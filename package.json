@@ -1,0 +1,39 @@
+{
+  "name": "community-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude-powered agent that manages the NZ Claude community Discord server and a WhatsApp number, with persistent memory for learning.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "tsx src/storage/migrate.ts",
+    "whatsapp:link": "tsx src/platforms/whatsapp/link.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1",
+    "pgvector": "^0.2.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^3.24.1",
+    "@huggingface/transformers": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

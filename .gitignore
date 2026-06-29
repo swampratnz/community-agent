@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# WhatsApp (Baileys) auth state — contains session credentials, NEVER commit
+auth/
+whatsapp-auth/
+.wwebjs_auth/
+
+# Logs
+logs/
+*.log
+
+# Local model cache (transformers.js)
+.cache/
+models/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

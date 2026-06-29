@@ -1,0 +1,44 @@
+# systemd unit for the Community Agent.
+# Install: cp deploy/community-agent.service /etc/systemd/system/
+#          systemctl daemon-reload && systemctl enable --now community-agent
+#
+# Logs:    journalctl -u community-agent -f
+
+[Unit]
+Description=NZ Claude Community Agent (Discord + WhatsApp)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=community-agent
+Group=community-agent
+WorkingDirectory=/opt/community-agent
+EnvironmentFile=/opt/community-agent/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+# Surface logs to journald.
+StandardOutput=journal
+StandardError=journal
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Writable paths: app working dir for WhatsApp auth state + model cache.
+ReadWritePaths=/opt/community-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# Resource caps.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
