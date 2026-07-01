@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
+  type WAMessage,
   type WASocket,
   type proto,
 } from '@whiskeysockets/baileys';
@@ -18,23 +19,61 @@ import type {
   PlatformAdapter,
 } from '../types.js';
 
-/** Strip the device suffix and domain from a JID to get a bare phone number. */
-function jidToNumber(jid: string | undefined | null): string {
+/** Strip the device suffix and domain from a JID: '6421...:12@s.whatsapp.net' -> '6421...'. */
+function jidLocalPart(jid: string | undefined | null): string {
   if (!jid) return '';
   return jid.split('@')[0].split(':')[0];
 }
 
-function extractText(msg: proto.IWebMessageInfo): string {
-  const m = msg.message;
-  if (!m) return '';
-  return (
+function isLidJid(jid: string | undefined | null): boolean {
+  return !!jid && jid.endsWith('@lid');
+}
+
+/**
+ * Resolve the sender's real PHONE NUMBER for a message, handling WhatsApp's
+ * LID (privacy) JIDs. When the routing JID is a LID, Baileys exposes the
+ * phone number on key.senderPn / key.participantPn. Returns '' if no phone
+ * number can be determined (LID-only sender on an old server payload).
+ */
+function senderPhoneNumber(msg: WAMessage, isGroup: boolean): string {
+  const key = msg.key;
+  if (isGroup) {
+    const participant = key.participant ?? '';
+    if (isLidJid(participant)) return jidLocalPart(key.participantPn);
+    return jidLocalPart(participant);
+  }
+  const remote = key.remoteJid ?? '';
+  if (isLidJid(remote)) return jidLocalPart(key.senderPn);
+  return jidLocalPart(remote);
+}
+
+/**
+ * Unwrap protocol containers (disappearing messages, view-once, document
+ * captions) to reach the real content message.
+ */
+function unwrapMessage(m: proto.IMessage | null | undefined): proto.IMessage | null {
+  if (!m) return null;
+  if (m.ephemeralMessage?.message) return unwrapMessage(m.ephemeralMessage.message);
+  if (m.viewOnceMessage?.message) return unwrapMessage(m.viewOnceMessage.message);
+  if (m.viewOnceMessageV2?.message) return unwrapMessage(m.viewOnceMessageV2.message);
+  if (m.documentWithCaptionMessage?.message) return unwrapMessage(m.documentWithCaptionMessage.message);
+  return m;
+}
+
+function extractText(msg: WAMessage): { text: string; contextInfo: proto.IContextInfo | null } {
+  const m = unwrapMessage(msg.message);
+  if (!m) return { text: '', contextInfo: null };
+  const text =
     m.conversation ??
     m.extendedTextMessage?.text ??
     m.imageMessage?.caption ??
     m.videoMessage?.caption ??
-    ''
-  );
+    '';
+  const contextInfo = m.extendedTextMessage?.contextInfo ?? null;
+  return { text, contextInfo };
 }
+
+const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
 
 /**
  * WhatsApp via Baileys (unofficial WhatsApp Web protocol, dedicated number).
@@ -48,7 +87,11 @@ export class BaileysAdapter implements PlatformAdapter {
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;
   private botNumber = '';
+  private botLid = '';
   private stopped = false;
+  private reconnectAttempts = 0;
+  /** WA Web version is fetched once and reused across reconnects. */
+  private cachedVersion: [number, number, number] | null = null;
 
   onMessage(handler: MessageHandler): void {
     this.handler = handler;
@@ -59,12 +102,37 @@ export class BaileysAdapter implements PlatformAdapter {
     await this.connect();
   }
 
+  private scheduleReconnect(): void {
+    if (this.stopped) return;
+    this.reconnectAttempts += 1;
+    const delay = Math.min(3_000 * 2 ** (this.reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS);
+    logger.warn({ attempt: this.reconnectAttempts, delayMs: delay }, 'Scheduling WhatsApp reconnect');
+    setTimeout(() => {
+      this.connect().catch((err) => {
+        // connect() can itself fail (e.g. network still down) — keep retrying
+        // with backoff instead of dying permanently.
+        logger.error({ err }, 'WA reconnect failed; will retry');
+        this.scheduleReconnect();
+      });
+    }, delay);
+  }
+
   private async connect(): Promise<void> {
     const { state, saveCreds } = await useMultiFileAuthState(config.whatsapp.authDir);
-    const { version } = await fetchLatestBaileysVersion();
+    if (!this.cachedVersion) {
+      try {
+        const { version } = await fetchLatestBaileysVersion();
+        this.cachedVersion = version as [number, number, number];
+      } catch (err) {
+        logger.warn({ err }, 'Could not fetch WA Web version; using Baileys default');
+      }
+    }
+
+    // Tear down any previous socket before replacing it.
+    this.sock?.end(undefined);
 
     const sock = makeWASocket({
-      version,
+      ...(this.cachedVersion ? { version: this.cachedVersion } : {}),
       auth: state,
       printQRInTerminal: false,
       // Baileys is chatty; route its logs through pino at warn+.
@@ -81,17 +149,19 @@ export class BaileysAdapter implements PlatformAdapter {
         qrcode.generate(qr, { small: true });
       }
       if (connection === 'open') {
-        this.botNumber = jidToNumber(sock.user?.id);
+        this.reconnectAttempts = 0;
+        this.botNumber = jidLocalPart(sock.user?.id);
+        this.botLid = jidLocalPart((sock.user as { lid?: string } | undefined)?.lid);
         logger.info({ number: this.botNumber }, 'WhatsApp connected');
       }
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
         logger.warn({ statusCode, loggedOut }, 'WhatsApp connection closed');
-        if (!loggedOut && !this.stopped) {
-          setTimeout(() => this.connect().catch((err) => logger.error({ err }, 'WA reconnect failed')), 3_000);
-        } else if (loggedOut) {
+        if (loggedOut) {
           logger.error('WhatsApp logged out — re-run `npm run whatsapp:link` to re-pair.');
+        } else {
+          this.scheduleReconnect();
         }
       }
     });
@@ -104,38 +174,49 @@ export class BaileysAdapter implements PlatformAdapter {
     });
   }
 
-  private async onWhatsappMessage(msg: proto.IWebMessageInfo): Promise<void> {
+  private async onWhatsappMessage(msg: WAMessage): Promise<void> {
     if (!this.handler) return;
     if (msg.key.fromMe) return; // ignore our own messages
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid || remoteJid === 'status@broadcast') return;
 
     const isGroup = remoteJid.endsWith('@g.us');
-    const isDirect = remoteJid.endsWith('@s.whatsapp.net');
+    // A non-group chat is a DM whether it's routed by phone JID or LID.
+    const isDirect = remoteJid.endsWith('@s.whatsapp.net') || isLidJid(remoteJid);
+    if (!isGroup && !isDirect) return; // newsletters/broadcast lists etc.
 
     // Optional allowlist of conversations.
     if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(remoteJid)) {
       return;
     }
 
-    const senderJid = isGroup ? msg.key.participant ?? '' : remoteJid;
-    const senderNumber = jidToNumber(senderJid);
-    const text = extractText(msg).trim();
+    const senderNumber = senderPhoneNumber(msg, isGroup);
+    const { text: rawText, contextInfo } = extractText(msg);
+    const text = rawText.trim();
     if (!text) return;
 
-    // In groups, only respond if the bot is mentioned.
+    // In groups, only respond if the bot is mentioned. mentionedJid entries
+    // may be phone JIDs or LIDs — match either identity of the bot.
     const mentioned =
-      msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.some(
-        (j) => jidToNumber(j) === this.botNumber,
-      ) ?? false;
+      contextInfo?.mentionedJid?.some((j) => {
+        const local = jidLocalPart(j);
+        return local === this.botNumber || (this.botLid !== '' && local === this.botLid);
+      }) ?? false;
 
-    const role = resolveWhatsappRole(senderNumber, config.whatsapp.adminNumbers);
+    // Admin resolution needs a real phone number. A LID sender without a
+    // resolvable number can only ever be a regular user.
+    const role = senderNumber
+      ? resolveWhatsappRole(senderNumber, config.whatsapp.adminNumbers)
+      : 'user';
+
+    const senderId =
+      senderNumber || jidLocalPart(isGroup ? msg.key.participant : remoteJid) || 'unknown';
 
     const normalised: IncomingMessage = {
       platform: 'whatsapp',
       conversationId: remoteJid,
-      userId: senderNumber,
-      userName: msg.pushName ?? senderNumber,
+      userId: senderId,
+      userName: msg.pushName ?? senderId,
       text,
       isDirect,
       role,
@@ -173,8 +254,15 @@ export class BaileysAdapter implements PlatformAdapter {
         const groupJid = action.conversationId!;
         const messageId = String(action.params?.messageId ?? '');
         if (!messageId) throw new Error('delete_message requires params.messageId');
+        if (!action.targetUserId) throw new Error('delete_message requires the author (targetUserId)');
+        // Revoking someone else's group message requires the author in the key.
         await this.sock.sendMessage(groupJid, {
-          delete: { remoteJid: groupJid, id: messageId, fromMe: false },
+          delete: {
+            remoteJid: groupJid,
+            id: messageId,
+            fromMe: false,
+            participant: `${action.targetUserId}@s.whatsapp.net`,
+          },
         });
         return `Deleted message ${messageId}.`;
       }

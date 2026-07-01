@@ -29,26 +29,57 @@ export async function recordInteraction(input: InteractionInput): Promise<void> 
     logger.warn({ err }, 'Embedding failed; storing interaction without vector');
   }
 
-  await pool.query(
-    `INSERT INTO interactions
-       (platform, conversation_id, user_id, user_name, role, direction,
-        content, addressed_to_bot, is_direct, cost_usd, meta, embedding)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-    [
-      input.platform,
-      input.conversationId,
-      input.userId,
-      input.userName ?? null,
-      input.role,
-      input.direction,
-      input.content,
-      input.addressedToBot ?? false,
-      input.isDirect ?? false,
-      input.costUsd ?? null,
-      JSON.stringify(input.meta ?? {}),
-      embedding ? pgvector.toSql(embedding) : null,
-    ],
+  const insert = (vec: number[] | null) =>
+    pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, user_name, role, direction,
+          content, addressed_to_bot, is_direct, cost_usd, meta, embedding)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [
+        input.platform,
+        input.conversationId,
+        input.userId,
+        input.userName ?? null,
+        input.role,
+        input.direction,
+        input.content,
+        input.addressedToBot ?? false,
+        input.isDirect ?? false,
+        input.costUsd ?? null,
+        JSON.stringify(input.meta ?? {}),
+        vec ? pgvector.toSql(vec) : null,
+      ],
+    );
+
+  try {
+    await insert(embedding);
+  } catch (err) {
+    if (!embedding) throw err;
+    // A bad vector (e.g. dimension mismatch) must not lose the audit record:
+    // retry without it.
+    logger.warn({ err }, 'Insert with embedding failed; retrying without vector');
+    await insert(null);
+  }
+}
+
+/**
+ * Fail fast if the live vector column dimension doesn't match config —
+ * otherwise every embedded insert silently degrades. Changing models requires
+ * migrating the column and re-embedding, not just editing .env.
+ */
+export async function verifyEmbeddingDim(expected: number): Promise<void> {
+  const { rows } = await pool.query(
+    `SELECT atttypmod AS dim
+       FROM pg_attribute
+      WHERE attrelid = 'interactions'::regclass AND attname = 'embedding'`,
   );
+  const actual = rows[0]?.dim;
+  if (typeof actual === 'number' && actual > 0 && actual !== expected) {
+    throw new Error(
+      `interactions.embedding is VECTOR(${actual}) but EMBEDDING_DIM=${expected}. ` +
+        `Changing the embedding model requires migrating the column and re-embedding existing rows.`,
+    );
+  }
 }
 
 export interface MemoryHit {
@@ -153,6 +184,43 @@ export async function setClaudeSessionId(
      DO UPDATE SET claude_session_id = EXCLUDED.claude_session_id, updated_at = now()`,
     [platform, conversationId, sessionId],
   );
+}
+
+/** Drop a stored session id (e.g. after a failed resume) so the next turn starts fresh. */
+export async function clearClaudeSessionId(
+  platform: Platform,
+  conversationId: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE sessions SET claude_session_id = NULL, updated_at = now()
+      WHERE platform = $1 AND conversation_id = $2`,
+    [platform, conversationId],
+  );
+}
+
+/**
+ * True if the bot has previously seen this conversation on this platform.
+ * Used to stop privileged tools from targeting arbitrary ids (e.g. messaging
+ * any phone number on WhatsApp).
+ */
+export async function isKnownConversation(
+  platform: Platform,
+  conversationId: string,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM interactions WHERE platform = $1 AND conversation_id = $2 LIMIT 1`,
+    [platform, conversationId],
+  );
+  return rows.length > 0;
+}
+
+/** True if the bot has previously seen this user on this platform. */
+export async function isKnownUser(platform: Platform, userId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM interactions WHERE platform = $1 AND user_id = $2 LIMIT 1`,
+    [platform, userId],
+  );
+  return rows.length > 0;
 }
 
 // --- Knowledge -------------------------------------------------------------

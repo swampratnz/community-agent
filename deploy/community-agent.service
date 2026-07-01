@@ -7,8 +7,9 @@
 [Unit]
 Description=NZ Claude Community Agent (Discord + WhatsApp)
 After=network-online.target postgresql.service
-Wants=network-online.target
-Requires=postgresql.service
+# Wants (not Requires): a Postgres restart must not stop the agent; the app
+# retries DB access itself.
+Wants=network-online.target postgresql.service
 
 [Service]
 Type=simple
@@ -16,8 +17,15 @@ User=community-agent
 Group=community-agent
 WorkingDirectory=/opt/community-agent
 EnvironmentFile=/opt/community-agent/.env
+# The SDK-spawned `claude` CLI writes session state under $HOME/.claude and
+# transformers.js caches models under $XDG_CACHE_HOME. Point both inside the
+# writable app dir so the hardening below doesn't break them.
+Environment=HOME=/opt/community-agent/home
+Environment=XDG_CACHE_HOME=/opt/community-agent/home/.cache
+Environment=CLAUDE_CONFIG_DIR=/opt/community-agent/home/.claude
+ExecStartPre=/usr/bin/mkdir -p /opt/community-agent/home/.cache
 ExecStart=/usr/bin/node dist/index.js
-Restart=on-failure
+Restart=always
 RestartSec=5
 # Surface logs to journald.
 StandardOutput=journal
@@ -28,7 +36,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-# Writable paths: app working dir for WhatsApp auth state + model cache.
+# Writable paths: app dir holds WhatsApp auth state, Claude session state and
+# the model cache (see HOME above).
 ReadWritePaths=/opt/community-agent
 ProtectKernelTunables=true
 ProtectKernelModules=true

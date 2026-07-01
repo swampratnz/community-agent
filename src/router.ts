@@ -20,6 +20,19 @@ export class Router {
   private readonly RATE_LIMIT = 8; // messages
   private readonly RATE_WINDOW_MS = 60_000; // per minute
 
+  constructor() {
+    // Sweep stale rate-limit entries so the map doesn't grow with every user
+    // ever seen. unref() keeps the timer from holding the process open.
+    setInterval(() => this.sweepRateLimits(), this.RATE_WINDOW_MS * 5).unref();
+  }
+
+  private sweepRateLimits(): void {
+    const now = Date.now();
+    for (const [key, hits] of this.userHits) {
+      if (hits.every((t) => now - t >= this.RATE_WINDOW_MS)) this.userHits.delete(key);
+    }
+  }
+
   register(adapter: PlatformAdapter): void {
     this.adapters.set(adapter.platform, adapter);
     adapter.onMessage((msg) => this.handle(msg));
@@ -39,7 +52,9 @@ export class Router {
 
   private async handle(msg: IncomingMessage): Promise<void> {
     // Always record inbound for audit + learning, even if we won't reply.
-    await recordInteraction({
+    // Fire-and-forget: recording embeds locally (CPU work) and must not sit
+    // on the reply critical path or block channels we won't answer in.
+    const recorded = recordInteraction({
       platform: msg.platform,
       conversationId: msg.conversationId,
       userId: msg.userId,
@@ -61,17 +76,22 @@ export class Router {
       return;
     }
 
-    // Serialise per conversation so session resume stays consistent.
+    // If we ARE replying, make sure this message is in memory before the
+    // agent turn runs (so recall can see it and ordering stays sane).
+    await recorded;
+
+    // Serialise per conversation so session resume stays consistent. Store
+    // the finally-wrapped promise itself so the cleanup comparison matches.
     const key = this.convoKey(msg);
     const prev = this.chains.get(key) ?? Promise.resolve();
-    const next = prev.then(() => this.respond(msg)).catch((err) => logger.error({ err }, 'respond failed'));
-    this.chains.set(
-      key,
-      next.finally(() => {
-        if (this.chains.get(key) === next) this.chains.delete(key);
-      }),
-    );
-    await next;
+    const next = prev
+      .then(() => this.respond(msg))
+      .catch((err) => logger.error({ err }, 'respond failed'));
+    const tracked = next.finally(() => {
+      if (this.chains.get(key) === tracked) this.chains.delete(key);
+    });
+    this.chains.set(key, tracked);
+    await tracked;
   }
 
   private async respond(msg: IncomingMessage): Promise<void> {

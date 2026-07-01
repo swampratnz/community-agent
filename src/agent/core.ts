@@ -4,14 +4,23 @@ import { logger } from '../logger.js';
 import { toolsForRole, type CallerContext } from '../auth/rbac.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import {
+  clearClaudeSessionId,
   getClaudeSessionId,
   searchMemory,
   setClaudeSessionId,
 } from '../storage/repository.js';
-import { buildSystemPrompt } from './systemPrompt.js';
+import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
 import { buildToolServer } from './tools.js';
 
 export interface AgentReply {
+  text: string;
+  costUsd?: number;
+  sessionId?: string;
+}
+
+interface TurnOutcome {
+  ok: boolean;
+  resumeFailed: boolean;
   text: string;
   costUsd?: number;
   sessionId?: string;
@@ -22,40 +31,95 @@ export interface AgentReply {
  *
  * Pipeline: recall relevant memory -> build a role-scoped system prompt and
  * tool surface -> resume the per-conversation Claude session -> stream the
- * result. Tool access is restricted by RBAC via `allowedTools`, so a normal
- * user's turn can never invoke a privileged tool.
+ * result. Tool access is restricted by RBAC via `allowedTools`, and ALL
+ * built-in Claude Code tools (Bash/Read/Write/...) are disabled via
+ * `tools: []`, so the model's only capabilities are our MCP tools.
  */
 export async function runAgentTurn(
   caller: CallerContext,
   userText: string,
   adapter: PlatformAdapter,
 ): Promise<AgentReply> {
+  // Memory recall is scoped to THIS conversation only. Cross-conversation
+  // recall is available solely through the admin-gated tools, so a public
+  // channel can never surface someone else's DMs.
   const memories = await searchMemory(userText, {
     platform: caller.platform,
     conversationId: caller.conversationId,
   });
 
-  const systemPrompt = buildSystemPrompt(caller, memories);
-  const toolServer = buildToolServer(caller, adapter);
-  const allowedTools = toolsForRole(caller.role);
+  const systemPrompt = buildSystemPrompt(caller);
+  // Recalled messages are untrusted user content: they ride in the user turn
+  // inside a clearly delimited block, never in the system prompt.
+  const prompt =
+    memories.length > 0
+      ? `${renderMemoryContext(memories)}\n\n${userText}`
+      : userText;
+
   const priorSession = await getClaudeSessionId(caller.platform, caller.conversationId);
 
-  let finalText = '';
+  const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession);
+  let outcome = first;
+
+  // If resuming a stale/foreign session failed (session files are CLI-local
+  // disk state), drop the stored id and retry once with a fresh session so
+  // the conversation doesn't brick itself.
+  if (!first.ok && first.resumeFailed && priorSession) {
+    logger.warn(
+      { conversationId: caller.conversationId, priorSession },
+      'Session resume failed; clearing stored session and retrying fresh',
+    );
+    await clearClaudeSessionId(caller.platform, caller.conversationId).catch(() => {});
+    outcome = await execTurn(caller, prompt, systemPrompt, adapter, null);
+  }
+
+  if (outcome.sessionId) {
+    await setClaudeSessionId(caller.platform, caller.conversationId, outcome.sessionId).catch(
+      (err) => logger.warn({ err }, 'Failed to persist session id'),
+    );
+  }
+
+  return {
+    text: outcome.text,
+    costUsd: outcome.costUsd,
+    sessionId: outcome.sessionId,
+  };
+}
+
+async function execTurn(
+  caller: CallerContext,
+  prompt: string,
+  systemPrompt: string,
+  adapter: PlatformAdapter,
+  resumeSession: string | null,
+): Promise<TurnOutcome> {
+  const toolServer = buildToolServer(caller, adapter);
+  const allowedTools = toolsForRole(caller.role);
+
+  // Text of the assistant message currently being streamed. Reset per
+  // assistant message so tool-use narration from earlier turns never leaks
+  // into the user-facing reply.
+  let lastAssistantText = '';
+  let resultText = '';
+  let resultSubtype: string | undefined;
   let costUsd: number | undefined;
   let sessionId: string | undefined;
 
   try {
     for await (const message of query({
-      prompt: userText,
+      prompt,
       options: {
         model: config.llm.model,
         systemPrompt,
         mcpServers: { community: toolServer },
+        // Disable ALL built-in Claude Code tools (Bash/Read/Write/Glob/...).
+        // `allowedTools` alone only auto-approves; it does not restrict.
+        tools: [],
         allowedTools,
-        // Tools are pre-approved via allowedTools; deny everything else without prompting.
+        disallowedTools: ['Task', 'WebFetch', 'WebSearch'],
         permissionMode: 'default',
         maxTurns: config.llm.maxTurns,
-        ...(priorSession ? { resume: priorSession } : {}),
+        ...(resumeSession ? { resume: resumeSession } : {}),
         // Don't load the host machine's ~/.claude config into the agent.
         settingSources: [],
       },
@@ -65,13 +129,13 @@ export async function runAgentTurn(
           if (message.subtype === 'init') sessionId = message.session_id;
           break;
         case 'assistant': {
-          // Accumulate text blocks from the assistant message.
-          const content = (message as { message?: { content?: Array<{ type: string; text?: string }> } }).message
-            ?.content;
+          const content = (message as { message?: { content?: Array<{ type: string; text?: string }> } })
+            .message?.content;
           if (Array.isArray(content)) {
-            for (const block of content) {
-              if (block.type === 'text' && block.text) finalText += block.text;
-            }
+            const textBlocks = content
+              .filter((b) => b.type === 'text' && b.text)
+              .map((b) => b.text as string);
+            if (textBlocks.length > 0) lastAssistantText = textBlocks.join('\n');
           }
           break;
         }
@@ -82,31 +146,43 @@ export async function runAgentTurn(
           if ('total_cost_usd' in message && typeof message.total_cost_usd === 'number') {
             costUsd = message.total_cost_usd;
           }
-          if ('result' in message && typeof message.result === 'string' && message.result.trim()) {
-            finalText = message.result;
+          if ('result' in message && typeof message.result === 'string') {
+            resultText = message.result;
           }
-          if (message.subtype && message.subtype !== 'success') {
-            logger.warn({ subtype: message.subtype }, 'Agent turn ended non-success');
-          }
+          resultSubtype = message.subtype;
           break;
         default:
           break;
       }
     }
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     logger.error({ err, conversationId: caller.conversationId }, 'Agent query failed');
-    return { text: 'Sorry — I hit an internal error and could not complete that. Please try again.' };
+    return {
+      ok: false,
+      // Heuristic: resume failures surface as errors mentioning the session.
+      resumeFailed: resumeSession != null && /session|resume/i.test(msg),
+      text: 'Sorry — I hit an internal error and could not complete that. Please try again.',
+    };
   }
 
-  if (sessionId) {
-    await setClaudeSessionId(caller.platform, caller.conversationId, sessionId).catch((err) =>
-      logger.warn({ err }, 'Failed to persist session id'),
-    );
+  if (resultSubtype && resultSubtype !== 'success') {
+    logger.warn({ subtype: resultSubtype, conversationId: caller.conversationId }, 'Agent turn ended non-success');
+    // Never surface the raw internal transcript on failures.
+    return {
+      ok: false,
+      // Non-success results (e.g. max turns) are turn failures, not resume
+      // failures — those throw during init and are handled in the catch above.
+      resumeFailed: false,
+      text:
+        resultSubtype === 'error_max_turns'
+          ? 'Sorry — that took more steps than I allow per message. Try breaking it into smaller questions.'
+          : 'Sorry — I could not complete that request. Please try again.',
+      costUsd,
+      sessionId,
+    };
   }
 
-  return {
-    text: finalText.trim() || "I don't have a response for that.",
-    costUsd,
-    sessionId,
-  };
+  const text = (resultText.trim() || lastAssistantText.trim()) || "I don't have a response for that.";
+  return { ok: true, resumeFailed: false, text, costUsd, sessionId };
 }

@@ -68,6 +68,24 @@ CREATE TABLE IF NOT EXISTS knowledge (
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
 
+-- Keep updated_at honest on any UPDATE path.
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS knowledge_set_updated_at ON knowledge;
+CREATE TRIGGER knowledge_set_updated_at
+  BEFORE UPDATE ON knowledge
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS sessions_set_updated_at ON sessions;
+CREATE TRIGGER sessions_set_updated_at
+  BEFORE UPDATE ON sessions
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 -- ---------------------------------------------------------------------------
 -- Append-only audit log of privileged (admin) actions the agent performed.
 -- ---------------------------------------------------------------------------

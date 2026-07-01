@@ -4,7 +4,8 @@ End-to-end setup on a fresh Ubuntu host.
 
 ## 0. Prerequisites
 - Ubuntu 22.04+ with sudo.
-- A Discord application + bot (token, `MessageContent` intent enabled).
+- A Discord application + bot token, with the **`MessageContent` and
+  `GuildMembers` privileged intents enabled** in the Developer Portal.
 - A dedicated phone number with WhatsApp installed (for Baileys linking).
 - A machine where you're logged into Claude Code to mint the OAuth token.
 
@@ -13,7 +14,7 @@ End-to-end setup on a fresh Ubuntu host.
 git clone <your-repo> community-agent && cd community-agent
 sudo bash deploy/setup-ubuntu.sh
 ```
-This installs Node 20, PostgreSQL + pgvector, creates the `community_agent`
+This installs Node 24 LTS, PostgreSQL + pgvector (0.8.4+), creates the `community_agent`
 database/role and a dedicated `community-agent` service user. **Save the printed
 DB password.**
 
@@ -46,7 +47,7 @@ Set at least: `CLAUDE_CODE_OAUTH_TOKEN`, `DISCORD_BOT_TOKEN`,
 ## 5. Run migrations
 ```bash
 cd /opt/community-agent
-sudo -u community-agent --preserve-env=PATH bash -lc 'set -a; . ./.env; set +a; npm run migrate'
+sudo -u community-agent bash -lc 'set -a; . ./.env; set +a; npm run migrate:prod'
 ```
 
 ## 6. Link the WhatsApp number (one-time, interactive)
@@ -77,7 +78,7 @@ sudo journalctl -u community-agent -f
 cd /opt/community-agent
 sudo -u community-agent git pull           # or rsync new code
 sudo -u community-agent npm ci && sudo -u community-agent npm run build
-sudo -u community-agent --preserve-env=PATH bash -lc 'set -a; . ./.env; set +a; npm run migrate'
+sudo -u community-agent bash -lc 'set -a; . ./.env; set +a; npm run migrate:prod'
 sudo systemctl restart community-agent
 ```
 
@@ -92,7 +93,8 @@ tar czf whatsapp-auth-$(date +%F).tgz -C /opt/community-agent whatsapp-auth
 - **`Invalid environment configuration`** — a required env var is missing; the
   log lists which.
 - **WhatsApp keeps showing a QR / `logged out`** — re-run step 6.
-- **Discord bot silent** — check the `MessageContent` privileged intent is on,
+- **Discord bot silent or login fails** — check the `MessageContent` **and**
+  `GuildMembers` privileged intents are on,
   the bot can see the channel, and (if set) `DISCORD_ALLOWED_CHANNEL_IDS`
   includes it. The bot only replies when @mentioned, replied to, or DM'd.
 - **`embedding dimension mismatch`** — `EMBEDDING_DIM` must match the model

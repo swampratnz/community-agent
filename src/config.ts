@@ -1,7 +1,7 @@
 import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
-loadEnv();
+loadEnv({ quiet: true });
 
 /** Parse a comma-separated env var into a trimmed, non-empty string array. */
 function csv(value: string | undefined): string[] {
@@ -15,7 +15,7 @@ function csv(value: string | undefined): string[] {
 const EnvSchema = z.object({
   // LLM / Claude
   CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
-  AGENT_MODEL: z.string().default('claude-opus-4-6'),
+  AGENT_MODEL: z.string().default('claude-sonnet-5'),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
 
   // Discord

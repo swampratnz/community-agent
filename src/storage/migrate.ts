@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -22,8 +22,8 @@ export async function migrate(): Promise<void> {
   logger.info('Database schema applied');
 }
 
-// Allow running directly: `npm run migrate`
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+// Allow running directly: `npm run migrate` (tsx) or `npm run migrate:prod` (node dist).
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
 if (isMain) {
   migrate()
     .then(() => closeDb())

@@ -21,7 +21,7 @@ authenticated with a **Claude subscription** (no per-token API billing).
 ## Tech stack
 | Concern | Choice |
 |---|---|
-| Runtime | TypeScript on Node 20 |
+| Runtime | TypeScript on Node 22+ (Node 24 LTS in production) |
 | Agent | `@anthropic-ai/claude-agent-sdk` (subscription auth) |
 | Discord | `discord.js` v14 |
 | WhatsApp | Baileys (dedicated number) — Cloud API adapter stubbed |

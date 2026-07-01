@@ -19,6 +19,10 @@ a living document — review it whenever you add a tool or a platform.
 A normal user tries to get the agent to moderate, announce, or reveal secrets.
 
 **Controls**
+- **Built-in tools disabled outright**: `tools: []` is passed to every
+  `query()`, removing ALL built-in Claude Code tools (Bash/Read/Write/Glob/…)
+  from the model's surface. Note `allowedTools` alone does NOT do this — it
+  only pre-approves; the restriction comes from `tools: []`.
 - **Structural RBAC**: `allowedTools` is computed from the *sender's* resolved
   role, not from anything in the message. A user-role turn never has privileged
   tools attached, so the model cannot call them even if convinced to.
@@ -27,9 +31,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - **Identity is platform-derived**: admin status comes from Discord role/user
   ids or WhatsApp numbers in config — never from message content. The system
   prompt explicitly states that messages cannot grant permissions.
-- **No shell/file tools**: the agent is given only the in-process `community`
-  MCP tools. `settingSources: []` prevents loading the host's `~/.claude`
-  config, and no built-in tools (Bash/Read/Write/etc.) are in `allowedTools`.
+- **Memory is conversation-scoped**: automatic recall and `remember_search`
+  only see the current conversation. Cross-conversation search (which could
+  expose other members' DMs) is admin-only.
+- **Recalled content is quarantined**: memories are injected into the *user*
+  turn inside a delimited `<recalled-messages>` block with angle brackets
+  stripped (so recalled text can't fake a closing tag), and the system prompt
+  instructs the model to treat recalled/tool-returned chat content as data,
+  never instructions. This mitigates stored prompt injection; it does not
+  eliminate it — see "Residual risks".
+- **Privileged targets are validated**: `moderate`/`announce` refuse targets
+  (conversations/users) the bot has never seen, so a manipulated admin turn
+  cannot message arbitrary phone numbers or unknown channels.
+- `settingSources: []` prevents loading the host's `~/.claude` config.
 
 ### 2. Secret exposure
 **Controls**
@@ -83,20 +97,35 @@ immediate, free operation — revisit it before scaling.
 
 ### Discord
 - Enable only the gateway intents the bot needs (Guilds, GuildMessages,
-  MessageContent, GuildMembers, DirectMessages). `MessageContent` is a
-  privileged intent — enable it in the Developer Portal.
+  MessageContent, GuildMembers, DirectMessages). **Both `MessageContent` and
+  `GuildMembers` are privileged intents — enable them in the Developer Portal
+  or the bot will fail to log in.**
 - Give the bot the least role permissions required for moderation (Timeout
   Members, Kick Members, Manage Messages) and place its role appropriately in
   the hierarchy.
 
 ## Subscription-auth caveat
 Anthropic's Agent SDK docs state subscription/claude.ai login is **not
-officially supported** for SDK-built products and recommend an API key. Using
-your own subscription for your own community bot is a personal decision and a
-grey area in the terms (which target redistributing subscription auth in
-third-party products). The auth layer is isolated in `src/agent/auth.ts`; switch
-to an API key by setting `ANTHROPIC_API_KEY` and removing the deletion in that
-file if you ever need the supported path.
+officially supported** for SDK-built products and recommend an API key. As of
+June 2026, headless SDK usage on Pro/Max additionally draws from a **separate
+weekly token pool** (rate-limited differently from interactive use), and the
+consumer terms language against using consumer OAuth tokens in
+third-party/automated services has tightened. Using your own subscription for
+your own community bot remains a personal decision and a grey area. The auth
+layer is isolated in `src/agent/auth.ts`; switch to an API key by setting
+`ANTHROPIC_API_KEY` and removing the deletion in that file if you ever need
+the supported path.
+
+## Residual risks (accepted, documented)
+- **Prompt injection is mitigated, not solved.** An admin turn still processes
+  untrusted channel text; the target validation and audit log bound the blast
+  radius of a successful injection to known conversations/users.
+- **`announce`/`warn_user` to known targets** is still a lever an attacker
+  could pull via a manipulated admin turn — the audit log is the detective
+  control.
+- **The `claude` CLI subprocess** still has network access (it must reach the
+  Anthropic API). OS-level egress filtering is the next hardening step if
+  needed.
 
 ## Operational checklist
 - [ ] `.env` is `chmod 600` and owned by the service user.

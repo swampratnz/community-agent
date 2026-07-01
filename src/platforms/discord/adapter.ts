@@ -83,7 +83,9 @@ export class DiscordAdapter implements PlatformAdapter {
       message.reference?.messageId != null &&
       (await this.isReplyToBot(message).catch(() => false));
 
-    const memberRoleIds = message.member ? [...message.member.roles.cache.keys()] : [];
+    // In DMs message.member is null; fetch guild membership so role-based
+    // admins keep their admin status in DM conversations too.
+    const memberRoleIds = await this.memberRoleIds(message);
     const role = resolveDiscordRole(message.author.id, memberRoleIds, {
       adminRoleIds: config.discord.adminRoleIds,
       adminUserIds: config.discord.adminUserIds,
@@ -108,6 +110,20 @@ export class DiscordAdapter implements PlatformAdapter {
     };
 
     await this.handler(normalised);
+  }
+
+  private async memberRoleIds(message: Message): Promise<string[]> {
+    if (message.member) return [...message.member.roles.cache.keys()];
+    // DM path: resolve roles from the configured guild. Only needed when
+    // role-based admins are configured at all.
+    if (config.discord.adminRoleIds.length === 0) return [];
+    try {
+      const guild = await this.client.guilds.fetch(config.discord.guildId);
+      const member = await guild.members.fetch(message.author.id);
+      return [...member.roles.cache.keys()];
+    } catch {
+      return []; // not a guild member (or fetch failed) -> no roles
+    }
   }
 
   private async isReplyToBot(message: Message): Promise<boolean> {

@@ -61,11 +61,12 @@ memory**:
 
 1. **Every** inbound and outbound message is written to `interactions` with a
    locally-computed embedding (transformers.js, `all-MiniLM-L6-v2`, 384-dim).
-2. On each turn the agent semantically searches prior interactions
-   (`pgvector` cosine distance, HNSW index) and the curated `knowledge` table,
-   and injects the top hits into the system prompt.
+2. On each turn the agent semantically searches prior interactions in the
+   *current conversation* (`pgvector` cosine distance, HNSW index) and injects
+   the top hits into the **user turn** inside a delimited untrusted-data block
+   (never the system prompt — see SECURITY.md on prompt injection).
 3. The `remember_search` / `knowledge_search` tools let the model query memory
-   on demand mid-turn.
+   on demand mid-turn. Cross-conversation search is admin-only.
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
@@ -103,6 +104,15 @@ action is written to the append-only `admin_audit` table.
 - Different conversations run in parallel.
 - A light **per-user rate limit** (8 msg / 60s) protects against spam and
   runaway cost.
+
+### Known cost/latency characteristic
+
+Each `query()` call spawns a Claude Code CLI subprocess and (when resuming)
+re-reads the conversation's session file. On a small VPS expect roughly one to
+a few seconds of overhead per answered message, growing with session length.
+If this becomes a problem: cap session length (start fresh after N turns), or
+move to the SDK's streaming-input mode with a persistent process per busy
+conversation.
 
 ## Switching WhatsApp providers
 
