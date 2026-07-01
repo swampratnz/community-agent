@@ -36,17 +36,40 @@ Behaviour rules:
 - When you take a privileged action, briefly confirm what you did.
 `.trim();
 
-export function buildSystemPrompt(caller: CallerContext): string {
-  const roleNote =
-    caller.role === 'admin'
-      ? 'The current requester is an ADMIN. Privileged tools (moderation, announcements, saving knowledge) are available.'
-      : 'The current requester is a regular USER. Only informational tools are available; decline privileged requests.';
+const ROLE_NOTES: Record<CallerContext['role'], string> = {
+  super_admin:
+    'The current requester is a SUPER ADMIN: full tool access across both platforms, including membership management, policies, purges and audit views. Destructive actions still require their out-of-band CONFIRM reply.',
+  admin:
+    'The current requester is an ADMIN. Moderation, announcements, membership additions and history lookups are available, but ONLY within conversations the admin actually participates in — the tools enforce this. Destructive actions require their CONFIRM reply.',
+  member:
+    'The current requester is a MEMBER. Informational tools only; politely decline privileged requests and suggest they ask an admin.',
+  guest:
+    'The current requester is a GUEST (not a registered member). Informational tools only; if they want full access, an admin can add them as a member.',
+};
 
+export interface PromptPolicy {
+  /** 'off' = never write code; 'snippets' = short snippets only; 'full' = unrestricted. */
+  codeAnswers: 'off' | 'snippets' | 'full';
+}
+
+function codePolicyNote(policy: PromptPolicy['codeAnswers']): string {
+  switch (policy) {
+    case 'off':
+      return 'Code policy: do NOT write code for users. Explain concepts in prose and point them to claude.ai or the API docs for code.';
+    case 'snippets':
+      return 'Code policy: short illustrative snippets (under ~15 lines) are fine; decline to write substantial programs — point people to claude.ai for that.';
+    case 'full':
+      return 'Code policy: code answers are allowed.';
+  }
+}
+
+export function buildSystemPrompt(caller: CallerContext, policy: PromptPolicy): string {
   return [
     COMMUNITY_CHARTER,
     GUIDELINES,
     `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${caller.userName} (${caller.role})`,
-    roleNote,
+    ROLE_NOTES[caller.role],
+    codePolicyNote(policy.codeAnswers),
   ].join('\n\n');
 }
 

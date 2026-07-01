@@ -41,8 +41,10 @@ sudo -u community-agent chmod 600 .env
 sudo -u community-agent nano .env      # fill in all values
 ```
 Set at least: `CLAUDE_CODE_OAUTH_TOKEN`, `DISCORD_BOT_TOKEN`,
-`DISCORD_GUILD_ID`, `DISCORD_ADMIN_USER_IDS`, `WHATSAPP_ADMIN_NUMBERS`,
-`DATABASE_URL` (with the password from step 1).
+`DISCORD_GUILD_ID`, `SUPER_ADMIN_DISCORD_IDS`, `SUPER_ADMIN_WHATSAPP_NUMBERS`,
+`DATABASE_URL` (with the password from step 1). Access is **gated** by
+default — after startup, message the bot as a super admin and use
+`add_member` / `grant_admin` to onboard people.
 
 ## 5. Run migrations
 ```bash

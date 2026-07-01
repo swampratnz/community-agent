@@ -4,12 +4,16 @@
  * Discord and WhatsApp adapters both normalise their native events into an
  * {@link IncomingMessage} and implement {@link PlatformAdapter}, so the agent
  * core and router never need to know which platform a message came from.
+ *
+ * Adapters carry IDENTITY only (who/where); permission tiers are resolved by
+ * the router from env + database (see auth/roles.ts), never in adapters and
+ * never from message content.
  */
 
 export type Platform = 'discord' | 'whatsapp';
 
-/** Coarse permission level derived from platform-native roles/identity. */
-export type Role = 'admin' | 'user';
+/** Permission tier. Defined here to keep types.ts dependency-free. */
+export type Tier = 'super_admin' | 'admin' | 'member' | 'guest';
 
 /** A message received from a platform, normalised to a common shape. */
 export interface IncomingMessage {
@@ -24,8 +28,6 @@ export interface IncomingMessage {
   text: string;
   /** True if this is a 1:1 / direct conversation rather than a group/channel. */
   isDirect: boolean;
-  /** Resolved permission level for this sender. */
-  role: Role;
   /** Whether the bot was explicitly addressed (mention / DM / reply). */
   addressedToBot: boolean;
   /** Epoch milliseconds the platform reported for the message. */
@@ -45,10 +47,11 @@ export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;
 /**
  * A privileged action the agent can request against a platform. Adapters
  * advertise which capabilities they support; unsupported actions throw.
- * RBAC is enforced *before* these are ever invoked (admin-only tools).
+ * RBAC is enforced *before* these are ever invoked (tier-gated tools plus
+ * conversation-membership scoping).
  */
 export interface AdminAction {
-  /** e.g. 'timeout_user', 'delete_message', 'announce', 'kick_user'. */
+  /** e.g. 'timeout_user', 'delete_message', 'kick_user', 'warn_user'. */
   kind: string;
   conversationId?: string;
   targetUserId?: string;
@@ -69,6 +72,17 @@ export interface PlatformAdapter {
 
   /** Send a text reply to a conversation. */
   sendMessage(out: OutgoingMessage): Promise<void>;
+
+  /** Send a 1:1 message to a user (used for warnings and super-admin alerts). */
+  sendDirectMessage(userId: string, text: string): Promise<void>;
+
+  /**
+   * Conversation ids the given user actually participates in right now
+   * (Discord: channels their permissions let them view; WhatsApp: groups
+   * they are a member of plus their own DM). Backs admin data scoping.
+   * Implementations cache briefly (~60s) to avoid hammering platform APIs.
+   */
+  conversationsForUser(userId: string): Promise<string[]>;
 
   /** Capabilities this adapter supports for {@link performAdminAction}. */
   readonly adminCapabilities: ReadonlySet<string>;

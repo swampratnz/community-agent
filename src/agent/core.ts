@@ -5,10 +5,11 @@ import { toolsForRole, type CallerContext } from '../auth/rbac.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
-  getClaudeSessionId,
+  getClaudeSession,
   searchMemory,
   setClaudeSessionId,
 } from '../storage/repository.js';
+import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
 import { buildToolServer } from './tools.js';
 
@@ -77,7 +78,8 @@ export async function runAgentTurn(
     conversationId: caller.conversationId,
   });
 
-  const systemPrompt = buildSystemPrompt(caller);
+  const codeAnswers = await getCodeAnswersPolicy();
+  const systemPrompt = buildSystemPrompt(caller, { codeAnswers });
   // Recalled messages are untrusted user content: they ride in the user turn
   // inside a clearly delimited block, never in the system prompt.
   const prompt =
@@ -85,7 +87,22 @@ export async function runAgentTurn(
       ? `${renderMemoryContext(memories)}\n\n${userText}`
       : userText;
 
-  const priorSession = await getClaudeSessionId(caller.platform, caller.conversationId);
+  // Session hygiene: cap resumed-session length and age so context (and any
+  // accumulated injection) can't grow without bound.
+  const stored = await getClaudeSession(caller.platform, caller.conversationId);
+  const maxAgeMs = config.behaviour.sessionMaxAgeHours * 3_600_000;
+  const priorSession =
+    stored &&
+    stored.turnCount < config.behaviour.sessionMaxTurns &&
+    Date.now() - stored.updatedAt.getTime() < maxAgeMs
+      ? stored.sessionId
+      : null;
+  if (stored && !priorSession) {
+    logger.info(
+      { conversationId: caller.conversationId, turnCount: stored.turnCount },
+      'Session past turn/age cap — starting fresh',
+    );
+  }
 
   const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession);
   let outcome = first;

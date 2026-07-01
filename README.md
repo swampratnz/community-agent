@@ -52,12 +52,15 @@ npm run dev                 # run with hot reload
 
 Production deployment on Ubuntu: see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
-## Admin vs user
-Admin status is derived from platform identity (Discord role/user ids in
-`DISCORD_ADMIN_*`, WhatsApp numbers in `WHATSAPP_ADMIN_NUMBERS`) — never from
-message content. Privileged tools are only attached to an admin's turn, so a
-normal user's request can't reach them. See
-**[docs/SECURITY.md](docs/SECURITY.md)**.
+## Roles (super admin / admin / member)
+Three tiers with **gated access** by default: only registered members get
+replies; admins add members (`add_member`); super admins (env-configured via
+`SUPER_ADMIN_*`) grant admins and control policies. Admin data access is
+scoped to conversations the admin actually participates in, destructive
+actions require an out-of-band CONFIRM reply, and everything privileged is
+audited + alerted. Set `ACCESS_MODE_DISCORD=open` later to let non-members ask
+basic questions. See **[docs/SECURITY.md](docs/SECURITY.md)** and
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full tool matrix.
 
 ## Important caveats
 - **Subscription auth** is a grey area in Anthropic's SDK terms (see SECURITY.md).

@@ -9,7 +9,6 @@ import makeWASocket, {
 import qrcode from 'qrcode-terminal';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
-import { resolveWhatsappRole } from '../../auth/rbac.js';
 import { extractText, isLidJid, jidLocalPart, senderPhoneNumber } from './wire.js';
 import type {
   AdminAction,
@@ -20,6 +19,7 @@ import type {
 } from '../types.js';
 
 const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
+const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
 /**
  * WhatsApp via Baileys (unofficial WhatsApp Web protocol, dedicated number).
@@ -36,6 +36,7 @@ export class BaileysAdapter implements PlatformAdapter {
   private botLid = '';
   private stopped = false;
   private reconnectAttempts = 0;
+  private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
   /** WA Web version is fetched once and reused across reconnects. */
   private cachedVersion: [number, number, number] | null = null;
 
@@ -149,12 +150,9 @@ export class BaileysAdapter implements PlatformAdapter {
         return local === this.botNumber || (this.botLid !== '' && local === this.botLid);
       }) ?? false;
 
-    // Admin resolution needs a real phone number. A LID sender without a
-    // resolvable number can only ever be a regular user.
-    const role = senderNumber
-      ? resolveWhatsappRole(senderNumber, config.whatsapp.adminNumbers)
-      : 'user';
-
+    // Identity must be a real phone number for tier resolution to work; a
+    // LID sender without a resolvable number falls back to the LID and can
+    // therefore never match a member/admin/super-admin grant.
     const senderId =
       senderNumber || jidLocalPart(isGroup ? msg.key.participant : remoteJid) || 'unknown';
 
@@ -165,7 +163,6 @@ export class BaileysAdapter implements PlatformAdapter {
       userName: msg.pushName ?? senderId,
       text,
       isDirect,
-      role,
       addressedToBot: isDirect || mentioned,
       timestamp: Number(msg.messageTimestamp ?? 0) * 1000,
       raw: msg,
@@ -177,6 +174,40 @@ export class BaileysAdapter implements PlatformAdapter {
   async sendMessage(out: OutgoingMessage): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     await this.sock.sendMessage(out.conversationId, { text: out.text });
+  }
+
+  async sendDirectMessage(userId: string, text: string): Promise<void> {
+    if (!this.sock) throw new Error('WhatsApp socket not connected');
+    await this.sock.sendMessage(`${userId}@s.whatsapp.net`, { text });
+  }
+
+  /**
+   * WhatsApp groups this user (phone number) is currently a participant of,
+   * plus their own 1:1 with the bot. Backs admin conversation scoping;
+   * cached ~60s (see SECURITY.md for the staleness window).
+   */
+  async conversationsForUser(userId: string): Promise<string[]> {
+    const cached = this.membershipCache.get(userId);
+    if (cached && cached.expires > Date.now()) return cached.ids;
+
+    const ids: string[] = [`${userId}@s.whatsapp.net`];
+    try {
+      if (!this.sock) throw new Error('socket not connected');
+      const groups = await this.sock.groupFetchAllParticipating();
+      for (const [jid, meta] of Object.entries(groups)) {
+        const inGroup = meta.participants?.some((p) => {
+          const pid = jidLocalPart(p.id);
+          const pn = jidLocalPart((p as { phoneNumber?: string }).phoneNumber);
+          return pid === userId || pn === userId;
+        });
+        if (inGroup) ids.push(jid);
+      }
+    } catch (err) {
+      logger.warn({ err, userId }, 'Failed to resolve WhatsApp conversations for user');
+    }
+
+    this.membershipCache.set(userId, { expires: Date.now() + MEMBERSHIP_CACHE_TTL_MS, ids });
+    return ids;
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {

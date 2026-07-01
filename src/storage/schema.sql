@@ -87,6 +87,40 @@ CREATE TRIGGER sessions_set_updated_at
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------------------------------------------------------------------------
+-- Community membership + tiers. super_admin is env-bootstrapped and never
+-- stored here; this table holds 'admin' and 'member' grants.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS community_users (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform      TEXT        NOT NULL,
+  platform_user_id TEXT     NOT NULL,
+  display_name  TEXT,
+  role          TEXT        NOT NULL DEFAULT 'member',  -- 'admin' | 'member'
+  added_by      TEXT,                                   -- platform user id of granter
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (platform, platform_user_id)
+);
+
+DROP TRIGGER IF EXISTS community_users_set_updated_at ON community_users;
+CREATE TRIGGER community_users_set_updated_at
+  BEFORE UPDATE ON community_users
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Runtime policies set by super admins (e.g. code_answers, paused).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS policies (
+  key           TEXT        PRIMARY KEY,
+  value         JSONB       NOT NULL,
+  updated_by    TEXT,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Session hygiene: cap resumed-session length (see agent/core.ts).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS turn_count INT NOT NULL DEFAULT 0;
+
+-- ---------------------------------------------------------------------------
 -- Append-only audit log of privileged (admin) actions the agent performed.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS admin_audit (

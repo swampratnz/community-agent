@@ -23,14 +23,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `query()`, removing ALL built-in Claude Code tools (Bash/Read/Write/Glob/…)
   from the model's surface. Note `allowedTools` alone does NOT do this — it
   only pre-approves; the restriction comes from `tools: []`.
-- **Structural RBAC**: `allowedTools` is computed from the *sender's* resolved
-  role, not from anything in the message. A user-role turn never has privileged
-  tools attached, so the model cannot call them even if convinced to.
-- **Defence in depth**: every privileged tool calls `assertAdmin()` before any
-  side effect.
-- **Identity is platform-derived**: admin status comes from Discord role/user
-  ids or WhatsApp numbers in config — never from message content. The system
-  prompt explicitly states that messages cannot grant permissions.
+- **Structural RBAC (three tiers)**: `allowedTools` is computed from the
+  *sender's* resolved tier (super_admin > admin > member > guest), not from
+  anything in the message. A lower tier's turn never has higher-tier tools
+  attached, so the model cannot call them even if convinced to.
+- **Admin scoping is data-layer**: admins' cross-conversation tools filter in
+  SQL against the admin's *platform-verified* conversation membership
+  (Discord channel visibility / WhatsApp group participation, cached ~60s).
+- **Confirm-before-destructive**: kick/timeout/delete/purge/forget register a
+  pending action; the actor must reply CONFIRM in the same conversation within
+  60s. The confirmation is intercepted by the router and executed
+  deterministically — it never passes through the model, so an injection can
+  *request* an action but can never *complete* one.
+- **Defence in depth**: every privileged tool calls `assertAtLeast()` before
+  any side effect.
+- **Identity is platform-derived**: super admins come from env config; admins
+  and members from the `community_users` table, changed only via audited
+  super-admin/admin tools — never from message content. The system prompt
+  explicitly states that messages cannot grant permissions.
+- **Super-admin alerting**: every successful privileged action DMs the other
+  super admins, so misuse or a successful injection is *seen*, not just logged.
 - **Memory is conversation-scoped**: automatic recall and `remember_search`
   only see the current conversation. Cross-conversation search (which could
   expose other members' DMs) is admin-only.
@@ -118,14 +130,29 @@ the supported path.
 
 ## Residual risks (accepted, documented)
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
-  untrusted channel text; the target validation and audit log bound the blast
-  radius of a successful injection to known conversations/users.
-- **`announce`/`warn_user` to known targets** is still a lever an attacker
-  could pull via a manipulated admin turn — the audit log is the detective
-  control.
+  untrusted channel text. The blast radius is bounded by: conversation-scoped
+  targets, the CONFIRM gate on destructive actions, super-admin alerting, and
+  the audit log. Non-confirm actions (`warn_user`, `announce` within scope)
+  remain a lever a successful injection could pull.
+- **Membership-scope staleness**: adapters cache an admin's conversation list
+  for ~60s, so an admin removed from a channel/group can retain data scope for
+  up to that window.
+- **Guests in gated mode are invisible**: their messages are not stored, which
+  also means no audit trail of what strangers sent the WhatsApp number. Trade
+  chosen deliberately (privacy > forensics for non-members).
+- **The daily budget counts recorded replies** — if cost/usage recording fails,
+  the budget degrades open (rate limiter still applies).
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.
+
+## Behaviour policy (code answers)
+`code_answers` policy (super admin, `set_policy`): `off` strips all fenced
+code from replies, `snippets` (default) truncates fences beyond ~15 lines,
+`full` disables the filter. Enforced *outside* the model in
+`src/agent/outbound.ts`, alongside unconditional secret redaction (exact
+runtime secrets + common token patterns) and Discord `allowedMentions: []`
+(no injected @everyone pings).
 
 ## Operational checklist
 - [ ] `.env` is `chmod 600` and owned by the service user.
