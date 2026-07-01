@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { toolsForRole, type CallerContext } from '../auth/rbac.js';
@@ -24,6 +24,35 @@ interface TurnOutcome {
   text: string;
   costUsd?: number;
   sessionId?: string;
+}
+
+/**
+ * Build the SDK query options for one turn. Extracted (and exported) so the
+ * security invariants are regression-testable:
+ *  - `tools: []` disables ALL built-in Claude Code tools;
+ *  - `allowedTools` is derived from the caller's role only.
+ */
+export function buildQueryOptions(
+  role: CallerContext['role'],
+  systemPrompt: string,
+  mcpServers: Record<string, McpServerConfig>,
+  resumeSession: string | null,
+) {
+  return {
+    model: config.llm.model,
+    systemPrompt,
+    mcpServers,
+    // Disable ALL built-in Claude Code tools (Bash/Read/Write/Glob/...).
+    // `allowedTools` alone only auto-approves; it does not restrict.
+    tools: [] as string[],
+    allowedTools: toolsForRole(role),
+    disallowedTools: ['Task', 'WebFetch', 'WebSearch'],
+    permissionMode: 'default' as const,
+    maxTurns: config.llm.maxTurns,
+    ...(resumeSession ? { resume: resumeSession } : {}),
+    // Don't load the host machine's ~/.claude config into the agent.
+    settingSources: [] as [],
+  };
 }
 
 /**
@@ -94,7 +123,6 @@ async function execTurn(
   resumeSession: string | null,
 ): Promise<TurnOutcome> {
   const toolServer = buildToolServer(caller, adapter);
-  const allowedTools = toolsForRole(caller.role);
 
   // Text of the assistant message currently being streamed. Reset per
   // assistant message so tool-use narration from earlier turns never leaks
@@ -108,21 +136,7 @@ async function execTurn(
   try {
     for await (const message of query({
       prompt,
-      options: {
-        model: config.llm.model,
-        systemPrompt,
-        mcpServers: { community: toolServer },
-        // Disable ALL built-in Claude Code tools (Bash/Read/Write/Glob/...).
-        // `allowedTools` alone only auto-approves; it does not restrict.
-        tools: [],
-        allowedTools,
-        disallowedTools: ['Task', 'WebFetch', 'WebSearch'],
-        permissionMode: 'default',
-        maxTurns: config.llm.maxTurns,
-        ...(resumeSession ? { resume: resumeSession } : {}),
-        // Don't load the host machine's ~/.claude config into the agent.
-        settingSources: [],
-      },
+      options: buildQueryOptions(caller.role, systemPrompt, { community: toolServer }, resumeSession),
     })) {
       switch (message.type) {
         case 'system':
