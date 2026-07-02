@@ -67,7 +67,10 @@ memory**:
    (never the system prompt — see SECURITY.md on prompt injection).
 3. The `remember_search` / `knowledge_search` tools let the model query memory
    on demand mid-turn. Cross-conversation search is admin-only.
-4. Admins can promote durable facts into `knowledge` via `save_knowledge`.
+4. Admins can promote durable facts into `knowledge` via `save_knowledge`, and
+   curate existing entries with `list_knowledge` (browse by scope),
+   `update_knowledge` (correct + re-embed), and `delete_knowledge` (retire,
+   CONFIRM-gated).
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -102,6 +105,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
+| `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |

@@ -332,6 +332,84 @@ export async function searchKnowledge(query: string, topK = 5): Promise<Array<{ 
   return rows.map((r) => ({ title: r.title, content: r.content, similarity: Number(r.similarity) }));
 }
 
+export interface KnowledgeEntry {
+  id: number;
+  scope: string;
+  title: string | null;
+  content: string;
+  createdByRole: string;
+  updatedAt: Date;
+}
+
+/** Browse knowledge entries directly (as opposed to semantic search), optionally filtered by scope. */
+export async function listKnowledge(input: { scope?: string; limit?: number; offset?: number } = {}): Promise<
+  KnowledgeEntry[]
+> {
+  const params: unknown[] = [];
+  let scopeClause = '';
+  if (input.scope) {
+    params.push(input.scope);
+    scopeClause = `WHERE scope = $${params.length}`;
+  }
+  params.push(input.limit ?? 20);
+  const limitParam = params.length;
+  params.push(input.offset ?? 0);
+  const { rows } = await pool.query(
+    `SELECT id, scope, title, content, created_by_role, updated_at
+       FROM knowledge
+       ${scopeClause}
+      ORDER BY updated_at DESC
+      LIMIT $${limitParam} OFFSET $${params.length}`,
+    params,
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    scope: r.scope,
+    title: r.title,
+    content: r.content,
+    createdByRole: r.created_by_role,
+    updatedAt: r.updated_at,
+  }));
+}
+
+/** Update a knowledge entry's title/content/scope and re-embed. Returns false if no row matched. */
+export async function updateKnowledge(input: {
+  id: number;
+  title?: string;
+  content?: string;
+  scope?: string;
+}): Promise<boolean> {
+  const { rows: existingRows } = await pool.query(
+    `SELECT title, content FROM knowledge WHERE id = $1`,
+    [input.id],
+  );
+  if (existingRows.length === 0) return false;
+
+  const title = input.title !== undefined ? input.title : existingRows[0].title;
+  const content = input.content !== undefined ? input.content : existingRows[0].content;
+
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(title ? `${title}\n${content}` : content);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for knowledge update');
+  }
+
+  const { rowCount } = await pool.query(
+    `UPDATE knowledge
+        SET title = $2, content = $3, scope = COALESCE($4, scope), embedding = COALESCE($5, embedding)
+      WHERE id = $1`,
+    [input.id, title ?? null, content, input.scope ?? null, embedding ? pgvector.toSql(embedding) : null],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Delete a knowledge entry by id. Returns false if no row matched. */
+export async function deleteKnowledge(id: number): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  return (rowCount ?? 0) > 0;
+}
+
 // --- Membership (three-tier RBAC) -------------------------------------------
 
 export type StoredRole = 'admin' | 'member';
