@@ -24,7 +24,7 @@ authenticated with a **Claude subscription** (no per-token API billing).
 | Runtime | TypeScript on Node 22+ (Node 24 LTS in production) |
 | Agent | `@anthropic-ai/claude-agent-sdk` (subscription auth) |
 | Discord | `discord.js` v14 |
-| WhatsApp | Baileys (dedicated number) — Cloud API adapter stubbed |
+| WhatsApp | Baileys (dedicated number) or the official Meta Cloud API |
 | Memory | PostgreSQL + `pgvector`, local embeddings (`transformers.js`) |
 | Service | systemd on Ubuntu |
 
@@ -65,9 +65,10 @@ basic questions. See **[docs/SECURITY.md](docs/SECURITY.md)** and
 ## Important caveats
 - **Subscription auth** is a grey area in Anthropic's SDK terms (see SECURITY.md).
   The auth layer is isolated so you can switch to an API key easily.
-- **Baileys WhatsApp** uses the unofficial protocol and violates WhatsApp ToS —
-  the number can be banned. Use a number you can afford to lose, or implement
-  the Cloud API adapter.
+- **Baileys WhatsApp** (the default) uses the unofficial protocol and violates
+  WhatsApp ToS — the number can be banned. Use a number you can afford to
+  lose, or set `WHATSAPP_PROVIDER=cloud` to use the official Meta Cloud API
+  adapter instead (see docs/ARCHITECTURE.md "Switching WhatsApp providers").
 - **Privacy**: all interactions are logged. Tell your community, and define a
   retention/deletion policy (NZ Privacy Act 2020).
 

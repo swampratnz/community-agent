@@ -61,6 +61,34 @@ A QR code prints in the terminal. On the dedicated phone:
 Wait for `WhatsApp connected`, then Ctrl-C. Credentials are saved in
 `whatsapp-auth/` and reused by the service.
 
+## 6b. (Alternative) Configure the WhatsApp Cloud API instead of Baileys
+Skip step 6 and use the official, ToS-compliant Meta Cloud API instead:
+
+1. In [Meta for Developers](https://developers.facebook.com/), create an app
+   with the **WhatsApp** product added, and note the **Phone number ID**,
+   a **temporary or permanent access token**, and the app's **App secret**
+   (App settings → Basic).
+2. In `.env`, set `WHATSAPP_PROVIDER=cloud` and fill in
+   `WHATSAPP_CLOUD_PHONE_NUMBER_ID`, `WHATSAPP_CLOUD_ACCESS_TOKEN`,
+   `WHATSAPP_CLOUD_APP_SECRET`, and a `WHATSAPP_CLOUD_VERIFY_TOKEN` of your
+   choosing (any random string — you'll enter the same value in Meta's
+   dashboard). `WHATSAPP_CLOUD_WEBHOOK_PORT` defaults to `8080`.
+3. Expose that port over HTTPS — Meta requires TLS for webhooks and will not
+   deliver to plain HTTP. Put a reverse proxy (nginx/Caddy) in front with a
+   real certificate, forwarding to `127.0.0.1:$WHATSAPP_CLOUD_WEBHOOK_PORT`.
+4. In the Meta app's WhatsApp → Configuration page, set the **Callback URL**
+   to your public HTTPS URL and the **Verify token** to the same
+   `WHATSAPP_CLOUD_VERIFY_TOKEN` value, then subscribe to the `messages`
+   webhook field. Meta will GET the URL to verify it — the service must
+   already be running (start it, or run step 8 first, then return here).
+5. No `whatsapp:link` step, no QR code, and no `whatsapp-auth/` directory —
+   the Cloud API is stateless on this side.
+
+Note: the Cloud API only allows free-form replies within the 24h window after
+a user messages the bot; outside that window only pre-approved message
+templates can be sent (not implemented here — the adapter fails clearly
+instead of attempting an unsupported send).
+
 ## 7. Invite the Discord bot
 In the Developer Portal, generate an OAuth2 URL with the `bot` scope and
 permissions: *Read Messages/View Channels, Send Messages, Read Message History,
@@ -95,6 +123,13 @@ tar czf whatsapp-auth-$(date +%F).tgz -C /opt/community-agent whatsapp-auth
 - **`Invalid environment configuration`** — a required env var is missing; the
   log lists which.
 - **WhatsApp keeps showing a QR / `logged out`** — re-run step 6.
+- **Meta webhook verification fails (Cloud API)** — confirm the service is
+  reachable over HTTPS at the exact Callback URL configured, and that
+  `WHATSAPP_CLOUD_VERIFY_TOKEN` matches the "Verify token" field in the Meta
+  dashboard exactly.
+- **Cloud API messages silently do nothing / 401 in logs** — the webhook's
+  `X-Hub-Signature-256` didn't match `WHATSAPP_CLOUD_APP_SECRET`; double-check
+  you copied the App secret (not the access token) from Meta's Basic settings.
 - **Discord bot silent or login fails** — check the `MessageContent` **and**
   `GuildMembers` privileged intents are on,
   the bot can see the channel, and (if set) `DISCORD_ALLOWED_CHANNEL_IDS`
