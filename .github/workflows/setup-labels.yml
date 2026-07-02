@@ -1,0 +1,21 @@
+name: Setup pipeline labels
+
+# Manually-triggered: creates/updates the labels that drive the multi-loop
+# pipeline (docs/PIPELINE.md). Run once from the Actions tab — no local gh
+# needed. Safe to re-run (idempotent via --force).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-labels.sh
