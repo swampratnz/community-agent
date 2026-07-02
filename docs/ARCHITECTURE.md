@@ -89,7 +89,9 @@ Tiers: **super_admin > admin > member > guest**.
 - **member** — granted by an admin (`add_member`); stored in `community_users`.
 - **guest** — everyone else. In **gated** mode (`ACCESS_MODE_*=gated`, the
   default) guests get a "ask an admin to add you" pointer and their message
-  content is **not stored**. In `open` mode guests get member-level tools.
+  content is **not stored** — only that they asked (identity + count, in
+  `access_requests`; see "Onboarding" below). In `open` mode guests get
+  member-level tools.
 
 The router resolves the tier (env + DB — never message content), and the agent
 core passes `toolsForRole(tier)` as `allowedTools`, so lower tiers are
@@ -106,6 +108,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
+| `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
@@ -114,6 +117,24 @@ Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),
 and an outbound filter on every reply — secret redaction plus the
 `code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`).
+
+## Onboarding (gated mode)
+
+Two pieces make the default gated experience less friction-y without
+weakening it:
+
+1. **Welcome message** (Discord only — WhatsApp has no equivalent "join"
+   event). Off unless `DISCORD_WELCOME_ENABLED=true`. On join, `DiscordAdapter`
+   sends a static, non-agent DM (no LLM call, no cost) pointing the new member
+   at an admin; if their DMs are closed, it falls back to posting in
+   `DISCORD_WELCOME_CHANNEL_ID` if configured.
+2. **Pending-access queue**. When a gated guest addresses the bot,
+   `router.ts` upserts a row into `access_requests` (platform, user id/name,
+   first/last-requested timestamps, request count) — deliberately *never*
+   their message content, preserving the existing no-storage invariant for
+   guests. Admins call `list_access_requests` to see who's waiting instead of
+   relying on informal pings; `add_member` clears the row for that user once
+   actioned.
 
 ## Concurrency model
 

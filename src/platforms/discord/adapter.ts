@@ -3,6 +3,7 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  type GuildMember,
   type Message,
   ChannelType,
 } from 'discord.js';
@@ -21,6 +22,11 @@ import type {
 
 const MAX_DISCORD_LEN = 2000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
+
+const WELCOME_MESSAGE =
+  "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
+  "but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here " +
+  'and an admin will see your request.';
 
 export class DiscordAdapter implements PlatformAdapter {
   readonly platform = 'discord' as const;
@@ -50,6 +56,10 @@ export class DiscordAdapter implements PlatformAdapter {
   async start(): Promise<void> {
     this.client.on(Events.MessageCreate, (message) => {
       this.onDiscordMessage(message).catch((err) => logger.error({ err }, 'Discord message handling failed'));
+    });
+
+    this.client.on(Events.GuildMemberAdd, (member) => {
+      this.onGuildMemberAdd(member).catch((err) => logger.error({ err }, 'Welcome message failed'));
     });
 
     this.client.once(Events.ClientReady, (c) => {
@@ -112,6 +122,37 @@ export class DiscordAdapter implements PlatformAdapter {
     if (!refId) return false;
     const ref = await message.channel.messages.fetch(refId);
     return ref.author.id === this.client.user?.id;
+  }
+
+  /**
+   * Static, non-agent welcome for new joiners — no LLM call, same cost
+   * profile as the gated notice. Off unless DISCORD_WELCOME_ENABLED=true, so
+   * existing deployments are unaffected. DM-first; falls back to the
+   * configured channel if the member has DMs closed.
+   */
+  private async onGuildMemberAdd(member: GuildMember): Promise<void> {
+    if (!config.discord.welcome.enabled) return;
+    if (member.guild.id !== config.discord.guildId) return;
+
+    try {
+      await member.send({ content: WELCOME_MESSAGE, allowedMentions: { parse: [] } });
+      return;
+    } catch (err) {
+      logger.warn({ err, userId: member.id }, 'Welcome DM failed; trying channel fallback');
+    }
+
+    const channelId = config.discord.welcome.channelId;
+    if (!channelId) return;
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || !channel.isTextBased() || !('send' in channel)) return;
+      await channel.send({
+        content: `Welcome <@${member.id}>! ${WELCOME_MESSAGE}`,
+        allowedMentions: { users: [member.id] },
+      });
+    } catch (err) {
+      logger.warn({ err, userId: member.id, channelId }, 'Welcome channel fallback failed');
+    }
   }
 
   /**

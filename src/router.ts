@@ -12,7 +12,7 @@ import {
   takePendingAction,
 } from './agent/pendingActions.js';
 import { isPaused } from './storage/policies.js';
-import { countRepliesToUser, recordInteraction } from './storage/repository.js';
+import { countRepliesToUser, recordAccessRequest, recordInteraction } from './storage/repository.js';
 
 const GATED_NOTICE =
   'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
@@ -93,10 +93,14 @@ export class Router {
     const gated = config.rbac.accessMode[msg.platform] === 'gated';
 
     // Gated mode: guests are not part of the community — do not store their
-    // content; if they address the bot, point them at an admin (rate-limited).
+    // content; if they address the bot, point them at an admin (rate-limited)
+    // and record the request (identity + count only) so admins have a queue.
     if (gated && role === 'guest') {
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
+        recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch((err) =>
+          logger.warn({ err }, 'Failed to record access request'),
+        );
         if (!this.rateLimited(userKey)) {
           await this.send(adapter, msg.conversationId, GATED_NOTICE).catch((err) =>
             logger.warn({ err }, 'Failed to send gated notice'),
