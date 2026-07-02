@@ -1,7 +1,7 @@
 import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
-loadEnv();
+loadEnv({ quiet: true });
 
 /** Parse a comma-separated env var into a trimmed, non-empty string array. */
 function csv(value: string | undefined): string[] {
@@ -15,21 +15,25 @@ function csv(value: string | undefined): string[] {
 const EnvSchema = z.object({
   // LLM / Claude
   CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
-  AGENT_MODEL: z.string().default('claude-opus-4-6'),
+  AGENT_MODEL: z.string().default('claude-sonnet-5'),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
 
   // Discord
   DISCORD_BOT_TOKEN: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1),
-  DISCORD_ADMIN_ROLE_IDS: z.string().optional(),
-  DISCORD_ADMIN_USER_IDS: z.string().optional(),
   DISCORD_ALLOWED_CHANNEL_IDS: z.string().optional(),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
   WHATSAPP_AUTH_DIR: z.string().default('./whatsapp-auth'),
-  WHATSAPP_ADMIN_NUMBERS: z.string().optional(),
   WHATSAPP_ALLOWED_JIDS: z.string().optional(),
+
+  // RBAC: super admins are env-bootstrapped (never grantable via chat).
+  SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
+  SUPER_ADMIN_WHATSAPP_NUMBERS: z.string().optional(),
+  // Access mode per platform: 'gated' = only registered members get replies.
+  ACCESS_MODE_DISCORD: z.enum(['gated', 'open']).default('gated'),
+  ACCESS_MODE_WHATSAPP: z.enum(['gated', 'open']).default('gated'),
   WHATSAPP_CLOUD_PHONE_NUMBER_ID: z.string().optional(),
   WHATSAPP_CLOUD_ACCESS_TOKEN: z.string().optional(),
   WHATSAPP_CLOUD_VERIFY_TOKEN: z.string().optional(),
@@ -42,6 +46,11 @@ const EnvSchema = z.object({
 
   // Behaviour
   MEMORY_TOP_K: z.coerce.number().int().nonnegative().default(6),
+  // Max agent replies per user per rolling 24h (0 = unlimited).
+  DAILY_REPLY_LIMIT_PER_USER: z.coerce.number().int().nonnegative().default(50),
+  // Session hygiene: start a fresh Claude session past either cap.
+  SESSION_MAX_TURNS: z.coerce.number().int().positive().default(30),
+  SESSION_MAX_AGE_HOURS: z.coerce.number().positive().default(24),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
   LOG_PRETTY: z
     .string()
@@ -49,7 +58,13 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
 });
 
-const parsed = EnvSchema.safeParse(process.env);
+const EnvSchemaChecked = EnvSchema.refine((e) => e.WHATSAPP_PROVIDER !== 'cloud', {
+  message:
+    "WHATSAPP_PROVIDER=cloud is not implemented yet — use 'baileys' or 'disabled' (see src/platforms/whatsapp/cloudAdapter.ts for the upgrade path)",
+  path: ['WHATSAPP_PROVIDER'],
+});
+
+const parsed = EnvSchemaChecked.safeParse(process.env);
 if (!parsed.success) {
   // Fail fast with a readable message rather than crashing deep inside a module.
   console.error('Invalid environment configuration:');
@@ -70,14 +85,11 @@ export const config = {
   discord: {
     botToken: env.DISCORD_BOT_TOKEN,
     guildId: env.DISCORD_GUILD_ID,
-    adminRoleIds: csv(env.DISCORD_ADMIN_ROLE_IDS),
-    adminUserIds: csv(env.DISCORD_ADMIN_USER_IDS),
     allowedChannelIds: csv(env.DISCORD_ALLOWED_CHANNEL_IDS),
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,
     authDir: env.WHATSAPP_AUTH_DIR,
-    adminNumbers: csv(env.WHATSAPP_ADMIN_NUMBERS),
     allowedJids: csv(env.WHATSAPP_ALLOWED_JIDS),
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
@@ -91,8 +103,19 @@ export const config = {
     embeddingModel: env.EMBEDDING_MODEL,
     embeddingDim: env.EMBEDDING_DIM,
   },
+  rbac: {
+    superAdminDiscordIds: csv(env.SUPER_ADMIN_DISCORD_IDS),
+    superAdminWhatsappNumbers: csv(env.SUPER_ADMIN_WHATSAPP_NUMBERS),
+    accessMode: {
+      discord: env.ACCESS_MODE_DISCORD,
+      whatsapp: env.ACCESS_MODE_WHATSAPP,
+    } as Record<'discord' | 'whatsapp', 'gated' | 'open'>,
+  },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
+    dailyReplyLimitPerUser: env.DAILY_REPLY_LIMIT_PER_USER,
+    sessionMaxTurns: env.SESSION_MAX_TURNS,
+    sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
   },
   log: {
     level: env.LOG_LEVEL,

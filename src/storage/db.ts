@@ -21,9 +21,9 @@ pool.on('error', (err) => {
  */
 pool.on('connect', async (client) => {
   try {
-    await pgvector.registerType(client);
+    await pgvector.registerTypes(client);
   } catch (err) {
-    logger.error({ err }, 'Failed to register pgvector type');
+    logger.error({ err }, 'Failed to register pgvector types');
   }
 });
 

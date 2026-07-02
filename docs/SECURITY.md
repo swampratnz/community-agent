@@ -19,17 +19,54 @@ a living document — review it whenever you add a tool or a platform.
 A normal user tries to get the agent to moderate, announce, or reveal secrets.
 
 **Controls**
-- **Structural RBAC**: `allowedTools` is computed from the *sender's* resolved
-  role, not from anything in the message. A user-role turn never has privileged
-  tools attached, so the model cannot call them even if convinced to.
-- **Defence in depth**: every privileged tool calls `assertAdmin()` before any
-  side effect.
-- **Identity is platform-derived**: admin status comes from Discord role/user
-  ids or WhatsApp numbers in config — never from message content. The system
-  prompt explicitly states that messages cannot grant permissions.
-- **No shell/file tools**: the agent is given only the in-process `community`
-  MCP tools. `settingSources: []` prevents loading the host's `~/.claude`
-  config, and no built-in tools (Bash/Read/Write/etc.) are in `allowedTools`.
+- **Built-in tools disabled outright**: the `tools` option passed to every
+  `query()` removes ALL built-in Claude Code tools (Bash/Read/Write/Glob/…)
+  from the model's surface, with one deliberate exception: **admin and
+  super-admin turns get exactly `WebSearch`** (search-and-summarise). Note
+  `allowedTools` alone does NOT restrict — it only pre-approves; the
+  restriction comes from the `tools` list.
+- **WebFetch stays disallowed for every tier**: the model constructs fetch
+  URLs, so an injection could exfiltrate conversation content via a query
+  string to an attacker's server, and fetched pages are a rich injection
+  vector. WebSearch snippets are a much smaller surface; they are still
+  untrusted content and the system prompt says so.
+- **Structural RBAC (three tiers)**: `allowedTools` is computed from the
+  *sender's* resolved tier (super_admin > admin > member > guest), not from
+  anything in the message. A lower tier's turn never has higher-tier tools
+  attached, so the model cannot call them even if convinced to.
+- **Admin scoping is data-layer**: admins' cross-conversation tools filter in
+  SQL against the admin's *platform-verified* conversation membership
+  (Discord channel visibility / WhatsApp group participation, cached ~60s).
+- **Confirm-before-destructive**: kick/timeout/delete/purge/forget — and
+  **grant_admin**, the highest-blast-radius action of all — register a pending
+  action; the actor must reply CONFIRM in the same conversation within 60s.
+  The confirmation is intercepted by the router *before* the addressed-check
+  (so a bare CONFIRM works in group chats; bot mention tokens are stripped and
+  tolerated) and executed deterministically — it never passes through the
+  model, so an injection can *request* an action but can never *complete*
+  one. The actor's tier is **re-resolved at confirm time**: a role revoked
+  inside the TTL invalidates the queued action.
+- **Defence in depth**: every privileged tool calls `assertAtLeast()` before
+  any side effect.
+- **Identity is platform-derived**: super admins come from env config; admins
+  and members from the `community_users` table, changed only via audited
+  super-admin/admin tools — never from message content. The system prompt
+  explicitly states that messages cannot grant permissions.
+- **Super-admin alerting**: every successful privileged action DMs the other
+  super admins, so misuse or a successful injection is *seen*, not just logged.
+- **Memory is conversation-scoped**: automatic recall and `remember_search`
+  only see the current conversation. Cross-conversation search (which could
+  expose other members' DMs) is admin-only.
+- **Recalled content is quarantined**: memories are injected into the *user*
+  turn inside a delimited `<recalled-messages>` block with angle brackets
+  stripped (so recalled text can't fake a closing tag), and the system prompt
+  instructs the model to treat recalled/tool-returned chat content as data,
+  never instructions. This mitigates stored prompt injection; it does not
+  eliminate it — see "Residual risks".
+- **Privileged targets are validated**: `moderate`/`announce` refuse targets
+  (conversations/users) the bot has never seen, so a manipulated admin turn
+  cannot message arbitrary phone numbers or unknown channels.
+- `settingSources: []` prevents loading the host's `~/.claude` config.
 
 ### 2. Secret exposure
 **Controls**
@@ -83,20 +120,59 @@ immediate, free operation — revisit it before scaling.
 
 ### Discord
 - Enable only the gateway intents the bot needs (Guilds, GuildMessages,
-  MessageContent, GuildMembers, DirectMessages). `MessageContent` is a
-  privileged intent — enable it in the Developer Portal.
+  MessageContent, GuildMembers, DirectMessages). **Both `MessageContent` and
+  `GuildMembers` are privileged intents — enable them in the Developer Portal
+  or the bot will fail to log in.**
 - Give the bot the least role permissions required for moderation (Timeout
   Members, Kick Members, Manage Messages) and place its role appropriately in
   the hierarchy.
 
 ## Subscription-auth caveat
 Anthropic's Agent SDK docs state subscription/claude.ai login is **not
-officially supported** for SDK-built products and recommend an API key. Using
-your own subscription for your own community bot is a personal decision and a
-grey area in the terms (which target redistributing subscription auth in
-third-party products). The auth layer is isolated in `src/agent/auth.ts`; switch
-to an API key by setting `ANTHROPIC_API_KEY` and removing the deletion in that
-file if you ever need the supported path.
+officially supported** for SDK-built products and recommend an API key. As of
+June 2026, headless SDK usage on Pro/Max additionally draws from a **separate
+weekly token pool** (rate-limited differently from interactive use), and the
+consumer terms language against using consumer OAuth tokens in
+third-party/automated services has tightened. Using your own subscription for
+your own community bot remains a personal decision and a grey area. The auth
+layer is isolated in `src/agent/auth.ts`; switch to an API key by setting
+`ANTHROPIC_API_KEY` and removing the deletion in that file if you ever need
+the supported path.
+
+## Residual risks (accepted, documented)
+- **Prompt injection is mitigated, not solved.** An admin turn still processes
+  untrusted channel text. The blast radius is bounded by: conversation-scoped
+  targets, the CONFIRM gate on destructive actions, super-admin alerting, and
+  the audit log. Non-confirm actions (`warn_user`, `announce` within scope)
+  remain a lever a successful injection could pull.
+- **Membership-scope staleness**: adapters cache an admin's conversation list
+  for ~60s, so an admin removed from a channel/group can retain data scope for
+  up to that window.
+- **Guests in gated mode are invisible**: their messages are not stored, which
+  also means no audit trail of what strangers sent the WhatsApp number. Trade
+  chosen deliberately (privacy > forensics for non-members).
+- **forget_me/purge scope**: deletes the user's messages, replies to them, and
+  knowledge entries *sourced from* them. Membership rows and the admin audit
+  log are retained deliberately (accountability).
+- **The daily budget counts recorded replies** — if cost/usage recording fails,
+  the budget degrades open (rate limiter still applies).
+- **The `claude` CLI subprocess** still has network access (it must reach the
+  Anthropic API). OS-level egress filtering is the next hardening step if
+  needed.
+
+## Behaviour policy (code answers)
+`code_answers` policy (super admin, `set_policy`): `off` strips all fenced
+code from replies, `snippets` (default) truncates fences beyond ~15 lines,
+`full` disables the filter. Unterminated fences are treated as running to
+end-of-text, so an unclosed ``` cannot bypass the policy. Enforced *outside*
+the model — the filter (plus unconditional secret redaction: exact runtime
+secrets incl. WhatsApp Cloud tokens + common token patterns) lives **inside
+the adapters' send paths**, so every outbound message — router replies,
+`announce`, `warn_user` DMs, super-admin alerts — passes through it; no
+future send path can forget. Discord additionally sends with
+`allowedMentions: []` (no injected @everyone pings), and WhatsApp refuses to
+route `lid:`-fallback ids as phone JIDs (a LID's digits sent as a phone
+number could reach an unrelated person).
 
 ## Operational checklist
 - [ ] `.env` is `chmod 600` and owned by the service user.

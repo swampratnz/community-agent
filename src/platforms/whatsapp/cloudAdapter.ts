@@ -38,6 +38,14 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     throw new Error('WhatsAppCloudAdapter.sendMessage not implemented.');
   }
 
+  async sendDirectMessage(_userId: string, _text: string): Promise<void> {
+    throw new Error('WhatsAppCloudAdapter.sendDirectMessage not implemented.');
+  }
+
+  async conversationsForUser(_userId: string): Promise<string[]> {
+    throw new Error('WhatsAppCloudAdapter.conversationsForUser not implemented.');
+  }
+
   async performAdminAction(_action: AdminAction): Promise<string> {
     throw new Error('WhatsAppCloudAdapter.performAdminAction not implemented.');
   }

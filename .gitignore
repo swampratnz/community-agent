@@ -11,8 +11,9 @@ dist/
 *.key
 
 # WhatsApp (Baileys) auth state — contains session credentials, NEVER commit
-auth/
-whatsapp-auth/
+# (anchored to repo root: src/auth/ is source code and must be tracked)
+/auth/
+/whatsapp-auth/
 .wwebjs_auth/
 
 # Logs

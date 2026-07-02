@@ -61,39 +61,55 @@ memory**:
 
 1. **Every** inbound and outbound message is written to `interactions` with a
    locally-computed embedding (transformers.js, `all-MiniLM-L6-v2`, 384-dim).
-2. On each turn the agent semantically searches prior interactions
-   (`pgvector` cosine distance, HNSW index) and the curated `knowledge` table,
-   and injects the top hits into the system prompt.
+2. On each turn the agent semantically searches prior interactions in the
+   *current conversation* (`pgvector` cosine distance, HNSW index) and injects
+   the top hits into the **user turn** inside a delimited untrusted-data block
+   (never the system prompt — see SECURITY.md on prompt injection).
 3. The `remember_search` / `knowledge_search` tools let the model query memory
-   on demand mid-turn.
+   on demand mid-turn. Cross-conversation search is admin-only.
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
 passed back as `resume` on the next turn.
 
-## RBAC (admin vs user)
+## RBAC (three tiers + gated access)
 
-Roles are resolved at the **adapter boundary** from platform-native identity:
+Tiers: **super_admin > admin > member > guest**.
 
-- **Discord** — admin if the author's id is in `DISCORD_ADMIN_USER_IDS`, or they
-  hold a role in `DISCORD_ADMIN_ROLE_IDS`.
-- **WhatsApp** — admin if their number is in `WHATSAPP_ADMIN_NUMBERS`.
+- **super_admin** — env-bootstrapped (`SUPER_ADMIN_DISCORD_IDS` /
+  `SUPER_ADMIN_WHATSAPP_NUMBERS`); never grantable via chat. Full access.
+- **admin** — granted by a super admin (`grant_admin`); stored in
+  `community_users`. Privileged data access is **scoped to conversations the
+  admin actually participates in** — the adapter resolves their real channel/
+  group membership (cached ~60s) and that list becomes a SQL filter.
+- **member** — granted by an admin (`add_member`); stored in `community_users`.
+- **guest** — everyone else. In **gated** mode (`ACCESS_MODE_*=gated`, the
+  default) guests get a "ask an admin to add you" pointer and their message
+  content is **not stored**. In `open` mode guests get member-level tools.
 
-The role rides on every `IncomingMessage`. The agent core then calls
-`toolsForRole(role)` and passes the result as the SDK's `allowedTools`, so a
-normal user's turn is **structurally incapable** of invoking a privileged tool —
-the tool isn't even offered to the model. Each privileged tool *also* calls
-`assertAdmin()` before any side effect (defence in depth), and every privileged
-action is written to the append-only `admin_audit` table.
+The router resolves the tier (env + DB — never message content), and the agent
+core passes `toolsForRole(tier)` as `allowedTools`, so lower tiers are
+**structurally incapable** of invoking higher-tier tools — the tool isn't even
+offered to the model. Each privileged tool re-asserts the tier
+(`assertAtLeast`), destructive actions additionally require an out-of-band
+CONFIRM reply (handled deterministically by the router, never by the model),
+and every privileged action is audited and alerted to super admins by DM.
 
-| Capability | user | admin |
-|---|:--:|:--:|
-| Ask questions, search memory/knowledge | ✅ | ✅ |
-| `moderate` (timeout / kick / delete / warn) | ❌ | ✅ |
-| `announce` to a channel | ❌ | ✅ |
-| `save_knowledge` | ❌ | ✅ |
-| `user_history` lookup | ❌ | ✅ |
+| Capability | guest (gated) | member | admin | super_admin |
+|---|:--:|:--:|:--:|:--:|
+| Talk to the bot | ❌ | ✅ | ✅ | ✅ |
+| Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
+| Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
+| `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
+| Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
+| `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
+
+Behaviour guardrails on top: per-user daily reply budget
+(`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),
+and an outbound filter on every reply — secret redaction plus the
+`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`).
 
 ## Concurrency model
 
@@ -103,6 +119,15 @@ action is written to the append-only `admin_audit` table.
 - Different conversations run in parallel.
 - A light **per-user rate limit** (8 msg / 60s) protects against spam and
   runaway cost.
+
+### Known cost/latency characteristic
+
+Each `query()` call spawns a Claude Code CLI subprocess and (when resuming)
+re-reads the conversation's session file. On a small VPS expect roughly one to
+a few seconds of overhead per answered message, growing with session length.
+If this becomes a problem: cap session length (start fresh after N turns), or
+move to the SDK's streaming-input mode with a persistent process per busy
+conversation.
 
 ## Switching WhatsApp providers
 

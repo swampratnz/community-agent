@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
+import { verifyEmbeddingDim } from './storage/repository.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
@@ -14,9 +15,11 @@ async function main(): Promise<void> {
   // 1. Auth: force subscription-based Claude auth.
   configureSubscriptionAuth();
 
-  // 2. Database must be reachable before we accept traffic.
+  // 2. Database must be reachable and the vector schema must match config
+  //    before we accept traffic.
   await healthcheck();
-  logger.info('Database reachable');
+  await verifyEmbeddingDim(config.db.embeddingDim);
+  logger.info('Database reachable, embedding dimension verified');
 
   // 3. Build platform adapters from config.
   const router = new Router();

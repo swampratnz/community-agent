@@ -8,7 +8,9 @@ import {
 } from 'discord.js';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
-import { resolveDiscordRole } from '../../auth/rbac.js';
+import { filterOutbound } from '../../agent/outbound.js';
+import { runtimeSecrets } from '../../agent/secrets.js';
+import { getCodeAnswersPolicy } from '../../storage/policies.js';
 import type {
   AdminAction,
   IncomingMessage,
@@ -18,6 +20,7 @@ import type {
 } from '../types.js';
 
 const MAX_DISCORD_LEN = 2000;
+const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
 export class DiscordAdapter implements PlatformAdapter {
   readonly platform = 'discord' as const;
@@ -25,6 +28,7 @@ export class DiscordAdapter implements PlatformAdapter {
 
   private readonly client: Client;
   private handler: MessageHandler | null = null;
+  private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
 
   constructor() {
     this.client = new Client({
@@ -83,12 +87,6 @@ export class DiscordAdapter implements PlatformAdapter {
       message.reference?.messageId != null &&
       (await this.isReplyToBot(message).catch(() => false));
 
-    const memberRoleIds = message.member ? [...message.member.roles.cache.keys()] : [];
-    const role = resolveDiscordRole(message.author.id, memberRoleIds, {
-      adminRoleIds: config.discord.adminRoleIds,
-      adminUserIds: config.discord.adminUserIds,
-    });
-
     // Strip the bot mention from the text for a clean prompt.
     const cleanText = botId
       ? message.content.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim()
@@ -101,7 +99,6 @@ export class DiscordAdapter implements PlatformAdapter {
       userName: message.member?.displayName ?? message.author.username,
       text: cleanText,
       isDirect: isDM,
-      role,
       addressedToBot: mentioned || repliedToBot,
       timestamp: message.createdTimestamp,
       raw: message,
@@ -117,15 +114,61 @@ export class DiscordAdapter implements PlatformAdapter {
     return ref.author.id === this.client.user?.id;
   }
 
+  /**
+   * Every outbound path is filtered HERE (secret redaction + code policy) so
+   * no caller — router reply, announce, warn, super-admin alert — can forget.
+   */
+  private async filtered(text: string): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets());
+  }
+
   async sendMessage(out: OutgoingMessage): Promise<void> {
     const channel = await this.client.channels.fetch(out.conversationId);
     if (!channel || !channel.isTextBased() || !('send' in channel)) {
       throw new Error(`Discord channel ${out.conversationId} is not sendable`);
     }
-    // Discord caps messages at 2000 chars; chunk longer replies.
-    for (const chunk of chunkText(out.text, MAX_DISCORD_LEN)) {
-      await channel.send(chunk);
+    // Discord caps messages at 2000 chars; chunk longer replies. Mentions are
+    // never parsed so an injected "@everyone" can't mass-ping.
+    for (const chunk of chunkText(await this.filtered(out.text), MAX_DISCORD_LEN)) {
+      await channel.send({ content: chunk, allowedMentions: { parse: [] } });
     }
+  }
+
+  async sendDirectMessage(userId: string, text: string): Promise<void> {
+    const user = await this.client.users.fetch(userId);
+    for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
+      await user.send({ content: chunk, allowedMentions: { parse: [] } });
+    }
+  }
+
+  /**
+   * Channels in the configured guild the user can currently view, plus their
+   * DM with the bot. Backs admin conversation scoping; cached ~60s (a member
+   * removed from a channel may retain scope for up to the TTL — documented in
+   * SECURITY.md).
+   */
+  async conversationsForUser(userId: string): Promise<string[]> {
+    const cached = this.membershipCache.get(userId);
+    if (cached && cached.expires > Date.now()) return cached.ids;
+
+    const ids: string[] = [];
+    try {
+      const guild = await this.client.guilds.fetch(config.discord.guildId);
+      const member = await guild.members.fetch(userId);
+      const channels = await guild.channels.fetch();
+      for (const channel of channels.values()) {
+        if (!channel || !channel.isTextBased()) continue;
+        if (channel.permissionsFor(member)?.has('ViewChannel')) ids.push(channel.id);
+      }
+      // Their 1:1 DM with the bot is always in scope.
+      const dm = await member.user.createDM();
+      ids.push(dm.id);
+    } catch (err) {
+      logger.warn({ err, userId }, 'Failed to resolve Discord conversations for user');
+    }
+
+    this.membershipCache.set(userId, { expires: Date.now() + MEMBERSHIP_CACHE_TTL_MS, ids });
+    return ids;
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
@@ -154,9 +197,11 @@ export class DiscordAdapter implements PlatformAdapter {
       }
       case 'warn_user': {
         // A "warn" is a DM to the user; recorded in the audit log by the caller.
-        const user = await this.client.users.fetch(action.targetUserId!);
-        await user.send(`⚠️ Warning from NZ Claude Community moderators: ${action.params?.reason ?? ''}`);
-        return `Warned ${user.tag}.`;
+        await this.sendDirectMessage(
+          action.targetUserId!,
+          `⚠️ Warning from NZ Claude Community moderators: ${action.params?.reason ?? ''}`,
+        );
+        return `Warned ${action.targetUserId}.`;
       }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);
