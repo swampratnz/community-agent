@@ -11,10 +11,26 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 const { buildQueryOptions } = await import('../src/agent/core.js');
 const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
-test('SECURITY: built-in Claude Code tools are disabled (tools: [])', () => {
-  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+test('SECURITY: members/guests get NO built-in tools; admin+ get exactly WebSearch', () => {
+  for (const role of ['guest', 'member'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null);
     assert.deepEqual(opts.tools, [], `tools must be [] for ${role} — allowedTools alone does NOT restrict`);
+    assert.ok(opts.disallowedTools.includes('WebSearch'), `${role} must have WebSearch disallowed`);
+    assert.ok(!opts.allowedTools.includes('WebSearch'));
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null);
+    assert.deepEqual(opts.tools, ['WebSearch'], `${role} built-ins must be exactly [WebSearch]`);
+    assert.ok(opts.allowedTools.includes('WebSearch'));
+  }
+});
+
+test('SECURITY: WebFetch is disallowed for every tier (exfiltration channel)', () => {
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null);
+    assert.ok(opts.disallowedTools.includes('WebFetch'), `${role} must have WebFetch disallowed`);
+    assert.ok(!opts.tools.includes('WebFetch'));
+    assert.ok(!opts.allowedTools.includes('WebFetch'));
   }
 });
 

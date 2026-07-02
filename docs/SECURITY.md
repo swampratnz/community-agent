@@ -19,10 +19,17 @@ a living document — review it whenever you add a tool or a platform.
 A normal user tries to get the agent to moderate, announce, or reveal secrets.
 
 **Controls**
-- **Built-in tools disabled outright**: `tools: []` is passed to every
-  `query()`, removing ALL built-in Claude Code tools (Bash/Read/Write/Glob/…)
-  from the model's surface. Note `allowedTools` alone does NOT do this — it
-  only pre-approves; the restriction comes from `tools: []`.
+- **Built-in tools disabled outright**: the `tools` option passed to every
+  `query()` removes ALL built-in Claude Code tools (Bash/Read/Write/Glob/…)
+  from the model's surface, with one deliberate exception: **admin and
+  super-admin turns get exactly `WebSearch`** (search-and-summarise). Note
+  `allowedTools` alone does NOT restrict — it only pre-approves; the
+  restriction comes from the `tools` list.
+- **WebFetch stays disallowed for every tier**: the model constructs fetch
+  URLs, so an injection could exfiltrate conversation content via a query
+  string to an attacker's server, and fetched pages are a rich injection
+  vector. WebSearch snippets are a much smaller surface; they are still
+  untrusted content and the system prompt says so.
 - **Structural RBAC (three tiers)**: `allowedTools` is computed from the
   *sender's* resolved tier (super_admin > admin > member > guest), not from
   anything in the message. A lower tier's turn never has higher-tier tools

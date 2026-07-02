@@ -103,6 +103,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
+| Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget

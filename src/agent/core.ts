@@ -1,7 +1,7 @@
 import { query, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { toolsForRole, type CallerContext } from '../auth/rbac.js';
+import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
@@ -30,7 +30,10 @@ interface TurnOutcome {
 /**
  * Build the SDK query options for one turn. Extracted (and exported) so the
  * security invariants are regression-testable:
- *  - `tools: []` disables ALL built-in Claude Code tools;
+ *  - built-in Claude Code tools are disabled via `tools` (empty for members;
+ *    admin+ additionally get WebSearch — and ONLY WebSearch);
+ *  - WebFetch is disallowed for every tier (URL construction is an
+ *    exfiltration channel; fetched pages are a rich injection vector);
  *  - `allowedTools` is derived from the caller's role only.
  */
 export function buildQueryOptions(
@@ -39,15 +42,18 @@ export function buildQueryOptions(
   mcpServers: Record<string, McpServerConfig>,
   resumeSession: string | null,
 ) {
+  // Web search is a privileged capability: admins and super admins only.
+  const webSearch = atLeast(role, 'admin');
   return {
     model: config.llm.model,
     systemPrompt,
     mcpServers,
-    // Disable ALL built-in Claude Code tools (Bash/Read/Write/Glob/...).
-    // `allowedTools` alone only auto-approves; it does not restrict.
-    tools: [] as string[],
-    allowedTools: toolsForRole(role),
-    disallowedTools: ['Task', 'WebFetch', 'WebSearch'],
+    // The base built-in tool set. Empty = no built-ins at all; admin+ get
+    // exactly one: WebSearch. `allowedTools` alone only auto-approves; this
+    // list is what actually restricts the surface.
+    tools: (webSearch ? ['WebSearch'] : []) as string[],
+    allowedTools: [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])],
+    disallowedTools: ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
     permissionMode: 'default' as const,
     maxTurns: config.llm.maxTurns,
     ...(resumeSession ? { resume: resumeSession } : {}),
