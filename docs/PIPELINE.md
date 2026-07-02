@@ -63,6 +63,23 @@ Claude Code, chat, everything. Don't launch all five at once:
 — re-arm weekly. For truly unattended automation, port the heavier loops to
 GitHub Actions triggered by these same labels.
 
+## Model selection per loop
+
+All five sessions share one Max usage pool, so match the model to each loop's
+cognitive demand × frequency. Set it per session with `/model` (or `--model`
+at launch).
+
+| Loop | Model | Rationale |
+|---|---|---|
+| Adversarial review | **Opus 4.8** | Highest-leverage judgement (a rejected weak proposal saves a whole build+review cycle); runs infrequently, so Opus cost is bounded. |
+| PR review | **Sonnet 5** | Strong security-diff reasoning, fires often, human merges behind it. Bump to Opus for a deep security pass. |
+| Build | **Sonnet 5** | Heaviest token user (many agentic turns); Sonnet 5 is tool-optimised and far cheaper per unit work. |
+| Research | **Sonnet 5** | Idea generation + web research; runs slowly. Opus only if proposal quality disappoints. |
+| Orchestrator | **Haiku 4.5** | Pure bookkeeping (labels, digests); cheapest and fast, ticks every 60 min. |
+
+Principle: **Opus where a wrong call is expensive and rare, Haiku where it's
+mechanical, Sonnet 5 for high-volume agentic work.**
+
 ## The five loop prompts
 
 Launch each in its own session with the `/loop` skill. Each is written to
