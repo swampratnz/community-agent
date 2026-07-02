@@ -5,9 +5,11 @@ import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { logger } from '../logger.js';
 import {
+  deleteKnowledge,
   demoteAdmin,
   isKnownConversation,
   isKnownUser,
+  listKnowledge,
   purgeUserData,
   recentAuditEntries,
   recordAdminAction,
@@ -15,6 +17,7 @@ import {
   saveKnowledge,
   searchKnowledge,
   searchMemory,
+  updateKnowledge,
   upsertMember,
   usageStats,
   userMessages,
@@ -372,6 +375,83 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const listKnowledgeTool = tool(
+    'list_knowledge',
+    'Browse curated community knowledge entries directly (not semantic search) — for finding an entry to correct or retire. Admin only.',
+    {
+      scope: z.string().optional().describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
+      limit: z.number().optional().describe('Max entries (default 20)'),
+      offset: z.number().optional().describe('Pagination offset (default 0)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_knowledge');
+      const entries = await listKnowledge({ scope: args.scope, limit: args.limit, offset: args.offset });
+      if (entries.length === 0) return text('No knowledge entries found.');
+      return text(
+        untrusted(
+          'Knowledge entries',
+          entries
+            .map(
+              (e) =>
+                `#${e.id} [${e.scope}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} (updated ${e.updatedAt.toISOString()})`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const updateKnowledgeTool = tool(
+    'update_knowledge',
+    'Correct an existing knowledge entry (title/content/scope). Re-embeds the content. Admin only.',
+    {
+      id: z.number().describe('Knowledge entry id (from list_knowledge or knowledge_search)'),
+      title: z.string().optional().describe('New title; omit to leave unchanged'),
+      content: z.string().optional().describe('New content; omit to leave unchanged'),
+      scope: z.string().optional().describe('New scope; omit to leave unchanged'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'update_knowledge');
+      const { success, result } = await audited({
+        actionKind: 'update_knowledge',
+        params: { id: args.id, title: args.title, content: args.content, scope: args.scope },
+        run: async () => {
+          const updated = await updateKnowledge({
+            id: args.id,
+            title: args.title,
+            content: args.content,
+            scope: args.scope,
+          });
+          if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
+          return 'updated';
+        },
+      });
+      return text(success ? `Updated knowledge entry #${args.id}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const deleteKnowledgeTool = tool(
+    'delete_knowledge',
+    'Retire (permanently delete) a knowledge entry that is no longer accurate. Requires confirmation. Admin only.',
+    { id: z.number().describe('Knowledge entry id (from list_knowledge or knowledge_search)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'delete_knowledge');
+      return requireConfirm(`delete knowledge entry #${args.id}`, 'admin', async () => {
+        const { success, result } = await audited({
+          actionKind: 'delete_knowledge',
+          params: { id: args.id },
+          run: async () => {
+            const deleted = await deleteKnowledge(args.id);
+            if (!deleted) throw new Error(`No knowledge entry with id ${args.id}.`);
+            return 'deleted';
+          },
+        });
+        return success ? `Deleted knowledge entry #${args.id}.` : `Failed: ${result}`;
+      });
+    },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -598,6 +678,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       moderate,
       announce,
       saveKnowledgeTool,
+      listKnowledgeTool,
+      updateKnowledgeTool,
+      deleteKnowledgeTool,
       addMember,
       removeMemberTool,
       grantAdmin,
