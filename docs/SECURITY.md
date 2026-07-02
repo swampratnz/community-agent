@@ -114,9 +114,23 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 Baileys uses the unofficial WhatsApp Web protocol. This **violates WhatsApp's
 Terms of Service** and the number can be **banned** at any time, and the
 protocol can break. Mitigations: use a dedicated number you can afford to lose,
-keep volume human-like, and keep the `WhatsAppCloudAdapter` path ready to
-migrate to the official API. This is a deliberate, accepted trade-off for
-immediate, free operation — revisit it before scaling.
+keep volume human-like, or switch to `WhatsAppCloudAdapter`
+(`WHATSAPP_PROVIDER=cloud`), the official, ToS-compliant Meta Cloud API — see
+"Switching WhatsApp providers" in `docs/ARCHITECTURE.md`. Running Baileys is a
+deliberate, accepted trade-off for immediate, free operation; revisit it
+before scaling.
+
+### WhatsApp Cloud API webhook
+`WhatsAppCloudAdapter` exposes a public HTTP listener
+(`WHATSAPP_CLOUD_WEBHOOK_PORT`) that must sit behind TLS termination (see
+`docs/DEPLOYMENT.md`). Every inbound `POST` is rejected unless its
+`X-Hub-Signature-256` header verifies against `WHATSAPP_CLOUD_APP_SECRET`
+(HMAC-SHA256 over the raw body, timing-safe compare) — the body is never
+parsed before that check passes. `WHATSAPP_CLOUD_ACCESS_TOKEN` and
+`WHATSAPP_CLOUD_APP_SECRET` are secrets and must go through the same
+`.env`-only, git-ignored handling as other tokens. Message content and
+delivery metadata for Cloud API traffic are additionally retained by Meta
+per their own terms, on top of this project's own storage.
 
 ### Discord
 - Enable only the gateway intents the bot needs (Guilds, GuildMessages,

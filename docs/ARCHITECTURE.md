@@ -45,7 +45,7 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/platforms/types.ts` | `PlatformAdapter` interface + normalised `IncomingMessage`. The seam that decouples the agent from any specific chat platform. |
 | `src/platforms/discord/adapter.ts` | discord.js client; normalises messages, resolves roles, performs moderation actions. |
 | `src/platforms/whatsapp/baileysAdapter.ts` | WhatsApp via Baileys (linked-device protocol, dedicated number). |
-| `src/platforms/whatsapp/cloudAdapter.ts` | Stub for the official Meta Cloud API — the documented upgrade path. |
+| `src/platforms/whatsapp/cloudAdapter.ts` | The official Meta Cloud API adapter — webhook intake + Graph API send, the documented upgrade path from Baileys. |
 | `src/auth/rbac.ts` | Role resolution (`admin`/`user`) + the per-role allowed-tool lists. |
 | `src/agent/core.ts` | Runs one agent turn: memory recall → prompt → `query()` → reply. |
 | `src/agent/tools.ts` | In-process MCP tools (search memory/knowledge, moderate, announce, …). |
@@ -132,10 +132,27 @@ conversation.
 ## Switching WhatsApp providers
 
 The Baileys adapter is the default (immediate, free, dedicated number, but
-against WhatsApp ToS — ban risk). To move to the official Meta **Cloud API**:
+against WhatsApp ToS — ban risk). The official Meta **Cloud API** is
+implemented as `WhatsAppCloudAdapter` and is the recommended path for any
+bot expected to run continuously:
 
-1. Implement `WhatsAppCloudAdapter` (webhook intake + Graph API send).
-2. Set `WHATSAPP_PROVIDER=cloud` and the `WHATSAPP_CLOUD_*` env vars.
+1. Set `WHATSAPP_PROVIDER=cloud` and `WHATSAPP_CLOUD_PHONE_NUMBER_ID`,
+   `WHATSAPP_CLOUD_ACCESS_TOKEN`, `WHATSAPP_CLOUD_VERIFY_TOKEN`,
+   `WHATSAPP_CLOUD_APP_SECRET`, and optionally `WHATSAPP_CLOUD_WEBHOOK_PORT`
+   (default `8080`).
+2. Point your Meta app's webhook subscription at
+   `http://<host>:<port>/` (any path — the adapter listens on all paths) with
+   the same verify token, and expose it over HTTPS via a reverse proxy (see
+   `docs/DEPLOYMENT.md`).
+
+The adapter verifies every inbound webhook's `X-Hub-Signature-256` HMAC
+against `WHATSAPP_CLOUD_APP_SECRET` before parsing the body. Because the
+Cloud API is 1:1-only (no groups), `adminCapabilities` only advertises
+`warn_user`; other moderation actions report as unsupported. Free-form
+outbound replies are only sent within Meta's 24h customer-service window
+(tracked in-process from the timestamp of the sender's last inbound
+message); sends outside that window fail with a clear error rather than
+being attempted.
 
 Nothing in `router.ts`, `agent/*`, or `storage/*` changes — they only depend on
 the `PlatformAdapter` interface.

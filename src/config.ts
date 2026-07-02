@@ -37,6 +37,7 @@ const EnvSchema = z.object({
   WHATSAPP_CLOUD_PHONE_NUMBER_ID: z.string().optional(),
   WHATSAPP_CLOUD_ACCESS_TOKEN: z.string().optional(),
   WHATSAPP_CLOUD_VERIFY_TOKEN: z.string().optional(),
+  WHATSAPP_CLOUD_APP_SECRET: z.string().optional(),
   WHATSAPP_CLOUD_WEBHOOK_PORT: z.coerce.number().int().positive().default(8080),
 
   // Database
@@ -58,11 +59,20 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
 });
 
-const EnvSchemaChecked = EnvSchema.refine((e) => e.WHATSAPP_PROVIDER !== 'cloud', {
-  message:
-    "WHATSAPP_PROVIDER=cloud is not implemented yet — use 'baileys' or 'disabled' (see src/platforms/whatsapp/cloudAdapter.ts for the upgrade path)",
-  path: ['WHATSAPP_PROVIDER'],
-});
+const EnvSchemaChecked = EnvSchema.refine(
+  (e) =>
+    e.WHATSAPP_PROVIDER !== 'cloud' ||
+    (e.WHATSAPP_CLOUD_PHONE_NUMBER_ID &&
+      e.WHATSAPP_CLOUD_ACCESS_TOKEN &&
+      e.WHATSAPP_CLOUD_VERIFY_TOKEN &&
+      e.WHATSAPP_CLOUD_APP_SECRET),
+  {
+    message:
+      'WHATSAPP_PROVIDER=cloud requires WHATSAPP_CLOUD_PHONE_NUMBER_ID, WHATSAPP_CLOUD_ACCESS_TOKEN, ' +
+      'WHATSAPP_CLOUD_VERIFY_TOKEN, and WHATSAPP_CLOUD_APP_SECRET',
+    path: ['WHATSAPP_PROVIDER'],
+  },
+);
 
 const parsed = EnvSchemaChecked.safeParse(process.env);
 if (!parsed.success) {
@@ -95,6 +105,7 @@ export const config = {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
       accessToken: env.WHATSAPP_CLOUD_ACCESS_TOKEN,
       verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN,
+      appSecret: env.WHATSAPP_CLOUD_APP_SECRET,
       webhookPort: env.WHATSAPP_CLOUD_WEBHOOK_PORT,
     },
   },
