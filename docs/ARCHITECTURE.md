@@ -154,5 +154,10 @@ outbound replies are only sent within Meta's 24h customer-service window
 message); sends outside that window fail with a clear error rather than
 being attempted.
 
+`WHATSAPP_ALLOWED_JIDS` is shared between both adapters but each entry can be
+either a bare phone-number digit string or a full Baileys-style JID
+(`64211234567@s.whatsapp.net`) — the Cloud adapter matches against the part
+before `@`, so the same list works for either adapter without reformatting.
+
 Nothing in `router.ts`, `agent/*`, or `storage/*` changes — they only depend on
 the `PlatformAdapter` interface.

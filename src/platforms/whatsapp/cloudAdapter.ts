@@ -4,7 +4,13 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
-import { extractMessages, parseVerificationRequest, verifySignature, type CloudInboundMessage } from './cloudWire.js';
+import {
+  extractMessages,
+  isAllowedSender,
+  parseVerificationRequest,
+  verifySignature,
+  type CloudInboundMessage,
+} from './cloudWire.js';
 import type {
   AdminAction,
   IncomingMessage,
@@ -18,6 +24,8 @@ const GRAPH_API_VERSION = 'v21.0';
 const MAX_BODY_BYTES = 1_000_000;
 /** Free-form replies are only allowed within Meta's 24h customer-service window. */
 const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60_000;
+/** How often to prune `lastInboundAt` entries older than the window, so long-running processes don't grow it forever. */
+const LAST_INBOUND_SWEEP_MS = 60 * 60_000;
 
 /**
  * WhatsApp via the official Meta Business Cloud API. ToS-compliant
@@ -33,10 +41,13 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
   /**
    * Last time each user sent an inbound message, tracked in-process to
    * enforce Meta's 24h free-form messaging window. Resets on restart — a
-   * known limitation of not persisting this; see docs/DEPLOYMENT.md.
+   * known limitation of not persisting this; see docs/DEPLOYMENT.md. Swept
+   * periodically (see `sweepTimer`) so a busy, long-running deployment
+   * doesn't grow this map forever.
    */
   private readonly lastInboundAt = new Map<string, number>();
 
@@ -66,14 +77,28 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       });
       this.server = server;
     });
+    this.sweepTimer = setInterval(() => this.sweepLastInboundAt(), LAST_INBOUND_SWEEP_MS);
+    this.sweepTimer.unref?.();
     logger.info({ port: webhookPort }, 'WhatsApp Cloud webhook listening');
   }
 
   async stop(): Promise<void> {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     const server = this.server;
     this.server = null;
     if (!server) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
+  /** Drop tracked senders whose last inbound message has aged out of the 24h window. */
+  private sweepLastInboundAt(): void {
+    const cutoff = Date.now() - CUSTOMER_SERVICE_WINDOW_MS;
+    for (const [from, lastInbound] of this.lastInboundAt) {
+      if (lastInbound < cutoff) this.lastInboundAt.delete(from);
+    }
   }
 
   private async handleRequest(req: HttpRequest, res: ServerResponse): Promise<void> {
@@ -140,9 +165,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   private async onCloudMessage(msg: CloudInboundMessage): Promise<void> {
     this.lastInboundAt.set(msg.from, Date.now());
     if (!this.handler) return;
-    if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(msg.from)) {
-      return;
-    }
+    if (!isAllowedSender(msg.from, config.whatsapp.allowedJids)) return;
 
     const normalised: IncomingMessage = {
       platform: 'whatsapp',

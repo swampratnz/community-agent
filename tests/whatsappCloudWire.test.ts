@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { extractMessages, parseVerificationRequest, verifySignature } from '../src/platforms/whatsapp/cloudWire.js';
+import {
+  extractMessages,
+  isAllowedSender,
+  parseVerificationRequest,
+  verifySignature,
+} from '../src/platforms/whatsapp/cloudWire.js';
 
 function sign(body: string, secret: string): string {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
@@ -106,6 +111,25 @@ test('extractMessages: missing contact profile falls back to empty name', () => 
   assert.deepEqual(extractMessages(payload), [
     { from: '64211234567', id: 'wamid.1', timestampMs: 1700000000000, text: 'hi', name: '' },
   ]);
+});
+
+test('isAllowedSender: empty allowlist admits everyone', () => {
+  assert.equal(isAllowedSender('64211234567', []), true);
+});
+
+test('isAllowedSender: matches a bare-digit entry', () => {
+  assert.equal(isAllowedSender('64211234567', ['64211234567']), true);
+  assert.equal(isAllowedSender('64299999999', ['64211234567']), false);
+});
+
+test('SECURITY: isAllowedSender matches a full Baileys-style JID entry (shared WHATSAPP_ALLOWED_JIDS config)', () => {
+  // The allowlist is shared with BaileysAdapter, whose entries are full JIDs
+  // ('...@s.whatsapp.net', '...@g.us') rather than bare digits — an operator
+  // reusing the same list for the Cloud adapter must not be silently locked
+  // out because the formats don't match.
+  assert.equal(isAllowedSender('64211234567', ['64211234567@s.whatsapp.net']), true);
+  assert.equal(isAllowedSender('64211234567', ['999@g.us', '64211234567@s.whatsapp.net']), true);
+  assert.equal(isAllowedSender('64299999999', ['64211234567@s.whatsapp.net']), false);
 });
 
 test('extractMessages: malformed or unrelated payloads yield an empty array', () => {

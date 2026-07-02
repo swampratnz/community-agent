@@ -43,6 +43,18 @@ export function parseVerificationRequest(url: URL): WebhookVerification | null {
   return { mode, token, challenge };
 }
 
+/**
+ * Check a bare phone-number digit string (a Cloud API sender id) against
+ * `WHATSAPP_ALLOWED_JIDS`. That list is shared with BaileysAdapter, whose
+ * entries are full JIDs ('64211234567@s.whatsapp.net', '...@g.us') rather
+ * than bare digits — normalise by stripping everything from '@' onward so
+ * either format works, instead of silently never matching.
+ */
+export function isAllowedSender(from: string, allowedJids: readonly string[]): boolean {
+  if (allowedJids.length === 0) return true;
+  return allowedJids.some((entry) => entry.split('@')[0] === from);
+}
+
 export interface CloudInboundMessage {
   /** Sender's phone number (E.164 digits, no '+'). */
   from: string;
