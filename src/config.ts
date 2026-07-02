@@ -22,6 +22,13 @@ const EnvSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1),
   DISCORD_ALLOWED_CHANNEL_IDS: z.string().optional(),
+  // Welcome message for new server joiners; off unless explicitly enabled.
+  DISCORD_WELCOME_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Fallback text channel to post the welcome in if the DM fails (e.g. DMs closed).
+  DISCORD_WELCOME_CHANNEL_ID: z.string().optional(),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -96,6 +103,10 @@ export const config = {
     botToken: env.DISCORD_BOT_TOKEN,
     guildId: env.DISCORD_GUILD_ID,
     allowedChannelIds: csv(env.DISCORD_ALLOWED_CHANNEL_IDS),
+    welcome: {
+      enabled: env.DISCORD_WELCOME_ENABLED ?? false,
+      channelId: env.DISCORD_WELCOME_CHANNEL_ID,
+    },
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,

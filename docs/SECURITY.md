@@ -164,7 +164,11 @@ the supported path.
   up to that window.
 - **Guests in gated mode are invisible**: their messages are not stored, which
   also means no audit trail of what strangers sent the WhatsApp number. Trade
-  chosen deliberately (privacy > forensics for non-members).
+  chosen deliberately (privacy > forensics for non-members). The one exception
+  is `access_requests` (the pending-access queue): it stores identity
+  (platform, user id/name) and a request count/timestamps for guests who
+  addressed the bot, but never their message content — an admin-only,
+  `list_access_requests`-gated read, not a new content-storage surface.
 - **forget_me/purge scope**: deletes the user's messages, replies to them, and
   knowledge entries *sourced from* them. Membership rows and the admin audit
   log are retained deliberately (accountability).

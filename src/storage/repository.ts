@@ -617,3 +617,58 @@ export async function recordAdminAction(input: {
     ],
   );
 }
+
+// --- Access requests (gated-mode pending queue) -----------------------------
+
+/**
+ * Record that a gated guest addressed the bot. Identity + counts only — the
+ * caller must never pass message content. Upserts so repeat pings from the
+ * same user dedup into one row instead of growing unbounded.
+ */
+export async function recordAccessRequest(input: {
+  platform: Platform;
+  userId: string;
+  userName?: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO access_requests (platform, user_id, user_name)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (platform, user_id) DO UPDATE
+       SET last_requested_at = now(),
+           request_count = access_requests.request_count + 1,
+           user_name = COALESCE(EXCLUDED.user_name, access_requests.user_name)`,
+    [input.platform, input.userId, input.userName ?? null],
+  );
+}
+
+export interface AccessRequest {
+  platform: Platform;
+  userId: string;
+  userName: string | null;
+  firstRequestedAt: Date;
+  lastRequestedAt: Date;
+  requestCount: number;
+}
+
+export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
+  const { rows } = await pool.query(
+    `SELECT platform, user_id, user_name, first_requested_at, last_requested_at, request_count
+       FROM access_requests
+      ORDER BY last_requested_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => ({
+    platform: r.platform,
+    userId: r.user_id,
+    userName: r.user_name,
+    firstRequestedAt: r.first_requested_at,
+    lastRequestedAt: r.last_requested_at,
+    requestCount: Number(r.request_count),
+  }));
+}
+
+/** Clear a resolved access request (e.g. after add_member succeeds for that user). */
+export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
+  await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}

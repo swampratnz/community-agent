@@ -5,10 +5,12 @@ import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { logger } from '../logger.js';
 import {
+  clearAccessRequest,
   deleteKnowledge,
   demoteAdmin,
   isKnownConversation,
   isKnownUser,
+  listAccessRequests,
   listKnowledge,
   purgeUserData,
   recentAuditEntries,
@@ -452,6 +454,26 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const listAccessRequestsTool = tool(
+    'list_access_requests',
+    'List gated guests who have asked the bot for access — identity and request count only, never message content. Admin only.',
+    { limit: z.number().optional().describe('Max entries (default 50)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_access_requests');
+      const rows = await listAccessRequests(args.limit ?? 50);
+      if (rows.length === 0) return text('No pending access requests.');
+      return text(
+        rows
+          .map(
+            (r) =>
+              `${r.platform} ${r.userName ?? r.userId} (${r.userId}) — ${r.requestCount} request(s), last ${r.lastRequestedAt.toISOString()}`,
+          )
+          .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -461,9 +483,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'add_member');
+      const userId = args.userId.trim();
       const finalRole = await upsertMember({
         platform: caller.platform,
-        userId: args.userId.trim(),
+        userId,
         role: 'member',
         addedBy: caller.userId,
         displayName: args.displayName,
@@ -474,6 +497,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         params: { displayName: args.displayName },
         run: async () => `registered as ${finalRole}`,
       });
+      await clearAccessRequest(caller.platform, userId).catch((err) =>
+        logger.warn({ err, userId }, 'Failed to clear access request'),
+      );
       return text(`Added ${args.displayName ?? args.userId} as ${finalRole} on ${caller.platform}.`);
     },
   );
@@ -681,6 +707,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       listKnowledgeTool,
       updateKnowledgeTool,
       deleteKnowledgeTool,
+      listAccessRequestsTool,
       addMember,
       removeMemberTool,
       grantAdmin,

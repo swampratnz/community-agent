@@ -56,6 +56,7 @@ export const ADMIN_TOOLS = [
   'mcp__community__list_knowledge',
   'mcp__community__update_knowledge',
   'mcp__community__delete_knowledge',
+  'mcp__community__list_access_requests',
   'mcp__community__add_member',
   'mcp__community__remove_member',
 ] as const;
