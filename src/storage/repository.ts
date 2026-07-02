@@ -527,6 +527,21 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
   return (messages ?? 0) + (knowledge ?? 0);
 }
 
+/**
+ * Age-based retention: delete raw `interactions` older than `days`. Never
+ * touches `knowledge` (curated facts are meant to be durable), `sessions`
+ * (governed separately by SESSION_MAX_TURNS/_AGE_HOURS), or `admin_audit`
+ * (accountability trail, retained deliberately — see SECURITY.md). Returns
+ * the number of rows deleted, for operator-visible logging.
+ */
+export async function purgeOldInteractions(days: number): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM interactions WHERE created_at < now() - ($1::text || ' days')::interval`,
+    [days],
+  );
+  return rowCount ?? 0;
+}
+
 // --- Super-admin views ---------------------------------------------------------
 
 export async function recentAuditEntries(limit = 20): Promise<
