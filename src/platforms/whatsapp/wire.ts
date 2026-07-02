@@ -16,6 +16,21 @@ export function isLidJid(jid: string | undefined | null): boolean {
 }
 
 /**
+ * True if a stored user id is a plain phone number that may safely be turned
+ * into a `<id>@s.whatsapp.net` JID. LID-fallback ids (see `lidFallbackId`)
+ * and anything else must never be routed as a phone number — LID digits sent
+ * as a phone JID could deliver to an unrelated real number.
+ */
+export function isPhoneUserId(id: string): boolean {
+  return /^\d{5,16}$/.test(id);
+}
+
+/** Mark an unresolvable-LID sender id so it can never be mistaken for a phone. */
+export function lidFallbackId(lidLocalPart: string): string {
+  return `lid:${lidLocalPart}`;
+}
+
+/**
  * Resolve the sender's real PHONE NUMBER for a message, handling WhatsApp's
  * LID (privacy) JIDs. When the routing JID is a LID, Baileys exposes the
  * phone number on key.senderPn / key.participantPn. Returns '' if no phone

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   extractText,
   isLidJid,
+  isPhoneUserId,
   jidLocalPart,
+  lidFallbackId,
   senderPhoneNumber,
   unwrapMessage,
 } from '../src/platforms/whatsapp/wire.js';
@@ -45,6 +47,16 @@ test('senderPhoneNumber: group participant, plain and LID', () => {
     key: { remoteJid: 'g@g.us', participant: '112233@lid', participantPn: '64219876543@s.whatsapp.net' },
   } as WAMessage;
   assert.equal(senderPhoneNumber(lid, true), '64219876543');
+});
+
+test('SECURITY: lid: fallback ids are never valid phone targets', () => {
+  // A LID local part looks numeric — the prefix must make it unroutable so
+  // warn/kick can never send to an unrelated real phone number.
+  assert.equal(isPhoneUserId('64211234567'), true);
+  assert.equal(isPhoneUserId(lidFallbackId('99887766554433')), false);
+  assert.equal(isPhoneUserId('99887766554433999999'), false); // too long
+  assert.equal(isPhoneUserId(''), false);
+  assert.equal(isPhoneUserId('unknown'), false);
 });
 
 test('unwrapMessage reaches through ephemeral and view-once wrappers', () => {

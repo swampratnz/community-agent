@@ -1,12 +1,17 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
-import type { CallerContext, Tier } from './auth/rbac.js';
+import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
 import { runAgentTurn } from './agent/core.js';
-import { classifyConfirmReply, cancelPendingAction, takePendingAction } from './agent/pendingActions.js';
-import { filterOutbound } from './agent/outbound.js';
-import { getCodeAnswersPolicy, isPaused } from './storage/policies.js';
+import {
+  cancelPendingAction,
+  classifyConfirmReply,
+  hasPendingAction,
+  sweepExpiredPendingActions,
+  takePendingAction,
+} from './agent/pendingActions.js';
+import { isPaused } from './storage/policies.js';
 import { countRepliesToUser, recordInteraction } from './storage/repository.js';
 
 const GATED_NOTICE =
@@ -33,29 +38,22 @@ export class Router {
 
   private readonly RATE_LIMIT = 8; // messages
   private readonly RATE_WINDOW_MS = 60_000; // per minute
-  /** userKeys already told they hit today's budget (keyed by day). */
-  private readonly budgetNotified = new Set<string>();
-
-  /** Exact secret values that must never leave the process in a reply. */
-  private readonly knownSecrets: string[] = [
-    config.llm.oauthToken,
-    config.discord.botToken,
-    config.db.url,
-  ];
+  /** userKey -> when they were last told they hit the budget (rolling 24h, matching the budget window). */
+  private readonly budgetNotified = new Map<string, number>();
 
   constructor() {
-    setInterval(() => this.sweepRateLimits(), this.RATE_WINDOW_MS * 5).unref();
+    setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
 
-  private sweepRateLimits(): void {
+  private sweep(): void {
     const now = Date.now();
     for (const [key, hits] of this.userHits) {
       if (hits.every((t) => now - t >= this.RATE_WINDOW_MS)) this.userHits.delete(key);
     }
-    const today = new Date().toDateString();
-    for (const key of this.budgetNotified) {
-      if (!key.endsWith(today)) this.budgetNotified.delete(key);
+    for (const [key, at] of this.budgetNotified) {
+      if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
     }
+    sweepExpiredPendingActions();
   }
 
   register(adapter: PlatformAdapter): void {
@@ -75,12 +73,9 @@ export class Router {
     return hits.length > this.RATE_LIMIT;
   }
 
+  /** Outbound filtering (secrets + code policy) lives in the adapters' send paths. */
   private async send(adapter: PlatformAdapter, conversationId: string, text: string): Promise<void> {
-    const codePolicy = await getCodeAnswersPolicy();
-    await adapter.sendMessage({
-      conversationId,
-      text: filterOutbound(text, codePolicy, this.knownSecrets),
-    });
+    await adapter.sendMessage({ conversationId, text });
   }
 
   private async handle(msg: IncomingMessage): Promise<void> {
@@ -125,36 +120,46 @@ export class Router {
       isDirect: msg.isDirect,
     }).catch((err) => logger.error({ err }, 'Failed to record inbound interaction'));
 
-    // Only respond when addressed (mention/reply) or in a direct conversation.
-    if (!msg.addressedToBot && !msg.isDirect) return;
-    if (!msg.text.trim()) return;
-
-    // Paused: only super admins get through (so they can resume it).
-    if (role !== 'super_admin' && (await isPaused().catch(() => false))) return;
-
     // Deterministic CONFIRM/CANCEL intercept for pending destructive actions.
-    // Never reaches the model: injection can request, only a human can confirm.
+    // Runs BEFORE the addressed check so a bare "CONFIRM" works in groups
+    // (where plain replies aren't "addressed"). Only fires when this exact
+    // actor has a pending action in this conversation, so it never steals
+    // normal messages. Never reaches the model: injection can request, only
+    // a human can confirm.
     const verdict = classifyConfirmReply(msg.text);
-    if (verdict === 'confirm') {
+    if (verdict && hasPendingAction(msg.platform, msg.conversationId, msg.userId)) {
+      if (verdict === 'cancel') {
+        cancelPendingAction(msg.platform, msg.conversationId, msg.userId);
+        await this.send(adapter, msg.conversationId, 'Cancelled.').catch(() => {});
+        return;
+      }
       const pending = takePendingAction(msg.platform, msg.conversationId, msg.userId);
       if (pending) {
         let outcome: string;
-        try {
-          outcome = await pending.execute();
-        } catch (err) {
-          outcome = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+        // Re-check the actor's CURRENT tier: a role revoked inside the
+        // confirm TTL invalidates the queued action.
+        if (!atLeast(role, pending.minTier)) {
+          outcome = 'Not executed: your permissions changed since this action was requested.';
+        } else {
+          try {
+            outcome = await pending.execute();
+          } catch (err) {
+            outcome = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
         }
         await this.send(adapter, msg.conversationId, outcome).catch((err) =>
           logger.error({ err }, 'Failed to send confirm outcome'),
         );
         return;
       }
-    } else if (verdict === 'cancel') {
-      if (cancelPendingAction(msg.platform, msg.conversationId, msg.userId)) {
-        await this.send(adapter, msg.conversationId, 'Cancelled.').catch(() => {});
-        return;
-      }
     }
+
+    // Only respond when addressed (mention/reply) or in a direct conversation.
+    if (!msg.addressedToBot && !msg.isDirect) return;
+    if (!msg.text.trim()) return;
+
+    // Paused: only super admins get through (so they can resume it).
+    if (role !== 'super_admin' && (await isPaused().catch(() => false))) return;
 
     const userKey = `${msg.platform}:${msg.userId}`;
     if (this.rateLimited(userKey)) {
@@ -167,13 +172,14 @@ export class Router {
     if (limit > 0 && role !== 'super_admin') {
       const used = await countRepliesToUser(msg.platform, msg.userId).catch(() => 0);
       if (used >= limit) {
-        const noticeKey = `${userKey}:${new Date().toDateString()}`;
-        if (!this.budgetNotified.has(noticeKey)) {
-          this.budgetNotified.add(noticeKey);
+        // Notify at most once per rolling 24h — same window as the budget itself.
+        const lastNotified = this.budgetNotified.get(userKey) ?? 0;
+        if (Date.now() - lastNotified > 24 * 3_600_000) {
+          this.budgetNotified.set(userKey, Date.now());
           await this.send(
             adapter,
             msg.conversationId,
-            "You've reached today's usage limit for the assistant — try again tomorrow.",
+            "You've reached today's usage limit for the assistant — try again later.",
           ).catch(() => {});
         }
         return;

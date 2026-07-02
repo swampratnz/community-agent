@@ -37,17 +37,49 @@ export function redactSecrets(text: string, knownSecrets: readonly string[] = []
   return out;
 }
 
-/** Enforce the code_answers policy on fenced code blocks. */
+/**
+ * Enforce the code_answers policy on fenced code blocks. Implemented as a
+ * line walker (not a paired regex) so an UNTERMINATED fence — trivially
+ * produced by a sweet-talked model or a cut-off reply — is treated as
+ * running to end-of-text instead of bypassing the policy.
+ */
 export function applyCodePolicy(text: string, policy: CodeAnswersPolicy): string {
   if (policy === 'full') return text;
-  return text.replace(/```[^\n]*\n([\s\S]*?)```/g, (block, body: string) => {
-    if (policy === 'off') return CODE_OMITTED_NOTE;
-    const lines = body.replace(/\n$/, '').split('\n');
-    if (lines.length <= SNIPPET_MAX_LINES) return block;
-    const kept = lines.slice(0, SNIPPET_MAX_LINES).join('\n');
-    const fence = block.slice(0, block.indexOf('\n') + 1); // keep the language tag
-    return `${fence}${kept}\n\`\`\`${CODE_TRUNCATED_NOTE(SNIPPET_MAX_LINES)}`;
-  });
+
+  const out: string[] = [];
+  let fenceHeader: string | null = null;
+  let body: string[] = [];
+
+  const flushBlock = () => {
+    if (policy === 'off') {
+      out.push(CODE_OMITTED_NOTE);
+    } else if (body.length <= SNIPPET_MAX_LINES) {
+      out.push(fenceHeader as string, ...body, '```');
+    } else {
+      out.push(
+        fenceHeader as string,
+        ...body.slice(0, SNIPPET_MAX_LINES),
+        '```' + CODE_TRUNCATED_NOTE(SNIPPET_MAX_LINES),
+      );
+    }
+    fenceHeader = null;
+    body = [];
+  };
+
+  for (const line of text.split('\n')) {
+    if (fenceHeader === null) {
+      if (/^\s*```/.test(line)) fenceHeader = line;
+      else out.push(line);
+    } else if (/^\s*```\s*$/.test(line)) {
+      flushBlock();
+    } else {
+      body.push(line);
+    }
+  }
+  // Unterminated fence: apply the policy to the trailing block anyway.
+  if (fenceHeader !== null) flushBlock();
+
+  return out.join('\n');
 }
 
 export function filterOutbound(

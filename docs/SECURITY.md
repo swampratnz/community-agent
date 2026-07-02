@@ -37,11 +37,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - **Admin scoping is data-layer**: admins' cross-conversation tools filter in
   SQL against the admin's *platform-verified* conversation membership
   (Discord channel visibility / WhatsApp group participation, cached ~60s).
-- **Confirm-before-destructive**: kick/timeout/delete/purge/forget register a
-  pending action; the actor must reply CONFIRM in the same conversation within
-  60s. The confirmation is intercepted by the router and executed
-  deterministically — it never passes through the model, so an injection can
-  *request* an action but can never *complete* one.
+- **Confirm-before-destructive**: kick/timeout/delete/purge/forget — and
+  **grant_admin**, the highest-blast-radius action of all — register a pending
+  action; the actor must reply CONFIRM in the same conversation within 60s.
+  The confirmation is intercepted by the router *before* the addressed-check
+  (so a bare CONFIRM works in group chats; bot mention tokens are stripped and
+  tolerated) and executed deterministically — it never passes through the
+  model, so an injection can *request* an action but can never *complete*
+  one. The actor's tier is **re-resolved at confirm time**: a role revoked
+  inside the TTL invalidates the queued action.
 - **Defence in depth**: every privileged tool calls `assertAtLeast()` before
   any side effect.
 - **Identity is platform-derived**: super admins come from env config; admins
@@ -147,6 +151,9 @@ the supported path.
 - **Guests in gated mode are invisible**: their messages are not stored, which
   also means no audit trail of what strangers sent the WhatsApp number. Trade
   chosen deliberately (privacy > forensics for non-members).
+- **forget_me/purge scope**: deletes the user's messages, replies to them, and
+  knowledge entries *sourced from* them. Membership rows and the admin audit
+  log are retained deliberately (accountability).
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
 - **The `claude` CLI subprocess** still has network access (it must reach the
@@ -156,10 +163,16 @@ the supported path.
 ## Behaviour policy (code answers)
 `code_answers` policy (super admin, `set_policy`): `off` strips all fenced
 code from replies, `snippets` (default) truncates fences beyond ~15 lines,
-`full` disables the filter. Enforced *outside* the model in
-`src/agent/outbound.ts`, alongside unconditional secret redaction (exact
-runtime secrets + common token patterns) and Discord `allowedMentions: []`
-(no injected @everyone pings).
+`full` disables the filter. Unterminated fences are treated as running to
+end-of-text, so an unclosed ``` cannot bypass the policy. Enforced *outside*
+the model — the filter (plus unconditional secret redaction: exact runtime
+secrets incl. WhatsApp Cloud tokens + common token patterns) lives **inside
+the adapters' send paths**, so every outbound message — router replies,
+`announce`, `warn_user` DMs, super-admin alerts — passes through it; no
+future send path can forget. Discord additionally sends with
+`allowedMentions: []` (no injected @everyone pings), and WhatsApp refuses to
+route `lid:`-fallback ids as phone JIDs (a LID's digits sent as a phone
+number could reach an unrelated person).
 
 ## Operational checklist
 - [ ] `.env` is `chmod 600` and owned by the service user.

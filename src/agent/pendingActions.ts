@@ -1,19 +1,22 @@
-import type { Platform } from '../platforms/types.js';
+import type { Platform, Tier } from '../platforms/types.js';
 
 /**
  * Confirm-before-destructive flow.
  *
- * Destructive tools (kick, timeout, delete, purge, forget_me) do not execute
- * directly. They register a pending action and tell the requester to reply
- * CONFIRM. The router intercepts that reply and runs the stored executor
- * DETERMINISTICALLY — the confirmation never passes through the model, so a
- * prompt injection can request an action but can never complete it: the
- * CONFIRM must arrive as a fresh platform message from the same person in the
- * same conversation.
+ * Destructive tools (kick, timeout, delete, purge, grant_admin, forget_me) do
+ * not execute directly. They register a pending action and tell the requester
+ * to reply CONFIRM. The router intercepts that reply and runs the stored
+ * executor DETERMINISTICALLY — the confirmation never passes through the
+ * model, so a prompt injection can request an action but can never complete
+ * it: the CONFIRM must arrive as a fresh platform message from the same
+ * person in the same conversation, and their tier is re-resolved at confirm
+ * time (a role revoked inside the TTL invalidates the pending action).
  */
 
 export interface PendingAction {
   description: string;
+  /** Minimum tier the actor must STILL hold when confirming. */
+  minTier: Tier;
   expiresAt: number;
   execute: () => Promise<string>;
 }
@@ -70,9 +73,26 @@ export function hasPendingAction(
   return !!entry && entry.expiresAt >= Date.now();
 }
 
-/** Message-text classifier for the router intercept. */
+/** Drop expired entries so abandoned pendings don't accumulate. */
+export function sweepExpiredPendingActions(): void {
+  const now = Date.now();
+  for (const [k, entry] of pending) {
+    if (entry.expiresAt < now) pending.delete(k);
+  }
+}
+
+/**
+ * Message-text classifier for the router intercept. Tolerates leading
+ * @-mention tokens ("@6421… CONFIRM" in WhatsApp groups, stray mentions on
+ * Discord) so confirmations work in group chats where addressing the bot is
+ * required to type at it.
+ */
 export function classifyConfirmReply(text: string): 'confirm' | 'cancel' | null {
-  const t = text.trim().toLowerCase();
+  const t = text
+    .trim()
+    .replace(/^(@\S+\s+)+/, '')
+    .trim()
+    .toLowerCase();
   if (t === 'confirm' || t === 'yes confirm') return 'confirm';
   if (t === 'cancel') return 'cancel';
   return null;

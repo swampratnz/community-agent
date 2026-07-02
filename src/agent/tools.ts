@@ -109,10 +109,19 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     return { success, result };
   }
 
-  /** Queue a destructive action behind an out-of-band CONFIRM reply. */
-  function requireConfirm(description: string, run: () => Promise<string>) {
+  /**
+   * Queue a destructive action behind an out-of-band CONFIRM reply.
+   * minTier is re-checked at confirm time (auth/roles re-resolved by the
+   * router), so a role revoked inside the TTL invalidates the action.
+   */
+  function requireConfirm(
+    description: string,
+    minTier: 'member' | 'admin' | 'super_admin',
+    run: () => Promise<string>,
+  ) {
     registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
       description,
+      minTier,
       execute: run,
     });
     return text(
@@ -200,10 +209,14 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     "Delete the requester's own stored messages from the bot's memory (privacy request). Requires confirmation.",
     {},
     async () =>
-      requireConfirm(`delete ALL of ${caller.userName}'s stored messages on ${caller.platform}`, async () => {
-        const n = await purgeUserData(caller.platform, caller.userId);
-        return `Deleted ${n} stored message(s) for ${caller.userName}.`;
-      }),
+      requireConfirm(
+        `delete ALL of ${caller.userName}'s stored messages (and any knowledge entries sourced from them) on ${caller.platform}`,
+        'member',
+        async () => {
+          const n = await purgeUserData(caller.platform, caller.userId);
+          return `Deleted ${n} stored record(s) for ${caller.userName}.`;
+        },
+      ),
   );
 
   // --- Admin tools (scoped to the admin's own conversations) ------------------
@@ -299,6 +312,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       if (args.action === 'warn_user') return text(await run());
       return requireConfirm(
         `${args.action} on ${args.targetUserId} in ${targetConversation} (reason: ${args.reason})`,
+        'admin',
         run,
       );
     },
@@ -417,15 +431,33 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'grant_admin');
-      await upsertMember({
-        platform: caller.platform,
-        userId: args.userId.trim(),
-        role: 'admin',
-        addedBy: caller.userId,
-        displayName: args.displayName,
-      });
-      await audited({ actionKind: 'grant_admin', targetUserId: args.userId, run: async () => 'granted' });
-      return text(`Granted admin to ${args.displayName ?? args.userId} on ${caller.platform}.`);
+      const userId = args.userId.trim();
+      // Privilege escalation is the highest-blast-radius action in the
+      // system — CONFIRM-gated like kick/purge so an injected turn can
+      // request but never complete it.
+      return requireConfirm(
+        `GRANT ADMIN to ${args.displayName ?? userId} (${userId}) on ${caller.platform}`,
+        'super_admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'grant_admin',
+            targetUserId: userId,
+            run: async () => {
+              await upsertMember({
+                platform: caller.platform,
+                userId,
+                role: 'admin',
+                addedBy: caller.userId,
+                displayName: args.displayName,
+              });
+              return 'granted';
+            },
+          });
+          return success
+            ? `Granted admin to ${args.displayName ?? userId} on ${caller.platform}.`
+            : `Failed: ${result}`;
+        },
+      );
     },
   );
 
@@ -457,17 +489,21 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { userId: z.string().min(1).describe('Platform user id whose data to erase') },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'purge_user_data');
-      return requireConfirm(`PURGE all stored messages of ${args.userId} on ${caller.platform}`, async () => {
-        const { success, result } = await audited({
-          actionKind: 'purge_user_data',
-          targetUserId: args.userId,
-          run: async () => {
-            const n = await purgeUserData(caller.platform, args.userId);
-            return `deleted ${n} stored message(s)`;
-          },
-        });
-        return success ? `Done: ${result}.` : `Failed: ${result}`;
-      });
+      return requireConfirm(
+        `PURGE all stored messages (and knowledge entries sourced from) ${args.userId} on ${caller.platform}`,
+        'super_admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'purge_user_data',
+            targetUserId: args.userId,
+            run: async () => {
+              const n = await purgeUserData(caller.platform, args.userId);
+              return `deleted ${n} stored record(s)`;
+            },
+          });
+          return success ? `Done: ${result}.` : `Failed: ${result}`;
+        },
+      );
     },
   );
 

@@ -430,18 +430,23 @@ export async function countRepliesToUser(
 }
 
 /**
- * Delete a user's stored messages (their inbound rows and the bot's replies
- * to them). Backs both the member-facing forget_me and the super-admin
- * purge_user_data. Membership and audit rows are intentionally kept.
+ * Delete a user's stored data: their inbound messages, the bot's replies to
+ * them, and knowledge entries sourced from them. Backs both the member-facing
+ * forget_me and the super-admin purge_user_data. Membership and audit rows
+ * are intentionally kept (documented in SECURITY.md).
  */
 export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
-  const { rowCount } = await pool.query(
+  const { rowCount: messages } = await pool.query(
     `DELETE FROM interactions
       WHERE platform = $1
         AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))`,
     [platform, userId],
   );
-  return rowCount ?? 0;
+  const { rowCount: knowledge } = await pool.query(
+    `DELETE FROM knowledge WHERE source_user_id = $1`,
+    [userId],
+  );
+  return (messages ?? 0) + (knowledge ?? 0);
 }
 
 // --- Super-admin views ---------------------------------------------------------

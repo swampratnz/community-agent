@@ -8,6 +8,9 @@ import {
 } from 'discord.js';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
+import { filterOutbound } from '../../agent/outbound.js';
+import { runtimeSecrets } from '../../agent/secrets.js';
+import { getCodeAnswersPolicy } from '../../storage/policies.js';
 import type {
   AdminAction,
   IncomingMessage,
@@ -111,6 +114,14 @@ export class DiscordAdapter implements PlatformAdapter {
     return ref.author.id === this.client.user?.id;
   }
 
+  /**
+   * Every outbound path is filtered HERE (secret redaction + code policy) so
+   * no caller — router reply, announce, warn, super-admin alert — can forget.
+   */
+  private async filtered(text: string): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets());
+  }
+
   async sendMessage(out: OutgoingMessage): Promise<void> {
     const channel = await this.client.channels.fetch(out.conversationId);
     if (!channel || !channel.isTextBased() || !('send' in channel)) {
@@ -118,14 +129,14 @@ export class DiscordAdapter implements PlatformAdapter {
     }
     // Discord caps messages at 2000 chars; chunk longer replies. Mentions are
     // never parsed so an injected "@everyone" can't mass-ping.
-    for (const chunk of chunkText(out.text, MAX_DISCORD_LEN)) {
+    for (const chunk of chunkText(await this.filtered(out.text), MAX_DISCORD_LEN)) {
       await channel.send({ content: chunk, allowedMentions: { parse: [] } });
     }
   }
 
   async sendDirectMessage(userId: string, text: string): Promise<void> {
     const user = await this.client.users.fetch(userId);
-    for (const chunk of chunkText(text, MAX_DISCORD_LEN)) {
+    for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
       await user.send({ content: chunk, allowedMentions: { parse: [] } });
     }
   }

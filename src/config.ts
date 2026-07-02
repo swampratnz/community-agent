@@ -58,7 +58,13 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
 });
 
-const parsed = EnvSchema.safeParse(process.env);
+const EnvSchemaChecked = EnvSchema.refine((e) => e.WHATSAPP_PROVIDER !== 'cloud', {
+  message:
+    "WHATSAPP_PROVIDER=cloud is not implemented yet — use 'baileys' or 'disabled' (see src/platforms/whatsapp/cloudAdapter.ts for the upgrade path)",
+  path: ['WHATSAPP_PROVIDER'],
+});
+
+const parsed = EnvSchemaChecked.safeParse(process.env);
 if (!parsed.success) {
   // Fail fast with a readable message rather than crashing deep inside a module.
   console.error('Invalid environment configuration:');

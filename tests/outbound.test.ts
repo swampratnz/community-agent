@@ -43,6 +43,20 @@ test("code policy 'snippets' keeps short blocks, truncates long ones", () => {
   assert.match(out, /snippet truncated/);
 });
 
+test("SECURITY: an UNTERMINATED code fence cannot bypass the policy", () => {
+  // A sweet-talked model (or a cut-off reply) can open a fence and never
+  // close it; the policy must treat it as running to end-of-text.
+  const sneaky = 'Sure!\n```python\n' + Array.from({ length: 40 }, (_, i) => `line${i}`).join('\n');
+  const off = applyCodePolicy(sneaky, 'off');
+  assert.ok(!off.includes('line0'), "'off' must strip an unterminated fence");
+  assert.match(off, /code omitted/);
+
+  const snip = applyCodePolicy(sneaky, 'snippets');
+  assert.ok(snip.includes('line14'));
+  assert.ok(!snip.includes('line15'), "'snippets' must truncate an unterminated fence");
+  assert.match(snip, /snippet truncated/);
+});
+
 test("code policy 'full' leaves code untouched", () => {
   const text = '```py\n' + 'x = 1\n'.repeat(50) + '```';
   assert.equal(applyCodePolicy(text, 'full'), text);

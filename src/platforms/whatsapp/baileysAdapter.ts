@@ -9,7 +9,17 @@ import makeWASocket, {
 import qrcode from 'qrcode-terminal';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
-import { extractText, isLidJid, jidLocalPart, senderPhoneNumber } from './wire.js';
+import { filterOutbound } from '../../agent/outbound.js';
+import { runtimeSecrets } from '../../agent/secrets.js';
+import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import {
+  extractText,
+  isLidJid,
+  isPhoneUserId,
+  jidLocalPart,
+  lidFallbackId,
+  senderPhoneNumber,
+} from './wire.js';
 import type {
   AdminAction,
   IncomingMessage,
@@ -139,22 +149,32 @@ export class BaileysAdapter implements PlatformAdapter {
 
     const senderNumber = senderPhoneNumber(msg, isGroup);
     const { text: rawText, contextInfo } = extractText(msg);
-    const text = rawText.trim();
+
+    // In groups, only respond if the bot is mentioned OR the message quotes
+    // (replies to) one of the bot's messages. mentionedJid entries may be
+    // phone JIDs or LIDs — match either identity of the bot.
+    const isBotJid = (j: string | null | undefined) => {
+      const local = jidLocalPart(j);
+      return local !== '' && (local === this.botNumber || (this.botLid !== '' && local === this.botLid));
+    };
+    const mentioned = contextInfo?.mentionedJid?.some(isBotJid) ?? false;
+    const repliedToBot = isBotJid(contextInfo?.participant);
+
+    // Strip the bot's own mention token(s) so "@bot CONFIRM" classifies
+    // cleanly (mirrors the Discord adapter stripping <@id>).
+    let text = rawText;
+    for (const id of [this.botNumber, this.botLid]) {
+      if (id) text = text.split(`@${id}`).join(' ');
+    }
+    text = text.replace(/\s+/g, ' ').trim();
     if (!text) return;
 
-    // In groups, only respond if the bot is mentioned. mentionedJid entries
-    // may be phone JIDs or LIDs — match either identity of the bot.
-    const mentioned =
-      contextInfo?.mentionedJid?.some((j) => {
-        const local = jidLocalPart(j);
-        return local === this.botNumber || (this.botLid !== '' && local === this.botLid);
-      }) ?? false;
-
-    // Identity must be a real phone number for tier resolution to work; a
-    // LID sender without a resolvable number falls back to the LID and can
-    // therefore never match a member/admin/super-admin grant.
-    const senderId =
-      senderNumber || jidLocalPart(isGroup ? msg.key.participant : remoteJid) || 'unknown';
+    // Identity must be a real phone number for tier resolution to work. A
+    // LID sender without a resolvable number gets a `lid:`-prefixed id: it
+    // can never match a member/admin grant AND can never be mis-routed as a
+    // phone JID by warn/kick (see performAdminAction's isPhoneUserId guard).
+    const rawFallback = jidLocalPart(isGroup ? msg.key.participant : remoteJid);
+    const senderId = senderNumber || (rawFallback ? lidFallbackId(rawFallback) : 'unknown');
 
     const normalised: IncomingMessage = {
       platform: 'whatsapp',
@@ -163,7 +183,7 @@ export class BaileysAdapter implements PlatformAdapter {
       userName: msg.pushName ?? senderId,
       text,
       isDirect,
-      addressedToBot: isDirect || mentioned,
+      addressedToBot: isDirect || mentioned || repliedToBot,
       timestamp: Number(msg.messageTimestamp ?? 0) * 1000,
       raw: msg,
     };
@@ -171,14 +191,25 @@ export class BaileysAdapter implements PlatformAdapter {
     await this.handler(normalised);
   }
 
+  /**
+   * Every outbound path is filtered HERE (secret redaction + code policy) so
+   * no caller — router reply, announce, warn, super-admin alert — can forget.
+   */
+  private async filtered(text: string): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets());
+  }
+
   async sendMessage(out: OutgoingMessage): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    await this.sock.sendMessage(out.conversationId, { text: out.text });
+    await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text) });
   }
 
   async sendDirectMessage(userId: string, text: string): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    await this.sock.sendMessage(`${userId}@s.whatsapp.net`, { text });
+    if (!isPhoneUserId(userId)) {
+      throw new Error(`Refusing to DM "${userId}": not a phone-number id (LID-only sender?).`);
+    }
+    await this.sock.sendMessage(`${userId}@s.whatsapp.net`, { text: await this.filtered(text) });
   }
 
   /**
@@ -190,7 +221,13 @@ export class BaileysAdapter implements PlatformAdapter {
     const cached = this.membershipCache.get(userId);
     if (cached && cached.expires > Date.now()) return cached.ids;
 
-    const ids: string[] = [`${userId}@s.whatsapp.net`];
+    // Their own 1:1 with the bot (phone ids only; lid: fallbacks have their
+    // DM keyed by the LID JID instead).
+    const ids: string[] = isPhoneUserId(userId)
+      ? [`${userId}@s.whatsapp.net`]
+      : userId.startsWith('lid:')
+        ? [`${userId.slice(4)}@lid`]
+        : [];
     try {
       if (!this.sock) throw new Error('socket not connected');
       const groups = await this.sock.groupFetchAllParticipating();
@@ -198,7 +235,7 @@ export class BaileysAdapter implements PlatformAdapter {
         const inGroup = meta.participants?.some((p) => {
           const pid = jidLocalPart(p.id);
           const pn = jidLocalPart((p as { phoneNumber?: string }).phoneNumber);
-          return pid === userId || pn === userId;
+          return pid === userId || pn === userId || lidFallbackId(pid) === userId;
         });
         if (inGroup) ids.push(jid);
       }
@@ -210,35 +247,48 @@ export class BaileysAdapter implements PlatformAdapter {
     return ids;
   }
 
+  /**
+   * Targets must be plain phone-number ids. `lid:`-fallback ids (or anything
+   * else) are refused: LID digits routed as a phone JID could hit an
+   * unrelated real number.
+   */
+  private targetJid(userId: string | undefined): string {
+    if (!userId || !isPhoneUserId(userId)) {
+      throw new Error(
+        `Refusing to act on "${userId ?? ''}": not a phone-number id. ` +
+          `(LID-only senders cannot be targeted until their number is known.)`,
+      );
+    }
+    return `${userId}@s.whatsapp.net`;
+  }
+
   async performAdminAction(action: AdminAction): Promise<string> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
-        const jid = `${action.targetUserId}@s.whatsapp.net`;
-        await this.sock.sendMessage(jid, {
-          text: `⚠️ Warning from NZ Claude Community: ${action.params?.reason ?? ''}`,
-        });
+        await this.sendDirectMessage(
+          action.targetUserId ?? '',
+          `⚠️ Warning from NZ Claude Community: ${action.params?.reason ?? ''}`,
+        );
         return `Warned ${action.targetUserId}.`;
       }
       case 'kick_user': {
         const groupJid = action.conversationId;
         if (!groupJid?.endsWith('@g.us')) throw new Error('kick_user requires a group conversationId');
-        const jid = `${action.targetUserId}@s.whatsapp.net`;
-        await this.sock.groupParticipantsUpdate(groupJid, [jid], 'remove');
+        await this.sock.groupParticipantsUpdate(groupJid, [this.targetJid(action.targetUserId)], 'remove');
         return `Removed ${action.targetUserId} from the group.`;
       }
       case 'delete_message': {
         const groupJid = action.conversationId!;
         const messageId = String(action.params?.messageId ?? '');
         if (!messageId) throw new Error('delete_message requires params.messageId');
-        if (!action.targetUserId) throw new Error('delete_message requires the author (targetUserId)');
         // Revoking someone else's group message requires the author in the key.
         await this.sock.sendMessage(groupJid, {
           delete: {
             remoteJid: groupJid,
             id: messageId,
             fromMe: false,
-            participant: `${action.targetUserId}@s.whatsapp.net`,
+            participant: this.targetJid(action.targetUserId),
           },
         });
         return `Deleted message ${messageId}.`;

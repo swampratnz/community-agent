@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS interactions (
   conversation_id TEXT      NOT NULL,
   user_id       TEXT        NOT NULL,
   user_name     TEXT,
-  role          TEXT        NOT NULL,              -- 'admin' | 'user'
+  role          TEXT        NOT NULL,              -- 'super_admin' | 'admin' | 'member' | 'guest'
   direction     TEXT        NOT NULL,              -- 'inbound' | 'outbound'
   content       TEXT        NOT NULL,
   addressed_to_bot BOOLEAN  NOT NULL DEFAULT false,
