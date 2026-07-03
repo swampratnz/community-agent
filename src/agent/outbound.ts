@@ -111,10 +111,59 @@ export function stripEmDashesOutsideCode(text: string): string {
     .join('\n');
 }
 
+const BOLD_TRIPLE = /\*\*\*(.+?)\*\*\*/g;
+const UNDERSCORE_TRIPLE = /___(.+?)___/g;
+const BOLD_DOUBLE = /\*\*(.+?)\*\*/g;
+const UNDERSCORE_DOUBLE = /__(.+?)__/g;
+const HEADING_LINE = /^(\s*)#{1,6}\s+(.*)$/;
+const BULLET_LINE = /^(\s*)[-*]\s+(.*)$/;
+
+function convertInlineEmphasis(line: string): string {
+  return line
+    .replace(BOLD_TRIPLE, '*$1*')
+    .replace(UNDERSCORE_TRIPLE, '*$1*')
+    .replace(BOLD_DOUBLE, '*$1*')
+    .replace(UNDERSCORE_DOUBLE, '*$1*');
+}
+
+/**
+ * Rewrite Discord/GFM-flavoured markdown into WhatsApp-readable formatting:
+ * `**bold**`/`__bold__` -> `*bold*`, `# Heading` -> `*Heading*`, `- item`/`* item`
+ * bullets -> `• item`. Line-anchored and fence-aware (same walker style as
+ * {@link stripEmDashesOutsideCode}) so code blocks and inline `*`/`#` in prose
+ * are never touched. Idempotent: re-running on already-converted text is a no-op.
+ */
+export function convertMarkdownForWhatsApp(text: string): string {
+  let inFence = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+
+      const heading = line.match(HEADING_LINE);
+      if (heading) return `${heading[1]}*${convertInlineEmphasis(heading[2])}*`;
+
+      const emphasised = convertInlineEmphasis(line);
+      const bullet = emphasised.match(BULLET_LINE);
+      if (bullet) return `${bullet[1]}• ${bullet[2]}`;
+
+      return emphasised;
+    })
+    .join('\n');
+}
+
+export type OutboundPlatform = 'discord' | 'whatsapp';
+
 export function filterOutbound(
   text: string,
   policy: CodeAnswersPolicy,
   knownSecrets: readonly string[] = [],
+  platform?: OutboundPlatform,
 ): string {
-  return stripEmDashesOutsideCode(applyCodePolicy(redactSecrets(text, knownSecrets), policy));
+  const filtered = stripEmDashesOutsideCode(applyCodePolicy(redactSecrets(text, knownSecrets), policy));
+  return platform === 'whatsapp' ? convertMarkdownForWhatsApp(filtered) : filtered;
 }

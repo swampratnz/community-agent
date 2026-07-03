@@ -105,6 +105,22 @@ test('SECURITY: filtering runs once on the whole message before chunking, so a s
   assert.ok(bodies.join('').includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+test('sendDirectMessage: Discord-style markdown is converted to WhatsApp formatting before sending', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', '**Answer:**\n# Heading\n- one\n- two');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+  const body = JSON.parse(calls[0].body).text.body as string;
+  assert.equal(body, '*Answer:*\n*Heading*\n• one\n• two');
+});
+
 test('partial-failure semantics: a mid-sequence Graph API failure delivers earlier chunks then throws (parity with Discord)', async () => {
   const adapter = new WhatsAppCloudAdapter();
   markInboundNow(adapter, '64211234567');

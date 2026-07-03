@@ -199,7 +199,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * no caller — router reply, announce, warn, super-admin alert — can forget.
    */
   private async filtered(text: string): Promise<string> {
-    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets());
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp');
   }
 
   async sendMessage(out: OutgoingMessage): Promise<void> {
