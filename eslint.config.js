@@ -46,5 +46,11 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'off',
     },
   },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
   eslintConfigPrettier,
 );
