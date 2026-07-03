@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyCodePolicy,
+  convertMarkdownForWhatsApp,
   filterOutbound,
   redactSecrets,
   stripEmDashes,
@@ -99,4 +100,64 @@ test('filterOutbound composes redaction and code policy', () => {
   );
   assert.ok(!out.includes('sk-ant-'));
   assert.match(out, /code omitted/);
+});
+
+test('convertMarkdownForWhatsApp: bold and headings and bullets', () => {
+  const out = convertMarkdownForWhatsApp('**bold** and __also bold__\n# Heading\n## Sub heading\n- one\n* two');
+  assert.match(out, /\*bold\* and \*also bold\*/);
+  assert.match(out, /^\*Heading\*$/m);
+  assert.match(out, /^\*Sub heading\*$/m);
+  assert.match(out, /^• one$/m);
+  assert.match(out, /^• two$/m);
+});
+
+test('convertMarkdownForWhatsApp: triple-emphasis and single-asterisk input degrade gracefully', () => {
+  assert.equal(convertMarkdownForWhatsApp('***bold italic***'), '*bold italic*');
+  assert.equal(convertMarkdownForWhatsApp('*already single*'), '*already single*');
+});
+
+test('convertMarkdownForWhatsApp: bullet/heading detection is line-anchored, inline * and # are untouched', () => {
+  const text = 'price is 5 * 3 = 15, and a channel called #general';
+  assert.equal(convertMarkdownForWhatsApp(text), text);
+});
+
+test('convertMarkdownForWhatsApp: is idempotent', () => {
+  const text = '**bold**\n# Heading\n- item\n***triple***';
+  const once = convertMarkdownForWhatsApp(text);
+  const twice = convertMarkdownForWhatsApp(once);
+  assert.equal(twice, once);
+});
+
+test('convertMarkdownForWhatsApp: fenced code blocks (including truncated-snippet notes) are never touched', () => {
+  const long = '```js\n' + Array.from({ length: 40 }, (_, i) => `line${i};`).join('\n') + '\n```';
+  const withNote = applyCodePolicy(long, 'snippets');
+  const out = convertMarkdownForWhatsApp('**intro**\n' + withNote + '\n- outro');
+  assert.match(out, /^\*intro\*$/m);
+  assert.ok(out.includes('line0;'));
+  assert.match(out, /^• outro$/m);
+  // the italic truncation note (single underscores) must survive unmangled
+  assert.match(out, /^_\[snippet truncated to 15 lines/m);
+});
+
+test('convertMarkdownForWhatsApp: prose + code fence mix keeps fence contents verbatim', () => {
+  const text = '**Answer:**\n```js\nconst a = **not bold** here;\n```\n- done';
+  const out = convertMarkdownForWhatsApp(text);
+  assert.ok(out.includes('const a = **not bold** here;'), 'code fence body is untouched');
+  assert.match(out, /^\*Answer:\*$/m);
+  assert.match(out, /^• done$/m);
+});
+
+test('filterOutbound: Discord output (no platform arg) is byte-identical to pre-conversion behaviour', () => {
+  const text = '**bold**\n# Heading\n- item';
+  const withoutPlatform = filterOutbound(text, 'full');
+  const withDiscord = filterOutbound(text, 'full', [], 'discord');
+  const preConversion = stripEmDashesOutsideCode(applyCodePolicy(redactSecrets(text), 'full'));
+  assert.equal(withoutPlatform, preConversion);
+  assert.equal(withDiscord, preConversion);
+});
+
+test('filterOutbound: whatsapp platform applies markdown conversion after redaction/code policy/em-dash stripping', () => {
+  const out = filterOutbound('**bold** — plain\n# Heading', 'full', [], 'whatsapp');
+  assert.match(out, /^\*bold\*, plain$/m);
+  assert.match(out, /^\*Heading\*$/m);
 });
