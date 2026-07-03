@@ -106,7 +106,7 @@ jobs:
           fi
 
           if [ -z "$review" ]; then
-            gh pr comment "$PR" --body "PR review (automated): the reviewer produced no output this run (see the workflow logs). This check is failing on purpose so the silence is visible."
+            gh pr comment "$PR" --body "PR review (automated): no review output was captured this run. If this PR modifies the review workflow itself, that's expected — the action only runs the workflow version on the default branch, so it will review normally once this is merged. Otherwise the reviewer genuinely produced nothing; see the workflow logs. Failing the check so this is never silent."
             echo "::error::PR review produced no text output"
             exit 1
           fi
