@@ -17,12 +17,13 @@ import {
   type CloudInboundMessage,
 } from './cloudWire.js';
 import { chunkText } from '../textChunk.js';
-import type {
-  AdminAction,
-  IncomingMessage,
-  MessageHandler,
-  OutgoingMessage,
-  PlatformAdapter,
+import {
+  paramString,
+  type AdminAction,
+  type IncomingMessage,
+  type MessageHandler,
+  type OutgoingMessage,
+  type PlatformAdapter,
 } from '../types.js';
 
 const GRAPH_API_VERSION = 'v21.0';
@@ -273,7 +274,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       case 'warn_user': {
         await this.sendDirectMessage(
           action.targetUserId ?? '',
-          `⚠️ Warning from NZ Claude Community: ${action.params?.reason ?? ''}`,
+          `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
       }

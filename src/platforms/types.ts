@@ -58,6 +58,11 @@ export interface AdminAction {
   params?: Record<string, unknown>;
 }
 
+/** Safely read a string out of {@link AdminAction.params}, falling back rather than stringifying non-strings. */
+export function paramString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
 export interface PlatformAdapter {
   readonly platform: Platform;
 

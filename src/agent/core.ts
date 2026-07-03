@@ -52,7 +52,7 @@ export function buildQueryOptions(
     // The base built-in tool set. Empty = no built-ins at all; admin+ get
     // exactly one: WebSearch. `allowedTools` alone only auto-approves; this
     // list is what actually restricts the surface.
-    tools: (webSearch ? ['WebSearch'] : []) as string[],
+    tools: webSearch ? ['WebSearch'] : [],
     allowedTools: [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])],
     disallowedTools: ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
     permissionMode: 'default' as const,

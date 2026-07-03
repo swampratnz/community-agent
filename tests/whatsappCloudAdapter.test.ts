@@ -23,7 +23,7 @@ function mockFetch(responses: Array<{ ok: boolean; status?: number }>) {
   const calls: Array<{ url: string; body: string }> = [];
   let i = 0;
   const fetchMock = async (url: string | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), body: String(init?.body ?? '') });
+    calls.push({ url: String(url), body: typeof init?.body === 'string' ? init.body : '' });
     const resp = responses[Math.min(i, responses.length - 1)];
     i++;
     return {
