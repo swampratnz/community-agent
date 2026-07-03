@@ -26,6 +26,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  id-token: write # claude-code-action mints its GitHub App token via OIDC
 
 jobs:
   build:
