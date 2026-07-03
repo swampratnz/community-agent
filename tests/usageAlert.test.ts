@@ -10,7 +10,8 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { initialUsageAlertTracker, stepUsageAlertTracker, startUsageAlert } = await import('../src/usageAlert.js');
+const { initialUsageAlertTracker, stepUsageAlertTracker, startUsageAlert } =
+  await import('../src/usageAlert.js');
 
 const THRESHOLD = 100;
 
@@ -20,7 +21,11 @@ test('startUsageAlert: USAGE_ALERT_DAILY_REPLIES unset (default) creates no time
 });
 
 test('stepUsageAlertTracker: under the threshold never alerts', () => {
-  const { tracker, shouldAlert } = stepUsageAlertTracker(initialUsageAlertTracker(), THRESHOLD - 1, THRESHOLD);
+  const { tracker, shouldAlert } = stepUsageAlertTracker(
+    initialUsageAlertTracker(),
+    THRESHOLD - 1,
+    THRESHOLD,
+  );
   assert.deepEqual(tracker, { crossed: false });
   assert.equal(shouldAlert, false);
 });
@@ -45,7 +50,11 @@ test('SECURITY/correctness: oscillating just above the threshold across ticks yi
     tracker = step.tracker;
     if (step.shouldAlert) alerts += 1;
   }
-  assert.equal(alerts, 1, 'no re-fire per tick while oscillating above the threshold without ever dropping below');
+  assert.equal(
+    alerts,
+    1,
+    'no re-fire per tick while oscillating above the threshold without ever dropping below',
+  );
 });
 
 test('stepUsageAlertTracker: dropping back below the threshold clears the latch silently (no alert)', () => {

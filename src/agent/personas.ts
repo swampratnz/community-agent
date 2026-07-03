@@ -57,7 +57,10 @@ export function selectPersona(opts: { text?: string }): Persona {
   const text = (opts.text ?? '').trim().toLowerCase();
   if (text) {
     // First token, stripped of a leading @ and trailing punctuation.
-    const firstToken = text.split(/\s+/)[0]?.replace(/^@/, '').replace(/[^\w]+$/, '');
+    const firstToken = text
+      .split(/\s+/)[0]
+      ?.replace(/^@/, '')
+      .replace(/[^\w]+$/, '');
     if (firstToken) {
       for (const persona of Object.values(PERSONAS)) {
         if (persona.id !== DEFAULT_PERSONA_ID && persona.aliases.includes(firstToken)) {

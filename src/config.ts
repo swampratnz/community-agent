@@ -27,7 +27,9 @@ function csv(value: string | undefined): string[] {
 
 const EnvSchema = z.object({
   // LLM / Claude
-  CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
+  CLAUDE_CODE_OAUTH_TOKEN: z
+    .string()
+    .min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
   AGENT_MODEL: z.string().default('claude-sonnet-5'),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
 
@@ -111,10 +113,13 @@ const EnvSchemaChecked = EnvSchema.refine(
       'WHATSAPP_CLOUD_VERIFY_TOKEN, and WHATSAPP_CLOUD_APP_SECRET',
     path: ['WHATSAPP_PROVIDER'],
   },
-).refine((e) => e.INTERACTION_RETENTION_DAYS === 0 || e.INTERACTION_RETENTION_DAYS >= MIN_INTERACTION_RETENTION_DAYS, {
-  message: `INTERACTION_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_INTERACTION_RETENTION_DAYS}`,
-  path: ['INTERACTION_RETENTION_DAYS'],
-});
+).refine(
+  (e) => e.INTERACTION_RETENTION_DAYS === 0 || e.INTERACTION_RETENTION_DAYS >= MIN_INTERACTION_RETENTION_DAYS,
+  {
+    message: `INTERACTION_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_INTERACTION_RETENTION_DAYS}`,
+    path: ['INTERACTION_RETENTION_DAYS'],
+  },
+);
 
 const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
 if (!parsed.success) {

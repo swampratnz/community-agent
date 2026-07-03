@@ -26,7 +26,7 @@ const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
 const WELCOME_MESSAGE =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
-  "but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here " +
+  'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
   'and an admin will see your request.';
 
 export class DiscordAdapter implements PlatformAdapter {
@@ -113,8 +113,7 @@ export class DiscordAdapter implements PlatformAdapter {
     const botId = this.client.user?.id;
     const mentioned = botId ? message.mentions.users.has(botId) : false;
     const repliedToBot =
-      message.reference?.messageId != null &&
-      (await this.isReplyToBot(message).catch(() => false));
+      message.reference?.messageId != null && (await this.isReplyToBot(message).catch(() => false));
 
     // Strip the bot mention from the text for a clean prompt.
     const cleanText = botId

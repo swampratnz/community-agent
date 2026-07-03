@@ -22,7 +22,5 @@ export function isSuperAdmin(platform: Platform, userId: string): boolean {
 
 /** All configured super-admin user ids for a platform (for alerting). */
 export function superAdminIds(platform: Platform): readonly string[] {
-  return platform === 'discord'
-    ? config.rbac.superAdminDiscordIds
-    : config.rbac.superAdminWhatsappNumbers;
+  return platform === 'discord' ? config.rbac.superAdminDiscordIds : config.rbac.superAdminWhatsappNumbers;
 }

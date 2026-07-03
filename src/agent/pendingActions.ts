@@ -64,11 +64,7 @@ export function cancelPendingAction(
   return pending.delete(key(platform, conversationId, actorUserId));
 }
 
-export function hasPendingAction(
-  platform: Platform,
-  conversationId: string,
-  actorUserId: string,
-): boolean {
+export function hasPendingAction(platform: Platform, conversationId: string, actorUserId: string): boolean {
   const entry = pending.get(key(platform, conversationId, actorUserId));
   return !!entry && entry.expiresAt >= Date.now();
 }

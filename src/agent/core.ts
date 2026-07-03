@@ -90,10 +90,7 @@ export async function runAgentTurn(
   const systemPrompt = buildSystemPrompt(caller, { codeAnswers }, persona);
   // Recalled messages are untrusted user content: they ride in the user turn
   // inside a clearly delimited block, never in the system prompt.
-  const prompt =
-    memories.length > 0
-      ? `${renderMemoryContext(memories)}\n\n${userText}`
-      : userText;
+  const prompt = memories.length > 0 ? `${renderMemoryContext(memories)}\n\n${userText}` : userText;
 
   // Session hygiene: cap resumed-session length and age so context (and any
   // accumulated injection) can't grow without bound.
@@ -128,8 +125,8 @@ export async function runAgentTurn(
   }
 
   if (outcome.sessionId) {
-    await setClaudeSessionId(caller.platform, caller.conversationId, outcome.sessionId).catch(
-      (err) => logger.warn({ err }, 'Failed to persist session id'),
+    await setClaudeSessionId(caller.platform, caller.conversationId, outcome.sessionId).catch((err) =>
+      logger.warn({ err }, 'Failed to persist session id'),
     );
   }
 
@@ -206,7 +203,10 @@ async function execTurn(
   }
 
   if (resultSubtype && resultSubtype !== 'success') {
-    logger.warn({ subtype: resultSubtype, conversationId: caller.conversationId }, 'Agent turn ended non-success');
+    logger.warn(
+      { subtype: resultSubtype, conversationId: caller.conversationId },
+      'Agent turn ended non-success',
+    );
     // Never surface the raw internal transcript on failures.
     return {
       ok: false,
@@ -222,6 +222,6 @@ async function execTurn(
     };
   }
 
-  const text = (resultText.trim() || lastAssistantText.trim()) || "I don't have a response for that.";
+  const text = resultText.trim() || lastAssistantText.trim() || "I don't have a response for that.";
   return { ok: true, resumeFailed: false, text, costUsd, sessionId };
 }

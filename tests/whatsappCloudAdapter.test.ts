@@ -86,7 +86,10 @@ test('SECURITY: filtering runs once on the whole message before chunking, so a s
   const secret = 'sk-ant-' + 'y'.repeat(30);
   const suffix = ' ' + 'z'.repeat(200);
   const text = prefix + secret + suffix;
-  assert.ok(prefix.length < 4096 && prefix.length + secret.length > 4096, 'test setup: secret must straddle the boundary');
+  assert.ok(
+    prefix.length < 4096 && prefix.length + secret.length > 4096,
+    'test setup: secret must straddle the boundary',
+  );
 
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -98,11 +101,15 @@ test('SECURITY: filtering runs once on the whole message before chunking, so a s
   }
 
   const bodies = calls.map((c) => JSON.parse(c.body).text.body as string);
-  for (const body of bodies) assert.ok(!body.includes('sk-ant-'), 'no raw secret fragment may reach any chunk');
+  for (const body of bodies)
+    assert.ok(!body.includes('sk-ant-'), 'no raw secret fragment may reach any chunk');
   // The chunk boundary can still cosmetically split the "[redacted]" marker
   // itself (same accepted cosmetic risk as a word/fence split — see PR
   // discussion); check the reassembled reply, not any single chunk.
-  assert.ok(bodies.join('').includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
+  assert.ok(
+    bodies.join('').includes('[redacted]'),
+    'the secret must have been redacted, not silently dropped',
+  );
 });
 
 test('sendDirectMessage: Discord-style markdown is converted to WhatsApp formatting before sending', async () => {
@@ -129,7 +136,10 @@ test('partial-failure semantics: a mid-sequence Graph API failure delivers earli
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchMock as typeof fetch;
   try {
-    await assert.rejects(() => adapter.sendDirectMessage('64211234567', longText), /WhatsApp Cloud send failed/);
+    await assert.rejects(
+      () => adapter.sendDirectMessage('64211234567', longText),
+      /WhatsApp Cloud send failed/,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

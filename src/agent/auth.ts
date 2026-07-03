@@ -14,7 +14,9 @@ export function configureSubscriptionAuth(): void {
   process.env.CLAUDE_CODE_OAUTH_TOKEN = config.llm.oauthToken;
 
   if (process.env.ANTHROPIC_API_KEY) {
-    logger.warn('ANTHROPIC_API_KEY is set but subscription-only auth is configured; clearing it for this process.');
+    logger.warn(
+      'ANTHROPIC_API_KEY is set but subscription-only auth is configured; clearing it for this process.',
+    );
     delete process.env.ANTHROPIC_API_KEY;
   }
   logger.info('Claude subscription auth configured (CLAUDE_CODE_OAUTH_TOKEN).');

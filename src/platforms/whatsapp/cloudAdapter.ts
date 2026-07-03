@@ -1,4 +1,9 @@
-import { createServer, type IncomingMessage as HttpRequest, type Server, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage as HttpRequest,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
@@ -233,7 +238,12 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
-  private async sendChunk(to: string, phoneNumberId: string, accessToken: string, body: string): Promise<void> {
+  private async sendChunk(
+    to: string,
+    phoneNumberId: string,
+    accessToken: string,
+    body: string,
+  ): Promise<void> {
     const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
       method: 'POST',
       headers: {
