@@ -204,11 +204,11 @@ test(
     const otherKnowledge = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [otherKnowledgeId]);
     assert.equal(otherKnowledge.rows.length, 1, "other user's knowledge is untouched");
 
-    const ownReportRow = await pool.query(`SELECT 1 FROM content_reports WHERE id = $1`, [ownReport!.id]);
+    const ownReportRow = await pool.query(`SELECT 1 FROM content_reports WHERE id = $1`, [ownReport.id]);
     assert.equal(ownReportRow.rows.length, 0, "the target's own submitted report is purged");
 
     const targetedReportRow = await pool.query(`SELECT 1 FROM content_reports WHERE id = $1`, [
-      reportAboutThem!.id,
+      reportAboutThem.id,
     ]);
     assert.equal(
       targetedReportRow.rows.length,
@@ -227,7 +227,7 @@ test(
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [otherUser]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [otherKnowledgeId]);
     await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUser]);
-    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportAboutThem!.id]);
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportAboutThem.id]);
   },
 );
 
@@ -624,80 +624,77 @@ test(
   },
 );
 
-test('repository: createContentReport truncates an over-long reason to 500 characters', { skip }, async () => {
-  const reporter = `${RUN}-reporter-long`;
-  const conversationId = `${RUN}-c-report-long`;
-  const longReason = 'x'.repeat(1000);
-
-  const created = await createContentReport({
-    platform: 'discord',
-    reporterUserId: reporter,
-    conversationId,
-    reason: longReason,
-  });
-  assert.ok(created);
-
-  const row = await pool.query(`SELECT reason FROM content_reports WHERE id = $1`, [created!.id]);
-  assert.equal(row.rows[0].reason.length, 500, 'stored reason is capped at 500 characters');
-
-  await pool.query(`DELETE FROM content_reports WHERE id = $1`, [created!.id]);
-});
-
 test(
-  'SECURITY: repository: listReports scopes by conversation and filters by status',
+  'repository: createContentReport truncates an over-long reason to 500 characters',
   { skip },
   async () => {
-    const inScopeConvo = `${RUN}-c-reports-in`;
-    const outOfScopeConvo = `${RUN}-c-reports-out`;
-    const reporter = `${RUN}-reports-list-reporter`;
+    const reporter = `${RUN}-reporter-long`;
+    const conversationId = `${RUN}-c-report-long`;
+    const longReason = 'x'.repeat(1000);
 
-    const inScope = await createContentReport({
+    const created = await createContentReport({
       platform: 'discord',
       reporterUserId: reporter,
-      conversationId: inScopeConvo,
-      reason: 'in scope, open',
+      conversationId,
+      reason: longReason,
     });
-    const outOfScope = await createContentReport({
-      platform: 'discord',
-      reporterUserId: reporter,
-      conversationId: outOfScopeConvo,
-      reason: 'must NOT be visible — admin is not in this conversation',
-    });
-    assert.ok(inScope && outOfScope);
+    assert.ok(created);
 
-    const scoped = await listReports([inScopeConvo]);
-    assert.ok(
-      scoped.some((r) => r.id === inScope!.id),
-      'the in-scope report is visible',
-    );
-    assert.ok(
-      !scoped.some((r) => r.id === outOfScope!.id),
-      'SECURITY: a report outside the scope filter must never be returned',
-    );
+    const row = await pool.query(`SELECT reason FROM content_reports WHERE id = $1`, [created.id]);
+    assert.equal(row.rows[0].reason.length, 500, 'stored reason is capped at 500 characters');
 
-    const unscoped = await listReports(null);
-    assert.ok(
-      unscoped.some((r) => r.id === inScope!.id) && unscoped.some((r) => r.id === outOfScope!.id),
-      'null scope (super admin) sees both conversations',
-    );
-
-    const resolved = await resolveContentReport(inScope!.id, 'resolved', `${RUN}-resolver`);
-    assert.ok(resolved);
-
-    const openOnly = await listReports([inScopeConvo], 'open');
-    assert.ok(
-      !openOnly.some((r) => r.id === inScope!.id),
-      'status filter excludes the now-resolved report',
-    );
-    const resolvedOnly = await listReports([inScopeConvo], 'resolved');
-    assert.ok(
-      resolvedOnly.some((r) => r.id === inScope!.id),
-      'status filter surfaces the resolved report',
-    );
-
-    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope!.id, outOfScope!.id]]);
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [created.id]);
   },
 );
+
+test('SECURITY: repository: listReports scopes by conversation and filters by status', { skip }, async () => {
+  const inScopeConvo = `${RUN}-c-reports-in`;
+  const outOfScopeConvo = `${RUN}-c-reports-out`;
+  const reporter = `${RUN}-reports-list-reporter`;
+
+  const inScope = await createContentReport({
+    platform: 'discord',
+    reporterUserId: reporter,
+    conversationId: inScopeConvo,
+    reason: 'in scope, open',
+  });
+  const outOfScope = await createContentReport({
+    platform: 'discord',
+    reporterUserId: reporter,
+    conversationId: outOfScopeConvo,
+    reason: 'must NOT be visible — admin is not in this conversation',
+  });
+  assert.ok(inScope && outOfScope);
+
+  const scoped = await listReports([inScopeConvo]);
+  assert.ok(
+    scoped.some((r) => r.id === inScope.id),
+    'the in-scope report is visible',
+  );
+  assert.ok(
+    !scoped.some((r) => r.id === outOfScope.id),
+    'SECURITY: a report outside the scope filter must never be returned',
+  );
+
+  const unscoped = await listReports(null);
+  assert.ok(
+    unscoped.some((r) => r.id === inScope.id) && unscoped.some((r) => r.id === outOfScope.id),
+    'null scope (super admin) sees both conversations',
+  );
+
+  const resolved = await resolveContentReport(inScope.id, 'resolved', `${RUN}-resolver`);
+  assert.ok(resolved);
+
+  const openOnly = await listReports([inScopeConvo], 'open');
+  assert.ok(!openOnly.some((r) => r.id === inScope.id), 'status filter excludes the now-resolved report');
+  const resolvedOnly = await listReports([inScopeConvo], 'resolved');
+  assert.ok(
+    resolvedOnly.some((r) => r.id === inScope.id),
+    'status filter surfaces the resolved report',
+  );
+
+  await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
+});
 
 test(
   'SECURITY: repository: resolveContentReport refuses to update a report outside the given conversation scope',
@@ -715,17 +712,15 @@ test(
     });
     assert.ok(report);
 
-    const refused = await resolveContentReport(report!.id, 'dismissed', `${RUN}-scoped-admin`, [
-      inScopeConvo,
-    ]);
+    const refused = await resolveContentReport(report.id, 'dismissed', `${RUN}-scoped-admin`, [inScopeConvo]);
     assert.equal(refused, false, 'SECURITY: resolving a report outside the caller scope must fail');
 
-    const stillOpen = await pool.query(`SELECT status FROM content_reports WHERE id = $1`, [report!.id]);
+    const stillOpen = await pool.query(`SELECT status FROM content_reports WHERE id = $1`, [report.id]);
     assert.equal(stillOpen.rows[0].status, 'open', 'the out-of-scope report is left untouched');
 
-    const allowed = await resolveContentReport(report!.id, 'dismissed', `${RUN}-super-admin`, undefined);
+    const allowed = await resolveContentReport(report.id, 'dismissed', `${RUN}-super-admin`, undefined);
     assert.ok(allowed, 'an unrestricted (super-admin) scope can resolve any report');
 
-    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report!.id]);
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
   },
 );

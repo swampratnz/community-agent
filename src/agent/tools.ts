@@ -260,10 +260,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       'Only confirms the report was recorded — it does not take any moderation action itself.',
     {
       reason: z.string().min(1).max(500).describe('What happened, in your own words (max 500 characters)'),
-      targetUserId: z
-        .string()
-        .optional()
-        .describe('Platform user id of the person being reported, if known'),
+      targetUserId: z.string().optional().describe('Platform user id of the person being reported, if known'),
       messageId: z.string().optional().describe('The specific message id being reported, if known'),
     },
     async (args) => {
@@ -608,8 +605,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const listReportsTool = tool(
     'list_reports',
-    "List member-submitted content reports (harassment/spam/rule violations) from your conversations. " +
-      'A report from a conversation you do not participate in (e.g. another member\'s DM) is not visible ' +
+    'List member-submitted content reports (harassment/spam/rule violations) from your conversations. ' +
+      "A report from a conversation you do not participate in (e.g. another member's DM) is not visible " +
       'here even to admins — only to a super admin. Admin only.',
     {
       status: z
