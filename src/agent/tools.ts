@@ -174,7 +174,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     "Report the bot's own recent updates from its changelog. Use this whenever " +
       "someone asks what's new, what changed, what you've been upgraded with, or " +
       'about your recent versions/releases.',
-    { limit: z.number().int().positive().max(10).optional().describe('How many recent changelog sections to include (default 2)') },
+    {
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(10)
+        .optional()
+        .describe('How many recent changelog sections to include (default 2)'),
+    },
     async (args) => text(await recentChanges(args.limit ?? 2)),
     { annotations: { readOnlyHint: true } },
   );
