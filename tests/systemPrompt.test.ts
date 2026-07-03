@@ -59,6 +59,13 @@ test('SECURITY: recalled content cannot fake tags to escape its block', () => {
   assert.match(rendered, /<\/recalled-messages>$/);
 });
 
+test('guidelines cover knowledge provenance: attribution and scoped general-knowledge flag', () => {
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  assert.match(prompt, /briefly attribute it in passing/);
+  assert.match(prompt, /community-specific facts/);
+  assert.match(prompt, /Do NOT do this\s+for general Claude\/API\/product questions/);
+});
+
 test('memory block is capped per entry', () => {
   const rendered = renderMemoryContext([hit('x'.repeat(5000))]);
   assert.ok(rendered.length < 1000, 'long memories must be truncated');
