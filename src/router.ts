@@ -13,6 +13,7 @@ import {
 } from './agent/pendingActions.js';
 import { isPaused } from './storage/policies.js';
 import { countRepliesToUser, recordAccessRequest, recordInteraction } from './storage/repository.js';
+import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from './rateLimitNotice.js';
 
 const GATED_NOTICE =
   'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
@@ -40,6 +41,8 @@ export class Router {
   private readonly RATE_WINDOW_MS = 60_000; // per minute
   /** userKey -> when they were last told they hit the budget (rolling 24h, matching the budget window). */
   private readonly budgetNotified = new Map<string, number>();
+  /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
+  private readonly rateLimitNotified = new Map<string, number>();
 
   constructor() {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
@@ -52,6 +55,9 @@ export class Router {
     }
     for (const [key, at] of this.budgetNotified) {
       if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
+    }
+    for (const [key, at] of this.rateLimitNotified) {
+      if (now - at > this.RATE_WINDOW_MS) this.rateLimitNotified.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -168,6 +174,12 @@ export class Router {
     const userKey = `${msg.platform}:${msg.userId}`;
     if (this.rateLimited(userKey)) {
       logger.warn({ userKey }, 'User rate limited');
+      // Notify at most once per rate-limit window — a burst of over-limit
+      // messages gets exactly one notice, not silence and not spam.
+      if (shouldNotifyRateLimited(this.rateLimitNotified.get(userKey), Date.now(), this.RATE_WINDOW_MS)) {
+        this.rateLimitNotified.set(userKey, Date.now());
+        await this.send(adapter, msg.conversationId, RATE_LIMIT_NOTICE_TEXT).catch(() => {});
+      }
       return;
     }
 
