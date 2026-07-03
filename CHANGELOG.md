@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to the NZ Claude Community Agent, newest first. The format
+loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
+`whats_new` tool reads this file, so keep entries user-legible and add a new
+`##` dated section (or version) as part of each release.
+
+## 2026-07-03
+
+### Added
+- `moderation_history` admin tool, scoped to the admin's own conversations (#34).
+- `question_digest` admin tool to surface recurring questions (#23).
+- Proactive super-admin alert when the shared Max-pool usage budget runs high (#25).
+- `/healthz` endpoint and sustained-disconnect super-admin alerting (#14).
+- Age-based retention purge for raw interactions, for privacy (#12).
+- Persona registry with "Kaha" as the default voice (#19).
+- Shared VISION.md rubric; richer research and adversarial prompts (#18).
+- Postgres + pgvector CI service and repository integration tests (#15).
+- Build + PR-review GitHub Actions using Claude Max subscription auth (#20).
+
+### Changed
+- Outbound replies now convert Discord-style markdown to WhatsApp-readable formatting (#38).
+- Long WhatsApp Cloud API replies are chunked under Meta's 4096-character limit (#36).
+- `knowledge_search` surfaces how recent each knowledge entry is (#32).
+- Build-worker turn cap raised to 300 with a matching 60-minute timeout (#49; earlier 40 → 80 in #31).
+- PR-review worker can now review build-worker PRs (#33).
+- Pipeline loops documented as cloud Routines (#16).
+
+### Fixed
+- Blank optional numeric env vars (e.g. `HEALTH_PORT=`) no longer fail config validation (#40).
+- Build-worker verify step hardened against spoofed or stale PRs (#30).
+- Build worker uses an explicit allowedTools list and deterministic PR verification (#29).
+- PR-review worker does read-only reviews and always posts a deterministic verdict (#26, #24).
+
+## 2026-07-02
+
+### Added
+- Three-tier RBAC (super_admin / admin / member) with gated access, plus security and correctness fixes and dependency upgrades (#1).
+- WhatsApp Cloud adapter against the official Meta Cloud API (#6).
+- Knowledge curation tools: list, update, delete (#8).
+- Proactive onboarding: a Discord welcome message and an access-request queue (#10).
+- Multi-loop pipeline scaffolding: labels, docs, conventions (#2).
+
+### Fixed
+- `setup-labels` workflow: restored `contents:read` so checkout works (#3).

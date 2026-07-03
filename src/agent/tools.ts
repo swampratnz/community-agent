@@ -28,6 +28,7 @@ import {
 } from '../storage/repository.js';
 import { updatePolicy } from '../storage/policies.js';
 import { registerPendingAction } from './pendingActions.js';
+import { recentChanges } from './changelog.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
 function text(t: string, isError = false) {
@@ -165,6 +166,16 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           'The bot answers questions, remembers this conversation, and searches curated community knowledge. ' +
           'Admins additionally moderate, announce, and manage membership. Access is member-gated; admins can add members.',
       ),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const whatsNew = tool(
+    'whats_new',
+    "Report the bot's own recent updates from its changelog. Use this whenever " +
+      "someone asks what's new, what changed, what you've been upgraded with, or " +
+      'about your recent versions/releases.',
+    { limit: z.number().int().positive().max(10).optional().describe('How many recent changelog sections to include (default 2)') },
+    async (args) => text(await recentChanges(args.limit ?? 2)),
     { annotations: { readOnlyHint: true } },
   );
 
@@ -773,6 +784,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     version: '2.0.0',
     tools: [
       communityInfo,
+      whatsNew,
       knowledgeSearch,
       rememberSearch,
       forgetMe,
