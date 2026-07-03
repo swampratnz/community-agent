@@ -1,0 +1,7 @@
+dist/
+whatsapp-auth/
+node_modules/
+package-lock.json
+
+# Docs are hand-formatted prose/tables; keep Prettier scoped to code for now.
+*.md
