@@ -3,11 +3,32 @@ import { logger } from './logger.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
-import { verifyEmbeddingDim } from './storage/repository.js';
+import { purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
 import { WhatsAppCloudAdapter } from './platforms/whatsapp/cloudAdapter.js';
+
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * Age-based purge of raw `interactions` (SECURITY.md retention policy). Off
+ * unless INTERACTION_RETENTION_DAYS is set. Runs once immediately (so
+ * operators see it working without waiting a day) and then daily.
+ */
+function startRetentionPurge(): ReturnType<typeof setInterval> | null {
+  const days = config.behaviour.interactionRetentionDays;
+  if (days <= 0) return null;
+  const run = () => {
+    purgeOldInteractions(days)
+      .then((count) => logger.info({ days, count }, 'Purged old interactions (retention policy)'))
+      .catch((err) => logger.error({ err }, 'Interaction retention purge failed'));
+  };
+  run();
+  const timer = setInterval(run, DAY_MS);
+  timer.unref();
+  return timer;
+}
 
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
@@ -43,9 +64,13 @@ async function main(): Promise<void> {
   await Promise.all(adapters.map((a) => a.start()));
   logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
 
+  // 4b. Optional age-based retention purge (disabled unless configured).
+  const retentionTimer = startRetentionPurge();
+
   // 5. Graceful shutdown.
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
+    if (retentionTimer) clearInterval(retentionTimer);
     await Promise.allSettled(adapters.map((a) => a.stop()));
     await closeDb();
     process.exit(0);

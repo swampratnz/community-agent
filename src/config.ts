@@ -59,12 +59,21 @@ const EnvSchema = z.object({
   // Session hygiene: start a fresh Claude session past either cap.
   SESSION_MAX_TURNS: z.coerce.number().int().positive().default(30),
   SESSION_MAX_AGE_HOURS: z.coerce.number().positive().default(24),
+  // Age-based purge of raw `interactions` content. Unset/0 = disabled (no
+  // behaviour change on upgrade). knowledge/admin_audit/sessions are never
+  // touched by this — see storage/repository.ts:purgeOldInteractions.
+  INTERACTION_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
   LOG_PRETTY: z
     .string()
     .optional()
     .transform((v) => v === 'true'),
 });
+
+// Retention must stay well clear of the active-conversation window
+// (SESSION_MAX_AGE_HOURS) so a low value can't silently gut memory recall
+// for users still mid-conversation.
+const MIN_INTERACTION_RETENTION_DAYS = 7;
 
 const EnvSchemaChecked = EnvSchema.refine(
   (e) =>
@@ -79,7 +88,10 @@ const EnvSchemaChecked = EnvSchema.refine(
       'WHATSAPP_CLOUD_VERIFY_TOKEN, and WHATSAPP_CLOUD_APP_SECRET',
     path: ['WHATSAPP_PROVIDER'],
   },
-);
+).refine((e) => e.INTERACTION_RETENTION_DAYS === 0 || e.INTERACTION_RETENTION_DAYS >= MIN_INTERACTION_RETENTION_DAYS, {
+  message: `INTERACTION_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_INTERACTION_RETENTION_DAYS}`,
+  path: ['INTERACTION_RETENTION_DAYS'],
+});
 
 const parsed = EnvSchemaChecked.safeParse(process.env);
 if (!parsed.success) {
@@ -138,6 +150,7 @@ export const config = {
     dailyReplyLimitPerUser: env.DAILY_REPLY_LIMIT_PER_USER,
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
+    interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
   },
   log: {
     level: env.LOG_LEVEL,

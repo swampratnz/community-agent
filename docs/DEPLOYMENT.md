@@ -46,6 +46,10 @@ Set at least: `CLAUDE_CODE_OAUTH_TOKEN`, `DISCORD_BOT_TOKEN`,
 default — after startup, message the bot as a super admin and use
 `add_member` / `grant_admin` to onboard people.
 
+Consider also setting `INTERACTION_RETENTION_DAYS` (e.g. `90`) to
+automatically age-purge raw message content per your privacy policy — it's
+disabled by default so existing deployments see no behaviour change.
+
 ## 5. Run migrations
 ```bash
 cd /opt/community-agent

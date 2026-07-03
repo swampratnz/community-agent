@@ -105,8 +105,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
-  by `user_id` on request. Consider a retention policy (e.g. purge raw
-  `interactions` older than N months while keeping aggregate `knowledge`).
+  by `user_id` on request (`forget_me` / `purge_user_data`).
+- **Retention policy**: set `INTERACTION_RETENTION_DAYS` to age-purge raw
+  `interactions` (default unset = disabled, no behaviour change on upgrade).
+  A daily in-process timer (`src/index.ts`) deletes rows older than the
+  configured window and logs the count purged. Must be `0` or **at least 7
+  days** (enforced at startup) so a low value can't silently gut memory
+  recall for users still mid-conversation. `knowledge` (curated, durable
+  facts), `admin_audit` (accountability trail), and `sessions` (governed by
+  `SESSION_MAX_TURNS`/`_AGE_HOURS`) are never touched by this purge.
 
 ## Platform-specific notes
 
@@ -198,5 +205,6 @@ number could reach an unrelated person).
 - [ ] Postgres is not exposed to the network.
 - [ ] Bot has minimal Discord permissions.
 - [ ] Community is informed that interactions are logged.
-- [ ] A retention/deletion policy is defined.
+- [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
+      for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.
