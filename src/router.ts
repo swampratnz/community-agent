@@ -98,8 +98,8 @@ export class Router {
     if (gated && role === 'guest') {
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
-        recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch((err) =>
-          logger.warn({ err }, 'Failed to record access request'),
+        recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch(
+          (err) => logger.warn({ err }, 'Failed to record access request'),
         );
         if (!this.rateLimited(userKey)) {
           await this.send(adapter, msg.conversationId, GATED_NOTICE).catch((err) =>

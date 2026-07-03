@@ -65,11 +65,7 @@ export function extractText(msg: WAMessage): { text: string; contextInfo: proto.
   const m = unwrapMessage(msg.message);
   if (!m) return { text: '', contextInfo: null };
   const text =
-    m.conversation ??
-    m.extendedTextMessage?.text ??
-    m.imageMessage?.caption ??
-    m.videoMessage?.caption ??
-    '';
+    m.conversation ?? m.extendedTextMessage?.text ?? m.imageMessage?.caption ?? m.videoMessage?.caption ?? '';
   const contextInfo = m.extendedTextMessage?.contextInfo ?? null;
   return { text, contextInfo };
 }

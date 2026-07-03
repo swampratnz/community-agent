@@ -18,7 +18,10 @@ test('loadChangelog parses top-level ## sections and ignores ### subsections', a
     assert.ok(section.body.length > 0, 'section body should not be empty');
   }
   // Subsection markers stay in the body, not promoted to their own sections.
-  assert.ok(sections.some((s) => s.body.includes('### ')), 'expected ### subsections inside a section body');
+  assert.ok(
+    sections.some((s) => s.body.includes('### ')),
+    'expected ### subsections inside a section body',
+  );
 });
 
 test('recentChanges returns exactly the requested number of sections', async () => {

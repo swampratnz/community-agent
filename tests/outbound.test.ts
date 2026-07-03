@@ -50,7 +50,7 @@ test("code policy 'snippets' keeps short blocks, truncates long ones", () => {
   assert.match(out, /snippet truncated/);
 });
 
-test("SECURITY: an UNTERMINATED code fence cannot bypass the policy", () => {
+test('SECURITY: an UNTERMINATED code fence cannot bypass the policy', () => {
   // A sweet-talked model (or a cut-off reply) can open a fence and never
   // close it; the policy must treat it as running to end-of-text.
   const sneaky = 'Sure!\n```python\n' + Array.from({ length: 40 }, (_, i) => `line${i}`).join('\n');
@@ -94,16 +94,15 @@ test('filterOutbound strips em dashes end-to-end', () => {
 });
 
 test('filterOutbound composes redaction and code policy', () => {
-  const out = filterOutbound(
-    'Token: sk-ant-api03-abcdefghijklmnop\n```js\nconsole.log(1)\n```',
-    'off',
-  );
+  const out = filterOutbound('Token: sk-ant-api03-abcdefghijklmnop\n```js\nconsole.log(1)\n```', 'off');
   assert.ok(!out.includes('sk-ant-'));
   assert.match(out, /code omitted/);
 });
 
 test('convertMarkdownForWhatsApp: bold and headings and bullets', () => {
-  const out = convertMarkdownForWhatsApp('**bold** and __also bold__\n# Heading\n## Sub heading\n- one\n* two');
+  const out = convertMarkdownForWhatsApp(
+    '**bold** and __also bold__\n# Heading\n## Sub heading\n- one\n* two',
+  );
   assert.match(out, /\*bold\* and \*also bold\*/);
   assert.match(out, /^\*Heading\*$/m);
   assert.match(out, /^\*Sub heading\*$/m);

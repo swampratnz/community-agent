@@ -54,7 +54,10 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
         const step = stepUsageAlertTracker(tracker, stats.outbound, threshold);
         tracker = step.tracker;
         if (step.shouldAlert) {
-          logger.warn({ outbound: stats.outbound, threshold, costUsd: stats.costUsd }, 'Usage alert threshold crossed');
+          logger.warn(
+            { outbound: stats.outbound, threshold, costUsd: stats.costUsd },
+            'Usage alert threshold crossed',
+          );
           void alertSuperAdmins(
             adapters,
             `⚠️ Usage alert: ${stats.outbound} replies in the last 24h (threshold ${threshold}).` +
@@ -75,9 +78,9 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) =>
-        logger.warn({ err, platform: adapter.platform, id }, 'Usage alert DM failed'),
-      );
+      adapter
+        .sendDirectMessage(id, message)
+        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Usage alert DM failed'));
     }
   }
 }

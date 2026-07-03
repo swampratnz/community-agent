@@ -3,7 +3,12 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { healthcheck } from './storage/db.js';
-import { buildHealthzPayload, initialTracker, stepDisconnectTracker, type DisconnectTracker } from './healthState.js';
+import {
+  buildHealthzPayload,
+  initialTracker,
+  stepDisconnectTracker,
+  type DisconnectTracker,
+} from './healthState.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const CHECK_INTERVAL_MS = 30_000;
@@ -52,9 +57,9 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
-      adapter.sendDirectMessage(id, message).catch((err) =>
-        logger.warn({ err, platform: adapter.platform, id }, 'Health alert DM failed'),
-      );
+      adapter
+        .sendDirectMessage(id, message)
+        .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Health alert DM failed'));
     }
   }
 }

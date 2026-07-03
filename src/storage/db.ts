@@ -19,12 +19,10 @@ pool.on('error', (err) => {
  * Register the pgvector type parser on every new connection so `vector`
  * columns round-trip as JS number arrays.
  */
-pool.on('connect', async (client) => {
-  try {
-    await pgvector.registerTypes(client);
-  } catch (err) {
-    logger.error({ err }, 'Failed to register pgvector types');
-  }
+pool.on('connect', (client) => {
+  pgvector
+    .registerTypes(client)
+    .catch((err: unknown) => logger.error({ err }, 'Failed to register pgvector types'));
 });
 
 export async function healthcheck(): Promise<void> {

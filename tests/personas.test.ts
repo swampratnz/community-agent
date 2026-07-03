@@ -37,7 +37,11 @@ test('SECURITY: every persona keeps the security guidelines and human-style rule
 
 test('persona changes voice, not the role note (permissions come from tier)', () => {
   const asMember = buildSystemPrompt(caller, { codeAnswers: 'snippets' }, getPersona('dave'));
-  const asAdmin = buildSystemPrompt({ ...caller, role: 'admin' }, { codeAnswers: 'snippets' }, getPersona('dave'));
+  const asAdmin = buildSystemPrompt(
+    { ...caller, role: 'admin' },
+    { codeAnswers: 'snippets' },
+    getPersona('dave'),
+  );
   // Same persona, but the tier-derived role note differs — persona never sets permissions.
   assert.match(asMember, /MEMBER/);
   assert.match(asAdmin, /an ADMIN/);

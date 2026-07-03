@@ -30,7 +30,9 @@ test('senderPhoneNumber: DM with plain phone JID', () => {
 });
 
 test('senderPhoneNumber: LID DM resolves via senderPn', () => {
-  const msg = { key: { remoteJid: '99887766554433@lid', senderPn: '64211234567@s.whatsapp.net' } } as WAMessage;
+  const msg = {
+    key: { remoteJid: '99887766554433@lid', senderPn: '64211234567@s.whatsapp.net' },
+  } as WAMessage;
   assert.equal(senderPhoneNumber(msg, false), '64211234567');
 });
 

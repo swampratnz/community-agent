@@ -1,4 +1,9 @@
-import { createServer, type IncomingMessage as HttpRequest, type Server, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage as HttpRequest,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
@@ -12,12 +17,13 @@ import {
   type CloudInboundMessage,
 } from './cloudWire.js';
 import { chunkText } from '../textChunk.js';
-import type {
-  AdminAction,
-  IncomingMessage,
-  MessageHandler,
-  OutgoingMessage,
-  PlatformAdapter,
+import {
+  paramString,
+  type AdminAction,
+  type IncomingMessage,
+  type MessageHandler,
+  type OutgoingMessage,
+  type PlatformAdapter,
 } from '../types.js';
 
 const GRAPH_API_VERSION = 'v21.0';
@@ -233,7 +239,12 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
-  private async sendChunk(to: string, phoneNumberId: string, accessToken: string, body: string): Promise<void> {
+  private async sendChunk(
+    to: string,
+    phoneNumberId: string,
+    accessToken: string,
+    body: string,
+  ): Promise<void> {
     const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
       method: 'POST',
       headers: {
@@ -263,7 +274,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       case 'warn_user': {
         await this.sendDirectMessage(
           action.targetUserId ?? '',
-          `⚠️ Warning from NZ Claude Community: ${action.params?.reason ?? ''}`,
+          `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
       }
