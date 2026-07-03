@@ -208,6 +208,18 @@ export class BaileysAdapter implements PlatformAdapter {
   async sendMessage(out: OutgoingMessage): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text) });
+    // Clear the "composing" indicator now that the reply has actually sent.
+    // Best-effort: a presence update failing here must not affect the send
+    // that already succeeded above.
+    this.sock
+      .sendPresenceUpdate('paused', out.conversationId)
+      .catch((err) => logger.debug({ err }, 'Failed to clear WhatsApp presence'));
+  }
+
+  /** Best-effort "composing…" presence update while a turn is in flight. */
+  async sendTypingIndicator(message: IncomingMessage): Promise<void> {
+    if (!this.sock) return;
+    await this.sock.sendPresenceUpdate('composing', message.conversationId);
   }
 
   async sendDirectMessage(userId: string, text: string): Promise<void> {

@@ -194,6 +194,13 @@ export class DiscordAdapter implements PlatformAdapter {
     }
   }
 
+  /** Best-effort typing indicator; Discord auto-clears it after ~10s or on the next message. */
+  async sendTypingIndicator(message: IncomingMessage): Promise<void> {
+    const channel = await this.client.channels.fetch(message.conversationId);
+    if (!channel || !channel.isTextBased() || !('sendTyping' in channel)) return;
+    await channel.sendTyping();
+  }
+
   async sendDirectMessage(userId: string, text: string): Promise<void> {
     const user = await this.client.users.fetch(userId);
     for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
