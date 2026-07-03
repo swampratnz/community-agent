@@ -82,10 +82,39 @@ export function applyCodePolicy(text: string, policy: CodeAnswersPolicy): string
   return out.join('\n');
 }
 
+/**
+ * Rewrite em dashes into natural punctuation. The system prompt asks the model
+ * not to use them; this guarantees none reach the community even when it
+ * disobeys. Targets the em dash (U+2014) and horizontal bar (U+2015) only —
+ * the en dash (U+2013) is left alone so numeric ranges like "10–20" survive.
+ */
+export function stripEmDashes(line: string): string {
+  return line
+    .replace(/\s*[—―]\s*/g, ', ') // "a — b" / "a—b" -> "a, b"
+    .replace(/\s+,/g, ',') // tidy stray space-before-comma
+    .replace(/,\s*,/g, ',') // collapse doubled commas
+    .replace(/,\s*([.!?;:])/g, '$1'); // "word, ." -> "word."
+}
+
+/** Apply {@link stripEmDashes} to prose only, leaving fenced code blocks untouched. */
+export function stripEmDashesOutsideCode(text: string): string {
+  let inFence = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : stripEmDashes(line);
+    })
+    .join('\n');
+}
+
 export function filterOutbound(
   text: string,
   policy: CodeAnswersPolicy,
   knownSecrets: readonly string[] = [],
 ): string {
-  return applyCodePolicy(redactSecrets(text, knownSecrets), policy);
+  return stripEmDashesOutsideCode(applyCodePolicy(redactSecrets(text, knownSecrets), policy));
 }

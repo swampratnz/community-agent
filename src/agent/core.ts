@@ -11,6 +11,7 @@ import {
 } from '../storage/repository.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
+import { selectPersona } from './personas.js';
 import { buildToolServer } from './tools.js';
 
 export interface AgentReply {
@@ -85,7 +86,8 @@ export async function runAgentTurn(
   });
 
   const codeAnswers = await getCodeAnswersPolicy();
-  const systemPrompt = buildSystemPrompt(caller, { codeAnswers });
+  const persona = selectPersona({ text: userText });
+  const systemPrompt = buildSystemPrompt(caller, { codeAnswers }, persona);
   // Recalled messages are untrusted user content: they ride in the user turn
   // inside a clearly delimited block, never in the system prompt.
   const prompt =

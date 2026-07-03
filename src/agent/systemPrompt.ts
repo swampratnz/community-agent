@@ -1,5 +1,22 @@
 import type { CallerContext } from '../auth/rbac.js';
 import type { MemoryHit } from '../storage/repository.js';
+import { getPersona, type Persona } from './personas.js';
+
+/**
+ * Global voice rules that apply under EVERY persona and never override the
+ * security guidelines above them. Em-dash avoidance is also enforced
+ * deterministically in the outbound filter (agent/outbound.ts) — this is the
+ * "please" and that is the guarantee.
+ */
+const HUMAN_STYLE = `
+Voice & style (applies to every persona; never overrides the rules above):
+- Write like a real person, not an AI assistant. Natural, warm, conversational.
+- Use contractions, vary sentence length, and get to the point.
+- NEVER use em dashes. Use commas, full stops, or brackets (round parentheses) instead.
+- Avoid AI tells: no "As an AI", no needless hedging, no bullet lists for a
+  simple chat reply, no boilerplate "Let me know if you have any questions!".
+- Personality is seasoning, not length. Stay concise and genuinely helpful.
+`.trim();
 
 /**
  * Static description of the community the agent serves. Edit freely — this is
@@ -63,10 +80,18 @@ function codePolicyNote(policy: PromptPolicy['codeAnswers']): string {
   }
 }
 
-export function buildSystemPrompt(caller: CallerContext, policy: PromptPolicy): string {
+export function buildSystemPrompt(
+  caller: CallerContext,
+  policy: PromptPolicy,
+  persona: Persona = getPersona(null),
+): string {
   return [
     COMMUNITY_CHARTER,
+    // Security guidelines come BEFORE the persona/voice so the model treats
+    // them as higher-precedence than any character flavour.
     GUIDELINES,
+    `Persona:\n${persona.voice}`,
+    HUMAN_STYLE,
     `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${caller.userName} (${caller.role})`,
     ROLE_NOTES[caller.role],
     codePolicyNote(policy.codeAnswers),
