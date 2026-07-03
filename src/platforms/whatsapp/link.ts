@@ -18,7 +18,9 @@ adapter.onMessage(() => {
 adapter
   .start()
   .then(() => {
-    logger.info('Waiting for QR scan… once "WhatsApp connected" appears you can Ctrl-C and start the service.');
+    logger.info(
+      'Waiting for QR scan… once "WhatsApp connected" appears you can Ctrl-C and start the service.',
+    );
   })
   .catch((err) => {
     logger.error({ err }, 'Linking failed');

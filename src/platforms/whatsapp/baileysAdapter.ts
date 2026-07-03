@@ -20,12 +20,13 @@ import {
   lidFallbackId,
   senderPhoneNumber,
 } from './wire.js';
-import type {
-  AdminAction,
-  IncomingMessage,
-  MessageHandler,
-  OutgoingMessage,
-  PlatformAdapter,
+import {
+  paramString,
+  type AdminAction,
+  type IncomingMessage,
+  type MessageHandler,
+  type OutgoingMessage,
+  type PlatformAdapter,
 } from '../types.js';
 
 const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
@@ -80,7 +81,7 @@ export class BaileysAdapter implements PlatformAdapter {
     if (!this.cachedVersion) {
       try {
         const { version } = await fetchLatestBaileysVersion();
-        this.cachedVersion = version as [number, number, number];
+        this.cachedVersion = version;
       } catch (err) {
         logger.warn({ err }, 'Could not fetch WA Web version; using Baileys default');
       }
@@ -94,11 +95,13 @@ export class BaileysAdapter implements PlatformAdapter {
       auth: state,
       printQRInTerminal: false,
       // Baileys is chatty; route its logs through pino at warn+.
-      logger: logger.child({ mod: 'baileys' }) as never,
+      logger: logger.child({ mod: 'baileys' }),
     });
     this.sock = sock;
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', () => {
+      saveCreds().catch((err: unknown) => logger.error({ err }, 'Failed to save Baileys credentials'));
+    });
 
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -271,7 +274,7 @@ export class BaileysAdapter implements PlatformAdapter {
       case 'warn_user': {
         await this.sendDirectMessage(
           action.targetUserId ?? '',
-          `⚠️ Warning from NZ Claude Community: ${action.params?.reason ?? ''}`,
+          `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
       }
@@ -283,7 +286,7 @@ export class BaileysAdapter implements PlatformAdapter {
       }
       case 'delete_message': {
         const groupJid = action.conversationId!;
-        const messageId = String(action.params?.messageId ?? '');
+        const messageId = paramString(action.params?.messageId);
         if (!messageId) throw new Error('delete_message requires params.messageId');
         // Revoking someone else's group message requires the author in the key.
         await this.sock.sendMessage(groupJid, {

@@ -23,7 +23,10 @@ async function getExtractor(): Promise<FeatureExtractor> {
       // Keep everything local/offline-friendly after first download.
       env.allowLocalModels = true;
       logger.info({ model: config.db.embeddingModel }, 'Loading embedding model');
-      const pipe = (await pipeline('feature-extraction', config.db.embeddingModel)) as unknown as FeatureExtractor;
+      const pipe = (await pipeline(
+        'feature-extraction',
+        config.db.embeddingModel,
+      )) as unknown as FeatureExtractor;
       logger.info('Embedding model ready');
       return pipe;
     })();

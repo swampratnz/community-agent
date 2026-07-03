@@ -67,9 +67,9 @@ async function notifySuperAdmins(
 ): Promise<void> {
   for (const id of superAdminIds(platform)) {
     if (id === excludeUserId) continue;
-    adapter.sendDirectMessage(id, `🔔 ${message}`).catch((err) =>
-      logger.warn({ err, id }, 'Super-admin alert failed'),
-    );
+    adapter
+      .sendDirectMessage(id, `🔔 ${message}`)
+      .catch((err) => logger.warn({ err, id }, 'Super-admin alert failed'));
   }
 }
 
@@ -174,7 +174,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     "Report the bot's own recent updates from its changelog. Use this whenever " +
       "someone asks what's new, what changed, what you've been upgraded with, or " +
       'about your recent versions/releases.',
-    { limit: z.number().int().positive().max(10).optional().describe('How many recent changelog sections to include (default 2)') },
+    {
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(10)
+        .optional()
+        .describe('How many recent changelog sections to include (default 2)'),
+    },
     async (args) => text(await recentChanges(args.limit ?? 2)),
     { annotations: { readOnlyHint: true } },
   );
@@ -188,7 +196,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       if (hits.length === 0) return text('No matching knowledge entries.');
       return text(
         hits
-          .map((h) => `- ${h.title ? `${h.title}: ` : ''}${h.content} (updated ${formatRelativeAge(h.updatedAt)})`)
+          .map(
+            (h) =>
+              `- ${h.title ? `${h.title}: ` : ''}${h.content} (updated ${formatRelativeAge(h.updatedAt)})`,
+          )
           .join('\n'),
       );
     },
@@ -269,18 +280,16 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'user_history');
       const allowed = await callerScope();
-      const rows = await userMessages(
-        caller.platform,
-        args.userId,
-        args.limit ?? 20,
-        allowed ?? undefined,
-      );
+      const rows = await userMessages(caller.platform, args.userId, args.limit ?? 20, allowed ?? undefined);
       if (rows.length === 0) return text('No history for that user (within your conversations).');
       return text(
         untrusted(
           `History for ${args.userId}`,
           rows
-            .map((r) => `[${r.createdAt.toISOString()}] (${r.conversationId}) ${r.direction}: ${r.content.slice(0, 200)}`)
+            .map(
+              (r) =>
+                `[${r.createdAt.toISOString()}] (${r.conversationId}) ${r.direction}: ${r.content.slice(0, 200)}`,
+            )
             .join('\n'),
         ),
       );
@@ -317,7 +326,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         return text(`Refusing: you are not a participant of conversation "${targetConversation}".`, true);
       }
       // Targets must be people/places the bot has actually seen.
-      if (targetConversation !== caller.conversationId && !(await isKnownConversation(caller.platform, targetConversation))) {
+      if (
+        targetConversation !== caller.conversationId &&
+        !(await isKnownConversation(caller.platform, targetConversation))
+      ) {
         return text(`Refusing: conversation "${targetConversation}" is unknown.`, true);
       }
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
@@ -414,7 +426,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     'list_knowledge',
     'Browse curated community knowledge entries directly (not semantic search) — for finding an entry to correct or retire. Admin only.',
     {
-      scope: z.string().optional().describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
+      scope: z
+        .string()
+        .optional()
+        .describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
       limit: z.number().optional().describe('Max entries (default 20)'),
       offset: z.number().optional().describe('Pagination offset (default 0)'),
     },
@@ -518,7 +533,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       assertAtLeast(caller.role, 'admin', 'question_digest');
       const allowed = await callerScope();
       const clusters = await recentQuestionClusters(allowed, args.days ?? 7, args.limit ?? 10);
-      if (clusters.length === 0) return text('No recurring questions in that window (within your conversations).');
+      if (clusters.length === 0)
+        return text('No recurring questions in that window (within your conversations).');
       return text(
         untrusted(
           'Recurring questions',
@@ -594,11 +610,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         targetUserId: args.userId,
         run: async () => {
           const removed = await removeMember(caller.platform, args.userId);
-          if (!removed) throw new Error('No member row removed (not a member, or an admin — revoke admin first).');
+          if (!removed)
+            throw new Error('No member row removed (not a member, or an admin — revoke admin first).');
           return 'membership removed';
         },
       });
-      return text(result === 'membership removed' ? `Removed ${args.userId} from members.` : `Failed: ${result}`, result !== 'membership removed');
+      return text(
+        result === 'membership removed' ? `Removed ${args.userId} from members.` : `Failed: ${result}`,
+        result !== 'membership removed',
+      );
     },
   );
 
@@ -736,17 +756,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
-  const resumeBot = tool(
-    'resume_bot',
-    'Resume the bot after a pause. Super admin only.',
-    {},
-    async () => {
-      assertAtLeast(caller.role, 'super_admin', 'resume_bot');
-      await updatePolicy('paused', false, caller.userId);
-      await audited({ actionKind: 'resume_bot', run: async () => 'resumed' });
-      return text('Bot resumed.');
-    },
-  );
+  const resumeBot = tool('resume_bot', 'Resume the bot after a pause. Super admin only.', {}, async () => {
+    assertAtLeast(caller.role, 'super_admin', 'resume_bot');
+    await updatePolicy('paused', false, caller.userId);
+    await audited({ actionKind: 'resume_bot', run: async () => 'resumed' });
+    return text('Bot resumed.');
+  });
 
   const setPolicy = tool(
     'set_policy',
@@ -761,7 +776,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         return text("code_answers must be 'off', 'snippets' or 'full'.", true);
       }
       await updatePolicy(args.key, args.value, caller.userId);
-      await audited({ actionKind: 'set_policy', params: { key: args.key, value: args.value }, run: async () => 'updated' });
+      await audited({
+        actionKind: 'set_policy',
+        params: { key: args.key, value: args.value },
+        run: async () => 'updated',
+      });
       return text(`Policy ${args.key} set to "${args.value}".`);
     },
   );

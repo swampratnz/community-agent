@@ -215,10 +215,7 @@ export async function setClaudeSessionId(
 }
 
 /** Drop a stored session id (e.g. after a failed resume) so the next turn starts fresh. */
-export async function clearClaudeSessionId(
-  platform: Platform,
-  conversationId: string,
-): Promise<void> {
+export async function clearClaudeSessionId(platform: Platform, conversationId: string): Promise<void> {
   await pool.query(
     `UPDATE sessions SET claude_session_id = NULL, updated_at = now()
       WHERE platform = $1 AND conversation_id = $2`,
@@ -231,10 +228,7 @@ export async function clearClaudeSessionId(
  * Used to stop privileged tools from targeting arbitrary ids (e.g. messaging
  * any phone number on WhatsApp).
  */
-export async function isKnownConversation(
-  platform: Platform,
-  conversationId: string,
-): Promise<boolean> {
+export async function isKnownConversation(platform: Platform, conversationId: string): Promise<boolean> {
   const { rows } = await pool.query(
     `SELECT 1 FROM interactions WHERE platform = $1 AND conversation_id = $2 LIMIT 1`,
     [platform, conversationId],
@@ -332,7 +326,12 @@ export async function searchKnowledge(
       LIMIT $2`,
     [pgvector.toSql(queryVec), topK],
   );
-  return rows.map((r) => ({ title: r.title, content: r.content, similarity: Number(r.similarity), updatedAt: r.updated_at }));
+  return rows.map((r) => ({
+    title: r.title,
+    content: r.content,
+    similarity: Number(r.similarity),
+    updatedAt: r.updated_at,
+  }));
 }
 
 export interface KnowledgeEntry {
@@ -345,9 +344,9 @@ export interface KnowledgeEntry {
 }
 
 /** Browse knowledge entries directly (as opposed to semantic search), optionally filtered by scope. */
-export async function listKnowledge(input: { scope?: string; limit?: number; offset?: number } = {}): Promise<
-  KnowledgeEntry[]
-> {
+export async function listKnowledge(
+  input: { scope?: string; limit?: number; offset?: number } = {},
+): Promise<KnowledgeEntry[]> {
   const params: unknown[] = [];
   let scopeClause = '';
   if (input.scope) {
@@ -382,10 +381,9 @@ export async function updateKnowledge(input: {
   content?: string;
   scope?: string;
 }): Promise<boolean> {
-  const { rows: existingRows } = await pool.query(
-    `SELECT title, content FROM knowledge WHERE id = $1`,
-    [input.id],
-  );
+  const { rows: existingRows } = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [
+    input.id,
+  ]);
   if (existingRows.length === 0) return false;
 
   const title = input.title !== undefined ? input.title : existingRows[0].title;
@@ -417,10 +415,7 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
 
 export type StoredRole = 'admin' | 'member';
 
-export async function getMemberRole(
-  platform: Platform,
-  userId: string,
-): Promise<StoredRole | null> {
+export async function getMemberRole(platform: Platform, userId: string): Promise<StoredRole | null> {
   const { rows } = await pool.query(
     `SELECT role FROM community_users WHERE platform = $1 AND platform_user_id = $2`,
     [platform, userId],
@@ -523,10 +518,9 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
         AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))`,
     [platform, userId],
   );
-  const { rowCount: knowledge } = await pool.query(
-    `DELETE FROM knowledge WHERE source_user_id = $1`,
-    [userId],
-  );
+  const { rowCount: knowledge } = await pool.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
+    userId,
+  ]);
   return (messages ?? 0) + (knowledge ?? 0);
 }
 
@@ -576,7 +570,13 @@ export async function recentAuditEntries(limit = 20): Promise<
 
 /** action_kinds an admin-tier `moderation_history` read may surface — allow-list so a
  * future privileged kind (e.g. another `grant_*`) is excluded by default, not by omission. */
-const MODERATION_ACTION_KINDS = ['warn_user', 'timeout_user', 'kick_user', 'delete_message', 'announce'] as const;
+const MODERATION_ACTION_KINDS = [
+  'warn_user',
+  'timeout_user',
+  'kick_user',
+  'delete_message',
+  'announce',
+] as const;
 
 /**
  * Admin-tier view of moderation actions, scoped to `conversationIds` (null = super
@@ -802,9 +802,7 @@ export async function recentQuestionClusters(
   for (const row of rows) {
     const vec = row.embedding as number[] | null;
     if (!vec) continue;
-    const match = clusters.find(
-      (c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD,
-    );
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
     if (match) {
       match.count += 1;
     } else {

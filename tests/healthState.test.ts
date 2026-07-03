@@ -5,7 +5,12 @@ import { buildHealthzPayload, initialTracker, stepDisconnectTracker } from '../s
 const AFTER_MS = 5 * 60_000; // 5 minutes
 
 test('stepDisconnectTracker: connected never alerts', () => {
-  const { tracker, shouldAlert, justReconnected } = stepDisconnectTracker(initialTracker(), true, 0, AFTER_MS);
+  const { tracker, shouldAlert, justReconnected } = stepDisconnectTracker(
+    initialTracker(),
+    true,
+    0,
+    AFTER_MS,
+  );
   assert.deepEqual(tracker, { disconnectedSince: null, alerted: false });
   assert.equal(shouldAlert, false);
   assert.equal(justReconnected, false);

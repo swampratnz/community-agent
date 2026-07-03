@@ -63,7 +63,13 @@ test('extractMessages: normalises a well-formed text message', () => {
             value: {
               contacts: [{ profile: { name: 'Jamie' }, wa_id: '64211234567' }],
               messages: [
-                { from: '64211234567', id: 'wamid.1', timestamp: '1700000000', type: 'text', text: { body: 'kia ora' } },
+                {
+                  from: '64211234567',
+                  id: 'wamid.1',
+                  timestamp: '1700000000',
+                  type: 'text',
+                  text: { body: 'kia ora' },
+                },
               ],
             },
           },
@@ -100,7 +106,13 @@ test('extractMessages: missing contact profile falls back to empty name', () => 
           {
             value: {
               messages: [
-                { from: '64211234567', id: 'wamid.1', timestamp: '1700000000', type: 'text', text: { body: 'hi' } },
+                {
+                  from: '64211234567',
+                  id: 'wamid.1',
+                  timestamp: '1700000000',
+                  type: 'text',
+                  text: { body: 'hi' },
+                },
               ],
             },
           },

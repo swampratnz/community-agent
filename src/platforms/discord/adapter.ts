@@ -13,12 +13,13 @@ import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
 import { chunkText } from '../textChunk.js';
-import type {
-  AdminAction,
-  IncomingMessage,
-  MessageHandler,
-  OutgoingMessage,
-  PlatformAdapter,
+import {
+  paramString,
+  type AdminAction,
+  type IncomingMessage,
+  type MessageHandler,
+  type OutgoingMessage,
+  type PlatformAdapter,
 } from '../types.js';
 
 const MAX_DISCORD_LEN = 2000;
@@ -26,7 +27,7 @@ const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
 const WELCOME_MESSAGE =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
-  "but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here " +
+  'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
   'and an admin will see your request.';
 
 export class DiscordAdapter implements PlatformAdapter {
@@ -113,8 +114,7 @@ export class DiscordAdapter implements PlatformAdapter {
     const botId = this.client.user?.id;
     const mentioned = botId ? message.mentions.users.has(botId) : false;
     const repliedToBot =
-      message.reference?.messageId != null &&
-      (await this.isReplyToBot(message).catch(() => false));
+      message.reference?.messageId != null && (await this.isReplyToBot(message).catch(() => false));
 
     // Strip the bot mention from the text for a clean prompt.
     const cleanText = botId
@@ -238,18 +238,18 @@ export class DiscordAdapter implements PlatformAdapter {
       case 'timeout_user': {
         const member = await guild.members.fetch(action.targetUserId!);
         const minutes = Number(action.params?.durationMinutes ?? 10);
-        await member.timeout(minutes * 60_000, String(action.params?.reason ?? 'No reason given'));
+        await member.timeout(minutes * 60_000, paramString(action.params?.reason, 'No reason given'));
         return `Timed out ${member.user.tag} for ${minutes} minute(s).`;
       }
       case 'kick_user': {
         const member = await guild.members.fetch(action.targetUserId!);
-        await member.kick(String(action.params?.reason ?? 'No reason given'));
+        await member.kick(paramString(action.params?.reason, 'No reason given'));
         return `Kicked ${member.user.tag}.`;
       }
       case 'delete_message': {
         const channel = await this.client.channels.fetch(action.conversationId!);
         if (!channel || !channel.isTextBased()) throw new Error('Channel not found or not text-based');
-        const messageId = String(action.params?.messageId ?? '');
+        const messageId = paramString(action.params?.messageId);
         if (!messageId) throw new Error('delete_message requires params.messageId');
         const msg = await channel.messages.fetch(messageId);
         await msg.delete();
@@ -259,7 +259,7 @@ export class DiscordAdapter implements PlatformAdapter {
         // A "warn" is a DM to the user; recorded in the audit log by the caller.
         await this.sendDirectMessage(
           action.targetUserId!,
-          `⚠️ Warning from NZ Claude Community moderators: ${action.params?.reason ?? ''}`,
+          `⚠️ Warning from NZ Claude Community moderators: ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
       }
