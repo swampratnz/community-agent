@@ -42,7 +42,10 @@ jobs:
     # Only react to the approved label; ignore every other label event.
     if: github.event.label.name == 'status:approved'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Wall-clock guard sized to the turn cap below: ~7s/turn observed means
+    # 300 turns can legitimately run ~40 min; 60 keeps headroom without
+    # letting a hung run camp on the concurrency slot all day.
+    timeout-minutes: 60
     env:
       # secrets are allowed in job-level env; this keeps the action step inert
       # until the token exists, so the workflow is safe to merge beforehand.
@@ -94,13 +97,14 @@ jobs:
           # (potentially adversarial) issue content, so we keep the shell
           # surface minimal — file rewrites go through Edit/Write and tracked
           # deletions through `git rm` (covered by Bash(git:*)).
-          # A full implement→typecheck/test/build→git→PR→relabel cycle for even
-          # a small proposal runs past 40 turns once test/build iteration is
-          # counted (issue #27's run hit error_max_turns at turn 41 with zero
-          # permission denials). timeout-minutes: 45 is the real wall-clock
-          # guard; 80 turns fits comfortably inside it (~5 min for ~40 turns).
+          # Turn-cap history: 40 died at turn 41 on a small 4-file proposal
+          # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
+          # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
+          # turns fast). 300 gives real proposals room to finish; the
+          # timeout-minutes above stays the wall-clock guard (~7s/turn
+          # observed, so 300 turns ≈ 40 min worst case).
           claude_args: |
-            --max-turns 80
+            --max-turns 300
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
