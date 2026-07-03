@@ -8,6 +8,7 @@ import {
   clearAccessRequest,
   deleteKnowledge,
   demoteAdmin,
+  getMemberRole,
   isKnownConversation,
   isKnownUser,
   listAccessRequests,
@@ -71,6 +72,30 @@ async function notifySuperAdmins(
       .sendDirectMessage(id, `🔔 ${message}`)
       .catch((err) => logger.warn({ err, id }, 'Super-admin alert failed'));
   }
+}
+
+const MEMBER_APPROVED_MESSAGE =
+  "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
+  'Feel free to message the bot here anytime.';
+
+/**
+ * Best-effort confirmation DM for a member grant. Fires only on an actual
+ * transition into membership (`wasAlreadyMember` false) so re-running
+ * `add_member` on an existing member/admin doesn't re-send it. A failed DM
+ * (closed DMs, WhatsApp 24h window, etc.) is logged and swallowed — the
+ * membership grant itself is the source of truth, never blocked on this.
+ * Exported separately from the `add_member` tool so it's unit-testable
+ * without the MCP tool-call transport.
+ */
+export async function notifyMemberApproved(
+  adapter: PlatformAdapter,
+  userId: string,
+  wasAlreadyMember: boolean,
+): Promise<void> {
+  if (wasAlreadyMember) return;
+  await adapter
+    .sendDirectMessage(userId, MEMBER_APPROVED_MESSAGE)
+    .catch((err) => logger.warn({ err, userId }, 'Approval DM failed'));
 }
 
 /**
@@ -579,6 +604,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'add_member');
       const userId = args.userId.trim();
+      const wasAlreadyMember = (await getMemberRole(caller.platform, userId)) !== null;
       const finalRole = await upsertMember({
         platform: caller.platform,
         userId,
@@ -595,6 +621,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       await clearAccessRequest(caller.platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
+      await notifyMemberApproved(adapter, userId, wasAlreadyMember);
       return text(`Added ${args.displayName ?? args.userId} as ${finalRole} on ${caller.platform}.`);
     },
   );
