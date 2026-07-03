@@ -54,11 +54,21 @@ jobs:
             and especially SECURITY — this bot has an RBAC + prompt-injection surface,
             so scrutinise: tool gating / tier checks, identity-from-platform-only,
             outbound filtering + secret redaction, SQL conversation scoping, and the
-            confirm-before-destructive flow. Check CI status and test coverage.
+            confirm-before-destructive flow. Check test coverage.
 
-            Leave concise inline review comments. Approve if it's clean; otherwise
-            request changes. Do NOT merge. If the change is architecturally significant
-            or ambiguous, add the `needs-human` label and summarise the decision needed.
+            ALWAYS finish by posting exactly ONE top-level comment on the PR with
+            your verdict, even when the PR is clean, so there is a visible record.
+            Structure it as:
+            - First line: "PR review (automated):"
+            - A one-line verdict: "LGTM, looks good and ready for a human to merge",
+              or "Changes requested", or "Needs a human decision".
+            - Then the findings as short bullets, or "No issues found." if clean.
+            Additionally leave inline comments for any specific line-level issues.
+
+            Do NOT rely on GitHub's formal Approve review state (it is unreliable for
+            an automated actor); the top-level comment IS your verdict. Never merge —
+            a human merges. If the change is architecturally significant or ambiguous,
+            also add the `needs-human` label and say why in the comment.
           claude_args: |
             --max-turns 20
             --model sonnet

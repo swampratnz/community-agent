@@ -93,7 +93,7 @@ cheap.
 Each iteration:
 1. List open PRs. For each with new commits or unaddressed review threads since you last looked, review the diff for correctness, security (community bot with RBAC + prompt-injection surface — scrutinise auth, tool gating, outbound filtering, SQL scoping), and test coverage.
 2. Leave concise inline comments; approve if clean, else request changes. Check CI and note failures.
-3. Never merge. If a PR is ready, comment "LGTM — ready for human merge" and leave it.
+3. Never merge. ALWAYS post one top-level verdict comment even when clean (e.g. "LGTM, ready for a human to merge"), so there's a visible record; don't rely on GitHub's Approve state.
 4. If a change is architecturally significant or ambiguous, add the `needs-human` label and summarise the decision needed.
 If no PRs need attention, do nothing and end the turn. Slow cadence; you are also woken by PR webhooks.
 ```
