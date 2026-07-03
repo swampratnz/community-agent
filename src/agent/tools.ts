@@ -741,6 +741,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       const s = await usageStats(args.days ?? 7);
       return text(
         `Last ${args.days ?? 7} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+          `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
           `Top users:\n${s.topUsers.map((u) => `- ${u.userName ?? u.userId}: ${u.messages} msgs`).join('\n') || '- none'}`,
       );
     },

@@ -636,6 +636,7 @@ export async function usageStats(days = 7): Promise<{
   outbound: number;
   costUsd: number;
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
+  costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
 }> {
   const interval = `${days} days`;
   const { rows: totals } = await pool.query(
@@ -653,11 +654,19 @@ export async function usageStats(days = 7): Promise<{
       GROUP BY user_id ORDER BY n DESC LIMIT 5`,
     [interval],
   );
+  const { rows: byRole } = await pool.query(
+    `SELECT role, coalesce(sum(cost_usd), 0) AS cost, count(*) AS n
+       FROM interactions
+      WHERE direction = 'outbound' AND created_at > now() - $1::interval
+      GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
+    [interval],
+  );
   return {
     inbound: Number(totals[0].inbound),
     outbound: Number(totals[0].outbound),
     costUsd: Number(totals[0].cost),
     topUsers: top.map((r) => ({ userId: r.user_id, userName: r.user_name, messages: Number(r.n) })),
+    costByRole: byRole.map((r) => ({ role: r.role, costUsd: Number(r.cost), replies: Number(r.n) })),
   };
 }
 
