@@ -11,8 +11,9 @@ name: Pipeline build worker
 #   2. Add repo secret CLAUDE_CODE_OAUTH_TOKEN (Settings → Secrets → Actions).
 #
 # COST: every run draws on the SAME Max pool as the production bot and every
-# other session. `concurrency` serialises builds (enforces WIP=1) and
-# `--max-turns` + `timeout-minutes` bound a single run.
+# other session. `concurrency` is now per-issue (see below), so distinct
+# issues build in parallel; `--max-turns` + `timeout-minutes` bound a single
+# run, and releasing issues in small batches bounds total parallel draw.
 #
 # WHY the explicit allowedTools + verify step: an earlier run finished with
 # conclusion=success but 12 permission denials and no branch/PR/relabel — the
@@ -27,8 +28,14 @@ on:
   issues:
     types: [labeled]
 
+# Per-issue concurrency: distinct approved issues build in PARALLEL (faster
+# backlog drain), while re-triggering the SAME issue queues instead of
+# double-running (kills duplicate PRs). GitHub can't express a hard "max N
+# concurrent", so throughput is governed by how many issues are released at
+# once; every run still draws on the shared Max pool, so release in small
+# batches to avoid exhausting the weekly token allowance.
 concurrency:
-  group: pipeline-build
+  group: pipeline-build-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 permissions:
