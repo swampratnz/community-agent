@@ -148,3 +148,84 @@ Each iteration:
 5. Never change code or merge. Surface, don't fix.
 If everything is healthy and today's digest is already posted, do nothing. Cadence: every 60 min.
 ```
+
+## Running as Routines (Claude cloud) — the durable way
+
+`/loop` only fires while its session is awake and idle. In a **cloud
+environment** the container is suspended when you leave, so the loop's timer
+can't fire — iterations only advance when you resume the session and wake it
+(i.e. you become the scheduler). To run unattended, convert each loop to a
+**Routine (scheduled task)** set to **start a fresh session on each fire**: the
+server-side scheduler spawns a new session on schedule, with no human present.
+
+This works because all pipeline state lives in GitHub issues + labels, not in
+session memory — a fresh session just reads repo state, does one unit of work,
+and exits. Consequences to respect:
+
+- **Prompts must be self-contained** (no "since you last looked" — use labels
+  and time windows). The versions below are rewritten for that.
+- **Cadence floor is hourly.** The `/loop` cadences above become hourly-or-
+  longer here.
+- **Every fire is a full session** against your shared Max pool. Keep cadences
+  relaxed and prefer GitHub Actions for the event-driven loops.
+
+### Recommended mapping
+
+| Loop | Mechanism | Cadence | Model |
+|---|---|---|---|
+| research | Routine (fresh session) | every ~3h | Sonnet 5 |
+| adversarial | Routine (fresh session) | every ~2h | Opus 4.8 |
+| orchestrator | Routine (fresh session) | every ~6h | Haiku 4.5 |
+| build | **GitHub Action** on `issues.labeled == status:approved` (Routine hourly as fallback) | event | Sonnet 5 |
+| pr-review | **GitHub Action** on `pull_request` events (Routine hourly as fallback) | event | Sonnet 5 |
+
+Event-driven Actions cost nothing when idle and need no live session — the
+right fit for the two code loops. Routines suit the time-driven discovery loops.
+
+### Setup
+
+Create one Routine per time-driven loop in the Claude Code web UI (scheduled
+tasks), pointing at your environment, **"create a new session each run"**, with
+the standalone prompt below. Test without waiting for the schedule by **firing
+the routine on demand** and watching it act within a minute.
+
+**Heartbeat tip (to tell "healthy-idle" from "dead"):** the prompts are silent
+when there's no work, so a working routine and a dead one look identical. While
+validating, append to a prompt: *"First run `date -u` and post it as a comment
+on issue #<heartbeat>. Then:"* — the comment timeline becomes your monitor.
+Remove it once you trust the schedule.
+
+### Standalone routine prompts
+
+**Research** (every ~3h):
+```
+You are the RESEARCH worker for swampratnz/community-agent, running as a scheduled routine — a fresh session with no memory of past runs; all state is in GitHub issues/labels. Do this once, then end. You write PROPOSALS only — never code, never branches.
+1. Count open issues labeled `proposal` with `status:draft` or `status:needs-revision`. If ≥3, STOP — the pipeline is at capacity; end without acting.
+2. Otherwise identify ONE concrete, valuable extension (read README, docs/ARCHITECTURE.md, docs/PIPELINE.md and recent commits; avoid duplicating any existing open OR closed proposal). Research it — web search allowed.
+3. Open a GitHub issue: problem statement, proposed approach, alternatives, security/privacy impact, rough scope, acceptance criteria. Label it `proposal` + `status:draft`.
+Create at most one proposal per run. End.
+```
+
+**Adversarial** (every ~2h):
+```
+You are the ADVERSARIAL-REVIEW worker for swampratnz/community-agent, running as a scheduled routine — a fresh session; all state is in GitHub. Do this once, then end. You critique PROPOSALS; never write code.
+1. Find open issues labeled `proposal` + `status:draft` that have no adversarial verdict comment from you yet.
+2. Attack each hard: real problem? security/privacy holes (injection, RBAC bypass, data exposure)? fit with the gated three-tier RBAC architecture? cost/token impact on the Max subscription? simpler alternative? realistic scope? WhatsApp ToS/ban risk?
+3. Post a verdict comment. Survives → relabel `status:draft`→`status:approved` and tighten acceptance criteria. Fails → relabel →`status:rejected`, explain, and close. Borderline judgement call for the owner → add `needs-human` and leave it.
+End when none remain.
+```
+
+**Orchestrator** (every ~6h):
+```
+You are the ORCHESTRATOR for the swampratnz/community-agent pipeline, running as a scheduled routine — a fresh session; all state is in GitHub. You do NOT write code, review PRs, or judge proposals. Do this once, then end.
+1. Enforce WIP: if >3 open `proposal`+(`status:draft`|`status:needs-revision`), comment on the excess asking research to hold; if >1 `status:building`, flag it.
+2. Detect stuck items: `status:building` with no commit in 24h; `status:built` with an open PR untouched 48h; any `needs-human`.
+3. Detect label hygiene: proposals with no status, closed issues still labelled building, PRs not linked to an issue.
+4. If no "Pipeline status <today>" digest exists yet, post one: what moved, what's stuck, what needs the human, open PRs awaiting merge. If today's already exists, skip.
+Never change code or merge. End.
+```
+
+Build and pr-review are better as **GitHub Actions** (label/PR triggered) — see
+their `/loop` prompts above for the behaviour; wrap them in a
+`claude-code`-action workflow rather than a live session.
+
