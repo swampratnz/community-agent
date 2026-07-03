@@ -139,6 +139,16 @@ parsed before that check passes. `WHATSAPP_CLOUD_ACCESS_TOKEN` and
 delivery metadata for Cloud API traffic are additionally retained by Meta
 per their own terms, on top of this project's own storage.
 
+### `/healthz` endpoint
+Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this
+pipeline's "new surface is opt-in" pattern). Unauthenticated by design, but
+the response is boolean connectivity flags only (`{status, db, adapters}`) —
+no message content, no user identifiers, no internal ids. Bind to localhost
+and put a reverse proxy in front if exposing it externally, same guidance as
+the Cloud API webhook port above. The sustained-disconnect super-admin DM
+alert reuses the existing adapter `sendDirectMessage` path — no new
+privileged tool, no RBAC surface.
+
 ### Discord
 - Enable only the gateway intents the bot needs (Guilds, GuildMessages,
   MessageContent, GuildMembers, DirectMessages). **Both `MessageContent` and

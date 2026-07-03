@@ -67,6 +67,15 @@ export interface PlatformAdapter {
   /** Gracefully disconnect. */
   stop(): Promise<void>;
 
+  /**
+   * True if the platform connection is currently live. Backs the /healthz
+   * endpoint and sustained-disconnect alerting — steady-state signal, not a
+   * one-shot startup check. Webhook-driven adapters (no persistent
+   * connection to track) may always return true; document why in the
+   * implementation.
+   */
+  isConnected(): boolean;
+
   /** Register the handler invoked for every incoming message. */
   onMessage(handler: MessageHandler): void;
 

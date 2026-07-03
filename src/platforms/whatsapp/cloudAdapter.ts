@@ -93,6 +93,16 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
+  /**
+   * Always true while `start()` has succeeded: this is a stateless webhook
+   * receiver, not a persistent socket — there's no "connection" to drop the
+   * way Baileys/Discord have. Reflects whether the local HTTP listener is
+   * up, not whether Meta can currently reach it.
+   */
+  isConnected(): boolean {
+    return this.server !== null;
+  }
+
   /** Drop tracked senders whose last inbound message has aged out of the 24h window. */
   private sweepLastInboundAt(): void {
     const cutoff = Date.now() - CUSTOMER_SERVICE_WINDOW_MS;

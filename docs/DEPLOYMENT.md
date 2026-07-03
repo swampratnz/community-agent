@@ -50,6 +50,12 @@ Consider also setting `INTERACTION_RETENTION_DAYS` (e.g. `90`) to
 automatically age-purge raw message content per your privacy policy — it's
 disabled by default so existing deployments see no behaviour change.
 
+Sustained platform-disconnect alerting to super admins is always on
+(`HEALTH_ALERT_AFTER_MINUTES`, default 5 minutes). Optionally set
+`HEALTH_PORT` to expose an unauthenticated `GET /healthz` for an external
+uptime monitor — bind it to localhost and reverse-proxy it if you expose it
+publicly, same as the WhatsApp Cloud API webhook.
+
 ## 5. Run migrations
 ```bash
 cd /opt/community-agent

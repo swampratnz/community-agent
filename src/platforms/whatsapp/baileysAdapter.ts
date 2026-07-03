@@ -45,6 +45,7 @@ export class BaileysAdapter implements PlatformAdapter {
   private botNumber = '';
   private botLid = '';
   private stopped = false;
+  private connected = false;
   private reconnectAttempts = 0;
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
   /** WA Web version is fetched once and reused across reconnects. */
@@ -106,12 +107,14 @@ export class BaileysAdapter implements PlatformAdapter {
         qrcode.generate(qr, { small: true });
       }
       if (connection === 'open') {
+        this.connected = true;
         this.reconnectAttempts = 0;
         this.botNumber = jidLocalPart(sock.user?.id);
         this.botLid = jidLocalPart((sock.user as { lid?: string } | undefined)?.lid);
         logger.info({ number: this.botNumber }, 'WhatsApp connected');
       }
       if (connection === 'close') {
+        this.connected = false;
         const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
         logger.warn({ statusCode, loggedOut }, 'WhatsApp connection closed');
@@ -300,6 +303,11 @@ export class BaileysAdapter implements PlatformAdapter {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.connected = false;
     this.sock?.end(undefined);
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 }

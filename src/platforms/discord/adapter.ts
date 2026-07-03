@@ -35,6 +35,7 @@ export class DiscordAdapter implements PlatformAdapter {
   private readonly client: Client;
   private handler: MessageHandler | null = null;
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
+  private connected = false;
 
   constructor() {
     this.client = new Client({
@@ -63,14 +64,31 @@ export class DiscordAdapter implements PlatformAdapter {
     });
 
     this.client.once(Events.ClientReady, (c) => {
+      this.connected = true;
       logger.info({ user: c.user.tag }, 'Discord connected');
+    });
+    // Steady-state signal for /healthz + disconnect alerting — discord.js
+    // handles gateway resume internally, but a shard going down means we're
+    // not receiving messages, which is what these signals care about.
+    this.client.on(Events.ShardDisconnect, () => {
+      this.connected = false;
+      logger.warn('Discord shard disconnected');
+    });
+    this.client.on(Events.ShardResume, () => {
+      this.connected = true;
+      logger.info('Discord shard resumed');
     });
 
     await this.client.login(config.discord.botToken);
   }
 
   async stop(): Promise<void> {
+    this.connected = false;
     await this.client.destroy();
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 
   private async onDiscordMessage(message: Message): Promise<void> {
