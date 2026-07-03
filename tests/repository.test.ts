@@ -171,7 +171,9 @@ test('repository: knowledge CRUD — insert, search finds it, update re-embeds a
   const id = await saveKnowledge({ title: 'Meetup schedule', content: 'We meet monthly on the first Tuesday.', scope: `${RUN}-scope` });
 
   const foundBefore = await searchKnowledge('monthly meetup schedule', 20);
-  assert.ok(foundBefore.some((h) => h.content.includes('first Tuesday')), 'search finds the freshly-saved entry');
+  const hitBefore = foundBefore.find((h) => h.content.includes('first Tuesday'));
+  assert.ok(hitBefore, 'search finds the freshly-saved entry');
+  assert.ok(hitBefore.updatedAt, 'search result carries updatedAt');
 
   const beforeRow = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
   const updated = await updateKnowledge({ id, content: 'We meet monthly on the SECOND Tuesday now.' });
@@ -186,9 +188,12 @@ test('repository: knowledge CRUD — insert, search finds it, update re-embeds a
   );
 
   const foundAfterUpdate = await searchKnowledge('second Tuesday meetup', 20);
-  assert.ok(
-    foundAfterUpdate.some((h) => h.content.includes('SECOND Tuesday')),
-    're-embedding means search finds the new content',
+  const hitAfter = foundAfterUpdate.find((h) => h.content.includes('SECOND Tuesday'));
+  assert.ok(hitAfter, 're-embedding means search finds the new content');
+  assert.equal(
+    new Date(hitAfter.updatedAt).getTime(),
+    new Date(afterRow.rows[0].updated_at).getTime(),
+    'searchKnowledge reflects the bumped updatedAt from update_knowledge',
   );
 
   const deleted = await deleteKnowledge(id);
