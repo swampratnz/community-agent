@@ -94,8 +94,13 @@ jobs:
           # (potentially adversarial) issue content, so we keep the shell
           # surface minimal — file rewrites go through Edit/Write and tracked
           # deletions through `git rm` (covered by Bash(git:*)).
+          # A full implement→typecheck/test/build→git→PR→relabel cycle for even
+          # a small proposal runs past 40 turns once test/build iteration is
+          # counted (issue #27's run hit error_max_turns at turn 41 with zero
+          # permission denials). timeout-minutes: 45 is the real wall-clock
+          # guard; 80 turns fits comfortably inside it (~5 min for ~40 turns).
           claude_args: |
-            --max-turns 40
+            --max-turns 80
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
