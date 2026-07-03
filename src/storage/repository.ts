@@ -314,7 +314,10 @@ export async function saveKnowledge(input: {
   return Number(rows[0].id);
 }
 
-export async function searchKnowledge(query: string, topK = 5): Promise<Array<{ title: string | null; content: string; similarity: number }>> {
+export async function searchKnowledge(
+  query: string,
+  topK = 5,
+): Promise<Array<{ title: string | null; content: string; similarity: number; updatedAt: Date }>> {
   let queryVec: number[];
   try {
     queryVec = await embed(query);
@@ -322,14 +325,14 @@ export async function searchKnowledge(query: string, topK = 5): Promise<Array<{ 
     return [];
   }
   const { rows } = await pool.query(
-    `SELECT title, content, 1 - (embedding <=> $1) AS similarity
+    `SELECT title, content, updated_at, 1 - (embedding <=> $1) AS similarity
        FROM knowledge
       WHERE embedding IS NOT NULL
       ORDER BY embedding <=> $1
       LIMIT $2`,
     [pgvector.toSql(queryVec), topK],
   );
-  return rows.map((r) => ({ title: r.title, content: r.content, similarity: Number(r.similarity) }));
+  return rows.map((r) => ({ title: r.title, content: r.content, similarity: Number(r.similarity), updatedAt: r.updated_at }));
 }
 
 export interface KnowledgeEntry {
