@@ -1,0 +1,63 @@
+name: Pipeline PR review worker
+
+# Event-driven PR-REVIEW loop (see docs/PIPELINE.md). Reviews pull requests as
+# they open/update — no live Claude session needed. Subscription auth via
+# CLAUDE_CODE_OAUTH_TOKEN. Comments only; never merges.
+#
+# PREREQUISITES (until then inert): install the Claude GitHub App and add the
+# CLAUDE_CODE_OAUTH_TOKEN secret. See docs/PIPELINE.md.
+#
+# Fork-PR safety: GitHub withholds secrets from fork pull requests, so on a fork
+# PR HAS_TOKEN is empty and the review step is skipped — the subscription token
+# is never exposed to untrusted PRs. (This repo is private, so PRs are from
+# collaborators anyway.)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  # One review at a time per PR; a new push supersedes an in-flight review.
+  group: pipeline-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR review worker is inert. Add the secret + install the Claude GitHub App to enable."
+
+      - uses: actions/checkout@v4
+        if: env.HAS_TOKEN == 'true'
+
+      - name: Review the pull request
+        if: env.HAS_TOKEN == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are the PR-REVIEW worker for the NZ Claude Community agent.
+            Review pull request #${{ github.event.pull_request.number }}.
+
+            Read CLAUDE.md (security posture) first. Review the diff for correctness
+            and especially SECURITY — this bot has an RBAC + prompt-injection surface,
+            so scrutinise: tool gating / tier checks, identity-from-platform-only,
+            outbound filtering + secret redaction, SQL conversation scoping, and the
+            confirm-before-destructive flow. Check CI status and test coverage.
+
+            Leave concise inline review comments. Approve if it's clean; otherwise
+            request changes. Do NOT merge. If the change is architecturally significant
+            or ambiguous, add the `needs-human` label and summarise the decision needed.
+          claude_args: |
+            --max-turns 20
+            --model sonnet

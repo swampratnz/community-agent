@@ -1,0 +1,72 @@
+name: Pipeline build worker
+
+# Event-driven BUILD loop (see docs/PIPELINE.md). Fires when a proposal issue
+# is labelled `status:approved` and implements it on a branch + PR — no live
+# Claude session needed. Authenticated with a Claude Max subscription via the
+# CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`), so it draws on the
+# subscription, not a metered API key.
+#
+# PREREQUISITES to go live (until then this is inert and simply logs a note):
+#   1. Install the Claude GitHub App on this repo (lets the action comment/push).
+#   2. Add repo secret CLAUDE_CODE_OAUTH_TOKEN (Settings → Secrets → Actions).
+#
+# COST: every run draws on the SAME Max pool as the production bot and every
+# other session. `concurrency` serialises builds (enforces WIP=1) and
+# `--max-turns` + `timeout-minutes` bound a single run.
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: pipeline-build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  build:
+    # Only react to the approved label; ignore every other label event.
+    if: github.event.label.name == 'status:approved'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # secrets are allowed in job-level env; this keeps the action step inert
+      # until the token exists, so the workflow is safe to merge beforehand.
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — build worker is inert. Add the secret + install the Claude GitHub App to enable."
+
+      - uses: actions/checkout@v4
+        if: env.HAS_TOKEN == 'true'
+
+      - name: Build the approved proposal
+        if: env.HAS_TOKEN == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are the BUILD worker for the NZ Claude Community agent pipeline.
+            Issue #${{ github.event.issue.number }} was just labelled `status:approved`.
+
+            Read CLAUDE.md (conventions + security posture you must not regress) and
+            docs/PIPELINE.md (ownership rules) first, then:
+            1. Relabel this issue `status:building` and comment that you've claimed it.
+            2. Implement the approved proposal on a new branch. Match existing style,
+               write/extend tests, and make `npm run typecheck`, `npm test`, and
+               `npm run build` all pass.
+            3. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
+               summarising the change, its security/privacy impact, and how you verified
+               it. Then relabel the issue `status:built`.
+            4. Do NOT merge — a human merges. If the proposal turns out infeasible or
+               unsafe as specified, add the `needs-human` label and explain instead of
+               forcing it.
+            Implement only this one approved issue.
+          claude_args: |
+            --max-turns 40
+            --model sonnet
