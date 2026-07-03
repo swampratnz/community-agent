@@ -55,7 +55,10 @@ ownership rules:
 - **Only the build loop** writes code or opens PRs. PR-review comments only;
   research & adversarial touch issues only.
 - **No loop merges PRs** — a human merges.
-- WIP caps: ≤3 open `status:draft`, exactly ≤1 `status:building`.
+- WIP caps: ≤3 open `status:draft`. Builds run per-issue-parallel (the build
+  worker's `concurrency` is keyed by issue number), so multiple
+  `status:building` issues are allowed; keep the number in flight small (≈2)
+  since every run draws on the shared Max pool.
 - Coordinate only through issue labels; when blocked or ambiguous, add
   `needs-human` and stop rather than guess.
 - Everything traces to an issue number; the build session works in its own git
