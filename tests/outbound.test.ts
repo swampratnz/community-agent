@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyCodePolicy, filterOutbound, redactSecrets } from '../src/agent/outbound.js';
+import {
+  applyCodePolicy,
+  filterOutbound,
+  redactSecrets,
+  stripEmDashes,
+  stripEmDashesOutsideCode,
+} from '../src/agent/outbound.js';
 
 test('SECURITY: known secret values are always redacted', () => {
   const secret = 'super-secret-oauth-token-value-123';
@@ -60,6 +66,30 @@ test("SECURITY: an UNTERMINATED code fence cannot bypass the policy", () => {
 test("code policy 'full' leaves code untouched", () => {
   const text = '```py\n' + 'x = 1\n'.repeat(50) + '```';
   assert.equal(applyCodePolicy(text, 'full'), text);
+});
+
+test('stripEmDashes rewrites em dashes to natural punctuation', () => {
+  assert.equal(stripEmDashes('it works — mostly'), 'it works, mostly');
+  assert.equal(stripEmDashes('works—mostly'), 'works, mostly');
+  assert.equal(stripEmDashes('done — .'), 'done.');
+  // en dash ranges are left intact
+  assert.equal(stripEmDashes('lines 10–20'), 'lines 10–20');
+  // plain hyphens are untouched
+  assert.equal(stripEmDashes('opt-in flag'), 'opt-in flag');
+});
+
+test('em dashes inside code fences are left alone, prose is cleaned', () => {
+  const text = 'Kia ora — welcome!\n```js\nconst a = 1 — 2\n```\nlater — bye';
+  const out = stripEmDashesOutsideCode(text);
+  assert.ok(!out.split('```')[0].includes('—'), 'prose before the fence is cleaned');
+  assert.ok(out.includes('const a = 1 — 2'), 'code inside the fence is untouched');
+  assert.ok(!out.split('```')[2].includes('—'), 'prose after the fence is cleaned');
+});
+
+test('filterOutbound strips em dashes end-to-end', () => {
+  const out = filterOutbound('Sweet as — all sorted', 'full');
+  assert.ok(!out.includes('—'));
+  assert.match(out, /Sweet as, all sorted/);
 });
 
 test('filterOutbound composes redaction and code policy', () => {
