@@ -35,6 +35,14 @@ test('system prompt states the requester tier and untrusted-content rule', () =>
   assert.match(buildSystemPrompt({ ...caller, role: 'guest' }, { codeAnswers: 'snippets' }), /GUEST/);
 });
 
+test('system prompt instructs mirroring the member language, defaulting to NZ English', () => {
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  assert.match(prompt, /NZ English by default/);
+  assert.match(prompt, /reply in that\s+language instead/);
+  assert.match(prompt, /mixes languages/);
+  assert.match(prompt, /default back to NZ English/);
+});
+
 test('code policy note follows the policy value', () => {
   assert.match(buildSystemPrompt(caller, { codeAnswers: 'off' }), /do NOT write code/);
   assert.match(buildSystemPrompt(caller, { codeAnswers: 'snippets' }), /short illustrative snippets/);
