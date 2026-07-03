@@ -15,6 +15,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 const skip = hasDb ? false : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/config.js');
+const pgvector = (await import('pgvector/pg')).default;
 const {
   recordInteraction,
   userMessages,
@@ -25,6 +27,7 @@ const {
   updateKnowledge,
   deleteKnowledge,
   recordAdminAction,
+  recentQuestionClusters,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -232,4 +235,68 @@ test('SECURITY: repository: admin conversation scoping excludes conversations ou
   );
 
   await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [userId]);
+});
+
+test('repository: recentQuestionClusters groups near-duplicate embeddings, separates unrelated ones, and enforces count >= 2', { skip }, async () => {
+  const conversationId = `${RUN}-c-digest`;
+
+  // Hand-crafted vectors (not run through the real embedding model) so
+  // similarity is deterministic: two identical "same question" vectors
+  // cluster together; an orthogonal vector stays its own singleton cluster
+  // and is dropped by the count >= 2 filter.
+  const dim = config.db.embeddingDim;
+  const sameQuestionVec = new Array(dim).fill(0);
+  sameQuestionVec[0] = 1;
+  const unrelatedVec = new Array(dim).fill(0);
+  unrelatedVec[1] = 1;
+
+  const insertAddressed = (content: string, vec: number[]) =>
+    pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, embedding)
+       VALUES ($1,$2,$3,$4,'inbound',$5,true,$6)`,
+      ['discord', conversationId, `${RUN}-digest-user`, 'member', content, pgvector.toSql(vec)],
+    );
+
+  await insertAddressed('How do I reset my password?', sameQuestionVec);
+  await insertAddressed('I forgot my password, how do I reset it?', sameQuestionVec);
+  await insertAddressed('What time is the next meetup?', unrelatedVec);
+
+  const clusters = await recentQuestionClusters([conversationId], 7, 10);
+  assert.equal(clusters.length, 1, 'only the count >= 2 cluster survives; the singleton is dropped');
+  assert.equal(clusters[0].count, 2);
+  assert.equal(clusters[0].representative, 'How do I reset my password?', 'representative is the first message seen');
+
+  await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+});
+
+test('SECURITY: repository: recentQuestionClusters excludes conversations outside the given scope', { skip }, async () => {
+  const inScopeConvo = `${RUN}-c-digest-in`;
+  const outOfScopeConvo = `${RUN}-c-digest-out`;
+  const dim = config.db.embeddingDim;
+  const vec = new Array(dim).fill(0);
+  vec[2] = 1;
+
+  const insertAddressed = (conversationId: string, content: string) =>
+    pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, embedding)
+       VALUES ($1,$2,$3,$4,'inbound',$5,true,$6)`,
+      ['discord', conversationId, `${RUN}-digest-scope-user`, 'member', content, pgvector.toSql(vec)],
+    );
+
+  await insertAddressed(inScopeConvo, 'in-scope question A');
+  await insertAddressed(inScopeConvo, 'in-scope question B');
+  await insertAddressed(outOfScopeConvo, 'out-of-scope question A');
+  await insertAddressed(outOfScopeConvo, 'out-of-scope question B');
+
+  const scoped = await recentQuestionClusters([inScopeConvo], 7, 10);
+  assert.equal(scoped.length, 1, 'clusters only reflect the in-scope conversation');
+  assert.equal(scoped[0].count, 2);
+
+  const unscoped = await recentQuestionClusters(null, 7, 10);
+  const totalUnscoped = unscoped.reduce((n, c) => n + c.count, 0);
+  assert.ok(totalUnscoped >= 4, 'without a scope filter (super admin), both conversations contribute');
+
+  await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScopeConvo, outOfScopeConvo]]);
 });

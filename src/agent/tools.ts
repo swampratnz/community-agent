@@ -14,6 +14,7 @@ import {
   listKnowledge,
   purgeUserData,
   recentAuditEntries,
+  recentQuestionClusters,
   recordAdminAction,
   removeMember,
   saveKnowledge,
@@ -474,6 +475,28 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const questionDigest = tool(
+    'question_digest',
+    'Show recurring questions asked in your conversations over recent days (count >= 2), a signal for what should become a knowledge entry. Admin only.',
+    {
+      days: z.number().optional().describe('Window in days (default 7, max 30)'),
+      limit: z.number().optional().describe('Max clusters to return (default 10)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'question_digest');
+      const allowed = await callerScope();
+      const clusters = await recentQuestionClusters(allowed, args.days ?? 7, args.limit ?? 10);
+      if (clusters.length === 0) return text('No recurring questions in that window (within your conversations).');
+      return text(
+        untrusted(
+          'Recurring questions',
+          clusters.map((c, i) => `${i + 1}. (${c.count}x) ${c.representative.slice(0, 300)}`).join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -708,6 +731,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,
+      questionDigest,
       addMember,
       removeMemberTool,
       grantAdmin,
