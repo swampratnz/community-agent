@@ -238,7 +238,10 @@ Cloud API is 1:1-only (no groups), `adminCapabilities` only advertises
 outbound replies are only sent within Meta's 24h customer-service window
 (tracked in-process from the timestamp of the sender's last inbound
 message); sends outside that window fail with a clear error rather than
-being attempted.
+being attempted. Replies over Meta's 4096-char text limit are chunked into
+sequential messages (same `chunkText` helper Discord uses at its own
+2000-char limit), filtered as a whole before splitting so redaction can't be
+defeated by a chunk boundary.
 
 `WHATSAPP_ALLOWED_JIDS` is shared between both adapters but each entry can be
 either a bare phone-number digit string or a full Baileys-style JID
