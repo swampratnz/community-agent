@@ -11,6 +11,7 @@ import {
   verifySignature,
   type CloudInboundMessage,
 } from './cloudWire.js';
+import { chunkText } from '../textChunk.js';
 import type {
   AdminAction,
   IncomingMessage,
@@ -24,6 +25,8 @@ const GRAPH_API_VERSION = 'v21.0';
 const MAX_BODY_BYTES = 1_000_000;
 /** Free-form replies are only allowed within Meta's 24h customer-service window. */
 const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60_000;
+/** Meta rejects any text message body over 4096 chars; longer replies are chunked. */
+const WHATSAPP_CLOUD_MAX_LEN = 4096;
 /** How often to prune `lastInboundAt` entries older than the window, so long-running processes don't grow it forever. */
 const LAST_INBOUND_SWEEP_MS = 60 * 60_000;
 
@@ -220,7 +223,17 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       );
     }
 
-    const body = await this.filtered(text);
+    // A single window check and a single filter pass govern the whole reply;
+    // it's then split at Meta's 4096-char body limit and sent as sequential
+    // messages (mirrors Discord's chunking at its own 2000-char limit). If a
+    // chunk in the middle fails, earlier chunks have already been delivered
+    // and the throw propagates — same partial-failure semantics as Discord.
+    for (const chunk of chunkText(await this.filtered(text), WHATSAPP_CLOUD_MAX_LEN)) {
+      await this.sendChunk(to, phoneNumberId, accessToken, chunk);
+    }
+  }
+
+  private async sendChunk(to: string, phoneNumberId: string, accessToken: string, body: string): Promise<void> {
     const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
       method: 'POST',
       headers: {

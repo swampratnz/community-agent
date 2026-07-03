@@ -12,6 +12,7 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { chunkText } from '../textChunk.js';
 import type {
   AdminAction,
   IncomingMessage,
@@ -266,18 +267,4 @@ export class DiscordAdapter implements PlatformAdapter {
         throw new Error(`Unsupported Discord action: ${action.kind}`);
     }
   }
-}
-
-function chunkText(text: string, size: number): string[] {
-  if (text.length <= size) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > size) {
-    let cut = remaining.lastIndexOf('\n', size);
-    if (cut < size * 0.5) cut = size; // avoid tiny chunks if no newline near the limit
-    chunks.push(remaining.slice(0, cut));
-    remaining = remaining.slice(cut);
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
 }
