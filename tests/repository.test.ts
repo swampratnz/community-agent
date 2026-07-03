@@ -31,6 +31,7 @@ const {
   recordAdminAction,
   recentQuestionClusters,
   recentModerationEntries,
+  usageStats,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -430,5 +431,92 @@ test(
     assert.ok(clamped.length <= 100, 'limit is clamped to a sane maximum for a non-super-admin-only tool');
 
     await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+  },
+);
+
+test(
+  'repository: usageStats.costByRole aggregates cost_usd by role over outbound rows only, ordered deterministically',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-cost-role`;
+    const adminUser = `${RUN}-cost-admin`;
+    const memberUser = `${RUN}-cost-member`;
+    const guestUser = `${RUN}-cost-guest`;
+
+    const days = 1;
+    const before = await usageStats(days);
+    const beforeByRole = new Map(before.costByRole.map((r) => [r.role, r]));
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: adminUser,
+      role: 'admin',
+      direction: 'outbound',
+      content: 'admin reply 1',
+      costUsd: 2.5,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: adminUser,
+      role: 'admin',
+      direction: 'outbound',
+      content: 'admin reply 2',
+      costUsd: 1.5,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: memberUser,
+      role: 'member',
+      direction: 'outbound',
+      content: 'member reply',
+      costUsd: 0.25,
+    });
+    // Inbound-only role: costByRole is scoped to direction = 'outbound', so this
+    // must not create or bump a 'guest' entry.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: guestUser,
+      role: 'guest',
+      direction: 'inbound',
+      content: 'guest asks a question',
+    });
+
+    const after = await usageStats(days);
+    const afterByRole = new Map(after.costByRole.map((r) => [r.role, r]));
+
+    const adminBeforeCost = beforeByRole.get('admin')?.costUsd ?? 0;
+    const adminBeforeReplies = beforeByRole.get('admin')?.replies ?? 0;
+    const adminAfter = afterByRole.get('admin');
+    assert.ok(adminAfter, 'admin role appears after seeding outbound admin cost');
+    assert.equal(adminAfter.costUsd - adminBeforeCost, 4, 'admin cost sums the seeded 2.5 + 1.5');
+    assert.equal(adminAfter.replies - adminBeforeReplies, 2, 'admin reply count reflects both outbound rows');
+
+    const memberBeforeCost = beforeByRole.get('member')?.costUsd ?? 0;
+    const memberBeforeReplies = beforeByRole.get('member')?.replies ?? 0;
+    const memberAfter = afterByRole.get('member');
+    assert.ok(memberAfter, 'member role appears after seeding outbound member cost');
+    assert.equal(memberAfter.costUsd - memberBeforeCost, 0.25, 'member cost reflects the seeded 0.25');
+    assert.equal(memberAfter.replies - memberBeforeReplies, 1);
+
+    assert.deepEqual(
+      afterByRole.get('guest'),
+      beforeByRole.get('guest'),
+      'guest had only an inbound row in this test, so its costByRole entry (or absence) is unchanged — not a spurious zero-cost row',
+    );
+
+    for (let i = 1; i < after.costByRole.length; i++) {
+      const prev = after.costByRole[i - 1];
+      const curr = after.costByRole[i];
+      assert.ok(
+        prev.costUsd > curr.costUsd || (prev.costUsd === curr.costUsd && prev.role < curr.role),
+        'costByRole is ordered by cost_usd desc, then role asc as a deterministic tiebreaker',
+      );
+    }
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );
