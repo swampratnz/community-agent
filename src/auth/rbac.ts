@@ -42,6 +42,7 @@ export function assertAtLeast(role: Tier, min: Tier, action: string): void {
 /** Tools (mcp__community__*) available to members (and guests in open mode). */
 export const MEMBER_TOOLS = [
   'mcp__community__community_info',
+  'mcp__community__whats_new',
   'mcp__community__knowledge_search',
   'mcp__community__remember_search',
   'mcp__community__forget_me',
