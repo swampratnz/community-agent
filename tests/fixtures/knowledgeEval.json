@@ -1,0 +1,151 @@
+{
+  "_comment": "Golden-query regression set for knowledge_search (issue #62). Each query must be a PARAPHRASE of its expectedTitle entry's content — never a near-verbatim quote of the entry's title/content — otherwise retrieval passes trivially and the test asserts nothing. 'entries' includes distractor rows (topically adjacent, not targeted by any query) so the eval actually exercises near-duplicate shadowing. Queries marked core:true form the must-hit set (100% floor); all queries together form the aggregate set (>=80% floor). Fixtures are seeded/cleaned up per-run by tests/knowledgeEval.test.ts and must not depend on ambient DB contents.",
+  "entries": [
+    {
+      "title": "Getting Anthropic API access",
+      "content": "To use the Anthropic API you need to sign up for a developer account at console.anthropic.com and generate an API key from the dashboard before you can make any requests."
+    },
+    {
+      "title": "API rate limits",
+      "content": "New API accounts default to 50 requests per minute and 40000 tokens per minute; you can request a higher limit from support once you have some usage history."
+    },
+    {
+      "title": "Discord server rules",
+      "content": "Be respectful, no spam, no self-promotion outside the showcase channel, and keep discussion on topic for each channel."
+    },
+    {
+      "title": "How to link WhatsApp and Discord identities",
+      "content": "Message the bot with the link-whatsapp command and follow the one-time code flow to associate your WhatsApp number with your Discord account."
+    },
+    {
+      "title": "Meetup schedule",
+      "content": "The Auckland meetup group gets together on the first Tuesday of every month at 6pm at the usual venue."
+    },
+    {
+      "title": "Requesting admin role",
+      "content": "Admin roles are granted manually by an existing admin after you have been an active, trusted member of the community for at least a month."
+    },
+    {
+      "title": "Reporting a bug in the bot",
+      "content": "If the bot gives a wrong or unsafe answer, post the details in the feedback channel so an admin can review and correct the underlying knowledge entry."
+    },
+    {
+      "title": "Claude Agent SDK vs Anthropic API",
+      "content": "The Claude Agent SDK is a higher-level framework for building agents, while the raw Anthropic API is the lower-level HTTP interface that it calls under the hood."
+    },
+    {
+      "title": "Exporting your conversation history",
+      "content": "You can ask the bot to export everything it has stored about you, and an admin will send you a copy of your interaction history within a few days."
+    },
+    {
+      "title": "Deleting your data",
+      "content": "Members can ask the bot or an admin to permanently purge their stored messages and any knowledge entries sourced from them at any time."
+    },
+    {
+      "title": "Setting up local development",
+      "content": "Clone the repository, copy the example environment file, install dependencies, and run the migration script against a local Postgres instance before starting the bot."
+    },
+    {
+      "title": "Choosing between Discord and WhatsApp support",
+      "content": "Discord is best for open community discussion and searchable history, while WhatsApp suits members who prefer a phone-based, one-on-one channel."
+    },
+    {
+      "title": "API key rotation policy",
+      "content": "Rotate your API key roughly every ninety days by generating a replacement in the console and revoking the old one once traffic has moved over."
+    },
+    {
+      "title": "Community code of conduct",
+      "content": "All members must follow the code of conduct: be kind, no harassment of any kind, and never share someone else's private information without consent."
+    },
+    {
+      "title": "Billing and usage dashboards",
+      "content": "Your organization's console shows current spend and token usage broken down by day, which is useful for catching unexpected cost spikes early."
+    },
+    {
+      "title": "Choosing a Claude model for a new project",
+      "content": "Pick a smaller, faster model for high-volume simple tasks and reserve the largest model for work that genuinely needs deeper reasoning, since cost and latency scale with capability."
+    }
+  ],
+  "queries": [
+    {
+      "query": "how do I sign up so I can start calling the API",
+      "expectedTitle": "Getting Anthropic API access",
+      "core": true
+    },
+    {
+      "query": "what's the cap on how many requests I can send per minute",
+      "expectedTitle": "API rate limits",
+      "core": true
+    },
+    {
+      "query": "what are the guidelines for behaving in this server",
+      "expectedTitle": "Discord server rules",
+      "core": true
+    },
+    {
+      "query": "how do I connect my phone number to my discord account",
+      "expectedTitle": "How to link WhatsApp and Discord identities",
+      "core": true
+    },
+    {
+      "query": "when is the next in-person get-together",
+      "expectedTitle": "Meetup schedule",
+      "core": true
+    },
+    {
+      "query": "how does someone become a moderator here",
+      "expectedTitle": "Requesting admin role",
+      "core": true
+    },
+    {
+      "query": "the assistant gave me a wrong answer, who do I tell",
+      "expectedTitle": "Reporting a bug in the bot",
+      "core": true
+    },
+    {
+      "query": "what's the practical difference between using the SDK and hitting the API myself",
+      "expectedTitle": "Claude Agent SDK vs Anthropic API",
+      "core": true
+    },
+    {
+      "query": "can I get a copy of everything the bot has recorded about me",
+      "expectedTitle": "Exporting your conversation history",
+      "core": false
+    },
+    {
+      "query": "how do I get all my stored messages wiped for good",
+      "expectedTitle": "Deleting your data",
+      "core": false
+    },
+    {
+      "query": "what are the steps to run this project on my own machine",
+      "expectedTitle": "Setting up local development",
+      "core": false
+    },
+    {
+      "query": "should I reach the community through a group chat platform or a messaging app",
+      "expectedTitle": "Choosing between Discord and WhatsApp support",
+      "core": false
+    },
+    {
+      "query": "how often should I swap out my secret key for a new one",
+      "expectedTitle": "API key rotation policy",
+      "core": false
+    },
+    {
+      "query": "what's expected of members in terms of treating each other well",
+      "expectedTitle": "Community code of conduct",
+      "core": false
+    },
+    {
+      "query": "where can I see how much I've spent so far this month",
+      "expectedTitle": "Billing and usage dashboards",
+      "core": false
+    },
+    {
+      "query": "which model size makes sense for a simple high-throughput task",
+      "expectedTitle": "Choosing a Claude model for a new project",
+      "core": false
+    }
+  ]
+}
