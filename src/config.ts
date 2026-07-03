@@ -63,6 +63,11 @@ const EnvSchema = z.object({
   // behaviour change on upgrade). knowledge/admin_audit/sessions are never
   // touched by this — see storage/repository.ts:purgeOldInteractions.
   INTERACTION_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
+  // Sustained platform disconnect -> one debounced super-admin DM alert.
+  HEALTH_ALERT_AFTER_MINUTES: z.coerce.number().positive().default(5),
+  // /healthz endpoint (native http, no auth). Unset = disabled; bind to
+  // localhost via reverse proxy if you expose it, like the Cloud webhook.
+  HEALTH_PORT: z.coerce.number().int().positive().optional(),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
   LOG_PRETTY: z
     .string()
@@ -151,6 +156,8 @@ export const config = {
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
+    healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
+    healthPort: env.HEALTH_PORT,
   },
   log: {
     level: env.LOG_LEVEL,

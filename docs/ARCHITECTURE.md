@@ -52,6 +52,7 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/agent/auth.ts` | Forces Claude **subscription** auth via `CLAUDE_CODE_OAUTH_TOKEN`. |
 | `src/storage/*` | Postgres pool, schema, migrations, embeddings, repository. |
 | `src/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
+| `src/health.ts` / `src/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
 
 ## Memory & "learning"
 
@@ -153,6 +154,35 @@ a few seconds of overhead per answered message, growing with session length.
 If this becomes a problem: cap session length (start fresh after N turns), or
 move to the SDK's streaming-input mode with a persistent process per busy
 conversation.
+
+## Health & monitoring
+
+`Restart=always` (`deploy/community-agent.service`) and the startup
+`healthcheck()` only catch the process crashing or the DB being unreachable
+at boot — neither catches "process alive, one platform connection silently
+dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
+`src/health.ts` covers that steady-state gap:
+
+- **Sustained-disconnect alerting** (always on, no config to disable) — a
+  30s periodic check across every registered adapter's `isConnected()`. Past
+  `HEALTH_ALERT_AFTER_MINUTES` (default 5) of continuous disconnection, it
+  DMs configured super admins via whichever adapter(s) are still up and logs
+  at `error`. Debounced: one alert per outage, not one per check tick;
+  reconnecting clears the state silently (no "it's back!" spam).
+- **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
+  `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
+  whatsapp: boolean}}`. No message content or user ids in the response.
+  Intended for an external uptime monitor; bind to localhost and put a
+  reverse proxy in front if exposing it, same guidance as the Cloud API
+  webhook port.
+- `WhatsAppCloudAdapter.isConnected()` reflects whether its local HTTP
+  listener is up, not whether Meta can currently reach it — it's a
+  stateless webhook receiver with no persistent connection to track the way
+  Baileys/Discord have.
+
+The debounce/payload logic lives in `src/healthState.ts`, deliberately free
+of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`
+is the thin I/O wrapper around it).
 
 ## Switching WhatsApp providers
 
