@@ -14,6 +14,7 @@ import {
   listKnowledge,
   purgeUserData,
   recentAuditEntries,
+  recentModerationEntries,
   recentQuestionClusters,
   recordAdminAction,
   removeMember,
@@ -517,6 +518,27 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const moderationHistory = tool(
+    'moderation_history',
+    'Show recent moderation actions (warnings, timeouts, kicks, deletions, announcements) in your conversations — for checking prior history before escalating. Admin only.',
+    { limit: z.number().optional().describe('Max entries (default 20, max 100)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'moderation_history');
+      const allowed = await callerScope();
+      const rows = await recentModerationEntries(allowed, args.limit ?? 20);
+      if (rows.length === 0) return text('No moderation actions recorded (within your conversations).');
+      return text(
+        rows
+          .map(
+            (r) =>
+              `[${r.createdAt.toISOString()}] ${r.platform} ${r.conversationId ?? 'unknown'} — ${r.actorUserId} → ${r.actionKind}${r.targetUserId ? ` (${r.targetUserId})` : ''} ${r.success ? '✓' : '✗'} ${r.result ?? ''}`,
+          )
+          .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -752,6 +774,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       deleteKnowledgeTool,
       listAccessRequestsTool,
       questionDigest,
+      moderationHistory,
       addMember,
       removeMemberTool,
       grantAdmin,

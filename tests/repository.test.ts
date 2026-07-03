@@ -28,6 +28,7 @@ const {
   deleteKnowledge,
   recordAdminAction,
   recentQuestionClusters,
+  recentModerationEntries,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -304,4 +305,69 @@ test('SECURITY: repository: recentQuestionClusters excludes conversations outsid
   assert.ok(totalUnscoped >= 4, 'without a scope filter (super admin), both conversations contribute');
 
   await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScopeConvo, outOfScopeConvo]]);
+});
+
+test('SECURITY: repository: recentModerationEntries scopes by conversation, allow-lists action_kind, and omits params', { skip }, async () => {
+  const inScopeConvo = `${RUN}-c-modhist-in`;
+  const outOfScopeConvo = `${RUN}-c-modhist-out`;
+  const actor = `${RUN}-modhist-admin`;
+  const target = `${RUN}-modhist-target`;
+
+  await recordAdminAction({
+    platform: 'discord',
+    actorUserId: actor,
+    actionKind: 'warn_user',
+    targetUserId: target,
+    conversationId: inScopeConvo,
+    params: { reason: 'be nice please — this is sensitive free text' },
+    result: 'warned',
+    success: true,
+  });
+  // Same conversation, but a privileged non-moderation kind — must never appear,
+  // even scoped to a conversation the admin belongs to (allow-list, not deny-list).
+  await recordAdminAction({
+    platform: 'discord',
+    actorUserId: actor,
+    actionKind: 'grant_admin',
+    targetUserId: target,
+    conversationId: inScopeConvo,
+    result: 'granted',
+    success: true,
+  });
+  // Different conversation, otherwise-whitelisted kind — must not leak into an
+  // admin's scoped view of inScopeConvo.
+  await recordAdminAction({
+    platform: 'discord',
+    actorUserId: actor,
+    actionKind: 'timeout_user',
+    targetUserId: target,
+    conversationId: outOfScopeConvo,
+    result: 'timed out',
+    success: true,
+  });
+
+  const scoped = await recentModerationEntries([inScopeConvo], 20);
+  assert.equal(scoped.length, 1, 'only the whitelisted, in-scope entry survives');
+  assert.equal(scoped[0].actionKind, 'warn_user');
+  assert.equal(scoped[0].conversationId, inScopeConvo, 'conversation_id is surfaced');
+  assert.ok(
+    !('params' in scoped[0]),
+    'params (may carry free-text PII) is never returned',
+  );
+  assert.ok(
+    scoped.every((r) => r.actionKind !== 'grant_admin'),
+    'grant_admin never appears, even within the admin\'s own conversation',
+  );
+
+  const unscoped = await recentModerationEntries(null, 20);
+  const kinds = unscoped
+    .filter((r) => r.conversationId === inScopeConvo || r.conversationId === outOfScopeConvo)
+    .map((r) => r.actionKind);
+  assert.ok(kinds.includes('warn_user') && kinds.includes('timeout_user'), 'super admin (null scope) sees both conversations');
+  assert.ok(!kinds.includes('grant_admin'), 'allow-list applies regardless of scope');
+
+  const clamped = await recentModerationEntries(null, 10_000);
+  assert.ok(clamped.length <= 100, 'limit is clamped to a sane maximum for a non-super-admin-only tool');
+
+  await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
 });

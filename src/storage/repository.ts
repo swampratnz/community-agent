@@ -574,6 +574,63 @@ export async function recentAuditEntries(limit = 20): Promise<
   }));
 }
 
+/** action_kinds an admin-tier `moderation_history` read may surface — allow-list so a
+ * future privileged kind (e.g. another `grant_*`) is excluded by default, not by omission. */
+const MODERATION_ACTION_KINDS = ['warn_user', 'timeout_user', 'kick_user', 'delete_message', 'announce'] as const;
+
+/**
+ * Admin-tier view of moderation actions, scoped to `conversationIds` (null = super
+ * admin, unrestricted — same convention as recentQuestionClusters). Mirrors
+ * recentAuditEntries but additionally surfaces conversation_id (needed both for the
+ * scoping filter and so an admin in multiple channels can attribute an entry) and
+ * omits `params` (may carry free-text reasons with member PII beyond the target id).
+ */
+export async function recentModerationEntries(
+  conversationIds: readonly string[] | null,
+  limit = 20,
+): Promise<
+  Array<{
+    createdAt: Date;
+    platform: string;
+    actorUserId: string;
+    actionKind: string;
+    targetUserId: string | null;
+    conversationId: string | null;
+    success: boolean;
+    result: string | null;
+  }>
+> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+
+  const params: unknown[] = [[...MODERATION_ACTION_KINDS]];
+  let scope = '';
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    scope = `AND conversation_id = ANY($${params.length})`;
+  }
+  params.push(clampedLimit);
+
+  const { rows } = await pool.query(
+    `SELECT created_at, platform, actor_user_id, action_kind, target_user_id, conversation_id, success, result
+       FROM admin_audit
+      WHERE action_kind = ANY($1)
+        ${scope}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((r) => ({
+    createdAt: r.created_at,
+    platform: r.platform,
+    actorUserId: r.actor_user_id,
+    actionKind: r.action_kind,
+    targetUserId: r.target_user_id,
+    conversationId: r.conversation_id,
+    success: r.success,
+    result: r.result,
+  }));
+}
+
 export async function usageStats(days = 7): Promise<{
   inbound: number;
   outbound: number;
