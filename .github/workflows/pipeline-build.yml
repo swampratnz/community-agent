@@ -53,6 +53,13 @@ jobs:
         if: env.HAS_TOKEN != 'true'
         run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — build worker is inert. Add the secret + install the Claude GitHub App to enable."
 
+      # Stamp the moment this run starts, before the build can open anything.
+      # The verify step only counts a PR created AFTER this instant, so a stale
+      # PR left by a prior attempt can never be mistaken for this run's output.
+      - name: Record job start (PR freshness watermark)
+        if: env.HAS_TOKEN == 'true'
+        run: echo "STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
         if: env.HAS_TOKEN == 'true'
 
@@ -83,10 +90,14 @@ jobs:
           # Pre-approve exactly the tools a build needs so there is no
           # permission-denial thrash. Without this the action falls back to its
           # opaque agent-mode defaults and silently denies git/gh/npm writes.
+          # Deliberately NO bare `rm`/`sed`: the build worker processes
+          # (potentially adversarial) issue content, so we keep the shell
+          # surface minimal — file rewrites go through Edit/Write and tracked
+          # deletions through `git rm` (covered by Bash(git:*)).
           claude_args: |
             --max-turns 40
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*),Bash(sed:*),Bash(rm:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a PR was produced (else escalate + fail loudly)
         if: always() && env.HAS_TOKEN == 'true'
@@ -95,12 +106,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # A build "succeeded" only if there is an OPEN PR whose body closes
-          # this issue. Anything else (silent no-op, denial thrash, crash) must
-          # be surfaced, not swallowed by a green check.
+          # A build "succeeded" only if there is an OPEN PR that:
+          #   (a) closes THIS issue in its body,
+          #   (b) lives in THIS repo — not a fork (isCrossRepository == false),
+          #       so an external contributor's throwaway "Closes #N" PR can't
+          #       spoof success, and
+          #   (c) was created AFTER this run started (createdAt >= STARTED_AT),
+          #       so a stale PR from a prior attempt can't mask a fresh no-op.
+          # Anything else (silent no-op, denial thrash, crash) is surfaced, not
+          # swallowed by a green check.
           match="$(gh pr list --state open --limit 100 \
-            --json number,body \
-            --jq "[.[] | select((.body // \"\") | test(\"[Cc]loses #${ISSUE_NUMBER}\\\\b\"))] | .[0].number // empty")"
+            --json number,body,createdAt,isCrossRepository \
+            --jq "[.[] | select((.isCrossRepository | not) and ((.body // \"\") | test(\"[Cc]loses #${ISSUE_NUMBER}\\\\b\")) and ((.createdAt | fromdateiso8601) >= ${STARTED_AT}))] | .[0].number // empty")"
 
           if [ -n "${match}" ]; then
             echo "Build produced PR #${match} closing issue #${ISSUE_NUMBER}."
