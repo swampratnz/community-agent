@@ -70,3 +70,6 @@ ownership rules:
 - Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/auth/`
   are distinct — the latter is source and must stay tracked.
 - Do not put model identifiers in commits, PR bodies, or code.
+- Human-facing conventions (style, test expectations, commit/PR rules) are
+  also written up in `docs/STANDARDS.md` — keep the two in sync if either
+  changes.
