@@ -56,6 +56,16 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The build worker opens its PRs as the `claude[bot]` GitHub App, and
+          # claude-code-action refuses to run on a bot-authored PR unless the
+          # bot is allow-listed ("Workflow initiated by non-human actor").
+          # Without this, EVERY build-worker PR fails review before the model
+          # even starts. `*` is safe here: this review job is strictly
+          # read-only (its allowedTools are gh pr diff/view + Read/Grep/Glob),
+          # it only posts a comment and can never merge or push, and fork PRs
+          # get no token (HAS_TOKEN empty -> inert) so this can't be abused
+          # from outside the repo.
+          allowed_bots: "*"
           prompt: |
             You are the PR-REVIEW worker for the NZ Claude Community agent.
             Review pull request #${{ env.PR }}. Use `gh pr diff ${{ env.PR }}` and
