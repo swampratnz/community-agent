@@ -53,3 +53,28 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run format:check
+
+  security-invariants:
+    # No postgres service here, deliberately: this job pins the security
+    # spine (RBAC tool gating, outbound filtering, confirm-gating — see
+    # CLAUDE.md's "do not regress" list) and must be deterministic regardless
+    # of DB reachability. DATABASE_URL is intentionally UNSET: the DB-backed
+    # SECURITY tests key their skip on `Boolean(process.env.DATABASE_URL)`, so
+    # a set-but-unreachable URL would make them RUN and fail — unset makes them
+    # skip cleanly (the test harness sets its own dummy default for config's
+    # zod schema). The count floor in scripts/check-security-test-count.mjs
+    # counts a skip the same as a pass, so the required count is stable.
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
+      DISCORD_BOT_TOKEN: ci-dummy-token
+      DISCORD_GUILD_ID: ci-dummy-guild
+      WHATSAPP_PROVIDER: disabled
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:security
