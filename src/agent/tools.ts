@@ -169,24 +169,6 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
-  const whatsNew = tool(
-    'whats_new',
-    "Report the bot's own recent updates from its changelog. Use this whenever " +
-      "someone asks what's new, what changed, what you've been upgraded with, or " +
-      'about your recent versions/releases.',
-    {
-      limit: z
-        .number()
-        .int()
-        .positive()
-        .max(10)
-        .optional()
-        .describe('How many recent changelog sections to include (default 2)'),
-    },
-    async (args) => text(await recentChanges(args.limit ?? 2)),
-    { annotations: { readOnlyHint: true } },
-  );
-
   const knowledgeSearch = tool(
     'knowledge_search',
     'Search curated community knowledge (FAQs, rules, resources admins have saved).',
@@ -269,6 +251,27 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
   );
 
   // --- Admin tools (scoped to the admin's own conversations) ------------------
+
+  const whatsNew = tool(
+    'whats_new',
+    "Report the bot's own recent updates from its changelog. Use this whenever " +
+      "someone asks what's new, what changed, what you've been upgraded with, or " +
+      'about your recent versions/releases.',
+    {
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(10)
+        .optional()
+        .describe('How many recent changelog sections to include (default 2)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'whats_new');
+      return text(await recentChanges(args.limit ?? 2));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
 
   const userHistory = tool(
     'user_history',
@@ -792,10 +795,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     version: '2.0.0',
     tools: [
       communityInfo,
-      whatsNew,
       knowledgeSearch,
       rememberSearch,
       forgetMe,
+      whatsNew,
       userHistory,
       moderate,
       announce,

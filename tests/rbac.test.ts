@@ -28,6 +28,18 @@ test('SECURITY: members and guests never get admin or super-admin tools', () => 
   }
 });
 
+test('SECURITY: whats_new is admin-only (binding requirement from #55)', () => {
+  const tool = 'mcp__community__whats_new';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'whats_new must be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'whats_new must not be in MEMBER_TOOLS');
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach whats_new`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach whats_new`);
+  }
+});
+
 test('SECURITY: admins never get super-admin tools', () => {
   const tools = toolsForRole('admin');
   for (const t of SUPER_ADMIN_TOOLS) {
