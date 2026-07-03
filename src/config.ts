@@ -3,6 +3,19 @@ import { z } from 'zod';
 
 loadEnv({ quiet: true });
 
+// dotenv (and shell `set -a; . ./.env`) load a blank `KEY=` line as the empty
+// string, not as absent. For every optional/coerced field that means "unset"
+// silently becomes "0" or an invalid enum value instead of the intended
+// default. Normalise blank values to undefined up front so optional env vars
+// behave the same whether they're commented out or left empty.
+export function emptyStringsToUndefined(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const result: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    result[key] = value === '' ? undefined : value;
+  }
+  return result;
+}
+
 /** Parse a comma-separated env var into a trimmed, non-empty string array. */
 function csv(value: string | undefined): string[] {
   if (!value) return [];
@@ -103,7 +116,7 @@ const EnvSchemaChecked = EnvSchema.refine(
   path: ['INTERACTION_RETENTION_DAYS'],
 });
 
-const parsed = EnvSchemaChecked.safeParse(process.env);
+const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
 if (!parsed.success) {
   // Fail fast with a readable message rather than crashing deep inside a module.
   console.error('Invalid environment configuration:');
