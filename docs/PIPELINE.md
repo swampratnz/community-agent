@@ -233,7 +233,29 @@ You are the ORCHESTRATOR for the swampratnz/community-agent pipeline, running as
 Never change code or merge. End.
 ```
 
-Build and pr-review are better as **GitHub Actions** (label/PR triggered) — see
-their `/loop` prompts above for the behaviour; wrap them in a
-`claude-code`-action workflow rather than a live session.
+Build and pr-review run as **GitHub Actions** (label/PR triggered), not live
+sessions:
+
+- `.github/workflows/pipeline-build.yml` — fires on `issues.labeled ==
+  status:approved`, implements on a branch, opens a PR "Closes #N", relabels
+  `status:built`. `concurrency` serialises builds (WIP=1); `--max-turns 40` +
+  a 45-min job timeout bound a run.
+- `.github/workflows/pipeline-pr-review.yml` — fires on `pull_request`
+  events; reviews the diff (security-focused), comments/approves, never merges.
+
+Both use `anthropics/claude-code-action@v1` with **subscription auth** via the
+`CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) — same Max pool as
+the bot, not a metered key.
+
+To go live:
+1. Add repo secret **`CLAUDE_CODE_OAUTH_TOKEN`** (Settings → Secrets → Actions).
+2. **Install the Claude GitHub App** on the repo so the action can comment/push.
+
+Until both exist the workflows are inert (they log a notice and skip). Fork PRs
+never receive the secret, so the review worker won't run on untrusted forks.
+
+**Cost caution:** every run draws on the same Max 5-hour/weekly pool as the
+production bot serving real members. Keep an eye on `/usage`; if the pipeline
+starts starving the live bot, relax cadences or move the pipeline to a separate
+plan/account.
 
