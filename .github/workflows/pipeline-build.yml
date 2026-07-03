@@ -13,6 +13,15 @@ name: Pipeline build worker
 # COST: every run draws on the SAME Max pool as the production bot and every
 # other session. `concurrency` serialises builds (enforces WIP=1) and
 # `--max-turns` + `timeout-minutes` bound a single run.
+#
+# WHY the explicit allowedTools + verify step: an earlier run finished with
+# conclusion=success but 12 permission denials and no branch/PR/relabel — the
+# action's opaque agent-mode defaults denied the write tools it needed, so it
+# narrated the work instead of doing it and the proposal stuck at
+# `status:approved` with no visible failure. We now (a) pre-approve exactly the
+# tools a build needs so there is zero denial thrash, and (b) verify the
+# outcome deterministically: if no open PR closing this issue exists, relabel
+# `needs-human`, comment, and fail the job loudly.
 
 on:
   issues:
@@ -38,6 +47,7 @@ jobs:
       # secrets are allowed in job-level env; this keeps the action step inert
       # until the token exists, so the workflow is safe to merge beforehand.
       HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -47,7 +57,9 @@ jobs:
         if: env.HAS_TOKEN == 'true'
 
       - name: Build the approved proposal
+        id: build
         if: env.HAS_TOKEN == 'true'
+        continue-on-error: true # never let a mid-run failure hide the outcome; the verify step below is the source of truth
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -68,6 +80,39 @@ jobs:
                unsafe as specified, add the `needs-human` label and explain instead of
                forcing it.
             Implement only this one approved issue.
+          # Pre-approve exactly the tools a build needs so there is no
+          # permission-denial thrash. Without this the action falls back to its
+          # opaque agent-mode defaults and silently denies git/gh/npm writes.
           claude_args: |
             --max-turns 40
             --model sonnet
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*),Bash(sed:*),Bash(rm:*)"
+
+      - name: Verify a PR was produced (else escalate + fail loudly)
+        if: always() && env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # A build "succeeded" only if there is an OPEN PR whose body closes
+          # this issue. Anything else (silent no-op, denial thrash, crash) must
+          # be surfaced, not swallowed by a green check.
+          match="$(gh pr list --state open --limit 100 \
+            --json number,body \
+            --jq "[.[] | select((.body // \"\") | test(\"[Cc]loses #${ISSUE_NUMBER}\\\\b\"))] | .[0].number // empty")"
+
+          if [ -n "${match}" ]; then
+            echo "Build produced PR #${match} closing issue #${ISSUE_NUMBER}."
+            exit 0
+          fi
+
+          echo "::error::Build worker finished without opening a PR that closes issue #${ISSUE_NUMBER}."
+
+          # Escalate so the proposal does not sit silently at status:approved.
+          gh issue edit "${ISSUE_NUMBER}" --add-label needs-human || true
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue comment "${ISSUE_NUMBER}" --body "🤖 Build worker ran but produced **no pull request** closing this issue, so it could not be marked \`status:built\`. Labelled \`needs-human\` for a maintainer to investigate. Run: ${run_url}" || true
+
+          exit 1
