@@ -22,5 +22,6 @@ label "status:rejected" "E11D21" "Failed adversarial review"
 label "status:building" "5319E7" "Claimed by the build loop (WIP=1)"
 label "status:built"    "0052CC" "PR open, awaiting review/merge"
 label "needs-human"     "D93F0B" "Escalated: a human must decide"
+label "community-feedback" "0E8A16" "A real member/admin request; input for research proposals"
 
 echo "Labels created/updated."
