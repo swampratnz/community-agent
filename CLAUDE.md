@@ -15,6 +15,13 @@ with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
 - `npm test` — Node test runner via tsx; must pass. Security invariants live
   here (tool gating, confirm flow, secret redaction, WhatsApp wire helpers) —
   when you touch those areas, extend the tests.
+- `tests/knowledgeEval.test.ts` + `tests/fixtures/knowledgeEval.json` — a
+  golden-query regression eval for `knowledge_search` retrieval quality
+  (precision@K against a curated, paraphrased query set with distractors).
+  When you add or edit knowledge entries in a way that should be
+  discoverable by a new phrasing, add a matching golden query there —
+  queries must be paraphrases of the target entry, never near-verbatim
+  quotes, or the eval proves nothing.
 - `npm run build` — tsc + copies `schema.sql` into `dist/`.
 - DB-touching changes: CI runs `tests/repository.test.ts` against a real
   `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),
