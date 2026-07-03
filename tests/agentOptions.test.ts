@@ -9,7 +9,7 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
 const { buildQueryOptions } = await import('../src/agent/core.js');
-const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
+const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
 
 test('SECURITY: members/guests get NO built-in tools; admin+ get exactly WebSearch', () => {
   for (const role of ['guest', 'member'] as const) {
@@ -31,6 +31,32 @@ test('SECURITY: WebFetch is disallowed for every tier (exfiltration channel)', (
     assert.ok(opts.disallowedTools.includes('WebFetch'), `${role} must have WebFetch disallowed`);
     assert.ok(!opts.tools.includes('WebFetch'));
     assert.ok(!opts.allowedTools.includes('WebFetch'));
+  }
+});
+
+test('SECURITY: Task (sub-agent spawning) is disallowed for every tier', () => {
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null);
+    assert.ok(opts.disallowedTools.includes('Task'), `${role} must have Task disallowed`);
+  }
+});
+
+test('SECURITY: settingSources is empty for every tier (host ~/.claude config is never loaded)', () => {
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    assert.deepEqual(buildQueryOptions(role, 'prompt', {}, null).settingSources, []);
+  }
+});
+
+test('SECURITY: allowedTools tracks toolsForRole exactly — no drift between rbac.ts and core.ts', () => {
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null);
+    const webSearch = role === 'admin' || role === 'super_admin';
+    const expected = [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])];
+    assert.deepEqual(
+      [...opts.allowedTools].sort(),
+      [...expected].sort(),
+      `${role} allowedTools must be exactly toolsForRole(${role}) plus tier-gated WebSearch`,
+    );
   }
 });
 
@@ -56,11 +82,6 @@ test('super-admin turns carry the full surface', () => {
   for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
     assert.ok(opts.allowedTools.includes(t));
   }
-});
-
-test('host ~/.claude config is never loaded', () => {
-  const opts = buildQueryOptions('super_admin', 'prompt', {}, null);
-  assert.deepEqual(opts.settingSources, []);
 });
 
 test('resume only set when a session id exists', () => {

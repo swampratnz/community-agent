@@ -16,6 +16,7 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/*.test.ts",
+    "test:security": "node scripts/check-security-test-count.mjs",
     "migrate": "tsx src/storage/migrate.ts",
     "migrate:prod": "node dist/storage/migrate.js",
     "whatsapp:link": "tsx src/platforms/whatsapp/link.ts",
