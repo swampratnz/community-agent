@@ -86,6 +86,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - `cost_usd` is recorded per outbound turn for monitoring.
 - The bot only responds when **addressed** (mention/reply) or in a direct
   chat — it does not react to every message in a channel.
+- Optional proactive alert (`USAGE_ALERT_DAILY_REPLIES`, off by default):
+  when the rolling-24h outbound reply count reaches the configured
+  threshold, super admins get one debounced DM (`src/usageAlert.ts`) instead
+  of having to remember to run `usage_stats`. Reply count, not `cost_usd`, is
+  the trigger — it's a coarse proxy for shared Max-pool draw that can't
+  silently under-report the way `cost_usd` can (see below). No auto-pause;
+  a super admin decides.
 
 ### 4. Moderation misuse / accountability
 **Controls**

@@ -188,6 +188,32 @@ The debounce/payload logic lives in `src/healthState.ts`, deliberately free
 of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`
 is the thin I/O wrapper around it).
 
+## Usage & shared Max-pool alerting
+
+The bot authenticates against a Claude **subscription** (see SECURITY.md
+"Subscription-auth caveat"), and that same weekly token pool is shared with
+the automated multi-loop pipeline sessions (see PIPELINE.md). `src/usageAlert.ts`
+adds an opt-in proactive check on top of the existing (pull-only, super-admin)
+`usage_stats` tool:
+
+- Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
+  extra queries, when unconfigured.
+- When set, an hourly check calls `usageStats(1)` (rolling 24h) and compares
+  the **outbound reply count** — not `cost_usd` — against the threshold.
+  Reply count is a coarse proxy for shared Max-pool draw (a short reply and a
+  long one draw very differently), so tune the threshold to your own
+  traffic; `cost_usd` is still shown in the alert as supplementary context,
+  but SECURITY.md already documents that it can silently under-report if
+  recording degrades open, so it's never the trigger condition.
+- Debounced with a rolling-window latch (`stepUsageAlertTracker`, pure and
+  unit-tested like `healthState.ts`'s disconnect tracker): one DM per
+  crossed window, no repeat while still over, no "back to normal" DM when it
+  drops back below — it just silently re-arms.
+- The alert DM rides the same `sendDirectMessage` super-admin path
+  `health.ts`'s disconnect alert already uses. No new privileged tool, no
+  new RBAC surface, no auto-`pause_bot` — a super admin decides whether to
+  pause manually.
+
 ## Switching WhatsApp providers
 
 The Baileys adapter is the default (immediate, free, dedicated number, but

@@ -5,6 +5,7 @@ import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
+import { startUsageAlert } from './usageAlert.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
@@ -73,11 +74,15 @@ async function main(): Promise<void> {
   const disconnectAlertTimer = startDisconnectAlerts(adapters);
   const healthServer = await startHealthServer(adapters);
 
+  // 4d. Optional proactive usage alert (disabled unless configured).
+  const usageAlertTimer = startUsageAlert(adapters);
+
   // 5. Graceful shutdown.
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
     if (retentionTimer) clearInterval(retentionTimer);
     clearInterval(disconnectAlertTimer);
+    if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));
     await closeDb();

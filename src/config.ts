@@ -65,6 +65,11 @@ const EnvSchema = z.object({
   INTERACTION_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
   // Sustained platform disconnect -> one debounced super-admin DM alert.
   HEALTH_ALERT_AFTER_MINUTES: z.coerce.number().positive().default(5),
+  // Proactive super-admin alert when rolling-24h outbound reply count
+  // reaches this threshold — a coarse proxy for shared Max-pool draw (short
+  // vs long replies draw differently; tune to your traffic). Unset/0 =
+  // disabled (no timer, no behaviour change on upgrade).
+  USAGE_ALERT_DAILY_REPLIES: z.coerce.number().int().nonnegative().default(0),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -158,6 +163,7 @@ export const config = {
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
+    usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
   },
   log: {
     level: env.LOG_LEVEL,
