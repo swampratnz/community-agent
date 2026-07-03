@@ -16,7 +16,7 @@ persona swap.
 
 ## Registry
 
-Personas live in `src/agent/personas.ts`. The default is **Kaha** — friendly,
+Personas live in `src/agent/personas.ts`. The default is **Dave** — friendly,
 Kiwi, a bit quirky. To add one, append an entry with a distinct `voice` and any
 `aliases` used to summon it. Keep the roster small (3-4) so people mostly know
 who they're talking to, and keep each voice consistent per context.
