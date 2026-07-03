@@ -86,6 +86,12 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - `cost_usd` is recorded per outbound turn for monitoring.
 - The bot only responds when **addressed** (mention/reply) or in a direct
   chat — it does not react to every message in a channel.
+- `report_content` is capped at 5 submissions per reporter per rolling 24h,
+  enforced as a `COUNT(*)` over `content_reports.created_at` inside the insert
+  query itself — a DB-backed check, not an in-memory counter, so it survives a
+  restart and can't be bypassed by timing a bounce (the only in-memory rate
+  limiter in the codebase is router.ts's per-message map, which is unrelated
+  and does reset on restart by design).
 - Optional proactive alert (`USAGE_ALERT_DAILY_REPLIES`, off by default):
   when the rolling-24h outbound reply count reaches the configured
   threshold, super admins get one debounced DM (`src/usageAlert.ts`) instead
@@ -193,9 +199,21 @@ the supported path.
   (platform, user id/name) and a request count/timestamps for guests who
   addressed the bot, but never their message content — an admin-only,
   `list_access_requests`-gated read, not a new content-storage surface.
-- **forget_me/purge scope**: deletes the user's messages, replies to them, and
-  knowledge entries *sourced from* them. Membership rows and the admin audit
-  log are retained deliberately (accountability).
+- **forget_me/purge scope**: deletes the user's messages, replies to them,
+  knowledge entries *sourced from* them, and content reports *they submitted
+  as reporter*. Membership rows, the admin audit log, and reports where the
+  user is only the *target* (not the reporter) are retained deliberately
+  (accountability) — the same precedent already applied to `admin_audit`.
+- **DM-originated content reports are visible only to super admins.**
+  `list_reports` is scoped exactly like `moderation_history`/
+  `list_access_requests`: an admin only sees reports from conversations they
+  actually participate in. WhatsApp is 1:1 with the bot and Discord DMs
+  likewise, so no ordinary admin is ever a "participant" of another member's
+  DM — a report filed from a DM therefore only reaches the unrestricted
+  (null-scope) super-admin view, never a scoped admin. This is a deliberate,
+  documented default (not a silent drop): the report is still recorded and
+  retrievable, just only by super admins, until/unless a routing mechanism
+  for DM-originated reports is added.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
 - **The `claude` CLI subprocess** still has network access (it must reach the

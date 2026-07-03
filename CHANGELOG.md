@@ -8,6 +8,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ## 2026-07-03
 
 ### Added
+- `report_content` member tool plus `list_reports`/`resolve_report` admin tools for flagging harassment/spam/rule violations to a conversation's admins (#70).
 - `moderation_history` admin tool, scoped to the admin's own conversations (#34).
 - `question_digest` admin tool to surface recurring questions (#23).
 - Proactive super-admin alert when the shared Max-pool usage budget runs high (#25).

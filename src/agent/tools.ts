@@ -6,6 +6,7 @@ import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { logger } from '../logger.js';
 import {
   clearAccessRequest,
+  createContentReport,
   deleteKnowledge,
   demoteAdmin,
   getMemberRole,
@@ -13,12 +14,15 @@ import {
   isKnownUser,
   listAccessRequests,
   listKnowledge,
+  listReports,
   purgeUserData,
   recentAuditEntries,
   recentModerationEntries,
   recentQuestionClusters,
   recordAdminAction,
   removeMember,
+  REPORT_RATE_LIMIT_PER_DAY,
+  resolveContentReport,
   saveKnowledge,
   searchKnowledge,
   searchMemory,
@@ -266,13 +270,43 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     {},
     async () =>
       requireConfirm(
-        `delete ALL of ${caller.userName}'s stored messages (and any knowledge entries sourced from them) on ${caller.platform}`,
+        `delete ALL of ${caller.userName}'s stored messages (and any knowledge entries or content reports sourced from them) on ${caller.platform}`,
         'member',
         async () => {
           const n = await purgeUserData(caller.platform, caller.userId);
           return `Deleted ${n} stored record(s) for ${caller.userName}.`;
         },
       ),
+  );
+
+  const reportContent = tool(
+    'report_content',
+    'Report harassment, spam, or a rule violation in this conversation to its admins for review. ' +
+      'Only confirms the report was recorded — it does not take any moderation action itself.',
+    {
+      reason: z.string().min(1).max(500).describe('What happened, in your own words (max 500 characters)'),
+      targetUserId: z.string().optional().describe('Platform user id of the person being reported, if known'),
+      messageId: z.string().optional().describe('The specific message id being reported, if known'),
+    },
+    async (args) => {
+      const created = await createContentReport({
+        platform: caller.platform,
+        reporterUserId: caller.userId,
+        reporterName: caller.userName,
+        conversationId: caller.conversationId,
+        targetUserId: args.targetUserId,
+        messageId: args.messageId,
+        reason: args.reason,
+      });
+      if (!created) {
+        return text(
+          `You've already submitted ${REPORT_RATE_LIMIT_PER_DAY} reports in the last 24 hours. ` +
+            'Please wait before submitting another, or contact an admin directly if this is urgent.',
+          true,
+        );
+      }
+      return text(`Report #${created.id} recorded for this conversation's admins. Thanks for flagging it.`);
+    },
   );
 
   // --- Admin tools (scoped to the admin's own conversations) ------------------
@@ -594,6 +628,64 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const listReportsTool = tool(
+    'list_reports',
+    'List member-submitted content reports (harassment/spam/rule violations) from your conversations. ' +
+      "A report from a conversation you do not participate in (e.g. another member's DM) is not visible " +
+      'here even to admins — only to a super admin. Admin only.',
+    {
+      status: z
+        .enum(['open', 'resolved', 'dismissed'])
+        .optional()
+        .describe('Filter by status (default: all statuses)'),
+      limit: z.number().optional().describe('Max entries (default 50)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_reports');
+      const allowed = await callerScope();
+      const rows = await listReports(allowed, args.status, args.limit ?? 50);
+      if (rows.length === 0) return text('No reports found (within your conversations).');
+      return text(
+        untrusted(
+          'Content reports',
+          rows
+            .map(
+              (r) =>
+                `#${r.id} [${r.status}] ${r.platform} ${r.conversationId} — reporter ${r.reporterName ?? r.reporterUserId}` +
+                `${r.targetUserId ? `, target ${r.targetUserId}` : ''}${r.messageId ? `, message ${r.messageId}` : ''}: ` +
+                `${r.reason} (${r.createdAt.toISOString()})`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const resolveReportTool = tool(
+    'resolve_report',
+    'Mark a content report as resolved or dismissed once triaged. Non-destructive status change (no ' +
+      'CONFIRM needed), audited. Admins can only resolve reports from conversations they are in. Admin only.',
+    {
+      id: z.number().describe('Report id (from list_reports)'),
+      status: z.enum(['resolved', 'dismissed']).describe('New status'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'resolve_report');
+      const allowed = await callerScope();
+      const { success, result } = await audited({
+        actionKind: 'resolve_report',
+        params: { id: args.id, status: args.status },
+        run: async () => {
+          const done = await resolveContentReport(args.id, args.status, caller.userId, allowed ?? undefined);
+          if (!done) throw new Error(`No report with id ${args.id} in your conversations.`);
+          return `marked ${args.status}`;
+        },
+      });
+      return text(success ? `Report #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
+    },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -722,7 +814,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'purge_user_data');
       return requireConfirm(
-        `PURGE all stored messages (and knowledge entries sourced from) ${args.userId} on ${caller.platform}`,
+        `PURGE all stored messages (and knowledge entries/content reports sourced from) ${args.userId} on ${caller.platform}`,
         'super_admin',
         async () => {
           const { success, result } = await audited({
@@ -826,6 +918,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       knowledgeSearch,
       rememberSearch,
       forgetMe,
+      reportContent,
       whatsNew,
       userHistory,
       moderate,
@@ -837,6 +930,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       listAccessRequestsTool,
       questionDigest,
       moderationHistory,
+      listReportsTool,
+      resolveReportTool,
       addMember,
       removeMemberTool,
       grantAdmin,

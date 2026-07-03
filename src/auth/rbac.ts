@@ -45,6 +45,7 @@ export const MEMBER_TOOLS = [
   'mcp__community__knowledge_search',
   'mcp__community__remember_search',
   'mcp__community__forget_me',
+  'mcp__community__report_content',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */
@@ -62,6 +63,8 @@ export const ADMIN_TOOLS = [
   'mcp__community__moderation_history',
   'mcp__community__add_member',
   'mcp__community__remove_member',
+  'mcp__community__list_reports',
+  'mcp__community__resolve_report',
 ] as const;
 
 /** Additional tools for super admins only. */

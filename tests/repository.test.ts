@@ -32,6 +32,10 @@ const {
   recentQuestionClusters,
   recentModerationEntries,
   usageStats,
+  createContentReport,
+  listReports,
+  resolveContentReport,
+  REPORT_RATE_LIMIT_PER_DAY,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -126,7 +130,7 @@ test(
 );
 
 test(
-  'repository: purgeUserData deletes only the target user (interactions + sourced knowledge)',
+  'repository: purgeUserData deletes only the target user (interactions + sourced knowledge + own reports)',
   { skip },
   async () => {
     const targetUser = `${RUN}-target`;
@@ -166,9 +170,27 @@ test(
       targetUserId: targetUser,
       success: true,
     });
+    // The target user's own submitted report (as reporter) must be purged...
+    const ownReport = await createContentReport({
+      platform: 'discord',
+      reporterUserId: targetUser,
+      conversationId,
+      reason: 'reported by the target user themself',
+    });
+    assert.ok(ownReport, 'fixture report was recorded');
+    // ...but a report naming them only as the *target* (someone else reporting
+    // them) is accountability data and must survive their own purge request.
+    const reportAboutThem = await createContentReport({
+      platform: 'discord',
+      reporterUserId: otherUser,
+      conversationId,
+      targetUserId: targetUser,
+      reason: 'reported by someone else, targeting this user',
+    });
+    assert.ok(reportAboutThem, 'fixture report about the target was recorded');
 
     const purged = await purgeUserData('discord', targetUser);
-    assert.ok(purged >= 2, 'purged count covers the target interaction + knowledge row');
+    assert.ok(purged >= 3, 'purged count covers the target interaction + knowledge row + own report');
 
     const targetRows = await pool.query(`SELECT 1 FROM interactions WHERE user_id = $1`, [targetUser]);
     assert.equal(targetRows.rows.length, 0, 'target user interactions are gone');
@@ -182,6 +204,18 @@ test(
     const otherKnowledge = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [otherKnowledgeId]);
     assert.equal(otherKnowledge.rows.length, 1, "other user's knowledge is untouched");
 
+    const ownReportRow = await pool.query(`SELECT 1 FROM content_reports WHERE id = $1`, [ownReport.id]);
+    assert.equal(ownReportRow.rows.length, 0, "the target's own submitted report is purged");
+
+    const targetedReportRow = await pool.query(`SELECT 1 FROM content_reports WHERE id = $1`, [
+      reportAboutThem.id,
+    ]);
+    assert.equal(
+      targetedReportRow.rows.length,
+      1,
+      'a report where the user is only the target (not reporter) is retained as accountability data',
+    );
+
     const auditRow = await pool.query(`SELECT 1 FROM admin_audit WHERE target_user_id = $1`, [targetUser]);
     assert.equal(
       auditRow.rows.length,
@@ -193,6 +227,7 @@ test(
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [otherUser]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [otherKnowledgeId]);
     await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUser]);
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportAboutThem.id]);
   },
 );
 
@@ -518,5 +553,174 @@ test(
     }
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: createContentReport enforces a DB-backed rolling-24h cap per reporter, robust to a simulated process restart',
+  { skip },
+  async () => {
+    const reporter = `${RUN}-reporter`;
+    const conversationId = `${RUN}-c-report-cap`;
+
+    // Simulate reports written by a *previous* process instance: inserted
+    // directly via SQL rather than through createContentReport, so nothing in
+    // this test process's memory "knows" about them. An in-memory counter
+    // would see zero prior reports here and wrongly accept the next one; a
+    // DB-backed COUNT(*) sees them regardless of which process wrote them.
+    for (let i = 0; i < REPORT_RATE_LIMIT_PER_DAY; i++) {
+      await pool.query(
+        `INSERT INTO content_reports (platform, reporter_user_id, conversation_id, reason)
+         VALUES ($1,$2,$3,$4)`,
+        ['discord', reporter, conversationId, `prior-process report ${i}`],
+      );
+    }
+
+    const rejected = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      reason: 'the one that should be refused',
+    });
+    assert.equal(rejected, null, 'the (cap+1)th report is refused, not silently accepted');
+
+    const countAfterRejection = await pool.query(
+      `SELECT count(*) AS n FROM content_reports WHERE reporter_user_id = $1`,
+      [reporter],
+    );
+    assert.equal(
+      Number(countAfterRejection.rows[0].n),
+      REPORT_RATE_LIMIT_PER_DAY,
+      'no row is inserted for a refused report',
+    );
+
+    // Age one report past the 24h window — it should no longer count, freeing a slot.
+    await pool.query(
+      `UPDATE content_reports SET created_at = now() - interval '25 hours'
+        WHERE id = (SELECT id FROM content_reports WHERE reporter_user_id = $1 ORDER BY id LIMIT 1)`,
+      [reporter],
+    );
+    const accepted = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      reason: 'accepted once one prior report aged out of the 24h window',
+    });
+    assert.ok(accepted, 'a report is accepted again once an old one falls outside the rolling window');
+
+    // A different reporter is unaffected by another user's cap.
+    const otherReporter = `${RUN}-reporter-other`;
+    const otherAccepted = await createContentReport({
+      platform: 'discord',
+      reporterUserId: otherReporter,
+      conversationId,
+      reason: 'a different reporter has their own independent cap',
+    });
+    assert.ok(otherAccepted, 'the cap is per-reporter, not global');
+
+    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = ANY($1)`, [
+      [reporter, otherReporter],
+    ]);
+  },
+);
+
+test(
+  'repository: createContentReport truncates an over-long reason to 500 characters',
+  { skip },
+  async () => {
+    const reporter = `${RUN}-reporter-long`;
+    const conversationId = `${RUN}-c-report-long`;
+    const longReason = 'x'.repeat(1000);
+
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      reason: longReason,
+    });
+    assert.ok(created);
+
+    const row = await pool.query(`SELECT reason FROM content_reports WHERE id = $1`, [created.id]);
+    assert.equal(row.rows[0].reason.length, 500, 'stored reason is capped at 500 characters');
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [created.id]);
+  },
+);
+
+test('SECURITY: repository: listReports scopes by conversation and filters by status', { skip }, async () => {
+  const inScopeConvo = `${RUN}-c-reports-in`;
+  const outOfScopeConvo = `${RUN}-c-reports-out`;
+  const reporter = `${RUN}-reports-list-reporter`;
+
+  const inScope = await createContentReport({
+    platform: 'discord',
+    reporterUserId: reporter,
+    conversationId: inScopeConvo,
+    reason: 'in scope, open',
+  });
+  const outOfScope = await createContentReport({
+    platform: 'discord',
+    reporterUserId: reporter,
+    conversationId: outOfScopeConvo,
+    reason: 'must NOT be visible — admin is not in this conversation',
+  });
+  assert.ok(inScope && outOfScope);
+
+  const scoped = await listReports([inScopeConvo]);
+  assert.ok(
+    scoped.some((r) => r.id === inScope.id),
+    'the in-scope report is visible',
+  );
+  assert.ok(
+    !scoped.some((r) => r.id === outOfScope.id),
+    'SECURITY: a report outside the scope filter must never be returned',
+  );
+
+  const unscoped = await listReports(null);
+  assert.ok(
+    unscoped.some((r) => r.id === inScope.id) && unscoped.some((r) => r.id === outOfScope.id),
+    'null scope (super admin) sees both conversations',
+  );
+
+  const resolved = await resolveContentReport(inScope.id, 'resolved', `${RUN}-resolver`);
+  assert.ok(resolved);
+
+  const openOnly = await listReports([inScopeConvo], 'open');
+  assert.ok(!openOnly.some((r) => r.id === inScope.id), 'status filter excludes the now-resolved report');
+  const resolvedOnly = await listReports([inScopeConvo], 'resolved');
+  assert.ok(
+    resolvedOnly.some((r) => r.id === inScope.id),
+    'status filter surfaces the resolved report',
+  );
+
+  await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
+});
+
+test(
+  'SECURITY: repository: resolveContentReport refuses to update a report outside the given conversation scope',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-resolve-in`;
+    const outOfScopeConvo = `${RUN}-c-resolve-out`;
+    const reporter = `${RUN}-resolve-reporter`;
+
+    const report = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: outOfScopeConvo,
+      reason: 'an admin scoped only to inScopeConvo must not be able to resolve this',
+    });
+    assert.ok(report);
+
+    const refused = await resolveContentReport(report.id, 'dismissed', `${RUN}-scoped-admin`, [inScopeConvo]);
+    assert.equal(refused, false, 'SECURITY: resolving a report outside the caller scope must fail');
+
+    const stillOpen = await pool.query(`SELECT status FROM content_reports WHERE id = $1`, [report.id]);
+    assert.equal(stillOpen.rows[0].status, 'open', 'the out-of-scope report is left untouched');
+
+    const allowed = await resolveContentReport(report.id, 'dismissed', `${RUN}-super-admin`, undefined);
+    assert.ok(allowed, 'an unrestricted (super-admin) scope can resolve any report');
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
   },
 );
