@@ -11,10 +11,10 @@ const caller = {
   conversationId: 'chan1',
 };
 
-test('default persona is Kaha and resolves for unknown/empty ids', () => {
+test('default persona is Dave and resolves for unknown/empty ids', () => {
   assert.equal(getPersona(null).id, DEFAULT_PERSONA_ID);
   assert.equal(getPersona('nope').id, DEFAULT_PERSONA_ID);
-  assert.equal(getPersona('kaha').name, 'Kaha');
+  assert.equal(getPersona('dave').name, 'Dave');
 });
 
 test('selectPersona falls back to the default when no alias matches', () => {
@@ -36,11 +36,11 @@ test('SECURITY: every persona keeps the security guidelines and human-style rule
 });
 
 test('persona changes voice, not the role note (permissions come from tier)', () => {
-  const asMember = buildSystemPrompt(caller, { codeAnswers: 'snippets' }, getPersona('kaha'));
+  const asMember = buildSystemPrompt(caller, { codeAnswers: 'snippets' }, getPersona('dave'));
   const asAdmin = buildSystemPrompt(
     { ...caller, role: 'admin' },
     { codeAnswers: 'snippets' },
-    getPersona('kaha'),
+    getPersona('dave'),
   );
   // Same persona, but the tier-derived role note differs — persona never sets permissions.
   assert.match(asMember, /MEMBER/);

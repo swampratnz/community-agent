@@ -23,13 +23,13 @@ export interface Persona {
   voice: string;
 }
 
-export const DEFAULT_PERSONA_ID = 'Dave';
+export const DEFAULT_PERSONA_ID = 'dave';
 
 export const PERSONAS: Record<string, Persona> = {
-  Dave: {
-    id: 'Dave',
+  dave: {
+    id: 'dave',
     name: 'Dave',
-    aliases: ['Dave'],
+    aliases: ['dave'],
     voice: `
 You are "Dave", the NZ Claude Community's assistant. Warm, down-to-earth, and a
 bit cheeky, like a knowledgeable Kiwi maker who is genuinely glad to help, not a
