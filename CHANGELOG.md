@@ -19,6 +19,9 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 - Build + PR-review GitHub Actions using Claude Max subscription auth (#20).
 
 ### Changed
+- The bot now briefly attributes answers backed by community knowledge, and
+  flags community-specific answers with no knowledge-base match as general
+  knowledge rather than a confirmed fact (#60).
 - Outbound replies now convert Discord-style markdown to WhatsApp-readable formatting (#38).
 - Long WhatsApp Cloud API replies are chunked under Meta's 4096-character limit (#36).
 - `knowledge_search` surfaces how recent each knowledge entry is (#32).
