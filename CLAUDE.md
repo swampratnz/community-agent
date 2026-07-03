@@ -16,7 +16,13 @@ with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
   here (tool gating, confirm flow, secret redaction, WhatsApp wire helpers) —
   when you touch those areas, extend the tests.
 - `npm run build` — tsc + copies `schema.sql` into `dist/`.
-- DB-touching changes: exercise against a local Postgres 16 + pgvector.
+- DB-touching changes: CI runs `tests/repository.test.ts` against a real
+  `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),
+  so this is enforced, not just a manual reminder. Do it locally too for the
+  tight loop: run `npm run migrate` against a local Postgres 16 + pgvector
+  with `DATABASE_URL` set, then `npm test` — DB-touching tests skip cleanly
+  (not fail) when `DATABASE_URL` is unset, so a contributor without local
+  Postgres isn't blocked.
 - Run all three (typecheck, test, build) green before opening/updating a PR.
 
 ## Security posture (do not regress)
