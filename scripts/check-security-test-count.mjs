@@ -28,8 +28,9 @@ const testsDir = path.join(repoRoot, 'tests');
 // Raised to 41 with the cross-platform identity-linking SECURITY tests (#44),
 // then to 57 with the approved-issues batch build (#45-#53), then to 59 with
 // the PR #91 review round (ambient recall scoping + URL-path token scrub),
-// then to 61 with the WhatsApp Cloud app-secret redaction tests (#110).
-const MIN_SECURITY_TESTS = 61;
+// then to 61 with the WhatsApp Cloud app-secret redaction tests (#110), then
+// to 62 with the suggestion-resolution cross-platform-notify guard (#116).
+const MIN_SECURITY_TESTS = 62;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))

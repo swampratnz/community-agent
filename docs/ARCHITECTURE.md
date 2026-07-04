@@ -251,7 +251,12 @@ shoehorned into a knowledge note). Same pull-queue shape as
 2. Admins triage with `list_suggestions` (content `untrusted()`-wrapped — a
    suggestion is member-authored text aimed at an admin turn, i.e. an
    injection vector) and `resolve_suggestion` (reviewed/declined/done,
-   audited, non-destructive so no CONFIRM).
+   audited, non-destructive so no CONFIRM). Resolving a suggestion best-effort
+   DMs the submitter naming the outcome (`notifySuggestionResolved`, issue
+   #116, same fire-and-forget shape as `notifyMemberApproved`) — but only
+   when the resolving admin's current platform matches the suggestion's
+   stored platform; see SECURITY.md's residual risks for the cross-platform
+   limitation.
 3. **The bridge to the pipeline stays human**: an admin files anything
    worthwhile as a GitHub `proposal` issue themselves. The bot never touches
    the repo — untrusted chat must never be able to write into the issue

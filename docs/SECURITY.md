@@ -407,6 +407,15 @@ the supported path.
   for DM-originated reports is added.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
+- **Suggestion-resolution DMs are same-platform-only** (issue #116): resolving
+  a suggestion filed on a *different* platform than the resolving admin's
+  current turn sends no confirmation DM to the submitter, since a per-turn
+  tool handler only has that turn's own adapter — there is no cross-platform
+  adapter registry to safely address the other platform's identity through
+  (the same limitation `notifySuperAdmins` already has). This degrades to
+  exactly today's silence, never a misdirected DM; a routing mechanism for
+  cross-platform notification is a future refinement if this proves to
+  matter in practice.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.

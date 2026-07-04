@@ -25,11 +25,13 @@ const skip = hasDb
 // clearAccessRequest, all DB-backed) already exercises via repository.test.ts.
 const {
   notifyMemberApproved,
+  notifySuggestionResolved,
   buildToolServer,
   formatKnowledgeSearchResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
 } = await import('../src/agent/tools.js');
-const { MODERATION_ACTION_KINDS, saveKnowledge } = await import('../src/storage/repository.js');
+const { MODERATION_ACTION_KINDS, saveKnowledge, createSuggestion } =
+  await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
@@ -37,10 +39,12 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 // tests/repository.test.ts and tests/knowledgeEval.test.ts.
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
+const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 
 after(async () => {
   if (hasDb) {
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_SEARCH_HANDLER_SCOPE]);
+    await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
   }
   await closeDb();
 });
@@ -103,6 +107,50 @@ test('notifyMemberApproved swallows a DM failure rather than throwing (grant sta
   });
 
   await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false));
+});
+
+// notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
+// notification behaviour, tested directly here the same way
+// notifyMemberApproved is above.
+test('notifySuggestionResolved sends a DM naming the outcome, wording differing per status', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode');
+  await notifySuggestionResolved(adapter, 'user-1', 'reviewed', 'add dark mode');
+  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode');
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /done/i);
+  assert.match(calls[0][1], /add dark mode/);
+  assert.match(calls[1][1], /reviewed/i);
+  assert.notEqual(calls[0][1], calls[1][1], 'done and reviewed get distinct wording');
+  assert.notEqual(calls[0][1], calls[2][1], 'done and declined get distinct wording');
+  assert.doesNotMatch(calls[2][1], /done|❌/i, 'a decline reads softer, not as a flat rejection of "done"');
+});
+
+test('notifySuggestionResolved truncates a long suggestion in the echoed confirmation', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longContent = 'x'.repeat(500);
+
+  await notifySuggestionResolved(adapter, 'user-1', 'done', longContent);
+
+  assert.ok(!calls[0].includes(longContent), 'the full 500-char suggestion must not appear verbatim');
+  assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed content is truncated with an ellipsis');
+});
+
+test('notifySuggestionResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode'));
 });
 
 test('SECURITY: moderation_history rejects an actionKind outside the allow-list at the zod schema boundary', () => {
@@ -270,5 +318,135 @@ test(
 
     assert.match(text, /% match\)/, 'a genuinely relevant hit must surface its match percentage');
     assert.match(text, new RegExp(uniqueTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  },
+);
+
+// resolve_suggestion tool handler (issue #116): notifySuggestionResolved
+// itself is unit-tested above without the MCP transport; these exercise the
+// handler's wiring — the same-platform guard in particular — against a real
+// resolved row, which requires the DB.
+function resolveSuggestionHandler(caller: { platform: 'discord' | 'whatsapp'; adapter: PlatformAdapter }) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            id: number;
+            status: 'reviewed' | 'declined' | 'done';
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['resolve_suggestion'];
+}
+
+test(
+  'resolve_suggestion sends the submitter a DM when resolved on their own platform (issue #116)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: RESOLVE_SUGGESTION_HANDLER_USER,
+      content: 'same-platform resolution',
+    });
+    assert.ok(created);
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, text) => {
+      calls.push([userId, text]);
+    });
+
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'done',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked done/);
+    assert.equal(calls.length, 1, 'the submitter is notified when the admin is on the same platform');
+    assert.equal(calls[0][0], RESOLVE_SUGGESTION_HANDLER_USER);
+    assert.match(calls[0][1], /done/i);
+  },
+);
+
+test(
+  'SECURITY: resolve_suggestion sends no DM when the resolving admin is on a different platform than the suggestion (issue #116)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'whatsapp',
+      userId: RESOLVE_SUGGESTION_HANDLER_USER,
+      content: 'cross-platform resolution must not misaddress a DM',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // The suggestion was filed on whatsapp; the admin resolving it is
+    // calling from discord — sendDirectMessage must never fire, since the
+    // per-turn adapter has no way to reach the whatsapp identity safely.
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'done',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked done/, 'resolution itself still succeeds');
+    assert.equal(calls.length, 0, 'a cross-platform resolution sends no DM');
+  },
+);
+
+test(
+  'resolve_suggestion sends no DM and reports failure for an unknown suggestion id (issue #116)',
+  { skip },
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: 999_999_999,
+      status: 'done',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /Failed/);
+    assert.equal(calls.length, 0, 'no row resolved means no notification');
+  },
+);
+
+test(
+  "resolve_suggestion's own reported outcome is unaffected by a DM delivery failure (issue #116)",
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: RESOLVE_SUGGESTION_HANDLER_USER,
+      content: 'DM will fail to send',
+    });
+    assert.ok(created);
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+
+    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'done',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked done/, 'resolve_suggestion still reports success');
   },
 );
