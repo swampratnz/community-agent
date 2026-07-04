@@ -121,6 +121,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the trigger — it's a coarse proxy for shared Max-pool draw that can't
   silently under-report the way `cost_usd` can (see below). No auto-pause;
   a super admin decides.
+- A thrown `query()` error whose message matches a small, anchored
+  usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
+  honest member-facing reply instead of the generic internal-error one, and
+  optionally (`UPSTREAM_LIMIT_ALERT_ENABLED`, off by default) a debounced
+  super-admin DM — same `sendDirectMessage` path, same "no auto-pause, a
+  super admin decides" posture. Only the error's own message is inspected
+  (never user-supplied text), and both the member reply and the admin DM
+  are always one of a small set of fixed strings — the raw error is never
+  echoed.
 
 ### 4. Moderation misuse / accountability
 **Controls**
@@ -488,7 +497,12 @@ the supported path.
   (null-scope) super-admin view, never a scoped admin. This is a deliberate,
   documented default (not a silent drop): the report is still recorded and
   retrievable, just only by super admins, until/unless a routing mechanism
-  for DM-originated reports is added.
+  for DM-originated reports is added. This risk is narrowed, not eliminated,
+  by issue #90: filing a report now proactively DMs every super admin the
+  moment it's created (`notifyReportFiled`), so a DM-originated report no
+  longer sits unseen until someone thinks to poll `list_reports` —
+  conversation-scoped admins still can't see it via `list_reports` until
+  that routing mechanism exists.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
 - **Suggestion-resolution DMs are same-platform-only** (issue #116): resolving

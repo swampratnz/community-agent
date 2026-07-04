@@ -109,6 +109,14 @@ const EnvSchema = z.object({
   // vs long replies draw differently; tune to your traffic). Unset/0 =
   // disabled (no timer, no behaviour change on upgrade).
   USAGE_ALERT_DAILY_REPLIES: z.coerce.number().int().nonnegative().default(0),
+  // Debounced super-admin DM when an agent turn fails on an upstream Claude
+  // usage-limit/overload condition (issue #131) — distinct from usage-alert's
+  // proactive threshold on successful replies. Off by default, consistent
+  // with this repo's convention for new proactive DMs.
+  UPSTREAM_LIMIT_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Offline context builder (issue #51): distills stored interactions into
   // durable context_digests on a ~daily cadence. Off by default; when on,
   // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
@@ -269,6 +277,7 @@ export const config = {
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
     usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
+    upstreamLimitAlertEnabled: env.UPSTREAM_LIMIT_ALERT_ENABLED ?? false,
     ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
   },
   log: {

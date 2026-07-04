@@ -257,6 +257,43 @@ export async function notifyReportResolved(
 }
 
 /**
+ * Proactive super-admin alert fired the moment a report is filed, instead of
+ * relying on an admin to remember to poll `list_reports` (issue #90) — reuses
+ * `notifySuperAdmins`, the exact mechanism `audited()` already uses for every
+ * other privileged-action alert. Not batched/debounced: unlike the usage/
+ * disconnect alerts (which debounce a *persisting condition*), a report is a
+ * discrete "someone needs help" event where the first one matters as much as
+ * the tenth — the existing per-reporter rate cap already bounds volume.
+ * Exposes no new data: the reporter/reason/target were already visible to
+ * super admins via `list_reports`; this only changes when they're seen. The
+ * reporter-supplied `reason` is quoted (`Reporter said: "..."`) so a crafted
+ * reason can't cosmetically impersonate the 🔔 system-alert prefix to the
+ * human reading it. Exported separately so it's unit-testable without the MCP
+ * tool-call transport, same convention as notifyReportResolved.
+ */
+export async function notifyReportFiled(
+  adapter: PlatformAdapter,
+  platform: Platform,
+  report: {
+    id: number;
+    reporterUserId: string;
+    reporterName: string | null;
+    conversationId: string;
+    targetUserId?: string;
+    messageId?: string;
+    reason: string;
+  },
+): Promise<void> {
+  const lines = [
+    `New report #${report.id} filed by ${report.reporterName ?? report.reporterUserId} in conversation ${report.conversationId}.`,
+    `Reporter said: "${report.reason}"`,
+  ];
+  if (report.targetUserId) lines.push(`Target user: ${report.targetUserId}`);
+  if (report.messageId) lines.push(`Message id: ${report.messageId}`);
+  await notifySuperAdmins(adapter, platform, lines.join('\n'), report.reporterUserId);
+}
+
+/**
  * Build the in-process MCP tool server for one agent turn. The tools close
  * over the caller context and the adapter handling this conversation, so
  * RBAC and platform routing are baked in. Layers:
@@ -486,6 +523,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           true,
         );
       }
+      void notifyReportFiled(adapter, caller.platform, {
+        id: created.id,
+        reporterUserId: caller.userId,
+        reporterName: caller.userName,
+        conversationId: caller.conversationId,
+        targetUserId: args.targetUserId,
+        messageId: args.messageId,
+        reason: args.reason,
+      });
       return text(`Report #${created.id} recorded for this conversation's admins. Thanks for flagging it.`);
     },
   );

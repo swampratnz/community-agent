@@ -1158,6 +1158,16 @@ export async function clearAccessRequest(platform: Platform, userId: string): Pr
   await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
 }
 
+/**
+ * Exact pending-guest count — a dedicated `COUNT(*)` rather than
+ * `(await listAccessRequests()).length`, which would silently understate a
+ * backlog past that function's `limit` (default 50) cap.
+ */
+export async function countAccessRequests(): Promise<number> {
+  const { rows } = await pool.query(`SELECT count(*) AS n FROM access_requests`);
+  return Number(rows[0].n);
+}
+
 // --- Context digests (offline builder output, issue #51) ---------------------
 
 export interface ContextDigest {
@@ -1810,6 +1820,26 @@ export async function listReports(
     params,
   );
   return rows.map(mapContentReport);
+}
+
+/**
+ * Exact open-report count, scoped like `listReports` (`conversationIds`
+ * null = unrestricted/super admin) — a dedicated `COUNT(*)` rather than
+ * `(await listReports(scope, 'open')).length`, which would silently
+ * understate a backlog past that function's clamped (≤200) `limit`.
+ */
+export async function countOpenReports(conversationIds: readonly string[] | null): Promise<number> {
+  const params: unknown[] = [];
+  const filters: string[] = [`status = 'open'`];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`conversation_id = ANY($${params.length})`);
+  }
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM content_reports WHERE ${filters.join(' AND ')}`,
+    params,
+  );
+  return Number(rows[0].n);
 }
 
 /**

@@ -50,6 +50,7 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/agent/core.ts` | Runs one agent turn: memory recall → prompt → `query()` → reply. |
 | `src/agent/tools.ts` | In-process MCP tools (search memory/knowledge, moderate, announce, …). |
 | `src/agent/auth.ts` | Forces Claude **subscription** auth via `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `src/agent/upstreamFailure.ts` | Classifies a usage-limit/overload `query()` failure vs. a generic internal error, + the debounce latch for the optional super-admin DM. |
 | `src/storage/*` | Postgres pool, schema, migrations, embeddings, repository. |
 | `src/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
 | `src/health.ts` / `src/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
@@ -112,9 +113,16 @@ memory**:
    call the tool: a daily timer (off unless `ADMIN_DIGEST_ENABLED`) DMs each
    `community_users` admin at most once a week — restart-safe via the
    `admin_digest_sends` freshness table — with their own scoped
-   `recentQuestionClusters` result, and sends nothing on a quiet week (no
-   clusters, no DM, no noise). Super admins are not enrolled; they keep the
-   on-demand, all-conversation-scoped `question_digest` tool instead.
+   `recentQuestionClusters` result, plus (issue #133) a guild-wide pending
+   access-request count and their own scoped open-report count, sourced from
+   dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`) so a
+   backlog past `list_access_requests`/`list_reports`'s own list `limit` is
+   never understated. The DM sends when *any* of the three signals is
+   non-zero, and sends nothing on a quiet week (all zero, no DM, no noise);
+   a persistently untriaged queue re-appears every subsequent weekly tick
+   until it's cleared. Super admins are not enrolled; they keep the
+   on-demand, all-conversation-scoped `question_digest`/`list_access_requests`/
+   `list_reports` tools instead.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -317,7 +325,12 @@ applied to abuse reports instead of pending guests:
    current one — a member can only report within a conversation they're
    actually in. Capped at 5 submissions per rolling 24h, enforced with a
    DB-backed count (survives a restart; see SECURITY.md), so the queue
-   itself can't become a spam vector against admin attention.
+   itself can't become a spam vector against admin attention. Filing a
+   report also proactively DMs every super admin (`notifyReportFiled`,
+   issue #90, same fire-and-forget shape as `notifySuperAdmins`'s other
+   callers) instead of relying on someone remembering to poll
+   `list_reports` — the reporter-supplied reason is quoted so it can't
+   cosmetically impersonate the alert's own `🔔` system prefix.
 2. Admins triage with `list_reports` (conversation-scoped, same pattern as
    `moderation_history`) and `resolve_report` (marks `resolved`/`dismissed`,
    audited, non-destructive so no CONFIRM gate). Resolving a report
@@ -455,6 +468,34 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   `health.ts`'s disconnect alert already uses. No new privileged tool, no
   new RBAC surface, no auto-`pause_bot` — a super admin decides whether to
   pause manually.
+
+`usageAlert.ts` is a **proactive** check on successful outbound reply
+*counts* — it says nothing about a turn actively **failing** because the
+upstream Claude call itself was rejected for hitting a limit or being
+overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
+
+- `execTurn`'s `catch` block (agent/core.ts) classifies a thrown `query()`
+  error by matching its message against a small, anchored set of known
+  substrings (`rate_limit`, `usage limit`, `429`, `overloaded_error`,
+  `quota` — case-insensitive). Only the SDK/CLI's own error message is
+  inspected, never user-supplied text, and the reply is always one of two
+  fixed strings — the raw error is never echoed to the member.
+- On a match, the member gets an honest "this bot has hit its shared usage
+  limit, not a bug, try again later" reply instead of the generic
+  `INTERNAL_ERROR_REPLY` — "please try again" is actively misleading when
+  the shared pool is genuinely exhausted. The `resultSubtype !== 'success'`
+  branch (e.g. `error_max_turns`) is untouched: per the SDK's own behaviour,
+  a usage-limit/overload condition surfaces as a thrown error, not a clean
+  result subtype.
+- Off unless `UPSTREAM_LIMIT_ALERT_ENABLED` is set (consistent with this
+  repo's convention for new proactive DMs). When on, a debounced latch
+  (`stepUsageLimitTracker`, pure and unit-tested like `healthState.ts`'s
+  disconnect tracker) DMs super admins on the platform that saw the
+  failure — one DM per ongoing window, silent re-arm the next time a turn
+  doesn't hit the classifier. The reply text only claims "an admin has been
+  notified" when this flag is actually on.
+- No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
+  decides.
 
 ## Switching WhatsApp providers
 

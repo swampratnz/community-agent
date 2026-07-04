@@ -35,7 +35,11 @@ const {
   createContentReport,
   listReports,
   resolveContentReport,
+  countOpenReports,
   REPORT_RATE_LIMIT_PER_DAY,
+  recordAccessRequest,
+  countAccessRequests,
+  clearAccessRequest,
   upsertRosterMember,
   markRosterLeave,
   listRoster,
@@ -910,6 +914,114 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
 
   await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
 });
+
+test(
+  'SECURITY: repository: countOpenReports scopes by conversation and counts only open status',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-countreports-in`;
+    const outOfScopeConvo = `${RUN}-c-countreports-out`;
+    const reporter = `${RUN}-countreports-reporter`;
+
+    const open1 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: inScopeConvo,
+      reason: 'in scope, open, one',
+    });
+    const open2 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: inScopeConvo,
+      reason: 'in scope, open, two',
+    });
+    const outOfScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: outOfScopeConvo,
+      reason: 'must NOT be counted — admin is not in this conversation',
+    });
+    assert.ok(open1 && open2 && outOfScope);
+
+    const scopedCount = await countOpenReports([inScopeConvo]);
+    assert.equal(scopedCount, 2, 'counts only open reports from the scoped conversation');
+
+    const unscopedCount = await countOpenReports(null);
+    assert.ok(
+      unscopedCount >= scopedCount + 1,
+      'null scope (super admin) is unrestricted and includes the out-of-scope conversation too',
+    );
+
+    await resolveContentReport(open1.id, 'resolved', `${RUN}-countreports-resolver`);
+    assert.equal(
+      await countOpenReports([inScopeConvo]),
+      1,
+      'a resolved report no longer counts toward the open total',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[open1.id, open2.id, outOfScope.id]]);
+  },
+);
+
+test(
+  'repository: countOpenReports is exact past the 200-row listReports clamp (issue #133)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-countreports-many`;
+    const reporter = `${RUN}-countreports-many-reporter`;
+    const TOTAL = 205;
+
+    const values: string[] = [];
+    const params: unknown[] = [];
+    for (let i = 0; i < TOTAL; i++) {
+      params.push('discord', reporter, conversationId, `bulk report ${i}`);
+      values.push(`($${params.length - 3}, $${params.length - 2}, $${params.length - 1}, $${params.length})`);
+    }
+    await pool.query(
+      `INSERT INTO content_reports (platform, reporter_user_id, conversation_id, reason) VALUES ${values.join(', ')}`,
+      params,
+    );
+
+    const listed = await listReports([conversationId], 'open', 200);
+    assert.equal(listed.length, 200, 'listReports is clamped at 200, understating the true backlog');
+
+    assert.equal(
+      await countOpenReports([conversationId]),
+      TOTAL,
+      'countOpenReports reports the exact backlog, not the clamped list length',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: countAccessRequests is exact and unaffected by listAccessRequests default limit (issue #133)',
+  { skip },
+  async () => {
+    const before = await countAccessRequests();
+    const TOTAL = 55; // exceeds listAccessRequests's default limit of 50
+    const userIds = Array.from({ length: TOTAL }, (_, i) => `${RUN}-countaccessreq-${i}`);
+    for (const userId of userIds) {
+      await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    }
+
+    assert.equal(
+      await countAccessRequests(),
+      before + TOTAL,
+      "countAccessRequests reflects the full backlog, not capped at listAccessRequests's default 50",
+    );
+
+    for (const userId of userIds) {
+      await clearAccessRequest('discord', userId);
+    }
+    assert.equal(
+      await countAccessRequests(),
+      before,
+      'clearing every inserted request restores the prior count',
+    );
+  },
+);
 
 test(
   'repository: createSuggestion enforces a DB-backed rolling-24h cap per user, robust to a simulated restart (issue #46)',
