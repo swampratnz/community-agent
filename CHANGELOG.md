@@ -31,6 +31,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 - Pipeline loops documented as cloud Routines (#16).
 
 ### Fixed
+- Membership tools (`add_member`, `grant_admin`, `remove_member`, `revoke_admin`) can now target either platform via an optional `platform` argument instead of always assuming the caller's; ids are shape-validated so a WhatsApp number can no longer be filed as a Discord user (#78).
 - Blank optional numeric env vars (e.g. `HEALTH_PORT=`) no longer fail config validation (#40).
 - Build-worker verify step hardened against spoofed or stale PRs (#30).
 - Build worker uses an explicit allowedTools list and deterministic PR verification (#29).
