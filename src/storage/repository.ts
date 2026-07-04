@@ -180,10 +180,10 @@ export async function searchMemory(
  * never stored, e.g. pre-archiving or a bot message).
  */
 export async function deleteInteractionByMessageId(platform: Platform, messageId: string): Promise<number> {
-  const { rowCount } = await pool.query(
-    `DELETE FROM interactions WHERE platform = $1 AND message_id = $2`,
-    [platform, messageId],
-  );
+  const { rowCount } = await pool.query(`DELETE FROM interactions WHERE platform = $1 AND message_id = $2`, [
+    platform,
+    messageId,
+  ]);
   return rowCount ?? 0;
 }
 

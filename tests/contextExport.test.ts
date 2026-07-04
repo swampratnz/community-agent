@@ -97,10 +97,7 @@ test('scrubPII leaves ordinary prose, years, and short counts alone', () => {
 });
 
 test('an export with nothing above the floor says so instead of rendering nothing', () => {
-  const { markdown, included } = renderCommunityContextExport(
-    [digest({ distinctUsers: 1 })],
-    OPTS,
-  );
+  const { markdown, included } = renderCommunityContextExport([digest({ distinctUsers: 1 })], OPTS);
   assert.equal(included, 0);
   assert.match(markdown, /No topics cleared the export floor/);
 });

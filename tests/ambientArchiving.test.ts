@@ -122,9 +122,7 @@ test(
     router.register(adapter);
 
     const userId = `${RUN}-guest`;
-    await trigger(
-      channelMessage({ userId, messageId: `${RUN}-m1`, text: 'guest talking among themselves' }),
-    );
+    await trigger(channelMessage({ userId, messageId: `${RUN}-m1`, text: 'guest talking among themselves' }));
 
     const rows = await waitForRows(userId);
     assert.equal(rows.length, 1, 'the guest channel message is archived');
@@ -190,10 +188,9 @@ test(
     const deadline = Date.now() + 30_000;
     let rows: Array<Record<string, unknown>> = [];
     while (Date.now() < deadline) {
-      ({ rows } = await pool.query(
-        `SELECT kind, message_id FROM interactions WHERE conversation_id = $1`,
-        [`${RUN}-chan-member`],
-      ));
+      ({ rows } = await pool.query(`SELECT kind, message_id FROM interactions WHERE conversation_id = $1`, [
+        `${RUN}-chan-member`,
+      ]));
       if (rows.length > 0) break;
       await sleep(100);
     }

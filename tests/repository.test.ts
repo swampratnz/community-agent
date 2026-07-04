@@ -810,10 +810,11 @@ test(
     // one, but the DB-backed COUNT(*) refuses it (same pattern as the
     // content_reports cap test).
     for (let i = 0; i < SUGGESTION_RATE_LIMIT_PER_DAY; i++) {
-      await pool.query(
-        `INSERT INTO suggestions (platform, user_id, content) VALUES ($1,$2,$3)`,
-        ['discord', userId, `prior-process suggestion ${i}`],
-      );
+      await pool.query(`INSERT INTO suggestions (platform, user_id, content) VALUES ($1,$2,$3)`, [
+        'discord',
+        userId,
+        `prior-process suggestion ${i}`,
+      ]);
     }
 
     const rejected = await createSuggestion({
@@ -823,9 +824,7 @@ test(
     });
     assert.equal(rejected, null, 'the (cap+1)th suggestion in 24h is refused');
 
-    const countAfter = await pool.query(`SELECT count(*) AS n FROM suggestions WHERE user_id = $1`, [
-      userId,
-    ]);
+    const countAfter = await pool.query(`SELECT count(*) AS n FROM suggestions WHERE user_id = $1`, [userId]);
     assert.equal(
       Number(countAfter.rows[0].n),
       SUGGESTION_RATE_LIMIT_PER_DAY,

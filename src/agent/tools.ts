@@ -350,7 +350,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const suggestImprovement = tool(
     'suggest_improvement',
-    'Record a member\'s suggestion for how this assistant/community bot could be improved, so the human ' +
+    "Record a member's suggestion for how this assistant/community bot could be improved, so the human " +
       'maintainers see it. Capture only: a human reviews these and decides — never promise the change ' +
       'will be built. Members cannot read the queue back; admins triage it with list_suggestions.',
     {
@@ -747,7 +747,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const listMemberNotesTool = tool(
     'list_member_notes',
-    "Show the admin-curated context notes kept about one member. Notes are admin-only reading — they never appear on member turns, in knowledge_search, or in memory recall. Admin only.",
+    'Show the admin-curated context notes kept about one member. Notes are admin-only reading — they never appear on member turns, in knowledge_search, or in memory recall. Admin only.',
     { userId: z.string().min(1).describe('Platform user id of the member'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_member_notes');
@@ -757,11 +757,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       return text(
         untrusted(
           `Notes for ${userId}`,
-          notes
-            .map(
-              (n) => `#${n.id} [${n.createdAt.toISOString()} by ${n.createdBy}] ${n.note}`,
-            )
-            .join('\n'),
+          notes.map((n) => `#${n.id} [${n.createdAt.toISOString()} by ${n.createdBy}] ${n.note}`).join('\n'),
         ),
       );
     },
