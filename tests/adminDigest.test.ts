@@ -21,8 +21,17 @@ const skip = hasDb
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { upsertMember, recordAdminDigestSent, wasAdminDigestSentRecently, listAdmins, purgeUserData } =
-  await import('../src/storage/repository.js');
+const {
+  upsertMember,
+  recordAdminDigestSent,
+  wasAdminDigestSentRecently,
+  listAdmins,
+  purgeUserData,
+  recordAccessRequest,
+  clearAccessRequest,
+  countAccessRequests,
+  createContentReport,
+} = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
 const pgvector = (await import('pgvector/pg')).default;
@@ -39,8 +48,8 @@ test('startAdminDigest: ADMIN_DIGEST_ENABLED unset (default) creates no timer', 
   assert.equal(timer, null, 'disabled by default — no timer, no extra queries');
 });
 
-test('buildAdminDigestMessage: empty clusters -> null (no send, no noise on a quiet week)', () => {
-  assert.equal(buildAdminDigestMessage([]), null);
+test('buildAdminDigestMessage: all three signals zero -> null (no send, no noise on a quiet week)', () => {
+  assert.equal(buildAdminDigestMessage([], 0, 0), null);
 });
 
 test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each length-bounded', () => {
@@ -50,7 +59,7 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
     count: i + 2,
   }));
 
-  const message = buildAdminDigestMessage(clusters);
+  const message = buildAdminDigestMessage(clusters, 0, 0);
   assert.ok(message, 'non-empty clusters produce a message');
   assert.match(message, /^🔔 7 recurring question\(s\)/);
   assert.ok(message.includes('question_digest'), 'points the admin at the on-demand tool for full detail');
@@ -62,6 +71,36 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
     assert.ok(match, `line matches the expected format: ${line}`);
     assert.ok(match[1].length <= 300, 'each snippet is truncated to 300 chars, mirroring question_digest');
   }
+});
+
+test('buildAdminDigestMessage: pending-access-request line appears only when count > 0 (issue #133)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0),
+    null,
+    'zero pending requests alongside zero clusters/reports is still a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 3, 0);
+  assert.ok(message, 'a non-zero pending-request count alone still produces a DM');
+  assert.match(message, /⏳ 3 pending access request\(s\) — run `list_access_requests`\./);
+  assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
+  assert.ok(!message.includes('🚩'), 'no report line when there are no open reports');
+});
+
+test('buildAdminDigestMessage: open-report line appears only when count > 0 (issue #133)', () => {
+  const message = buildAdminDigestMessage([], 0, 2);
+  assert.ok(message, 'a non-zero open-report count alone still produces a DM');
+  assert.match(message, /🚩 2 open report\(s\) in your conversations — run `list_reports`\./);
+  assert.ok(!message.includes('⏳'), 'no pending-request line when the count is zero');
+});
+
+test('buildAdminDigestMessage: all three signals non-zero -> all three lines present', () => {
+  const clusters = [{ representative: 'a repeated question', count: 4 }];
+  const message = buildAdminDigestMessage(clusters, 1, 1);
+  assert.ok(message);
+  assert.ok(message.includes('🔔'), 'cluster line present');
+  assert.ok(message.includes('⏳'), 'pending-request line present');
+  assert.ok(message.includes('🚩'), 'open-report line present');
 });
 
 function fakeAdapter(opts: {
@@ -201,27 +240,47 @@ test(
 );
 
 test(
-  'runAdminDigestOnce: an admin past the window with zero clusters sends nothing and does not update the freshness row',
+  'runAdminDigestOnce: an admin past the window with all three signals at zero sends nothing and does not update the freshness row (issue #133)',
   { skip },
   async () => {
     const adminId = `${RUN}-run-quiet-admin`;
     await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
 
     const sent: Array<{ userId: string; text: string }> = [];
+    // A conversation id unique to this test guarantees zero clusters and zero
+    // open reports in scope. countAccessRequests is guild-wide by design
+    // (issue #133) and so is NOT test-isolated by a unique id — snapshot it
+    // immediately beforehand so this assertion holds even if another test
+    // file concurrently has a pending access request in flight.
     const adapter = fakeAdapter({ platform: 'discord', conversationIds: [`${RUN}-c-empty`], sent });
+    const pendingAccessRequestsBefore = await countAccessRequests();
 
     await runAdminDigestOnce([adapter]);
-    assert.equal(sent.length, 0, 'no clusters in scope — no DM sent');
 
-    assert.equal(
-      await wasAdminDigestSentRecently('discord', adminId, 7),
-      false,
-      'a quiet run must not touch the freshness row (so a later clustered week is not skipped)',
-    );
+    if (pendingAccessRequestsBefore === 0) {
+      assert.equal(sent.length, 0, 'zero clusters, zero pending requests, zero open reports — no DM sent');
+      assert.equal(
+        await wasAdminDigestSentRecently('discord', adminId, 7),
+        false,
+        'a quiet run must not touch the freshness row (so a later clustered week is not skipped)',
+      );
+    } else {
+      // Extremely rare in practice, but countAccessRequests is intentionally
+      // unscoped — a concurrently-running test file's pending access request
+      // legitimately makes this a non-quiet week, so the digest correctly sends.
+      assert.equal(
+        sent.length,
+        1,
+        'a pre-existing pending access request still legitimately triggers a digest',
+      );
+      assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
+      assert.ok(!sent[0].text.includes('🚩'), 'no report line — this admin has zero open reports in scope');
+    }
 
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
   },
 );
 
@@ -275,6 +334,149 @@ test(
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
       [inScopeConvo, outOfScopeConvo],
     ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: an admin with zero recurring-question clusters but a pending access request and an open report still receives a digest (issue #133 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-queues-admin`;
+    const conversationId = `${RUN}-c-run-queues`;
+    const requesterId = `${RUN}-run-queues-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const report = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-run-queues-reporter`,
+      conversationId,
+      reason: 'open report with zero recurring-question clusters',
+    });
+    assert.ok(report);
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'guest' });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(
+      sent.length,
+      1,
+      'zero clusters today would previously mean no DM — the pending queue signals now still trigger one',
+    );
+    assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
+    assert.match(
+      sent[0].text,
+      /⏳ \d+ pending access request\(s\) — run `list_access_requests`\./,
+      'the pending-access-request line is present',
+    );
+    assert.match(
+      sent[0].text,
+      /🚩 1 open report\(s\) in your conversations — run `list_reports`\./,
+      'the open-report line is present with the exact scoped count',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
+    await clearAccessRequest('discord', requesterId);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the open-report count is scoped to the conversations the admin participates in, excluding others (issue #133)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-reportscope-admin`;
+    const inScopeConvo = `${RUN}-c-run-reportscope-in`;
+    const outOfScopeConvo = `${RUN}-c-run-reportscope-out`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const inScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-run-reportscope-reporter`,
+      conversationId: inScopeConvo,
+      reason: 'in-scope open report',
+    });
+    const outOfScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-run-reportscope-reporter`,
+      conversationId: outOfScopeConvo,
+      reason: 'must NOT be counted — admin does not participate in this conversation',
+    });
+    assert.ok(inScope && outOfScope);
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [inScopeConvo], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1);
+    assert.match(
+      sent[0].text,
+      /🚩 1 open report\(s\)/,
+      'SECURITY: the count reflects only the in-scope conversation, never the out-of-scope one',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: a still-open report re-appears in the digest on the next weekly tick (persistent-nag by design, issue #133)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-nag-admin`;
+    const conversationId = `${RUN}-c-run-nag`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const report = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-run-nag-reporter`,
+      conversationId,
+      reason: 'left open across two weekly ticks',
+    });
+    assert.ok(report);
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+    assert.equal(sent.length, 1, 'first tick sends the digest with the open report');
+
+    // Simulate the freshness window elapsing, exactly like the freshness test above.
+    await pool.query(
+      `UPDATE admin_digest_sends SET sent_at = now() - interval '8 days'
+        WHERE platform = $1 AND platform_user_id = $2`,
+      ['discord', adminId],
+    );
+
+    await runAdminDigestOnce([adapter]);
+    assert.equal(sent.length, 2, 'the still-open report triggers a second digest on the next weekly tick');
+    assert.match(
+      sent[1].text,
+      /🚩 1 open report\(s\)/,
+      'the persistent-nag behaviour is intended, not a bug — the same open report resurfaces every week',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
