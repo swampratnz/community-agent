@@ -566,6 +566,28 @@ export async function demoteAdmin(platform: Platform, userId: string): Promise<b
   return (rowCount ?? 0) > 0;
 }
 
+export interface AdminIdentity {
+  platform: Platform;
+  platformUserId: string;
+}
+
+/**
+ * All admin-tier identities (`community_users.role = 'admin'`), for the
+ * weekly admin digest (issue #97) to enumerate recipients. Super admins are
+ * env-sourced (`superAdminIds`) and deliberately excluded here — they keep
+ * the on-demand, all-conversation-scoped `question_digest` tool instead of
+ * this per-admin scoped push.
+ */
+export async function listAdmins(): Promise<AdminIdentity[]> {
+  const { rows } = await pool.query(
+    `SELECT platform, platform_user_id FROM community_users WHERE role = 'admin'`,
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    platformUserId: r.platform_user_id as string,
+  }));
+}
+
 /** Remove a member row entirely. Refuses to remove admins (revoke first). */
 /**
  * If a person group is left with fewer than two members, dissolve it: clear
@@ -842,8 +864,20 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
     [platform, userId],
   );
+  // admin_digest_sends (issue #97) is keyed on the same (platform, user id)
+  // identity — purge coherence for an offboarded admin.
+  const { rowCount: digestSends } = await pool.query(
+    `DELETE FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
+    [platform, userId],
+  );
   return (
-    (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0) + (notes ?? 0) + (suggestions ?? 0)
+    (messages ?? 0) +
+    (knowledge ?? 0) +
+    (reports ?? 0) +
+    (roster ?? 0) +
+    (notes ?? 0) +
+    (suggestions ?? 0) +
+    (digestSends ?? 0)
   );
 }
 
@@ -1572,6 +1606,37 @@ export async function recentQuestionClusters(
     .sort((a, b) => b.count - a.count)
     .slice(0, clampedLimit)
     .map((c) => ({ representative: c.representative, count: c.count }));
+}
+
+// --- Admin digest freshness guard (issue #97) --------------------------------
+
+/**
+ * True if this admin identity was already sent the weekly digest within the
+ * last `days` — the restart-safe check `src/adminDigest.ts` uses so a
+ * redeploy mid-week can't double-send.
+ */
+export async function wasAdminDigestSentRecently(
+  platform: Platform,
+  platformUserId: string,
+  days: number,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM admin_digest_sends
+      WHERE platform = $1 AND platform_user_id = $2
+        AND sent_at > now() - ($3 || ' days')::interval`,
+    [platform, platformUserId, days],
+  );
+  return rows.length > 0;
+}
+
+/** Record that the weekly admin digest was just sent to this identity. */
+export async function recordAdminDigestSent(platform: Platform, platformUserId: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO admin_digest_sends (platform, platform_user_id, sent_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (platform, platform_user_id) DO UPDATE SET sent_at = now()`,
+    [platform, platformUserId],
+  );
 }
 
 // --- Content reports (member-facing abuse/spam intake) -----------------------

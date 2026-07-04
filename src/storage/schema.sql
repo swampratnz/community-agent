@@ -320,3 +320,18 @@ CREATE INDEX IF NOT EXISTS content_reports_conversation_idx
 -- Backs the per-reporter rolling-24h rate cap (see repository.ts createContentReport).
 CREATE INDEX IF NOT EXISTS content_reports_reporter_rate_idx
   ON content_reports (platform, reporter_user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard for the weekly proactive admin
+-- recurring-questions digest (issue #97): one row per admin identity, so a
+-- redeploy/restart mid-week can't re-send within the same freshness window.
+-- Identity + timestamp only — no message content, no cluster text — and
+-- deletable by forget_me/purge_user_data alongside other admin-identity-keyed
+-- rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_digest_sends (
+  platform         TEXT        NOT NULL,
+  platform_user_id TEXT        NOT NULL,
+  sent_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (platform, platform_user_id)
+);

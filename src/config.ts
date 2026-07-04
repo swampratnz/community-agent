@@ -127,6 +127,15 @@ const EnvSchema = z.object({
   CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
   CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
   CONTEXT_EXPORT_PATH: z.string().default('docs/COMMUNITY-CONTEXT.md'),
+  // Weekly proactive per-admin DM digest of recurring-question clusters in
+  // their own scoped conversations (issue #97) — a push companion to the
+  // on-demand `question_digest` tool. Off by default (no timer, no extra
+  // queries). Recipients are `community_users` admins only; super admins keep
+  // the on-demand tool instead (see storage/repository.ts:listAdmins).
+  ADMIN_DIGEST_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
   // with no other content — sends one static reply instead. Off by default;
   // an operator opts in after confirming the canned reply tone fits their
@@ -239,6 +248,9 @@ export const config = {
     windowDays: env.CONTEXT_EXPORT_WINDOW_DAYS,
     minDistinctUsers: env.CONTEXT_EXPORT_MIN_DISTINCT_USERS,
     path: env.CONTEXT_EXPORT_PATH,
+  },
+  adminDigest: {
+    enabled: env.ADMIN_DIGEST_ENABLED ?? false,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

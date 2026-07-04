@@ -90,7 +90,14 @@ memory**:
    CONFIRM-gated). `question_digest` closes the discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
-   patterns worth turning into a knowledge entry.
+   patterns worth turning into a knowledge entry. `src/adminDigest.ts` (issue
+   #97) pushes this same signal proactively instead of relying on an admin to
+   call the tool: a daily timer (off unless `ADMIN_DIGEST_ENABLED`) DMs each
+   `community_users` admin at most once a week — restart-safe via the
+   `admin_digest_sends` freshness table — with their own scoped
+   `recentQuestionClusters` result, and sends nothing on a quiet week (no
+   clusters, no DM, no noise). Super admins are not enrolled; they keep the
+   on-demand, all-conversation-scoped `question_digest` tool instead.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
