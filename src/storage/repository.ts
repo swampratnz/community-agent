@@ -17,6 +17,10 @@ export interface InteractionInput {
   isDirect?: boolean;
   costUsd?: number;
   meta?: Record<string, unknown>;
+  /** Platform-native message id, for delete/edit honouring (issue #48). */
+  messageId?: string;
+  /** 'addressed' (to the bot / DM) vs 'ambient' channel chatter (issue #48). */
+  kind?: 'addressed' | 'ambient';
 }
 
 /** Persist one interaction, embedding its content for later semantic recall. */
@@ -33,8 +37,9 @@ export async function recordInteraction(input: InteractionInput): Promise<void> 
     pool.query(
       `INSERT INTO interactions
          (platform, conversation_id, user_id, user_name, role, direction,
-          content, addressed_to_bot, is_direct, cost_usd, meta, embedding)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          content, addressed_to_bot, is_direct, cost_usd, meta, embedding,
+          message_id, kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         input.platform,
         input.conversationId,
@@ -48,6 +53,8 @@ export async function recordInteraction(input: InteractionInput): Promise<void> 
         input.costUsd ?? null,
         JSON.stringify(input.meta ?? {}),
         vec ? pgvector.toSql(vec) : null,
+        input.messageId ?? null,
+        input.kind ?? 'addressed',
       ],
     );
 
@@ -165,6 +172,43 @@ export async function searchMemory(
     createdAt: r.created_at,
     similarity: Number(r.similarity),
   }));
+}
+
+/**
+ * Honour a platform-level message deletion (issue #48): hard-delete the
+ * stored copy. Returns the number of rows removed (0 when the message was
+ * never stored, e.g. pre-archiving or a bot message).
+ */
+export async function deleteInteractionByMessageId(platform: Platform, messageId: string): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM interactions WHERE platform = $1 AND message_id = $2`,
+    [platform, messageId],
+  );
+  return rowCount ?? 0;
+}
+
+/**
+ * Honour a platform-level message edit (issue #48): replace the stored
+ * content and re-embed it (NULL embedding on failure, same best-effort
+ * fallback as recordInteraction). Returns false if no stored row matched.
+ */
+export async function updateInteractionByMessageId(
+  platform: Platform,
+  messageId: string,
+  content: string,
+): Promise<boolean> {
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(content);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for edited message; storing update without vector');
+  }
+  const { rowCount } = await pool.query(
+    `UPDATE interactions SET content = $3, embedding = $4
+      WHERE platform = $1 AND message_id = $2`,
+    [platform, messageId, content, embedding ? pgvector.toSql(embedding) : null],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 /** Recent turns in a conversation, oldest-first, for short-term context. */

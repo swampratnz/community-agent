@@ -117,6 +117,40 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - All messages are stored for memory/audit. **Inform your community** that an
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
+- **Ambient channel archiving** (`DISCORD_ARCHIVE_ALL_MESSAGES`, issue #48,
+  off by default): when enabled, EVERY message posted in the guild's allowed
+  channels is stored with an embedding and its Discord message id —
+  member, guest, or lurker, addressed to the bot or not. This is the
+  project's founding "store all interactions so it can learn" goal, enabled
+  deliberately by the operator. Controls that ship with it:
+  - **Storage is decoupled from response**: the addressed-check still solely
+    decides whether the agent runs; ambient rows never trigger a reply
+    (pinned by `SECURITY:` test).
+  - **Platform deletes/edits are honoured**: deleting a Discord message
+    hard-deletes the stored copy; editing re-writes and re-embeds it —
+    stronger than the pre-#48 posture, where a processed message was kept
+    even if later deleted on Discord.
+  - Ambient rows join the same lifecycle as everything else: conversation-
+    scoped recall, `INTERACTION_RETENTION_DAYS` age purge, and
+    `forget_me`/`purge_user_data` (all pinned by tests). The recall
+    quarantine (untrusted block, bracket stripping) applies to ambient
+    content identically.
+  - **Visible community notice is a precondition, not a nicety** — see the
+    operational checklist and the ready-to-pin notice text below. Do not
+    enable the flag before the notice is posted.
+
+  Ready-to-pin server notice (edit the retention line to match your config):
+
+  > 📢 **Message logging in this server**
+  > Our community assistant stores messages posted in this server's public
+  > channels — including from non-members — to build shared community
+  > memory (so it can answer things like "what did we decide about X?").
+  > What's stored: message text, author, channel, and time. Deleting or
+  > editing your Discord message deletes or updates the stored copy. DMs
+  > with the bot are stored for registered members only. You can tell the
+  > bot to "forget me" at any time to erase your stored messages
+  > [, and messages are automatically deleted after N days]. Questions →
+  > ask an admin.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no
@@ -235,13 +269,15 @@ the supported path.
 - **Membership-scope staleness**: adapters cache an admin's conversation list
   for ~60s, so an admin removed from a channel/group can retain data scope for
   up to that window.
-- **Guests in gated mode are invisible**: their messages are not stored, which
-  also means no audit trail of what strangers sent the WhatsApp number. Trade
-  chosen deliberately (privacy > forensics for non-members). The one exception
-  is `access_requests` (the pending-access queue): it stores identity
-  (platform, user id/name) and a request count/timestamps for guests who
-  addressed the bot, but never their message content — an admin-only,
-  `list_access_requests`-gated read, not a new content-storage surface.
+- **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
+  (issue #48, an owner-approved posture change). The precise guarantee is:
+  **guest DMs to the bot are never stored; public guild-channel messages —
+  including from guests and never-interacted lurkers — ARE stored when the
+  operator enables `DISCORD_ARCHIVE_ALL_MESSAGES`** (default off; off =
+  exactly the old posture, pinned by test). WhatsApp is unaffected. Two
+  metadata-only exceptions exist regardless of the flag: `access_requests`
+  (identity + request count for guests who addressed the bot) and
+  `server_roster` (join/leave identity metadata) — neither stores content.
 - **The roster narrows the "guests are invisible" spirit, not its letter**:
   `server_roster` deliberately records the *identity* (never content) of every
   guild member — including lurkers who never touched the bot — because the
@@ -295,6 +331,10 @@ number could reach an unrelated person).
       join/leave events (identity + timestamps, no content) are recorded for
       admin onboarding/growth views, and that admins may keep private
       context notes about members** (deletable on request via `forget_me`).
+- [ ] **Before enabling `DISCORD_ARCHIVE_ALL_MESSAGES`**: the ambient-
+      archiving notice (see "Data protection" above) is posted visibly
+      (server rules / pinned message). Enabling the flag without notice
+      violates the collection-notice expectations this deployment relies on.
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.

@@ -112,6 +112,31 @@ export class Router {
     // content; if they address the bot, point them at an admin (rate-limited)
     // and record the request (identity + count only) so admins have a queue.
     if (gated && role === 'guest') {
+      // Ambient archiving (issue #48): with DISCORD_ARCHIVE_ALL_MESSAGES on,
+      // guest messages in guild channels ARE stored — a deliberate,
+      // documented posture change requiring community notice (SECURITY.md).
+      // Guest DMs to the bot stay unstored either way. Storage only: the
+      // addressed-check below still solely decides whether the agent runs.
+      if (
+        msg.platform === 'discord' &&
+        config.discord.archiveAllMessages &&
+        !msg.isDirect &&
+        msg.text.trim()
+      ) {
+        recordInteraction({
+          platform: msg.platform,
+          conversationId: msg.conversationId,
+          userId: msg.userId,
+          userName: msg.userName,
+          role,
+          direction: 'inbound',
+          content: msg.text,
+          addressedToBot: msg.addressedToBot,
+          isDirect: msg.isDirect,
+          messageId: msg.messageId,
+          kind: msg.addressedToBot ? 'addressed' : 'ambient',
+        }).catch((err) => logger.error({ err }, 'Failed to record ambient interaction'));
+      }
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
         recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch(
@@ -138,6 +163,8 @@ export class Router {
       content: msg.text,
       addressedToBot: msg.addressedToBot,
       isDirect: msg.isDirect,
+      messageId: msg.messageId,
+      kind: msg.addressedToBot || msg.isDirect ? 'addressed' : 'ambient',
     }).catch((err) => logger.error({ err }, 'Failed to record inbound interaction'));
 
     // Deterministic CONFIRM/CANCEL intercept for pending destructive actions.

@@ -54,6 +54,22 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
 | `src/health.ts` / `src/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
 
+## Ambient archiving
+
+With `DISCORD_ARCHIVE_ALL_MESSAGES=true` (issue #48; **off by default**),
+storage is decoupled from response: every message in the guild's allowed
+channels is recorded to `interactions` (kind `ambient` when not addressing
+the bot, with the Discord message id), while the addressed-check continues to
+solely govern whether the agent replies. That gives conversation-scoped
+recall, `question_digest`, and the context pipeline visibility into actual
+channel discussion — "what did we decide about X last week?" becomes
+answerable. Discord deletes/edits are honoured against the stored copy
+(hard-delete / re-embed by message id), ambient rows age out via
+`INTERACTION_RETENTION_DAYS` and are covered by `forget_me`. This reverses
+part of the gated-mode guest guarantee for public channels — see SECURITY.md
+for the posture statement, the notice precondition, and the ready-to-pin
+community notice text.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),

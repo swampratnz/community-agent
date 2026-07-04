@@ -6,6 +6,7 @@ import {
   type GuildMember,
   type PartialGuildMember,
   type Message,
+  type PartialMessage,
   ChannelType,
 } from 'discord.js';
 import { config } from '../../config.js';
@@ -13,7 +14,12 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
-import { markRosterLeave, upsertRosterMember } from '../../storage/repository.js';
+import {
+  deleteInteractionByMessageId,
+  markRosterLeave,
+  updateInteractionByMessageId,
+  upsertRosterMember,
+} from '../../storage/repository.js';
 import { chunkText } from '../textChunk.js';
 import {
   paramString,
@@ -65,6 +71,32 @@ export class DiscordAdapter implements PlatformAdapter {
     this.client.on(Events.MessageCreate, (message) => {
       this.onDiscordMessage(message).catch((err) => logger.error({ err }, 'Discord message handling failed'));
     });
+
+    // Delete/edit honouring for stored messages (issue #48): only wired when
+    // ambient archiving is on, so the default-off posture is byte-identical
+    // to before. A user deleting or editing their Discord message deletes or
+    // updates the stored copy.
+    if (config.discord.archiveAllMessages) {
+      this.client.on(Events.MessageDelete, (message) => {
+        if (!this.inArchiveScope(message.guildId, message.channelId)) return;
+        deleteInteractionByMessageId('discord', message.id).catch((err) =>
+          logger.warn({ err, messageId: message.id }, 'Stored-message delete failed'),
+        );
+      });
+      this.client.on(Events.MessageBulkDelete, (messages) => {
+        for (const message of messages.values()) {
+          if (!this.inArchiveScope(message.guildId, message.channelId)) continue;
+          deleteInteractionByMessageId('discord', message.id).catch((err) =>
+            logger.warn({ err, messageId: message.id }, 'Stored-message bulk delete failed'),
+          );
+        }
+      });
+      this.client.on(Events.MessageUpdate, (_old, newMessage) => {
+        this.onMessageUpdate(newMessage).catch((err) =>
+          logger.warn({ err, messageId: newMessage.id }, 'Stored-message update failed'),
+        );
+      });
+    }
 
     this.client.on(Events.GuildMemberAdd, (member) => {
       this.onGuildMemberAdd(member).catch((err) => logger.error({ err }, 'Member join handling failed'));
@@ -128,24 +160,41 @@ export class DiscordAdapter implements PlatformAdapter {
     const repliedToBot =
       message.reference?.messageId != null && (await this.isReplyToBot(message).catch(() => false));
 
-    // Strip the bot mention from the text for a clean prompt.
-    const cleanText = botId
-      ? message.content.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim()
-      : message.content.trim();
-
     const normalised: IncomingMessage = {
       platform: 'discord',
       conversationId: message.channelId,
       userId: message.author.id,
       userName: message.member?.displayName ?? message.author.username,
-      text: cleanText,
+      text: this.cleanContent(message.content),
       isDirect: isDM,
       addressedToBot: mentioned || repliedToBot,
+      messageId: message.id,
       timestamp: message.createdTimestamp,
       raw: message,
     };
 
     await this.handler(normalised);
+  }
+
+  /** Strip the bot mention from message text for a clean prompt. */
+  private cleanContent(content: string): string {
+    const botId = this.client.user?.id;
+    return botId ? content.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim() : content.trim();
+  }
+
+  /** True when a message id belongs to the configured guild + allowed channels (archiving scope). */
+  private inArchiveScope(guildId: string | null, channelId: string): boolean {
+    if (guildId !== config.discord.guildId) return false;
+    return (
+      config.discord.allowedChannelIds.length === 0 || config.discord.allowedChannelIds.includes(channelId)
+    );
+  }
+
+  private async onMessageUpdate(newMessage: Message | PartialMessage): Promise<void> {
+    if (!this.inArchiveScope(newMessage.guildId, newMessage.channelId)) return;
+    const full = newMessage.partial ? await newMessage.fetch() : newMessage;
+    if (full.author.bot || !full.content) return;
+    await updateInteractionByMessageId('discord', full.id, this.cleanContent(full.content));
   }
 
   private async isReplyToBot(message: Message): Promise<boolean> {

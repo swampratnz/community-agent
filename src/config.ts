@@ -44,6 +44,14 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
   // Fallback text channel to post the welcome in if the DM fails (e.g. DMs closed).
   DISCORD_WELCOME_CHANNEL_ID: z.string().optional(),
+  // Ambient archiving (issue #48): store EVERY message in allowed guild
+  // channels — including from gated-mode guests — not just messages that
+  // address the bot. A deliberate privacy-posture change; requires visible
+  // community notice BEFORE enabling (see SECURITY.md). Off by default.
+  DISCORD_ARCHIVE_ALL_MESSAGES: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -156,6 +164,7 @@ export const config = {
       enabled: env.DISCORD_WELCOME_ENABLED ?? false,
       channelId: env.DISCORD_WELCOME_CHANNEL_ID,
     },
+    archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,
