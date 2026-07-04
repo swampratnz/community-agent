@@ -1315,12 +1315,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
   const usageStatsTool = tool(
     'usage_stats',
     'Show message volume, cost and top users over recent days. Super admin only.',
-    { days: z.number().optional().describe('Window in days (default 7)') },
+    { days: z.number().optional().describe('Window in days (default 7, max 365)') },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'usage_stats');
-      const s = await usageStats(args.days ?? 7);
+      const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 365);
+      const s = await usageStats(days);
       return text(
-        `Last ${args.days ?? 7} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+        `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
           `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
           `Top users:\n${s.topUsers.map((u) => `- ${u.userName ?? u.userId}: ${u.messages} msgs`).join('\n') || '- none'}`,
       );
