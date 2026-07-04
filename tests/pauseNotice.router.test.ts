@@ -16,12 +16,17 @@ import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/p
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
+// Capture whether a REAL Postgres was provided BEFORE applying the dummy
+// default below — the default only exists to satisfy config.ts's import-time
+// validation, it is not a reachable DB. Reading hasDb after the `??=` would
+// make it always true, so the after() cleanup query would reject against the
+// unreachable dummy and throw out of the teardown hook, failing this file in
+// the security-invariants CI job (which runs with DATABASE_URL unset).
+const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
-
-const hasDb = Boolean(process.env.DATABASE_URL);
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
 const { PAUSE_NOTICE_TEXT } = await import('../src/pauseNotice.js');
