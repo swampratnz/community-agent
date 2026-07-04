@@ -232,7 +232,15 @@ jobs:
             later step detects "no new commit" and escalates `needs-human`.
           # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml):
           #   * `gh` is READ-only (understand the PR) — no merge/close/create.
-          #   * `git` includes `merge` for bringing main in, but EXCLUDES
+          #   * `git fetch`/`git merge` are pinned to the EXACT forms the prompt
+          #     needs — `Bash(git fetch origin main)` and `Bash(git merge
+          #     origin/main)` (no `:*`) — so the agent can only pull in and merge
+          #     `origin/main`, not fetch/merge an arbitrary ref or remote. This
+          #     matches the exact-match discipline of the push tool below. A
+          #     wildcard would widen "what it can merge in"; recovery from a
+          #     botched merge is not needed as a tool because any unresolved
+          #     state simply reaches the verify step and escalates `needs-human`.
+          #   * `git` includes that one `merge` for bringing main in, but EXCLUDES
           #     reset/remote/blanket push AND, deliberately, `checkout`/`branch`/
           #     `switch`. The ONLY push tool is the exact `Bash(git push origin
           #     HEAD)` (no `:*`): the agent may run only that literal command.
@@ -248,7 +256,7 @@ jobs:
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge origin/main),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin main),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify the conflict was resolved (else escalate loudly)
         if: always()
