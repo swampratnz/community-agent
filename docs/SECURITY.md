@@ -40,6 +40,12 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - **Confirm-before-destructive**: kick/timeout/delete/purge/forget — and
   **grant_admin**, the highest-blast-radius action of all — register a pending
   action; the actor must reply CONFIRM in the same conversation within 60s.
+  **`redeploy_bot`** (issue #101) follows the identical path: super-admin only,
+  `{}` input schema (no ref/branch/argument the model or chat text could ever
+  supply), CONFIRM-gated, and executed by the router via a fixed `execFile`
+  argv — an injection can at most *request* a deploy of already-human-merged
+  `origin/main` and still cannot complete it without the super admin's own
+  CONFIRM.
   The confirmation is intercepted by the router *before* the addressed-check
   (so a bare CONFIRM works in group chats; bot mention tokens are stripped and
   tolerated) and executed deterministically — it never passes through the
@@ -128,6 +134,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - systemd hardening: `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, restricted namespaces, single `ReadWritePaths`.
 - Postgres bound to localhost with a dedicated least-privilege role.
+- **One new, deliberate host-level surface (issue #101):** the
+  `redeploy_bot` tool needs the unprivileged `community-agent` user to start
+  one root-owned systemd unit. This is granted via a single **exact-match**
+  sudoers line (`NOPASSWD: /usr/bin/systemctl start
+  community-agent-redeploy.service`, no wildcard — see docs/DEPLOYMENT.md) —
+  it does not grant `systemctl` generally, only starting that one oneshot
+  unit, which itself only fast-forwards to already-human-merged `main` (see
+  branch protection above). `sudo -n` (non-interactive) means a missing grant
+  fails the tool loudly instead of hanging. This is an **operator opt-in**:
+  the code ships gated behind the sudoers line existing, so a deployment that
+  never adds it never gains the new surface.
 
 ### 6. Data protection (member PII)
 - All messages are stored for memory/audit. **Inform your community** that an
@@ -506,3 +523,6 @@ number could reach an unrelated person).
       automation — the build and autofix workers hold a `contents: write` token,
       so branch protection is what guarantees nothing reaches `main` without a
       human merge even if a worker is prompt-injected into misusing `git push`.
+- [ ] **If enabling `redeploy_bot`**: the exact-match sudoers line in
+      docs/DEPLOYMENT.md is added (opt-in — omit it and the tool simply fails
+      clean with no new host surface granted).

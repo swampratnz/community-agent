@@ -89,6 +89,7 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__pause_bot',
   'mcp__community__resume_bot',
   'mcp__community__set_policy',
+  'mcp__community__redeploy_bot',
 ] as const;
 
 export function toolsForRole(role: Tier): string[] {
