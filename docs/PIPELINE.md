@@ -55,12 +55,16 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   as an ownership violation either.
 - **No loop merges PRs.** A human merges — especially important for this
   security-sensitive bot.
-- **WIP caps:** ≤3 open `status:draft`. Builds run **serially** — the build
-  worker's `concurrency` is a single fixed group (`pipeline-build`), so only one
-  build runs at a time and the rest queue. This is deliberate: every run draws
-  on the shared Max pool, and per-issue parallelism rate-limited every build
-  into its 60-min wall-clock timeout, escalating them all to `needs-human` at
-  once (observed 2026-07-04). Serial is slower but each build actually finishes.
+- **WIP caps:** ≤3 open `status:draft`. Builds run **per-issue** (each issue its
+  own `concurrency` group — distinct issues in parallel, no cross-eviction; a
+  single shared group would silently *cancel* queued builds, which aren't
+  retried). Every run draws on the shared Max pool, so avoid releasing large
+  bursts at once: parallel builds throttle each other on the pool, and 2026-07-04
+  showed a 5-issue burst rate-limiting every build into its wall-clock timeout.
+  The mitigation is a generous build `timeout-minutes` (a contended build
+  finishes slowly rather than being killed mid-gate), plus staggering approvals;
+  a true FIFO lock the job polls is the proper fix if bursts keep saturating the
+  pool.
 - **Label transitions are the only cross-session messaging.** When blocked or
   genuinely ambiguous, add `needs-human` and stop rather than guess.
 - **Everything traces to an issue number.**

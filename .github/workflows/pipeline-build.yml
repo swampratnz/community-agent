@@ -11,9 +11,11 @@ name: Pipeline build worker
 #   2. Add repo secret CLAUDE_CODE_OAUTH_TOKEN (Settings → Secrets → Actions).
 #
 # COST: every run draws on the SAME Max pool as the production bot and every
-# other session. Builds are SERIALISED (see the `concurrency` block below —
-# one at a time repo-wide) precisely because that shared pool can't sustain
-# parallel builds; `--max-turns` + `timeout-minutes` bound a single run.
+# other session. Builds run per-issue (distinct issues in parallel — see the
+# concurrency block below for why a shared serial group is NOT used); the shared
+# pool is the real bottleneck, so `--max-turns` bounds a run and
+# `timeout-minutes` is sized generously so a contended (throttled) build finishes
+# rather than being killed mid-gate.
 #
 # WHY the explicit allowedTools + verify step: an earlier run finished with
 # conclusion=success but 12 permission denials and no branch/PR/relabel — the
@@ -28,21 +30,30 @@ on:
   issues:
     types: [labeled]
 
-# SERIAL builds — one at a time across the whole repo (a single fixed group,
-# NOT keyed by issue). Why the change from per-issue-parallel: every build draws
-# on the SAME shared Max pool, and per-issue parallelism let N approved/retried
-# issues run at once, so each turn got rate-limited, every build blew past its
-# 60-minute wall-clock, and ALL of them escalated `needs-human` — then the
-# build-retry loop re-ran the failures, adding MORE parallel load: a contention
-# death spiral (observed 2026-07-04: five small proposals, incl. #90, all
-# cancelled at exactly 60 min with `npm test` still running). Serialising means
-# each build gets the full pool and finishes in time; the backlog drains one PR
-# at a time instead of failing all at once. `cancel-in-progress: false` queues
-# rather than cancelling, so a re-trigger of the same (or any) issue never
-# double-runs. Slower but reliable — the shared pool is the bottleneck, not CI
-# minutes.
+# Per-issue concurrency: each issue gets its OWN group, so re-triggering the
+# SAME issue queues instead of double-running, while distinct issues do not
+# evict each other.
+#
+# WHY NOT a single shared group to force one-build-at-a-time: a GitHub
+# concurrency group holds only ONE pending run — when a new run is queued to a
+# group that already has one running + one pending, the previously-pending run
+# is CANCELLED (`cancel-in-progress: false` only protects the *running* job, not
+# the pending queue). So a burst of approvals against a shared group would
+# silently drop all but the last-queued build; worse, a `cancelled` run is not a
+# `failure`, so the build-retry loop (which triggers on `conclusion == failure`)
+# never reruns it and the verify/escalate step never runs — the issue would sit
+# at `status:approved` with no PR, no retry, no `needs-human`, invisibly. That
+# is why shared-group "serialisation" is the wrong tool here.
+#
+# Shared-pool contention (the 2026-07-04 spiral: parallel builds throttling each
+# other into the wall-clock and all escalating `needs-human`) is instead bounded
+# by a generous `timeout-minutes` below — a throttled build finishes slowly
+# rather than being killed mid-gate — plus the human approval cadence. If real
+# bursts still saturate the pool, the proper fix is a true FIFO lock the job
+# polls (a queue step), not `concurrency.group`; deferred as its own change
+# because a lock deployed wrong deadlocks every build.
 concurrency:
-  group: pipeline-build
+  group: pipeline-build-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 permissions:
@@ -56,10 +67,14 @@ jobs:
     # Only react to the approved label; ignore every other label event.
     if: github.event.label.name == 'status:approved'
     runs-on: ubuntu-latest
-    # Wall-clock guard sized to the turn cap below: ~7s/turn observed means
-    # 300 turns can legitimately run ~40 min; 60 keeps headroom without
-    # letting a hung run camp on the concurrency slot all day.
-    timeout-minutes: 60
+    # Wall-clock guard. Solo, 300 turns ≈ 40 min (~7s/turn). But builds share
+    # the Max pool, so under contention turns are throttled and a legitimate
+    # build runs several× slower — 60 min was killing real builds mid-gate (the
+    # 2026-07-04 spiral: cancelled at 60 min with `npm test` still running), and
+    # a cancelled run is not retried. 120 gives a contended build room to finish
+    # instead of being killed. Still well under GitHub's 6 h job cap; a genuinely
+    # hung run is still caught by the verify step (and costs at most 2 h).
+    timeout-minutes: 120
     # A real pgvector Postgres so the worker's OWN verification runs the
     # DB-integration tests (which skip without DATABASE_URL) against the same
     # database CI will use on the PR. Without this the worker "passes" locally
