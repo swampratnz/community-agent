@@ -40,8 +40,9 @@ const testsDir = path.join(repoRoot, 'tests');
 // tools.test.ts,
 // then to 80 with the suggestion-resolution cross-platform-notify guard (#116),
 // then to 82 with the report-resolution cross-platform-notify guard and the
-// no-target-identity-in-DM test (#120).
-const MIN_SECURITY_TESTS = 82;
+// no-target-identity-in-DM test (#120), then to 84 with the response-style
+// preference's RBAC member-tier test and its purge-coherence test (#126).
+const MIN_SECURITY_TESTS = 84;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))

@@ -310,6 +310,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   sent_at)` — no cluster text — and is purge-coherent:
   `forget_me`/`purge_user_data` remove an offboarded admin's row alongside
   other admin-identity-keyed data.
+- **Standing response-style preference** (`response_style_prefs`, issue
+  #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
+  into plain-language replies without re-asking every message. The argument
+  is a closed two-value enum (`standard`/`plain`) — no free text, smaller
+  surface than `report_content`/`suggest_improvement`. Non-destructive and
+  instantly reversible by calling it again, so it is deliberately **not**
+  CONFIRM-gated. Keyed on raw `(platform, user_id)` like
+  `admin_digest_sends` (not `community_users`), so it works for a guest in
+  open mode too. No row means today's default (`'standard'`) behaviour —
+  zero change for anyone who never calls the tool. Purge-coherent:
+  `forget_me`/`purge_user_data` delete the caller's row.
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
   identity has been linked (`link_member`) to another platform identity as the
@@ -469,9 +480,10 @@ the supported path.
   who left are kept (with `left_at`) for churn history; an age-purge of
   departed rows is a future refinement if retention expectations tighten.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
-  knowledge entries *sourced from* them, and content reports *they submitted
-  as reporter*. Membership rows, the admin audit log, and reports where the
-  user is only the *target* (not the reporter) are retained deliberately
+  knowledge entries *sourced from* them, content reports *they submitted
+  as reporter*, and their response-style preference. Membership rows, the
+  admin audit log, and reports where the user is only the *target* (not the
+  reporter) are retained deliberately
   (accountability) — the same precedent already applied to `admin_audit`. If
   the identity is linked (`link_member`), this scope applies to every linked
   identity, not just the one the request came from — see "Cross-platform

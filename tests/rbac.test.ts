@@ -96,6 +96,17 @@ test('SECURITY: suggest_improvement is write-only at member tier — the suggest
   }
 });
 
+test('SECURITY: set_response_style is member-tier and reaches guests in open mode (issue #126)', () => {
+  const tool = 'mcp__community__set_response_style';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'set_response_style must be in MEMBER_TOOLS');
+  for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+    assert.notEqual(t, tool, 'set_response_style must not appear in ADMIN_TOOLS/SUPER_ADMIN_TOOLS');
+  }
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach set_response_style`);
+  }
+});
+
 test('SECURITY: member-note tools are admin-only — a member can never read or write notes, including about themselves (issue #45)', () => {
   const tools = [
     'mcp__community__add_member_note',

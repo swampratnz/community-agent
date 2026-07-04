@@ -23,20 +23,29 @@ function hit(content: string): MemoryHit {
 }
 
 test('system prompt states the requester tier and untrusted-content rule', () => {
-  const memberPrompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  const memberPrompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
   assert.match(memberPrompt, /MEMBER/);
   assert.match(memberPrompt, /UNTRUSTED DATA/);
 
-  assert.match(buildSystemPrompt({ ...caller, role: 'admin' }, { codeAnswers: 'snippets' }), /an ADMIN/);
   assert.match(
-    buildSystemPrompt({ ...caller, role: 'super_admin' }, { codeAnswers: 'snippets' }),
+    buildSystemPrompt({ ...caller, role: 'admin' }, { codeAnswers: 'snippets', responseStyle: 'standard' }),
+    /an ADMIN/,
+  );
+  assert.match(
+    buildSystemPrompt(
+      { ...caller, role: 'super_admin' },
+      { codeAnswers: 'snippets', responseStyle: 'standard' },
+    ),
     /SUPER ADMIN/,
   );
-  assert.match(buildSystemPrompt({ ...caller, role: 'guest' }, { codeAnswers: 'snippets' }), /GUEST/);
+  assert.match(
+    buildSystemPrompt({ ...caller, role: 'guest' }, { codeAnswers: 'snippets', responseStyle: 'standard' }),
+    /GUEST/,
+  );
 });
 
 test('system prompt instructs mirroring the member language, defaulting to NZ English', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
   assert.match(prompt, /NZ English by default/);
   assert.match(prompt, /reply in that\s+language instead/);
   assert.match(prompt, /mixes languages/);
@@ -44,9 +53,35 @@ test('system prompt instructs mirroring the member language, defaulting to NZ En
 });
 
 test('code policy note follows the policy value', () => {
-  assert.match(buildSystemPrompt(caller, { codeAnswers: 'off' }), /do NOT write code/);
-  assert.match(buildSystemPrompt(caller, { codeAnswers: 'snippets' }), /short illustrative snippets/);
-  assert.match(buildSystemPrompt(caller, { codeAnswers: 'full' }), /code answers are allowed/i);
+  assert.match(
+    buildSystemPrompt(caller, { codeAnswers: 'off', responseStyle: 'standard' }),
+    /do NOT write code/,
+  );
+  assert.match(
+    buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' }),
+    /short illustrative snippets/,
+  );
+  assert.match(
+    buildSystemPrompt(caller, { codeAnswers: 'full', responseStyle: 'standard' }),
+    /code answers are allowed/i,
+  );
+});
+
+test('plain-language block appears only when responseStyle is plain', () => {
+  const standard = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const plain = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'plain' });
+  assert.ok(
+    !standard.includes('plain-language replies'),
+    'standard style must not include the plain-language instruction block',
+  );
+  assert.match(plain, /plain-language replies/);
+  assert.match(plain, /Avoid unexplained jargon/);
+});
+
+test('guidelines teach the model when to call set_response_style', () => {
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  assert.match(prompt, /set_response_style\('plain'\)/);
+  assert.match(prompt, /one-off "explain that\s+again more simply" should just be honoured/);
 });
 
 test('SECURITY: recalled content cannot fake tags to escape its block', () => {
@@ -68,7 +103,7 @@ test('SECURITY: recalled content cannot fake tags to escape its block', () => {
 });
 
 test('guidelines cover knowledge provenance: attribution and scoped general-knowledge flag', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
   assert.match(prompt, /briefly attribute it in passing/);
   assert.match(prompt, /community-specific facts/);
   assert.match(prompt, /Do NOT do this\s+for general Claude\/API\/product questions/);
@@ -89,7 +124,7 @@ test('SECURITY: ambient-archived channel text is quarantined in recall exactly l
 });
 
 test('guidelines offer suggest_improvement for feature ideas without promising delivery (issue #46)', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
   assert.match(prompt, /suggest_improvement/);
   assert.match(prompt, /never\s+promise or imply the change will be built/);
   assert.match(prompt, /no repo or issue-tracker access/);

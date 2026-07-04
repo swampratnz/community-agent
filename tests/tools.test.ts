@@ -41,6 +41,7 @@ const {
   saveKnowledge,
   createSuggestion,
   createContentReport,
+  getResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
@@ -392,6 +393,7 @@ test('community_info names every member capability for a member caller (issue #9
   assert.match(replyText, /suggest/i, 'must mention suggest_improvement');
   assert.match(replyText, /knowledge/i, 'must mention knowledge_search');
   assert.match(replyText, /past messages|remember/i, 'must mention remember_search');
+  assert.match(replyText, /simply/i, 'must mention set_response_style (issue #126) so it is discoverable');
 });
 
 test('community_info reply stays concise, not a wall of text (issue #92)', async () => {
@@ -853,6 +855,59 @@ test(
       "SECURITY: the reporter's resolution DM must never include the reported user's identity",
     );
     assert.match(calls[0], /they were harassing me/, "the reporter's own reason is echoed");
+  },
+);
+
+// set_response_style (issue #126): a closed two-value enum, no CONFIRM gate —
+// the handler just upserts via repository.setResponseStyle, so this exercises
+// the real DB round-trip, same convention as the knowledge_search handler test.
+function setResponseStyleHandler(caller: { platform: 'discord' | 'whatsapp'; userId: string }) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            style: 'standard' | 'plain';
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['set_response_style'];
+}
+
+test(
+  "set_response_style upserts the caller's preference, readable back via getResponseStyle (issue #126)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-set-response-style-user`;
+
+    const plainResult = await setResponseStyleHandler({ platform: 'discord', userId }).handler({
+      style: 'plain',
+    });
+    assert.match(plainResult.content[0]?.text ?? '', /simple/i);
+    assert.equal(await getResponseStyle('discord', userId), 'plain');
+
+    const standardResult = await setResponseStyleHandler({ platform: 'discord', userId }).handler({
+      style: 'standard',
+    });
+    assert.match(standardResult.content[0]?.text ?? '', /normal reply style/i);
+    assert.equal(await getResponseStyle('discord', userId), 'standard');
+
+    await pool.query(`DELETE FROM response_style_prefs WHERE platform = 'discord' AND user_id = $1`, [
+      userId,
+    ]);
   },
 );
 

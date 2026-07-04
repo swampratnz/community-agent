@@ -60,6 +60,8 @@ const {
   unlinkMember,
   resolveLinkedIdentities,
   countRepliesToUser,
+  getResponseStyle,
+  setResponseStyle,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -1723,5 +1725,54 @@ test(
     await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
       whatsappUser,
     ]);
+  },
+);
+
+test(
+  'repository: getResponseStyle defaults to standard with no row, and round-trips through setResponseStyle (issue #126)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-response-style-user`;
+
+    assert.equal(
+      await getResponseStyle('discord', userId),
+      'standard',
+      "a caller who never called set_response_style gets today's default behaviour",
+    );
+
+    await setResponseStyle('discord', userId, 'plain');
+    assert.equal(await getResponseStyle('discord', userId), 'plain');
+
+    // Calling it again (upsert) updates in place rather than erroring or duplicating.
+    await setResponseStyle('discord', userId, 'standard');
+    assert.equal(await getResponseStyle('discord', userId), 'standard');
+    const { rows } = await pool.query(
+      `SELECT count(*) AS n FROM response_style_prefs WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(Number(rows[0].n), 1, 'setResponseStyle upserts one row, never duplicates');
+
+    await pool.query(`DELETE FROM response_style_prefs WHERE platform = 'discord' AND user_id = $1`, [
+      userId,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me/purge_user_data) removes the response-style preference (issue #126)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-response-style-purge-user`;
+
+    await setResponseStyle('discord', userId, 'plain');
+    assert.equal(await getResponseStyle('discord', userId), 'plain');
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the response-style row');
+    assert.equal(
+      await getResponseStyle('discord', userId),
+      'standard',
+      'SECURITY: after purge, the caller reverts to the default as if they never set a preference',
+    );
   },
 );
