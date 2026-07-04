@@ -30,6 +30,12 @@ export interface IncomingMessage {
   isDirect: boolean;
   /** Whether the bot was explicitly addressed (mention / DM / reply). */
   addressedToBot: boolean;
+  /**
+   * Platform-native message id, when the platform exposes one. Lets stored
+   * interactions be deleted/updated when the original message is (ambient
+   * archiving, issue #48).
+   */
+  messageId?: string;
   /** Epoch milliseconds the platform reported for the message. */
   timestamp: number;
   /** Opaque platform-native payload, for adapters that need extra context. */

@@ -36,6 +36,19 @@ const {
   listReports,
   resolveContentReport,
   REPORT_RATE_LIMIT_PER_DAY,
+  upsertRosterMember,
+  markRosterLeave,
+  listRoster,
+  rosterCounts,
+  addMemberNote,
+  listMemberNotes,
+  deleteMemberNote,
+  MEMBER_NOTE_MAX_CHARS,
+  createSuggestion,
+  listSuggestions,
+  resolveSuggestion,
+  SUGGESTION_RATE_LIMIT_PER_DAY,
+  SUGGESTION_MAX_CHARS,
   upsertMember,
   getMemberRole,
   removeMember,
@@ -791,6 +804,319 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
 
   await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
 });
+
+test(
+  'repository: createSuggestion enforces a DB-backed rolling-24h cap per user, robust to a simulated restart (issue #46)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-suggester`;
+
+    // Seed cap-many suggestions via direct SQL — as if written by a previous
+    // process instance — so an in-memory counter would wrongly admit the next
+    // one, but the DB-backed COUNT(*) refuses it (same pattern as the
+    // content_reports cap test).
+    for (let i = 0; i < SUGGESTION_RATE_LIMIT_PER_DAY; i++) {
+      await pool.query(`INSERT INTO suggestions (platform, user_id, content) VALUES ($1,$2,$3)`, [
+        'discord',
+        userId,
+        `prior-process suggestion ${i}`,
+      ]);
+    }
+
+    const rejected = await createSuggestion({
+      platform: 'discord',
+      userId,
+      content: 'the one over the cap — must be refused',
+    });
+    assert.equal(rejected, null, 'the (cap+1)th suggestion in 24h is refused');
+
+    const countAfter = await pool.query(`SELECT count(*) AS n FROM suggestions WHERE user_id = $1`, [userId]);
+    assert.equal(
+      Number(countAfter.rows[0].n),
+      SUGGESTION_RATE_LIMIT_PER_DAY,
+      'no row is inserted for a refused suggestion',
+    );
+
+    // Age one out of the window — a slot frees up.
+    await pool.query(
+      `UPDATE suggestions SET created_at = now() - interval '25 hours'
+        WHERE id = (SELECT id FROM suggestions WHERE user_id = $1 ORDER BY id LIMIT 1)`,
+      [userId],
+    );
+    const accepted = await createSuggestion({
+      platform: 'discord',
+      userId,
+      displayName: 'Suggester',
+      content: 'x'.repeat(SUGGESTION_MAX_CHARS + 200),
+    });
+    assert.ok(accepted, 'accepted once an old suggestion ages out of the rolling window');
+
+    // Another user's cap is independent.
+    const other = await createSuggestion({
+      platform: 'discord',
+      userId: `${RUN}-suggester-other`,
+      content: 'a different user has their own cap',
+    });
+    assert.ok(other, 'the cap is per-user, not global');
+
+    const rows = await listSuggestions('new', 200);
+    const stored = rows.find((s) => s.id === accepted.id);
+    assert.ok(stored, 'the accepted suggestion is listed');
+    assert.equal(stored.content.length, SUGGESTION_MAX_CHARS, 'over-long content is capped server-side');
+
+    // Triage transitions and the status filter.
+    assert.equal(await resolveSuggestion(accepted.id, 'done', `${RUN}-resolver`), true);
+    const doneRows = await listSuggestions('done', 200);
+    assert.ok(
+      doneRows.some((s) => s.id === accepted.id && s.reviewedBy === `${RUN}-resolver`),
+      'resolution records status and reviewer',
+    );
+    const newRows = await listSuggestions('new', 200);
+    assert.ok(!newRows.some((s) => s.id === accepted.id), 'a resolved suggestion leaves the new queue');
+    assert.equal(await resolveSuggestion(999_999_999, 'done', 'x'), false, 'unknown id returns false');
+
+    // forget_me / purge_user_data removes the user's suggestions.
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes suggestions');
+    const afterPurge = await pool.query(`SELECT 1 FROM suggestions WHERE user_id = $1`, [userId]);
+    assert.equal(afterPurge.rows.length, 0, "the user's suggestions are gone after purge");
+
+    await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [`${RUN}-suggester-other`]);
+  },
+);
+
+test(
+  'repository: member notes CRUD — add (capped), list newest-first, delete (issue #45)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-notes-user`;
+    const admin = `${RUN}-notes-admin`;
+
+    const id1 = await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: 'runs the Christchurch meetup',
+      createdBy: admin,
+    });
+    const id2 = await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: 'x'.repeat(MEMBER_NOTE_MAX_CHARS + 500),
+      createdBy: admin,
+    });
+
+    const notes = await listMemberNotes('discord', userId);
+    assert.equal(notes.length, 2);
+    assert.equal(notes[0].id, id2, 'newest note first');
+    assert.equal(
+      notes[0].note.length,
+      MEMBER_NOTE_MAX_CHARS,
+      'over-long note text is capped server-side, not trusted from the caller',
+    );
+    assert.equal(notes[1].note, 'runs the Christchurch meetup');
+    assert.equal(notes[1].createdBy, admin, 'authorship is recorded');
+
+    assert.equal(await deleteMemberNote(id1), true);
+    assert.equal(await deleteMemberNote(id1), false, 'deleting a nonexistent id returns false');
+    assert.equal((await listMemberNotes('discord', userId)).length, 1);
+
+    await pool.query(`DELETE FROM member_notes WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'SECURITY: repository: member notes never land in member-reachable tables, and purgeUserData removes them (issue #45)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-notes-sec-user`;
+    const marker = `${RUN}-note-marker-must-not-leak`;
+
+    await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: marker,
+      createdBy: `${RUN}-notes-sec-admin`,
+    });
+
+    // Notes must be unreachable through every member-facing read path. Those
+    // paths only query `knowledge` (knowledge_search) and `interactions`
+    // (remember_search / recall), so pin that the note text exists in
+    // neither table — the member_notes table has no embedding column and no
+    // other reader than listMemberNotes.
+    const { rows: inKnowledge } = await pool.query(`SELECT 1 FROM knowledge WHERE content LIKE $1`, [
+      `%${marker}%`,
+    ]);
+    assert.equal(inKnowledge.length, 0, 'note text never reaches the knowledge table (knowledge_search)');
+    const { rows: inInteractions } = await pool.query(`SELECT 1 FROM interactions WHERE content LIKE $1`, [
+      `%${marker}%`,
+    ]);
+    assert.equal(inInteractions.length, 0, 'note text never reaches interactions (memory recall)');
+
+    // The subject's purge (forget_me / purge_user_data) removes notes about them.
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the note');
+    const remaining = await listMemberNotes('discord', userId);
+    assert.equal(remaining.length, 0, 'notes about the purged member are gone');
+  },
+);
+
+test(
+  'repository: roster join/leave/rejoin lifecycle and idempotent backfill upsert (issue #47)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-roster-user`;
+
+    // Join + a second identical upsert (the backfill path): one row, no
+    // rejoin counted, joined_at unchanged.
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Roster Person' });
+    const first = await pool.query(
+      `SELECT joined_at, left_at, rejoined_count FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(first.rows.length, 1);
+    assert.equal(first.rows[0].left_at, null);
+    assert.equal(Number(first.rows[0].rejoined_count), 0);
+
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Roster Person' });
+    const second = await pool.query(
+      `SELECT joined_at, left_at, rejoined_count,
+              (SELECT count(*) FROM server_roster WHERE platform = 'discord' AND user_id = $1) AS n
+         FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(Number(second.rows[0].n), 1, 'backfill re-upsert is idempotent: still exactly one row');
+    assert.equal(Number(second.rows[0].rejoined_count), 0, 'a re-upsert while present is not a rejoin');
+    assert.equal(
+      new Date(second.rows[0].joined_at).getTime(),
+      new Date(first.rows[0].joined_at).getTime(),
+      'joined_at does not move on an idempotent re-upsert',
+    );
+
+    // Leave marks left_at; a second leave is a no-op.
+    assert.equal(await markRosterLeave('discord', userId), true);
+    assert.equal(await markRosterLeave('discord', userId), false, 'already-left row is not re-marked');
+
+    // Rejoin clears left_at, bumps rejoined_count, resets joined_at.
+    await upsertRosterMember({ platform: 'discord', userId });
+    const rejoined = await pool.query(
+      `SELECT left_at, rejoined_count, display_name FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(rejoined.rows[0].left_at, null, 'rejoin clears left_at');
+    assert.equal(Number(rejoined.rows[0].rejoined_count), 1, 'rejoin increments rejoined_count');
+    assert.equal(
+      rejoined.rows[0].display_name,
+      'Roster Person',
+      'an upsert without a display name preserves the stored one',
+    );
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'repository: listRoster surfaces the joined-but-not-a-member onboarding queue and growth counts (issue #47)',
+  { skip },
+  async () => {
+    const lurker = `${RUN}-roster-lurker`;
+    const member = `${RUN}-roster-member`;
+    const leaver = `${RUN}-roster-leaver`;
+
+    await upsertRosterMember({ platform: 'discord', userId: lurker, displayName: 'Lurker' });
+    await upsertRosterMember({ platform: 'discord', userId: member, displayName: 'Member' });
+    await upsertRosterMember({ platform: 'discord', userId: leaver, displayName: 'Leaver' });
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: `${RUN}-admin` });
+    await markRosterLeave('discord', leaver);
+
+    const notMembers = await listRoster('discord', 'not_members', 7, 200);
+    assert.ok(
+      notMembers.some((r) => r.userId === lurker && !r.isMember),
+      'a present non-member appears in the onboarding queue',
+    );
+    assert.ok(
+      !notMembers.some((r) => r.userId === member),
+      'a registered member is not in the onboarding queue',
+    );
+    assert.ok(
+      !notMembers.some((r) => r.userId === leaver),
+      'someone who left is not in the onboarding queue',
+    );
+
+    const recent = await listRoster('discord', 'recent', 7, 200);
+    assert.ok(
+      recent.some((r) => r.userId === member && r.isMember),
+      'recent joins are flagged with membership status',
+    );
+
+    const left = await listRoster('discord', 'left', 7, 200);
+    assert.ok(
+      left.some((r) => r.userId === leaver && r.leftAt !== null),
+      'recent leavers appear under the left filter',
+    );
+
+    const counts = await rosterCounts('discord');
+    assert.ok(counts.total >= 2, 'present count includes the two still-present fixtures');
+    assert.ok(counts.joinedThisWeek >= 2, 'this-week join count includes the fixtures');
+    assert.ok(counts.leftThisWeek >= 1, 'this-week leave count includes the leaver');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
+  },
+);
+
+test(
+  'SECURITY: repository: roster stores identity metadata only — no content column exists and no roster write touches interactions (issue #47)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-roster-security`;
+
+    // Structural pin: the table cannot hold message content because no such
+    // column exists. A future migration adding one must consciously break
+    // this list (and re-argue the SECURITY.md posture).
+    const { rows: columns } = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'server_roster' ORDER BY column_name`,
+    );
+    assert.deepEqual(
+      columns.map((c) => c.column_name).sort(),
+      ['display_name', 'id', 'joined_at', 'left_at', 'platform', 'rejoined_count', 'updated_at', 'user_id'],
+      'server_roster columns are identity metadata only — adding a content-bearing column is a posture change',
+    );
+
+    // Behavioural pin: the full roster lifecycle writes nothing to the
+    // message-content table.
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'No Content' });
+    await markRosterLeave('discord', userId);
+    await upsertRosterMember({ platform: 'discord', userId });
+    const { rows: interactionRows } = await pool.query(
+      `SELECT 1 FROM interactions WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(interactionRows.length, 0, 'no roster code path ever writes message content');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me and purge_user_data) removes the roster row (issue #47)',
+  { skip },
+  async () => {
+    // forget_me and purge_user_data both execute purgeUserData; exercise it
+    // twice on fresh rows so each caller's path is covered by the assertion.
+    for (const via of ['forget_me', 'purge_user_data']) {
+      const userId = `${RUN}-roster-purge-${via}`;
+      await upsertRosterMember({ platform: 'discord', userId, displayName: 'Purge Me' });
+      const purged = await purgeUserData('discord', userId);
+      assert.ok(purged >= 1, `${via}: purge count includes the roster row`);
+      const { rows } = await pool.query(
+        `SELECT 1 FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+        [userId],
+      );
+      assert.equal(rows.length, 0, `${via}: the roster row is gone after purgeUserData`);
+    }
+  },
+);
 
 test(
   'SECURITY: repository: resolveContentReport refuses to update a report outside the given conversation scope',

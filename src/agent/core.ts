@@ -20,6 +20,14 @@ export interface AgentReply {
   sessionId?: string;
 }
 
+/**
+ * User-facing fallback when a turn dies on an internal failure. Shared with
+ * the router's pre-send backstop (issue #52) so a DB blip mid-turn produces
+ * the same degraded reply as an agent-query failure — never silence.
+ */
+export const INTERNAL_ERROR_REPLY =
+  'Sorry — I hit an internal error and could not complete that. Please try again.';
+
 interface TurnOutcome {
   ok: boolean;
   resumeFailed: boolean;
@@ -198,7 +206,7 @@ async function execTurn(
       ok: false,
       // Heuristic: resume failures surface as errors mentioning the session.
       resumeFailed: resumeSession != null && /session|resume/i.test(msg),
-      text: 'Sorry — I hit an internal error and could not complete that. Please try again.',
+      text: INTERNAL_ERROR_REPLY,
     };
   }
 

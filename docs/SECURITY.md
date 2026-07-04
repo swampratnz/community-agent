@@ -120,6 +120,104 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - All messages are stored for memory/audit. **Inform your community** that an
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
+- **Ambient channel archiving** (`DISCORD_ARCHIVE_ALL_MESSAGES`, issue #48,
+  off by default): when enabled, EVERY message posted in the guild's allowed
+  channels is stored with an embedding and its Discord message id —
+  member, guest, or lurker, addressed to the bot or not. This is the
+  project's founding "store all interactions so it can learn" goal, enabled
+  deliberately by the operator. Controls that ship with it:
+  - **Storage is decoupled from response**: the addressed-check still solely
+    decides whether the agent runs; ambient rows never trigger a reply
+    (pinned by `SECURITY:` test).
+  - **Platform deletes/edits are honoured**: deleting a Discord message
+    hard-deletes the stored copy; editing re-writes and re-embeds it —
+    stronger than the pre-#48 posture, where a processed message was kept
+    even if later deleted on Discord.
+  - Ambient rows join the same lifecycle as everything else: conversation-
+    scoped recall, `INTERACTION_RETENTION_DAYS` age purge, and
+    `forget_me`/`purge_user_data` (all pinned by tests). The recall
+    quarantine (untrusted block, bracket stripping) applies to ambient
+    content identically.
+  - **Visible community notice is a precondition, not a nicety** — see the
+    operational checklist and the ready-to-pin notice text below. Do not
+    enable the flag before the notice is posted.
+
+  Ready-to-pin server notice (edit the retention line to match your config):
+
+  > 📢 **Message logging in this server**
+  > Our community assistant stores messages posted in this server's public
+  > channels — including from non-members — to build shared community
+  > memory (so it can answer things like "what did we decide about X?").
+  > What's stored: message text, author, channel, and time. Deleting or
+  > editing your Discord message deletes or updates the stored copy. DMs
+  > with the bot are stored for registered members only. You can tell the
+  > bot to "forget me" at any time to erase your stored messages
+  > [, and messages are automatically deleted after N days]. Questions →
+  > ask an admin.
+- **Context digests** (`context_digests`, issue #51): an internal batch job
+  summarises *already-stored* interactions into aggregate topic digests — no
+  new collection surface. Admin-tier reads only (`list_context_digests`,
+  wrapped as untrusted data). Privacy properties enforced in code and pinned
+  by `SECURITY:` tests: digests reference interaction ids (never copied
+  content); a `forget_me`/`purge_user_data` invalidates every digest built
+  over the purged person's rows; and a minimum-distinct-authors floor stops
+  a digest from becoming a single-person profile. Cost is bounded by a hard
+  per-run cap on model calls plus an automatic skip while the usage-alert
+  threshold is breached.
+- **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
+  the one place DB-derived content deliberately leaves the database — an
+  aggregate rendering of `context_digests` for the research loop. The
+  boundary is enforced in `src/context/export.ts` and pinned by `SECURITY:`
+  tests: aggregate fields only (topic, counts, summaries, period stamps; no
+  raw content, user ids, display names, conversation ids, or interaction
+  refs), a configurable k-anonymity floor
+  (`CONTEXT_EXPORT_MIN_DISTINCT_USERS`, default 3 — small enough to keep
+  signal in a modest community, large enough that no single person's
+  activity becomes an identifiable line; sub-floor topics are dropped and
+  the drop logged), and a lexical PII scrub (emails, phones, @handles, URL
+  query strings) over the model-written summaries. **Honest limits**: the
+  scrub is lexical, not semantic — a summary can still be *semantically*
+  identifying, the same exposure class as an admin reading a digest; and
+  once committed, the export lives in git history permanently (`forget_me`
+  shapes future exports, it cannot retract committed ones). Both are
+  acceptable **only because this repo is private** — if the repo's
+  visibility ever changes, re-evaluate this export before flipping the
+  switch. Committing the regenerated file is a deliberate human step; the
+  bot never pushes.
+- **Suggestions** (`suggestions`, issue #46): member-authored improvement
+  ideas for the bot. No new data class (members' messages are already
+  stored; guests, whose content is never stored in gated mode, have no
+  access to the tool), write-only at member tier with a DB-backed 3/24h
+  cap, admin-only reads wrapped as untrusted data, purged with the user.
+  The pipeline bridge stays human — the bot has **no** GitHub access, so an
+  injected "suggestion" can never become a repo issue a build worker acts
+  on without an admin consciously filing it.
+- **Member notes** (`member_notes`, issue #45): admins can attach durable,
+  person-scoped context notes to *known* members (unknown identities are
+  refused). This is a deliberate, owner-approved PII surface with hard
+  boundaries: notes are **human-entered only** (the bot never auto-populates
+  one from web search or chat), **admin-read only** via `list_member_notes`
+  (never on member/guest turns, never in `knowledge_search` — the table has
+  no embedding column — never in memory recall; pinned by `SECURITY:`
+  tests), writes/deletes are **audited** (the audit row records that a note
+  was added, never its text, so a later purge actually removes the content),
+  and `forget_me`/`purge_user_data` delete all notes **about** the person.
+  The owner has explicitly accepted (issue #45) that there is **no
+  self-access path** (members cannot read notes about themselves) and that
+  admins may manually transcribe web-researched facts into a note — both are
+  scope decisions for this small, high-trust community, revisit if it grows.
+- **Server roster** (`server_roster`, issue #47): join/leave events plus a
+  startup backfill persist **identity metadata for every guild member** —
+  platform user id, display name, join/leave timestamps, rejoin count —
+  including non-members and lurkers who have never interacted with the bot.
+  It stores **no message content** (pinned by a `SECURITY:` test, plus a
+  structural column check so a content-bearing column can't appear
+  silently). Reads are **admin-tier and guild-wide** (`list_roster` is not
+  conversation-scoped — same precedent as `list_access_requests`), display
+  names are wrapped as untrusted data, and `forget_me`/`purge_user_data`
+  delete the person's roster row. Roster rows are durable (like
+  `community_users`); age-purging `left_at` rows is a possible future
+  refinement, noted under residual risks.
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
   identity has been linked (`link_member`) to another platform identity as the
@@ -248,13 +346,24 @@ the supported path.
 - **Membership-scope staleness**: adapters cache an admin's conversation list
   for ~60s, so an admin removed from a channel/group can retain data scope for
   up to that window.
-- **Guests in gated mode are invisible**: their messages are not stored, which
-  also means no audit trail of what strangers sent the WhatsApp number. Trade
-  chosen deliberately (privacy > forensics for non-members). The one exception
-  is `access_requests` (the pending-access queue): it stores identity
-  (platform, user id/name) and a request count/timestamps for guests who
-  addressed the bot, but never their message content — an admin-only,
-  `list_access_requests`-gated read, not a new content-storage surface.
+- **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
+  (issue #48, an owner-approved posture change). The precise guarantee is:
+  **guest DMs to the bot are never stored; public guild-channel messages —
+  including from guests and never-interacted lurkers — ARE stored when the
+  operator enables `DISCORD_ARCHIVE_ALL_MESSAGES`** (default off; off =
+  exactly the old posture, pinned by test). WhatsApp is unaffected. Two
+  metadata-only exceptions exist regardless of the flag: `access_requests`
+  (identity + request count for guests who addressed the bot) and
+  `server_roster` (join/leave identity metadata) — neither stores content.
+- **The roster narrows the "guests are invisible" spirit, not its letter**:
+  `server_roster` deliberately records the *identity* (never content) of every
+  guild member — including lurkers who never touched the bot — because the
+  onboarding queue ("joined but never added") and growth counts need exactly
+  that. It is metadata every server member can already see in the member
+  list, it is deletable (`forget_me`/`purge_user_data`), and reads are
+  admin-only and guild-wide rather than conversation-scoped. Rows for people
+  who left are kept (with `left_at`) for churn history; an age-purge of
+  departed rows is a future refinement if retention expectations tighten.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, and content reports *they submitted
   as reporter*. Membership rows, the admin audit log, and reports where the
@@ -298,7 +407,14 @@ number could reach an unrelated person).
 - [ ] `whatsapp-auth/` directory is `chmod 700`, not in git.
 - [ ] Postgres is not exposed to the network.
 - [ ] Bot has minimal Discord permissions.
-- [ ] Community is informed that interactions are logged.
+- [ ] Community is informed that interactions are logged, **that server
+      join/leave events (identity + timestamps, no content) are recorded for
+      admin onboarding/growth views, and that admins may keep private
+      context notes about members** (deletable on request via `forget_me`).
+- [ ] **Before enabling `DISCORD_ARCHIVE_ALL_MESSAGES`**: the ambient-
+      archiving notice (see "Data protection" above) is posted visibly
+      (server rules / pinned message). Enabling the flag without notice
+      violates the collection-notice expectations this deployment relies on.
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.

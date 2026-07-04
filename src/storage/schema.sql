@@ -138,6 +138,22 @@ CREATE TABLE IF NOT EXISTS policies (
 -- Session hygiene: cap resumed-session length (see agent/core.ts).
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS turn_count INT NOT NULL DEFAULT 0;
 
+-- Ambient archiving (issue #48): distinguish rows that address the bot from
+-- ambient channel chatter, and keep the platform message id so a Discord
+-- delete/edit can be honoured against the stored copy.
+ALTER TABLE interactions ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'addressed';
+ALTER TABLE interactions ADD COLUMN IF NOT EXISTS message_id TEXT;
+
+CREATE INDEX IF NOT EXISTS interactions_message_id_idx
+  ON interactions (platform, message_id);
+
+-- One-time relabel of legacy inbound rows that were never addressed to the
+-- bot (recorded before `kind` existed). Idempotent: rows written after this
+-- migration carry the correct kind at insert time and never match again.
+UPDATE interactions SET kind = 'ambient'
+ WHERE kind = 'addressed' AND direction = 'inbound'
+   AND addressed_to_bot = false AND is_direct = false;
+
 -- ---------------------------------------------------------------------------
 -- Append-only audit log of privileged (admin) actions the agent performed.
 -- ---------------------------------------------------------------------------
@@ -177,6 +193,106 @@ CREATE TABLE IF NOT EXISTS access_requests (
 
 CREATE INDEX IF NOT EXISTS access_requests_last_requested_idx
   ON access_requests (last_requested_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Server roster: who is (or was) in the platform community space, kept from
+-- join/leave events plus a startup backfill. Identity metadata ONLY (id,
+-- display name, join/leave timestamps) — data every server member already
+-- sees in the member list. NEVER message content (see SECURITY.md). Durable
+-- like community_users, not age-purged like interactions.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS server_roster (
+  id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform       TEXT        NOT NULL,
+  user_id        TEXT        NOT NULL,
+  display_name   TEXT,
+  joined_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  left_at        TIMESTAMPTZ,                        -- null = currently present
+  rejoined_count INT         NOT NULL DEFAULT 0,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (platform, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS server_roster_joined_idx
+  ON server_roster (platform, joined_at DESC);
+
+DROP TRIGGER IF EXISTS server_roster_set_updated_at ON server_roster;
+CREATE TRIGGER server_roster_set_updated_at
+  BEFORE UPDATE ON server_roster
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Durable community-context digests distilled from interactions by the
+-- offline context builder (issue #51). Each row is one recurring topic over
+-- one period. example_refs are interaction ids, NEVER copied content, so a
+-- privacy purge can invalidate affected digests (see repository.purgeUserData).
+-- Digests deliberately outlive the raw rows the retention purge ages out.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS context_digests (
+  id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  period_start   TIMESTAMPTZ NOT NULL,
+  period_end     TIMESTAMPTZ NOT NULL,
+  platform       TEXT,                              -- null = all platforms
+  topic          TEXT        NOT NULL,
+  summary        TEXT        NOT NULL,
+  example_refs   BIGINT[]    NOT NULL DEFAULT '{}',
+  distinct_users INT         NOT NULL,
+  question_count INT         NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS context_digests_created_idx
+  ON context_digests (created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Member-submitted improvement suggestions for the bot itself (issue #46) —
+-- a structured path from "the bot should do X" in chat to the humans who run
+-- the pipeline. The bridge to GitHub stays human: an admin reviews the queue
+-- and files anything worthwhile as a proposal issue themselves; the bot
+-- NEVER touches the repo.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS suggestions (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform      TEXT        NOT NULL,
+  user_id       TEXT        NOT NULL,
+  display_name  TEXT,
+  content       TEXT        NOT NULL,
+  status        TEXT        NOT NULL DEFAULT 'new', -- 'new' | 'reviewed' | 'declined' | 'done'
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_by   TEXT,
+  reviewed_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS suggestions_status_idx
+  ON suggestions (status, created_at DESC);
+
+-- Backs the per-user rolling-24h rate cap (see repository.ts createSuggestion).
+CREATE INDEX IF NOT EXISTS suggestions_user_rate_idx
+  ON suggestions (platform, user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Admin-curated context notes about known community members (issue #45).
+-- Person-scoped facts ("runs the Chch meetup") that do NOT belong in the
+-- global knowledge FAQ. Human-entered only, admin-read only, deleted by the
+-- member's forget_me/purge (see SECURITY.md).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_notes (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform      TEXT        NOT NULL,
+  user_id       TEXT        NOT NULL,           -- the member the note is about
+  note          TEXT        NOT NULL,
+  created_by    TEXT        NOT NULL,           -- platform user id of the admin author
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS member_notes_user_idx
+  ON member_notes (platform, user_id, created_at DESC);
+
+DROP TRIGGER IF EXISTS member_notes_set_updated_at ON member_notes;
+CREATE TRIGGER member_notes_set_updated_at
+  BEFORE UPDATE ON member_notes
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------------------------------------------------------------------------
 -- Member-submitted reports of harassment/spam/rule violations, for admins to

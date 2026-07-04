@@ -4,7 +4,7 @@ import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
-import { runAgentTurn } from './agent/core.js';
+import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
 import {
   cancelPendingAction,
   classifyConfirmReply,
@@ -135,6 +135,31 @@ export class Router {
     // content; if they address the bot, point them at an admin (rate-limited)
     // and record the request (identity + count only) so admins have a queue.
     if (gated && role === 'guest') {
+      // Ambient archiving (issue #48): with DISCORD_ARCHIVE_ALL_MESSAGES on,
+      // guest messages in guild channels ARE stored — a deliberate,
+      // documented posture change requiring community notice (SECURITY.md).
+      // Guest DMs to the bot stay unstored either way. Storage only: the
+      // addressed-check below still solely decides whether the agent runs.
+      if (
+        msg.platform === 'discord' &&
+        config.discord.archiveAllMessages &&
+        !msg.isDirect &&
+        msg.text.trim()
+      ) {
+        recordInteraction({
+          platform: msg.platform,
+          conversationId: msg.conversationId,
+          userId: msg.userId,
+          userName: msg.userName,
+          role,
+          direction: 'inbound',
+          content: msg.text,
+          addressedToBot: msg.addressedToBot,
+          isDirect: msg.isDirect,
+          messageId: msg.messageId,
+          kind: msg.addressedToBot ? 'addressed' : 'ambient',
+        }).catch((err) => logger.error({ err }, 'Failed to record ambient interaction'));
+      }
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
         recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch(
@@ -161,6 +186,8 @@ export class Router {
       content: msg.text,
       addressedToBot: msg.addressedToBot,
       isDirect: msg.isDirect,
+      messageId: msg.messageId,
+      kind: msg.addressedToBot || msg.isDirect ? 'addressed' : 'ambient',
     }).catch((err) => logger.error({ err }, 'Failed to record inbound interaction'));
 
     // Deterministic CONFIRM/CANCEL intercept for pending destructive actions.
@@ -281,7 +308,24 @@ export class Router {
     const typingTimer = setInterval(fireTypingIndicator, this.typingRefireMs).unref();
 
     try {
-      const reply = await this.runTurn(caller, msg.text, adapter);
+      // Backstop (issue #52): any unexpected failure between recall and the
+      // reply-send must degrade to the same fallback text execTurn already
+      // uses — the member always gets *some* reply, never silence. It wraps
+      // ONLY the pre-send path: a failure during or after the send is not
+      // retried, so at most one outbound reply ever goes out. The error is
+      // still logged at error level, and a *persistent* DB outage still
+      // trips /healthz + the startup healthcheck — this degradation is
+      // per-request only.
+      let reply: AgentReply;
+      try {
+        reply = await this.runTurn(caller, msg.text, adapter);
+      } catch (err) {
+        logger.error(
+          { err, conversationId: msg.conversationId },
+          'Turn failed before send; sending fallback reply',
+        );
+        reply = { text: INTERNAL_ERROR_REPLY };
+      }
 
       await this.send(adapter, msg.conversationId, reply.text);
 

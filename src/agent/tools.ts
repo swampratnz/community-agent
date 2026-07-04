@@ -6,17 +6,25 @@ import { normalizeMemberId } from '../auth/memberId.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { logger } from '../logger.js';
 import {
+  addMemberNote,
   clearAccessRequest,
   createContentReport,
+  createSuggestion,
   deleteKnowledge,
+  deleteMemberNote,
   demoteAdmin,
   getMemberRole,
+  listMemberNotes,
+  MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
   isKnownUser,
   linkMembers,
   listAccessRequests,
+  listContextDigests,
   listKnowledge,
   listReports,
+  listRoster,
+  listSuggestions,
   MODERATION_ACTION_KINDS,
   purgeUserData,
   recentAuditEntries,
@@ -26,8 +34,12 @@ import {
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
+  resolveSuggestion,
+  rosterCounts,
   resolveLinkedIdentities,
   saveKnowledge,
+  SUGGESTION_MAX_CHARS,
+  SUGGESTION_RATE_LIMIT_PER_DAY,
   searchKnowledge,
   searchMemory,
   unlinkMember,
@@ -339,6 +351,39 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const suggestImprovement = tool(
+    'suggest_improvement',
+    "Record a member's suggestion for how this assistant/community bot could be improved, so the human " +
+      'maintainers see it. Capture only: a human reviews these and decides — never promise the change ' +
+      'will be built. Members cannot read the queue back; admins triage it with list_suggestions.',
+    {
+      content: z
+        .string()
+        .min(1)
+        .max(SUGGESTION_MAX_CHARS)
+        .describe(`The suggestion, in the member's own words (max ${SUGGESTION_MAX_CHARS} characters)`),
+    },
+    async (args) => {
+      const created = await createSuggestion({
+        platform: caller.platform,
+        userId: caller.userId,
+        displayName: caller.userName,
+        content: args.content,
+      });
+      if (!created) {
+        return text(
+          `You've already filed ${SUGGESTION_RATE_LIMIT_PER_DAY} suggestions in the last 24 hours. ` +
+            'Please wait before filing another.',
+          true,
+        );
+      }
+      return text(
+        `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
+          'but no promises on if/when it gets built.',
+      );
+    },
+  );
+
   // --- Admin tools (scoped to the admin's own conversations) ------------------
 
   const whatsNew = tool(
@@ -615,6 +660,207 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
               `${r.platform} ${r.userName ?? r.userId} (${r.userId}) — ${r.requestCount} request(s), last ${r.lastRequestedAt.toISOString()}`,
           )
           .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listSuggestionsTool = tool(
+    'list_suggestions',
+    'List member-submitted bot-improvement suggestions for triage. The bridge to the pipeline stays ' +
+      'human: file anything worthwhile as a GitHub proposal yourself — the bot has no repo access. Admin only.',
+    {
+      status: z
+        .enum(['new', 'reviewed', 'declined', 'done'])
+        .optional()
+        .describe('Filter by status (default: all statuses)'),
+      limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_suggestions');
+      const rows = await listSuggestions(args.status, args.limit ?? 50);
+      if (rows.length === 0) return text('No suggestions found.');
+      return text(
+        untrusted(
+          'Suggestions',
+          rows
+            .map(
+              (s) =>
+                `#${s.id} [${s.status}] ${s.platform} ${s.displayName ?? s.userId} (${s.createdAt.toISOString()}): ${s.content}`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const resolveSuggestionTool = tool(
+    'resolve_suggestion',
+    'Mark a suggestion as reviewed, declined, or done once triaged. Non-destructive status change ' +
+      '(no CONFIRM needed), audited. Admin only.',
+    {
+      id: z.number().describe('Suggestion id (from list_suggestions)'),
+      status: z.enum(['reviewed', 'declined', 'done']).describe('New status'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'resolve_suggestion');
+      const { success, result } = await audited({
+        actionKind: 'resolve_suggestion',
+        params: { id: args.id, status: args.status },
+        run: async () => {
+          const done = await resolveSuggestion(args.id, args.status, caller.userId);
+          if (!done) throw new Error(`No suggestion with id ${args.id}.`);
+          return `marked ${args.status}`;
+        },
+      });
+      return text(success ? `Suggestion #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const addMemberNoteTool = tool(
+    'add_member_note',
+    'Attach a durable, admin-curated context note to a KNOWN community member (e.g. "runs the Chch ' +
+      'meetup", "prefers email"). Person-scoped facts belong here, never in the global knowledge FAQ. ' +
+      'Notes are human-entered only — never auto-populate one from web search or message content ' +
+      'without the admin explicitly asking to save that text. Admin only.',
+    {
+      userId: z.string().min(1).describe('Platform user id of the member the note is about'),
+      note: z
+        .string()
+        .min(1)
+        .max(MEMBER_NOTE_MAX_CHARS)
+        .describe(`The note text (max ${MEMBER_NOTE_MAX_CHARS} characters)`),
+      platform: platformArg,
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'add_member_note');
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      if ((await getMemberRole(platform, userId)) === null) {
+        return text(`Refusing: "${userId}" is not a registered community member on ${platform}.`, true);
+      }
+      // The audit row records that a note was added, never the note text —
+      // audit rows survive a purge, member_notes must not (SECURITY.md).
+      const { success, result } = await audited({
+        actionKind: 'add_member_note',
+        targetUserId: userId,
+        params: { platform, noteChars: args.note.length },
+        run: async () => {
+          const id = await addMemberNote({ platform, userId, note: args.note, createdBy: caller.userId });
+          return `note #${id} added`;
+        },
+      });
+      return text(success ? `Saved note for ${userId} (${result}).` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const listMemberNotesTool = tool(
+    'list_member_notes',
+    'Show the admin-curated context notes kept about one member. Notes are admin-only reading — they never appear on member turns, in knowledge_search, or in memory recall. Admin only.',
+    { userId: z.string().min(1).describe('Platform user id of the member'), platform: platformArg },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_member_notes');
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const notes = await listMemberNotes(platform, userId);
+      if (notes.length === 0) return text(`No notes for ${userId} on ${platform}.`);
+      return text(
+        untrusted(
+          `Notes for ${userId}`,
+          notes.map((n) => `#${n.id} [${n.createdAt.toISOString()} by ${n.createdBy}] ${n.note}`).join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const deleteMemberNoteTool = tool(
+    'delete_member_note',
+    'Delete one member context note by id (from list_member_notes). Audited. Admin only.',
+    { id: z.number().describe('Note id') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'delete_member_note');
+      const { success, result } = await audited({
+        actionKind: 'delete_member_note',
+        params: { id: args.id },
+        run: async () => {
+          const deleted = await deleteMemberNote(args.id);
+          if (!deleted) throw new Error(`No note with id ${args.id}.`);
+          return 'deleted';
+        },
+      });
+      return text(success ? `Deleted note #${args.id}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const listRosterTool = tool(
+    'list_roster',
+    'Show the server roster kept from join/leave events: recent joiners, people who joined but were ' +
+      'never added as members (the onboarding queue), or recent leavers — plus growth counts. Identity ' +
+      'metadata only, never message content. Guild-wide (not conversation-scoped). Admin only.',
+    {
+      filter: z
+        .enum(['recent', 'not_members', 'left', 'all'])
+        .optional()
+        .describe(
+          "'recent' (default) = joined within the window; 'not_members' = present but never added to " +
+            "community_users (onboarding queue); 'left' = left within the window; 'all' = everyone present",
+        ),
+      days: z.number().optional().describe("Window in days for 'recent'/'left' (default 7, max 90)"),
+      limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_roster');
+      const filter = args.filter ?? 'recent';
+      const rows = await listRoster(caller.platform, filter, args.days ?? 7, args.limit ?? 50);
+      const counts = await rosterCounts(caller.platform);
+      const summary = `Roster: ${counts.total} present · ${counts.joinedThisWeek} joined this week · ${counts.leftThisWeek} left this week.`;
+      if (rows.length === 0) return text(`${summary}\nNo entries match filter "${filter}".`);
+      return text(
+        `${summary}\n` +
+          untrusted(
+            `Roster (${filter})`,
+            rows
+              .map(
+                (r) =>
+                  `${r.displayName ?? r.userId} (${r.userId}) — joined ${r.joinedAt.toISOString()}` +
+                  `${r.leftAt ? `, left ${r.leftAt.toISOString()}` : ''}` +
+                  `${r.rejoinedCount > 0 ? `, rejoined ${r.rejoinedCount}x` : ''}` +
+                  `${r.isMember ? '' : ', NOT yet a member'}`,
+              )
+              .join('\n'),
+          ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listContextDigestsTool = tool(
+    'list_context_digests',
+    'Show durable community-context digests the offline builder distilled from stored interactions: ' +
+      'recurring topics with aggregate summaries and how many people/messages carried each. Admin only.',
+    {
+      days: z.number().optional().describe('How far back to look (default 30, max 365)'),
+      limit: z.number().optional().describe('Max digests (default 20, max 100)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_context_digests');
+      const rows = await listContextDigests(args.days ?? 30, args.limit ?? 20);
+      if (rows.length === 0) {
+        return text(
+          'No context digests found. The offline builder may be disabled (CONTEXT_BUILDER_ENABLED) or has not run yet.',
+        );
+      }
+      return text(
+        untrusted(
+          'Context digests',
+          rows
+            .map(
+              (d) =>
+                `#${d.id} [${d.periodStart.toISOString().slice(0, 10)}..${d.periodEnd.toISOString().slice(0, 10)}] ` +
+                `${d.topic} — ${d.summary} (${d.questionCount} messages from ${d.distinctUsers} people)`,
+            )
+            .join('\n'),
+        ),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -1066,6 +1312,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       rememberSearch,
       forgetMe,
       reportContent,
+      suggestImprovement,
       whatsNew,
       userHistory,
       moderate,
@@ -1075,10 +1322,17 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,
+      addMemberNoteTool,
+      listMemberNotesTool,
+      deleteMemberNoteTool,
+      listRosterTool,
+      listContextDigestsTool,
       questionDigest,
       moderationHistory,
       listReportsTool,
       resolveReportTool,
+      listSuggestionsTool,
+      resolveSuggestionTool,
       addMember,
       removeMemberTool,
       linkMemberTool,

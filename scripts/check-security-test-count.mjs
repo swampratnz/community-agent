@@ -25,8 +25,9 @@ const testsDir = path.join(repoRoot, 'tests');
 
 // Count at merge time of #42. Bump this in the same diff that adds a new
 // SECURITY: test; a diff that only lowers it needs an explanation.
-// Raised to 41 with the cross-platform identity-linking SECURITY tests (#44).
-const MIN_SECURITY_TESTS = 41;
+// Raised to 41 with the cross-platform identity-linking SECURITY tests (#44),
+// then to 57 with the approved-issues batch build (#45-#53).
+const MIN_SECURITY_TESTS = 57;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))

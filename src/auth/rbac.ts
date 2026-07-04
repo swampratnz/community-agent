@@ -46,6 +46,9 @@ export const MEMBER_TOOLS = [
   'mcp__community__remember_search',
   'mcp__community__forget_me',
   'mcp__community__report_content',
+  // Write-only into the member's own queue (rate-capped); the read side
+  // (list_suggestions) is admin-tier — a member can never read the queue.
+  'mcp__community__suggest_improvement',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */
@@ -59,6 +62,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__update_knowledge',
   'mcp__community__delete_knowledge',
   'mcp__community__list_access_requests',
+  'mcp__community__add_member_note',
+  'mcp__community__list_member_notes',
+  'mcp__community__delete_member_note',
+  'mcp__community__list_roster',
+  'mcp__community__list_context_digests',
   'mcp__community__question_digest',
   'mcp__community__moderation_history',
   'mcp__community__add_member',
@@ -67,6 +75,8 @@ export const ADMIN_TOOLS = [
   'mcp__community__unlink_member',
   'mcp__community__list_reports',
   'mcp__community__resolve_report',
+  'mcp__community__list_suggestions',
+  'mcp__community__resolve_suggestion',
 ] as const;
 
 /** Additional tools for super admins only. */

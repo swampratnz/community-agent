@@ -64,6 +64,58 @@ test('SECURITY: list_reports and resolve_report are admin-only (member/guest mus
   }
 });
 
+test('SECURITY: list_roster is admin-only — members/guests never see the roster (issue #47)', () => {
+  const tool = 'mcp__community__list_roster';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_roster must be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'list_roster must not be in MEMBER_TOOLS');
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_roster`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_roster`);
+  }
+});
+
+test('SECURITY: suggest_improvement is write-only at member tier — the suggestion queue is only readable by admin+ (issue #46)', () => {
+  const writeTool = 'mcp__community__suggest_improvement';
+  const readTools = ['mcp__community__list_suggestions', 'mcp__community__resolve_suggestion'];
+
+  assert.ok(MEMBER_TOOLS.includes(writeTool), 'suggest_improvement must be in MEMBER_TOOLS');
+  for (const t of readTools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of readTools) {
+      assert.ok(!surface.includes(t), `${role} must not read any suggestion (theirs or others') via ${t}`);
+    }
+  }
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(writeTool), `${role} must reach suggest_improvement`);
+  }
+});
+
+test('SECURITY: member-note tools are admin-only — a member can never read or write notes, including about themselves (issue #45)', () => {
+  const tools = [
+    'mcp__community__add_member_note',
+    'mcp__community__list_member_notes',
+    'mcp__community__delete_member_note',
+  ];
+  for (const t of tools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
 test('SECURITY: link_member and unlink_member are admin-only, never reachable by member/guest — the only way person_id can change is this explicit, CONFIRM-gated admin tool, never message content (issue #44)', () => {
   const tools = ['mcp__community__link_member', 'mcp__community__unlink_member'];
   for (const t of tools) {
@@ -77,6 +129,21 @@ test('SECURITY: link_member and unlink_member are admin-only, never reachable by
   for (const role of ['admin', 'super_admin'] as const) {
     const surface = toolsForRole(role);
     for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
+test('SECURITY: list_context_digests is admin-only — digests derive from member content and never reach member turns (issue #51)', () => {
+  const tool = 'mcp__community__list_context_digests';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_context_digests must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'list_context_digests must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_context_digests`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_context_digests`);
   }
 });
 

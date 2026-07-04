@@ -1,0 +1,16 @@
+# Nightly redeploy timer (issue #50): 1am Pacific/Auckland, DST-correct
+# (NZST/NZDT handled by the timezone suffix, not a hard-coded UTC hour).
+# Persistent=true catches up after downtime: if the box was off/asleep at
+# 1am, the deploy runs on next boot instead of silently skipping a night.
+
+[Unit]
+Description=Nightly community-agent redeploy from origin/main
+
+[Timer]
+OnCalendar=*-*-* 01:00:00 Pacific/Auckland
+Persistent=true
+# Spread a little so a fleet (or a coincident backup cron) doesn't align.
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

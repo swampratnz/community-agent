@@ -21,6 +21,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
+const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
+const { logger } = await import('../src/logger.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 // recordInteraction embeds every message it stores; the embedding pipeline is
@@ -201,6 +203,43 @@ test('respond(): a Cloud-style adapter whose 2nd+ indicator call rejects still d
   await done;
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'cloud reply');
+});
+
+test('respond(): a thrown turn sends the internal-error fallback instead of silence (issue #52)', async (t) => {
+  const errorLog = t.mock.method(logger, 'error');
+  const router = new Router(async () => {
+    throw new Error('DB blew up mid-turn');
+  }, 1_000_000);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1, 'the member gets exactly one reply, never silence');
+  assert.equal(sent[0].text, INTERNAL_ERROR_REPLY);
+  assert.ok(
+    errorLog.mock.calls.some((c) => String(c.arguments[1]).includes('fallback')),
+    'the backstop logs at error level — it never swallows silently',
+  );
+});
+
+test('respond(): a failure during the send itself is never retried — at most one outbound reply (issue #52)', async () => {
+  let sendAttempts = 0;
+  const router = new Router(async () => makeReply('a perfectly good reply'), 1_000_000);
+  const { adapter, trigger } = makeAdapter({
+    sendMessage: async () => {
+      sendAttempts += 1;
+      throw new Error('send failed after the turn succeeded');
+    },
+  });
+  router.register(adapter);
+
+  // handle() chains respond() through `.catch(logger.error)`, so the send
+  // failure is logged, not re-thrown — and crucially the backstop wraps only
+  // the PRE-send path, so it must not catch this and emit a second reply.
+  await trigger(makeMessage());
+
+  assert.equal(sendAttempts, 1, 'no fallback double-send after a send-path failure');
 });
 
 test('router: a gated-out guest never reaches respond() — zero typing indicator calls', async () => {

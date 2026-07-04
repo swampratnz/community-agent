@@ -122,6 +122,66 @@ sudo -u community-agent bash -lc 'set -a; . ./.env; set +a; npm run migrate:prod
 sudo systemctl restart community-agent
 ```
 
+## Automated nightly redeploy (1am NZ time)
+
+`scripts/redeploy.sh` + the systemd timer automate the upgrade steps above,
+unattended, every night at **1am Pacific/Auckland** (DST-correct — the
+timezone lives in `OnCalendar`, not a hard-coded UTC hour):
+
+```bash
+sudo cp deploy/community-agent-redeploy.service /etc/systemd/system/
+sudo cp deploy/community-agent-redeploy.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now community-agent-redeploy.timer
+systemctl list-timers community-agent-redeploy.timer   # shows the next 1am run
+```
+
+What a run does, in order: `flock` (no overlapping runs) → clean-tree check
+(untracked files like `.env`/`dist/` are fine; *modified tracked* files
+abort) → `git fetch` → **fast-forward-only** update to `origin/main` (a
+diverged or rewritten history aborts; nothing is ever force-reset over local
+commits) → `npm ci` → `npm run build` → `npm run migrate:prod` → `systemctl
+restart` → health poll (`HEALTH_URL` if set, else `systemctl is-active`).
+If nothing was merged since the last run it exits 0 at the fetch step
+("up to date") — the nightly tick is effectively free.
+
+Fail-safe behaviour:
+
+- A **build/migrate failure** restores the old code (and its `dist/`) and
+  does **not** restart — the running service stays on the old build.
+- A **restart that never becomes healthy** rolls back to the old commit,
+  rebuilds, and restarts onto it.
+- **Rollback restores code only.** An already-applied migration is never
+  rolled back, so **schema migrations must stay backward-compatible within a
+  deploy** — the old binary must be able to run against the new schema. This
+  repo's additive `IF NOT EXISTS` migration style already satisfies that;
+  keep it that way.
+
+Preconditions and caveats:
+
+- This deploys whatever is at `origin/main` as the service user. **Branch
+  protection on `main` (require PR + review) and CODEOWNERS are the controls
+  that make pull-deploy safe** — they're what guarantees `origin/main` only
+  ever contains human-merged code (see `docs/SECURITY.md`'s operational
+  checklist). Do not enable the timer without them.
+- Failures are visible via `journalctl -u community-agent-redeploy` and the
+  unit's failed state (`systemctl status community-agent-redeploy`). For
+  push-style alerting, attach an `OnFailure=` unit of your choosing — the
+  running bot's super-admin DM path lives inside the bot process and is not
+  callable from this standalone script (deliberately small scope).
+- Triggering a redeploy from chat is **out of scope** for this mechanism —
+  if ever built, it must be super-admin + CONFIRM-gated, router-executed,
+  and take no model-supplied arguments (see issue #50's review).
+- Non-systemd alternative: a root crontab entry
+  `0 1 * * * TZ=Pacific/Auckland /opt/community-agent/scripts/redeploy.sh`
+  (note: plain cron evaluates the schedule in the *system* timezone; the
+  `TZ=` prefix only affects the job, so prefer the systemd timer, which
+  handles the NZST/NZDT shift correctly).
+
+To exercise it manually: `sudo systemctl start community-agent-redeploy.service`
+(one run, same logs), or run the script directly with `SERVICE_NAME=""` to
+test the git/build/migrate flow without touching the running service.
+
 ## Backups
 Back up the database (memory + audit) and the WhatsApp auth dir:
 ```bash

@@ -18,6 +18,10 @@ export interface InteractionInput {
   isDirect?: boolean;
   costUsd?: number;
   meta?: Record<string, unknown>;
+  /** Platform-native message id, for delete/edit honouring (issue #48). */
+  messageId?: string;
+  /** 'addressed' (to the bot / DM) vs 'ambient' channel chatter (issue #48). */
+  kind?: 'addressed' | 'ambient';
 }
 
 /** Persist one interaction, embedding its content for later semantic recall. */
@@ -34,8 +38,9 @@ export async function recordInteraction(input: InteractionInput): Promise<void> 
     pool.query(
       `INSERT INTO interactions
          (platform, conversation_id, user_id, user_name, role, direction,
-          content, addressed_to_bot, is_direct, cost_usd, meta, embedding)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          content, addressed_to_bot, is_direct, cost_usd, meta, embedding,
+          message_id, kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         input.platform,
         input.conversationId,
@@ -49,6 +54,8 @@ export async function recordInteraction(input: InteractionInput): Promise<void> 
         input.costUsd ?? null,
         JSON.stringify(input.meta ?? {}),
         vec ? pgvector.toSql(vec) : null,
+        input.messageId ?? null,
+        input.kind ?? 'addressed',
       ],
     );
 
@@ -133,15 +140,30 @@ export async function searchMemory(
   }
   params.push(topK);
 
-  const { rows } = await pool.query(
-    `SELECT content, user_name, role, direction, created_at,
+  let rows: Array<{
+    content: string;
+    user_name: string | null;
+    role: string;
+    direction: string;
+    created_at: Date;
+    similarity: unknown;
+  }>;
+  try {
+    ({ rows } = await pool.query(
+      `SELECT content, user_name, role, direction, created_at,
             1 - (embedding <=> $1) AS similarity
        FROM interactions
       WHERE ${filters.join(' AND ')}
       ORDER BY embedding <=> $1
       LIMIT $${params.length}`,
-    params,
-  );
+      params,
+    ));
+  } catch (err) {
+    // A transient DB failure must degrade to "no relevant memories", not kill
+    // the whole turn (issue #52) — same treatment as the embed() catch above.
+    logger.warn({ err }, 'Memory search query failed; proceeding without memory context');
+    return [];
+  }
 
   return rows.map((r) => ({
     content: r.content,
@@ -151,6 +173,43 @@ export async function searchMemory(
     createdAt: r.created_at,
     similarity: Number(r.similarity),
   }));
+}
+
+/**
+ * Honour a platform-level message deletion (issue #48): hard-delete the
+ * stored copy. Returns the number of rows removed (0 when the message was
+ * never stored, e.g. pre-archiving or a bot message).
+ */
+export async function deleteInteractionByMessageId(platform: Platform, messageId: string): Promise<number> {
+  const { rowCount } = await pool.query(`DELETE FROM interactions WHERE platform = $1 AND message_id = $2`, [
+    platform,
+    messageId,
+  ]);
+  return rowCount ?? 0;
+}
+
+/**
+ * Honour a platform-level message edit (issue #48): replace the stored
+ * content and re-embed it (NULL embedding on failure, same best-effort
+ * fallback as recordInteraction). Returns false if no stored row matched.
+ */
+export async function updateInteractionByMessageId(
+  platform: Platform,
+  messageId: string,
+  content: string,
+): Promise<boolean> {
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(content);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for edited message; storing update without vector');
+  }
+  const { rowCount } = await pool.query(
+    `UPDATE interactions SET content = $3, embedding = $4
+      WHERE platform = $1 AND message_id = $2`,
+    [platform, messageId, content, embedding ? pgvector.toSql(embedding) : null],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 /** Recent turns in a conversation, oldest-first, for short-term context. */
@@ -182,11 +241,19 @@ export async function getClaudeSession(
   platform: Platform,
   conversationId: string,
 ): Promise<StoredSession | null> {
-  const { rows } = await pool.query(
-    `SELECT claude_session_id, turn_count, updated_at
+  let rows: Array<{ claude_session_id: string | null; turn_count: unknown; updated_at: Date }>;
+  try {
+    ({ rows } = await pool.query(
+      `SELECT claude_session_id, turn_count, updated_at
        FROM sessions WHERE platform = $1 AND conversation_id = $2`,
-    [platform, conversationId],
-  );
+      [platform, conversationId],
+    ));
+  } catch (err) {
+    // Degrade to "no stored session" so the turn starts fresh instead of
+    // dying — runAgentTurn already treats null as start-fresh (issue #52).
+    logger.warn({ err }, 'Session lookup failed; starting a fresh session');
+    return null;
+  }
   const row = rows[0];
   if (!row?.claude_session_id) return null;
   return {
@@ -696,12 +763,23 @@ export async function countRepliesToUser(
 
 /** Delete one identity's stored data — the single-identity core of `purgeUserData`. */
 async function purgeSingleIdentity(platform: Platform, userId: string): Promise<number> {
-  const { rowCount: messages } = await pool.query(
+  const { rows: deletedInteractions } = await pool.query(
     `DELETE FROM interactions
       WHERE platform = $1
-        AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))`,
+        AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))
+      RETURNING id`,
     [platform, userId],
   );
+  const messages = deletedInteractions.length;
+  // Deletion coherence (issue #51): a context digest whose summary was built
+  // over any purged interaction is invalidated outright — the next builder
+  // run regenerates the topic without this person's signal. Digests store
+  // interaction ids (never copied content) precisely so this is possible.
+  if (messages > 0) {
+    await pool.query(`DELETE FROM context_digests WHERE example_refs && $1::bigint[]`, [
+      deletedInteractions.map((r) => Number(r.id)),
+    ]);
+  }
   // knowledge has no platform column, so this keys on source_user_id alone.
   // Safe because Discord snowflakes (17-20 digits) and WhatsApp E.164 numbers
   // (7-15 digits) can't collide as strings (enforced by normalizeMemberId), so
@@ -714,13 +792,29 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
     [platform, userId],
   );
-  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0);
+  const { rowCount: roster } = await pool.query(
+    `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  const { rowCount: notes } = await pool.query(
+    `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  const { rowCount: suggestions } = await pool.query(
+    `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  return (
+    (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0) + (notes ?? 0) + (suggestions ?? 0)
+  );
 }
 
 /**
  * Delete a user's stored data: their inbound messages, the bot's replies to
- * them, knowledge entries sourced from them, and content reports *they
- * submitted* as reporter — across every identity linked to them via
+ * them, knowledge entries sourced from them, content reports *they
+ * submitted* as reporter, their server_roster row, admin notes kept *about*
+ * them (member_notes), suggestions they filed, and any context digest built
+ * over their purged interactions — across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
  * *both*, which is why `link_member` is CONFIRM-gated, audited, and
@@ -987,6 +1081,381 @@ export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
 /** Clear a resolved access request (e.g. after add_member succeeds for that user). */
 export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
   await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}
+
+// --- Context digests (offline builder output, issue #51) ---------------------
+
+export interface ContextDigest {
+  id: number;
+  periodStart: Date;
+  periodEnd: Date;
+  platform: string | null;
+  topic: string;
+  summary: string;
+  exampleRefs: number[];
+  distinctUsers: number;
+  questionCount: number;
+  createdAt: Date;
+}
+
+export async function insertContextDigest(input: {
+  periodStart: Date;
+  periodEnd: Date;
+  platform?: string;
+  topic: string;
+  summary: string;
+  exampleRefs: number[];
+  distinctUsers: number;
+  questionCount: number;
+}): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO context_digests
+       (period_start, period_end, platform, topic, summary, example_refs, distinct_users, question_count)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [
+      input.periodStart,
+      input.periodEnd,
+      input.platform ?? null,
+      input.topic,
+      input.summary,
+      input.exampleRefs,
+      input.distinctUsers,
+      input.questionCount,
+    ],
+  );
+  return Number(rows[0].id);
+}
+
+export async function listContextDigests(days = 30, limit = 20): Promise<ContextDigest[]> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 30, 1), 365);
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const { rows } = await pool.query(
+    `SELECT id, period_start, period_end, platform, topic, summary, example_refs,
+            distinct_users, question_count, created_at
+       FROM context_digests
+      WHERE created_at > now() - $1::interval
+      ORDER BY created_at DESC, question_count DESC
+      LIMIT $2`,
+    [`${clampedDays} days`, clampedLimit],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    periodStart: r.period_start,
+    periodEnd: r.period_end,
+    platform: r.platform,
+    topic: r.topic,
+    summary: r.summary,
+    exampleRefs: (r.example_refs as unknown[]).map(Number),
+    distinctUsers: Number(r.distinct_users),
+    questionCount: Number(r.question_count),
+    createdAt: r.created_at,
+  }));
+}
+
+/** When the builder last produced anything — backs the ~daily freshness guard. */
+export async function latestContextDigestAt(): Promise<Date | null> {
+  const { rows } = await pool.query(`SELECT max(created_at) AS at FROM context_digests`);
+  return rows[0]?.at ?? null;
+}
+
+/**
+ * Inbound rows (with embeddings) in the builder's window, oldest-first.
+ * Bounded so a very busy window can't balloon builder memory.
+ */
+export async function recentInboundForClustering(
+  days: number,
+  limit = 5000,
+): Promise<Array<{ id: number; userId: string; content: string; embedding: number[] }>> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 1, 1), 30);
+  const { rows } = await pool.query(
+    `SELECT id, user_id, content, embedding
+       FROM interactions
+      WHERE direction = 'inbound' AND embedding IS NOT NULL
+        AND created_at > now() - $1::interval
+      ORDER BY created_at ASC
+      LIMIT $2`,
+    [`${clampedDays} days`, limit],
+  );
+  return rows
+    .filter((r) => Array.isArray(r.embedding))
+    .map((r) => ({
+      id: Number(r.id),
+      userId: r.user_id,
+      content: r.content,
+      embedding: r.embedding as number[],
+    }));
+}
+
+// --- Suggestions (member-submitted bot-improvement queue, issue #46) ---------
+
+/** Per-user cap on new suggestions within a rolling 24h window (anti-spam on the admin queue). */
+export const SUGGESTION_RATE_LIMIT_PER_DAY = 3;
+export const SUGGESTION_MAX_CHARS = 1000;
+
+export type SuggestionStatus = 'new' | 'reviewed' | 'declined' | 'done';
+
+export interface Suggestion {
+  id: number;
+  platform: Platform;
+  userId: string;
+  displayName: string | null;
+  content: string;
+  status: SuggestionStatus;
+  createdAt: Date;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+}
+
+/**
+ * Record a member's suggestion, enforcing a DB-backed rolling-24h cap per
+ * user (COUNT(*) inside the insert, same restart-proof pattern as
+ * createContentReport — never an in-memory or model-supplied counter).
+ * Returns null when the caller is at/over the cap; the tool layer turns
+ * that into a polite refusal.
+ */
+export async function createSuggestion(input: {
+  platform: Platform;
+  userId: string;
+  displayName?: string;
+  content: string;
+}): Promise<{ id: number } | null> {
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM suggestions
+        WHERE platform = $1 AND user_id = $2
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO suggestions (platform, user_id, display_name, content)
+     SELECT $1, $2, $3, $4
+      WHERE (SELECT n FROM recent) < $5
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      input.displayName ?? null,
+      input.content.slice(0, SUGGESTION_MAX_CHARS),
+      SUGGESTION_RATE_LIMIT_PER_DAY,
+    ],
+  );
+  return rows[0] ? { id: Number(rows[0].id) } : null;
+}
+
+/** Admin-tier read of the suggestion queue (there is deliberately no member read path). */
+export async function listSuggestions(status?: SuggestionStatus, limit = 50): Promise<Suggestion[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+  const params: unknown[] = [];
+  let where = '';
+  if (status) {
+    params.push(status);
+    where = `WHERE status = $${params.length}`;
+  }
+  params.push(clampedLimit);
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, display_name, content, status, created_at, reviewed_by, reviewed_at
+       FROM suggestions
+       ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    displayName: r.display_name,
+    content: r.content,
+    status: r.status as SuggestionStatus,
+    createdAt: r.created_at,
+    reviewedBy: r.reviewed_by,
+    reviewedAt: r.reviewed_at,
+  }));
+}
+
+/** Flip a suggestion's status once triaged. Returns false if no row matched. */
+export async function resolveSuggestion(
+  id: number,
+  status: Exclude<SuggestionStatus, 'new'>,
+  reviewedBy: string,
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE suggestions SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1`,
+    [id, status, reviewedBy],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+// --- Member notes (admin-curated person-scoped context, issue #45) -----------
+
+export const MEMBER_NOTE_MAX_CHARS = 1000;
+
+export interface MemberNote {
+  id: number;
+  note: string;
+  createdBy: string;
+  createdAt: Date;
+}
+
+/**
+ * Attach an admin-authored note to a member. Content is capped server-side;
+ * target validation (the member must exist in community_users) lives in the
+ * tool layer so the refusal message can be user-facing. Never in
+ * knowledge_search or memory recall — this table has no embedding column by
+ * design and is only read through listMemberNotes.
+ */
+export async function addMemberNote(input: {
+  platform: Platform;
+  userId: string;
+  note: string;
+  createdBy: string;
+}): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO member_notes (platform, user_id, note, created_by)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    [input.platform, input.userId, input.note.slice(0, MEMBER_NOTE_MAX_CHARS), input.createdBy],
+  );
+  return Number(rows[0].id);
+}
+
+export async function listMemberNotes(platform: Platform, userId: string): Promise<MemberNote[]> {
+  const { rows } = await pool.query(
+    `SELECT id, note, created_by, created_at
+       FROM member_notes
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY created_at DESC`,
+    [platform, userId],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    note: r.note,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+  }));
+}
+
+/** Delete one note by id. Returns false if no row matched. */
+export async function deleteMemberNote(id: number): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM member_notes WHERE id = $1`, [id]);
+  return (rowCount ?? 0) > 0;
+}
+
+// --- Server roster (join/leave persistence) ----------------------------------
+
+/**
+ * Upsert a roster row for someone present in the server. Used by both the
+ * join event and the startup backfill, so it must be idempotent for an
+ * already-present user: display name refreshes, nothing else moves. A user
+ * whose row is marked left re-activates as a rejoin (left_at cleared,
+ * rejoined_count bumped, joined_at reset to now). Identity metadata only —
+ * callers must never pass message content (SECURITY.md invariant).
+ */
+export async function upsertRosterMember(input: {
+  platform: Platform;
+  userId: string;
+  displayName?: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO server_roster (platform, user_id, display_name)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (platform, user_id) DO UPDATE SET
+       display_name = COALESCE(EXCLUDED.display_name, server_roster.display_name),
+       rejoined_count = CASE
+         WHEN server_roster.left_at IS NOT NULL
+         THEN server_roster.rejoined_count + 1 ELSE server_roster.rejoined_count END,
+       joined_at = CASE
+         WHEN server_roster.left_at IS NOT NULL THEN now() ELSE server_roster.joined_at END,
+       left_at = NULL`,
+    [input.platform, input.userId, input.displayName ?? null],
+  );
+}
+
+/** Mark a roster row as left. No-op (false) if unknown or already marked left. */
+export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE server_roster SET left_at = now()
+      WHERE platform = $1 AND user_id = $2 AND left_at IS NULL`,
+    [platform, userId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export type RosterFilter = 'recent' | 'not_members' | 'left' | 'all';
+
+export interface RosterEntry {
+  userId: string;
+  displayName: string | null;
+  joinedAt: Date;
+  leftAt: Date | null;
+  rejoinedCount: number;
+  isMember: boolean;
+}
+
+/**
+ * Roster view for admins. Deliberately guild-wide, not conversation-scoped —
+ * the roster is the same member list every server member already sees
+ * (documented in SECURITY.md alongside list_access_requests). 'not_members'
+ * is the onboarding queue: present in the server but never added to
+ * community_users.
+ */
+export async function listRoster(
+  platform: Platform,
+  filter: RosterFilter = 'recent',
+  days = 7,
+  limit = 50,
+): Promise<RosterEntry[]> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 90);
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+
+  const params: unknown[] = [platform];
+  let where = 'r.platform = $1';
+  if (filter === 'recent') {
+    params.push(`${clampedDays} days`);
+    where += ` AND r.left_at IS NULL AND r.joined_at > now() - $${params.length}::interval`;
+  } else if (filter === 'left') {
+    params.push(`${clampedDays} days`);
+    where += ` AND r.left_at IS NOT NULL AND r.left_at > now() - $${params.length}::interval`;
+  } else if (filter === 'not_members') {
+    where += ' AND r.left_at IS NULL AND cu.id IS NULL';
+  }
+  params.push(clampedLimit);
+
+  const { rows } = await pool.query(
+    `SELECT r.user_id, r.display_name, r.joined_at, r.left_at, r.rejoined_count,
+            (cu.id IS NOT NULL) AS is_member
+       FROM server_roster r
+       LEFT JOIN community_users cu
+         ON cu.platform = r.platform AND cu.platform_user_id = r.user_id
+      WHERE ${where}
+      ORDER BY COALESCE(r.left_at, r.joined_at) DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((r) => ({
+    userId: r.user_id,
+    displayName: r.display_name,
+    joinedAt: r.joined_at,
+    leftAt: r.left_at,
+    rejoinedCount: Number(r.rejoined_count),
+    isMember: Boolean(r.is_member),
+  }));
+}
+
+/** Growth-pulse counts for the roster summary line. */
+export async function rosterCounts(
+  platform: Platform,
+): Promise<{ total: number; joinedThisWeek: number; leftThisWeek: number }> {
+  const { rows } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE left_at IS NULL) AS total,
+       count(*) FILTER (WHERE left_at IS NULL AND joined_at > now() - interval '7 days') AS joined_week,
+       count(*) FILTER (WHERE left_at IS NOT NULL AND left_at > now() - interval '7 days') AS left_week
+     FROM server_roster WHERE platform = $1`,
+    [platform],
+  );
+  return {
+    total: Number(rows[0]?.total ?? 0),
+    joinedThisWeek: Number(rows[0]?.joined_week ?? 0),
+    leftThisWeek: Number(rows[0]?.left_week ?? 0),
+  };
 }
 
 // --- Question digest ---------------------------------------------------------

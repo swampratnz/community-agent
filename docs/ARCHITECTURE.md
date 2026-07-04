@@ -54,6 +54,22 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
 | `src/health.ts` / `src/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
 
+## Ambient archiving
+
+With `DISCORD_ARCHIVE_ALL_MESSAGES=true` (issue #48; **off by default**),
+storage is decoupled from response: every message in the guild's allowed
+channels is recorded to `interactions` (kind `ambient` when not addressing
+the bot, with the Discord message id), while the addressed-check continues to
+solely govern whether the agent replies. That gives conversation-scoped
+recall, `question_digest`, and the context pipeline visibility into actual
+channel discussion — "what did we decide about X last week?" becomes
+answerable. Discord deletes/edits are honoured against the stored copy
+(hard-delete / re-embed by message id), ambient rows age out via
+`INTERACTION_RETENTION_DAYS` and are covered by `forget_me`. This reverses
+part of the gated-mode guest guarantee for public channels — see SECURITY.md
+for the posture statement, the notice precondition, and the ready-to-pin
+community notice text.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
@@ -110,10 +126,15 @@ and every privileged action is audited and alerted to super admins by DM.
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
+| `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `list_suggestions` / `resolve_suggestion` (triage the idea queue) | ❌ | ❌ | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
+| `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
+| `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
+| `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(writes audited)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -156,6 +177,94 @@ weakening it:
    guests. Admins call `list_access_requests` to see who's waiting instead of
    relying on informal pings; `add_member` clears the row for that user once
    actioned.
+3. **Server roster** (issue #47). The Discord adapter records every
+   `guildMemberAdd`/`guildMemberRemove` into `server_roster` (identity
+   metadata only — see SECURITY.md) and idempotently backfills the current
+   member list once on startup, skipping bots. `list_roster` (admin) answers
+   "who joined this week?", "who joined but was never added as a member?"
+   (the gated-mode onboarding queue — the exact conversion funnel
+   `add_member` serves), and "who left?", with a total/joined/left weekly
+   pulse line. Rejoins clear `left_at` and bump `rejoined_count`. No new
+   gateway intent: the `GuildMembers` intent the bot already holds for role
+   resolution streams these events anyway; a `GuildMember` partial is enabled
+   so leaves of uncached members still fire.
+
+## Offline context builder
+
+`src/context/builder.ts` (issue #51) is the learning step on top of storage:
+a ~daily in-process job (timer in `src/index.ts`, mirroring the retention
+purge; off unless `CONTEXT_BUILDER_ENABLED`) that reads across the window's
+inbound interactions, greedily clusters them by embedding similarity (same
+pgvector-fed technique and threshold as `question_digest`), and writes each
+recurring theme to `context_digests` as a topic label + model-written
+aggregate summary + interaction-id refs. Admins read them via
+`list_context_digests`.
+
+Guardrails, all enforced in code (binding conditions from the issue review):
+
+- **Hard cost cap**: at most `CONTEXT_BUILDER_MAX_SUMMARIES` tool-less,
+  single-turn model calls per run — a busy window truncates (logged), never
+  overruns — and a run is skipped outright while the rolling-24h reply count
+  is at/over `USAGE_ALERT_DAILY_REPLIES`, so background analysis can't drain
+  the shared Max pool a busy live bot is using.
+- **k-floor** (`CONTEXT_BUILDER_MIN_DISTINCT_USERS`, ≥2): clusters carried
+  by fewer distinct authors are dropped (logged) so a digest never becomes a
+  de-facto profile of one person.
+- **Deletion coherence**: digests store interaction *ids*, never copied
+  content, and `purgeUserData` invalidates any digest referencing a purged
+  interaction — the next run regenerates the topic without that person.
+  Digests deliberately survive the age-based retention purge (that's their
+  point); only privacy purges invalidate them.
+- **Restart-safe cadence**: the timer ticks 6-hourly but a freshness guard
+  on the last digest's `created_at` makes it ~one run per day, so the
+  nightly redeploy restart can't double-run it.
+- The `knowledge_candidates` review-queue idea from the proposal is
+  **deferred to a separate proposal** per the adversarial scope trim.
+
+On top of the digests sits the **anonymised community-context export**
+(issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
+`src/context/export.ts` regenerates `docs/COMMUNITY-CONTEXT.md` —
+aggregate-only (its own k-floor + PII scrub; the egress boundary lives in
+SECURITY.md) — which the research loop reads (file-only, no DB access) once
+a human commits it. `npm run export:context` regenerates it manually.
+
+## Suggestion capture
+
+`suggest_improvement` (issue #46) closes the "the suggestion died in chat"
+gap: when a member proposes something the bot should do, the idea now lands
+in a triageable `suggestions` queue instead of evaporating (or being
+shoehorned into a knowledge note). Same pull-queue shape as
+`access_requests` and `content_reports`:
+
+1. A member calls `suggest_improvement(content)` — capped at 3 per rolling
+   24h with the same DB-backed count-inside-insert pattern as
+   `report_content`, and capped at 1000 chars server-side. The bot confirms
+   capture and sets expectations ("a human reviews these; no promises").
+   Members have **no read path**: the queue is write-only at member tier.
+2. Admins triage with `list_suggestions` (content `untrusted()`-wrapped — a
+   suggestion is member-authored text aimed at an admin turn, i.e. an
+   injection vector) and `resolve_suggestion` (reviewed/declined/done,
+   audited, non-destructive so no CONFIRM).
+3. **The bridge to the pipeline stays human**: an admin files anything
+   worthwhile as a GitHub `proposal` issue themselves. The bot never touches
+   the repo — untrusted chat must never be able to write into the issue
+   queue a build worker implements from (see SECURITY.md).
+
+`forget_me`/`purge_user_data` delete the user's suggestions.
+
+## Member context notes
+
+`member_notes` (issue #45) gives admins a person-scoped home for durable
+facts about a member ("runs the Chch meetup", "is the Claude Ambassador")
+that previously had nowhere to live except the **global** knowledge FAQ —
+the wrong container, since `knowledge_search` surfaces entries to every
+tier. Notes are keyed to known `community_users` identities (unknown targets
+refused, same validation pattern as the membership tools), capped at 1000
+chars, human-entered only, and readable exclusively through the admin-tier
+`list_member_notes` (content `untrusted()`-wrapped — notes are data, never
+instructions). Writes and deletes are audited without the note text;
+`forget_me`/`purge_user_data` delete the subject's notes. See SECURITY.md
+for the privacy boundary and the owner-accepted no-self-access decision.
 
 ## Abuse reporting
 
@@ -271,6 +380,13 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
 The debounce/payload logic lives in `src/healthState.ts`, deliberately free
 of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`
 is the thin I/O wrapper around it).
+
+Per-request DB failures degrade rather than alert: a memory-recall or
+session-lookup failure mid-turn falls back (no memory context / fresh
+session) and the router's pre-send backstop guarantees the member still gets
+a reply (issue #52). That degradation is per-request only — a *persistent*
+DB outage still fails `healthcheck()` at startup and flips `db: false` on
+`/healthz`, so it is never masked from monitoring.
 
 ## Usage & shared Max-pool alerting
 

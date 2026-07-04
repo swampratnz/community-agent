@@ -44,6 +44,14 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
   // Fallback text channel to post the welcome in if the DM fails (e.g. DMs closed).
   DISCORD_WELCOME_CHANNEL_ID: z.string().optional(),
+  // Ambient archiving (issue #48): store EVERY message in allowed guild
+  // channels — including from gated-mode guests — not just messages that
+  // address the bot. A deliberate privacy-posture change; requires visible
+  // community notice BEFORE enabling (see SECURITY.md). Off by default.
+  DISCORD_ARCHIVE_ALL_MESSAGES: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -94,6 +102,31 @@ const EnvSchema = z.object({
   // vs long replies draw differently; tune to your traffic). Unset/0 =
   // disabled (no timer, no behaviour change on upgrade).
   USAGE_ALERT_DAILY_REPLIES: z.coerce.number().int().nonnegative().default(0),
+  // Offline context builder (issue #51): distills stored interactions into
+  // durable context_digests on a ~daily cadence. Off by default; when on,
+  // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
+  // model calls (hard cap enforced in code) and is skipped entirely while
+  // the usage-alert threshold is breached.
+  CONTEXT_BUILDER_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  CONTEXT_BUILDER_WINDOW_DAYS: z.coerce.number().int().positive().max(30).default(1),
+  CONTEXT_BUILDER_MAX_SUMMARIES: z.coerce.number().int().positive().max(20).default(5),
+  // k-floor: a cluster needs at least this many distinct authors to be
+  // digested, so a digest can't become a one-person profile. Never below 2.
+  CONTEXT_BUILDER_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
+  // Anonymised community-context export (issue #53): render digests into
+  // docs/COMMUNITY-CONTEXT.md for the research loop. Off by default. The
+  // export applies its own k-floor and PII scrub — see src/context/export.ts
+  // and SECURITY.md for the egress boundary.
+  CONTEXT_EXPORT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
+  CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
+  CONTEXT_EXPORT_PATH: z.string().default('docs/COMMUNITY-CONTEXT.md'),
   // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
   // with no other content — sends one static reply instead. Off by default;
   // an operator opts in after confirming the canned reply tone fits their
@@ -164,6 +197,7 @@ export const config = {
       enabled: env.DISCORD_WELCOME_ENABLED ?? false,
       channelId: env.DISCORD_WELCOME_CHANNEL_ID,
     },
+    archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,
@@ -193,6 +227,18 @@ export const config = {
       discord: env.ACCESS_MODE_DISCORD,
       whatsapp: env.ACCESS_MODE_WHATSAPP,
     } as Record<'discord' | 'whatsapp', 'gated' | 'open'>,
+  },
+  contextBuilder: {
+    enabled: env.CONTEXT_BUILDER_ENABLED ?? false,
+    windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
+    maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
+    minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
+  },
+  contextExport: {
+    enabled: env.CONTEXT_EXPORT_ENABLED ?? false,
+    windowDays: env.CONTEXT_EXPORT_WINDOW_DAYS,
+    minDistinctUsers: env.CONTEXT_EXPORT_MIN_DISTINCT_USERS,
+    path: env.CONTEXT_EXPORT_PATH,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
