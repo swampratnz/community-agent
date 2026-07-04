@@ -260,6 +260,26 @@ test('router: a gated-out guest never reaches respond() — zero typing indicato
   assert.match(sent[0].text, /member-only/i);
 });
 
+test('router: a gated-out guest is unaffected by pause — still gets the gated notice, never the pause notice (issue #128)', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    async () => true, // paused
+  );
+  const { adapter, sent, typingCalls, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // Gated-mode guest branch returns before the paused check is ever reached
+  // (src/router.ts), so pause state must have no effect on this path.
+  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+
+  assert.equal(typingCalls.length, 0);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /member-only/i, 'must get the gated notice, not the pause notice');
+});
+
 test('config: ACK_SHORTCUT_ENABLED defaults to false when unset', () => {
   assert.equal(config.behaviour.ackShortcutEnabled, false);
 });

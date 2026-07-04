@@ -179,7 +179,13 @@ and every privileged action is audited and alerted to super admins by DM.
 Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),
 and an outbound filter on every reply — secret redaction plus the
-`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`).
+`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`). None of
+the router's silent-drop conditions stay silent: hitting the rate limit, the
+daily budget, or (issue #128) a super-admin `pause_bot` all send the member a
+static, debounced notice instead of nothing — once per window per user
+(`src/rateLimitNotice.ts`, the inline `budgetNotified` check, and
+`src/pauseNotice.ts` respectively), so none of them read as the bot being
+broken.
 
 ## Onboarding (gated mode)
 
