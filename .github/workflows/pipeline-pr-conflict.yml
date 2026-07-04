@@ -19,13 +19,21 @@ name: Pipeline PR conflict resolver
 #     (which would otherwise drain the weekly token pool re-fighting the same
 #     unresolvable conflict).
 #   * The agent's `gh` is READ-only and its ONLY push tool is the EXACT command
-#     `git push origin HEAD` (no `:*` wildcard) — it can push only the PR's own
-#     branch, fast-forward, never `main` and never `--force` (same reasoning as
-#     the autofix loop).
+#     `git push origin HEAD` (no `:*`); combined with withholding
+#     checkout/branch/switch this keeps the *tool surface* pinned to the PR's
+#     own branch. NOTE this is defence-in-depth, NOT a hard guarantee: the agent
+#     also has Edit/Write and `node`/`npm` (needed to run the gate), i.e. code
+#     execution, so it could in principle rewrite `.git/HEAD` and retarget that
+#     push. The ENFORCEABLE guarantee that this loop cannot push to `main` is
+#     branch protection on `main` (a required repo setting — see
+#     docs/SECURITY.md); the tool restrictions raise the bar but do not replace
+#     it.
 #   * GH_TOKEN is set per-step on the deterministic shell steps only, never on
-#     the agent step (which reads untrusted PR/issue content), so the agent
-#     can't exfiltrate a GITHUB_TOKEN. The agent gets its own gh/git auth from
-#     the action's App token (a GITHUB_TOKEN push wouldn't re-trigger CI anyway).
+#     the agent step, and the checkout uses `persist-credentials: false` so the
+#     job's GITHUB_TOKEN is NOT left in `.git/config` where the agent (which
+#     reads untrusted PR/issue content and can run `cat`/`node`) could read and
+#     exfiltrate it. The agent gets its own gh/git auth from the action's App
+#     token (a GITHUB_TOKEN push wouldn't re-trigger CI anyway).
 #   * It CANNOT push .github/workflows/* (App token lacks the `workflows`
 #     scope), so the prompt tells it to escalate those rather than thrash.
 #   * Never merges the PR itself — a human merges. It only merges `main` INTO
@@ -161,6 +169,12 @@ jobs:
         with:
           ref: ${{ matrix.branch }}
           fetch-depth: 0 # full history so `git merge origin/main` works
+          # Do NOT leave the job's GITHUB_TOKEN in .git/config: the agent step
+          # reads untrusted PR content and can `cat .git/config` / read it via
+          # node, then exfiltrate it. The agent pushes with the action's own App
+          # token, and the deterministic steps use `gh` (GH_TOKEN env), so no
+          # persisted git credential is needed anywhere.
+          persist-credentials: false
 
       - name: Mark attempt + record current HEAD
         id: mark
@@ -249,9 +263,13 @@ jobs:
           #     rename its branch to `main` (via `git checkout -B main` or `git
           #     branch -m main`), that exact command would become `git push
           #     origin main`. Withholding checkout/branch/switch keeps the local
-          #     branch pinned to the PR's own branch (checked out by the job), so
-          #     the push can ONLY reach the PR branch — never main, never force.
-          #     Conflict resolution therefore uses Edit/Write + `git restore
+          #     branch pinned to the PR's own branch (checked out by the job).
+          #     This raises the bar but is NOT a hard guarantee: Edit/Write plus
+          #     `node`/`npm` (code execution, needed for the gate) could still
+          #     rewrite `.git/HEAD` on disk to retarget the push. The enforceable
+          #     stop against a main-push is branch protection on `main`, not this
+          #     allowlist (see the header comment + docs/SECURITY.md).
+          #     Conflict resolution uses Edit/Write + `git restore
           #     --ours/--theirs` + `git add`, not branch-switching.
           claude_args: |
             --max-turns 200
@@ -264,8 +282,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git fetch origin "$HEAD_BRANCH"
-          after="$(git rev-parse "origin/$HEAD_BRANCH")"
+          # Read the branch's current remote tip via the API (gh/GH_TOKEN) rather
+          # than `git fetch` — with persist-credentials:false there is no git
+          # credential in .git/config for a fetch, and this avoids reintroducing
+          # one. head_before was captured from the local checkout (git rev-parse
+          # HEAD needs no credential).
+          after="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
           if [ "$after" != "${{ steps.mark.outputs.head_before }}" ]; then
             echo "Resolver pushed a merge commit; CI will re-run on the new commit."
             exit 0
