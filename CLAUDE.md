@@ -77,10 +77,14 @@ ownership rules:
   opening a PR, so "green locally" matches CI. Keep it that way when editing
   either `pipeline-build.yml` or `ci.yml` — they must run the same checks.
 - **No loop merges PRs** — a human merges.
-- WIP caps: ≤3 open `status:draft`. Builds run per-issue-parallel (the build
-  worker's `concurrency` is keyed by issue number), so multiple
-  `status:building` issues are allowed; keep the number in flight small (≈2)
-  since every run draws on the shared Max pool.
+- WIP caps: ≤3 open `status:draft`. Builds run **per-issue** (each issue its own
+  `concurrency` group, so distinct issues run in parallel and none evicts
+  another — a single shared group would silently *cancel* queued builds, and
+  cancellations aren't retried). Every run draws on the shared Max pool, so
+  don't release large bursts at once: parallel builds throttle each other, and
+  the mitigation is a generous build `timeout-minutes` (contended builds finish
+  slowly rather than being killed), not a hard cap. A true FIFO lock is the
+  proper fix if bursts keep saturating the pool.
 - Coordinate only through issue labels; when blocked or ambiguous, add
   `needs-human` and stop rather than guess.
 - Everything traces to an issue number; the build session works in its own git
