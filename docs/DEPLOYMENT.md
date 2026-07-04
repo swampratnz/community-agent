@@ -49,6 +49,9 @@ default — after startup, message the bot as a super admin and use
 Consider also setting `INTERACTION_RETENTION_DAYS` (e.g. `90`) to
 automatically age-purge raw message content per your privacy policy — it's
 disabled by default so existing deployments see no behaviour change.
+Similarly, `ROSTER_DEPARTED_RETENTION_DAYS` (e.g. `90`, minimum `30`)
+age-purges `server_roster` rows for members who have left; also disabled by
+default and independent of the interactions purge above.
 
 Sustained platform-disconnect alerting to super admins is always on
 (`HEALTH_ALERT_AFTER_MINUTES`, default 5 minutes). Optionally set
