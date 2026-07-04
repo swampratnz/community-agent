@@ -255,13 +255,15 @@ test(
   'repository: knowledge CRUD — insert, search finds it, update re-embeds and bumps updated_at, delete removes it',
   { skip },
   async () => {
+    const scope = `${RUN}-scope`;
+    const caller = { platform: 'discord' as const, conversationId: scope };
     const { id } = await saveKnowledge({
       title: 'Meetup schedule',
       content: 'We meet monthly on the first Tuesday.',
-      scope: `${RUN}-scope`,
+      scope,
     });
 
-    const foundBefore = await searchKnowledge('monthly meetup schedule', 20);
+    const foundBefore = await searchKnowledge('monthly meetup schedule', caller, 20);
     const hitBefore = foundBefore.find((h) => h.content.includes('first Tuesday'));
     assert.ok(hitBefore, 'search finds the freshly-saved entry');
     assert.ok(hitBefore.updatedAt, 'search result carries updatedAt');
@@ -278,7 +280,7 @@ test(
       'updated_at is bumped',
     );
 
-    const foundAfterUpdate = await searchKnowledge('second Tuesday meetup', 20);
+    const foundAfterUpdate = await searchKnowledge('second Tuesday meetup', caller, 20);
     const hitAfter = foundAfterUpdate.find((h) => h.content.includes('SECOND Tuesday'));
     assert.ok(hitAfter, 're-embedding means search finds the new content');
     assert.equal(
@@ -299,7 +301,7 @@ test(
 );
 
 test(
-  'repository: saveKnowledge nudges on a near-duplicate in the same scope, but not on a distinct entry',
+  'SECURITY: repository: saveKnowledge near-duplicate nudge is scoped — matches within scope, never nudges (or leaks content) across scopes',
   { skip },
   async () => {
     const scope = `${RUN}-dup-scope`;
@@ -335,7 +337,8 @@ test(
     assert.equal(
       crossScopeSimilar,
       undefined,
-      'a near-duplicate in a different scope does not trigger a nudge',
+      'SECURITY: a near-duplicate in a different scope must never trigger a nudge — that would leak ' +
+        "another scope's entry content to an admin saving into a scope they may not be in",
     );
 
     await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);

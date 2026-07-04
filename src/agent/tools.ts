@@ -297,7 +297,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     'Search curated community knowledge (FAQs, rules, resources admins have saved).',
     { query: z.string().describe('Topic to look up') },
     async (args) => {
-      const hits = await searchKnowledge(args.query);
+      const hits = await searchKnowledge(args.query, {
+        platform: caller.platform,
+        conversationId: caller.conversationId,
+      });
       return text(formatKnowledgeSearchResults(hits));
     },
     { annotations: { readOnlyHint: true } },

@@ -414,8 +414,18 @@ export async function saveKnowledge(input: {
   return { id: Number(rows[0].id), similarEntry };
 }
 
+/**
+ * Semantic search over curated knowledge, scoped to what `caller` may see:
+ * `'global'` entries, entries scoped to the caller's platform, and entries
+ * scoped to the caller's exact conversation (SECURITY: issue #106 — `scope`
+ * used to be write-only metadata; an admin who saved a conversation-scoped
+ * entry had it recite to every tier, everywhere). `list_knowledge` (admin
+ * browse) deliberately keeps its own unrestricted-by-default behaviour —
+ * that's a curation view, not member-facing recall.
+ */
 export async function searchKnowledge(
   query: string,
+  caller: { platform: Platform; conversationId: string },
   topK = 5,
 ): Promise<Array<{ title: string | null; content: string; similarity: number; updatedAt: Date }>> {
   let queryVec: number[];
@@ -428,9 +438,10 @@ export async function searchKnowledge(
     `SELECT title, content, updated_at, 1 - (embedding <=> $1) AS similarity
        FROM knowledge
       WHERE embedding IS NOT NULL
+        AND scope IN ('global', $2, $3)
       ORDER BY embedding <=> $1
-      LIMIT $2`,
-    [pgvector.toSql(queryVec), topK],
+      LIMIT $4`,
+    [pgvector.toSql(queryVec), caller.platform, caller.conversationId, topK],
   );
   return rows.map((r) => ({
     title: r.title,

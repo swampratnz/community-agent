@@ -27,8 +27,11 @@ const testsDir = path.join(repoRoot, 'tests');
 // SECURITY: test; a diff that only lowers it needs an explanation.
 // Raised to 41 with the cross-platform identity-linking SECURITY tests (#44),
 // then to 57 with the approved-issues batch build (#45-#53), then to 59 with
-// the PR #91 review round (ambient recall scoping + URL-path token scrub).
-const MIN_SECURITY_TESTS = 59;
+// the PR #91 review round (ambient recall scoping + URL-path token scrub),
+// then to 66 with issue #106 (knowledge_search scope enforcement: 3 new
+// tests/knowledgeScope.test.ts cases, plus the existing near-duplicate scope
+// test renamed into the SECURITY: namespace).
+const MIN_SECURITY_TESTS = 66;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
@@ -37,7 +40,13 @@ const testFiles = readdirSync(testsDir)
 const tsxBin = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
 const result = spawnSync(
   tsxBin,
-  ['--test', '--test-reporter=tap', '--test-name-pattern=^SECURITY:', ...testFiles],
+  [
+    '--experimental-test-module-mocks',
+    '--test',
+    '--test-reporter=tap',
+    '--test-name-pattern=^SECURITY:',
+    ...testFiles,
+  ],
   { cwd: repoRoot, encoding: 'utf8' },
 );
 
