@@ -44,7 +44,17 @@ export class Router {
   /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
   private readonly rateLimitNotified = new Map<string, number>();
 
-  constructor() {
+  /**
+   * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
+   * sane production cadence (Discord auto-clears its own indicator after
+   * ~10s, so re-firing every 8s keeps it continuously visible). Both are
+   * overridable in tests so the typing-indicator behaviour can be exercised
+   * without spawning a real Claude Code subprocess or waiting 8 real seconds.
+   */
+  constructor(
+    private readonly runTurn: typeof runAgentTurn = runAgentTurn,
+    private readonly typingRefireMs = 8_000,
+  ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
 
@@ -228,20 +238,35 @@ export class Router {
       conversationId: msg.conversationId,
     };
 
-    const reply = await runAgentTurn(caller, msg.text, adapter);
+    // Best-effort "processing…" signal, fired immediately and then re-fired
+    // periodically since a turn can run longer than a single indicator lasts
+    // (e.g. Discord auto-clears after ~10s). Never awaited: a hung or
+    // rejecting indicator must not delay or break the actual reply. Cleared
+    // in `finally` so a thrown turn can't leave a dangling timer.
+    const fireTypingIndicator = (): void => {
+      adapter.sendTypingIndicator?.(msg).catch((err) => logger.debug({ err }, 'Typing indicator failed'));
+    };
+    fireTypingIndicator();
+    const typingTimer = setInterval(fireTypingIndicator, this.typingRefireMs).unref();
 
-    await this.send(adapter, msg.conversationId, reply.text);
+    try {
+      const reply = await this.runTurn(caller, msg.text, adapter);
 
-    await recordInteraction({
-      platform: msg.platform,
-      conversationId: msg.conversationId,
-      userId: 'bot',
-      userName: 'CommunityAgent',
-      role: 'member',
-      direction: 'outbound',
-      content: reply.text,
-      costUsd: reply.costUsd,
-      meta: { replyToUserId: msg.userId },
-    }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
+      await this.send(adapter, msg.conversationId, reply.text);
+
+      await recordInteraction({
+        platform: msg.platform,
+        conversationId: msg.conversationId,
+        userId: 'bot',
+        userName: 'CommunityAgent',
+        role: 'member',
+        direction: 'outbound',
+        content: reply.text,
+        costUsd: reply.costUsd,
+        meta: { replyToUserId: msg.userId },
+      }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
+    } finally {
+      clearInterval(typingTimer);
+    }
   }
 }

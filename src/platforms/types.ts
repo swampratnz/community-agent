@@ -87,6 +87,15 @@ export interface PlatformAdapter {
   /** Send a text reply to a conversation. */
   sendMessage(out: OutgoingMessage): Promise<void>;
 
+  /**
+   * Best-effort "processing…" signal while an agent turn is in flight. Never
+   * throws — the router treats this as fire-and-forget and swallows any
+   * failure, since a slow or failed indicator must never delay or break the
+   * actual reply. Optional: adapters with no native presence primitive simply
+   * omit it.
+   */
+  sendTypingIndicator?(message: IncomingMessage): Promise<void>;
+
   /** Send a 1:1 message to a user (used for warnings and super-admin alerts). */
   sendDirectMessage(userId: string, text: string): Promise<void>;
 
