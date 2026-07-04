@@ -134,7 +134,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
-| `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(writes audited)* | ✅ |
+| `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -262,7 +262,8 @@ tier. Notes are keyed to known `community_users` identities (unknown targets
 refused, same validation pattern as the membership tools), capped at 1000
 chars, human-entered only, and readable exclusively through the admin-tier
 `list_member_notes` (content `untrusted()`-wrapped — notes are data, never
-instructions). Writes and deletes are audited without the note text;
+instructions). Writes and deletes are audited without the note text, and
+deletion is CONFIRM-gated (same as `delete_knowledge`);
 `forget_me`/`purge_user_data` delete the subject's notes. See SECURITY.md
 for the privacy boundary and the owner-accepted no-self-access decision.
 

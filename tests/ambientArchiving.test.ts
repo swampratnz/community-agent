@@ -24,6 +24,8 @@ const skip = hasDb
 
 const { Router } = await import('../src/router.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/config.js');
+const pgvector = (await import('pgvector/pg')).default;
 const { embed } = await import('../src/storage/embeddings.js');
 const {
   purgeUserData,
@@ -31,6 +33,7 @@ const {
   recordInteraction,
   deleteInteractionByMessageId,
   updateInteractionByMessageId,
+  searchMemory,
 } = await import('../src/storage/repository.js');
 
 // Pre-warm the (lazily loaded) embedding pipeline outside any timed wait.
@@ -199,6 +202,41 @@ test(
     assert.equal(rows[0].message_id, `${RUN}-m3`);
     assert.equal(turnCalls, 0, 'SECURITY: addressed-check still solely governs agent invocation');
     assert.equal(sent.length, 0);
+  },
+);
+
+test(
+  'SECURITY: ambient rows stay conversation-scoped in recall — channel A chatter never surfaces in channel B (issue #48)',
+  { skip },
+  async () => {
+    // Hand-crafted embeddings so no (network-dependent) model load is
+    // needed; a whitespace query short-circuits embed() to a zero vector,
+    // and the conversation filter is what this test pins.
+    const vec = new Array(config.db.embeddingDim).fill(0);
+    vec[20] = 1;
+    const insertAmbient = (conversationId: string, content: string) =>
+      pool.query(
+        `INSERT INTO interactions
+           (platform, conversation_id, user_id, role, direction, content, kind, embedding)
+         VALUES ('discord', $1, $2, 'guest', 'inbound', $3, 'ambient', $4)`,
+        [conversationId, `${RUN}-scope-user`, content, pgvector.toSql(vec)],
+      );
+    await insertAmbient(`${RUN}-chan-a`, `${RUN} channel A ambient secret`);
+    await insertAmbient(`${RUN}-chan-b`, `${RUN} channel B ambient secret`);
+
+    const hits = await searchMemory(' ', {
+      platform: 'discord',
+      conversationId: `${RUN}-chan-a`,
+      topK: 1000,
+    });
+    assert.ok(
+      hits.some((h) => h.content === `${RUN} channel A ambient secret`),
+      'recall scoped to channel A sees its own ambient rows',
+    );
+    assert.ok(
+      !hits.some((h) => h.content === `${RUN} channel B ambient secret`),
+      "SECURITY: channel B's ambient content never leaks into channel A's recall",
+    );
   },
 );
 

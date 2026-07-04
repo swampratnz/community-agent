@@ -1370,6 +1370,15 @@ export async function listMemberNotes(platform: Platform, userId: string): Promi
   }));
 }
 
+/** Fetch one note by id, so the delete CONFIRM can show whose note it is. */
+export async function getMemberNote(
+  id: number,
+): Promise<{ platform: Platform; userId: string; note: string } | null> {
+  const { rows } = await pool.query(`SELECT platform, user_id, note FROM member_notes WHERE id = $1`, [id]);
+  if (rows.length === 0) return null;
+  return { platform: rows[0].platform as Platform, userId: rows[0].user_id, note: rows[0].note };
+}
+
 /** Delete one note by id. Returns false if no row matched. */
 export async function deleteMemberNote(id: number): Promise<boolean> {
   const { rowCount } = await pool.query(`DELETE FROM member_notes WHERE id = $1`, [id]);
