@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemPrompt, renderMemoryContext } from '../src/agent/systemPrompt.js';
 import type { MemoryHit } from '../src/storage/repository.js';
+
+// systemPrompt.js loads config.ts (guild id for jump links), which validates
+// env at import time — set a dummy env before dynamically importing it.
+process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
+process.env.DISCORD_BOT_TOKEN ??= 'test-token';
+process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
+process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+
+const { buildSystemPrompt, renderMemoryContext } = await import('../src/agent/systemPrompt.js');
 
 const caller = {
   platform: 'discord' as const,

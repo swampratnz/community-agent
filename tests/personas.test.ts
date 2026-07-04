@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_PERSONA_ID, PERSONAS, getPersona, selectPersona } from '../src/agent/personas.js';
-import { buildSystemPrompt } from '../src/agent/systemPrompt.js';
+
+// systemPrompt.js loads config.ts, which validates env at import time — set a
+// dummy env before dynamically importing anything that pulls it in.
+process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
+process.env.DISCORD_BOT_TOKEN ??= 'test-token';
+process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
+process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+
+const { DEFAULT_PERSONA_ID, PERSONAS, getPersona, selectPersona } = await import('../src/agent/personas.js');
+const { buildSystemPrompt } = await import('../src/agent/systemPrompt.js');
 
 const caller = {
   platform: 'discord' as const,
