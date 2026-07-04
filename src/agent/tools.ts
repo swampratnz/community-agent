@@ -34,6 +34,7 @@ import {
   recentModerationEntries,
   recentQuestionClusters,
   recordAdminAction,
+  recordKnowledgeRetrieval,
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
@@ -430,6 +431,18 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         platform: caller.platform,
         conversationId: caller.conversationId,
       });
+      // Fire-and-forget usage tracking (issue #134) — entries that clear the
+      // relevance floor are "used"; ones that exist but fall below it are
+      // not. Never awaited and errors are swallowed here (not inside
+      // recordKnowledgeRetrieval) so a counter-write failure can never delay
+      // or fail this member-facing search, mirroring notifySuperAdmins'
+      // inline-catch, non-awaited style.
+      const relevantIds = hits
+        .filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD)
+        .map((h) => h.id);
+      recordKnowledgeRetrieval(relevantIds).catch((err) =>
+        logger.warn({ err }, 'Knowledge retrieval count update failed'),
+      );
       return text(formatKnowledgeSearchResults(hits));
     },
     { annotations: { readOnlyHint: true } },
@@ -797,7 +810,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           entries
             .map(
               (e) =>
-                `#${e.id} [${e.scope}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} (updated ${e.updatedAt.toISOString()})`,
+                `#${e.id} [${e.scope}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
+                `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
+                `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''})`,
             )
             .join('\n'),
         ),

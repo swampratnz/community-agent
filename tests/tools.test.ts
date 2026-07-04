@@ -524,14 +524,37 @@ test('formatKnowledgeSearchResults annotates surviving hits with an exact "(NN% 
   assert.match(text, /Rounds to 88/);
 });
 
+/** Poll for the fire-and-forget retrieval-count bump (issue #134) to land. */
+async function waitForRetrievalCount(
+  id: number,
+  predicate: (count: number) => boolean,
+  timeoutMs = 10_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await pool.query(`SELECT retrieval_count FROM knowledge WHERE id = $1`, [id]);
+    const count = Number(rows[0]?.retrieval_count ?? 0);
+    if (predicate(count) || Date.now() > deadline) return count;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 test(
-  'knowledge_search tool handler wires searchKnowledge into formatKnowledgeSearchResults end-to-end (real DB + embeddings)',
+  'knowledge_search tool handler wires searchKnowledge into formatKnowledgeSearchResults end-to-end (real DB + embeddings), and records a retrieval hit only for the relevant entry (issue #134)',
   { skip },
   async () => {
     const uniqueTitle = `Zylotrix onboarding steps ${RUN}`;
-    await saveKnowledge({
+    const { id: relevantId } = await saveKnowledge({
       title: uniqueTitle,
       content: 'To onboard to Zylotrix, request an invite from an admin and complete the setup wizard.',
+      scope: KNOWLEDGE_SEARCH_HANDLER_SCOPE,
+    });
+    // Distractor entry, same scope, unrelated topic — must exist but never
+    // clear the relevance floor for the query below, so it's the negative
+    // case proving a below-threshold hit is not counted as a "use".
+    const { id: distractorId } = await saveKnowledge({
+      title: `Distractor entry ${RUN}`,
+      content: 'The community hall parking lot closes at 10pm on weekdays.',
       scope: KNOWLEDGE_SEARCH_HANDLER_SCOPE,
     });
 
@@ -563,6 +586,20 @@ test(
 
     assert.match(text, /% match\)/, 'a genuinely relevant hit must surface its match percentage');
     assert.match(text, new RegExp(uniqueTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const relevantCount = await waitForRetrievalCount(relevantId, (c) => c >= 1);
+    assert.equal(
+      relevantCount,
+      1,
+      'the entry surfaced above the relevance floor gets its retrieval_count bumped',
+    );
+
+    const distractorCount = await waitForRetrievalCount(distractorId, (c) => c >= 1, 1_000);
+    assert.equal(
+      distractorCount,
+      0,
+      'an entry that exists but falls below the relevance floor for this query must NOT be counted as a use',
+    );
   },
 );
 

@@ -28,6 +28,8 @@ const {
   searchKnowledge,
   updateKnowledge,
   deleteKnowledge,
+  listKnowledge,
+  recordKnowledgeRetrieval,
   recordAdminAction,
   recentQuestionClusters,
   recentModerationEntries,
@@ -304,6 +306,49 @@ test(
 
     const deletedAgain = await deleteKnowledge(id);
     assert.equal(deletedAgain, false, 'deleting a nonexistent id returns false, not an error');
+  },
+);
+
+test(
+  "repository: recordKnowledgeRetrieval bumps retrieval_count/last_retrieved_at, listKnowledge exposes them, and updated_at (and #27/#5's ordering/hedging that key off it) is left untouched",
+  { skip },
+  async () => {
+    const scope = `${RUN}-retrieval-scope`;
+    const { id } = await saveKnowledge({
+      content: 'Never-retrieved-yet entry.',
+      scope,
+    });
+
+    const [freshEntry] = await listKnowledge({ scope });
+    assert.equal(freshEntry.retrievalCount, 0, 'never-retrieved entry starts at 0');
+    assert.equal(freshEntry.lastRetrievedAt, null, 'never-retrieved entry has no last_retrieved_at');
+
+    const beforeRow = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+
+    await recordKnowledgeRetrieval([id]);
+
+    const [bumped] = await listKnowledge({ scope });
+    assert.equal(bumped.retrievalCount, 1, 'one recorded retrieval increments the counter by 1');
+    assert.ok(bumped.lastRetrievedAt, 'last_retrieved_at is set after a recorded retrieval');
+
+    const afterRow = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+    assert.equal(
+      new Date(afterRow.rows[0].updated_at).getTime(),
+      new Date(beforeRow.rows[0].updated_at).getTime(),
+      'a retrieval-count bump must NOT touch updated_at — it would otherwise make the most-retrieved ' +
+        "(possibly stalest) entries look freshly edited, defeating #27's recency hedging and reshuffling " +
+        "list_knowledge's updated_at ordering on every member search (issue #134)",
+    );
+
+    await recordKnowledgeRetrieval([id]);
+    const [bumpedAgain] = await listKnowledge({ scope });
+    assert.equal(bumpedAgain.retrievalCount, 2, 'a second recorded retrieval increments again, not resets');
+
+    await recordKnowledgeRetrieval([]);
+    const [unchangedByEmptyBatch] = await listKnowledge({ scope });
+    assert.equal(unchangedByEmptyBatch.retrievalCount, 2, 'recording an empty id list is a no-op');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
   },
 );
 

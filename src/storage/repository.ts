@@ -425,7 +425,9 @@ export async function searchKnowledge(
   query: string,
   caller: { platform: Platform; conversationId: string },
   topK = 5,
-): Promise<Array<{ title: string | null; content: string; similarity: number; updatedAt: Date }>> {
+): Promise<
+  Array<{ id: number; title: string | null; content: string; similarity: number; updatedAt: Date }>
+> {
   let queryVec: number[];
   try {
     queryVec = await embed(query);
@@ -433,7 +435,7 @@ export async function searchKnowledge(
     return [];
   }
   const { rows } = await pool.query(
-    `SELECT title, content, updated_at, 1 - (embedding <=> $1) AS similarity
+    `SELECT id, title, content, updated_at, 1 - (embedding <=> $1) AS similarity
        FROM knowledge
       WHERE embedding IS NOT NULL
         AND scope IN ('global', $2, $3)
@@ -442,11 +444,30 @@ export async function searchKnowledge(
     [pgvector.toSql(queryVec), caller.platform, caller.conversationId, topK],
   );
   return rows.map((r) => ({
+    id: Number(r.id),
     title: r.title,
     content: r.content,
     similarity: Number(r.similarity),
     updatedAt: r.updated_at,
   }));
+}
+
+/**
+ * Record that `ids` were surfaced as relevant `knowledge_search` hits.
+ * Fire-and-forget from the tool handler (issue #134) — callers must swallow
+ * failures themselves, same as `notifySuggestionResolved`, so a counter-write
+ * error never delays or fails a member's search. Deliberately only touches
+ * retrieval_count/last_retrieved_at: see the schema comment on those columns
+ * for why this must not bump `updated_at`.
+ */
+export async function recordKnowledgeRetrieval(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(
+    `UPDATE knowledge
+        SET retrieval_count = retrieval_count + 1, last_retrieved_at = now()
+      WHERE id = ANY($1::bigint[])`,
+    [ids],
+  );
 }
 
 export interface KnowledgeEntry {
@@ -456,6 +477,8 @@ export interface KnowledgeEntry {
   content: string;
   createdByRole: string;
   updatedAt: Date;
+  retrievalCount: number;
+  lastRetrievedAt: Date | null;
 }
 
 /** Browse knowledge entries directly (as opposed to semantic search), optionally filtered by scope. */
@@ -472,7 +495,7 @@ export async function listKnowledge(
   const limitParam = params.length;
   params.push(input.offset ?? 0);
   const { rows } = await pool.query(
-    `SELECT id, scope, title, content, created_by_role, updated_at
+    `SELECT id, scope, title, content, created_by_role, updated_at, retrieval_count, last_retrieved_at
        FROM knowledge
        ${scopeClause}
       ORDER BY updated_at DESC
@@ -486,6 +509,8 @@ export async function listKnowledge(
     content: r.content,
     createdByRole: r.created_by_role,
     updatedAt: r.updated_at,
+    retrievalCount: Number(r.retrieval_count),
+    lastRetrievedAt: r.last_retrieved_at,
   }));
 }
 
