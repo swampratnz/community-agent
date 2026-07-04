@@ -55,10 +55,12 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   as an ownership violation either.
 - **No loop merges PRs.** A human merges — especially important for this
   security-sensitive bot.
-- **WIP caps:** ≤3 open `status:draft`. Builds run per-issue-parallel (the
-  build worker's `concurrency` is keyed by issue number), so multiple
-  `status:building` issues are allowed; keep the number in flight small (≈2),
-  since every run draws on the shared Max pool.
+- **WIP caps:** ≤3 open `status:draft`. Builds run **serially** — the build
+  worker's `concurrency` is a single fixed group (`pipeline-build`), so only one
+  build runs at a time and the rest queue. This is deliberate: every run draws
+  on the shared Max pool, and per-issue parallelism rate-limited every build
+  into its 60-min wall-clock timeout, escalating them all to `needs-human` at
+  once (observed 2026-07-04). Serial is slower but each build actually finishes.
 - **Label transitions are the only cross-session messaging.** When blocked or
   genuinely ambiguous, add `needs-human` and stop rather than guess.
 - **Everything traces to an issue number.**

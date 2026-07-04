@@ -28,14 +28,21 @@ on:
   issues:
     types: [labeled]
 
-# Per-issue concurrency: distinct approved issues build in PARALLEL (faster
-# backlog drain), while re-triggering the SAME issue queues instead of
-# double-running (kills duplicate PRs). GitHub can't express a hard "max N
-# concurrent", so throughput is governed by how many issues are released at
-# once; every run still draws on the shared Max pool, so release in small
-# batches to avoid exhausting the weekly token allowance.
+# SERIAL builds — one at a time across the whole repo (a single fixed group,
+# NOT keyed by issue). Why the change from per-issue-parallel: every build draws
+# on the SAME shared Max pool, and per-issue parallelism let N approved/retried
+# issues run at once, so each turn got rate-limited, every build blew past its
+# 60-minute wall-clock, and ALL of them escalated `needs-human` — then the
+# build-retry loop re-ran the failures, adding MORE parallel load: a contention
+# death spiral (observed 2026-07-04: five small proposals, incl. #90, all
+# cancelled at exactly 60 min with `npm test` still running). Serialising means
+# each build gets the full pool and finishes in time; the backlog drains one PR
+# at a time instead of failing all at once. `cancel-in-progress: false` queues
+# rather than cancelling, so a re-trigger of the same (or any) issue never
+# double-runs. Slower but reliable — the shared pool is the bottleneck, not CI
+# minutes.
 concurrency:
-  group: pipeline-build-${{ github.event.issue.number }}
+  group: pipeline-build
   cancel-in-progress: false
 
 permissions:
