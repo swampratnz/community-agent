@@ -892,7 +892,11 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
   );
 
   const resolved = await resolveContentReport(inScope.id, 'resolved', `${RUN}-resolver`);
-  assert.ok(resolved);
+  assert.deepEqual(
+    resolved,
+    { platform: 'discord', reporterUserId: reporter, reason: 'in scope, open' },
+    'resolution returns the row (platform/reporterUserId/reason) so the caller can notify the reporter',
+  );
 
   const openOnly = await listReports([inScopeConvo], 'open');
   assert.ok(!openOnly.some((r) => r.id === inScope.id), 'status filter excludes the now-resolved report');
@@ -1240,13 +1244,21 @@ test(
     assert.ok(report);
 
     const refused = await resolveContentReport(report.id, 'dismissed', `${RUN}-scoped-admin`, [inScopeConvo]);
-    assert.equal(refused, false, 'SECURITY: resolving a report outside the caller scope must fail');
+    assert.equal(refused, null, 'SECURITY: resolving a report outside the caller scope must fail');
 
     const stillOpen = await pool.query(`SELECT status FROM content_reports WHERE id = $1`, [report.id]);
     assert.equal(stillOpen.rows[0].status, 'open', 'the out-of-scope report is left untouched');
 
     const allowed = await resolveContentReport(report.id, 'dismissed', `${RUN}-super-admin`, undefined);
-    assert.ok(allowed, 'an unrestricted (super-admin) scope can resolve any report');
+    assert.deepEqual(
+      allowed,
+      {
+        platform: 'discord',
+        reporterUserId: reporter,
+        reason: 'an admin scoped only to inScopeConvo must not be able to resolve this',
+      },
+      'an unrestricted (super-admin) scope can resolve any report and returns the row',
+    );
 
     await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
   },

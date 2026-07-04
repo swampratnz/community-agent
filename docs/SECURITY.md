@@ -488,6 +488,10 @@ the supported path.
   exactly today's silence, never a misdirected DM; a routing mechanism for
   cross-platform notification is a future refinement if this proves to
   matter in practice.
+- **Report-resolution DMs are same-platform-only** (issue #120), identical
+  limitation and rationale to the suggestion-resolution case above: resolving
+  a report filed on a different platform than the resolving admin's current
+  turn sends no confirmation DM to the reporter.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.
