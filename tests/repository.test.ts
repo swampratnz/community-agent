@@ -965,7 +965,12 @@ test(
     assert.equal(stored.content.length, SUGGESTION_MAX_CHARS, 'over-long content is capped server-side');
 
     // Triage transitions and the status filter.
-    assert.equal(await resolveSuggestion(accepted.id, 'done', `${RUN}-resolver`), true);
+    const resolvedRow = await resolveSuggestion(accepted.id, 'done', `${RUN}-resolver`);
+    assert.deepEqual(
+      resolvedRow,
+      { platform: 'discord', userId, content: 'x'.repeat(SUGGESTION_MAX_CHARS) },
+      'resolution returns the row (platform/userId/content) so the caller can notify the submitter',
+    );
     const doneRows = await listSuggestions('done', 200);
     assert.ok(
       doneRows.some((s) => s.id === accepted.id && s.reviewedBy === `${RUN}-resolver`),
@@ -973,7 +978,7 @@ test(
     );
     const newRows = await listSuggestions('new', 200);
     assert.ok(!newRows.some((s) => s.id === accepted.id), 'a resolved suggestion leaves the new queue');
-    assert.equal(await resolveSuggestion(999_999_999, 'done', 'x'), false, 'unknown id returns false');
+    assert.equal(await resolveSuggestion(999_999_999, 'done', 'x'), null, 'unknown id returns null');
 
     // forget_me / purge_user_data removes the user's suggestions.
     const purged = await purgeUserData('discord', userId);

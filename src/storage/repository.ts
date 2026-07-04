@@ -1338,17 +1338,24 @@ export async function listSuggestions(status?: SuggestionStatus, limit = 50): Pr
   }));
 }
 
-/** Flip a suggestion's status once triaged. Returns false if no row matched. */
+/**
+ * Flip a suggestion's status once triaged. Returns the resolved row's
+ * platform/userId/content (so the caller can notify the submitter) or null
+ * if no row matched — same "no match" signal the old boolean return gave.
+ */
 export async function resolveSuggestion(
   id: number,
   status: Exclude<SuggestionStatus, 'new'>,
   reviewedBy: string,
-): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    `UPDATE suggestions SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1`,
+): Promise<{ platform: Platform; userId: string; content: string } | null> {
+  const { rows } = await pool.query(
+    `UPDATE suggestions SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1
+     RETURNING platform, user_id, content`,
     [id, status, reviewedBy],
   );
-  return (rowCount ?? 0) > 0;
+  return rows[0]
+    ? { platform: rows[0].platform as Platform, userId: rows[0].user_id, content: rows[0].content }
+    : null;
 }
 
 // --- Member notes (admin-curated person-scoped context, issue #45) -----------

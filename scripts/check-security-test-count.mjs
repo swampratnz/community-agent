@@ -37,8 +37,9 @@ const testsDir = path.join(repoRoot, 'tests');
 // then to 79 with the chat-triggered redeploy tool (#101): fixed-argv +
 // no-hang-on-missing-sudoers coverage in redeploy.test.ts, the RBAC-surface
 // test in rbac.test.ts, and the pending-action/assertAtLeast tests in
-// tools.test.ts.
-const MIN_SECURITY_TESTS = 79;
+// tools.test.ts,
+// then to 80 with the suggestion-resolution cross-platform-notify guard (#116).
+const MIN_SECURITY_TESTS = 80;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))

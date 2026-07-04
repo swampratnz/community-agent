@@ -8,6 +8,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ## 2026-07-04
 
 ### Added
+- Resolving a member's `suggest_improvement` submission now sends them a best-effort DM naming the outcome (reviewed/declined/done) — closes the "suggestion box into the void" gap. Same-platform only for now: a resolution on a different platform than the suggestion was filed on sends no DM (#116).
 - Chat-triggered redeploy: a super admin can now say "deploy the latest code" instead of waiting for the nightly timer or reaching for SSH. `redeploy_bot` takes no arguments, is CONFIRM-gated and router-executed like `grant_admin`/`purge_user_data`, and starts the same flock-guarded `community-agent-redeploy.service` unit the 1am timer uses — requires an opt-in, exact-match sudoers grant documented in DEPLOYMENT.md (#101).
 - Weekly proactive admin digest (opt-in, `ADMIN_DIGEST_ENABLED`): DMs each admin at most once a week with their own scoped recurring-question clusters — the same signal `question_digest` already computes on demand, now pushed instead of pull-only. Restart-safe freshness guard, no DM on a quiet week (#97).
 - Anonymised community-context export (opt-in, `CONTEXT_EXPORT_ENABLED`): context digests render into `docs/COMMUNITY-CONTEXT.md` (aggregate-only, k-floored, PII-scrubbed) so the research loop can ground proposals in real community need; committing the file stays a human step (#53).
