@@ -311,7 +311,12 @@ applied to abuse reports instead of pending guests:
    current one — a member can only report within a conversation they're
    actually in. Capped at 5 submissions per rolling 24h, enforced with a
    DB-backed count (survives a restart; see SECURITY.md), so the queue
-   itself can't become a spam vector against admin attention.
+   itself can't become a spam vector against admin attention. Filing a
+   report also proactively DMs every super admin (`notifyReportFiled`,
+   issue #90, same fire-and-forget shape as `notifySuperAdmins`'s other
+   callers) instead of relying on someone remembering to poll
+   `list_reports` — the reporter-supplied reason is quoted so it can't
+   cosmetically impersonate the alert's own `🔔` system prefix.
 2. Admins triage with `list_reports` (conversation-scoped, same pattern as
    `moderation_history`) and `resolve_report` (marks `resolved`/`dismissed`,
    audited, non-destructive so no CONFIRM gate). Resolving a report

@@ -13,6 +13,10 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+// Scoped to whatsapp (not discord) so it never interferes with this file's
+// many discord-caller admin-action tests, which assert exact DM counts
+// assuming zero configured discord super admins.
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1,super-2';
 
 const skip = hasDb
   ? false
@@ -27,12 +31,18 @@ const {
   notifyMemberApproved,
   notifySuggestionResolved,
   notifyReportResolved,
+  notifyReportFiled,
   buildToolServer,
   formatKnowledgeSearchResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
 } = await import('../src/agent/tools.js');
-const { MODERATION_ACTION_KINDS, saveKnowledge, createSuggestion, createContentReport } =
-  await import('../src/storage/repository.js');
+const {
+  MODERATION_ACTION_KINDS,
+  saveKnowledge,
+  createSuggestion,
+  createContentReport,
+  REPORT_RATE_LIMIT_PER_DAY,
+} = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
 
@@ -43,6 +53,7 @@ const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
+const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 
 after(async () => {
   if (hasDb) {
@@ -50,6 +61,9 @@ after(async () => {
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = $1`, [
       RESOLVE_REPORT_HANDLER_USER,
+    ]);
+    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
+      `${REPORT_CONTENT_HANDLER_USER}%`,
     ]);
   }
   await closeDb();
@@ -213,6 +227,104 @@ test('notifyReportResolved swallows a DM failure rather than throwing (resolutio
   });
 
   await assert.doesNotReject(notifyReportResolved(adapter, 'user-1', 'resolved', 'reason'));
+});
+
+// notifyReportFiled (issue #90): a report proactively alerts every configured
+// super admin the moment it's filed, instead of relying on someone
+// remembering to poll list_reports. process.env.SUPER_ADMIN_DISCORD_IDS is
+// set to 'super-1,super-2' above so superAdminIds('discord') resolves to a
+// real, non-empty list for these tests.
+test('notifyReportFiled DMs every configured super admin with the report details', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  await notifyReportFiled(adapter, 'whatsapp', {
+    id: 42,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    reason: 'someone was spamming the general channel',
+  });
+
+  assert.equal(calls.length, 2, 'both configured super admins are DMed');
+  assert.deepEqual(calls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  for (const [, message] of calls) {
+    assert.match(message, /#42/, 'includes the report id');
+    assert.match(message, /convo-1/, 'includes the conversation id');
+    assert.match(message, /Reporter One/, 'includes the reporter');
+    assert.match(
+      message,
+      /Reporter said: "someone was spamming the general channel"/,
+      'the reporter-supplied reason is explicitly quoted/labelled, not left to blend into the alert prefix',
+    );
+  }
+});
+
+test('notifyReportFiled includes target user and message id only when known', async () => {
+  const withoutContext: string[] = [];
+  const adapterWithout = stubAdapter(async (_userId, message) => {
+    withoutContext.push(message);
+  });
+  await notifyReportFiled(adapterWithout, 'whatsapp', {
+    id: 1,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    reason: 'reason',
+  });
+  assert.doesNotMatch(withoutContext[0], /Target user/);
+  assert.doesNotMatch(withoutContext[0], /Message id/);
+
+  const withContext: string[] = [];
+  const adapterWith = stubAdapter(async (_userId, message) => {
+    withContext.push(message);
+  });
+  await notifyReportFiled(adapterWith, 'whatsapp', {
+    id: 2,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    targetUserId: 'target-1',
+    messageId: 'msg-1',
+    reason: 'reason',
+  });
+  assert.match(withContext[0], /Target user: target-1/);
+  assert.match(withContext[0], /Message id: msg-1/);
+});
+
+test('notifyReportFiled excludes the reporter from the alert (matches notifySuperAdmins convention)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (userId) => {
+    calls.push(userId);
+  });
+
+  await notifyReportFiled(adapter, 'whatsapp', {
+    id: 1,
+    reporterUserId: 'super-1',
+    reporterName: 'Super One',
+    conversationId: 'convo-1',
+    reason: 'reason',
+  });
+
+  assert.deepEqual(calls, ['super-2'], 'a super admin filing their own report is never self-DMed');
+});
+
+test('notifyReportFiled swallows a DM failure rather than throwing (filing stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(
+    notifyReportFiled(adapter, 'whatsapp', {
+      id: 1,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'reason',
+    }),
+  );
 });
 
 test('SECURITY: moderation_history rejects an actionKind outside the allow-list at the zod schema boundary', () => {
@@ -741,5 +853,109 @@ test(
       "SECURITY: the reporter's resolution DM must never include the reported user's identity",
     );
     assert.match(calls[0], /they were harassing me/, "the reporter's own reason is echoed");
+  },
+);
+
+// report_content tool handler (issue #90): notifyReportFiled itself is
+// unit-tested above without the MCP transport; these exercise the handler's
+// wiring — that a successful filing triggers the alert and a rate-limited
+// one doesn't — against a real DB-backed rate cap, same pattern as
+// resolveReportHandler above.
+function reportContentHandler(adapter: PlatformAdapter, userId = REPORT_CONTENT_HANDLER_USER) {
+  const server = buildToolServer(
+    {
+      // whatsapp, not discord: keeps SUPER_ADMIN_WHATSAPP_NUMBERS (configured
+      // above for these tests) isolated from this file's many discord-caller
+      // admin-action tests, which assert exact DM counts assuming zero
+      // configured discord super admins.
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Reporting Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            reason: string;
+            targetUserId?: string;
+            messageId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['report_content'];
+}
+
+test('report_content alerts super admins on a successful filing (issue #90)', { skip }, async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  const result = await reportContentHandler(adapter).handler({
+    reason: 'someone was spamming the general channel',
+  });
+
+  assert.match(result.content[0]?.text ?? '', /recorded/, 'the reporter still gets their confirmation');
+  assert.equal(calls.length, 2, 'both configured super admins are alerted');
+  for (const [, message] of calls) {
+    assert.match(message, /Reporting Member/);
+    assert.match(message, /Reporter said: "someone was spamming the general channel"/);
+  }
+});
+
+test(
+  'SECURITY: report_content sends no super-admin alert for a rate-limited filing (issue #90)',
+  { skip },
+  async () => {
+    // Own reporter id, isolated from the other report_content tests in this
+    // file, so a prior test's filings never count against this test's cap.
+    const rateLimitUser = `${REPORT_CONTENT_HANDLER_USER}-ratelimit`;
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    for (let i = 0; i < REPORT_RATE_LIMIT_PER_DAY; i++) {
+      const ok = await reportContentHandler(adapter, rateLimitUser).handler({
+        reason: `report number ${i}`,
+      });
+      assert.match(ok.content[0]?.text ?? '', /recorded/);
+    }
+    calls.length = 0;
+
+    const overCap = await reportContentHandler(adapter, rateLimitUser).handler({
+      reason: 'one report too many',
+    });
+
+    assert.equal(overCap.isError, true);
+    assert.match(overCap.content[0]?.text ?? '', /already submitted/);
+    assert.equal(calls.length, 0, 'a rate-limited attempt must not send a spurious alert');
+  },
+);
+
+test(
+  "report_content's own reported outcome is unaffected by an alert DM failure (issue #90)",
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+
+    const result = await reportContentHandler(adapter).handler({
+      reason: 'DM to super admins will fail to send',
+    });
+
+    assert.match(
+      result.content[0]?.text ?? '',
+      /recorded/,
+      'the reporter confirmation is unaffected by a failed best-effort alert',
+    );
   },
 );

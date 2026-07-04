@@ -476,7 +476,12 @@ the supported path.
   (null-scope) super-admin view, never a scoped admin. This is a deliberate,
   documented default (not a silent drop): the report is still recorded and
   retrievable, just only by super admins, until/unless a routing mechanism
-  for DM-originated reports is added.
+  for DM-originated reports is added. This risk is narrowed, not eliminated,
+  by issue #90: filing a report now proactively DMs every super admin the
+  moment it's created (`notifyReportFiled`), so a DM-originated report no
+  longer sits unseen until someone thinks to poll `list_reports` —
+  conversation-scoped admins still can't see it via `list_reports` until
+  that routing mechanism exists.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
 - **Suggestion-resolution DMs are same-platform-only** (issue #116): resolving
