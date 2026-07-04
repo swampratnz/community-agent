@@ -135,17 +135,17 @@ export class Router {
     // content; if they address the bot, point them at an admin (rate-limited)
     // and record the request (identity + count only) so admins have a queue.
     if (gated && role === 'guest') {
-      // Ambient archiving (issue #48): with DISCORD_ARCHIVE_ALL_MESSAGES on,
-      // guest messages in guild channels ARE stored — a deliberate,
-      // documented posture change requiring community notice (SECURITY.md).
-      // Guest DMs to the bot stay unstored either way. Storage only: the
-      // addressed-check below still solely decides whether the agent runs.
-      if (
-        msg.platform === 'discord' &&
-        config.discord.archiveAllMessages &&
-        !msg.isDirect &&
-        msg.text.trim()
-      ) {
+      // Ambient archiving (issue #48; WhatsApp parity issue #103): with
+      // DISCORD_ARCHIVE_ALL_MESSAGES on, or the WhatsApp conversation JID in
+      // WHATSAPP_ARCHIVE_GROUP_JIDS, guest messages in group/guild channels
+      // ARE stored — a deliberate, documented posture change requiring
+      // community notice (SECURITY.md). Guest DMs to the bot stay unstored
+      // either way. Storage only: the addressed-check below still solely
+      // decides whether the agent runs.
+      const archiveAmbient =
+        (msg.platform === 'discord' && config.discord.archiveAllMessages) ||
+        (msg.platform === 'whatsapp' && config.whatsapp.archiveGroupJids.includes(msg.conversationId));
+      if (archiveAmbient && !msg.isDirect && msg.text.trim()) {
         recordInteraction({
           platform: msg.platform,
           conversationId: msg.conversationId,
