@@ -1669,11 +1669,18 @@ export type ResponseStyle = 'standard' | 'plain';
  * single primary-key lookup, so this is a negligible per-turn cost.
  */
 export async function getResponseStyle(platform: Platform, userId: string): Promise<ResponseStyle> {
-  const { rows } = await pool.query(
-    `SELECT style FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  return rows[0]?.style === 'plain' ? 'plain' : 'standard';
+  try {
+    const { rows } = await pool.query(
+      `SELECT style FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    return rows[0]?.style === 'plain' ? 'plain' : 'standard';
+  } catch (err) {
+    // Hot-path read on every turn: a DB hiccup must not fail the turn (issue
+    // #52) — degrade to the default reply style, same as getCodeAnswersPolicy.
+    logger.warn({ err, platform, userId }, 'Response-style read failed; using standard');
+    return 'standard';
+  }
 }
 
 /** Upsert the caller's response-style preference. */

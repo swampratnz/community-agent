@@ -15,6 +15,7 @@ import {
 import { isPaused } from './storage/policies.js';
 import { countRepliesToUser, recordAccessRequest, recordInteraction } from './storage/repository.js';
 import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from './rateLimitNotice.js';
+import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from './pauseNotice.js';
 
 const GATED_NOTICE =
   'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
@@ -34,7 +35,8 @@ const ACK_REPLY_TEXT = 'No worries!';
  *    is NOT stored
  *  - intercept CONFIRM/CANCEL replies for pending destructive actions —
  *    executed deterministically, never through the model
- *  - respect the paused policy (super admins only while paused)
+ *  - respect the paused policy (super admins only while paused; everyone else
+ *    gets a debounced notice instead of silence)
  *  - persist member+ messages (audit + learning) regardless of reply
  *  - per-user rate limit and daily reply budget
  *  - serialise turns per conversation (session resume is not concurrency-safe)
@@ -51,17 +53,24 @@ export class Router {
   private readonly budgetNotified = new Map<string, number>();
   /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
   private readonly rateLimitNotified = new Map<string, number>();
+  /** userKey -> when they were last told the bot is paused (debounced to PAUSE_NOTIFY_WINDOW_MS). */
+  private readonly pauseNotified = new Map<string, number>();
+
+  private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
 
   /**
    * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
    * sane production cadence (Discord auto-clears its own indicator after
-   * ~10s, so re-firing every 8s keeps it continuously visible). Both are
-   * overridable in tests so the typing-indicator behaviour can be exercised
-   * without spawning a real Claude Code subprocess or waiting 8 real seconds.
+   * ~10s, so re-firing every 8s keeps it continuously visible). `checkPaused`
+   * defaults to the real policy read. All three are overridable in tests so
+   * the typing-indicator and pause behaviour can be exercised without
+   * spawning a real Claude Code subprocess, waiting 8 real seconds, or a live
+   * DB-backed policy.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
     private readonly typingRefireMs = 8_000,
+    private readonly checkPaused: typeof isPaused = isPaused,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -76,6 +85,9 @@ export class Router {
     }
     for (const [key, at] of this.rateLimitNotified) {
       if (now - at > this.RATE_WINDOW_MS) this.rateLimitNotified.delete(key);
+    }
+    for (const [key, at] of this.pauseNotified) {
+      if (now - at > this.PAUSE_NOTIFY_WINDOW_MS) this.pauseNotified.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -228,8 +240,21 @@ export class Router {
     if (!msg.addressedToBot && !msg.isDirect) return;
     if (!msg.text.trim()) return;
 
-    // Paused: only super admins get through (so they can resume it).
-    if (role !== 'super_admin' && (await isPaused().catch(() => false))) return;
+    // Paused: only super admins get through (so they can resume it). Everyone
+    // else gets a debounced notice instead of silence (issue #128, mirroring
+    // the rate-limit/budget notices below) — at most once per
+    // PAUSE_NOTIFY_WINDOW_MS per user, so a busy channel during a long pause
+    // isn't spammed. This check runs BEFORE the rate-limit check below, so a
+    // paused user who is also over the rate limit gets exactly the pause
+    // notice, never both.
+    if (role !== 'super_admin' && (await this.checkPaused().catch(() => false))) {
+      const pauseKey = `${msg.platform}:${msg.userId}`;
+      if (shouldNotifyPaused(this.pauseNotified.get(pauseKey), Date.now(), this.PAUSE_NOTIFY_WINDOW_MS)) {
+        this.pauseNotified.set(pauseKey, Date.now());
+        await this.send(adapter, msg.conversationId, PAUSE_NOTICE_TEXT).catch(() => {});
+      }
+      return;
+    }
 
     const userKey = `${msg.platform}:${msg.userId}`;
     if (this.rateLimited(userKey)) {

@@ -185,7 +185,12 @@ member/guest may also set their own standing `response_style`
 (`standard`/`plain`, via `set_response_style`) — a per-caller preference
 (`response_style_prefs`, keyed like `admin_digest_sends`) read alongside
 `code_answers` on every turn; `plain` appends a short jargon-avoidance
-instruction block to the system prompt.
+instruction block to the system prompt. None of the router's silent-drop
+conditions stay silent: hitting the rate limit, the daily budget, or (issue
+#128) a super-admin `pause_bot` all send the member a static, debounced notice
+instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
+inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
+of them read as the bot being broken.
 
 ## Onboarding (gated mode)
 
