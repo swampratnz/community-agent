@@ -81,6 +81,57 @@ function formatRelativeAge(updatedAt: Date): string {
   return `~${years} year${years === 1 ? '' : 's'} ago`;
 }
 
+/**
+ * Relevance floor for `knowledge_search` hits, in cosine similarity
+ * (`1 - (embedding <=> query)`, same units as `searchKnowledge`'s returned
+ * `similarity`). This is a *relevance* floor ("is this topically usable at
+ * all"), not a *duplicate* floor like `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`
+ * in repository.ts (0.85, "is this the same question") — it is deliberately
+ * much lower.
+ *
+ * The value is a function of the current embedding model
+ * (`config.db.embeddingModel`, currently Xenova/all-MiniLM-L6-v2) and query
+ * distribution, not a universal constant. It was derived empirically against
+ * `tests/fixtures/knowledgeEval.json` (see the `negativeQueries` case in
+ * knowledgeEval.test.ts): with this model, unambiguously off-topic queries
+ * (e.g. "what's the best coffee place near the venue") score ~0.15-0.22
+ * against every fixture entry, and a topically-adjacent near-miss (asking how
+ * long admin applications take to hear back — same topic as "Requesting admin
+ * role", but a question that entry doesn't answer) tops out at ~0.33, while
+ * all but a couple of the weakest genuine paraphrase matches score 0.36+. A
+ * small minority of very loosely-worded genuine matches score below this
+ * floor too (e.g. "what are the guidelines for behaving in this server" vs.
+ * the actual "Discord server rules" entry, ~0.30) — that's an intentional
+ * precision-over-recall trade-off: this feature exists specifically so a
+ * low-confidence hit results in "no confident match" (which the system
+ * prompt turns into an honest hedge) rather than a shaky answer stated as
+ * fact. If `EMBEDDING_MODEL` ever changes, this constant must be re-derived
+ * the same way — a model swap will otherwise silently degrade filtering with
+ * no test failure.
+ */
+export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
+
+/**
+ * Filters `knowledge_search` hits to ones that clear the relevance floor and
+ * formats the reply, prepending each surviving hit's match percentage
+ * (exactly mirroring `remember_search`'s `(NN% match)` convention below).
+ * Exported separately from the `knowledge_search` tool so the filter is
+ * unit-testable without the MCP tool-call transport, same as
+ * `notifyMemberApproved`.
+ */
+export function formatKnowledgeSearchResults(
+  hits: Array<{ title: string | null; content: string; similarity: number; updatedAt: Date }>,
+): string {
+  const relevant = hits.filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD);
+  if (relevant.length === 0) return 'No matching knowledge entries.';
+  return relevant
+    .map(
+      (h) =>
+        `- (${(h.similarity * 100).toFixed(0)}% match) ${h.title ? `${h.title}: ` : ''}${h.content} (updated ${formatRelativeAge(h.updatedAt)})`,
+    )
+    .join('\n');
+}
+
 async function notifySuperAdmins(
   adapter: PlatformAdapter,
   platform: Platform,
@@ -246,15 +297,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { query: z.string().describe('Topic to look up') },
     async (args) => {
       const hits = await searchKnowledge(args.query);
-      if (hits.length === 0) return text('No matching knowledge entries.');
-      return text(
-        hits
-          .map(
-            (h) =>
-              `- ${h.title ? `${h.title}: ` : ''}${h.content} (updated ${formatRelativeAge(h.updatedAt)})`,
-          )
-          .join('\n'),
-      );
+      return text(formatKnowledgeSearchResults(hits));
     },
     { annotations: { readOnlyHint: true } },
   );

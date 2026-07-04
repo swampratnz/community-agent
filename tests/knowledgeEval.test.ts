@@ -20,6 +20,7 @@ const skip = hasDb
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { saveKnowledge, searchKnowledge } = await import('../src/storage/repository.js');
+const { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } = await import('../src/agent/tools.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
 // cleaned up precisely, mirroring the RUN-tag convention in
@@ -45,9 +46,15 @@ interface FixtureQuery {
   core: boolean;
 }
 
+interface FixtureNegativeQuery {
+  query: string;
+  label: string;
+}
+
 interface Fixture {
   entries: FixtureEntry[];
   queries: FixtureQuery[];
+  negativeQueries: FixtureNegativeQuery[];
 }
 
 const fixturePath = fileURLToPath(new URL('./fixtures/knowledgeEval.json', import.meta.url));
@@ -126,6 +133,41 @@ test(
       `aggregate precision@${TOP_K} ${(precision * 100).toFixed(1)}% is below the ${
         AGGREGATE_FLOOR * 100
       }% floor — see logged misses above`,
+    );
+  },
+);
+
+test(
+  "knowledgeEval: negative queries (issue #95) stay below KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD against this fixture's own entries",
+  { skip },
+  async () => {
+    // Reseeds the same fixture rows under EVAL_SCOPE; harmless duplicates —
+    // this test only cares about the ceiling on similarity, which is
+    // unaffected by repeated identical rows, and the shared `after` hook
+    // cleans up everything under EVAL_SCOPE regardless of row count.
+    for (const entry of fixture.entries) {
+      await saveKnowledge({ title: entry.title, content: entry.content, scope: EVAL_SCOPE });
+    }
+    const seededContent = new Set(fixture.entries.map((e) => e.content));
+
+    const overThreshold: Array<{ query: string; label: string; similarity: number; title: string | null }> =
+      [];
+    for (const n of fixture.negativeQueries) {
+      const results = (await searchKnowledge(n.query, OVER_FETCH)).filter((r) =>
+        seededContent.has(r.content),
+      );
+      const top = results[0];
+      if (top && top.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD) {
+        overThreshold.push({ query: n.query, label: n.label, similarity: top.similarity, title: top.title });
+      }
+    }
+
+    assert.equal(
+      overThreshold.length,
+      0,
+      `negative quer${overThreshold.length === 1 ? 'y' : 'ies'} scored at/above KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD ` +
+        `(${KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD}) against this fixture's entries — the threshold in src/agent/tools.ts ` +
+        `needs re-deriving (embedding model drift?): ${JSON.stringify(overThreshold)}`,
     );
   },
 );
