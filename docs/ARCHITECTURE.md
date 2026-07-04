@@ -70,6 +70,17 @@ part of the gated-mode guest guarantee for public channels — see SECURITY.md
 for the posture statement, the notice precondition, and the ready-to-pin
 community notice text.
 
+`WHATSAPP_ARCHIVE_GROUP_JIDS` (issue #103) extends the same mechanism to the
+WhatsApp Baileys path, scoped to an explicit allowlist of group JIDs rather
+than a single flag (WhatsApp groups have no "public channel" equivalent, so
+each group opts in individually once its notice is posted). The Baileys
+adapter populates `IncomingMessage.messageId` from the WhatsApp message key,
+and honours "delete for everyone" (always) and edits (best-effort — Baileys'
+protocol fidelity for edits is less reliable than for revokes) by watching
+for `protocolMessage` events in archived groups. Archiving is receive-side
+only — no new outbound/send behaviour, so it adds no new Baileys ToS/ban-risk
+surface (see SECURITY.md's Baileys section).
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
@@ -87,7 +98,13 @@ memory**:
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`, and
    curate existing entries with `list_knowledge` (browse by scope),
    `update_knowledge` (correct + re-embed), and `delete_knowledge` (retire,
-   CONFIRM-gated). `question_digest` closes the discovery gap: it greedily
+   CONFIRM-gated). `scope` (`'global'` | a platform | a conversation id) is
+   enforced at retrieval time: `knowledge_search` only ever surfaces
+   `'global'` entries plus entries scoped to the caller's own platform or
+   conversation (see docs/SECURITY.md, issue #106). `list_knowledge` is the
+   deliberate exception — an admin curating browses by explicit scope,
+   unrestricted by their own conversation. `question_digest` closes the
+   discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
    patterns worth turning into a knowledge entry. `src/adminDigest.ts` (issue
@@ -149,6 +166,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
+| `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),

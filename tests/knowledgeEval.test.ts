@@ -64,13 +64,18 @@ const fixture: Fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));
 // within. Kept in sync with the proposal's precision@K definition.
 const TOP_K = 3;
 
-// searchKnowledge has no scope filter (it ranks across the whole knowledge
-// table), so we over-fetch and then filter down to just this run's seeded
-// fixture rows before computing rank — that keeps the pass/fail verdict
-// independent of whatever else happens to be in the DB (CI's empty
-// container vs. a developer's populated local instance), per the tightened
-// acceptance criteria on issue #62.
+// searchKnowledge (issue #106) scopes results to 'global' + the caller's
+// platform/conversation. These fixtures are saved under one conversation-like
+// EVAL_SCOPE tag, and every lookup below passes a caller whose conversationId
+// is that same tag, so retrieval here is unaffected by scoping (scope
+// enforcement itself is covered by tests/knowledgeScope.test.ts). We still
+// over-fetch and filter down to just this run's seeded fixture rows before
+// computing rank — that keeps the pass/fail verdict independent of whatever
+// else happens to be in the DB (CI's empty container vs. a developer's
+// populated local instance), per the tightened acceptance criteria on issue
+// #62.
 const OVER_FETCH = 200;
+const EVAL_CALLER = { platform: 'discord' as const, conversationId: EVAL_SCOPE };
 
 // A small "must-hit" core (paraphrases of the most unambiguous entries) is
 // asserted at 100% so one genuine ranking regression always fails the
@@ -93,7 +98,7 @@ test(
     let hits = 0;
 
     for (const q of fixture.queries) {
-      const results = await searchKnowledge(q.query, OVER_FETCH);
+      const results = await searchKnowledge(q.query, EVAL_CALLER, OVER_FETCH);
       // Restrict to rows belonging to this run's fixture set (see OVER_FETCH
       // comment above), then take the top-K of what's left.
       const ownTopK = results
@@ -153,7 +158,7 @@ test(
     const overThreshold: Array<{ query: string; label: string; similarity: number; title: string | null }> =
       [];
     for (const n of fixture.negativeQueries) {
-      const results = (await searchKnowledge(n.query, OVER_FETCH)).filter((r) =>
+      const results = (await searchKnowledge(n.query, EVAL_CALLER, OVER_FETCH)).filter((r) =>
         seededContent.has(r.content),
       );
       const top = results[0];

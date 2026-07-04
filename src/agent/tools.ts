@@ -52,6 +52,7 @@ import {
 import { updatePolicy } from '../storage/policies.js';
 import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
+import { triggerRedeploy } from './redeploy.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
 function text(t: string, isError = false) {
@@ -353,7 +354,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     'Search curated community knowledge (FAQs, rules, resources admins have saved).',
     { query: z.string().describe('Topic to look up') },
     async (args) => {
-      const hits = await searchKnowledge(args.query);
+      const hits = await searchKnowledge(args.query, {
+        platform: caller.platform,
+        conversationId: caller.conversationId,
+      });
       return text(formatKnowledgeSearchResults(hits));
     },
     { annotations: { readOnlyHint: true } },
@@ -1435,6 +1439,32 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const redeployBot = tool(
+    'redeploy_bot',
+    'Immediately redeploy the bot from origin/main (fast-forward only), instead of waiting for the ' +
+      '1am timer or using SSH. Takes no arguments — it can only trigger a deploy of code a human already ' +
+      'merged to main. Super admin only; requires confirmation.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'super_admin', 'redeploy_bot');
+      // Highest-blast-radius action after grant_admin: CONFIRM-gated like
+      // every other destructive/irreversible tool, so an injected turn can
+      // request a deploy but never complete one without the super admin's
+      // own out-of-band reply.
+      return requireConfirm(
+        'REDEPLOY the bot from origin/main now — the bot process will restart mid-deploy',
+        'super_admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'redeploy_bot',
+            run: () => triggerRedeploy(),
+          });
+          return success ? result : `Failed: ${result}`;
+        },
+      );
+    },
+  );
+
   // Attach everything; the per-turn allowedTools list (rbac.toolsForRole) is
   // what actually restricts which of these the model can call.
   return createSdkMcpServer({
@@ -1479,6 +1509,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       pauseBot,
       resumeBot,
       setPolicy,
+      redeployBot,
     ],
   });
 }

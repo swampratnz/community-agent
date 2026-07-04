@@ -9,10 +9,12 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 
 ### Added
 - Resolving a member's `suggest_improvement` submission now sends them a best-effort DM naming the outcome (reviewed/declined/done) — closes the "suggestion box into the void" gap. Same-platform only for now: a resolution on a different platform than the suggestion was filed on sends no DM (#116).
+- Chat-triggered redeploy: a super admin can now say "deploy the latest code" instead of waiting for the nightly timer or reaching for SSH. `redeploy_bot` takes no arguments, is CONFIRM-gated and router-executed like `grant_admin`/`purge_user_data`, and starts the same flock-guarded `community-agent-redeploy.service` unit the 1am timer uses — requires an opt-in, exact-match sudoers grant documented in DEPLOYMENT.md (#101).
 - Weekly proactive admin digest (opt-in, `ADMIN_DIGEST_ENABLED`): DMs each admin at most once a week with their own scoped recurring-question clusters — the same signal `question_digest` already computes on demand, now pushed instead of pull-only. Restart-safe freshness guard, no DM on a quiet week (#97).
 - Anonymised community-context export (opt-in, `CONTEXT_EXPORT_ENABLED`): context digests render into `docs/COMMUNITY-CONTEXT.md` (aggregate-only, k-floored, PII-scrubbed) so the research loop can ground proposals in real community need; committing the file stays a human step (#53).
 - Offline context builder (opt-in, `CONTEXT_BUILDER_ENABLED`): a ~daily job distills stored interactions into durable topic digests admins read with `list_context_digests` — hard-capped model spend, a distinct-author floor, and purge-coherent by construction (#51).
 - Ambient message archiving (opt-in, `DISCORD_ARCHIVE_ALL_MESSAGES`): every message in allowed guild channels is stored for community memory, Discord deletes/edits are honoured against the stored copy, and the bot still only replies when addressed. Requires posting the community notice from SECURITY.md first (#48).
+- WhatsApp group ambient archiving parity (opt-in, per-group `WHATSAPP_ARCHIVE_GROUP_JIDS` allowlist): extends the above to WhatsApp groups — the community's largest venue — with the same posture, delete-honouring (best-effort edit-tracking), and notice precondition. Receive-side only, no new send behaviour (#103).
 - In-chat suggestion capture: members can file bot-improvement ideas with `suggest_improvement` (rate-capped); admins triage the queue with `list_suggestions`/`resolve_suggestion`. The bridge to GitHub stays human (#46).
 - Admin-curated member context notes: `add_member_note` / `list_member_notes` / `delete_member_note` give person-scoped facts a home outside the global FAQ — admin-only, audited, deleted by `forget_me` (#45).
 - Discord server roster: join/leave events and a startup backfill persist identity metadata (never content) so admins can ask who joined, who left, and who joined but was never added as a member, via the new `list_roster` tool (#47).
@@ -22,6 +24,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 
 ### Fixed
 - A database hiccup during memory recall or session lookup no longer makes the bot go silent — the turn degrades (answers without memory context / starts a fresh session) and a router backstop guarantees the member always gets a reply (#52).
+- `knowledge_search` now enforces the `scope` an entry was saved with: an admin's channel- or platform-scoped FAQ no longer surfaces to every member, everywhere — previously `scope` was write-only metadata, decorative at read time (#106).
 
 ## 2026-07-03
 
