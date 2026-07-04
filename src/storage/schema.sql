@@ -61,9 +61,20 @@ CREATE TABLE IF NOT EXISTS knowledge (
   source_user_id TEXT,
   created_by_role TEXT      NOT NULL DEFAULT 'admin',
   embedding     VECTOR(:EMBEDDING_DIM),
+  -- Post-hoc "does this entry earn its keep" signal (issue #134): bumped by
+  -- knowledge_search hits above the relevance floor, read by list_knowledge
+  -- so admins can spot dead entries to prune. Deliberately excluded from the
+  -- knowledge_set_updated_at trigger's column list below — retrieval hits
+  -- must not look like content edits, or they'd defeat #27's recency hedging
+  -- and reshuffle list_knowledge's updated_at ordering on every member search.
+  retrieval_count INT       NOT NULL DEFAULT 0,
+  last_retrieved_at TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS retrieval_count INT NOT NULL DEFAULT 0;
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS last_retrieved_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
@@ -76,9 +87,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Scoped to the content-bearing columns (not retrieval_count/last_retrieved_at)
+-- so a knowledge_search hit's counter bump never touches updated_at — see the
+-- comment on those columns above.
 DROP TRIGGER IF EXISTS knowledge_set_updated_at ON knowledge;
 CREATE TRIGGER knowledge_set_updated_at
-  BEFORE UPDATE ON knowledge
+  BEFORE UPDATE OF scope, title, content, source_user_id, created_by_role, embedding ON knowledge
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS sessions_set_updated_at ON sessions;
