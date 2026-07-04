@@ -21,10 +21,12 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 - Automated nightly redeploy: `scripts/redeploy.sh` + a systemd timer fast-forward the server to `origin/main` at 1am NZ time, with build/migrate-before-restart, health-checked rollback, and a no-op fast path (#50).
 
 - `link_member`/`unlink_member` admin tools to link a member's Discord and WhatsApp identities as one person, so `forget_me`/`purge_user_data` and the daily reply budget follow the person instead of the platform row (#44).
+- `community_info` now names concrete member capabilities — `report_content`, `forget_me`, `suggest_improvement`, `remember_search`, `knowledge_search` — instead of a vague static blurb, and the one-time approval DM signposts this self-serve rundown (#92).
 
 ### Fixed
 - A database hiccup during memory recall or session lookup no longer makes the bot go silent — the turn degrades (answers without memory context / starts a fresh session) and a router backstop guarantees the member always gets a reply (#52).
 - `knowledge_search` now enforces the `scope` an entry was saved with: an admin's channel- or platform-scoped FAQ no longer surfaces to every member, everywhere — previously `scope` was write-only metadata, decorative at read time (#106).
+- Review polish: the WhatsApp Cloud app secret is redacted from logs, dead `recentTurns` code removed, and the `usage_stats` window clamped to a sane range (#110).
 
 ## 2026-07-03
 
