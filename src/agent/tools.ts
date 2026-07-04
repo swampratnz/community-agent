@@ -10,6 +10,7 @@ import { memoryHitJumpLink } from './discordLink.js';
 import {
   addMemberNote,
   clearAccessRequest,
+  clearWarnings,
   createContentReport,
   createSuggestion,
   deleteKnowledge,
@@ -726,6 +727,49 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         'admin',
         run,
       );
+    },
+  );
+
+  const clearWarningsTool = tool(
+    'clear_warnings',
+    "Clear a member's auto-moderation warnings and lift any resulting mute so they can post again. Admin only. Use this when a member was blocked after reaching the warning limit (you'll have seen the alert in the mod-alerts channel) and you want to give them another chance. Lenient/reversible, so no CONFIRM needed.",
+    {
+      targetUserId: z.string().describe('Platform user id whose warnings to clear'),
+      reason: z.string().optional().describe('Optional note for the audit log'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'clear_warnings');
+      if (!(await isKnownUser(caller.platform, args.targetUserId))) {
+        return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
+      }
+      const { success, result } = await audited({
+        actionKind: 'clear_warnings',
+        targetUserId: args.targetUserId,
+        conversationId: caller.conversationId,
+        params: { reason: args.reason },
+        run: async () => {
+          const cleared = await clearWarnings(caller.platform, args.targetUserId, caller.userId);
+          // Lift the mute too, if the platform supports it. The DB clear is the
+          // source of truth; a failed unmute is reported inline, not fatal.
+          let muteNote = '';
+          if (adapter.adminCapabilities.has('unmute_user')) {
+            try {
+              await adapter.performAdminAction({
+                kind: 'unmute_user',
+                targetUserId: args.targetUserId,
+                conversationId: caller.conversationId,
+              });
+            } catch (err) {
+              logger.warn({ err, targetUserId: args.targetUserId }, 'Unmute after clear_warnings failed');
+              muteNote = ' (but I could not lift the Discord mute — check my Manage Roles permission)';
+            }
+          }
+          return cleared > 0
+            ? `Cleared ${cleared} warning(s); ${args.targetUserId} can post again${muteNote}.`
+            : `${args.targetUserId} had no active warnings${muteNote}.`;
+        },
+      });
+      return text(success ? result : `Failed: ${result}`);
     },
   );
 
@@ -1606,6 +1650,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       whatsNew,
       userHistory,
       moderate,
+      clearWarningsTool,
       announce,
       saveKnowledgeTool,
       listKnowledgeTool,

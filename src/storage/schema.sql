@@ -365,3 +365,35 @@ CREATE TABLE IF NOT EXISTS response_style_prefs (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (platform, user_id)
 );
+
+-- ---------------------------------------------------------------------------
+-- Auto-moderation strikes (Discord bad-language / abuse warnings). One row
+-- per warning against a member, keyed on raw (platform, user_id) like
+-- response_style_prefs — a warned user need not be in community_users. An
+-- ACTIVE strike is one with cleared_at IS NULL; a member is "blocked" (muted
+-- role assigned) once their active-strike count reaches the configured limit.
+-- An admin clears warnings by stamping cleared_at/cleared_by on all of a
+-- user's active rows (which also lifts the mute). `source` distinguishes an
+-- automatic detection from an admin-issued warning; `excerpt` stores only a
+-- short capped snippet of the offending message for admin context, never the
+-- whole message (see SECURITY.md). Purge-coherent: forget_me/purge_user_data
+-- delete a user's rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_warnings (
+  id          BIGSERIAL   PRIMARY KEY,
+  platform    TEXT        NOT NULL,
+  user_id     TEXT        NOT NULL,
+  reason      TEXT        NOT NULL,
+  excerpt     TEXT,
+  source      TEXT        NOT NULL DEFAULT 'auto' CHECK (source IN ('auto', 'admin')),
+  issued_by   TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  cleared_at  TIMESTAMPTZ,
+  cleared_by  TEXT
+);
+
+-- Fast active-strike count / "is this member blocked" lookups on the hot path
+-- (every scanned message checks the warned user's active strike count).
+CREATE INDEX IF NOT EXISTS member_warnings_active_idx
+  ON member_warnings (platform, user_id)
+  WHERE cleared_at IS NULL;

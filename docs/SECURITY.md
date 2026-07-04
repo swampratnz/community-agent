@@ -11,7 +11,8 @@ a living document — review it whenever you add a tool or a platform.
 3. **WhatsApp linked-device credentials** (`whatsapp-auth/`) — effectively
    control of the bot's WhatsApp number.
 4. **The interaction database** — contains community members' messages (PII).
-5. **Moderation authority** — the ability to timeout/kick/announce.
+5. **Moderation authority** — the ability to timeout/kick/announce, and (when
+   auto-moderation is enabled) to mute/block members via a Discord role.
 
 ## Threat model & controls
 
@@ -323,6 +324,36 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   open mode too. No row means today's default (`'standard'`) behaviour —
   zero change for anyone who never calls the tool. Purge-coherent:
   `forget_me`/`purge_user_data` delete the caller's row.
+- **Auto-moderation** (`DISCORD_MODERATION_ENABLED`, `member_warnings`, off by
+  default): when enabled, the Discord adapter scans **every** in-scope guild
+  message for bad language / abuse — a privacy-posture change of the same class
+  as ambient archiving, so it needs a community notice before you flip it on.
+  Controls and honest limits:
+  - **Storage is minimal**: a flagged message records a `member_warnings` row
+    with the reason and a **capped excerpt** (≤200 chars) — never the whole
+    message. Keyed on raw `(platform, user_id)`; purge-coherent
+    (`forget_me`/`purge_user_data` delete it, pinned by a `SECURITY:` test).
+  - **Admins/super admins are exempt** — never warned or muted (same role
+    resolution the router uses; pinned by a `SECURITY:` test), and a member is
+    muted **only** at the strike limit, never before (pinned by a `SECURITY:`
+    test).
+  - **Enforcement needs privilege**: the muted role and the auto-created
+    `mod-alerts` channel require the bot to hold **Manage Roles** + **Manage
+    Channels** — a real expansion of the bot's blast radius. The bot only ever
+    creates/assigns the one configured muted role and the one alerts channel,
+    but a compromised bot token with these permissions can do more than one
+    without them; grant them deliberately.
+  - **Enforcement is best-effort, not airtight**: the muted role's
+    deny-SendMessages overwrites are applied to channels that exist when a mute
+    happens — **channels created later won't inherit them** until the next mute
+    re-applies. A determined member could also leave/rejoin to shed the role.
+    Treat it as a strong deterrent, not a hard containment boundary.
+  - **Stage 2 (LLM abuse) is opt-in** (`MODERATION_LLM_ABUSE_ENABLED`, off):
+    only wordlist-clean messages escalate, one Claude call each on the shared
+    Max pool — deliberately gated so it can't silently run up cost/scan volume.
+  - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
+    member's active warnings and lifts the mute; it's lenient/reversible so it
+    isn't CONFIRM-gated, and any admin may clear anyone's.
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
   identity has been linked (`link_member`) to another platform identity as the
@@ -493,7 +524,8 @@ the supported path.
   are never purged regardless of this setting.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, content reports *they submitted
-  as reporter*, and their response-style preference. Membership rows, the
+  as reporter*, their response-style preference, and their auto-moderation
+  warning history (`member_warnings`). Membership rows, the
   admin audit log, and reports where the user is only the *target* (not the
   reporter) are retained deliberately
   (accountability) — the same precedent already applied to `admin_audit`. If
@@ -566,6 +598,15 @@ number could reach an unrelated person).
       posted visibly in *that group*. Do this per group, before each JID is
       added — adding the JID is the operator's assertion that notice was
       posted.
+- [ ] **Before enabling `DISCORD_MODERATION_ENABLED`**: (1) a notice that
+      messages are scanned for moderation is posted visibly (same expectation
+      as the archiving notice — every message is inspected), and (2) the bot
+      has been granted **Manage Roles** + **Manage Channels** (for the muted
+      role and the `mod-alerts` channel). Note these two permissions widen the
+      bot token's blast radius; grant them only for this feature and keep the
+      rest of the bot's permissions minimal. `MODERATION_LLM_ABUSE_ENABLED`
+      (Stage 2) additionally spends the shared Max pool per escalated message —
+      leave it off until you want it.
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.

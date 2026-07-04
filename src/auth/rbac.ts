@@ -58,6 +58,7 @@ export const ADMIN_TOOLS = [
   'mcp__community__whats_new',
   'mcp__community__user_history',
   'mcp__community__moderate',
+  'mcp__community__clear_warnings',
   'mcp__community__announce',
   'mcp__community__save_knowledge',
   'mcp__community__list_knowledge',

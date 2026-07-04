@@ -3,7 +3,11 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  PermissionFlagsBits,
   type GuildMember,
+  type Guild,
+  type Role,
+  type TextChannel,
   type PartialGuildMember,
   type Message,
   type PartialMessage,
@@ -14,6 +18,7 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import {
   deleteInteractionByMessageId,
   markRosterLeave,
@@ -38,16 +43,28 @@ const WELCOME_MESSAGE =
   'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
   'and an admin will see your request.';
 
-export class DiscordAdapter implements PlatformAdapter {
+export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   readonly platform = 'discord' as const;
-  readonly adminCapabilities = new Set(['timeout_user', 'kick_user', 'delete_message', 'warn_user']);
+  readonly adminCapabilities = new Set([
+    'timeout_user',
+    'kick_user',
+    'delete_message',
+    'warn_user',
+    'unmute_user',
+  ]);
 
   private readonly client: Client;
   private handler: MessageHandler | null = null;
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
   private connected = false;
+  private readonly moderator: Moderator;
+  // Resolved lazily on first use and cached: the muted role and the admin
+  // alerts channel are created on demand (needs Manage Roles / Manage Channels).
+  private mutedRoleId: string | null = null;
+  private adminChannelId: string | null = null;
 
   constructor() {
+    this.moderator = createModerator(this);
     this.client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -153,6 +170,21 @@ export class DiscordAdapter implements PlatformAdapter {
       !config.discord.allowedChannelIds.includes(message.channelId)
     ) {
       return;
+    }
+
+    // Auto-moderation scans EVERY in-scope guild message (not just addressed
+    // ones), independently of the agent path below. Fire-and-forget so a scan
+    // failure can never block or delay normal handling. DMs aren't scanned —
+    // muting is a guild concept. A no-op unless DISCORD_MODERATION_ENABLED.
+    if (!isDM) {
+      void this.moderator
+        .scan({
+          platform: 'discord',
+          userId: message.author.id,
+          userName: message.member?.displayName ?? message.author.username,
+          text: this.cleanContent(message.content),
+        })
+        .catch((err) => logger.warn({ err }, 'Moderation scan failed'));
     }
 
     const botId = this.client.user?.id;
@@ -376,8 +408,147 @@ export class DiscordAdapter implements PlatformAdapter {
         );
         return `Warned ${action.targetUserId}.`;
       }
+      case 'unmute_user': {
+        // Lift an auto-moderation mute (remove the muted role). Used by the
+        // clear_warnings admin tool after it clears the DB strikes.
+        await this.removeMutedRole(action.targetUserId!);
+        return `Unmuted ${action.targetUserId}.`;
+      }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);
     }
+  }
+
+  // --- Moderation enforcement (ModerationEnforcer) ---------------------------
+
+  /** DM a warned member — same outbound filter as every other DM. */
+  async warnUser(userId: string, text: string): Promise<void> {
+    await this.sendDirectMessage(userId, text);
+  }
+
+  /** Assign the muted role (creating it + its deny-post overwrites if missing). */
+  async muteUser(userId: string): Promise<void> {
+    const guild = await this.client.guilds.fetch(config.discord.guildId);
+    const role = await this.ensureMutedRole(guild);
+    const member = await guild.members.fetch(userId);
+    await member.roles.add(role, 'Reached moderation warning limit');
+  }
+
+  /** Remove the muted role (idempotent). */
+  async unmuteUser(userId: string): Promise<void> {
+    await this.removeMutedRole(userId);
+  }
+
+  /** Post a moderation alert to the private admin channel (creating it if missing). */
+  async postAdminAlert(text: string): Promise<void> {
+    const channel = await this.ensureAdminChannel();
+    for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
+      await channel.send({ content: chunk, allowedMentions: { parse: [] } });
+    }
+  }
+
+  private async removeMutedRole(userId: string): Promise<void> {
+    const guild = await this.client.guilds.fetch(config.discord.guildId);
+    const role = this.findMutedRole(guild);
+    if (!role) return;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (member?.roles.cache.has(role.id)) {
+      await member.roles.remove(role, 'Warnings cleared by an admin');
+    }
+  }
+
+  private findMutedRole(guild: Guild): Role | null {
+    if (this.mutedRoleId) {
+      const cached = guild.roles.cache.get(this.mutedRoleId);
+      if (cached) return cached;
+    }
+    return guild.roles.cache.find((r) => r.name === config.moderation.mutedRoleName) ?? null;
+  }
+
+  /**
+   * Find or create the muted role and make sure it actually blocks posting: a
+   * deny-SendMessages overwrite is applied to every current text/forum channel
+   * and category. Channels created LATER won't inherit it (documented
+   * limitation, see SECURITY.md) — the next mute re-runs this and re-applies to
+   * all current channels. Needs the bot to have Manage Roles + Manage Channels.
+   */
+  private async ensureMutedRole(guild: Guild): Promise<Role> {
+    let role = this.findMutedRole(guild);
+    if (!role) {
+      role = await guild.roles.create({
+        name: config.moderation.mutedRoleName,
+        permissions: [],
+        color: 0x607d8b,
+        reason: 'Auto-moderation muted role',
+      });
+    }
+    this.mutedRoleId = role.id;
+
+    const channels = await guild.channels.fetch();
+    for (const channel of channels.values()) {
+      if (
+        !channel ||
+        (channel.type !== ChannelType.GuildText &&
+          channel.type !== ChannelType.GuildAnnouncement &&
+          channel.type !== ChannelType.GuildForum &&
+          channel.type !== ChannelType.GuildCategory)
+      ) {
+        continue;
+      }
+      try {
+        await channel.permissionOverwrites.edit(role, {
+          SendMessages: false,
+          SendMessagesInThreads: false,
+          CreatePublicThreads: false,
+          CreatePrivateThreads: false,
+          AddReactions: false,
+        });
+      } catch (err) {
+        logger.warn({ err, channelId: channel.id }, 'Failed to apply muted-role overwrite');
+      }
+    }
+    return role;
+  }
+
+  /**
+   * Find or create the private admin alerts channel: @everyone can't view it,
+   * the bot can view+send, and the configured super admins can view. Discord
+   * members with the Administrator permission see it regardless of overwrites.
+   */
+  private async ensureAdminChannel(): Promise<TextChannel> {
+    const guild = await this.client.guilds.fetch(config.discord.guildId);
+    if (this.adminChannelId) {
+      const cached = await this.client.channels.fetch(this.adminChannelId).catch(() => null);
+      if (cached?.type === ChannelType.GuildText) return cached;
+    }
+    const channels = await guild.channels.fetch();
+    const existing = channels.find(
+      (c): c is TextChannel =>
+        c?.type === ChannelType.GuildText && c.name === config.moderation.adminChannelName,
+    );
+    if (existing) {
+      this.adminChannelId = existing.id;
+      return existing;
+    }
+
+    const botId = this.client.user?.id;
+    const created = await guild.channels.create({
+      name: config.moderation.adminChannelName,
+      type: ChannelType.GuildText,
+      topic: 'Private moderation alerts — bad-language/abuse warnings and blocks.',
+      permissionOverwrites: [
+        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        ...(botId
+          ? [{ id: botId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }]
+          : []),
+        ...config.rbac.superAdminDiscordIds.map((id) => ({
+          id,
+          allow: [PermissionFlagsBits.ViewChannel],
+        })),
+      ],
+      reason: 'Auto-moderation admin alerts channel',
+    });
+    this.adminChannelId = created.id;
+    return created;
   }
 }
