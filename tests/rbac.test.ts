@@ -147,6 +147,17 @@ test('SECURITY: list_context_digests is admin-only — digests derive from membe
   }
 });
 
+test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachable by admin/member/guest', () => {
+  const tool = 'mcp__community__redeploy_bot';
+  assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'redeploy_bot must be in SUPER_ADMIN_TOOLS');
+  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'redeploy_bot must not be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'redeploy_bot must not be in MEMBER_TOOLS');
+  for (const role of ['guest', 'member', 'admin'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach redeploy_bot`);
+  }
+  assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach redeploy_bot');
+});
+
 test('SECURITY: admins never get super-admin tools', () => {
   const tools = toolsForRole('admin');
   for (const t of SUPER_ADMIN_TOOLS) {

@@ -31,6 +31,7 @@ const {
 } = await import('../src/agent/tools.js');
 const { MODERATION_ACTION_KINDS, saveKnowledge } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
+const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -123,6 +124,68 @@ test('SECURITY: moderation_history rejects an actionKind outside the allow-list 
     );
   }
   assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'actionKind stays optional');
+});
+
+test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'super-1',
+    userName: 'SuperAdmin',
+    role: 'super_admin' as const,
+    conversationId: 'convo-redeploy',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['redeploy_bot'];
+
+  assert.equal(
+    hasPendingAction('discord', 'convo-redeploy', 'super-1'),
+    false,
+    'nothing pending before the call',
+  );
+  const result = await registeredTool.handler({});
+  assert.match(
+    result.content[0].text,
+    /CONFIRM/,
+    'must ask for out-of-band confirmation, not run immediately',
+  );
+  assert.ok(
+    hasPendingAction('discord', 'convo-redeploy', 'super-1'),
+    'must register a pending action rather than execute the deploy directly from the model-facing call',
+  );
+
+  cancelPendingAction('discord', 'convo-redeploy', 'super-1');
+});
+
+test('SECURITY: redeploy_bot handler refuses a direct call from an admin caller (assertAtLeast re-check)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-redeploy-admin',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+    }
+  )._registeredTools['redeploy_bot'];
+
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+  assert.equal(
+    hasPendingAction('discord', 'convo-redeploy-admin', 'admin-1'),
+    false,
+    'a refused call must never register a pending action either',
+  );
 });
 
 // formatKnowledgeSearchResults holds all of knowledge_search's relevance-

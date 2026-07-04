@@ -169,9 +169,6 @@ Preconditions and caveats:
   push-style alerting, attach an `OnFailure=` unit of your choosing — the
   running bot's super-admin DM path lives inside the bot process and is not
   callable from this standalone script (deliberately small scope).
-- Triggering a redeploy from chat is **out of scope** for this mechanism —
-  if ever built, it must be super-admin + CONFIRM-gated, router-executed,
-  and take no model-supplied arguments (see issue #50's review).
 - Non-systemd alternative: a root crontab entry
   `0 1 * * * TZ=Pacific/Auckland /opt/community-agent/scripts/redeploy.sh`
   (note: plain cron evaluates the schedule in the *system* timezone; the
@@ -181,6 +178,37 @@ Preconditions and caveats:
 To exercise it manually: `sudo systemctl start community-agent-redeploy.service`
 (one run, same logs), or run the script directly with `SERVICE_NAME=""` to
 test the git/build/migrate flow without touching the running service.
+
+### Chat-triggered redeploy (opt-in, issue #101)
+
+A super admin can also say something like "deploy the latest code" instead of
+waiting for the 1am timer or reaching for SSH. This is the `redeploy_bot` tool
+— super-admin only, CONFIRM-gated (the actor must reply `CONFIRM` within 60s;
+`CANCEL` or a timeout starts nothing), and **router-executed with a `{}` input
+schema**: the model cannot supply a ref, branch, or any argument, so an
+injected turn can at most *request* a deploy of whatever is already at
+`origin/main` — the same fast-forward-only, human-merged code the nightly
+timer would have deployed anyway — and still can't complete it without the
+super admin's own CONFIRM reply. It starts the identical
+`community-agent-redeploy.service` oneshot unit the timer uses (via
+`sudo -n systemctl start --no-block …`, no shell, fixed argv), so the
+`flock` in `scripts/redeploy.sh` rules out overlap between the two triggers.
+Like every privileged action it writes an `admin_audit` row and DMs the other
+super admins.
+
+This requires one **opt-in, deploy-time** sudoers grant so the bot's
+unprivileged service user can start (only start — not stop, restart, or any
+other unit) exactly this one unit, non-interactively:
+
+```
+community-agent ALL=(root) NOPASSWD: /usr/bin/systemctl start community-agent-redeploy.service
+```
+
+Add it via `sudo visudo -f /etc/sudoers.d/community-agent-redeploy` (exact
+command match, no wildcard — `systemctl` is not granted generally). Without
+this line the tool fails immediately with a clear error (`sudo -n` never
+prompts or hangs waiting for a password) — it does not silently do nothing
+and does not wedge the CONFIRM flow.
 
 ## Backups
 Back up the database (memory + audit) and the WhatsApp auth dir:
