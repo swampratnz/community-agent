@@ -83,6 +83,12 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
+          # Do NOT leave the job's GITHUB_TOKEN in .git/config: the fix agent
+          # reads untrusted CI logs / PR content and can `cat .git/config` / read
+          # it via node, then exfiltrate it. The agent pushes with the action's
+          # own App token, and the deterministic steps use `gh` (GH_TOKEN env),
+          # so no persisted git credential is needed anywhere.
+          persist-credentials: false
 
       - name: Resolve PR + eligibility
         id: pr
@@ -188,26 +194,32 @@ jobs:
                failure is not something you can safely fix, then just STOP
                without committing/pushing: a later step detects "no new commit"
                and escalates `needs-human` for you.
-          # Tool surface is least-privilege so the safety guarantees are
-          # structural, not prompt-only:
+          # Tool surface is least-privilege — defence in depth, NOT a hard
+          # guarantee (the agent also has Edit/Write + node/npm code execution,
+          # so it could rewrite .git/HEAD on disk; see the main-push note below):
           #   * `gh` is READ-only (diagnose the failure) — no merge/close/create.
+          #   * `git fetch` is pinned to `Bash(git fetch origin:*)` so the agent
+          #     can only fetch from origin, not an arbitrary remote/URL.
           #   * `git` excludes `reset`/`remote`/blanket push. The only push tool
           #     is `Bash(git push origin HEAD)` with NO `:*` wildcard, i.e. an
           #     EXACT match: the agent may run only that literal command. A
           #     wildcard form (`git push origin HEAD:*`) would also permit
           #     `git push origin HEAD:main` (refspec src:dst) and
-          #     `git push origin HEAD --force`; the exact match forbids both, so
-          #     it can push ONLY the current branch, fast-forward, never main and
-          #     never force. The push runs via the action's App token because a
-          #     GITHUB_TOKEN push wouldn't re-trigger CI. Labelling/commenting/
+          #     `git push origin HEAD --force`. Combined with the checkout
+          #     pinning the local branch name, this keeps the *tool surface* on
+          #     the current branch — but note code execution (above) means it is
+          #     not a hard stop. The push runs via the action's App token because
+          #     a GITHUB_TOKEN push wouldn't re-trigger CI. Labelling/commenting/
           #     escalation are done by the deterministic shell steps, not here.
-          #   * Defence in depth: branch protection on `main` (blocking direct/
-          #     force pushes) is the recommended backstop regardless of token —
-          #     see docs. It is a repo setting, not something this file enforces.
+          #   * The ENFORCEABLE guarantee that this loop cannot push to `main` is
+          #     branch protection on `main` (blocking direct/force pushes) — a
+          #     required repo setting (see docs/SECURITY.md), not something this
+          #     file enforces. The allowlist above raises the bar; it does not
+          #     replace branch protection.
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a fix was pushed (else escalate loudly)
         if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
@@ -216,8 +228,12 @@ jobs:
         run: |
           set -euo pipefail
           n="${{ steps.pr.outputs.number }}"
-          git fetch origin "$HEAD_BRANCH"
-          after="$(git rev-parse "origin/$HEAD_BRANCH")"
+          # Read the branch's current remote tip via the API (gh/GH_TOKEN) rather
+          # than `git fetch` — with persist-credentials:false there is no git
+          # credential in .git/config for a fetch, and this avoids reintroducing
+          # one. head_before was captured from the local checkout (git rev-parse
+          # HEAD needs no credential).
+          after="$(gh pr view "$n" --json headRefOid --jq '.headRefOid')"
           if [ "$after" != "${{ steps.mark.outputs.head_before }}" ]; then
             echo "Autofix pushed a change; CI will re-run on the new commit."
             exit 0
