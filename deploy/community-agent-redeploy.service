@@ -1,0 +1,22 @@
+# Oneshot unit run by community-agent-redeploy.timer (issue #50).
+# Install: cp deploy/community-agent-redeploy.{service,timer} /etc/systemd/system/
+#          systemctl daemon-reload && systemctl enable --now community-agent-redeploy.timer
+#
+# Logs:    journalctl -u community-agent-redeploy
+#
+# Runs as root so it can `systemctl restart community-agent`; the script
+# drops to the community-agent user (runuser) for every git/npm step, so no
+# build tooling ever executes privileged.
+
+[Unit]
+Description=Redeploy community-agent from origin/main (fast-forward only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/community-agent
+ExecStart=/opt/community-agent/scripts/redeploy.sh
+# A deploy (npm ci + build + migrate + health poll) should never take this
+# long; kill it rather than wedging the lock until someone notices.
+TimeoutStartSec=30min
