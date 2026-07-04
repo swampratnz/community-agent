@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
+import { normalizeMemberId } from '../auth/memberId.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { logger } from '../logger.js';
 import {
@@ -153,6 +154,28 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         `(Confirmation is handled outside the AI and must come from you in this conversation.)`,
     );
   }
+
+  /**
+   * Resolve + validate the target of a membership tool. The platform defaults
+   * to the caller's; managing a user on a *different* platform is broader
+   * authority, so it requires super_admin. The id is shape-checked per platform
+   * so a WhatsApp number can't be silently filed as a Discord user (issue #78).
+   */
+  function resolveMemberTarget(rawUserId: string, platformArg?: Platform): { platform: Platform; userId: string } {
+    const platform = platformArg ?? caller.platform;
+    if (platform !== caller.platform) {
+      assertAtLeast(caller.role, 'super_admin', `managing a ${platform} user from ${caller.platform}`);
+    }
+    return { platform, userId: normalizeMemberId(platform, rawUserId) };
+  }
+
+  /** Optional `platform` argument shared by the membership tools. */
+  const platformArg = z
+    .enum(['discord', 'whatsapp'])
+    .optional()
+    .describe(
+      'Target platform. Defaults to the platform you are messaging from; set explicitly (e.g. "whatsapp" while on Discord) to manage a user on the other platform. Cross-platform management requires super admin.',
+    );
 
   // --- Member tools ----------------------------------------------------------
 
@@ -574,13 +597,14 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
     {
       userId: z.string().min(1).describe('Platform user id (Discord user id / WhatsApp number without +)'),
+      platform: platformArg,
       displayName: z.string().optional().describe('Human-readable name for records'),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'add_member');
-      const userId = args.userId.trim();
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
       const finalRole = await upsertMember({
-        platform: caller.platform,
+        platform,
         userId,
         role: 'member',
         addedBy: caller.userId,
@@ -588,38 +612,40 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       });
       await audited({
         actionKind: 'add_member',
-        targetUserId: args.userId,
-        params: { displayName: args.displayName },
-        run: async () => `registered as ${finalRole}`,
+        targetUserId: userId,
+        params: { platform, displayName: args.displayName },
+        run: async () => `registered as ${finalRole} on ${platform}`,
       });
-      await clearAccessRequest(caller.platform, userId).catch((err) =>
+      await clearAccessRequest(platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
-      return text(`Added ${args.displayName ?? args.userId} as ${finalRole} on ${caller.platform}.`);
+      return text(`Added ${args.displayName ?? userId} as ${finalRole} on ${platform}.`);
     },
   );
 
   const removeMemberTool = tool(
     'remove_member',
     'Remove a member (revokes bot access in gated mode). Cannot remove admins. Admin only.',
-    { userId: z.string().min(1).describe('Platform user id to remove') },
+    { userId: z.string().min(1).describe('Platform user id to remove'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'remove_member');
-      if (isSuperAdmin(caller.platform, args.userId)) {
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      if (isSuperAdmin(platform, userId)) {
         return text('Refusing: that user is a super admin.', true);
       }
       const { result } = await audited({
         actionKind: 'remove_member',
-        targetUserId: args.userId,
+        targetUserId: userId,
+        params: { platform },
         run: async () => {
-          const removed = await removeMember(caller.platform, args.userId);
+          const removed = await removeMember(platform, userId);
           if (!removed)
             throw new Error('No member row removed (not a member, or an admin — revoke admin first).');
           return 'membership removed';
         },
       });
       return text(
-        result === 'membership removed' ? `Removed ${args.userId} from members.` : `Failed: ${result}`,
+        result === 'membership removed' ? `Removed ${userId} from ${platform} members.` : `Failed: ${result}`,
         result !== 'membership removed',
       );
     },
@@ -632,24 +658,26 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     'Promote a user to admin. Super admin only.',
     {
       userId: z.string().min(1).describe('Platform user id to promote'),
+      platform: platformArg,
       displayName: z.string().optional(),
     },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'grant_admin');
-      const userId = args.userId.trim();
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
       // Privilege escalation is the highest-blast-radius action in the
       // system — CONFIRM-gated like kick/purge so an injected turn can
       // request but never complete it.
       return requireConfirm(
-        `GRANT ADMIN to ${args.displayName ?? userId} (${userId}) on ${caller.platform}`,
+        `GRANT ADMIN to ${args.displayName ?? userId} (${userId}) on ${platform}`,
         'super_admin',
         async () => {
           const { success, result } = await audited({
             actionKind: 'grant_admin',
             targetUserId: userId,
+            params: { platform },
             run: async () => {
               await upsertMember({
-                platform: caller.platform,
+                platform,
                 userId,
                 role: 'admin',
                 addedBy: caller.userId,
@@ -659,7 +687,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
             },
           });
           return success
-            ? `Granted admin to ${args.displayName ?? userId} on ${caller.platform}.`
+            ? `Granted admin to ${args.displayName ?? userId} on ${platform}.`
             : `Failed: ${result}`;
         },
       );
@@ -669,22 +697,24 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
   const revokeAdmin = tool(
     'revoke_admin',
     'Demote an admin back to member. Super admin only.',
-    { userId: z.string().min(1).describe('Platform user id to demote') },
+    { userId: z.string().min(1).describe('Platform user id to demote'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'revoke_admin');
-      if (isSuperAdmin(caller.platform, args.userId)) {
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      if (isSuperAdmin(platform, userId)) {
         return text('Refusing: super admins are configured in the environment, not manageable here.', true);
       }
       const { success, result } = await audited({
         actionKind: 'revoke_admin',
-        targetUserId: args.userId,
+        targetUserId: userId,
+        params: { platform },
         run: async () => {
-          const done = await demoteAdmin(caller.platform, args.userId);
+          const done = await demoteAdmin(platform, userId);
           if (!done) throw new Error('User is not an admin.');
           return 'demoted to member';
         },
       });
-      return text(success ? `${args.userId} is now a member.` : `Failed: ${result}`, !success);
+      return text(success ? `${userId} is now a member on ${platform}.` : `Failed: ${result}`, !success);
     },
   );
 
