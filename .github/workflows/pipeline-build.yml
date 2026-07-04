@@ -185,8 +185,9 @@ jobs:
           # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
           # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
           # turns fast). 300 gives real proposals room to finish; the
-          # timeout-minutes above stays the wall-clock guard (~7s/turn
-          # observed, so 300 turns ≈ 40 min worst case).
+          # `timeout-minutes` above (120) is the wall-clock guard — solo, 300
+          # turns ≈ 40 min (~7s/turn), but under shared-pool throttling a
+          # legitimate build runs slower, which is why the guard is 120 not 60.
           claude_args: |
             --max-turns 300
             --model sonnet
