@@ -712,6 +712,57 @@ test(
 );
 
 test(
+  'repository: usageStats clamps an out-of-range days window to [1, 365] (issue #110)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-days-clamp`;
+    const userId = `${RUN}-days-clamp`;
+
+    // Min clamp: a negative `days` must behave as the 1-day floor, not a
+    // literal negative interval (which would flip to a future timestamp and
+    // match nothing — even the row created "now").
+    const beforeMin = await usageStats(-3);
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId,
+      role: 'member',
+      direction: 'outbound',
+      content: 'inside a 1-day window — now',
+      costUsd: 1,
+    });
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, cost_usd, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, now() - interval '2 days')`,
+      ['discord', conversationId, userId, 'member', 'outbound', 'just outside a 1-day window', 1],
+    );
+    const afterMin = await usageStats(-3);
+    assert.equal(
+      afterMin.outbound - beforeMin.outbound,
+      1,
+      'days=-3 clamps to the 1-day floor: the "now" row is counted, the 2-day-old row is not',
+    );
+
+    // Max clamp: a huge `days` must behave as the 365-day ceiling, not a
+    // literal 10,000-day interval (which would happily include a 400-day-old row).
+    const beforeMax = await usageStats(10_000);
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, cost_usd, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, now() - interval '400 days')`,
+      ['discord', conversationId, userId, 'member', 'outbound', 'just outside a 365-day window', 1],
+    );
+    const afterMax = await usageStats(10_000);
+    assert.equal(
+      afterMax.outbound - beforeMax.outbound,
+      0,
+      'days=10_000 clamps to the 365-day ceiling: a 400-day-old row must not become visible',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   'repository: createContentReport enforces a DB-backed rolling-24h cap per reporter, robust to a simulated process restart',
   { skip },
   async () => {

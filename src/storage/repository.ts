@@ -212,23 +212,6 @@ export async function updateInteractionByMessageId(
   return (rowCount ?? 0) > 0;
 }
 
-/** Recent turns in a conversation, oldest-first, for short-term context. */
-export async function recentTurns(
-  platform: Platform,
-  conversationId: string,
-  limit = 10,
-): Promise<Array<{ userName: string | null; direction: string; content: string }>> {
-  const { rows } = await pool.query(
-    `SELECT user_name, direction, content
-       FROM interactions
-      WHERE platform = $1 AND conversation_id = $2
-      ORDER BY created_at DESC
-      LIMIT $3`,
-    [platform, conversationId, limit],
-  );
-  return rows.reverse();
-}
-
 // --- Sessions --------------------------------------------------------------
 
 export interface StoredSession {
@@ -1036,7 +1019,8 @@ export async function usageStats(days = 7): Promise<{
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
   costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
 }> {
-  const interval = `${days} days`;
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
+  const interval = `${clampedDays} days`;
   const { rows: totals } = await pool.query(
     `SELECT
        count(*) FILTER (WHERE direction = 'inbound') AS inbound,
