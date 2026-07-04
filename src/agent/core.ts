@@ -2,6 +2,7 @@ import { query, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
+import { superAdminIds } from '../auth/roles.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
@@ -13,6 +14,13 @@ import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
 import { buildToolServer } from './tools.js';
+import {
+  initialUsageLimitTracker,
+  isUsageLimitFailure,
+  stepUsageLimitTracker,
+  USAGE_LIMIT_REPLY,
+  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
+} from './upstreamFailure.js';
 
 export interface AgentReply {
   text: string;
@@ -145,6 +153,45 @@ export async function runAgentTurn(
   };
 }
 
+// Module-level: the upstream usage-limit condition is a property of the
+// shared Max pool, not any one conversation, so the debounce latch is
+// process-wide rather than per-conversation (mirrors usageAlert.ts's
+// single rolling tracker).
+let usageLimitTracker = initialUsageLimitTracker();
+
+/**
+ * Debounced super-admin DM when a turn fails on an upstream usage-limit/
+ * overload condition (issue #131) — one per ongoing window, silent re-arm
+ * once a turn stops hitting it. No-op unless UPSTREAM_LIMIT_ALERT_ENABLED.
+ * DMs go out via the platform that saw the failure, same as this turn's
+ * `adapter` — mirroring health.ts/usageAlert.ts's existing super-admin
+ * alert path, just scoped to one adapter instead of iterating all of them.
+ */
+function noteUsageLimitOutcome(
+  hitUsageLimit: boolean,
+  adapter: PlatformAdapter,
+  conversationId: string,
+): void {
+  if (!config.behaviour.upstreamLimitAlertEnabled) return;
+  const step = stepUsageLimitTracker(usageLimitTracker, hitUsageLimit);
+  usageLimitTracker = step.tracker;
+  if (!step.shouldAlert) return;
+  logger.warn(
+    { conversationId, platform: adapter.platform },
+    'Upstream Claude usage-limit/overload detected',
+  );
+  for (const id of superAdminIds(adapter.platform)) {
+    adapter
+      .sendDirectMessage(
+        id,
+        '⚠️ The bot just hit an upstream Claude usage-limit/overload condition — members are seeing a ' +
+          "degraded reply. This isn't a bug and should clear once the shared quota resets; consider " +
+          'pause_bot if it persists.',
+      )
+      .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Usage-limit alert DM failed'));
+  }
+}
+
 async function execTurn(
   caller: CallerContext,
   prompt: string,
@@ -202,11 +249,22 @@ async function execTurn(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ err, conversationId: caller.conversationId }, 'Agent query failed');
+    // Distinguish an upstream Claude usage-limit/overload condition (issue
+    // #131) from a random internal failure — "please try again" is actively
+    // misleading when the shared pool is genuinely exhausted. Only inspects
+    // the SDK/CLI's own error message, never user-supplied text, and always
+    // returns a fixed string (the raw error is never echoed).
+    const usageLimitHit = isUsageLimitFailure(msg);
+    noteUsageLimitOutcome(usageLimitHit, adapter, caller.conversationId);
     return {
       ok: false,
       // Heuristic: resume failures surface as errors mentioning the session.
       resumeFailed: resumeSession != null && /session|resume/i.test(msg),
-      text: INTERNAL_ERROR_REPLY,
+      text: usageLimitHit
+        ? config.behaviour.upstreamLimitAlertEnabled
+          ? USAGE_LIMIT_REPLY_ADMIN_NOTIFIED
+          : USAGE_LIMIT_REPLY
+        : INTERNAL_ERROR_REPLY,
     };
   }
 
@@ -215,6 +273,11 @@ async function execTurn(
       { subtype: resultSubtype, conversationId: caller.conversationId },
       'Agent turn ended non-success',
     );
+    // Non-success results (max turns, etc.) are a distinct, already-clean
+    // signal — not the opaque thrown-error path the classifier above targets
+    // — but still count as "not a usage-limit failure" for the debounce so a
+    // recovering turn re-arms the latch.
+    noteUsageLimitOutcome(false, adapter, caller.conversationId);
     // Never surface the raw internal transcript on failures.
     return {
       ok: false,
@@ -230,6 +293,7 @@ async function execTurn(
     };
   }
 
+  noteUsageLimitOutcome(false, adapter, caller.conversationId);
   const text = resultText.trim() || lastAssistantText.trim() || "I don't have a response for that.";
   return { ok: true, resumeFailed: false, text, costUsd, sessionId };
 }

@@ -121,6 +121,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the trigger — it's a coarse proxy for shared Max-pool draw that can't
   silently under-report the way `cost_usd` can (see below). No auto-pause;
   a super admin decides.
+- A thrown `query()` error whose message matches a small, anchored
+  usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
+  honest member-facing reply instead of the generic internal-error one, and
+  optionally (`UPSTREAM_LIMIT_ALERT_ENABLED`, off by default) a debounced
+  super-admin DM — same `sendDirectMessage` path, same "no auto-pause, a
+  super admin decides" posture. Only the error's own message is inspected
+  (never user-supplied text), and both the member reply and the admin DM
+  are always one of a small set of fixed strings — the raw error is never
+  echoed.
 
 ### 4. Moderation misuse / accountability
 **Controls**

@@ -50,6 +50,7 @@ Claude-powered agent, with a Postgres-backed memory for learning.
 | `src/agent/core.ts` | Runs one agent turn: memory recall → prompt → `query()` → reply. |
 | `src/agent/tools.ts` | In-process MCP tools (search memory/knowledge, moderate, announce, …). |
 | `src/agent/auth.ts` | Forces Claude **subscription** auth via `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `src/agent/upstreamFailure.ts` | Classifies a usage-limit/overload `query()` failure vs. a generic internal error, + the debounce latch for the optional super-admin DM. |
 | `src/storage/*` | Postgres pool, schema, migrations, embeddings, repository. |
 | `src/router.ts` | Orchestrates inbound → agent → outbound and persistence. |
 | `src/health.ts` / `src/healthState.ts` | `/healthz` endpoint + sustained-disconnect super-admin alerting; `healthState.ts` holds the pure, tested debounce/payload logic. |
@@ -449,6 +450,34 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   `health.ts`'s disconnect alert already uses. No new privileged tool, no
   new RBAC surface, no auto-`pause_bot` — a super admin decides whether to
   pause manually.
+
+`usageAlert.ts` is a **proactive** check on successful outbound reply
+*counts* — it says nothing about a turn actively **failing** because the
+upstream Claude call itself was rejected for hitting a limit or being
+overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
+
+- `execTurn`'s `catch` block (agent/core.ts) classifies a thrown `query()`
+  error by matching its message against a small, anchored set of known
+  substrings (`rate_limit`, `usage limit`, `429`, `overloaded_error`,
+  `quota` — case-insensitive). Only the SDK/CLI's own error message is
+  inspected, never user-supplied text, and the reply is always one of two
+  fixed strings — the raw error is never echoed to the member.
+- On a match, the member gets an honest "this bot has hit its shared usage
+  limit, not a bug, try again later" reply instead of the generic
+  `INTERNAL_ERROR_REPLY` — "please try again" is actively misleading when
+  the shared pool is genuinely exhausted. The `resultSubtype !== 'success'`
+  branch (e.g. `error_max_turns`) is untouched: per the SDK's own behaviour,
+  a usage-limit/overload condition surfaces as a thrown error, not a clean
+  result subtype.
+- Off unless `UPSTREAM_LIMIT_ALERT_ENABLED` is set (consistent with this
+  repo's convention for new proactive DMs). When on, a debounced latch
+  (`stepUsageLimitTracker`, pure and unit-tested like `healthState.ts`'s
+  disconnect tracker) DMs super admins on the platform that saw the
+  failure — one DM per ongoing window, silent re-arm the next time a turn
+  doesn't hit the classifier. The reply text only claims "an admin has been
+  notified" when this flag is actually on.
+- No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
+  decides.
 
 ## Switching WhatsApp providers
 
