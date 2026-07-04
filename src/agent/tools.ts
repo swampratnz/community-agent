@@ -19,6 +19,7 @@ import {
   isKnownConversation,
   isKnownUser,
   listAccessRequests,
+  listContextDigests,
   listKnowledge,
   listReports,
   listRoster,
@@ -828,6 +829,38 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const listContextDigestsTool = tool(
+    'list_context_digests',
+    'Show durable community-context digests the offline builder distilled from stored interactions: ' +
+      'recurring topics with aggregate summaries and how many people/messages carried each. Admin only.',
+    {
+      days: z.number().optional().describe('How far back to look (default 30, max 365)'),
+      limit: z.number().optional().describe('Max digests (default 20, max 100)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_context_digests');
+      const rows = await listContextDigests(args.days ?? 30, args.limit ?? 20);
+      if (rows.length === 0) {
+        return text(
+          'No context digests found. The offline builder may be disabled (CONTEXT_BUILDER_ENABLED) or has not run yet.',
+        );
+      }
+      return text(
+        untrusted(
+          'Context digests',
+          rows
+            .map(
+              (d) =>
+                `#${d.id} [${d.periodStart.toISOString().slice(0, 10)}..${d.periodEnd.toISOString().slice(0, 10)}] ` +
+                `${d.topic} — ${d.summary} (${d.questionCount} messages from ${d.distinctUsers} people)`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const questionDigest = tool(
     'question_digest',
     'Show recurring questions asked in your conversations over recent days (count >= 2), a signal for what should become a knowledge entry. Admin only.',
@@ -1193,6 +1226,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       listMemberNotesTool,
       deleteMemberNoteTool,
       listRosterTool,
+      listContextDigestsTool,
       questionDigest,
       moderationHistory,
       listReportsTool,

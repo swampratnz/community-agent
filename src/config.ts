@@ -102,6 +102,20 @@ const EnvSchema = z.object({
   // vs long replies draw differently; tune to your traffic). Unset/0 =
   // disabled (no timer, no behaviour change on upgrade).
   USAGE_ALERT_DAILY_REPLIES: z.coerce.number().int().nonnegative().default(0),
+  // Offline context builder (issue #51): distills stored interactions into
+  // durable context_digests on a ~daily cadence. Off by default; when on,
+  // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
+  // model calls (hard cap enforced in code) and is skipped entirely while
+  // the usage-alert threshold is breached.
+  CONTEXT_BUILDER_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  CONTEXT_BUILDER_WINDOW_DAYS: z.coerce.number().int().positive().max(30).default(1),
+  CONTEXT_BUILDER_MAX_SUMMARIES: z.coerce.number().int().positive().max(20).default(5),
+  // k-floor: a cluster needs at least this many distinct authors to be
+  // digested, so a digest can't become a one-person profile. Never below 2.
+  CONTEXT_BUILDER_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -194,6 +208,12 @@ export const config = {
       discord: env.ACCESS_MODE_DISCORD,
       whatsapp: env.ACCESS_MODE_WHATSAPP,
     } as Record<'discord' | 'whatsapp', 'gated' | 'open'>,
+  },
+  contextBuilder: {
+    enabled: env.CONTEXT_BUILDER_ENABLED ?? false,
+    windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
+    maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
+    minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

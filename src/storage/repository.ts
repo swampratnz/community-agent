@@ -583,12 +583,23 @@ export async function countRepliesToUser(
  * SECURITY.md).
  */
 export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
-  const { rowCount: messages } = await pool.query(
+  const { rows: deletedInteractions } = await pool.query(
     `DELETE FROM interactions
       WHERE platform = $1
-        AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))`,
+        AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))
+      RETURNING id`,
     [platform, userId],
   );
+  const messages = deletedInteractions.length;
+  // Deletion coherence (issue #51): a context digest whose summary was built
+  // over any purged interaction is invalidated outright — the next builder
+  // run regenerates the topic without this person's signal. Digests store
+  // interaction ids (never copied content) precisely so this is possible.
+  if (messages > 0) {
+    await pool.query(`DELETE FROM context_digests WHERE example_refs && $1::bigint[]`, [
+      deletedInteractions.map((r) => Number(r.id)),
+    ]);
+  }
   const { rowCount: knowledge } = await pool.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
     userId,
   ]);
@@ -862,6 +873,109 @@ export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
 /** Clear a resolved access request (e.g. after add_member succeeds for that user). */
 export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
   await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}
+
+// --- Context digests (offline builder output, issue #51) ---------------------
+
+export interface ContextDigest {
+  id: number;
+  periodStart: Date;
+  periodEnd: Date;
+  platform: string | null;
+  topic: string;
+  summary: string;
+  exampleRefs: number[];
+  distinctUsers: number;
+  questionCount: number;
+  createdAt: Date;
+}
+
+export async function insertContextDigest(input: {
+  periodStart: Date;
+  periodEnd: Date;
+  platform?: string;
+  topic: string;
+  summary: string;
+  exampleRefs: number[];
+  distinctUsers: number;
+  questionCount: number;
+}): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO context_digests
+       (period_start, period_end, platform, topic, summary, example_refs, distinct_users, question_count)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [
+      input.periodStart,
+      input.periodEnd,
+      input.platform ?? null,
+      input.topic,
+      input.summary,
+      input.exampleRefs,
+      input.distinctUsers,
+      input.questionCount,
+    ],
+  );
+  return Number(rows[0].id);
+}
+
+export async function listContextDigests(days = 30, limit = 20): Promise<ContextDigest[]> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 30, 1), 365);
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const { rows } = await pool.query(
+    `SELECT id, period_start, period_end, platform, topic, summary, example_refs,
+            distinct_users, question_count, created_at
+       FROM context_digests
+      WHERE created_at > now() - $1::interval
+      ORDER BY created_at DESC, question_count DESC
+      LIMIT $2`,
+    [`${clampedDays} days`, clampedLimit],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    periodStart: r.period_start,
+    periodEnd: r.period_end,
+    platform: r.platform,
+    topic: r.topic,
+    summary: r.summary,
+    exampleRefs: (r.example_refs as unknown[]).map(Number),
+    distinctUsers: Number(r.distinct_users),
+    questionCount: Number(r.question_count),
+    createdAt: r.created_at,
+  }));
+}
+
+/** When the builder last produced anything — backs the ~daily freshness guard. */
+export async function latestContextDigestAt(): Promise<Date | null> {
+  const { rows } = await pool.query(`SELECT max(created_at) AS at FROM context_digests`);
+  return rows[0]?.at ?? null;
+}
+
+/**
+ * Inbound rows (with embeddings) in the builder's window, oldest-first.
+ * Bounded so a very busy window can't balloon builder memory.
+ */
+export async function recentInboundForClustering(
+  days: number,
+  limit = 5000,
+): Promise<Array<{ id: number; userId: string; content: string; embedding: number[] }>> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 1, 1), 30);
+  const { rows } = await pool.query(
+    `SELECT id, user_id, content, embedding
+       FROM interactions
+      WHERE direction = 'inbound' AND embedding IS NOT NULL
+        AND created_at > now() - $1::interval
+      ORDER BY created_at ASC
+      LIMIT $2`,
+    [`${clampedDays} days`, limit],
+  );
+  return rows
+    .filter((r) => Array.isArray(r.embedding))
+    .map((r) => ({
+      id: Number(r.id),
+      userId: r.user_id,
+      content: r.content,
+      embedding: r.embedding as number[],
+    }));
 }
 
 // --- Suggestions (member-submitted bot-improvement queue, issue #46) ---------

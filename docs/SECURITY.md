@@ -151,6 +151,16 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   > bot to "forget me" at any time to erase your stored messages
   > [, and messages are automatically deleted after N days]. Questions →
   > ask an admin.
+- **Context digests** (`context_digests`, issue #51): an internal batch job
+  summarises *already-stored* interactions into aggregate topic digests — no
+  new collection surface. Admin-tier reads only (`list_context_digests`,
+  wrapped as untrusted data). Privacy properties enforced in code and pinned
+  by `SECURITY:` tests: digests reference interaction ids (never copied
+  content); a `forget_me`/`purge_user_data` invalidates every digest built
+  over the purged person's rows; and a minimum-distinct-authors floor stops
+  a digest from becoming a single-person profile. Cost is bounded by a hard
+  per-run cap on model calls plus an automatic skip while the usage-alert
+  threshold is breached.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no

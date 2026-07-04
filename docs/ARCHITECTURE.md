@@ -133,6 +133,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
+| `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(writes audited)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -186,6 +187,38 @@ weakening it:
    gateway intent: the `GuildMembers` intent the bot already holds for role
    resolution streams these events anyway; a `GuildMember` partial is enabled
    so leaves of uncached members still fire.
+
+## Offline context builder
+
+`src/context/builder.ts` (issue #51) is the learning step on top of storage:
+a ~daily in-process job (timer in `src/index.ts`, mirroring the retention
+purge; off unless `CONTEXT_BUILDER_ENABLED`) that reads across the window's
+inbound interactions, greedily clusters them by embedding similarity (same
+pgvector-fed technique and threshold as `question_digest`), and writes each
+recurring theme to `context_digests` as a topic label + model-written
+aggregate summary + interaction-id refs. Admins read them via
+`list_context_digests`.
+
+Guardrails, all enforced in code (binding conditions from the issue review):
+
+- **Hard cost cap**: at most `CONTEXT_BUILDER_MAX_SUMMARIES` tool-less,
+  single-turn model calls per run — a busy window truncates (logged), never
+  overruns — and a run is skipped outright while the rolling-24h reply count
+  is at/over `USAGE_ALERT_DAILY_REPLIES`, so background analysis can't drain
+  the shared Max pool a busy live bot is using.
+- **k-floor** (`CONTEXT_BUILDER_MIN_DISTINCT_USERS`, ≥2): clusters carried
+  by fewer distinct authors are dropped (logged) so a digest never becomes a
+  de-facto profile of one person.
+- **Deletion coherence**: digests store interaction *ids*, never copied
+  content, and `purgeUserData` invalidates any digest referencing a purged
+  interaction — the next run regenerates the topic without that person.
+  Digests deliberately survive the age-based retention purge (that's their
+  point); only privacy purges invalidate them.
+- **Restart-safe cadence**: the timer ticks 6-hourly but a freshness guard
+  on the last digest's `created_at` makes it ~one run per day, so the
+  nightly redeploy restart can't double-run it.
+- The `knowledge_candidates` review-queue idea from the proposal is
+  **deferred to a separate proposal** per the adversarial scope trim.
 
 ## Suggestion capture
 

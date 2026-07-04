@@ -116,6 +116,21 @@ test('SECURITY: member-note tools are admin-only — a member can never read or 
   }
 });
 
+test('SECURITY: list_context_digests is admin-only — digests derive from member content and never reach member turns (issue #51)', () => {
+  const tool = 'mcp__community__list_context_digests';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_context_digests must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'list_context_digests must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_context_digests`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_context_digests`);
+  }
+});
+
 test('SECURITY: admins never get super-admin tools', () => {
   const tools = toolsForRole('admin');
   for (const t of SUPER_ADMIN_TOOLS) {
