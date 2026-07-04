@@ -251,7 +251,10 @@ test(
       userId: 'member-1',
       userName: 'Member',
       role: 'member' as const,
-      conversationId: 'convo-1',
+      // Matches the scope the fixture entry was saved under, so this exercises
+      // the in-scope (conversation-scoped) retrieval path (issue #106); the
+      // out-of-scope paths are covered in tests/knowledgeScope.test.ts.
+      conversationId: KNOWLEDGE_SEARCH_HANDLER_SCOPE,
     };
     const server = buildToolServer(caller, adapter);
     const registeredTool = (

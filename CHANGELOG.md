@@ -22,6 +22,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 
 ### Fixed
 - A database hiccup during memory recall or session lookup no longer makes the bot go silent — the turn degrades (answers without memory context / starts a fresh session) and a router backstop guarantees the member always gets a reply (#52).
+- `knowledge_search` now enforces the `scope` an entry was saved with: an admin's channel- or platform-scoped FAQ no longer surfaces to every member, everywhere — previously `scope` was write-only metadata, decorative at read time (#106).
 
 ## 2026-07-03
 

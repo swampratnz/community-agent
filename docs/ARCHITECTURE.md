@@ -98,7 +98,13 @@ memory**:
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`, and
    curate existing entries with `list_knowledge` (browse by scope),
    `update_knowledge` (correct + re-embed), and `delete_knowledge` (retire,
-   CONFIRM-gated). `question_digest` closes the discovery gap: it greedily
+   CONFIRM-gated). `scope` (`'global'` | a platform | a conversation id) is
+   enforced at retrieval time: `knowledge_search` only ever surfaces
+   `'global'` entries plus entries scoped to the caller's own platform or
+   conversation (see docs/SECURITY.md, issue #106). `list_knowledge` is the
+   deliberate exception — an admin curating browses by explicit scope,
+   unrestricted by their own conversation. `question_digest` closes the
+   discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
    patterns worth turning into a knowledge entry. `src/adminDigest.ts` (issue
