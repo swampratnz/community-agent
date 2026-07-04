@@ -288,8 +288,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   conversation-scoped — same precedent as `list_access_requests`), display
   names are wrapped as untrusted data, and `forget_me`/`purge_user_data`
   delete the person's roster row. Roster rows are durable (like
-  `community_users`); age-purging `left_at` rows is a possible future
-  refinement, noted under residual risks.
+  `community_users`) for members still present; departed members'
+  (`left_at IS NOT NULL`) rows are age-purged after
+  `ROSTER_DEPARTED_RETENTION_DAYS` (issue #136, unset/0 = disabled, floor of
+  30 days if set — mirrors `INTERACTION_RETENTION_DAYS`).
 - **Weekly admin digest** (`admin_digest_sends`, issue #97): a daily timer
   (off unless `ADMIN_DIGEST_ENABLED`) proactively DMs each `community_users`
   admin the same recurring-question-cluster signal `question_digest` already
@@ -334,6 +336,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   recall for users still mid-conversation. `knowledge` (curated, durable
   facts), `admin_audit` (accountability trail), and `sessions` (governed by
   `SESSION_MAX_TURNS`/`_AGE_HOURS`) are never touched by this purge.
+- **Roster retention policy**: set `ROSTER_DEPARTED_RETENTION_DAYS` to
+  age-purge `server_roster` rows for departed members (default unset =
+  disabled, no behaviour change on upgrade). A daily in-process timer
+  (`src/index.ts`), independent of the interactions purge above, deletes
+  `left_at IS NOT NULL` rows older than the configured window and logs the
+  count purged. Must be `0` or **at least 30 days** (enforced at startup).
+  Currently-present rows (`left_at IS NULL`) are never touched.
 
 ### 7. Cross-platform identity linking (`link_member` / `unlink_member`)
 A member's Discord account and WhatsApp number are, by default, two unrelated
@@ -477,8 +486,11 @@ the supported path.
   that. It is metadata every server member can already see in the member
   list, it is deletable (`forget_me`/`purge_user_data`), and reads are
   admin-only and guild-wide rather than conversation-scoped. Rows for people
-  who left are kept (with `left_at`) for churn history; an age-purge of
-  departed rows is a future refinement if retention expectations tighten.
+  who left are kept (with `left_at`) for churn history, then age-purged once
+  `left_at` is older than `ROSTER_DEPARTED_RETENTION_DAYS` (issue #136,
+  default disabled; a 30-day floor when enabled keeps `list_roster`'s
+  "left this week" pulse intact). Currently-present rows (`left_at IS NULL`)
+  are never purged regardless of this setting.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, content reports *they submitted
   as reporter*, and their response-style preference. Membership rows, the

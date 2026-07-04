@@ -44,6 +44,7 @@ const {
   markRosterLeave,
   listRoster,
   rosterCounts,
+  purgeDepartedRoster,
   addMemberNote,
   listMemberNotes,
   deleteMemberNote,
@@ -1338,6 +1339,86 @@ test(
       );
       assert.equal(rows.length, 0, `${via}: the roster row is gone after purgeUserData`);
     }
+  },
+);
+
+test(
+  'repository: purgeDepartedRoster deletes only departed rows past the cutoff, never left_at IS NULL rows (issue #136)',
+  { skip },
+  async () => {
+    const stillPresent = `${RUN}-roster-departed-present`;
+    const justUnderCutoff = `${RUN}-roster-departed-under`;
+    const justOverCutoff = `${RUN}-roster-departed-over`;
+
+    // Use an extreme window (~100 years) for the cutoff assertions so
+    // they're correct regardless of what else lives in the table, mirroring
+    // purgeOldInteractions's convention.
+    const HUNDRED_YEARS_DAYS = 36_525;
+
+    await upsertRosterMember({ platform: 'discord', userId: stillPresent, displayName: 'Still Here' });
+    await upsertRosterMember({ platform: 'discord', userId: justUnderCutoff, displayName: 'Under' });
+    await upsertRosterMember({ platform: 'discord', userId: justOverCutoff, displayName: 'Over' });
+
+    await pool.query(
+      `UPDATE server_roster SET left_at = now() - interval '${HUNDRED_YEARS_DAYS - 1} days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [justUnderCutoff],
+    );
+    await pool.query(
+      `UPDATE server_roster SET left_at = now() - interval '${HUNDRED_YEARS_DAYS + 1} days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [justOverCutoff],
+    );
+
+    const deleted = await purgeDepartedRoster(HUNDRED_YEARS_DAYS);
+    assert.ok(deleted >= 1, 'at least the over-the-cutoff fixture was deleted');
+
+    const remaining = await pool.query(`SELECT user_id, left_at FROM server_roster WHERE user_id = ANY($1)`, [
+      [stillPresent, justUnderCutoff, justOverCutoff],
+    ]);
+    const remainingIds = remaining.rows.map((r) => r.user_id);
+    assert.ok(
+      remainingIds.includes(stillPresent),
+      'a currently-present member (left_at IS NULL) is never touched',
+    );
+    assert.ok(remainingIds.includes(justUnderCutoff), 'a departed row just under the cutoff survives');
+    assert.ok(!remainingIds.includes(justOverCutoff), 'a departed row past the cutoff is purged');
+
+    const stillPresentRow = remaining.rows.find((r) => r.user_id === stillPresent);
+    assert.equal(stillPresentRow?.left_at, null, 'the surviving present member still has left_at IS NULL');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [
+      [stillPresent, justUnderCutoff, justOverCutoff],
+    ]);
+  },
+);
+
+test(
+  'repository: purgeDepartedRoster at the 30-day floor spares a departed row aged between the 7-day churn window and the floor (issue #136)',
+  { skip },
+  async () => {
+    const atFloorBoundary = `${RUN}-roster-departed-floor`;
+
+    await upsertRosterMember({ platform: 'discord', userId: atFloorBoundary, displayName: 'Floor' });
+    // Aged past list_roster's 7-day "left this week" churn window, but
+    // comfortably under the 30-day floor MIN_ROSTER_DEPARTED_RETENTION_DAYS
+    // enforces — must survive a purge run at exactly that floor.
+    await pool.query(
+      `UPDATE server_roster SET left_at = now() - interval '20 days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [atFloorBoundary],
+    );
+
+    await purgeDepartedRoster(30);
+
+    const survivors = await pool.query(`SELECT 1 FROM server_roster WHERE user_id = $1`, [atFloorBoundary]);
+    assert.equal(
+      survivors.rows.length,
+      1,
+      'a departed row aged between 7 and 30 days survives a purge run at the 30-day floor',
+    );
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [atFloorBoundary]);
   },
 );
 

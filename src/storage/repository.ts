@@ -1574,6 +1574,20 @@ export async function rosterCounts(
   };
 }
 
+/**
+ * Age-based retention: delete `server_roster` rows for members who have
+ * LEFT (left_at IS NOT NULL) more than `days` ago. Currently-present members
+ * (left_at IS NULL) are never touched, regardless of `days`. Returns the
+ * number of rows deleted, for operator-visible logging.
+ */
+export async function purgeDepartedRoster(days: number): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM server_roster WHERE left_at IS NOT NULL AND left_at < now() - ($1::text || ' days')::interval`,
+    [days],
+  );
+  return rowCount ?? 0;
+}
+
 // --- Question digest ---------------------------------------------------------
 
 export interface QuestionCluster {

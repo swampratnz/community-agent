@@ -4,6 +4,7 @@ import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { latestContextDigestAt, purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
+import { startRosterRetentionPurge } from './rosterRetention.js';
 import { runContextBuilder, shouldRunContextBuilder } from './context/builder.js';
 import { writeCommunityContextExport } from './context/export.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
@@ -98,8 +99,10 @@ async function main(): Promise<void> {
   await Promise.all(adapters.map((a) => a.start()));
   logger.info({ platforms: adapters.map((a) => a.platform) }, 'Community Agent running');
 
-  // 4b. Optional age-based retention purge (disabled unless configured).
+  // 4b. Optional age-based retention purges (each independently disabled
+  //     unless configured — neither's disabled state suppresses the other).
   const retentionTimer = startRetentionPurge();
+  const rosterRetentionTimer = startRosterRetentionPurge();
 
   // 4c. Sustained-disconnect super-admin alerting (always on; no user-facing
   //     surface to disable) and the optional /healthz endpoint.
@@ -119,6 +122,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
     if (retentionTimer) clearInterval(retentionTimer);
+    if (rosterRetentionTimer) clearInterval(rosterRetentionTimer);
     clearInterval(disconnectAlertTimer);
     if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);

@@ -102,6 +102,11 @@ const EnvSchema = z.object({
   // behaviour change on upgrade). knowledge/admin_audit/sessions are never
   // touched by this — see storage/repository.ts:purgeOldInteractions.
   INTERACTION_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
+  // Age-based purge of `server_roster` rows for members who have LEFT
+  // (left_at IS NOT NULL). Unset/0 = disabled (no behaviour change on
+  // upgrade). Currently-present members (left_at IS NULL) are never touched
+  // regardless of this setting — see storage/repository.ts:purgeDepartedRoster.
+  ROSTER_DEPARTED_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(0),
   // Sustained platform disconnect -> one debounced super-admin DM alert.
   HEALTH_ALERT_AFTER_MINUTES: z.coerce.number().positive().default(5),
   // Proactive super-admin alert when rolling-24h outbound reply count
@@ -174,6 +179,10 @@ const EnvSchema = z.object({
 // for users still mid-conversation.
 const MIN_INTERACTION_RETENTION_DAYS = 7;
 
+// list_roster's churn windows ("joined/left this week") are 7 days; a 30-day
+// floor comfortably preserves that pulse while still bounding retention.
+const MIN_ROSTER_DEPARTED_RETENTION_DAYS = 30;
+
 const EnvSchemaChecked = EnvSchema.refine(
   (e) =>
     e.WHATSAPP_PROVIDER !== 'cloud' ||
@@ -187,13 +196,24 @@ const EnvSchemaChecked = EnvSchema.refine(
       'WHATSAPP_CLOUD_VERIFY_TOKEN, and WHATSAPP_CLOUD_APP_SECRET',
     path: ['WHATSAPP_PROVIDER'],
   },
-).refine(
-  (e) => e.INTERACTION_RETENTION_DAYS === 0 || e.INTERACTION_RETENTION_DAYS >= MIN_INTERACTION_RETENTION_DAYS,
-  {
-    message: `INTERACTION_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_INTERACTION_RETENTION_DAYS}`,
-    path: ['INTERACTION_RETENTION_DAYS'],
-  },
-);
+)
+  .refine(
+    (e) =>
+      e.INTERACTION_RETENTION_DAYS === 0 || e.INTERACTION_RETENTION_DAYS >= MIN_INTERACTION_RETENTION_DAYS,
+    {
+      message: `INTERACTION_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_INTERACTION_RETENTION_DAYS}`,
+      path: ['INTERACTION_RETENTION_DAYS'],
+    },
+  )
+  .refine(
+    (e) =>
+      e.ROSTER_DEPARTED_RETENTION_DAYS === 0 ||
+      e.ROSTER_DEPARTED_RETENTION_DAYS >= MIN_ROSTER_DEPARTED_RETENTION_DAYS,
+    {
+      message: `ROSTER_DEPARTED_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_ROSTER_DEPARTED_RETENTION_DAYS}`,
+      path: ['ROSTER_DEPARTED_RETENTION_DAYS'],
+    },
+  );
 
 const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
 if (!parsed.success) {
@@ -274,6 +294,7 @@ export const config = {
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
+    rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
     usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,

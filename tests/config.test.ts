@@ -15,6 +15,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.HEALTH_PORT = '';
 process.env.WHATSAPP_CLOUD_WEBHOOK_PORT = '';
 process.env.INTERACTION_RETENTION_DAYS = '';
+process.env.ROSTER_DEPARTED_RETENTION_DAYS = '';
 
 const { config, emptyStringsToUndefined } = await import('../src/config.js');
 
@@ -38,6 +39,10 @@ test('config: blank HEALTH_PORT (as shipped in .env.example) is treated as unset
 test('config: blank optional coerced-number env var falls back to its default', () => {
   assert.equal(config.whatsapp.cloud.webhookPort, 8080);
   assert.equal(config.behaviour.interactionRetentionDays, 0);
+});
+
+test('config: ROSTER_DEPARTED_RETENTION_DAYS unset (default) is disabled — zero behaviour change (issue #136)', () => {
+  assert.equal(config.behaviour.rosterDepartedRetentionDays, 0);
 });
 
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
