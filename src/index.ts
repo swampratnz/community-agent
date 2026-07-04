@@ -8,6 +8,7 @@ import { runContextBuilder, shouldRunContextBuilder } from './context/builder.js
 import { writeCommunityContextExport } from './context/export.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
+import { startAdminDigest } from './adminDigest.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
@@ -111,6 +112,9 @@ async function main(): Promise<void> {
   // 4e. Optional offline context builder (disabled unless configured).
   const contextBuilderTimer = startContextBuilder();
 
+  // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
+  const adminDigestTimer = startAdminDigest(adapters);
+
   // 5. Graceful shutdown.
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
@@ -118,6 +122,7 @@ async function main(): Promise<void> {
     clearInterval(disconnectAlertTimer);
     if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
+    if (adminDigestTimer) clearInterval(adminDigestTimer);
     if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));
     await closeDb();

@@ -221,6 +221,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   delete the person's roster row. Roster rows are durable (like
   `community_users`); age-purging `left_at` rows is a possible future
   refinement, noted under residual risks.
+- **Weekly admin digest** (`admin_digest_sends`, issue #97): a daily timer
+  (off unless `ADMIN_DIGEST_ENABLED`) proactively DMs each `community_users`
+  admin the same recurring-question-cluster signal `question_digest` already
+  computes on demand — no new tool, no new RBAC tier, no message content
+  treated as instructions. Recipients come **only** from
+  `community_users WHERE role = 'admin'`; super admins are deliberately not
+  enrolled (they keep the on-demand, unrestricted-scope `question_digest`
+  tool instead, so they're never double-served). Scoping is identical to the
+  `question_digest` admin path: `adapter.conversationsForUser(admin.id)` feeds
+  `recentQuestionClusters`, so an admin can never receive a cluster sourced
+  from a conversation outside their own membership. The DM goes through the
+  same `sendDirectMessage` path as every other proactive alert (secret
+  redaction applies), snippet count is capped at 5 and each snippet is
+  length-bounded (mirrors `question_digest`'s own 300-char slice). A quiet
+  week (zero qualifying clusters) sends nothing and leaves the freshness row
+  untouched — same "silently re-arm, no noise" convention as the disconnect/
+  usage alerts. `admin_digest_sends` stores only `(platform, platform_user_id,
+  sent_at)` — no cluster text — and is purge-coherent:
+  `forget_me`/`purge_user_data` remove an offboarded admin's row alongside
+  other admin-identity-keyed data.
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
   identity has been linked (`link_member`) to another platform identity as the
