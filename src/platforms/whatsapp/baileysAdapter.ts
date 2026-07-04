@@ -2,6 +2,7 @@ import { Boom } from '@hapi/boom';
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
+  proto,
   useMultiFileAuthState,
   type BaileysEventMap,
   type WAMessage,
@@ -13,6 +14,7 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { deleteInteractionByMessageId, updateInteractionByMessageId } from '../../storage/repository.js';
 import {
   extractText,
   isLidJid,
@@ -187,6 +189,14 @@ export class BaileysAdapter implements PlatformAdapter {
     const isDirect = remoteJid.endsWith('@s.whatsapp.net') || isLidJid(remoteJid);
     if (!isGroup && !isDirect) return; // newsletters/broadcast lists etc.
 
+    // Delete/edit honouring for archived groups (issue #103, mirrors #48):
+    // WhatsApp delivers "delete for everyone" and edits as a protocolMessage
+    // over the same messages.upsert stream, not a separate socket event —
+    // intercept it before the normal text handling below, since a
+    // revoke/edit carries no text of its own and would otherwise just be
+    // dropped by the `!text` check further down.
+    if (await this.handleProtocolMessage(msg, remoteJid, isGroup)) return;
+
     // Optional allowlist of conversations.
     if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(remoteJid)) {
       return;
@@ -229,11 +239,56 @@ export class BaileysAdapter implements PlatformAdapter {
       text,
       isDirect,
       addressedToBot: isDirect || mentioned || repliedToBot,
+      messageId: msg.key.id ?? undefined,
       timestamp: Number(msg.messageTimestamp ?? 0) * 1000,
       raw: msg,
     };
 
     await this.handler(normalised);
+  }
+
+  /** True for a group JID that's opted into ambient archiving (`WHATSAPP_ARCHIVE_GROUP_JIDS`, issue #103). */
+  private inArchiveScope(remoteJid: string, isGroup: boolean): boolean {
+    return isGroup && config.whatsapp.archiveGroupJids.includes(remoteJid);
+  }
+
+  /**
+   * Honours a "delete for everyone" / edit on a message this bot previously
+   * saw in an archived group (issue #103, mirrors Discord's #48 handling).
+   * Both arrive as a `protocolMessage` over the same `messages.upsert`
+   * stream Baileys uses for ordinary messages, keyed to the id of the
+   * message being revoked/edited. Returns true if the event was a
+   * protocol message (handled or not), so the caller can skip normal
+   * text processing either way — a revoke/edit is never itself a chat message.
+   */
+  private async handleProtocolMessage(msg: WAMessage, remoteJid: string, isGroup: boolean): Promise<boolean> {
+    const protocolMessage = msg.message?.protocolMessage;
+    const targetId = protocolMessage?.key?.id;
+    if (!protocolMessage || !targetId) return false;
+    if (!this.inArchiveScope(remoteJid, isGroup)) return true;
+
+    if (protocolMessage.type === proto.Message.ProtocolMessage.Type.REVOKE) {
+      await deleteInteractionByMessageId('whatsapp', targetId).catch((err) =>
+        logger.warn({ err, messageId: targetId }, 'Stored-message delete failed'),
+      );
+      return true;
+    }
+    // Edit-tracking is best-effort (Baileys protocol fidelity for edits
+    // varies more than revokes); delete-honouring above is the load-bearing
+    // privacy promise and always applies.
+    if (
+      protocolMessage.type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT &&
+      protocolMessage.editedMessage
+    ) {
+      const { text } = extractText({ key: msg.key, message: protocolMessage.editedMessage });
+      if (text) {
+        await updateInteractionByMessageId('whatsapp', targetId, text).catch((err) =>
+          logger.warn({ err, messageId: targetId }, 'Stored-message update failed'),
+        );
+      }
+      return true;
+    }
+    return true;
   }
 
   /**

@@ -70,6 +70,17 @@ part of the gated-mode guest guarantee for public channels — see SECURITY.md
 for the posture statement, the notice precondition, and the ready-to-pin
 community notice text.
 
+`WHATSAPP_ARCHIVE_GROUP_JIDS` (issue #103) extends the same mechanism to the
+WhatsApp Baileys path, scoped to an explicit allowlist of group JIDs rather
+than a single flag (WhatsApp groups have no "public channel" equivalent, so
+each group opts in individually once its notice is posted). The Baileys
+adapter populates `IncomingMessage.messageId` from the WhatsApp message key,
+and honours "delete for everyone" (always) and edits (best-effort — Baileys'
+protocol fidelity for edits is less reliable than for revokes) by watching
+for `protocolMessage` events in archived groups. Archiving is receive-side
+only — no new outbound/send behaviour, so it adds no new Baileys ToS/ban-risk
+surface (see SECURITY.md's Baileys section).
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
