@@ -76,6 +76,26 @@ test('SECURITY: list_roster is admin-only — members/guests never see the roste
   }
 });
 
+test('SECURITY: member-note tools are admin-only — a member can never read or write notes, including about themselves (issue #45)', () => {
+  const tools = [
+    'mcp__community__add_member_note',
+    'mcp__community__list_member_notes',
+    'mcp__community__delete_member_note',
+  ];
+  for (const t of tools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
 test('SECURITY: admins never get super-admin tools', () => {
   const tools = toolsForRole('admin');
   for (const t of SUPER_ADMIN_TOOLS) {

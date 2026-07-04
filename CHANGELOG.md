@@ -8,6 +8,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ## 2026-07-04
 
 ### Added
+- Admin-curated member context notes: `add_member_note` / `list_member_notes` / `delete_member_note` give person-scoped facts a home outside the global FAQ — admin-only, audited, deleted by `forget_me` (#45).
 - Discord server roster: join/leave events and a startup backfill persist identity metadata (never content) so admins can ask who joined, who left, and who joined but was never added as a member, via the new `list_roster` tool (#47).
 - Automated nightly redeploy: `scripts/redeploy.sh` + a systemd timer fast-forward the server to `origin/main` at 1am NZ time, with build/migrate-before-restart, health-checked rollback, and a no-op fast path (#50).
 

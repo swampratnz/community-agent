@@ -117,6 +117,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - All messages are stored for memory/audit. **Inform your community** that an
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
+- **Member notes** (`member_notes`, issue #45): admins can attach durable,
+  person-scoped context notes to *known* members (unknown identities are
+  refused). This is a deliberate, owner-approved PII surface with hard
+  boundaries: notes are **human-entered only** (the bot never auto-populates
+  one from web search or chat), **admin-read only** via `list_member_notes`
+  (never on member/guest turns, never in `knowledge_search` — the table has
+  no embedding column — never in memory recall; pinned by `SECURITY:`
+  tests), writes/deletes are **audited** (the audit row records that a note
+  was added, never its text, so a later purge actually removes the content),
+  and `forget_me`/`purge_user_data` delete all notes **about** the person.
+  The owner has explicitly accepted (issue #45) that there is **no
+  self-access path** (members cannot read notes about themselves) and that
+  admins may manually transcribe web-researched facts into a note — both are
+  scope decisions for this small, high-trust community, revisit if it grows.
 - **Server roster** (`server_roster`, issue #47): join/leave events plus a
   startup backfill persist **identity metadata for every guild member** —
   platform user id, display name, join/leave timestamps, rejoin count —
@@ -269,9 +283,10 @@ number could reach an unrelated person).
 - [ ] `whatsapp-auth/` directory is `chmod 700`, not in git.
 - [ ] Postgres is not exposed to the network.
 - [ ] Bot has minimal Discord permissions.
-- [ ] Community is informed that interactions are logged **and that server
+- [ ] Community is informed that interactions are logged, **that server
       join/leave events (identity + timestamps, no content) are recorded for
-      admin onboarding/growth views**.
+      admin onboarding/growth views, and that admins may keep private
+      context notes about members** (deletable on request via `forget_me`).
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.

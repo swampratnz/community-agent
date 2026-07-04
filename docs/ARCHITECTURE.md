@@ -115,6 +115,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
+| `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(writes audited)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -167,6 +168,20 @@ weakening it:
    gateway intent: the `GuildMembers` intent the bot already holds for role
    resolution streams these events anyway; a `GuildMember` partial is enabled
    so leaves of uncached members still fire.
+
+## Member context notes
+
+`member_notes` (issue #45) gives admins a person-scoped home for durable
+facts about a member ("runs the Chch meetup", "is the Claude Ambassador")
+that previously had nowhere to live except the **global** knowledge FAQ —
+the wrong container, since `knowledge_search` surfaces entries to every
+tier. Notes are keyed to known `community_users` identities (unknown targets
+refused, same validation pattern as the membership tools), capped at 1000
+chars, human-entered only, and readable exclusively through the admin-tier
+`list_member_notes` (content `untrusted()`-wrapped — notes are data, never
+instructions). Writes and deletes are audited without the note text;
+`forget_me`/`purge_user_data` delete the subject's notes. See SECURITY.md
+for the privacy boundary and the owner-accepted no-self-access decision.
 
 ## Abuse reporting
 

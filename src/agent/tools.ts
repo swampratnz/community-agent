@@ -6,11 +6,15 @@ import { normalizeMemberId } from '../auth/memberId.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { logger } from '../logger.js';
 import {
+  addMemberNote,
   clearAccessRequest,
   createContentReport,
   deleteKnowledge,
+  deleteMemberNote,
   demoteAdmin,
   getMemberRole,
+  listMemberNotes,
+  MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
   isKnownUser,
   listAccessRequests,
@@ -613,6 +617,84 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const addMemberNoteTool = tool(
+    'add_member_note',
+    'Attach a durable, admin-curated context note to a KNOWN community member (e.g. "runs the Chch ' +
+      'meetup", "prefers email"). Person-scoped facts belong here, never in the global knowledge FAQ. ' +
+      'Notes are human-entered only — never auto-populate one from web search or message content ' +
+      'without the admin explicitly asking to save that text. Admin only.',
+    {
+      userId: z.string().min(1).describe('Platform user id of the member the note is about'),
+      note: z
+        .string()
+        .min(1)
+        .max(MEMBER_NOTE_MAX_CHARS)
+        .describe(`The note text (max ${MEMBER_NOTE_MAX_CHARS} characters)`),
+      platform: platformArg,
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'add_member_note');
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      if ((await getMemberRole(platform, userId)) === null) {
+        return text(`Refusing: "${userId}" is not a registered community member on ${platform}.`, true);
+      }
+      // The audit row records that a note was added, never the note text —
+      // audit rows survive a purge, member_notes must not (SECURITY.md).
+      const { success, result } = await audited({
+        actionKind: 'add_member_note',
+        targetUserId: userId,
+        params: { platform, noteChars: args.note.length },
+        run: async () => {
+          const id = await addMemberNote({ platform, userId, note: args.note, createdBy: caller.userId });
+          return `note #${id} added`;
+        },
+      });
+      return text(success ? `Saved note for ${userId} (${result}).` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const listMemberNotesTool = tool(
+    'list_member_notes',
+    "Show the admin-curated context notes kept about one member. Notes are admin-only reading — they never appear on member turns, in knowledge_search, or in memory recall. Admin only.",
+    { userId: z.string().min(1).describe('Platform user id of the member'), platform: platformArg },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_member_notes');
+      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const notes = await listMemberNotes(platform, userId);
+      if (notes.length === 0) return text(`No notes for ${userId} on ${platform}.`);
+      return text(
+        untrusted(
+          `Notes for ${userId}`,
+          notes
+            .map(
+              (n) => `#${n.id} [${n.createdAt.toISOString()} by ${n.createdBy}] ${n.note}`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const deleteMemberNoteTool = tool(
+    'delete_member_note',
+    'Delete one member context note by id (from list_member_notes). Audited. Admin only.',
+    { id: z.number().describe('Note id') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'delete_member_note');
+      const { success, result } = await audited({
+        actionKind: 'delete_member_note',
+        params: { id: args.id },
+        run: async () => {
+          const deleted = await deleteMemberNote(args.id);
+          if (!deleted) throw new Error(`No note with id ${args.id}.`);
+          return 'deleted';
+        },
+      });
+      return text(success ? `Deleted note #${args.id}.` : `Failed: ${result}`, !success);
+    },
+  );
+
   const listRosterTool = tool(
     'list_roster',
     'Show the server roster kept from join/leave events: recent joiners, people who joined but were ' +
@@ -1015,6 +1097,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,
+      addMemberNoteTool,
+      listMemberNotesTool,
+      deleteMemberNoteTool,
       listRosterTool,
       questionDigest,
       moderationHistory,

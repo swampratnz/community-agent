@@ -531,7 +531,8 @@ export async function countRepliesToUser(
 /**
  * Delete a user's stored data: their inbound messages, the bot's replies to
  * them, knowledge entries sourced from them, content reports *they
- * submitted* as reporter, and their server_roster row. Backs both the
+ * submitted* as reporter, their server_roster row, and admin notes kept
+ * *about* them (member_notes). Backs both the
  * member-facing forget_me and the super-admin purge_user_data. Membership,
  * audit rows, and reports where the user is only the *target* (not the
  * reporter) are intentionally kept (accountability data — documented in
@@ -555,7 +556,11 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
     `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
     [platform, userId],
   );
-  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0);
+  const { rowCount: notes } = await pool.query(
+    `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0) + (notes ?? 0);
 }
 
 /**
@@ -807,6 +812,60 @@ export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
 /** Clear a resolved access request (e.g. after add_member succeeds for that user). */
 export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
   await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}
+
+// --- Member notes (admin-curated person-scoped context, issue #45) -----------
+
+export const MEMBER_NOTE_MAX_CHARS = 1000;
+
+export interface MemberNote {
+  id: number;
+  note: string;
+  createdBy: string;
+  createdAt: Date;
+}
+
+/**
+ * Attach an admin-authored note to a member. Content is capped server-side;
+ * target validation (the member must exist in community_users) lives in the
+ * tool layer so the refusal message can be user-facing. Never in
+ * knowledge_search or memory recall — this table has no embedding column by
+ * design and is only read through listMemberNotes.
+ */
+export async function addMemberNote(input: {
+  platform: Platform;
+  userId: string;
+  note: string;
+  createdBy: string;
+}): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO member_notes (platform, user_id, note, created_by)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    [input.platform, input.userId, input.note.slice(0, MEMBER_NOTE_MAX_CHARS), input.createdBy],
+  );
+  return Number(rows[0].id);
+}
+
+export async function listMemberNotes(platform: Platform, userId: string): Promise<MemberNote[]> {
+  const { rows } = await pool.query(
+    `SELECT id, note, created_by, created_at
+       FROM member_notes
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY created_at DESC`,
+    [platform, userId],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    note: r.note,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+  }));
+}
+
+/** Delete one note by id. Returns false if no row matched. */
+export async function deleteMemberNote(id: number): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM member_notes WHERE id = $1`, [id]);
+  return (rowCount ?? 0) > 0;
 }
 
 // --- Server roster (join/leave persistence) ----------------------------------

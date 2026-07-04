@@ -41,6 +41,10 @@ const {
   listRoster,
   rosterCounts,
   upsertMember,
+  addMemberNote,
+  listMemberNotes,
+  deleteMemberNote,
+  MEMBER_NOTE_MAX_CHARS,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -789,6 +793,81 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
 
   await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
 });
+
+test(
+  'repository: member notes CRUD — add (capped), list newest-first, delete (issue #45)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-notes-user`;
+    const admin = `${RUN}-notes-admin`;
+
+    const id1 = await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: 'runs the Christchurch meetup',
+      createdBy: admin,
+    });
+    const id2 = await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: 'x'.repeat(MEMBER_NOTE_MAX_CHARS + 500),
+      createdBy: admin,
+    });
+
+    const notes = await listMemberNotes('discord', userId);
+    assert.equal(notes.length, 2);
+    assert.equal(notes[0].id, id2, 'newest note first');
+    assert.equal(
+      notes[0].note.length,
+      MEMBER_NOTE_MAX_CHARS,
+      'over-long note text is capped server-side, not trusted from the caller',
+    );
+    assert.equal(notes[1].note, 'runs the Christchurch meetup');
+    assert.equal(notes[1].createdBy, admin, 'authorship is recorded');
+
+    assert.equal(await deleteMemberNote(id1), true);
+    assert.equal(await deleteMemberNote(id1), false, 'deleting a nonexistent id returns false');
+    assert.equal((await listMemberNotes('discord', userId)).length, 1);
+
+    await pool.query(`DELETE FROM member_notes WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'SECURITY: repository: member notes never land in member-reachable tables, and purgeUserData removes them (issue #45)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-notes-sec-user`;
+    const marker = `${RUN}-note-marker-must-not-leak`;
+
+    await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: marker,
+      createdBy: `${RUN}-notes-sec-admin`,
+    });
+
+    // Notes must be unreachable through every member-facing read path. Those
+    // paths only query `knowledge` (knowledge_search) and `interactions`
+    // (remember_search / recall), so pin that the note text exists in
+    // neither table — the member_notes table has no embedding column and no
+    // other reader than listMemberNotes.
+    const { rows: inKnowledge } = await pool.query(`SELECT 1 FROM knowledge WHERE content LIKE $1`, [
+      `%${marker}%`,
+    ]);
+    assert.equal(inKnowledge.length, 0, 'note text never reaches the knowledge table (knowledge_search)');
+    const { rows: inInteractions } = await pool.query(`SELECT 1 FROM interactions WHERE content LIKE $1`, [
+      `%${marker}%`,
+    ]);
+    assert.equal(inInteractions.length, 0, 'note text never reaches interactions (memory recall)');
+
+    // The subject's purge (forget_me / purge_user_data) removes notes about them.
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the note');
+    const remaining = await listMemberNotes('discord', userId);
+    assert.equal(remaining.length, 0, 'notes about the purged member are gone');
+  },
+);
 
 test(
   'repository: roster join/leave/rejoin lifecycle and idempotent backfill upsert (issue #47)',
