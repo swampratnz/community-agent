@@ -57,6 +57,13 @@ ownership rules:
   (`pipeline-pr-autofix.yml`) may push fixes to an existing build-worker PR
   branch when its CI fails — bounded to 2 attempts, same-repo bot PRs only,
   then it escalates `needs-human`. It never opens or merges PRs.
+- The **build-retry loop** (`pipeline-build-retry.yml`) auto-re-runs a build
+  worker run that failed to produce a PR, via `gh run rerun`, bounded by
+  `run_attempt` (≤3 total attempts). The build worker escalates `needs-human`
+  only on its final attempt, so transient/infra failures recover unattended and
+  a human is pinged only for persistent ones — don't re-add manual re-trigger
+  steps for build failures. (A GITHUB_TOKEN label toggle can't re-trigger the
+  build worker, which is why this uses rerun, not a label change.)
 - The build worker runs the **full CI gate** (typecheck, lint, format:check,
   migrate, test against a real pgvector Postgres, build, test:security) BEFORE
   opening a PR, so "green locally" matches CI. Keep it that way when editing
