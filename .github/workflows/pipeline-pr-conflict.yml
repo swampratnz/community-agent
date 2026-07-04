@@ -78,11 +78,16 @@ jobs:
             exit 0
           fi
 
-          # Eligible = open, same-repo (not a fork), bot-authored, and NOT
-          # already escalated to needs-human (that label is the one-attempt stop).
+          # Eligible = open, same-repo (not a fork), bot-authored, a BUILD-WORKER
+          # PR (its body references `Closes #<issue>` — the build worker's
+          # contract, the same signal pipeline-build.yml's own verify step keys
+          # on), and NOT already escalated to needs-human (that label is the
+          # one-attempt stop). The `Closes #` test scopes this to pipeline output
+          # so an unrelated same-repo bot PR (e.g. a Dependabot bump) is not
+          # given an automated main-merge + full-gate push.
           candidates="$(gh pr list --repo "${{ github.repository }}" --state open --limit 100 \
-            --json number,headRefName,author,isCrossRepository,labels \
-            --jq '[.[] | select((.isCrossRepository | not) and (.author.is_bot == true) and ([.labels[].name] | index("needs-human") | not))]')"
+            --json number,headRefName,author,isCrossRepository,labels,body \
+            --jq '[.[] | select((.isCrossRepository | not) and (.author.is_bot == true) and (((.body // "") | test("[Cc]loses #[0-9]+")) and ([.labels[].name] | index("needs-human") | not)))]')"
 
           count="$(jq 'length' <<<"$candidates")"
           echo "Found ${count} candidate bot PR(s); checking mergeability…"
@@ -207,8 +212,10 @@ jobs:
                `git fetch origin main` then `git merge origin/main`. Resolve
                every conflict so BOTH the PR's intent and the changes now on
                `main` are preserved — do not clobber either side; when they
-               truly overlap, integrate them. Then `git add` the resolved files
-               and complete the merge commit.
+               truly overlap, integrate them. Edit the conflicted files
+               directly (or use `git restore --ours`/`--theirs <path>` to take
+               one whole side); `git checkout` is intentionally NOT available.
+               Then `git add` the resolved files and complete the merge commit.
             3. A pgvector Postgres is available at DATABASE_URL, so run the FULL
                gate and make EVERY check green before pushing:
                npm run typecheck && npm run lint && npm run format:check &&
@@ -225,15 +232,23 @@ jobs:
             later step detects "no new commit" and escalates `needs-human`.
           # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml):
           #   * `gh` is READ-only (understand the PR) — no merge/close/create.
-          #   * `git` includes merge/checkout for conflict resolution but
-          #     EXCLUDES reset/remote/blanket push. The ONLY push tool is the
-          #     exact `Bash(git push origin HEAD)` (no `:*`): the agent may run
-          #     only that literal command, so it can push ONLY this branch,
-          #     fast-forward, never main and never force.
+          #   * `git` includes `merge` for bringing main in, but EXCLUDES
+          #     reset/remote/blanket push AND, deliberately, `checkout`/`branch`/
+          #     `switch`. The ONLY push tool is the exact `Bash(git push origin
+          #     HEAD)` (no `:*`): the agent may run only that literal command.
+          #     Crucially, `git push origin HEAD` pushes HEAD to a remote branch
+          #     named after the CURRENT LOCAL branch — so if the agent could
+          #     rename its branch to `main` (via `git checkout -B main` or `git
+          #     branch -m main`), that exact command would become `git push
+          #     origin main`. Withholding checkout/branch/switch keeps the local
+          #     branch pinned to the PR's own branch (checked out by the job), so
+          #     the push can ONLY reach the PR branch — never main, never force.
+          #     Conflict resolution therefore uses Edit/Write + `git restore
+          #     --ours/--theirs` + `git add`, not branch-switching.
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge:*),Bash(git checkout:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify the conflict was resolved (else escalate loudly)
         if: always()
