@@ -228,6 +228,13 @@ The debounce/payload logic lives in `src/healthState.ts`, deliberately free
 of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`
 is the thin I/O wrapper around it).
 
+Per-request DB failures degrade rather than alert: a memory-recall or
+session-lookup failure mid-turn falls back (no memory context / fresh
+session) and the router's pre-send backstop guarantees the member still gets
+a reply (issue #52). That degradation is per-request only — a *persistent*
+DB outage still fails `healthcheck()` at startup and flips `db: false` on
+`/healthz`, so it is never masked from monitoring.
+
 ## Usage & shared Max-pool alerting
 
 The bot authenticates against a Claude **subscription** (see SECURITY.md

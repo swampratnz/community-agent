@@ -132,15 +132,30 @@ export async function searchMemory(
   }
   params.push(topK);
 
-  const { rows } = await pool.query(
-    `SELECT content, user_name, role, direction, created_at,
+  let rows: Array<{
+    content: string;
+    user_name: string | null;
+    role: string;
+    direction: string;
+    created_at: Date;
+    similarity: unknown;
+  }>;
+  try {
+    ({ rows } = await pool.query(
+      `SELECT content, user_name, role, direction, created_at,
             1 - (embedding <=> $1) AS similarity
        FROM interactions
       WHERE ${filters.join(' AND ')}
       ORDER BY embedding <=> $1
       LIMIT $${params.length}`,
-    params,
-  );
+      params,
+    ));
+  } catch (err) {
+    // A transient DB failure must degrade to "no relevant memories", not kill
+    // the whole turn (issue #52) — same treatment as the embed() catch above.
+    logger.warn({ err }, 'Memory search query failed; proceeding without memory context');
+    return [];
+  }
 
   return rows.map((r) => ({
     content: r.content,
@@ -181,11 +196,19 @@ export async function getClaudeSession(
   platform: Platform,
   conversationId: string,
 ): Promise<StoredSession | null> {
-  const { rows } = await pool.query(
-    `SELECT claude_session_id, turn_count, updated_at
+  let rows: Array<{ claude_session_id: string | null; turn_count: unknown; updated_at: Date }>;
+  try {
+    ({ rows } = await pool.query(
+      `SELECT claude_session_id, turn_count, updated_at
        FROM sessions WHERE platform = $1 AND conversation_id = $2`,
-    [platform, conversationId],
-  );
+      [platform, conversationId],
+    ));
+  } catch (err) {
+    // Degrade to "no stored session" so the turn starts fresh instead of
+    // dying — runAgentTurn already treats null as start-fresh (issue #52).
+    logger.warn({ err }, 'Session lookup failed; starting a fresh session');
+    return null;
+  }
   const row = rows[0];
   if (!row?.claude_session_id) return null;
   return {

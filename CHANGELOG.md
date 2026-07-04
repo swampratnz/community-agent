@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-04
+
+### Fixed
+- A database hiccup during memory recall or session lookup no longer makes the bot go silent — the turn degrades (answers without memory context / starts a fresh session) and a router backstop guarantees the member always gets a reply (#52).
+
 ## 2026-07-03
 
 ### Added

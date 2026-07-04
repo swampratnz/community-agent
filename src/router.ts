@@ -3,7 +3,7 @@ import { logger } from './logger.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
-import { runAgentTurn } from './agent/core.js';
+import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
 import {
   cancelPendingAction,
   classifyConfirmReply,
@@ -250,7 +250,24 @@ export class Router {
     const typingTimer = setInterval(fireTypingIndicator, this.typingRefireMs).unref();
 
     try {
-      const reply = await this.runTurn(caller, msg.text, adapter);
+      // Backstop (issue #52): any unexpected failure between recall and the
+      // reply-send must degrade to the same fallback text execTurn already
+      // uses — the member always gets *some* reply, never silence. It wraps
+      // ONLY the pre-send path: a failure during or after the send is not
+      // retried, so at most one outbound reply ever goes out. The error is
+      // still logged at error level, and a *persistent* DB outage still
+      // trips /healthz + the startup healthcheck — this degradation is
+      // per-request only.
+      let reply: AgentReply;
+      try {
+        reply = await this.runTurn(caller, msg.text, adapter);
+      } catch (err) {
+        logger.error(
+          { err, conversationId: msg.conversationId },
+          'Turn failed before send; sending fallback reply',
+        );
+        reply = { text: INTERNAL_ERROR_REPLY };
+      }
 
       await this.send(adapter, msg.conversationId, reply.text);
 
