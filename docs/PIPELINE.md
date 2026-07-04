@@ -40,10 +40,17 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
 ## Ownership rules (enforced by every loop; also in CLAUDE.md)
 
 - **Only the build loop** writes code / opens PRs. PR-review comments only;
-  research & adversarial touch issues only (no files ⇒ no git conflicts).
+  research & adversarial touch issues only (no files ⇒ no git conflicts). One
+  exception: the **autofix loop** (`pipeline-pr-autofix.yml`) may push fixes to
+  an existing build-worker PR branch when its CI fails — same-repo bot PRs only,
+  capped at 2 attempts, then it escalates `needs-human`. It never opens or
+  merges PRs. Do not misflag its pushes as an ownership violation.
 - **No loop merges PRs.** A human merges — especially important for this
   security-sensitive bot.
-- **WIP caps:** ≤3 open `status:draft`; exactly **≤1** `status:building`.
+- **WIP caps:** ≤3 open `status:draft`. Builds run per-issue-parallel (the
+  build worker's `concurrency` is keyed by issue number), so multiple
+  `status:building` issues are allowed; keep the number in flight small (≈2),
+  since every run draws on the shared Max pool.
 - **Label transitions are the only cross-session messaging.** When blocked or
   genuinely ambiguous, add `needs-human` and stop rather than guess.
 - **Everything traces to an issue number.**

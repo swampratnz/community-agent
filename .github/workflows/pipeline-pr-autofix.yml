@@ -147,16 +147,22 @@ jobs:
                DATABASE_URL, so run the full gate and make EVERY check green:
                npm run typecheck && npm run lint && npm run format:check &&
                npm run migrate && npm test && npm run build && npm run test:security
-            3. Commit and push to THIS SAME branch. Do NOT open a new PR and do NOT
-               merge. If the fix needs a change under `.github/workflows/` (you
-               cannot push those — the token lacks the `workflows` scope) or the
-               failure is not something you can safely fix, do NOT thrash: add the
-               `needs-human` label to PR #${{ steps.pr.outputs.number }} and
-               comment what a human needs to do.
+            3. Commit and push to THIS SAME branch with a normal fast-forward
+               push — NEVER force-push (the branch may carry commits you did not
+               make). Do NOT open a new PR and do NOT merge. If the fix needs a
+               change under `.github/workflows/` (you cannot push those — the
+               token lacks the `workflows` scope) or the failure is not something
+               you can safely fix, then just STOP without pushing: a later step
+               detects "no new commit" and escalates `needs-human` for you.
+          # `gh` is restricted to READ subcommands (diagnose the failure); the
+          # agent's only write is `git push` to this branch. Merging, closing,
+          # labelling and commenting are done by the deterministic shell steps
+          # (with GITHUB_TOKEN), not the model — so "never merges"/"escalate on
+          # failure" are structurally enforced, not just asked for in the prompt.
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a fix was pushed (else escalate loudly)
         if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
