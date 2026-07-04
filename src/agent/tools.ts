@@ -9,6 +9,7 @@ import {
   addMemberNote,
   clearAccessRequest,
   createContentReport,
+  createSuggestion,
   deleteKnowledge,
   deleteMemberNote,
   demoteAdmin,
@@ -21,6 +22,7 @@ import {
   listKnowledge,
   listReports,
   listRoster,
+  listSuggestions,
   MODERATION_ACTION_KINDS,
   purgeUserData,
   recentAuditEntries,
@@ -30,8 +32,11 @@ import {
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
+  resolveSuggestion,
   rosterCounts,
   saveKnowledge,
+  SUGGESTION_MAX_CHARS,
+  SUGGESTION_RATE_LIMIT_PER_DAY,
   searchKnowledge,
   searchMemory,
   updateKnowledge,
@@ -342,6 +347,39 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const suggestImprovement = tool(
+    'suggest_improvement',
+    'Record a member\'s suggestion for how this assistant/community bot could be improved, so the human ' +
+      'maintainers see it. Capture only: a human reviews these and decides — never promise the change ' +
+      'will be built. Members cannot read the queue back; admins triage it with list_suggestions.',
+    {
+      content: z
+        .string()
+        .min(1)
+        .max(SUGGESTION_MAX_CHARS)
+        .describe(`The suggestion, in the member's own words (max ${SUGGESTION_MAX_CHARS} characters)`),
+    },
+    async (args) => {
+      const created = await createSuggestion({
+        platform: caller.platform,
+        userId: caller.userId,
+        displayName: caller.userName,
+        content: args.content,
+      });
+      if (!created) {
+        return text(
+          `You've already filed ${SUGGESTION_RATE_LIMIT_PER_DAY} suggestions in the last 24 hours. ` +
+            'Please wait before filing another.',
+          true,
+        );
+      }
+      return text(
+        `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
+          'but no promises on if/when it gets built.',
+      );
+    },
+  );
+
   // --- Admin tools (scoped to the admin's own conversations) ------------------
 
   const whatsNew = tool(
@@ -615,6 +653,59 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       );
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const listSuggestionsTool = tool(
+    'list_suggestions',
+    'List member-submitted bot-improvement suggestions for triage. The bridge to the pipeline stays ' +
+      'human: file anything worthwhile as a GitHub proposal yourself — the bot has no repo access. Admin only.',
+    {
+      status: z
+        .enum(['new', 'reviewed', 'declined', 'done'])
+        .optional()
+        .describe('Filter by status (default: all statuses)'),
+      limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_suggestions');
+      const rows = await listSuggestions(args.status, args.limit ?? 50);
+      if (rows.length === 0) return text('No suggestions found.');
+      return text(
+        untrusted(
+          'Suggestions',
+          rows
+            .map(
+              (s) =>
+                `#${s.id} [${s.status}] ${s.platform} ${s.displayName ?? s.userId} (${s.createdAt.toISOString()}): ${s.content}`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const resolveSuggestionTool = tool(
+    'resolve_suggestion',
+    'Mark a suggestion as reviewed, declined, or done once triaged. Non-destructive status change ' +
+      '(no CONFIRM needed), audited. Admin only.',
+    {
+      id: z.number().describe('Suggestion id (from list_suggestions)'),
+      status: z.enum(['reviewed', 'declined', 'done']).describe('New status'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'resolve_suggestion');
+      const { success, result } = await audited({
+        actionKind: 'resolve_suggestion',
+        params: { id: args.id, status: args.status },
+        run: async () => {
+          const done = await resolveSuggestion(args.id, args.status, caller.userId);
+          if (!done) throw new Error(`No suggestion with id ${args.id}.`);
+          return `marked ${args.status}`;
+        },
+      });
+      return text(success ? `Suggestion #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
+    },
   );
 
   const addMemberNoteTool = tool(
@@ -1088,6 +1179,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       rememberSearch,
       forgetMe,
       reportContent,
+      suggestImprovement,
       whatsNew,
       userHistory,
       moderate,
@@ -1105,6 +1197,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       moderationHistory,
       listReportsTool,
       resolveReportTool,
+      listSuggestionsTool,
+      resolveSuggestionTool,
       addMember,
       removeMemberTool,
       grantAdmin,

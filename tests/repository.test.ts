@@ -45,6 +45,11 @@ const {
   listMemberNotes,
   deleteMemberNote,
   MEMBER_NOTE_MAX_CHARS,
+  createSuggestion,
+  listSuggestions,
+  resolveSuggestion,
+  SUGGESTION_RATE_LIMIT_PER_DAY,
+  SUGGESTION_MAX_CHARS,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -793,6 +798,87 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
 
   await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
 });
+
+test(
+  'repository: createSuggestion enforces a DB-backed rolling-24h cap per user, robust to a simulated restart (issue #46)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-suggester`;
+
+    // Seed cap-many suggestions via direct SQL — as if written by a previous
+    // process instance — so an in-memory counter would wrongly admit the next
+    // one, but the DB-backed COUNT(*) refuses it (same pattern as the
+    // content_reports cap test).
+    for (let i = 0; i < SUGGESTION_RATE_LIMIT_PER_DAY; i++) {
+      await pool.query(
+        `INSERT INTO suggestions (platform, user_id, content) VALUES ($1,$2,$3)`,
+        ['discord', userId, `prior-process suggestion ${i}`],
+      );
+    }
+
+    const rejected = await createSuggestion({
+      platform: 'discord',
+      userId,
+      content: 'the one over the cap — must be refused',
+    });
+    assert.equal(rejected, null, 'the (cap+1)th suggestion in 24h is refused');
+
+    const countAfter = await pool.query(`SELECT count(*) AS n FROM suggestions WHERE user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(
+      Number(countAfter.rows[0].n),
+      SUGGESTION_RATE_LIMIT_PER_DAY,
+      'no row is inserted for a refused suggestion',
+    );
+
+    // Age one out of the window — a slot frees up.
+    await pool.query(
+      `UPDATE suggestions SET created_at = now() - interval '25 hours'
+        WHERE id = (SELECT id FROM suggestions WHERE user_id = $1 ORDER BY id LIMIT 1)`,
+      [userId],
+    );
+    const accepted = await createSuggestion({
+      platform: 'discord',
+      userId,
+      displayName: 'Suggester',
+      content: 'x'.repeat(SUGGESTION_MAX_CHARS + 200),
+    });
+    assert.ok(accepted, 'accepted once an old suggestion ages out of the rolling window');
+
+    // Another user's cap is independent.
+    const other = await createSuggestion({
+      platform: 'discord',
+      userId: `${RUN}-suggester-other`,
+      content: 'a different user has their own cap',
+    });
+    assert.ok(other, 'the cap is per-user, not global');
+
+    const rows = await listSuggestions('new', 200);
+    const stored = rows.find((s) => s.id === accepted.id);
+    assert.ok(stored, 'the accepted suggestion is listed');
+    assert.equal(stored.content.length, SUGGESTION_MAX_CHARS, 'over-long content is capped server-side');
+
+    // Triage transitions and the status filter.
+    assert.equal(await resolveSuggestion(accepted.id, 'done', `${RUN}-resolver`), true);
+    const doneRows = await listSuggestions('done', 200);
+    assert.ok(
+      doneRows.some((s) => s.id === accepted.id && s.reviewedBy === `${RUN}-resolver`),
+      'resolution records status and reviewer',
+    );
+    const newRows = await listSuggestions('new', 200);
+    assert.ok(!newRows.some((s) => s.id === accepted.id), 'a resolved suggestion leaves the new queue');
+    assert.equal(await resolveSuggestion(999_999_999, 'done', 'x'), false, 'unknown id returns false');
+
+    // forget_me / purge_user_data removes the user's suggestions.
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes suggestions');
+    const afterPurge = await pool.query(`SELECT 1 FROM suggestions WHERE user_id = $1`, [userId]);
+    assert.equal(afterPurge.rows.length, 0, "the user's suggestions are gone after purge");
+
+    await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [`${RUN}-suggester-other`]);
+  },
+);
 
 test(
   'repository: member notes CRUD — add (capped), list newest-first, delete (issue #45)',

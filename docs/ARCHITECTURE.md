@@ -110,6 +110,8 @@ and every privileged action is audited and alerted to super admins by DM.
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
+| `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `list_suggestions` / `resolve_suggestion` (triage the idea queue) | ❌ | ❌ | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
@@ -168,6 +170,30 @@ weakening it:
    gateway intent: the `GuildMembers` intent the bot already holds for role
    resolution streams these events anyway; a `GuildMember` partial is enabled
    so leaves of uncached members still fire.
+
+## Suggestion capture
+
+`suggest_improvement` (issue #46) closes the "the suggestion died in chat"
+gap: when a member proposes something the bot should do, the idea now lands
+in a triageable `suggestions` queue instead of evaporating (or being
+shoehorned into a knowledge note). Same pull-queue shape as
+`access_requests` and `content_reports`:
+
+1. A member calls `suggest_improvement(content)` — capped at 3 per rolling
+   24h with the same DB-backed count-inside-insert pattern as
+   `report_content`, and capped at 1000 chars server-side. The bot confirms
+   capture and sets expectations ("a human reviews these; no promises").
+   Members have **no read path**: the queue is write-only at member tier.
+2. Admins triage with `list_suggestions` (content `untrusted()`-wrapped — a
+   suggestion is member-authored text aimed at an admin turn, i.e. an
+   injection vector) and `resolve_suggestion` (reviewed/declined/done,
+   audited, non-destructive so no CONFIRM).
+3. **The bridge to the pipeline stays human**: an admin files anything
+   worthwhile as a GitHub `proposal` issue themselves. The bot never touches
+   the repo — untrusted chat must never be able to write into the issue
+   queue a build worker implements from (see SECURITY.md).
+
+`forget_me`/`purge_user_data` delete the user's suggestions.
 
 ## Member context notes
 

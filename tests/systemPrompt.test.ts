@@ -74,6 +74,13 @@ test('guidelines cover knowledge provenance: attribution and scoped general-know
   assert.match(prompt, /Do NOT do this\s+for general Claude\/API\/product questions/);
 });
 
+test('guidelines offer suggest_improvement for feature ideas without promising delivery (issue #46)', () => {
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets' });
+  assert.match(prompt, /suggest_improvement/);
+  assert.match(prompt, /never\s+promise or imply the change will be built/);
+  assert.match(prompt, /no repo or issue-tracker access/);
+});
+
 test('memory block is capped per entry', () => {
   const rendered = renderMemoryContext([hit('x'.repeat(5000))]);
   assert.ok(rendered.length < 1000, 'long memories must be truncated');

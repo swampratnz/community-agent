@@ -117,6 +117,14 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - All messages are stored for memory/audit. **Inform your community** that an
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
+- **Suggestions** (`suggestions`, issue #46): member-authored improvement
+  ideas for the bot. No new data class (members' messages are already
+  stored; guests, whose content is never stored in gated mode, have no
+  access to the tool), write-only at member tier with a DB-backed 3/24h
+  cap, admin-only reads wrapped as untrusted data, purged with the user.
+  The pipeline bridge stays human — the bot has **no** GitHub access, so an
+  injected "suggestion" can never become a repo issue a build worker acts
+  on without an admin consciously filing it.
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard

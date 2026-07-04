@@ -531,8 +531,8 @@ export async function countRepliesToUser(
 /**
  * Delete a user's stored data: their inbound messages, the bot's replies to
  * them, knowledge entries sourced from them, content reports *they
- * submitted* as reporter, their server_roster row, and admin notes kept
- * *about* them (member_notes). Backs both the
+ * submitted* as reporter, their server_roster row, admin notes kept *about*
+ * them (member_notes), and suggestions they filed. Backs both the
  * member-facing forget_me and the super-admin purge_user_data. Membership,
  * audit rows, and reports where the user is only the *target* (not the
  * reporter) are intentionally kept (accountability data — documented in
@@ -560,7 +560,13 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
     `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
     [platform, userId],
   );
-  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0) + (notes ?? 0);
+  const { rowCount: suggestions } = await pool.query(
+    `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  return (
+    (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0) + (notes ?? 0) + (suggestions ?? 0)
+  );
 }
 
 /**
@@ -812,6 +818,104 @@ export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
 /** Clear a resolved access request (e.g. after add_member succeeds for that user). */
 export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
   await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}
+
+// --- Suggestions (member-submitted bot-improvement queue, issue #46) ---------
+
+/** Per-user cap on new suggestions within a rolling 24h window (anti-spam on the admin queue). */
+export const SUGGESTION_RATE_LIMIT_PER_DAY = 3;
+export const SUGGESTION_MAX_CHARS = 1000;
+
+export type SuggestionStatus = 'new' | 'reviewed' | 'declined' | 'done';
+
+export interface Suggestion {
+  id: number;
+  platform: Platform;
+  userId: string;
+  displayName: string | null;
+  content: string;
+  status: SuggestionStatus;
+  createdAt: Date;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+}
+
+/**
+ * Record a member's suggestion, enforcing a DB-backed rolling-24h cap per
+ * user (COUNT(*) inside the insert, same restart-proof pattern as
+ * createContentReport — never an in-memory or model-supplied counter).
+ * Returns null when the caller is at/over the cap; the tool layer turns
+ * that into a polite refusal.
+ */
+export async function createSuggestion(input: {
+  platform: Platform;
+  userId: string;
+  displayName?: string;
+  content: string;
+}): Promise<{ id: number } | null> {
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM suggestions
+        WHERE platform = $1 AND user_id = $2
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO suggestions (platform, user_id, display_name, content)
+     SELECT $1, $2, $3, $4
+      WHERE (SELECT n FROM recent) < $5
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      input.displayName ?? null,
+      input.content.slice(0, SUGGESTION_MAX_CHARS),
+      SUGGESTION_RATE_LIMIT_PER_DAY,
+    ],
+  );
+  return rows[0] ? { id: Number(rows[0].id) } : null;
+}
+
+/** Admin-tier read of the suggestion queue (there is deliberately no member read path). */
+export async function listSuggestions(status?: SuggestionStatus, limit = 50): Promise<Suggestion[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+  const params: unknown[] = [];
+  let where = '';
+  if (status) {
+    params.push(status);
+    where = `WHERE status = $${params.length}`;
+  }
+  params.push(clampedLimit);
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, display_name, content, status, created_at, reviewed_by, reviewed_at
+       FROM suggestions
+       ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    displayName: r.display_name,
+    content: r.content,
+    status: r.status as SuggestionStatus,
+    createdAt: r.created_at,
+    reviewedBy: r.reviewed_by,
+    reviewedAt: r.reviewed_at,
+  }));
+}
+
+/** Flip a suggestion's status once triaged. Returns false if no row matched. */
+export async function resolveSuggestion(
+  id: number,
+  status: Exclude<SuggestionStatus, 'new'>,
+  reviewedBy: string,
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE suggestions SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1`,
+    [id, status, reviewedBy],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 // --- Member notes (admin-curated person-scoped context, issue #45) -----------

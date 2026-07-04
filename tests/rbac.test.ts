@@ -76,6 +76,26 @@ test('SECURITY: list_roster is admin-only — members/guests never see the roste
   }
 });
 
+test('SECURITY: suggest_improvement is write-only at member tier — the suggestion queue is only readable by admin+ (issue #46)', () => {
+  const writeTool = 'mcp__community__suggest_improvement';
+  const readTools = ['mcp__community__list_suggestions', 'mcp__community__resolve_suggestion'];
+
+  assert.ok(MEMBER_TOOLS.includes(writeTool), 'suggest_improvement must be in MEMBER_TOOLS');
+  for (const t of readTools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of readTools) {
+      assert.ok(!surface.includes(t), `${role} must not read any suggestion (theirs or others') via ${t}`);
+    }
+  }
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(writeTool), `${role} must reach suggest_improvement`);
+  }
+});
+
 test('SECURITY: member-note tools are admin-only — a member can never read or write notes, including about themselves (issue #45)', () => {
   const tools = [
     'mcp__community__add_member_note',
