@@ -108,6 +108,12 @@ jobs:
       # new migration of its own (idempotent).
       - name: Migrate base schema (deterministic — do not leave to the agent)
         if: env.HAS_TOKEN == 'true'
+        env:
+          # config.ts (loaded by migrate) requires CLAUDE_CODE_OAUTH_TOKEN, but
+          # the job env omits it (the action injects the real one). migrate
+          # never calls Claude, so a dummy satisfies the zod schema — matching
+          # ci.yml's build job.
+          CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
         run: |
           npm ci
           npm run migrate

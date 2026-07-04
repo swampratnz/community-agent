@@ -149,6 +149,9 @@ jobs:
           DISCORD_BOT_TOKEN: ci-dummy-token
           DISCORD_GUILD_ID: ci-dummy-guild
           WHATSAPP_PROVIDER: disabled
+          # migrate loads config.ts which requires this; migrate never calls
+          # Claude, so a dummy satisfies the schema (see pipeline-build.yml).
+          CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
         run: |
           npm ci
           npm run migrate
