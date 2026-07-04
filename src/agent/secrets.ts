@@ -12,5 +12,6 @@ export function runtimeSecrets(): string[] {
     config.db.url,
     config.whatsapp.cloud.accessToken ?? '',
     config.whatsapp.cloud.verifyToken ?? '',
+    config.whatsapp.cloud.appSecret ?? '',
   ];
 }
