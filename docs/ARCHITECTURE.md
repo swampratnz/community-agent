@@ -228,6 +228,21 @@ If this becomes a problem: cap session length (start fresh after N turns), or
 move to the SDK's streaming-input mode with a persistent process per busy
 conversation.
 
+**Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
+acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
+exact matches — see `src/ackClassifier.ts`) skips the agent turn entirely and
+gets one static reply via `send()` instead, avoiding a wasted `query()` spawn
+for a message with nothing for the model to act on. It runs as a router-level
+classifier (same shape as `classifyConfirmReply`), exact-match only so a
+message that merely starts or ends with an ack word ("thanks but...") always
+still reaches the agent, and it's routed through the same per-conversation
+chain as a real turn so it can never be delivered ahead of one already in
+flight. The message is still recorded inbound as normal; because no outbound
+`recordInteraction` is written for the canned reply (only `respond()` writes
+one), ack replies are not counted against `dailyReplyLimitPerUser` — an ack
+isn't a real answer, so it doesn't draw down the budget. Off by default; an
+operator opts in once the canned reply tone fits their community.
+
 ## Health & monitoring
 
 `Restart=always` (`deploy/community-agent.service`) and the startup
