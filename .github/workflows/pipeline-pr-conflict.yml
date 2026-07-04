@@ -1,0 +1,254 @@
+name: Pipeline PR conflict resolver
+
+# Event-driven MERGE-CONFLICT loop: when `main` advances, an open build-worker
+# PR can flip from mergeable to CONFLICTING. GitHub emits NO webhook for that
+# transition (and `mergeable` is computed asynchronously, so it isn't even known
+# at push time), so we trigger on every push to `main`, discover which same-repo
+# bot PRs have become conflicting, and have Claude merge `main` into each branch,
+# resolve the conflicts, re-run the full gate, and push — so a conflicting PR
+# gets un-stuck without a human doing the merge by hand.
+#
+# Guardrails (mirrors pipeline-pr-autofix.yml — this spends the shared Max pool
+# and pushes code, so they matter):
+#   * Same-repo, bot-authored PRs only. workflow-triggered secrets + a push
+#     tool must never run against human- or fork-controlled branches, so the
+#     discover filter hard-requires author.is_bot && !isCrossRepository.
+#   * PRs already labelled `needs-human` are SKIPPED — that label is the stop.
+#     A failed resolution labels `needs-human`, so each conflict gets exactly
+#     ONE attempt and the loop will not thrash on every subsequent push to main
+#     (which would otherwise drain the weekly token pool re-fighting the same
+#     unresolvable conflict).
+#   * The agent's `gh` is READ-only and its ONLY push tool is the EXACT command
+#     `git push origin HEAD` (no `:*` wildcard) — it can push only the PR's own
+#     branch, fast-forward, never `main` and never `--force` (same reasoning as
+#     the autofix loop).
+#   * GH_TOKEN is set per-step on the deterministic shell steps only, never on
+#     the agent step (which reads untrusted PR/issue content), so the agent
+#     can't exfiltrate a GITHUB_TOKEN. The agent gets its own gh/git auth from
+#     the action's App token (a GITHUB_TOKEN push wouldn't re-trigger CI anyway).
+#   * It CANNOT push .github/workflows/* (App token lacks the `workflows`
+#     scope), so the prompt tells it to escalate those rather than thrash.
+#   * Never merges the PR itself — a human merges. It only merges `main` INTO
+#     the PR branch to clear the conflict.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# One resolver run at a time. A push to main while a resolution is in flight
+# queues rather than double-running; the next run re-discovers current state.
+concurrency:
+  group: pipeline-pr-conflict
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write # claude-code-action mints its GitHub App token via OIDC
+
+jobs:
+  # Find open same-repo bot PRs that have gone CONFLICTING against the new main.
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    outputs:
+      matrix: ${{ steps.scan.outputs.matrix }}
+      has_conflicts: ${{ steps.scan.outputs.has_conflicts }}
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR conflict resolver is inert."
+
+      - name: Discover conflicting bot PRs
+        id: scan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Inert until the token exists: emit an empty matrix so the resolve
+          # job is skipped and the workflow is safe to merge beforehand.
+          if [ "${HAS_TOKEN}" != "true" ]; then
+            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Eligible = open, same-repo (not a fork), bot-authored, and NOT
+          # already escalated to needs-human (that label is the one-attempt stop).
+          candidates="$(gh pr list --repo "${{ github.repository }}" --state open --limit 100 \
+            --json number,headRefName,author,isCrossRepository,labels \
+            --jq '[.[] | select((.isCrossRepository | not) and (.author.is_bot == true) and ([.labels[].name] | index("needs-human") | not))]')"
+
+          count="$(jq 'length' <<<"$candidates")"
+          echo "Found ${count} candidate bot PR(s); checking mergeability…"
+
+          include='[]'
+          for i in $(seq 0 $(( count - 1 )) ); do
+            [ "$count" -eq 0 ] && break
+            number="$(jq -r ".[$i].number" <<<"$candidates")"
+            branch="$(jq -r ".[$i].headRefName" <<<"$candidates")"
+
+            # `mergeable` is computed asynchronously after a push, so it reads
+            # UNKNOWN until GitHub finishes. Poll a bounded number of times
+            # before giving up (a still-UNKNOWN PR is simply left for the next
+            # push-to-main to re-evaluate — never guessed as conflicting).
+            mergeable='UNKNOWN'
+            for _ in $(seq 1 10); do
+              mergeable="$(gh pr view "$number" --repo "${{ github.repository }}" --json mergeable --jq '.mergeable')"
+              [ "$mergeable" != 'UNKNOWN' ] && break
+              sleep 3
+            done
+
+            echo "PR #${number} (${branch}): mergeable=${mergeable}"
+            if [ "$mergeable" = 'CONFLICTING' ]; then
+              include="$(jq -c --argjson n "$number" --arg b "$branch" '. + [{number:$n, branch:$b}]' <<<"$include")"
+            fi
+          done
+
+          matrix="$(jq -c -n --argjson inc "$include" '{include:$inc}')"
+          has_conflicts="$( [ "$(jq 'length' <<<"$include")" -gt 0 ] && echo true || echo false )"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "has_conflicts=${has_conflicts}" >> "$GITHUB_OUTPUT"
+          echo "Conflicting PRs to resolve: ${matrix}"
+
+  # One resolver per conflicting PR, run serially (max-parallel 1) so parallel
+  # merges don't collide on the shared Max pool and log lines stay readable.
+  resolve:
+    needs: discover
+    if: needs.discover.outputs.has_conflicts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # Same pgvector Postgres as the build/CI/autofix jobs so the resolver can
+    # run the full gate (incl. DB-integration tests) locally before pushing.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: community_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PR_NUMBER: ${{ matrix.number }}
+      HEAD_BRANCH: ${{ matrix.branch }}
+      # NB: GH_TOKEN is deliberately NOT job-level — set per-step on the
+      # deterministic gh steps only, so the agent step never inherits a
+      # GITHUB_TOKEN it could exfiltrate (see pipeline-pr-autofix.yml).
+      CONFLICT_MARKER: '<!-- pipeline-pr-conflict-attempt -->'
+      ESCALATE_MARKER: '<!-- pipeline-pr-conflict-escalation -->'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 0 # full history so `git merge origin/main` works
+
+      - name: Mark attempt + record current HEAD
+        id: mark
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${CONFLICT_MARKER}
+          🤖 This PR conflicts with \`main\`. Attempting an automatic merge + conflict resolution on this branch."
+          echo "head_before=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Create the base schema deterministically before the resolve agent runs,
+      # so its `npm test` sees a migrated DB (same fix as the other pipeline
+      # workflows — an un-migrated DB fails every DB-integration test with
+      # "relation does not exist"). node_modules persists into the fix step.
+      - name: Migrate base schema (deterministic — do not leave to the agent)
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+          # migrate loads config.ts which requires this; migrate never calls
+          # Claude, so a dummy satisfies the schema (see pipeline-build.yml).
+          CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
+        run: |
+          npm ci
+          npm run migrate
+
+      - name: Resolve the merge conflict
+        id: fix
+        continue-on-error: true # the verify step below is the source of truth
+        uses: anthropics/claude-code-action@v1
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Pull request #${{ matrix.number }} for the NZ Claude Community agent
+            conflicts with `main`. Its branch (`${{ matrix.branch }}`) is already
+            checked out here.
+
+            1. Read CLAUDE.md (conventions + security posture you must not
+               regress) and understand what this PR changes: `gh pr diff
+               ${{ matrix.number }}` and `gh pr view ${{ matrix.number }}`.
+            2. Bring `main` in and resolve the conflict:
+               `git fetch origin main` then `git merge origin/main`. Resolve
+               every conflict so BOTH the PR's intent and the changes now on
+               `main` are preserved — do not clobber either side; when they
+               truly overlap, integrate them. Then `git add` the resolved files
+               and complete the merge commit.
+            3. A pgvector Postgres is available at DATABASE_URL, so run the FULL
+               gate and make EVERY check green before pushing:
+               npm run typecheck && npm run lint && npm run format:check &&
+               npm run migrate && npm test && npm run build && npm run test:security
+            4. Push the resolved branch with EXACTLY this command (nothing else —
+               no other push form is permitted): `git push origin HEAD`. NEVER
+               force-push and NEVER push any other ref or branch. Do NOT open a
+               new PR and do NOT merge this PR — a human merges.
+
+            If the conflict cannot be resolved safely (e.g. the two sides are
+            semantically incompatible), or the fix needs a change under
+            `.github/workflows/` (you cannot push those — the token lacks the
+            `workflows` scope), then just STOP without committing/pushing: a
+            later step detects "no new commit" and escalates `needs-human`.
+          # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml):
+          #   * `gh` is READ-only (understand the PR) — no merge/close/create.
+          #   * `git` includes merge/checkout for conflict resolution but
+          #     EXCLUDES reset/remote/blanket push. The ONLY push tool is the
+          #     exact `Bash(git push origin HEAD)` (no `:*`): the agent may run
+          #     only that literal command, so it can push ONLY this branch,
+          #     fast-forward, never main and never force.
+          claude_args: |
+            --max-turns 200
+            --model sonnet
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge:*),Bash(git checkout:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      - name: Verify the conflict was resolved (else escalate loudly)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$HEAD_BRANCH"
+          after="$(git rev-parse "origin/$HEAD_BRANCH")"
+          if [ "$after" != "${{ steps.mark.outputs.head_before }}" ]; then
+            echo "Resolver pushed a merge commit; CI will re-run on the new commit."
+            exit 0
+          fi
+          echo "::error::Conflict resolver produced no new commit on ${HEAD_BRANCH}."
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label needs-human || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${ESCALATE_MARKER}
+          🤖 Could not automatically resolve this PR's conflict with \`main\` — either the two sides are semantically incompatible, or the fix needs a \`.github/workflows/\` change I can't push. Labelled \`needs-human\` for a maintainer. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1

@@ -45,6 +45,14 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   an existing build-worker PR branch when its CI fails — same-repo bot PRs only,
   capped at 2 attempts, then it escalates `needs-human`. It never opens or
   merges PRs. Do not misflag its pushes as an ownership violation.
+- A second exception: the **conflict-resolver loop**
+  (`pipeline-pr-conflict.yml`) may push a `main`-merge to an existing
+  build-worker PR branch that has gone CONFLICTING — same-repo bot PRs only,
+  one attempt per conflict, then it escalates `needs-human` (and skips
+  `needs-human` PRs thereafter). It runs on every push to `main` because no
+  webhook fires for a mergeable→conflicting transition. Same push guardrails
+  as autofix; it never opens or merges PRs. Do not misflag its merge commits
+  as an ownership violation either.
 - **No loop merges PRs.** A human merges — especially important for this
   security-sensitive bot.
 - **WIP caps:** ≤3 open `status:draft`. Builds run per-issue-parallel (the
