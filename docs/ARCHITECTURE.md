@@ -109,12 +109,14 @@ and every privileged action is audited and alerted to super admins by DM.
 |---|:--:|:--:|:--:|:--:|
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
+| `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
-| `moderation_history` (warn/timeout/kick/delete/announce log) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
@@ -141,6 +143,31 @@ weakening it:
    guests. Admins call `list_access_requests` to see who's waiting instead of
    relying on informal pings; `add_member` clears the row for that user once
    actioned.
+
+## Abuse reporting
+
+`report_content` closes a gap neither platform covers on its own: a member
+who is harassed, spammed at, or sees a rule violation had no structured way
+to flag it to *this community's* admins (Discord's native report goes to
+Discord Trust & Safety, not the server; WhatsApp has nothing at all). It's
+the same pull-queue shape as `access_requests`/`list_access_requests`,
+applied to abuse reports instead of pending guests:
+
+1. A member (or admin/super admin) calls `report_content(reason,
+   targetUserId?, messageId?)`. The conversation is always the caller's
+   current one — a member can only report within a conversation they're
+   actually in. Capped at 5 submissions per rolling 24h, enforced with a
+   DB-backed count (survives a restart; see SECURITY.md), so the queue
+   itself can't become a spam vector against admin attention.
+2. Admins triage with `list_reports` (conversation-scoped, same pattern as
+   `moderation_history`) and `resolve_report` (marks `resolved`/`dismissed`,
+   audited, non-destructive so no CONFIRM gate).
+3. No automation beyond intake: the queue is purely informational. Admins
+   still decide and act via the existing `moderate` tool.
+
+Because `list_reports` is conversation-scoped, a report filed from a DM (no
+ordinary admin is ever a "participant" of another member's 1:1 conversation)
+is only reachable by a super admin — see SECURITY.md's residual-risks note.
 
 ## Concurrency model
 

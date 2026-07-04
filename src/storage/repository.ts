@@ -507,9 +507,11 @@ export async function countRepliesToUser(
 
 /**
  * Delete a user's stored data: their inbound messages, the bot's replies to
- * them, and knowledge entries sourced from them. Backs both the member-facing
- * forget_me and the super-admin purge_user_data. Membership and audit rows
- * are intentionally kept (documented in SECURITY.md).
+ * them, knowledge entries sourced from them, and content reports *they
+ * submitted* as reporter. Backs both the member-facing forget_me and the
+ * super-admin purge_user_data. Membership, audit rows, and reports where the
+ * user is only the *target* (not the reporter) are intentionally kept
+ * (accountability data — documented in SECURITY.md).
  */
 export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
   const { rowCount: messages } = await pool.query(
@@ -521,7 +523,11 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
   const { rowCount: knowledge } = await pool.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
     userId,
   ]);
-  return (messages ?? 0) + (knowledge ?? 0);
+  const { rowCount: reports } = await pool.query(
+    `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
+    [platform, userId],
+  );
+  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0);
 }
 
 /**
@@ -570,7 +576,7 @@ export async function recentAuditEntries(limit = 20): Promise<
 
 /** action_kinds an admin-tier `moderation_history` read may surface — allow-list so a
  * future privileged kind (e.g. another `grant_*`) is excluded by default, not by omission. */
-const MODERATION_ACTION_KINDS = [
+export const MODERATION_ACTION_KINDS = [
   'warn_user',
   'timeout_user',
   'kick_user',
@@ -584,10 +590,16 @@ const MODERATION_ACTION_KINDS = [
  * recentAuditEntries but additionally surfaces conversation_id (needed both for the
  * scoping filter and so an admin in multiple channels can attribute an entry) and
  * omits `params` (may carry free-text reasons with member PII beyond the target id).
+ *
+ * `targetUserId`/`actionKind`, when present, narrow the result further — same
+ * one-predicate-append technique as listReports's `status` filter — and can never
+ * widen it past the mandatory allow-list/scope predicates above.
  */
 export async function recentModerationEntries(
   conversationIds: readonly string[] | null,
   limit = 20,
+  targetUserId?: string,
+  actionKind?: (typeof MODERATION_ACTION_KINDS)[number],
 ): Promise<
   Array<{
     createdAt: Date;
@@ -608,6 +620,16 @@ export async function recentModerationEntries(
     params.push([...conversationIds]);
     scope = `AND conversation_id = ANY($${params.length})`;
   }
+  let targetFilter = '';
+  if (targetUserId) {
+    params.push(targetUserId);
+    targetFilter = `AND target_user_id = $${params.length}`;
+  }
+  let actionKindFilter = '';
+  if (actionKind) {
+    params.push(actionKind);
+    actionKindFilter = `AND action_kind = $${params.length}`;
+  }
   params.push(clampedLimit);
 
   const { rows } = await pool.query(
@@ -615,6 +637,8 @@ export async function recentModerationEntries(
        FROM admin_audit
       WHERE action_kind = ANY($1)
         ${scope}
+        ${targetFilter}
+        ${actionKindFilter}
       ORDER BY created_at DESC
       LIMIT $${params.length}`,
     params,
@@ -824,4 +848,165 @@ export async function recentQuestionClusters(
     .sort((a, b) => b.count - a.count)
     .slice(0, clampedLimit)
     .map((c) => ({ representative: c.representative, count: c.count }));
+}
+
+// --- Content reports (member-facing abuse/spam intake) -----------------------
+
+/** Per-reporter cap on new reports within a rolling window (anti-griefing on the admin queue). */
+export const REPORT_RATE_LIMIT_PER_DAY = 5;
+
+export type ContentReportStatus = 'open' | 'resolved' | 'dismissed';
+
+export interface ContentReport {
+  id: number;
+  platform: Platform;
+  reporterUserId: string;
+  reporterName: string | null;
+  conversationId: string;
+  targetUserId: string | null;
+  messageId: string | null;
+  reason: string;
+  status: ContentReportStatus;
+  createdAt: Date;
+  resolvedBy: string | null;
+  resolvedAt: Date | null;
+}
+
+function mapContentReport(r: {
+  id: number | string;
+  platform: string;
+  reporter_user_id: string;
+  reporter_name: string | null;
+  conversation_id: string;
+  target_user_id: string | null;
+  message_id: string | null;
+  reason: string;
+  status: string;
+  created_at: Date;
+  resolved_by: string | null;
+  resolved_at: Date | null;
+}): ContentReport {
+  return {
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    reporterUserId: r.reporter_user_id,
+    reporterName: r.reporter_name,
+    conversationId: r.conversation_id,
+    targetUserId: r.target_user_id,
+    messageId: r.message_id,
+    reason: r.reason,
+    status: r.status as ContentReportStatus,
+    createdAt: r.created_at,
+    resolvedBy: r.resolved_by,
+    resolvedAt: r.resolved_at,
+  };
+}
+
+/**
+ * Record a member's report, enforcing a DB-backed rolling-24h cap per
+ * reporter (COUNT(*) over content_reports, not an in-memory counter — the
+ * only existing rate limiter, router.ts's per-message map, resets on
+ * restart and would let a bounce bypass the cap). Returns null when the
+ * caller is at/over the cap; the tool layer turns that into a polite refusal.
+ */
+export async function createContentReport(input: {
+  platform: Platform;
+  reporterUserId: string;
+  reporterName?: string;
+  conversationId: string;
+  targetUserId?: string;
+  messageId?: string;
+  reason: string;
+}): Promise<{ id: number } | null> {
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM content_reports
+        WHERE platform = $1 AND reporter_user_id = $2
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO content_reports
+       (platform, reporter_user_id, reporter_name, conversation_id, target_user_id, message_id, reason)
+     SELECT $1, $2, $3, $4, $5, $6, $7
+      WHERE (SELECT n FROM recent) < $8
+     RETURNING id`,
+    [
+      input.platform,
+      input.reporterUserId,
+      input.reporterName ?? null,
+      input.conversationId,
+      input.targetUserId ?? null,
+      input.messageId ?? null,
+      input.reason.slice(0, 500),
+      REPORT_RATE_LIMIT_PER_DAY,
+    ],
+  );
+  return rows[0] ? { id: Number(rows[0].id) } : null;
+}
+
+/**
+ * Admin-tier view of reports, scoped to `conversationIds` (null = super
+ * admin, unrestricted — same convention as recentModerationEntries). A
+ * report from a conversation no ordinary admin participates in (e.g. a
+ * WhatsApp/Discord-DM report) is therefore only reachable here with the
+ * unrestricted (super admin) scope — a deliberate, documented limitation,
+ * not a silent drop; see docs/SECURITY.md.
+ */
+export async function listReports(
+  conversationIds: readonly string[] | null,
+  status?: ContentReportStatus,
+  limit = 50,
+): Promise<ContentReport[]> {
+  const params: unknown[] = [];
+  const filters: string[] = [];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`conversation_id = ANY($${params.length})`);
+  }
+  if (status) {
+    params.push(status);
+    filters.push(`status = $${params.length}`);
+  }
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+  params.push(clampedLimit);
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+  const { rows } = await pool.query(
+    `SELECT id, platform, reporter_user_id, reporter_name, conversation_id, target_user_id,
+            message_id, reason, status, created_at, resolved_by, resolved_at
+       FROM content_reports
+       ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map(mapContentReport);
+}
+
+/**
+ * Flip a report's status (resolve/dismiss) — non-destructive, no CONFIRM
+ * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
+ * to `conversationIds` so an admin can only resolve reports from
+ * conversations they actually participate in (same invariant as `moderate`/
+ * `announce`). Returns false if no matching row was found (unknown id, or
+ * the id exists but is outside the caller's scope).
+ */
+export async function resolveContentReport(
+  id: number,
+  status: 'resolved' | 'dismissed',
+  resolvedBy: string,
+  conversationIds?: readonly string[],
+): Promise<boolean> {
+  const params: unknown[] = [id, status, resolvedBy];
+  let scope = '';
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    scope = `AND conversation_id = ANY($${params.length})`;
+  }
+  const { rowCount } = await pool.query(
+    `UPDATE content_reports
+        SET status = $2, resolved_by = $3, resolved_at = now()
+      WHERE id = $1 ${scope}`,
+    params,
+  );
+  return (rowCount ?? 0) > 0;
 }

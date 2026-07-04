@@ -159,3 +159,30 @@ CREATE TABLE IF NOT EXISTS access_requests (
 
 CREATE INDEX IF NOT EXISTS access_requests_last_requested_idx
   ON access_requests (last_requested_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Member-submitted reports of harassment/spam/rule violations, for admins to
+-- triage. Purely informational intake — no automatic action is taken on a
+-- report; an admin still decides and acts via the existing `moderate` tool.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS content_reports (
+  id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform         TEXT        NOT NULL,
+  reporter_user_id TEXT        NOT NULL,
+  reporter_name    TEXT,
+  conversation_id  TEXT        NOT NULL,
+  target_user_id   TEXT,
+  message_id       TEXT,
+  reason           TEXT        NOT NULL,
+  status           TEXT        NOT NULL DEFAULT 'open', -- 'open' | 'resolved' | 'dismissed'
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_by      TEXT,
+  resolved_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS content_reports_conversation_idx
+  ON content_reports (conversation_id, created_at DESC);
+
+-- Backs the per-reporter rolling-24h rate cap (see repository.ts createContentReport).
+CREATE INDEX IF NOT EXISTS content_reports_reporter_rate_idx
+  ON content_reports (platform, reporter_user_id, created_at DESC);

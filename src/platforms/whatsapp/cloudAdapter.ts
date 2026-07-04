@@ -216,6 +216,38 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     await this.sendText(userId, text);
   }
 
+  /**
+   * Meta exposes typing indicators via the mark-as-read call: marking the
+   * inbound message read with `typing_indicator` set shows "typing…" for up
+   * to ~25s. Bound to a single inbound wamid — unlike Discord's `sendTyping`,
+   * this cannot be meaningfully re-fired for the same message, so the
+   * router's periodic re-fire will just no-op (best-effort) on the 2nd+ call.
+   */
+  async sendTypingIndicator(message: IncomingMessage): Promise<void> {
+    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
+    if (!phoneNumberId || !accessToken) return;
+    const wamid = (message.raw as CloudInboundMessage | undefined)?.id;
+    if (!wamid) return;
+
+    const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: wamid,
+        typing_indicator: { type: 'text' },
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`WhatsApp Cloud typing indicator failed: ${res.status} ${detail}`);
+    }
+  }
+
   private async sendText(to: string, text: string): Promise<void> {
     const { phoneNumberId, accessToken } = config.whatsapp.cloud;
     if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');

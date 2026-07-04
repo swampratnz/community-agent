@@ -146,6 +146,80 @@ test('partial-failure semantics: a mid-sequence Graph API failure delivers earli
   assert.equal(calls.length, 2, 'the first chunk should have been sent before the second one failed');
 });
 
+test('sendTypingIndicator: posts the mark-as-read + typing_indicator payload for the inbound wamid', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendTypingIndicator({
+      platform: 'whatsapp',
+      conversationId: '64211234567',
+      userId: '64211234567',
+      userName: 'User',
+      text: 'hi',
+      isDirect: true,
+      addressedToBot: true,
+      timestamp: Date.now(),
+      raw: { from: '64211234567', id: 'wamid.ABC123', timestampMs: Date.now(), text: 'hi', name: 'User' },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+  const body = JSON.parse(calls[0].body);
+  assert.equal(body.status, 'read');
+  assert.equal(body.message_id, 'wamid.ABC123');
+  assert.deepEqual(body.typing_indicator, { type: 'text' });
+});
+
+test('sendTypingIndicator: a message with no wamid on `raw` is a silent no-op (no Graph API call)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendTypingIndicator({
+      platform: 'whatsapp',
+      conversationId: '64211234567',
+      userId: '64211234567',
+      userName: 'User',
+      text: 'hi',
+      isDirect: true,
+      addressedToBot: true,
+      timestamp: Date.now(),
+      // no raw — e.g. a synthetic message with no underlying inbound wamid.
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('sendTypingIndicator: a Graph API failure throws — the router treats this as best-effort and swallows it', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  const { fetchMock } = mockFetch([{ ok: false, status: 400 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(() =>
+      adapter.sendTypingIndicator({
+        platform: 'whatsapp',
+        conversationId: '64211234567',
+        userId: '64211234567',
+        userName: 'User',
+        text: 'hi',
+        isDirect: true,
+        addressedToBot: true,
+        timestamp: Date.now(),
+        raw: { from: '64211234567', id: 'wamid.X', timestampMs: Date.now(), text: 'hi', name: 'User' },
+      }),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('outside the 24h customer-service window: throws before any Graph API call, regardless of message length', async () => {
   const adapter = new WhatsAppCloudAdapter();
   // No markInboundNow — this user has no recent inbound message.
