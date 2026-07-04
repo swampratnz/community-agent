@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden-query regression set for knowledge_search (issue #62). Each query must be a PARAPHRASE of its expectedTitle entry's content — never a near-verbatim quote of the entry's title/content — otherwise retrieval passes trivially and the test asserts nothing. 'entries' includes distractor rows (topically adjacent, not targeted by any query) so the eval actually exercises near-duplicate shadowing. Queries marked core:true form the must-hit set (100% floor); all queries together form the aggregate set (>=80% floor). Fixtures are seeded/cleaned up per-run by tests/knowledgeEval.test.ts and must not depend on ambient DB contents.",
+  "_comment": "Golden-query regression set for knowledge_search (issue #62). Each query must be a PARAPHRASE of its expectedTitle entry's content — never a near-verbatim quote of the entry's title/content — otherwise retrieval passes trivially and the test asserts nothing. 'entries' includes distractor rows (topically adjacent, not targeted by any query) so the eval actually exercises near-duplicate shadowing. Queries marked core:true form the must-hit set (100% floor); all queries together form the aggregate set (>=80% floor). Fixtures are seeded/cleaned up per-run by tests/knowledgeEval.test.ts and must not depend on ambient DB contents. 'negativeQueries' (issue #95) are queries no entry actually answers — an 'off-topic' one and a topically-adjacent 'near-miss' one — used to ground KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD (src/agent/tools.ts) empirically against this fixture's own entries and guard against embedding-model drift; they assert against searchKnowledge's raw top similarity, not the tool-handler filter (see tests/tools.test.ts for the handler-level filter assertion).",
   "entries": [
     {
       "title": "Getting Anthropic API access",
@@ -146,6 +146,20 @@
       "query": "which model size makes sense for a simple high-throughput task",
       "expectedTitle": "Choosing a Claude model for a new project",
       "core": false
+    }
+  ],
+  "negativeQueries": [
+    {
+      "query": "what's the best coffee place near the venue",
+      "label": "off-topic"
+    },
+    {
+      "query": "is it going to rain this weekend",
+      "label": "off-topic"
+    },
+    {
+      "query": "how many weeks does it usually take to hear back after applying for a role",
+      "label": "near-miss: topically adjacent to 'Requesting admin role' (also about becoming an admin) but asks about timing no entry answers"
     }
   ]
 }
