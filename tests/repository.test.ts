@@ -38,6 +38,7 @@ const {
   REPORT_RATE_LIMIT_PER_DAY,
   upsertMember,
   getMemberRole,
+  removeMember,
   linkMembers,
   unlinkMember,
   resolveLinkedIdentities,
@@ -1041,6 +1042,36 @@ test(
 );
 
 test(
+  'repository: removeMember dissolves a person group it would leave with a single member (no orphaned persons row)',
+  { skip },
+  async () => {
+    const d = `${RUN}-rm-d`;
+    const w = `${RUN}-rm-w`;
+    await upsertMember({ platform: 'discord', userId: d, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({ platform: 'whatsapp', userId: w, role: 'member', addedBy: `${RUN}-admin` });
+    const { personId } = await linkMembers('discord', d, 'whatsapp', w);
+
+    const removed = await removeMember('discord', d);
+    assert.equal(removed, true, 'the linked member row is removed');
+
+    // The surviving identity must not be stranded in a one-member group...
+    const survivors = await resolveLinkedIdentities('whatsapp', w);
+    assert.deepEqual(
+      survivors,
+      [{ platform: 'whatsapp', userId: w }],
+      'the surviving identity is unlinked once its only co-member is removed',
+    );
+    // ...and the now-empty persons row must be deleted, not orphaned.
+    const { rows } = await pool.query('SELECT count(*)::int AS n FROM persons WHERE id = $1', [personId]);
+    assert.equal(rows[0].n, 0, 'the emptied persons row is deleted');
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      w,
+    ]);
+  },
+);
+
+test(
   'SECURITY: repository: linking a member to an admin never propagates tier — each identity keeps its own role',
   { skip },
   async () => {
@@ -1050,6 +1081,11 @@ test(
     await upsertMember({ platform: 'whatsapp', userId: adminUser, role: 'admin', addedBy: `${RUN}-admin` });
 
     await linkMembers('discord', memberUser, 'whatsapp', adminUser);
+
+    // The link must actually have taken effect, else the role assertions below
+    // are vacuously true (getMemberRole is per-row) and this guards nothing.
+    const linked = await resolveLinkedIdentities('discord', memberUser);
+    assert.equal(linked.length, 2, 'precondition: the two identities resolve as one linked person');
 
     assert.equal(
       await getMemberRole('discord', memberUser),

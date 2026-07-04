@@ -1,6 +1,7 @@
 import pgvector from 'pgvector/pg';
 import type { Platform, Tier } from '../platforms/types.js';
 import { logger } from '../logger.js';
+import type { PoolClient } from 'pg';
 import { pool } from './db.js';
 import { embed } from './embeddings.js';
 import { config } from '../config.js';
@@ -461,13 +462,54 @@ export async function demoteAdmin(platform: Platform, userId: string): Promise<b
 }
 
 /** Remove a member row entirely. Refuses to remove admins (revoke first). */
+/**
+ * If a person group is left with fewer than two members, dissolve it: clear
+ * any straggler's person_id and delete the persons row. Keeps the "no
+ * singleton groups, no orphaned persons rows" invariant. Must run inside the
+ * caller's open transaction.
+ */
+async function dissolveGroupIfUnderTwo(client: PoolClient, personId: number): Promise<void> {
+  const { rows } = await client.query(`SELECT count(*) AS n FROM community_users WHERE person_id = $1`, [
+    personId,
+  ]);
+  if (Number(rows[0].n) <= 1) {
+    await client.query(`UPDATE community_users SET person_id = NULL WHERE person_id = $1`, [personId]);
+    await client.query(`DELETE FROM persons WHERE id = $1`, [personId]);
+  }
+}
+
+/**
+ * Remove a member row. If the member was linked, dissolve a person group this
+ * would leave with a single member — the same invariant `unlinkMember`
+ * protects, so hard-removing a linked member never orphans a persons row or
+ * leaves a co-member "still linked" to a now-empty group.
+ */
 export async function removeMember(platform: Platform, userId: string): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    `DELETE FROM community_users
-      WHERE platform = $1 AND platform_user_id = $2 AND role = 'member'`,
-    [platform, userId],
-  );
-  return (rowCount ?? 0) > 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT person_id FROM community_users
+        WHERE platform = $1 AND platform_user_id = $2 AND role = 'member' FOR UPDATE`,
+      [platform, userId],
+    );
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+    await client.query(
+      `DELETE FROM community_users WHERE platform = $1 AND platform_user_id = $2 AND role = 'member'`,
+      [platform, userId],
+    );
+    if (rows[0].person_id) await dissolveGroupIfUnderTwo(client, Number(rows[0].person_id));
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Cross-platform identity linking ----------------------------------------
@@ -504,8 +546,12 @@ export async function resolveLinkedIdentities(platform: Platform, userId: string
  * admin can never make the member resolve as admin (see docs/SECURITY.md).
  *
  * Idempotent: linking two identities already in the same group is a no-op
- * success. Linking across two existing (different) groups merges them —
- * transactional and row-locked so a concurrent link/unlink can't race it.
+ * success. Linking across two existing (different) groups merges them. The
+ * two named rows are locked FOR UPDATE; a concurrent link/unlink touching an
+ * *unlocked* co-member of a merging group may deadlock, in which case Postgres
+ * aborts one side and this rolls back cleanly (no partial merge) — safe, but
+ * the loser sees a DB error rather than a serialized success. These are
+ * admin-tier, CONFIRM-gated actions, so real contention is negligible.
  */
 export async function linkMembers(
   platformA: Platform,
@@ -591,14 +637,7 @@ export async function unlinkMember(platform: Platform, userId: string): Promise<
       `UPDATE community_users SET person_id = NULL WHERE platform = $1 AND platform_user_id = $2`,
       [platform, userId],
     );
-    const { rows: remaining } = await client.query(
-      `SELECT count(*) AS n FROM community_users WHERE person_id = $1`,
-      [personId],
-    );
-    if (Number(remaining[0].n) <= 1) {
-      await client.query(`UPDATE community_users SET person_id = NULL WHERE person_id = $1`, [personId]);
-      await client.query(`DELETE FROM persons WHERE id = $1`, [personId]);
-    }
+    await dissolveGroupIfUnderTwo(client, Number(personId));
     await client.query('COMMIT');
     return true;
   } catch (err) {
@@ -663,6 +702,11 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
         AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))`,
     [platform, userId],
   );
+  // knowledge has no platform column, so this keys on source_user_id alone.
+  // Safe because Discord snowflakes (17-20 digits) and WhatsApp E.164 numbers
+  // (7-15 digits) can't collide as strings (enforced by normalizeMemberId), so
+  // this never touches another platform's user. If that validation loosens, add
+  // a platform column to knowledge and filter on it here.
   const { rowCount: knowledge } = await pool.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
     userId,
   ]);

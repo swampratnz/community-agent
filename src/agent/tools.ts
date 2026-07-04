@@ -814,6 +814,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       if (a.platform === b.platform && a.userId === b.userId) {
         return text('Refusing: cannot link an identity to itself.', true);
       }
+      // Authority: an admin must have at least one identity on their own
+      // platform. Linking two identities that are *both* on another platform is
+      // super-admin-only — consistent with resolveMemberTarget's cross-platform
+      // gate on add_member/remove_member/unlink_member.
+      if (a.platform !== caller.platform && b.platform !== caller.platform) {
+        assertAtLeast(caller.role, 'super_admin', 'linking two identities both on another platform');
+      }
       if (isSuperAdmin(a.platform, a.userId) || isSuperAdmin(b.platform, b.userId)) {
         return text('Refusing: super admins are configured in the environment, not linkable here.', true);
       }
@@ -852,7 +859,18 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { userId: z.string().min(1).describe('Platform user id to unlink'), platform: platformArg },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'unlink_member');
-      const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const platform = args.platform ?? caller.platform;
+      const userId = normalizeMemberId(platform, args.userId);
+      // An admin may unlink an identity on their own platform, or one linked to
+      // an identity on their platform (they have authority over that person).
+      // Unlinking a foreign identity with no on-platform link is super-admin-only
+      // — symmetric with link_member's both-foreign gate above.
+      if (platform !== caller.platform) {
+        const group = await resolveLinkedIdentities(platform, userId);
+        if (!group.some((g) => g.platform === caller.platform)) {
+          assertAtLeast(caller.role, 'super_admin', 'unlinking an identity on another platform');
+        }
+      }
       return requireConfirm(`unlink ${userId} on ${platform} from its linked identity`, 'admin', async () => {
         const { success, result } = await audited({
           actionKind: 'unlink_member',

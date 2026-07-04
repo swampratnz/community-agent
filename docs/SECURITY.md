@@ -145,6 +145,12 @@ grouping identities under a shared `persons.id` (`community_users.person_id`).
 - Admin-tier, CONFIRM-gated (both `link_member` and `unlink_member`), audited
   to `admin_audit`, and super-admin-alerted — the same treatment as every
   other privileged tool.
+- **Cross-platform authority**: an admin must have at least one identity on
+  their own platform. Linking two identities that are *both* on another
+  platform — or unlinking a foreign identity with no on-platform co-member —
+  requires super_admin, consistent with the cross-platform gate on
+  `add_member` / `remove_member`. This stops a Discord-only admin from
+  operating solely on WhatsApp identities (and vice versa).
 - **Target validation**: both identities must already be known community
   members; linking can never grant membership, only associate two identities
   that already have it.
