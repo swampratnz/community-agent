@@ -195,12 +195,19 @@ jobs:
             exit 0
           fi
 
-          echo "::error::Build worker finished without opening a PR that closes issue #${ISSUE_NUMBER}."
-
-          # Escalate so the proposal does not sit silently at status:approved.
-          gh issue edit "${ISSUE_NUMBER}" --add-label needs-human || true
-
+          echo "::error::Build worker produced no PR closing issue #${ISSUE_NUMBER} (attempt ${{ github.run_attempt }})."
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh issue comment "${ISSUE_NUMBER}" --body "🤖 Build worker ran but produced **no pull request** closing this issue, so it could not be marked \`status:built\`. Labelled \`needs-human\` for a maintainer to investigate. Run: ${run_url}" || true
+
+          # Auto-retry: pipeline-build-retry.yml re-runs this run on failure (up
+          # to attempt 3), so transient/infra failures recover without a human.
+          # Only escalate needs-human on the FINAL attempt — a human is pinged
+          # once retries are exhausted, not on every flake. Keep this `>= 3` cap
+          # in sync with the `< 3` guard in pipeline-build-retry.yml.
+          if [ "${{ github.run_attempt }}" -ge 3 ]; then
+            gh issue edit "${ISSUE_NUMBER}" --add-label needs-human || true
+            gh issue comment "${ISSUE_NUMBER}" --body "🤖 Build worker produced **no pull request** after ${{ github.run_attempt }} attempts (auto-retried). Labelled \`needs-human\` for a maintainer — this is a persistent failure, not a flake. Latest run: ${run_url}" || true
+          else
+            echo "Not escalating yet — the auto-retry loop will re-run this build (attempt ${{ github.run_attempt }} < 3)."
+          fi
 
           exit 1
