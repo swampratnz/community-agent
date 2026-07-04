@@ -15,6 +15,7 @@ import {
   listAccessRequests,
   listKnowledge,
   listReports,
+  MODERATION_ACTION_KINDS,
   purgeUserData,
   recentAuditEntries,
   recentModerationEntries,
@@ -609,12 +610,21 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const moderationHistory = tool(
     'moderation_history',
-    'Show recent moderation actions (warnings, timeouts, kicks, deletions, announcements) in your conversations — for checking prior history before escalating. Admin only.',
-    { limit: z.number().optional().describe('Max entries (default 20, max 100)') },
+    "Show recent moderation actions (warnings, timeouts, kicks, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
+    {
+      limit: z.number().optional().describe('Max entries (default 20, max 100)'),
+      targetUserId: z.string().optional().describe('Only show actions taken against this member'),
+      actionKind: z.enum(MODERATION_ACTION_KINDS).optional().describe('Only show actions of this kind'),
+    },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'moderation_history');
       const allowed = await callerScope();
-      const rows = await recentModerationEntries(allowed, args.limit ?? 20);
+      const rows = await recentModerationEntries(
+        allowed,
+        args.limit ?? 20,
+        args.targetUserId,
+        args.actionKind,
+      );
       if (rows.length === 0) return text('No moderation actions recorded (within your conversations).');
       return text(
         rows

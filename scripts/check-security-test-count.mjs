@@ -25,7 +25,7 @@ const testsDir = path.join(repoRoot, 'tests');
 
 // Count at merge time of #42. Bump this in the same diff that adds a new
 // SECURITY: test; a diff that only lowers it needs an explanation.
-const MIN_SECURITY_TESTS = 31;
+const MIN_SECURITY_TESTS = 36;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
