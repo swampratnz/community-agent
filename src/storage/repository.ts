@@ -910,6 +910,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     `DELETE FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
     [platform, userId],
   );
+  // member_warnings (auto-moderation strikes) are keyed on raw (platform,
+  // user_id) too — a purged user's warning history goes with them.
+  const { rowCount: warnings } = await pool.query(
+    `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
   return (
     (messages ?? 0) +
     (knowledge ?? 0) +
@@ -918,7 +924,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     (notes ?? 0) +
     (suggestions ?? 0) +
     (digestSends ?? 0) +
-    (responseStyle ?? 0)
+    (responseStyle ?? 0) +
+    (warnings ?? 0)
   );
 }
 
@@ -997,6 +1004,7 @@ export const MODERATION_ACTION_KINDS = [
   'timeout_user',
   'kick_user',
   'delete_message',
+  'clear_warnings',
   'announce',
 ] as const;
 
@@ -1749,6 +1757,52 @@ export async function setResponseStyle(
      ON CONFLICT (platform, user_id) DO UPDATE SET style = $3, updated_at = now()`,
     [platform, userId, style],
   );
+}
+
+// --- Auto-moderation strikes -------------------------------------------------
+
+export interface NewWarning {
+  platform: string;
+  userId: string;
+  reason: string;
+  excerpt: string | null;
+  source: 'auto' | 'admin';
+  issuedBy: string | null;
+}
+
+/** Record one warning against a member. */
+export async function addWarning(w: NewWarning): Promise<void> {
+  await pool.query(
+    `INSERT INTO member_warnings (platform, user_id, reason, excerpt, source, issued_by)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [w.platform, w.userId, w.reason, w.excerpt, w.source, w.issuedBy],
+  );
+}
+
+/** Active (uncleared) strike count for a member — the block trigger. */
+export async function countActiveWarnings(platform: string, userId: string): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n
+       FROM member_warnings
+      WHERE platform = $1 AND user_id = $2 AND cleared_at IS NULL`,
+    [platform, userId],
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
+ * Clear all of a member's active warnings (an admin action), stamping who
+ * cleared them and when. Returns the number of strikes cleared, so the caller
+ * can tell "actually unblocked them" from "they had nothing to clear".
+ */
+export async function clearWarnings(platform: string, userId: string, clearedBy: string): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE member_warnings
+        SET cleared_at = now(), cleared_by = $3
+      WHERE platform = $1 AND user_id = $2 AND cleared_at IS NULL`,
+    [platform, userId, clearedBy],
+  );
+  return rowCount ?? 0;
 }
 
 // --- Content reports (member-facing abuse/spam intake) -----------------------

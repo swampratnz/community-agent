@@ -52,6 +52,36 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Auto-moderation (Discord): scan every message for bad language / abuse,
+  // warn the member, and after MODERATION_STRIKE_LIMIT active strikes assign a
+  // muted role that blocks posting until an admin clears their warnings. Off by
+  // default — enabling it is a privacy-posture change (every message is
+  // scanned) and requires the bot to have Manage Roles + Manage Channels (see
+  // SECURITY.md). Admins and super admins are never warned or muted.
+  DISCORD_MODERATION_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Comma-separated bad-language / slur terms, matched case-insensitively as
+  // whole words on every scanned message (Stage 1, zero token cost). Unset =
+  // a small built-in default list (see src/moderation/wordlist.ts).
+  MODERATION_BAD_WORDS: z.string().optional(),
+  // Active strikes at which the member is muted (blocked from posting).
+  MODERATION_STRIKE_LIMIT: z.coerce.number().int().positive().default(3),
+  // Discord role the bot creates (if missing) and assigns to block posting;
+  // per-channel overwrites deny it Send Messages. Removed when an admin clears.
+  MODERATION_MUTED_ROLE_NAME: z.string().default('Muted'),
+  // Private admin channel the bot creates (if missing) and posts warning /
+  // block alerts to; locked to admins by permission overwrites.
+  MODERATION_ADMIN_CHANNEL_NAME: z.string().default('mod-alerts'),
+  // Stage 2 (opt-in, OFF by default): escalate messages NOT caught by the
+  // wordlist to an LLM abuse classifier — one Claude call per escalated message
+  // on the shared Max pool, so enable deliberately. Stage 1 (wordlist) runs
+  // regardless whenever moderation is enabled.
+  MODERATION_LLM_ABUSE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -242,6 +272,14 @@ export const config = {
       channelId: env.DISCORD_WELCOME_CHANNEL_ID,
     },
     archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
+  },
+  moderation: {
+    enabled: env.DISCORD_MODERATION_ENABLED ?? false,
+    badWords: csv(env.MODERATION_BAD_WORDS),
+    strikeLimit: env.MODERATION_STRIKE_LIMIT,
+    mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
+    adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
+    llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,

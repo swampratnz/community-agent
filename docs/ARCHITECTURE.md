@@ -351,6 +351,44 @@ Because `list_reports` is conversation-scoped, a report filed from a DM (no
 ordinary admin is ever a "participant" of another member's 1:1 conversation)
 is only reachable by a super admin — see SECURITY.md's residual-risks note.
 
+## Auto-moderation (Discord)
+
+Where `report_content` is a member-initiated pull, auto-moderation is a
+proactive push: when `DISCORD_MODERATION_ENABLED` is on, the Discord adapter
+scans **every** in-scope guild message (not just ones addressing the bot) via
+`src/moderation/`. It is off by default and a privacy-posture change when
+enabled (every message is inspected) — treat it like ambient archiving.
+
+- **Two-stage classifier** (`makeClassifier`): Stage 1 is a zero-cost,
+  case-insensitive, whole-word wordlist (`MODERATION_BAD_WORDS` on top of a
+  small built-in default) that catches bad language on every message. Stage 2
+  (`MODERATION_LLM_ABUSE_ENABLED`, off by default) escalates only
+  wordlist-clean messages to a single tool-less LLM abuse check — one Claude
+  call per escalated message on the shared Max pool, so it's opt-in.
+- **Strikes** live in `member_warnings` (keyed on raw `(platform, user_id)`,
+  like `response_style_prefs`). Each detection records one `source='auto'`
+  warning; the member gets a warning DM and the alert goes to a private
+  admin channel. **Admins and super admins are never warned or muted** —
+  `isExempt` uses the same role resolution the router does.
+- **Block at the limit**: once a member's *active* (uncleared) strike count
+  reaches `MODERATION_STRIKE_LIMIT` (default 3) the bot assigns a **muted
+  role** (created on demand, with deny-SendMessages overwrites on every text
+  channel) so they can no longer post, and posts a block alert to the admin
+  channel. The muted role is real Discord enforcement, not just the bot
+  ignoring them.
+- **Admin channel**: the bot creates a private `mod-alerts` channel on demand
+  (denied to `@everyone`, allowed to the bot + configured super admins;
+  Discord Administrators see it regardless) and posts every warning and block
+  there.
+- **Clearing**: the admin-tier `clear_warnings(targetUserId)` tool clears all
+  of a member's active warnings (stamping who/when) and lifts the mute (a new
+  `unmute_user` adapter action removing the role). It's lenient/reversible so
+  it isn't CONFIRM-gated, and any admin can clear anyone's warnings. Clears are
+  audited and surface in `moderation_history`.
+
+Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
+see SECURITY.md for the blast-radius and enforcement caveats.
+
 ## Cross-platform identity linking
 
 One human is often two unrelated `community_users` rows — a Discord account
