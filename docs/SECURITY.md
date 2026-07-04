@@ -161,6 +161,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   a digest from becoming a single-person profile. Cost is bounded by a hard
   per-run cap on model calls plus an automatic skip while the usage-alert
   threshold is breached.
+- **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
+  the one place DB-derived content deliberately leaves the database — an
+  aggregate rendering of `context_digests` for the research loop. The
+  boundary is enforced in `src/context/export.ts` and pinned by `SECURITY:`
+  tests: aggregate fields only (topic, counts, summaries, period stamps; no
+  raw content, user ids, display names, conversation ids, or interaction
+  refs), a configurable k-anonymity floor
+  (`CONTEXT_EXPORT_MIN_DISTINCT_USERS`, default 3 — small enough to keep
+  signal in a modest community, large enough that no single person's
+  activity becomes an identifiable line; sub-floor topics are dropped and
+  the drop logged), and a lexical PII scrub (emails, phones, @handles, URL
+  query strings) over the model-written summaries. **Honest limits**: the
+  scrub is lexical, not semantic — a summary can still be *semantically*
+  identifying, the same exposure class as an admin reading a digest; and
+  once committed, the export lives in git history permanently (`forget_me`
+  shapes future exports, it cannot retract committed ones). Both are
+  acceptable **only because this repo is private** — if the repo's
+  visibility ever changes, re-evaluate this export before flipping the
+  switch. Committing the regenerated file is a deliberate human step; the
+  bot never pushes.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no

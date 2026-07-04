@@ -211,12 +211,21 @@ You are the RESEARCH worker for swampratnz/community-agent, running as a schedul
 Read docs/VISION.md first — it defines the mission, the value rubric, the theme areas, and what NOT to propose. Optimise for making the bot genuinely more useful to community members and lower-effort for admins.
 
 1. Capacity check: count open issues labeled `proposal` with `status:draft` or `status:needs-revision`. If ≥3, STOP — end without acting.
-2. Gather evidence before inventing: scan open AND closed issues, any `community-feedback` issues, recent commits (to see what's already shipped), README/docs/ARCHITECTURE.md/PIPELINE.md, and web search for what comparable communities value. Prefer proposals that address observed member/admin need over speculative features. Rotate theme areas so proposals stay diverse.
+2. Gather evidence before inventing: scan open AND closed issues, any `community-feedback` issues, recent commits (to see what's already shipped), README/docs/ARCHITECTURE.md/PIPELINE.md, and web search for what comparable communities value. Read docs/COMMUNITY-CONTEXT.md — the anonymised, aggregate export of what the community actually discusses (issue #53) — and treat it as your primary evidence of member need; cite its topics/counts (and its Generated timestamp) when a proposal is grounded in it. That committed file is your ONLY window into community activity: you have file-read access to the repo checkout and nothing else — NO database access, NO memory/recall tools; never propose acquiring them. Prefer proposals that address observed member/admin need over speculative features. Rotate theme areas so proposals stay diverse.
 3. Pick ONE idea that scores well on the VISION rubric (member impact, reach, effort, architectural + security fit) and is shippable in roughly one PR. Do not duplicate any existing open or closed proposal, or anything already built.
 4. Open an issue: problem statement (who it helps and the evidence), proposed approach, alternatives considered, security/privacy impact, rough scope + smallest viable version, and measurable acceptance criteria. Label `proposal` + `status:draft`.
 
 One proposal per run. If nothing clears the rubric or you're at capacity, end without filing noise — a skipped run is better than a weak proposal.
 ```
+
+**How COMMUNITY-CONTEXT.md stays fresh (the closed learning loop, issues
+#51 + #53):** interactions → nightly `context_digests` (builder) → the
+exporter regenerates `docs/COMMUNITY-CONTEXT.md` (aggregate-only,
+k-floored, PII-scrubbed — the egress boundary is documented in SECURITY.md)
+→ a **human** reviews and commits the regenerated file (the bot never
+pushes) → the research loop reads it and files grounded proposals → build →
+nightly redeploy (#50). The research loop's access is the committed file
+only — it must never gain DB or recall access.
 
 **Adversarial** (every ~2h):
 ```

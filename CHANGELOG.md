@@ -8,6 +8,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ## 2026-07-04
 
 ### Added
+- Anonymised community-context export (opt-in, `CONTEXT_EXPORT_ENABLED`): context digests render into `docs/COMMUNITY-CONTEXT.md` (aggregate-only, k-floored, PII-scrubbed) so the research loop can ground proposals in real community need; committing the file stays a human step (#53).
 - Offline context builder (opt-in, `CONTEXT_BUILDER_ENABLED`): a ~daily job distills stored interactions into durable topic digests admins read with `list_context_digests` — hard-capped model spend, a distinct-author floor, and purge-coherent by construction (#51).
 - Ambient message archiving (opt-in, `DISCORD_ARCHIVE_ALL_MESSAGES`): every message in allowed guild channels is stored for community memory, Discord deletes/edits are honoured against the stored copy, and the bot still only replies when addressed. Requires posting the community notice from SECURITY.md first (#48).
 - In-chat suggestion capture: members can file bot-improvement ideas with `suggest_improvement` (rate-capped); admins triage the queue with `list_suggestions`/`resolve_suggestion`. The bridge to GitHub stays human (#46).

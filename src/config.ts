@@ -116,6 +116,17 @@ const EnvSchema = z.object({
   // k-floor: a cluster needs at least this many distinct authors to be
   // digested, so a digest can't become a one-person profile. Never below 2.
   CONTEXT_BUILDER_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
+  // Anonymised community-context export (issue #53): render digests into
+  // docs/COMMUNITY-CONTEXT.md for the research loop. Off by default. The
+  // export applies its own k-floor and PII scrub — see src/context/export.ts
+  // and SECURITY.md for the egress boundary.
+  CONTEXT_EXPORT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
+  CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
+  CONTEXT_EXPORT_PATH: z.string().default('docs/COMMUNITY-CONTEXT.md'),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -214,6 +225,12 @@ export const config = {
     windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
     maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
     minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
+  },
+  contextExport: {
+    enabled: env.CONTEXT_EXPORT_ENABLED ?? false,
+    windowDays: env.CONTEXT_EXPORT_WINDOW_DAYS,
+    minDistinctUsers: env.CONTEXT_EXPORT_MIN_DISTINCT_USERS,
+    path: env.CONTEXT_EXPORT_PATH,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

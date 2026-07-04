@@ -5,6 +5,7 @@ import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
 import { latestContextDigestAt, purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
 import { runContextBuilder, shouldRunContextBuilder } from './context/builder.js';
+import { writeCommunityContextExport } from './context/export.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
 import type { PlatformAdapter } from './platforms/types.js';
@@ -47,6 +48,11 @@ function startContextBuilder(): ReturnType<typeof setInterval> | null {
       if (!shouldRunContextBuilder(latest, Date.now())) return;
       const result = await runContextBuilder();
       logger.info(result, 'Context builder run complete');
+      // Regenerate the anonymised export after a producing run (issue #53).
+      // Writing the file is automatic; COMMITTING it stays a human step.
+      if (config.contextExport.enabled && result.digests > 0) {
+        await writeCommunityContextExport();
+      }
     } catch (err) {
       logger.error({ err }, 'Context builder run failed');
     }

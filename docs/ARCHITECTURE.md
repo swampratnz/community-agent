@@ -220,6 +220,13 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 - The `knowledge_candidates` review-queue idea from the proposal is
   **deferred to a separate proposal** per the adversarial scope trim.
 
+On top of the digests sits the **anonymised community-context export**
+(issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
+`src/context/export.ts` regenerates `docs/COMMUNITY-CONTEXT.md` —
+aggregate-only (its own k-floor + PII scrub; the egress boundary lives in
+SECURITY.md) — which the research loop reads (file-only, no DB access) once
+a human commits it. `npm run export:context` regenerates it manually.
+
 ## Suggestion capture
 
 `suggest_improvement` (issue #46) closes the "the suggestion died in chat"

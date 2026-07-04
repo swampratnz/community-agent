@@ -19,6 +19,7 @@
     "test:security": "node scripts/check-security-test-count.mjs",
     "migrate": "tsx src/storage/migrate.ts",
     "migrate:prod": "node dist/storage/migrate.js",
+    "export:context": "tsx src/context/export.ts",
     "whatsapp:link": "tsx src/platforms/whatsapp/link.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
