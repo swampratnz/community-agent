@@ -470,6 +470,145 @@ export async function removeMember(platform: Platform, userId: string): Promise<
   return (rowCount ?? 0) > 0;
 }
 
+// --- Cross-platform identity linking ----------------------------------------
+
+export interface PersonIdentity {
+  platform: Platform;
+  userId: string;
+}
+
+/**
+ * All platform identities that are the same person as (platform, userId),
+ * including itself. Unlinked users (person_id NULL, or no community_users
+ * row at all) resolve to just themselves — callers never need to special-case
+ * "not linked". This is the one place forget_me/purge and the reply budget
+ * consult to decide whether to aggregate across identities.
+ */
+export async function resolveLinkedIdentities(platform: Platform, userId: string): Promise<PersonIdentity[]> {
+  const { rows } = await pool.query(
+    `SELECT platform, platform_user_id FROM community_users
+      WHERE person_id = (
+        SELECT person_id FROM community_users WHERE platform = $1 AND platform_user_id = $2
+      )`,
+    [platform, userId],
+  );
+  if (rows.length === 0) return [{ platform, userId }];
+  return rows.map((r) => ({ platform: r.platform as Platform, userId: r.platform_user_id as string }));
+}
+
+/**
+ * Link two platform identities as the same human. Both must already be known
+ * community members (a community_users row exists) — this is a data-hygiene
+ * link over verified members, not a way to grant membership. NEVER touches
+ * `role`: tier stays per-platform-row by design, so linking a member to an
+ * admin can never make the member resolve as admin (see docs/SECURITY.md).
+ *
+ * Idempotent: linking two identities already in the same group is a no-op
+ * success. Linking across two existing (different) groups merges them —
+ * transactional and row-locked so a concurrent link/unlink can't race it.
+ */
+export async function linkMembers(
+  platformA: Platform,
+  userA: string,
+  platformB: Platform,
+  userB: string,
+): Promise<{ personId: number }> {
+  if (platformA === platformB && userA === userB) {
+    throw new Error('Cannot link an identity to itself.');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT platform, platform_user_id, person_id FROM community_users
+        WHERE (platform = $1 AND platform_user_id = $2) OR (platform = $3 AND platform_user_id = $4)
+        FOR UPDATE`,
+      [platformA, userA, platformB, userB],
+    );
+    const rowA = rows.find((r) => r.platform === platformA && r.platform_user_id === userA);
+    const rowB = rows.find((r) => r.platform === platformB && r.platform_user_id === userB);
+    if (!rowA || !rowB) {
+      throw new Error('Both identities must already be known community members.');
+    }
+
+    let personId: number;
+    if (rowA.person_id && rowB.person_id) {
+      const keep = Math.min(Number(rowA.person_id), Number(rowB.person_id));
+      const drop = Math.max(Number(rowA.person_id), Number(rowB.person_id));
+      if (keep !== drop) {
+        await client.query(`UPDATE community_users SET person_id = $1 WHERE person_id = $2`, [keep, drop]);
+        await client.query(`DELETE FROM persons WHERE id = $1`, [drop]);
+      }
+      personId = keep;
+    } else if (rowA.person_id || rowB.person_id) {
+      personId = Number(rowA.person_id ?? rowB.person_id);
+      const unlinkedIsA = !rowA.person_id;
+      await client.query(
+        `UPDATE community_users SET person_id = $1 WHERE platform = $2 AND platform_user_id = $3`,
+        [personId, unlinkedIsA ? platformA : platformB, unlinkedIsA ? userA : userB],
+      );
+    } else {
+      const created = await client.query(`INSERT INTO persons DEFAULT VALUES RETURNING id`);
+      personId = Number(created.rows[0].id);
+      await client.query(
+        `UPDATE community_users SET person_id = $1
+          WHERE (platform = $2 AND platform_user_id = $3) OR (platform = $4 AND platform_user_id = $5)`,
+        [personId, platformA, userA, platformB, userB],
+      );
+    }
+    await client.query('COMMIT');
+    return { personId };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Remove one identity from its person group. If the group would be left with
+ * fewer than two members, it's dissolved entirely (every remaining member's
+ * person_id cleared, the persons row deleted) rather than left as a
+ * one-member group — so no identity can be silently "still linked" to a
+ * now-empty group and no persons row dangles for a future link to reattach
+ * to unexpectedly. Returns false if the identity wasn't linked to anyone.
+ */
+export async function unlinkMember(platform: Platform, userId: string): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `SELECT person_id FROM community_users WHERE platform = $1 AND platform_user_id = $2 FOR UPDATE`,
+      [platform, userId],
+    );
+    const personId = rows[0]?.person_id;
+    if (!personId) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+    await client.query(
+      `UPDATE community_users SET person_id = NULL WHERE platform = $1 AND platform_user_id = $2`,
+      [platform, userId],
+    );
+    const { rows: remaining } = await client.query(
+      `SELECT count(*) AS n FROM community_users WHERE person_id = $1`,
+      [personId],
+    );
+    if (Number(remaining[0].n) <= 1) {
+      await client.query(`UPDATE community_users SET person_id = NULL WHERE person_id = $1`, [personId]);
+      await client.query(`DELETE FROM persons WHERE id = $1`, [personId]);
+    }
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // --- Policies ----------------------------------------------------------------
 
 export async function getPolicyValue(key: string): Promise<unknown> {
@@ -489,31 +628,35 @@ export async function setPolicyValue(key: string, value: unknown, updatedBy: str
 
 // --- Budgets / privacy --------------------------------------------------------
 
-/** Agent replies sent to this user in the last `sinceHours` hours. */
+/**
+ * Agent replies sent to this user in the last `sinceHours` hours, aggregated
+ * across every identity linked to them via `link_member` (so the daily reply
+ * budget can't be double-dipped by messaging from a linked Discord account
+ * and WhatsApp number instead of one).
+ */
 export async function countRepliesToUser(
   platform: Platform,
   userId: string,
   sinceHours = 24,
 ): Promise<number> {
+  const identities = await resolveLinkedIdentities(platform, userId);
+  const params: unknown[] = [String(sinceHours)];
+  const conditions = identities.map((id) => {
+    params.push(id.platform, id.userId);
+    return `(platform = $${params.length - 1} AND meta->>'replyToUserId' = $${params.length})`;
+  });
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM interactions
-      WHERE platform = $1 AND direction = 'outbound'
-        AND meta->>'replyToUserId' = $2
-        AND created_at > now() - ($3 || ' hours')::interval`,
-    [platform, userId, String(sinceHours)],
+      WHERE direction = 'outbound'
+        AND created_at > now() - ($1 || ' hours')::interval
+        AND (${conditions.join(' OR ')})`,
+    params,
   );
   return Number(rows[0]?.n ?? 0);
 }
 
-/**
- * Delete a user's stored data: their inbound messages, the bot's replies to
- * them, knowledge entries sourced from them, and content reports *they
- * submitted* as reporter. Backs both the member-facing forget_me and the
- * super-admin purge_user_data. Membership, audit rows, and reports where the
- * user is only the *target* (not the reporter) are intentionally kept
- * (accountability data — documented in SECURITY.md).
- */
-export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
+/** Delete one identity's stored data — the single-identity core of `purgeUserData`. */
+async function purgeSingleIdentity(platform: Platform, userId: string): Promise<number> {
   const { rowCount: messages } = await pool.query(
     `DELETE FROM interactions
       WHERE platform = $1
@@ -528,6 +671,27 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
     [platform, userId],
   );
   return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0);
+}
+
+/**
+ * Delete a user's stored data: their inbound messages, the bot's replies to
+ * them, knowledge entries sourced from them, and content reports *they
+ * submitted* as reporter — across every identity linked to them via
+ * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
+ * linking two identities means forget_me/purge from *either* now erases
+ * *both*, which is why `link_member` is CONFIRM-gated, audited, and
+ * super-admin-alerted; see docs/SECURITY.md). Backs both the member-facing
+ * `forget_me` and the super-admin `purge_user_data`. Membership, audit rows,
+ * and reports where the user is only the *target* (not the reporter) are
+ * intentionally kept (accountability data — documented in SECURITY.md).
+ */
+export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
+  const identities = await resolveLinkedIdentities(platform, userId);
+  let total = 0;
+  for (const identity of identities) {
+    total += await purgeSingleIdentity(identity.platform, identity.userId);
+  }
+  return total;
 }
 
 /**
