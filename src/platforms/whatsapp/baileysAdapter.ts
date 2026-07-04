@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
+  type BaileysEventMap,
   type WAMessage,
   type WASocket,
 } from '@whiskeysockets/baileys';
@@ -32,6 +33,37 @@ import {
 const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
+// Generic and static — no @-mention or echo of the joiner, so a bulk add
+// can't be turned into a mass-ping and no participant JID reaches the chat.
+const WHATSAPP_GROUP_WELCOME_MESSAGE =
+  "Kia ora! 👋 This bot only replies to registered members. If you're new here, ask an admin in this group to add you as a member.";
+
+export interface WelcomeCooldownState {
+  readonly lastSentAt: Readonly<Record<string, number>>;
+}
+
+export function initialWelcomeCooldownState(): WelcomeCooldownState {
+  return { lastSentAt: {} };
+}
+
+/**
+ * Pure per-group latch, same shape as usageAlert.ts's stepUsageAlertTracker:
+ * at most one welcome per group per `cooldownMs`, so a burst of sequential
+ * joins collapses into a single message instead of one per join.
+ */
+export function stepWelcomeCooldown(
+  state: WelcomeCooldownState,
+  groupJid: string,
+  now: number,
+  cooldownMs: number,
+): { state: WelcomeCooldownState; shouldSend: boolean } {
+  const last = state.lastSentAt[groupJid];
+  if (last !== undefined && now - last < cooldownMs) {
+    return { state, shouldSend: false };
+  }
+  return { state: { lastSentAt: { ...state.lastSentAt, [groupJid]: now } }, shouldSend: true };
+}
+
 /**
  * WhatsApp via Baileys (unofficial WhatsApp Web protocol, dedicated number).
  * Link the number once with `npm run whatsapp:link`, then this adapter reuses
@@ -51,6 +83,7 @@ export class BaileysAdapter implements PlatformAdapter {
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
   /** WA Web version is fetched once and reused across reconnects. */
   private cachedVersion: [number, number, number] | null = null;
+  private welcomeCooldown: WelcomeCooldownState = initialWelcomeCooldownState();
 
   onMessage(handler: MessageHandler): void {
     this.handler = handler;
@@ -135,6 +168,12 @@ export class BaileysAdapter implements PlatformAdapter {
         this.onWhatsappMessage(msg).catch((err) => logger.error({ err }, 'WA message handling failed'));
       }
     });
+
+    sock.ev.on('group-participants.update', (update) => {
+      this.onGroupParticipantsUpdate(update).catch((err) =>
+        logger.error({ err }, 'WhatsApp group welcome failed'),
+      );
+    });
   }
 
   private async onWhatsappMessage(msg: WAMessage): Promise<void> {
@@ -195,6 +234,32 @@ export class BaileysAdapter implements PlatformAdapter {
     };
 
     await this.handler(normalised);
+  }
+
+  /**
+   * WhatsApp's analogue of Discord's onGuildMemberAdd: `group-participants.update`
+   * fires whenever someone joins (or is added to) a group the linked number is
+   * in. Off unless WHATSAPP_WELCOME_ENABLED=true. Posts ONE static, non-agent
+   * message (no LLM call) to the group itself — deliberately never a 1:1 DM to
+   * the new participant, since an unsolicited DM to a stranger's number is
+   * exactly the Baileys ban-risk pattern this avoids. Baileys batches
+   * simultaneous joins into one event already; the cooldown additionally
+   * collapses sequential joins across time into a single message per window.
+   */
+  private async onGroupParticipantsUpdate(
+    update: BaileysEventMap['group-participants.update'],
+  ): Promise<void> {
+    if (!config.whatsapp.welcome.enabled) return;
+    if (update.action !== 'add') return;
+    if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(update.id)) return;
+    if (!this.sock) return;
+
+    const cooldownMs = config.whatsapp.welcome.cooldownMinutes * 60_000;
+    const step = stepWelcomeCooldown(this.welcomeCooldown, update.id, Date.now(), cooldownMs);
+    this.welcomeCooldown = step.state;
+    if (!step.shouldSend) return;
+
+    await this.sock.sendMessage(update.id, { text: WHATSAPP_GROUP_WELCOME_MESSAGE });
   }
 
   /**

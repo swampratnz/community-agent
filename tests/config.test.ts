@@ -39,3 +39,8 @@ test('config: blank optional coerced-number env var falls back to its default', 
   assert.equal(config.whatsapp.cloud.webhookPort, 8080);
   assert.equal(config.behaviour.interactionRetentionDays, 0);
 });
+
+test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
+  assert.equal(config.whatsapp.welcome.enabled, false);
+  assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);
+});

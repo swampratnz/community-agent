@@ -140,6 +140,15 @@ keep volume human-like, or switch to `WhatsAppCloudAdapter`
 deliberate, accepted trade-off for immediate, free operation; revisit it
 before scaling.
 
+Enabling `WHATSAPP_WELCOME_ENABLED` adds an **unprompted, event-triggered
+automated group post** (a static message on `group-participants.update`) to
+this unofficial path — not a risk-free feature. It never DMs the joiner
+(the higher-risk pattern), it's operator-gated (off by default), and it's
+cooldown-bounded (`WHATSAPP_WELCOME_COOLDOWN_MINUTES`) so it can't fire on
+every join in an active group — but it is still a new automation pattern the
+account posts without being addressed first, which is exactly the kind of
+bot-fingerprint the ToS-risk mitigations above are trying to minimise.
+
 ### WhatsApp Cloud API webhook
 `WhatsAppCloudAdapter` exposes a public HTTP listener
 (`WHATSAPP_CLOUD_WEBHOOK_PORT`) that must sit behind TLS termination (see

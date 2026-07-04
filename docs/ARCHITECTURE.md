@@ -131,11 +131,23 @@ and an outbound filter on every reply — secret redaction plus the
 Two pieces make the default gated experience less friction-y without
 weakening it:
 
-1. **Welcome message** (Discord only — WhatsApp has no equivalent "join"
-   event). Off unless `DISCORD_WELCOME_ENABLED=true`. On join, `DiscordAdapter`
-   sends a static, non-agent DM (no LLM call, no cost) pointing the new member
-   at an admin; if their DMs are closed, it falls back to posting in
-   `DISCORD_WELCOME_CHANNEL_ID` if configured.
+1. **Welcome message.**
+   - **Discord**: off unless `DISCORD_WELCOME_ENABLED=true`. On join,
+     `DiscordAdapter` sends a static, non-agent DM (no LLM call, no cost)
+     pointing the new member at an admin; if their DMs are closed, it falls
+     back to posting in `DISCORD_WELCOME_CHANNEL_ID` if configured.
+   - **WhatsApp** (Baileys only — the Cloud API is 1:1-only, no group-join
+     event to hook): off unless `WHATSAPP_WELCOME_ENABLED=true`.
+     `BaileysAdapter` subscribes to Baileys' `group-participants.update` and,
+     on `action: 'add'`, posts ONE static, non-agent message **to the group
+     itself** — never a 1:1 DM to the new participant, since an unsolicited
+     DM to a stranger's number is exactly the kind of Baileys ban-risk
+     pattern this avoids (see `docs/SECURITY.md`). Respects
+     `WHATSAPP_ALLOWED_JIDS` and a per-group cooldown
+     (`WHATSAPP_WELCOME_COOLDOWN_MINUTES`, default 180) that collapses both a
+     simultaneous bulk add and a burst of sequential joins into a single
+     message per window, so the bot can't turn into a per-join spammer in an
+     active group.
 2. **Pending-access queue**. When a gated guest addresses the bot,
    `router.ts` upserts a row into `access_requests` (platform, user id/name,
    first/last-requested timestamps, request count) — deliberately *never*

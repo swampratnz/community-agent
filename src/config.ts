@@ -49,6 +49,15 @@ const EnvSchema = z.object({
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
   WHATSAPP_AUTH_DIR: z.string().default('./whatsapp-auth'),
   WHATSAPP_ALLOWED_JIDS: z.string().optional(),
+  // Welcome message posted to a group on group-participants.update (Baileys
+  // only); off unless explicitly enabled.
+  WHATSAPP_WELCOME_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Minimum gap between welcome posts to the same group, so a burst of
+  // sequential joins can't turn the bot into a per-join spammer.
+  WHATSAPP_WELCOME_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(180),
 
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
@@ -152,6 +161,10 @@ export const config = {
     provider: env.WHATSAPP_PROVIDER,
     authDir: env.WHATSAPP_AUTH_DIR,
     allowedJids: csv(env.WHATSAPP_ALLOWED_JIDS),
+    welcome: {
+      enabled: env.WHATSAPP_WELCOME_ENABLED ?? false,
+      cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,
+    },
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
       accessToken: env.WHATSAPP_CLOUD_ACCESS_TOKEN,
