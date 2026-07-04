@@ -117,6 +117,18 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - All messages are stored for memory/audit. **Inform your community** that an
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
+- **Server roster** (`server_roster`, issue #47): join/leave events plus a
+  startup backfill persist **identity metadata for every guild member** —
+  platform user id, display name, join/leave timestamps, rejoin count —
+  including non-members and lurkers who have never interacted with the bot.
+  It stores **no message content** (pinned by a `SECURITY:` test, plus a
+  structural column check so a content-bearing column can't appear
+  silently). Reads are **admin-tier and guild-wide** (`list_roster` is not
+  conversation-scoped — same precedent as `list_access_requests`), display
+  names are wrapped as untrusted data, and `forget_me`/`purge_user_data`
+  delete the person's roster row. Roster rows are durable (like
+  `community_users`); age-purging `left_at` rows is a possible future
+  refinement, noted under residual risks.
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`).
 - **Retention policy**: set `INTERACTION_RETENTION_DAYS` to age-purge raw
@@ -208,6 +220,15 @@ the supported path.
   (platform, user id/name) and a request count/timestamps for guests who
   addressed the bot, but never their message content — an admin-only,
   `list_access_requests`-gated read, not a new content-storage surface.
+- **The roster narrows the "guests are invisible" spirit, not its letter**:
+  `server_roster` deliberately records the *identity* (never content) of every
+  guild member — including lurkers who never touched the bot — because the
+  onboarding queue ("joined but never added") and growth counts need exactly
+  that. It is metadata every server member can already see in the member
+  list, it is deletable (`forget_me`/`purge_user_data`), and reads are
+  admin-only and guild-wide rather than conversation-scoped. Rows for people
+  who left are kept (with `left_at`) for churn history; an age-purge of
+  departed rows is a future refinement if retention expectations tighten.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, and content reports *they submitted
   as reporter*. Membership rows, the admin audit log, and reports where the
@@ -248,7 +269,9 @@ number could reach an unrelated person).
 - [ ] `whatsapp-auth/` directory is `chmod 700`, not in git.
 - [ ] Postgres is not exposed to the network.
 - [ ] Bot has minimal Discord permissions.
-- [ ] Community is informed that interactions are logged.
+- [ ] Community is informed that interactions are logged **and that server
+      join/leave events (identity + timestamps, no content) are recorded for
+      admin onboarding/growth views**.
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.

@@ -16,6 +16,7 @@ import {
   listAccessRequests,
   listKnowledge,
   listReports,
+  listRoster,
   MODERATION_ACTION_KINDS,
   purgeUserData,
   recentAuditEntries,
@@ -25,6 +26,7 @@ import {
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
+  rosterCounts,
   saveKnowledge,
   searchKnowledge,
   searchMemory,
@@ -611,6 +613,48 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const listRosterTool = tool(
+    'list_roster',
+    'Show the server roster kept from join/leave events: recent joiners, people who joined but were ' +
+      'never added as members (the onboarding queue), or recent leavers — plus growth counts. Identity ' +
+      'metadata only, never message content. Guild-wide (not conversation-scoped). Admin only.',
+    {
+      filter: z
+        .enum(['recent', 'not_members', 'left', 'all'])
+        .optional()
+        .describe(
+          "'recent' (default) = joined within the window; 'not_members' = present but never added to " +
+            "community_users (onboarding queue); 'left' = left within the window; 'all' = everyone present",
+        ),
+      days: z.number().optional().describe("Window in days for 'recent'/'left' (default 7, max 90)"),
+      limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_roster');
+      const filter = args.filter ?? 'recent';
+      const rows = await listRoster(caller.platform, filter, args.days ?? 7, args.limit ?? 50);
+      const counts = await rosterCounts(caller.platform);
+      const summary = `Roster: ${counts.total} present · ${counts.joinedThisWeek} joined this week · ${counts.leftThisWeek} left this week.`;
+      if (rows.length === 0) return text(`${summary}\nNo entries match filter "${filter}".`);
+      return text(
+        `${summary}\n` +
+          untrusted(
+            `Roster (${filter})`,
+            rows
+              .map(
+                (r) =>
+                  `${r.displayName ?? r.userId} (${r.userId}) — joined ${r.joinedAt.toISOString()}` +
+                  `${r.leftAt ? `, left ${r.leftAt.toISOString()}` : ''}` +
+                  `${r.rejoinedCount > 0 ? `, rejoined ${r.rejoinedCount}x` : ''}` +
+                  `${r.isMember ? '' : ', NOT yet a member'}`,
+              )
+              .join('\n'),
+          ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const questionDigest = tool(
     'question_digest',
     'Show recurring questions asked in your conversations over recent days (count >= 2), a signal for what should become a knowledge entry. Admin only.',
@@ -971,6 +1015,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,
+      listRosterTool,
       questionDigest,
       moderationHistory,
       listReportsTool,

@@ -36,6 +36,11 @@ const {
   listReports,
   resolveContentReport,
   REPORT_RATE_LIMIT_PER_DAY,
+  upsertRosterMember,
+  markRosterLeave,
+  listRoster,
+  rosterCounts,
+  upsertMember,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -784,6 +789,164 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
 
   await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
 });
+
+test(
+  'repository: roster join/leave/rejoin lifecycle and idempotent backfill upsert (issue #47)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-roster-user`;
+
+    // Join + a second identical upsert (the backfill path): one row, no
+    // rejoin counted, joined_at unchanged.
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Roster Person' });
+    const first = await pool.query(
+      `SELECT joined_at, left_at, rejoined_count FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(first.rows.length, 1);
+    assert.equal(first.rows[0].left_at, null);
+    assert.equal(Number(first.rows[0].rejoined_count), 0);
+
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Roster Person' });
+    const second = await pool.query(
+      `SELECT joined_at, left_at, rejoined_count,
+              (SELECT count(*) FROM server_roster WHERE platform = 'discord' AND user_id = $1) AS n
+         FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(Number(second.rows[0].n), 1, 'backfill re-upsert is idempotent: still exactly one row');
+    assert.equal(Number(second.rows[0].rejoined_count), 0, 'a re-upsert while present is not a rejoin');
+    assert.equal(
+      new Date(second.rows[0].joined_at).getTime(),
+      new Date(first.rows[0].joined_at).getTime(),
+      'joined_at does not move on an idempotent re-upsert',
+    );
+
+    // Leave marks left_at; a second leave is a no-op.
+    assert.equal(await markRosterLeave('discord', userId), true);
+    assert.equal(await markRosterLeave('discord', userId), false, 'already-left row is not re-marked');
+
+    // Rejoin clears left_at, bumps rejoined_count, resets joined_at.
+    await upsertRosterMember({ platform: 'discord', userId });
+    const rejoined = await pool.query(
+      `SELECT left_at, rejoined_count, display_name FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(rejoined.rows[0].left_at, null, 'rejoin clears left_at');
+    assert.equal(Number(rejoined.rows[0].rejoined_count), 1, 'rejoin increments rejoined_count');
+    assert.equal(
+      rejoined.rows[0].display_name,
+      'Roster Person',
+      'an upsert without a display name preserves the stored one',
+    );
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'repository: listRoster surfaces the joined-but-not-a-member onboarding queue and growth counts (issue #47)',
+  { skip },
+  async () => {
+    const lurker = `${RUN}-roster-lurker`;
+    const member = `${RUN}-roster-member`;
+    const leaver = `${RUN}-roster-leaver`;
+
+    await upsertRosterMember({ platform: 'discord', userId: lurker, displayName: 'Lurker' });
+    await upsertRosterMember({ platform: 'discord', userId: member, displayName: 'Member' });
+    await upsertRosterMember({ platform: 'discord', userId: leaver, displayName: 'Leaver' });
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: `${RUN}-admin` });
+    await markRosterLeave('discord', leaver);
+
+    const notMembers = await listRoster('discord', 'not_members', 7, 200);
+    assert.ok(
+      notMembers.some((r) => r.userId === lurker && !r.isMember),
+      'a present non-member appears in the onboarding queue',
+    );
+    assert.ok(
+      !notMembers.some((r) => r.userId === member),
+      'a registered member is not in the onboarding queue',
+    );
+    assert.ok(
+      !notMembers.some((r) => r.userId === leaver),
+      'someone who left is not in the onboarding queue',
+    );
+
+    const recent = await listRoster('discord', 'recent', 7, 200);
+    assert.ok(
+      recent.some((r) => r.userId === member && r.isMember),
+      'recent joins are flagged with membership status',
+    );
+
+    const left = await listRoster('discord', 'left', 7, 200);
+    assert.ok(
+      left.some((r) => r.userId === leaver && r.leftAt !== null),
+      'recent leavers appear under the left filter',
+    );
+
+    const counts = await rosterCounts('discord');
+    assert.ok(counts.total >= 2, 'present count includes the two still-present fixtures');
+    assert.ok(counts.joinedThisWeek >= 2, 'this-week join count includes the fixtures');
+    assert.ok(counts.leftThisWeek >= 1, 'this-week leave count includes the leaver');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
+  },
+);
+
+test(
+  'SECURITY: repository: roster stores identity metadata only — no content column exists and no roster write touches interactions (issue #47)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-roster-security`;
+
+    // Structural pin: the table cannot hold message content because no such
+    // column exists. A future migration adding one must consciously break
+    // this list (and re-argue the SECURITY.md posture).
+    const { rows: columns } = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'server_roster' ORDER BY column_name`,
+    );
+    assert.deepEqual(
+      columns.map((c) => c.column_name).sort(),
+      ['display_name', 'id', 'joined_at', 'left_at', 'platform', 'rejoined_count', 'updated_at', 'user_id'],
+      'server_roster columns are identity metadata only — adding a content-bearing column is a posture change',
+    );
+
+    // Behavioural pin: the full roster lifecycle writes nothing to the
+    // message-content table.
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'No Content' });
+    await markRosterLeave('discord', userId);
+    await upsertRosterMember({ platform: 'discord', userId });
+    const { rows: interactionRows } = await pool.query(
+      `SELECT 1 FROM interactions WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(interactionRows.length, 0, 'no roster code path ever writes message content');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me and purge_user_data) removes the roster row (issue #47)',
+  { skip },
+  async () => {
+    // forget_me and purge_user_data both execute purgeUserData; exercise it
+    // twice on fresh rows so each caller's path is covered by the assertion.
+    for (const via of ['forget_me', 'purge_user_data']) {
+      const userId = `${RUN}-roster-purge-${via}`;
+      await upsertRosterMember({ platform: 'discord', userId, displayName: 'Purge Me' });
+      const purged = await purgeUserData('discord', userId);
+      assert.ok(purged >= 1, `${via}: purge count includes the roster row`);
+      const { rows } = await pool.query(
+        `SELECT 1 FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+        [userId],
+      );
+      assert.equal(rows.length, 0, `${via}: the roster row is gone after purgeUserData`);
+    }
+  },
+);
 
 test(
   'SECURITY: repository: resolveContentReport refuses to update a report outside the given conversation scope',

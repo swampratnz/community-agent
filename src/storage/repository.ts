@@ -530,11 +530,12 @@ export async function countRepliesToUser(
 
 /**
  * Delete a user's stored data: their inbound messages, the bot's replies to
- * them, knowledge entries sourced from them, and content reports *they
- * submitted* as reporter. Backs both the member-facing forget_me and the
- * super-admin purge_user_data. Membership, audit rows, and reports where the
- * user is only the *target* (not the reporter) are intentionally kept
- * (accountability data — documented in SECURITY.md).
+ * them, knowledge entries sourced from them, content reports *they
+ * submitted* as reporter, and their server_roster row. Backs both the
+ * member-facing forget_me and the super-admin purge_user_data. Membership,
+ * audit rows, and reports where the user is only the *target* (not the
+ * reporter) are intentionally kept (accountability data — documented in
+ * SECURITY.md).
  */
 export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
   const { rowCount: messages } = await pool.query(
@@ -550,7 +551,11 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
     `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
     [platform, userId],
   );
-  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0);
+  const { rowCount: roster } = await pool.query(
+    `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  return (messages ?? 0) + (knowledge ?? 0) + (reports ?? 0) + (roster ?? 0);
 }
 
 /**
@@ -802,6 +807,126 @@ export async function listAccessRequests(limit = 50): Promise<AccessRequest[]> {
 /** Clear a resolved access request (e.g. after add_member succeeds for that user). */
 export async function clearAccessRequest(platform: Platform, userId: string): Promise<void> {
   await pool.query(`DELETE FROM access_requests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+}
+
+// --- Server roster (join/leave persistence) ----------------------------------
+
+/**
+ * Upsert a roster row for someone present in the server. Used by both the
+ * join event and the startup backfill, so it must be idempotent for an
+ * already-present user: display name refreshes, nothing else moves. A user
+ * whose row is marked left re-activates as a rejoin (left_at cleared,
+ * rejoined_count bumped, joined_at reset to now). Identity metadata only —
+ * callers must never pass message content (SECURITY.md invariant).
+ */
+export async function upsertRosterMember(input: {
+  platform: Platform;
+  userId: string;
+  displayName?: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO server_roster (platform, user_id, display_name)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (platform, user_id) DO UPDATE SET
+       display_name = COALESCE(EXCLUDED.display_name, server_roster.display_name),
+       rejoined_count = CASE
+         WHEN server_roster.left_at IS NOT NULL
+         THEN server_roster.rejoined_count + 1 ELSE server_roster.rejoined_count END,
+       joined_at = CASE
+         WHEN server_roster.left_at IS NOT NULL THEN now() ELSE server_roster.joined_at END,
+       left_at = NULL`,
+    [input.platform, input.userId, input.displayName ?? null],
+  );
+}
+
+/** Mark a roster row as left. No-op (false) if unknown or already marked left. */
+export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE server_roster SET left_at = now()
+      WHERE platform = $1 AND user_id = $2 AND left_at IS NULL`,
+    [platform, userId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export type RosterFilter = 'recent' | 'not_members' | 'left' | 'all';
+
+export interface RosterEntry {
+  userId: string;
+  displayName: string | null;
+  joinedAt: Date;
+  leftAt: Date | null;
+  rejoinedCount: number;
+  isMember: boolean;
+}
+
+/**
+ * Roster view for admins. Deliberately guild-wide, not conversation-scoped —
+ * the roster is the same member list every server member already sees
+ * (documented in SECURITY.md alongside list_access_requests). 'not_members'
+ * is the onboarding queue: present in the server but never added to
+ * community_users.
+ */
+export async function listRoster(
+  platform: Platform,
+  filter: RosterFilter = 'recent',
+  days = 7,
+  limit = 50,
+): Promise<RosterEntry[]> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 90);
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+
+  const params: unknown[] = [platform];
+  let where = 'r.platform = $1';
+  if (filter === 'recent') {
+    params.push(`${clampedDays} days`);
+    where += ` AND r.left_at IS NULL AND r.joined_at > now() - $${params.length}::interval`;
+  } else if (filter === 'left') {
+    params.push(`${clampedDays} days`);
+    where += ` AND r.left_at IS NOT NULL AND r.left_at > now() - $${params.length}::interval`;
+  } else if (filter === 'not_members') {
+    where += ' AND r.left_at IS NULL AND cu.id IS NULL';
+  }
+  params.push(clampedLimit);
+
+  const { rows } = await pool.query(
+    `SELECT r.user_id, r.display_name, r.joined_at, r.left_at, r.rejoined_count,
+            (cu.id IS NOT NULL) AS is_member
+       FROM server_roster r
+       LEFT JOIN community_users cu
+         ON cu.platform = r.platform AND cu.platform_user_id = r.user_id
+      WHERE ${where}
+      ORDER BY COALESCE(r.left_at, r.joined_at) DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((r) => ({
+    userId: r.user_id,
+    displayName: r.display_name,
+    joinedAt: r.joined_at,
+    leftAt: r.left_at,
+    rejoinedCount: Number(r.rejoined_count),
+    isMember: Boolean(r.is_member),
+  }));
+}
+
+/** Growth-pulse counts for the roster summary line. */
+export async function rosterCounts(
+  platform: Platform,
+): Promise<{ total: number; joinedThisWeek: number; leftThisWeek: number }> {
+  const { rows } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE left_at IS NULL) AS total,
+       count(*) FILTER (WHERE left_at IS NULL AND joined_at > now() - interval '7 days') AS joined_week,
+       count(*) FILTER (WHERE left_at IS NOT NULL AND left_at > now() - interval '7 days') AS left_week
+     FROM server_roster WHERE platform = $1`,
+    [platform],
+  );
+  return {
+    total: Number(rows[0]?.total ?? 0),
+    joinedThisWeek: Number(rows[0]?.joined_week ?? 0),
+    leftThisWeek: Number(rows[0]?.left_week ?? 0),
+  };
 }
 
 // --- Question digest ---------------------------------------------------------

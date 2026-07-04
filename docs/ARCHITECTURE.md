@@ -114,6 +114,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
+| `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -155,6 +156,17 @@ weakening it:
    guests. Admins call `list_access_requests` to see who's waiting instead of
    relying on informal pings; `add_member` clears the row for that user once
    actioned.
+3. **Server roster** (issue #47). The Discord adapter records every
+   `guildMemberAdd`/`guildMemberRemove` into `server_roster` (identity
+   metadata only — see SECURITY.md) and idempotently backfills the current
+   member list once on startup, skipping bots. `list_roster` (admin) answers
+   "who joined this week?", "who joined but was never added as a member?"
+   (the gated-mode onboarding queue — the exact conversion funnel
+   `add_member` serves), and "who left?", with a total/joined/left weekly
+   pulse line. Rejoins clear `left_at` and bump `rejoined_count`. No new
+   gateway intent: the `GuildMembers` intent the bot already holds for role
+   resolution streams these events anyway; a `GuildMember` partial is enabled
+   so leaves of uncached members still fire.
 
 ## Abuse reporting
 

@@ -4,6 +4,7 @@ import {
   GatewayIntentBits,
   Partials,
   type GuildMember,
+  type PartialGuildMember,
   type Message,
   ChannelType,
 } from 'discord.js';
@@ -12,6 +13,7 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { markRosterLeave, upsertRosterMember } from '../../storage/repository.js';
 import { chunkText } from '../textChunk.js';
 import {
   paramString,
@@ -48,7 +50,10 @@ export class DiscordAdapter implements PlatformAdapter {
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.DirectMessages,
       ],
-      partials: [Partials.Channel, Partials.Message],
+      // GuildMember partial so guildMemberRemove still fires for members the
+      // cache never held (needed by the roster's leave tracking). Partials
+      // are a caching setting, not a gateway intent — no new intent here.
+      partials: [Partials.Channel, Partials.Message, Partials.GuildMember],
     });
   }
 
@@ -62,12 +67,19 @@ export class DiscordAdapter implements PlatformAdapter {
     });
 
     this.client.on(Events.GuildMemberAdd, (member) => {
-      this.onGuildMemberAdd(member).catch((err) => logger.error({ err }, 'Welcome message failed'));
+      this.onGuildMemberAdd(member).catch((err) => logger.error({ err }, 'Member join handling failed'));
+    });
+    this.client.on(Events.GuildMemberRemove, (member) => {
+      this.onGuildMemberRemove(member).catch((err) => logger.error({ err }, 'Roster leave failed'));
     });
 
     this.client.once(Events.ClientReady, (c) => {
       this.connected = true;
       logger.info({ user: c.user.tag }, 'Discord connected');
+      // One-shot idempotent roster backfill so "everyone already here" is
+      // covered, not just future joiners. Fire-and-forget: a backfill
+      // failure must never block message handling.
+      void this.backfillRoster();
     });
     // Steady-state signal for /healthz + disconnect alerting — discord.js
     // handles gateway resume internally, but a shard going down means we're
@@ -144,14 +156,25 @@ export class DiscordAdapter implements PlatformAdapter {
   }
 
   /**
-   * Static, non-agent welcome for new joiners — no LLM call, same cost
-   * profile as the gated notice. Off unless DISCORD_WELCOME_ENABLED=true, so
-   * existing deployments are unaffected. DM-first; falls back to the
-   * configured channel if the member has DMs closed.
+   * Roster join recording (always, identity metadata only — never message
+   * content, see SECURITY.md) plus the static, non-agent welcome — no LLM
+   * call, same cost profile as the gated notice. The welcome stays off
+   * unless DISCORD_WELCOME_ENABLED=true, so existing deployments are
+   * unaffected. DM-first; falls back to the configured channel if the
+   * member has DMs closed.
    */
   private async onGuildMemberAdd(member: GuildMember): Promise<void> {
-    if (!config.discord.welcome.enabled) return;
     if (member.guild.id !== config.discord.guildId) return;
+
+    if (!member.user.bot) {
+      await upsertRosterMember({
+        platform: 'discord',
+        userId: member.id,
+        displayName: member.displayName,
+      }).catch((err) => logger.warn({ err, userId: member.id }, 'Roster join record failed'));
+    }
+
+    if (!config.discord.welcome.enabled) return;
 
     try {
       await member.send({ content: WELCOME_MESSAGE, allowedMentions: { parse: [] } });
@@ -171,6 +194,40 @@ export class DiscordAdapter implements PlatformAdapter {
       });
     } catch (err) {
       logger.warn({ err, userId: member.id, channelId }, 'Welcome channel fallback failed');
+    }
+  }
+
+  private async onGuildMemberRemove(member: GuildMember | PartialGuildMember): Promise<void> {
+    if (member.guild.id !== config.discord.guildId) return;
+    if (member.user?.bot) return;
+    await markRosterLeave('discord', member.id).catch((err) =>
+      logger.warn({ err, userId: member.id }, 'Roster leave record failed'),
+    );
+  }
+
+  /**
+   * Idempotent upsert of every current (non-bot) guild member, so the roster
+   * covers lurkers who joined before this feature existed. Uses the member
+   * list the GuildMembers intent already streams to the bot — no new intent,
+   * no message content.
+   */
+  private async backfillRoster(): Promise<void> {
+    try {
+      const guild = await this.client.guilds.fetch(config.discord.guildId);
+      const members = await guild.members.fetch();
+      let count = 0;
+      for (const member of members.values()) {
+        if (member.user.bot) continue;
+        await upsertRosterMember({
+          platform: 'discord',
+          userId: member.id,
+          displayName: member.displayName,
+        });
+        count += 1;
+      }
+      logger.info({ count }, 'Roster backfill complete');
+    } catch (err) {
+      logger.warn({ err }, 'Roster backfill failed');
     }
   }
 

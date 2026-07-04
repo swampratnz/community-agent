@@ -64,6 +64,18 @@ test('SECURITY: list_reports and resolve_report are admin-only (member/guest mus
   }
 });
 
+test('SECURITY: list_roster is admin-only — members/guests never see the roster (issue #47)', () => {
+  const tool = 'mcp__community__list_roster';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_roster must be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'list_roster must not be in MEMBER_TOOLS');
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_roster`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_roster`);
+  }
+});
+
 test('SECURITY: admins never get super-admin tools', () => {
   const tools = toolsForRole('admin');
   for (const t of SUPER_ADMIN_TOOLS) {
