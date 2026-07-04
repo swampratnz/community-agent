@@ -29,10 +29,11 @@ const testsDir = path.join(repoRoot, 'tests');
 // then to 57 with the approved-issues batch build (#45-#53), then to 59 with
 // the PR #91 review round (ambient recall scoping + URL-path token scrub),
 // then to 61 with the WhatsApp Cloud app-secret redaction tests (#110),
-// then to 65 with issue #106 (knowledge_search scope enforcement: 3 new
+// then to 62 with the module-mocks runner-flag canary (#109),
+// then to 66 with issue #106 (knowledge_search scope enforcement: 3 new
 // tests/knowledgeScope.test.ts cases, plus the existing near-duplicate scope
 // test renamed into the SECURITY: namespace).
-const MIN_SECURITY_TESTS = 65;
+const MIN_SECURITY_TESTS = 66;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
