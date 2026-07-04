@@ -470,6 +470,95 @@ test(
 );
 
 test(
+  'repository: recentModerationEntries filters by targetUserId and actionKind (issue #80)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-modfilter-in`;
+    const outOfScopeConvo = `${RUN}-c-modfilter-out`;
+    const actor = `${RUN}-modfilter-admin`;
+    const targetA = `${RUN}-modfilter-target-a`;
+    const targetB = `${RUN}-modfilter-target-b`;
+
+    // Two members warned in the same conversation.
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor,
+      actionKind: 'warn_user',
+      targetUserId: targetA,
+      conversationId: inScopeConvo,
+      params: { reason: 'first warning' },
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor,
+      actionKind: 'warn_user',
+      targetUserId: targetB,
+      conversationId: inScopeConvo,
+      result: 'warned',
+      success: true,
+    });
+    // Same member, different (allow-listed) action kind — for the actionKind filter.
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor,
+      actionKind: 'timeout_user',
+      targetUserId: targetA,
+      conversationId: inScopeConvo,
+      result: 'timed out',
+      success: true,
+    });
+    // Same target, same action kind, but in a conversation the admin can't see —
+    // must not leak in even though targetUserId/actionKind would otherwise match.
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor,
+      actionKind: 'warn_user',
+      targetUserId: targetA,
+      conversationId: outOfScopeConvo,
+      result: 'warned',
+      success: true,
+    });
+
+    const byTarget = await recentModerationEntries([inScopeConvo], 20, targetA);
+    assert.equal(byTarget.length, 2, 'only targetA rows in-scope survive (warn_user + timeout_user)');
+    assert.ok(
+      byTarget.every((r) => r.targetUserId === targetA),
+      'targetB never appears when filtering by targetA',
+    );
+    assert.ok(!('params' in byTarget[0]), 'params is still omitted through the filtered path');
+
+    const byKind = await recentModerationEntries([inScopeConvo], 20, undefined, 'warn_user');
+    assert.equal(byKind.length, 2, 'both warn_user rows (targetA and targetB) survive the actionKind filter');
+    assert.ok(
+      byKind.every((r) => r.actionKind === 'warn_user'),
+      'timeout_user is excluded when filtering by warn_user',
+    );
+
+    const both = await recentModerationEntries([inScopeConvo], 20, targetA, 'warn_user');
+    assert.equal(both.length, 1, 'combining filters narrows to their intersection');
+    assert.equal(both[0].targetUserId, targetA);
+    assert.equal(both[0].actionKind, 'warn_user');
+
+    const scopedNegative = await recentModerationEntries([inScopeConvo], 20, targetA, 'timeout_user');
+    assert.ok(
+      scopedNegative.every((r) => r.conversationId !== outOfScopeConvo),
+      'a valid target/kind filter never surfaces rows from a conversation outside the caller scope',
+    );
+
+    const noFilters = await recentModerationEntries([inScopeConvo], 20);
+    assert.equal(
+      noFilters.length,
+      3,
+      'omitting both filters is unchanged from today: all 3 in-scope allow-listed rows returned',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+  },
+);
+
+test(
   'repository: usageStats.costByRole aggregates cost_usd by role over outbound rows only, ordered deterministically',
   { skip },
   async () => {

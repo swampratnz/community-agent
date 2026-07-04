@@ -15,7 +15,8 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 // exported and tested directly here rather than through the full MCP
 // tool-call transport, which the rest of add_member (upsertMember/audited/
 // clearAccessRequest, all DB-backed) already exercises via repository.test.ts.
-const { notifyMemberApproved } = await import('../src/agent/tools.js');
+const { notifyMemberApproved, buildToolServer } = await import('../src/agent/tools.js');
+const { MODERATION_ACTION_KINDS } = await import('../src/storage/repository.js');
 
 function stubAdapter(sendDirectMessage: PlatformAdapter['sendDirectMessage']): PlatformAdapter {
   return {
@@ -64,4 +65,35 @@ test('notifyMemberApproved swallows a DM failure rather than throwing (grant sta
   });
 
   await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false));
+});
+
+test('SECURITY: moderation_history rejects an actionKind outside the allow-list at the zod schema boundary', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['moderation_history'];
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ actionKind: 'grant_admin' }).success,
+    false,
+    'a privileged kind outside MODERATION_ACTION_KINDS must fail validation, never reach SQL',
+  );
+  for (const kind of MODERATION_ACTION_KINDS) {
+    assert.equal(
+      registeredTool.inputSchema.safeParse({ actionKind: kind }).success,
+      true,
+      `${kind} is allow-listed`,
+    );
+  }
+  assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'actionKind stays optional');
 });

@@ -576,7 +576,7 @@ export async function recentAuditEntries(limit = 20): Promise<
 
 /** action_kinds an admin-tier `moderation_history` read may surface — allow-list so a
  * future privileged kind (e.g. another `grant_*`) is excluded by default, not by omission. */
-const MODERATION_ACTION_KINDS = [
+export const MODERATION_ACTION_KINDS = [
   'warn_user',
   'timeout_user',
   'kick_user',
@@ -590,10 +590,16 @@ const MODERATION_ACTION_KINDS = [
  * recentAuditEntries but additionally surfaces conversation_id (needed both for the
  * scoping filter and so an admin in multiple channels can attribute an entry) and
  * omits `params` (may carry free-text reasons with member PII beyond the target id).
+ *
+ * `targetUserId`/`actionKind`, when present, narrow the result further — same
+ * one-predicate-append technique as listReports's `status` filter — and can never
+ * widen it past the mandatory allow-list/scope predicates above.
  */
 export async function recentModerationEntries(
   conversationIds: readonly string[] | null,
   limit = 20,
+  targetUserId?: string,
+  actionKind?: (typeof MODERATION_ACTION_KINDS)[number],
 ): Promise<
   Array<{
     createdAt: Date;
@@ -614,6 +620,16 @@ export async function recentModerationEntries(
     params.push([...conversationIds]);
     scope = `AND conversation_id = ANY($${params.length})`;
   }
+  let targetFilter = '';
+  if (targetUserId) {
+    params.push(targetUserId);
+    targetFilter = `AND target_user_id = $${params.length}`;
+  }
+  let actionKindFilter = '';
+  if (actionKind) {
+    params.push(actionKind);
+    actionKindFilter = `AND action_kind = $${params.length}`;
+  }
   params.push(clampedLimit);
 
   const { rows } = await pool.query(
@@ -621,6 +637,8 @@ export async function recentModerationEntries(
        FROM admin_audit
       WHERE action_kind = ANY($1)
         ${scope}
+        ${targetFilter}
+        ${actionKindFilter}
       ORDER BY created_at DESC
       LIMIT $${params.length}`,
     params,
