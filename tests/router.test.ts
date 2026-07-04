@@ -102,7 +102,15 @@ test('respond(): fires the typing indicator immediately and re-fires periodicall
   router.register(adapter);
 
   const done = trigger(makeMessage());
-  await sleep(90); // several 20ms refire windows while the turn is still pending
+  // respond() only fires the indicator AFTER handle()'s pre-turn awaits
+  // (inbound record + the first DB query, whose pg-pool cold connect on a
+  // fresh CI Postgres can exceed 100ms). Racing a fixed sleep against that is
+  // flaky — it read 0 fires on CI. Poll for the first fire instead, then let a
+  // few 20ms refire windows elapse while the turn is still pending.
+  const deadline = Date.now() + 3000;
+  while (typingCalls.length < 1 && Date.now() < deadline) await sleep(5);
+  assert.ok(typingCalls.length >= 1, 'the typing indicator should fire once the turn starts');
+  await sleep(70); // ~3 refire windows at 20ms
   assert.ok(typingCalls.length >= 2, `expected multiple typing-indicator fires, got ${typingCalls.length}`);
   assert.equal(sent.length, 0, 'the reply must not be sent until the turn resolves');
 
