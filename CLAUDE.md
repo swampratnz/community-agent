@@ -57,6 +57,14 @@ ownership rules:
   (`pipeline-pr-autofix.yml`) may push fixes to an existing build-worker PR
   branch when its CI fails — bounded to 2 attempts, same-repo bot PRs only,
   then it escalates `needs-human`. It never opens or merges PRs.
+- The **conflict-resolver loop** (`pipeline-pr-conflict.yml`) may push a
+  `main`-merge to an existing build-worker PR branch when that PR has gone
+  CONFLICTING (no webhook fires for that transition, so it runs on every push
+  to `main`, discovers conflicting same-repo bot PRs, and merges `main` in +
+  resolves). One attempt per conflict: a failed resolution escalates
+  `needs-human`, and the discover filter skips `needs-human` PRs so it never
+  thrashes. Same push guardrails as autofix (read-only `gh`, exact
+  `git push origin HEAD`). It never opens or merges PRs.
 - The **build-retry loop** (`pipeline-build-retry.yml`) auto-re-runs a build
   worker run that failed to produce a PR, via `gh run rerun`, bounded by
   `run_attempt` (≤3 total attempts). The build worker escalates `needs-human`

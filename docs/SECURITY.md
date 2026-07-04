@@ -528,10 +528,16 @@ number could reach an unrelated person).
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.
 - [ ] **Branch protection on `main`** blocks direct and force pushes (require a
-      PR + review). This is the backstop for the pipeline's write-scoped
-      automation — the build and autofix workers hold a `contents: write` token,
-      so branch protection is what guarantees nothing reaches `main` without a
-      human merge even if a worker is prompt-injected into misusing `git push`.
+      PR + review). This is the **enforceable** guarantee for the pipeline's
+      write-scoped automation — the build, autofix, and conflict-resolver workers
+      each hold a `contents: write` token and run an agent with code execution
+      (`node`/`npm`, needed to run the gate). Their `git push origin HEAD`
+      allowlist and withheld `checkout`/`branch` raise the bar, but an agent with
+      code execution could still rewrite `.git/HEAD` on disk to retarget a push,
+      so the tool restrictions are defence-in-depth, not the guarantee. Branch
+      protection (server-side) is what actually guarantees nothing reaches `main`
+      without a human merge even if a worker is prompt-injected. Enable it before
+      relying on these loops.
 - [ ] **If enabling `redeploy_bot`**: the exact-match sudoers line in
       docs/DEPLOYMENT.md is added (opt-in — omit it and the tool simply fails
       clean with no new host surface granted).
