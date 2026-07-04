@@ -45,6 +45,9 @@ export function scrubPII(text: string): string {
       .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]')
       // URLs: keep origin+path, drop query/fragment (where user tokens live)
       .replace(/(https?:\/\/[^\s?#]+)[?#]\S*/g, '$1')
+      // ...and redact long token-shaped PATH segments too (reset links etc.
+      // often carry the token in the path, not the query)
+      .replace(/(https?:\/\/[^\s]*?\/)[A-Za-z0-9_-]{20,}/g, '$1[token]')
       // @handles
       .replace(/@[A-Za-z0-9_.-]{2,}/g, '[handle]')
       // phone-number-shaped runs (8+ digits, optional +/separators)

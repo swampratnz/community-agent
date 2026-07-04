@@ -91,6 +91,18 @@ test('SECURITY: PII-shaped tokens in model-written summaries are scrubbed before
   assert.match(markdown, /\[handle\]/);
 });
 
+test('SECURITY: tokens embedded in URL paths (not just query strings) are scrubbed (issue #53)', () => {
+  const scrubbed = scrubPII(
+    'Use https://example.com/reset/AbCdEfGhIjKlMnOpQrStUv12 or https://example.com/docs/getting-started to continue.',
+  );
+  assert.ok(!scrubbed.includes('AbCdEfGhIjKlMnOpQrStUv12'), 'a long token-shaped path segment is redacted');
+  assert.ok(scrubbed.includes('https://example.com/reset/[token]'), 'the URL shape survives redaction');
+  assert.ok(
+    scrubbed.includes('https://example.com/docs/getting-started'),
+    'ordinary short path segments are untouched',
+  );
+});
+
 test('scrubPII leaves ordinary prose, years, and short counts alone', () => {
   const text = 'In 2026 about 400 members asked 12 questions across 3 channels.';
   assert.equal(scrubPII(text), text);

@@ -49,7 +49,11 @@ die() {
   exit 1
 }
 
-# Run a build step as the service user when root, directly otherwise.
+# Run a git/build step as the service user when root, directly otherwise.
+# EVERY git and npm invocation must go through this: git as root against the
+# community-agent-owned checkout would both trip git's dubious-ownership
+# refusal and parse network-supplied pack data (git fetch) with root
+# privileges. Root is kept exclusively for systemctl.
 run_as_app() {
   if [ "$(id -u)" = "0" ] && [ -n "$APP_USER" ]; then
     runuser -u "$APP_USER" -- "$@"
@@ -94,19 +98,19 @@ main() {
   flock -n 9 || die "another redeploy is already running (lock: $LOCK_FILE)"
 
   cd "$APP_DIR" || die "APP_DIR $APP_DIR does not exist"
-  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$APP_DIR is not a git checkout"
+  run_as_app git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$APP_DIR is not a git checkout"
 
   # Never deploy over local state: a dirty tree means a human is mid-change.
   # Untracked files are expected (.env, dist/, node_modules/, whatsapp-auth/)
   # — only modifications to TRACKED files block the deploy.
-  [ -z "$(git status --porcelain --untracked-files=no)" ] ||
+  [ -z "$(run_as_app git status --porcelain --untracked-files=no)" ] ||
     die "working tree has local modifications; not touching anything"
 
-  git fetch origin "$BRANCH" || die "git fetch failed"
+  run_as_app git fetch origin "$BRANCH" || die "git fetch failed"
 
   local old_sha new_sha
-  old_sha="$(git rev-parse HEAD)"
-  new_sha="$(git rev-parse "origin/$BRANCH")"
+  old_sha="$(run_as_app git rev-parse HEAD)"
+  new_sha="$(run_as_app git rev-parse "origin/$BRANCH")"
 
   if [ "$old_sha" = "$new_sha" ]; then
     log "up to date at $old_sha; nothing to deploy"
@@ -115,11 +119,11 @@ main() {
 
   # Fast-forward only: origin/$BRANCH must contain HEAD. Anything else means
   # history was rewritten or the checkout diverged — a human call, not ours.
-  git merge-base --is-ancestor "$old_sha" "$new_sha" ||
+  run_as_app git merge-base --is-ancestor "$old_sha" "$new_sha" ||
     die "origin/$BRANCH ($new_sha) is not a fast-forward of HEAD ($old_sha)"
 
   log "deploying $old_sha -> $new_sha"
-  git merge --ff-only "origin/$BRANCH" >/dev/null || die "fast-forward merge failed"
+  run_as_app git merge --ff-only "origin/$BRANCH" >/dev/null || die "fast-forward merge failed"
 
   if ! build_and_migrate; then
     # Restore the old code so the on-disk dist/ matches the still-running
@@ -127,29 +131,38 @@ main() {
     # any migration that already applied stays applied — migrations must be
     # backward-compatible within a deploy (docs/DEPLOYMENT.md).
     log "build/migrate FAILED for $new_sha; restoring $old_sha, service NOT restarted"
-    git reset --hard "$old_sha" >/dev/null
+    run_as_app git reset --hard "$old_sha" >/dev/null
     run_as_app npm ci --no-audit --no-fund >/dev/null 2>&1 || true
     run_as_app npm run build >/dev/null 2>&1 || true
     exit 1
   fi
 
-  restart_service || die "systemctl restart $SERVICE_NAME failed"
+  # Roll back CODE ONLY (the migration stays — see the note above), rebuild
+  # the old tree, and restart onto it. Used both when the restart itself
+  # fails and when the restarted service never becomes healthy — either way
+  # the box must not be left down on the new code with no recovery attempt.
+  roll_back() {
+    run_as_app git reset --hard "$old_sha" >/dev/null
+    if build_and_migrate && restart_service && wait_healthy; then
+      log "rolled back to $old_sha and healthy — investigate $new_sha before the next deploy"
+    else
+      log "ROLLBACK DID NOT COME UP HEALTHY — manual intervention required"
+    fi
+    exit 1
+  }
+
+  if ! restart_service; then
+    log "systemctl restart FAILED on $new_sha; rolling back to $old_sha"
+    roll_back
+  fi
 
   if wait_healthy; then
     log "deployed $new_sha and healthy"
     exit 0
   fi
 
-  # Roll back CODE ONLY (see note above — the migration stays), rebuild the
-  # old tree, and restart onto it.
   log "service unhealthy after ${HEALTH_TIMEOUT_SECS}s on $new_sha; rolling back to $old_sha"
-  git reset --hard "$old_sha" >/dev/null
-  if build_and_migrate && restart_service && wait_healthy; then
-    log "rolled back to $old_sha and healthy — investigate $new_sha before the next deploy"
-  else
-    log "ROLLBACK DID NOT COME UP HEALTHY — manual intervention required"
-  fi
-  exit 1
+  roll_back
 }
 
 main "$@"

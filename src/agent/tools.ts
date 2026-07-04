@@ -13,6 +13,7 @@ import {
   deleteKnowledge,
   deleteMemberNote,
   demoteAdmin,
+  getMemberNote,
   getMemberRole,
   listMemberNotes,
   MEMBER_NOTE_MAX_CHARS,
@@ -351,11 +352,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const forgetMe = tool(
     'forget_me',
-    "Delete the requester's own stored messages from the bot's memory (privacy request). Requires confirmation.",
+    "Delete the requester's own stored data from the bot's memory (privacy request): their messages, " +
+      'plus any knowledge entries, content reports, suggestions, roster entry, and admin notes tied to ' +
+      'them — across linked identities. Requires confirmation.',
     {},
     async () =>
       requireConfirm(
-        `delete ALL of ${caller.userName}'s stored messages (and any knowledge entries or content reports sourced from them) on ${caller.platform}`,
+        `delete ALL of ${caller.userName}'s stored data on ${caller.platform} (messages, and any knowledge entries, content reports, suggestions, roster entry, or admin notes tied to them — across linked identities)`,
         'member',
         async () => {
           const n = await purgeUserData(caller.platform, caller.userId);
@@ -824,20 +827,36 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const deleteMemberNoteTool = tool(
     'delete_member_note',
-    'Delete one member context note by id (from list_member_notes). Audited. Admin only.',
+    'Permanently delete one member context note by id (from list_member_notes). Requires confirmation. ' +
+      'Audited. Admin only.',
     { id: z.number().describe('Note id') },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'delete_member_note');
-      const { success, result } = await audited({
-        actionKind: 'delete_member_note',
-        params: { id: args.id },
-        run: async () => {
-          const deleted = await deleteMemberNote(args.id);
-          if (!deleted) throw new Error(`No note with id ${args.id}.`);
-          return 'deleted';
+      // Resolve the note first so the CONFIRM names whose note is being
+      // deleted — an injected bare id can't quietly erase the wrong one —
+      // and so an unknown id is refused before anything is queued.
+      const note = await getMemberNote(args.id);
+      if (!note) return text(`No note with id ${args.id}.`, true);
+      // Same CONFIRM gate as delete_knowledge: deletion is irreversible, so
+      // the model can request it but only the admin's out-of-band reply
+      // executes it (CLAUDE.md invariant).
+      return requireConfirm(
+        `delete member note #${args.id} about ${note.userId} on ${note.platform} ("${note.note.slice(0, 80)}${note.note.length > 80 ? '…' : ''}")`,
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'delete_member_note',
+            targetUserId: note.userId,
+            params: { id: args.id },
+            run: async () => {
+              const deleted = await deleteMemberNote(args.id);
+              if (!deleted) throw new Error(`No note with id ${args.id}.`);
+              return 'deleted';
+            },
+          });
+          return success ? `Deleted note #${args.id}.` : `Failed: ${result}`;
         },
-      });
-      return text(success ? `Deleted note #${args.id}.` : `Failed: ${result}`, !success);
+      );
     },
   );
 

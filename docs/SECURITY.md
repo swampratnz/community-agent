@@ -201,7 +201,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   no embedding column — never in memory recall; pinned by `SECURITY:`
   tests), writes/deletes are **audited** (the audit row records that a note
   was added, never its text, so a later purge actually removes the content),
-  and `forget_me`/`purge_user_data` delete all notes **about** the person.
+  `delete_member_note` is **CONFIRM-gated** like `delete_knowledge` (the
+  confirmation names whose note is being deleted, so an injected turn can
+  request but never complete an irreversible deletion), and
+  `forget_me`/`purge_user_data` delete all notes **about** the person.
   The owner has explicitly accepted (issue #45) that there is **no
   self-access path** (members cannot read notes about themselves) and that
   admins may manually transcribe web-researched facts into a note — both are
