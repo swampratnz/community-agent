@@ -159,6 +159,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `list_suggestions` / `resolve_suggestion` (triage the idea queue) | ❌ | ❌ | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
@@ -179,13 +180,17 @@ and every privileged action is audited and alerted to super admins by DM.
 Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),
 and an outbound filter on every reply — secret redaction plus the
-`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`). None of
-the router's silent-drop conditions stay silent: hitting the rate limit, the
-daily budget, or (issue #128) a super-admin `pause_bot` all send the member a
-static, debounced notice instead of nothing — once per window per user
-(`src/rateLimitNotice.ts`, the inline `budgetNotified` check, and
-`src/pauseNotice.ts` respectively), so none of them read as the bot being
-broken.
+`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`). A
+member/guest may also set their own standing `response_style`
+(`standard`/`plain`, via `set_response_style`) — a per-caller preference
+(`response_style_prefs`, keyed like `admin_digest_sends`) read alongside
+`code_answers` on every turn; `plain` appends a short jargon-avoidance
+instruction block to the system prompt. None of the router's silent-drop
+conditions stay silent: hitting the rate limit, the daily budget, or (issue
+#128) a super-admin `pause_bot` all send the member a static, debounced notice
+instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
+inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
+of them read as the bot being broken.
 
 ## Onboarding (gated mode)
 

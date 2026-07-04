@@ -41,6 +41,7 @@ import {
   rosterCounts,
   resolveLinkedIdentities,
   saveKnowledge,
+  setResponseStyle,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   searchKnowledge,
@@ -168,6 +169,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Answer questions from curated community knowledge — just ask\n' +
   '- Search back through your own past messages for something said earlier\n' +
   '- Suggest how the bot or community could be better\n' +
+  '- Ask me to explain things more simply from now on ("keep it simple")\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -565,6 +567,24 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       return text(
         `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
           'but no promises on if/when it gets built.',
+      );
+    },
+  );
+
+  const setResponseStyleTool = tool(
+    'set_response_style',
+    "Set the caller's standing reply style for every future message in every conversation, so they " +
+      "don't have to re-ask each time. Call with 'plain' when someone asks you to explain things more " +
+      'simply, avoid jargon, or use plainer language going forward — not for a one-off "explain that ' +
+      "again\" request, which should just be honoured directly in the reply. Call with 'standard' to " +
+      'revert to the normal style.',
+    { style: z.enum(['standard', 'plain']).describe('The reply style to use from now on') },
+    async (args) => {
+      await setResponseStyle(caller.platform, caller.userId, args.style);
+      return text(
+        args.style === 'plain'
+          ? "Got it — I'll keep replies simple and jargon-free from now on. Say the word to switch back."
+          : 'Got it — back to the normal reply style.',
       );
     },
   );
@@ -1567,6 +1587,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       forgetMe,
       reportContent,
       suggestImprovement,
+      setResponseStyleTool,
       whatsNew,
       userHistory,
       moderate,

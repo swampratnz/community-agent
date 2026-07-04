@@ -49,6 +49,8 @@ export const MEMBER_TOOLS = [
   // Write-only into the member's own queue (rate-capped); the read side
   // (list_suggestions) is admin-tier — a member can never read the queue.
   'mcp__community__suggest_improvement',
+  // Self-service, non-destructive, instantly reversible — no CONFIRM gate.
+  'mcp__community__set_response_style',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */
