@@ -97,6 +97,12 @@ export interface MemoryHit {
   direction: string;
   createdAt: Date;
   similarity: number;
+  platform: Platform;
+  /** Platform-native conversation/channel id (Discord jump links, issue #137). */
+  conversationId: string;
+  /** Platform-native message id, when it was captured (issue #48). Null for pre-archiving rows. */
+  messageId: string | null;
+  isDirect: boolean;
 }
 
 /**
@@ -146,11 +152,16 @@ export async function searchMemory(
     role: string;
     direction: string;
     created_at: Date;
+    platform: Platform;
+    conversation_id: string;
+    message_id: string | null;
+    is_direct: boolean;
     similarity: unknown;
   }>;
   try {
     ({ rows } = await pool.query(
       `SELECT content, user_name, role, direction, created_at,
+            platform, conversation_id, message_id, is_direct,
             1 - (embedding <=> $1) AS similarity
        FROM interactions
       WHERE ${filters.join(' AND ')}
@@ -172,6 +183,10 @@ export async function searchMemory(
     direction: r.direction,
     createdAt: r.created_at,
     similarity: Number(r.similarity),
+    platform: r.platform,
+    conversationId: r.conversation_id,
+    messageId: r.message_id,
+    isDirect: r.is_direct,
   }));
 }
 

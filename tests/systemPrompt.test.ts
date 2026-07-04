@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemPrompt, renderMemoryContext } from '../src/agent/systemPrompt.js';
 import type { MemoryHit } from '../src/storage/repository.js';
+
+// systemPrompt.js loads config.ts (guild id for jump links), which validates
+// env at import time — set a dummy env before dynamically importing it.
+process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
+process.env.DISCORD_BOT_TOKEN ??= 'test-token';
+process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
+process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+
+const { buildSystemPrompt, renderMemoryContext } = await import('../src/agent/systemPrompt.js');
 
 const caller = {
   platform: 'discord' as const,
@@ -11,7 +19,7 @@ const caller = {
   conversationId: 'chan1',
 };
 
-function hit(content: string): MemoryHit {
+function hit(content: string, overrides: Partial<MemoryHit> = {}): MemoryHit {
   return {
     content,
     userName: 'Someone',
@@ -19,6 +27,11 @@ function hit(content: string): MemoryHit {
     direction: 'inbound',
     createdAt: new Date(0),
     similarity: 0.9,
+    platform: 'discord',
+    conversationId: 'chan1',
+    messageId: null,
+    isDirect: false,
+    ...overrides,
   };
 }
 
@@ -133,4 +146,29 @@ test('guidelines offer suggest_improvement for feature ideas without promising d
 test('memory block is capped per entry', () => {
   const rendered = renderMemoryContext([hit('x'.repeat(5000))]);
   assert.ok(rendered.length < 1000, 'long memories must be truncated');
+});
+
+test('a Discord guild hit with a stored message id gets a jump link appended (issue #137)', () => {
+  const rendered = renderMemoryContext([hit('found it', { messageId: 'm1', conversationId: 'chan1' })]);
+  assert.match(rendered, /https:\/\/discord\.com\/channels\/ci-dummy-guild\/chan1\/m1/);
+});
+
+test('a Discord DM hit with a stored message id gets an @me jump link, not a guild one (issue #137)', () => {
+  const rendered = renderMemoryContext([
+    hit('found it', { messageId: 'm1', conversationId: 'dm-chan', isDirect: true }),
+  ]);
+  assert.match(rendered, /https:\/\/discord\.com\/channels\/@me\/dm-chan\/m1/);
+  assert.doesNotMatch(rendered, /ci-dummy-guild/);
+});
+
+test('a hit with no stored message id degrades to the link-less format (pre-archiving rows, issue #137)', () => {
+  const rendered = renderMemoryContext([hit('found it', { messageId: null })]);
+  assert.doesNotMatch(rendered, /discord\.com/);
+});
+
+test('a WhatsApp-origin hit is byte-for-byte unaffected: no link, even with a message id (issue #137)', () => {
+  const withoutMessageId = renderMemoryContext([hit('found it', { platform: 'whatsapp' })]);
+  const withMessageId = renderMemoryContext([hit('found it', { platform: 'whatsapp', messageId: 'wa-1' })]);
+  assert.equal(withoutMessageId, withMessageId);
+  assert.doesNotMatch(withMessageId, /discord\.com/);
 });

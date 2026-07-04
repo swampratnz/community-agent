@@ -4,7 +4,9 @@ import type { Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
 import { normalizeMemberId } from '../auth/memberId.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
+import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { memoryHitJumpLink } from './discordLink.js';
 import {
   addMemberNote,
   clearAccessRequest,
@@ -469,10 +471,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         untrusted(
           'Search results',
           hits
-            .map(
-              (h, i) =>
-                `${i + 1}. (${(h.similarity * 100).toFixed(0)}% match) [${h.direction}${h.userName ? ` by ${h.userName}` : ''}] ${h.content.slice(0, 400)}`,
-            )
+            .map((h, i) => {
+              const link = memoryHitJumpLink(h, config.discord.guildId);
+              return `${i + 1}. (${(h.similarity * 100).toFixed(0)}% match) [${h.direction}${h.userName ? ` by ${h.userName}` : ''}] ${h.content.slice(0, 400)}${link ? ` (${link})` : ''}`;
+            })
             .join('\n'),
         ),
       );

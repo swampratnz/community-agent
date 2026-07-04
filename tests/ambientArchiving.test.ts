@@ -241,6 +241,36 @@ test(
 );
 
 test(
+  'repository: searchMemory hits carry platform, conversationId, messageId and isDirect for jump-link rendering (issue #137)',
+  { skip },
+  async () => {
+    const vec = new Array(config.db.embeddingDim).fill(0);
+    vec[21] = 1;
+    const conversationId = `${RUN}-chan-jumplink`;
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, kind, embedding, message_id, is_direct)
+       VALUES ('discord', $1, $2, 'guest', 'inbound', $3, 'ambient', $4, $5, true)`,
+      [
+        conversationId,
+        `${RUN}-jumplink-user`,
+        `${RUN} jump link fixture`,
+        pgvector.toSql(vec),
+        `${RUN}-jump-m1`,
+      ],
+    );
+
+    const hits = await searchMemory(' ', { platform: 'discord', conversationId, topK: 1000 });
+    const hit = hits.find((h) => h.content === `${RUN} jump link fixture`);
+    assert.ok(hit, 'the fixture row is recalled');
+    assert.equal(hit?.platform, 'discord');
+    assert.equal(hit?.conversationId, conversationId);
+    assert.equal(hit?.messageId, `${RUN}-jump-m1`);
+    assert.equal(hit?.isDirect, true);
+  },
+);
+
+test(
   'repository: deleting/editing the platform message deletes/updates the stored row (issue #48)',
   { skip },
   async () => {
