@@ -30,11 +30,14 @@ const testsDir = path.join(repoRoot, 'tests');
 // the PR #91 review round (ambient recall scoping + URL-path token scrub),
 // then to 61 with the WhatsApp Cloud app-secret redaction tests (#110),
 // then to 62 with the module-mocks runner-flag canary (#109),
-// then to 67 with the chat-triggered redeploy tool (#101): fixed-argv +
+// then to 66 with issue #106 (knowledge_search scope enforcement: 3 new
+// tests/knowledgeScope.test.ts cases, plus the existing near-duplicate scope
+// test renamed into the SECURITY: namespace),
+// then to 71 with the chat-triggered redeploy tool (#101): fixed-argv +
 // no-hang-on-missing-sudoers coverage in redeploy.test.ts, the RBAC-surface
 // test in rbac.test.ts, and the pending-action/assertAtLeast tests in
 // tools.test.ts.
-const MIN_SECURITY_TESTS = 67;
+const MIN_SECURITY_TESTS = 71;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
