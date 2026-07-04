@@ -66,6 +66,13 @@ const EnvSchema = z.object({
   // Minimum gap between welcome posts to the same group, so a burst of
   // sequential joins can't turn the bot into a per-join spammer.
   WHATSAPP_WELCOME_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(180),
+  // Ambient archiving parity for WhatsApp groups (issue #103, extends #48):
+  // an explicit per-group opt-in allowlist — narrower than Discord's single
+  // all-channels flag, since WhatsApp groups have no "public channel"
+  // convention and each requires its own posted notice before its JID is
+  // added here (see SECURITY.md). Unset/empty = feature fully off, zero
+  // behaviour change. 1:1 DMs are never archived for gated guests regardless.
+  WHATSAPP_ARCHIVE_GROUP_JIDS: z.string().optional(),
 
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
@@ -216,6 +223,7 @@ export const config = {
       enabled: env.WHATSAPP_WELCOME_ENABLED ?? false,
       cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,
     },
+    archiveGroupJids: csv(env.WHATSAPP_ARCHIVE_GROUP_JIDS),
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
       accessToken: env.WHATSAPP_CLOUD_ACCESS_TOKEN,

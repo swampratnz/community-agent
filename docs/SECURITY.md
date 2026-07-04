@@ -154,6 +154,36 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   > bot to "forget me" at any time to erase your stored messages
   > [, and messages are automatically deleted after N days]. Questions →
   > ask an admin.
+- **Ambient WhatsApp group archiving** (`WHATSAPP_ARCHIVE_GROUP_JIDS`, issue
+  #103, extends #48, off by default): the same posture and controls as
+  Discord's ambient archiving above, applied to the community's WhatsApp
+  group(s) — same "storage decoupled from response", same delete/edit
+  honouring, same lifecycle (retention purge, `forget_me`/`purge_user_data`,
+  conversation-scoped recall), all pinned by `SECURITY:` tests. It differs
+  from Discord in one deliberate way: it's an **explicit per-group JID
+  allowlist**, not a single all-channels flag. WhatsApp groups have no
+  "public channel" convention, so each group's archiving is opted into
+  individually — the act of adding a JID to the list **is** the operator's
+  assertion that the group's notice has been posted. Guest 1:1 DMs to the
+  bot are never archived, regardless of config. Edit-tracking is
+  best-effort (Baileys' protocol fidelity for edits is less reliable than
+  for revokes); delete-honouring is the load-bearing privacy promise and
+  always applies to archived groups. See "WhatsApp / Baileys ToS risk"
+  below for why this adds no new ban-risk surface.
+
+  Ready-to-pin WhatsApp group notice (edit the retention line to match your
+  config, then post it in the group *before* adding its JID to
+  `WHATSAPP_ARCHIVE_GROUP_JIDS`):
+
+  > 📢 **Message logging in this group**
+  > Our community assistant stores messages posted in this group — including
+  > from non-members — to build shared community memory (so it can answer
+  > things like "what did we decide about X?"). What's stored: message text,
+  > sender, group, and time. Deleting your WhatsApp message deletes the
+  > stored copy. 1:1 chats with the bot are stored for registered members
+  > only. You can tell the bot to "forget me" at any time to erase your
+  > stored messages [, and messages are automatically deleted after N days].
+  > Questions → ask an admin.
 - **Context digests** (`context_digests`, issue #51): an internal batch job
   summarises *already-stored* interactions into aggregate topic digests — no
   new collection surface. Admin-tier reads only (`list_context_digests`,
@@ -317,6 +347,15 @@ every join in an active group — but it is still a new automation pattern the
 account posts without being addressed first, which is exactly the kind of
 bot-fingerprint the ToS-risk mitigations above are trying to minimise.
 
+`WHATSAPP_ARCHIVE_GROUP_JIDS` (issue #103), by contrast, adds **no new send
+behaviour at all**: archiving is receive-side only. The linked account
+already receives every message in a group it's a member of — that's how
+addressed-detection has always worked — so recording it changes nothing
+about what the account does on the wire. Subscribing to revoke/edit
+`protocolMessage`s for delete/edit-honouring is likewise passive receipt, not
+a new automation fingerprint. The ToS-risk mitigations above are about
+*outbound* patterns; this feature has none.
+
 ### WhatsApp Cloud API webhook
 `WhatsAppCloudAdapter` exposes a public HTTP listener
 (`WHATSAPP_CLOUD_WEBHOOK_PORT`) that must sit behind TLS termination (see
@@ -370,14 +409,17 @@ the supported path.
   for ~60s, so an admin removed from a channel/group can retain data scope for
   up to that window.
 - **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
-  (issue #48, an owner-approved posture change). The precise guarantee is:
-  **guest DMs to the bot are never stored; public guild-channel messages —
+  (issue #48, an owner-approved posture change; extended to WhatsApp groups
+  by issue #103). The precise guarantee is: **guest 1:1 DMs to the bot
+  (Discord or WhatsApp) are never stored; public guild-channel messages —
   including from guests and never-interacted lurkers — ARE stored when the
-  operator enables `DISCORD_ARCHIVE_ALL_MESSAGES`** (default off; off =
-  exactly the old posture, pinned by test). WhatsApp is unaffected. Two
-  metadata-only exceptions exist regardless of the flag: `access_requests`
-  (identity + request count for guests who addressed the bot) and
-  `server_roster` (join/leave identity metadata) — neither stores content.
+  operator enables `DISCORD_ARCHIVE_ALL_MESSAGES`, and WhatsApp group
+  messages likewise when the group's JID is in
+  `WHATSAPP_ARCHIVE_GROUP_JIDS`** (both default off/empty; off = exactly the
+  old posture, pinned by test). Two metadata-only exceptions exist
+  regardless of either flag: `access_requests` (identity + request count for
+  guests who addressed the bot) and `server_roster` (join/leave identity
+  metadata, Discord-only) — neither stores content.
 - **The roster narrows the "guests are invisible" spirit, not its letter**:
   `server_roster` deliberately records the *identity* (never content) of every
   guild member — including lurkers who never touched the bot — because the
@@ -438,6 +480,11 @@ number could reach an unrelated person).
       archiving notice (see "Data protection" above) is posted visibly
       (server rules / pinned message). Enabling the flag without notice
       violates the collection-notice expectations this deployment relies on.
+- [ ] **Before adding a group's JID to `WHATSAPP_ARCHIVE_GROUP_JIDS`**: the
+      WhatsApp ambient-archiving notice (see "Data protection" above) is
+      posted visibly in *that group*. Do this per group, before each JID is
+      added — adding the JID is the operator's assertion that notice was
+      posted.
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.

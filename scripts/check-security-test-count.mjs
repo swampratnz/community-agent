@@ -27,8 +27,9 @@ const testsDir = path.join(repoRoot, 'tests');
 // SECURITY: test; a diff that only lowers it needs an explanation.
 // Raised to 41 with the cross-platform identity-linking SECURITY tests (#44),
 // then to 57 with the approved-issues batch build (#45-#53), then to 59 with
-// the PR #91 review round (ambient recall scoping + URL-path token scrub).
-const MIN_SECURITY_TESTS = 59;
+// the PR #91 review round (ambient recall scoping + URL-path token scrub),
+// then to 67 with WhatsApp group ambient archiving parity (#103).
+const MIN_SECURITY_TESTS = 67;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
