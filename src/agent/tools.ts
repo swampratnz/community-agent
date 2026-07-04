@@ -13,6 +13,7 @@ import {
   getMemberRole,
   isKnownConversation,
   isKnownUser,
+  linkMembers,
   listAccessRequests,
   listKnowledge,
   listReports,
@@ -25,9 +26,11 @@ import {
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
+  resolveLinkedIdentities,
   saveKnowledge,
   searchKnowledge,
   searchMemory,
+  unlinkMember,
   updateKnowledge,
   upsertMember,
   usageStats,
@@ -370,17 +373,23 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       assertAtLeast(caller.role, 'admin', 'user_history');
       const allowed = await callerScope();
       const rows = await userMessages(caller.platform, args.userId, args.limit ?? 20, allowed ?? undefined);
-      if (rows.length === 0) return text('No history for that user (within your conversations).');
+      const linked = await resolveLinkedIdentities(caller.platform, args.userId);
+      const linkNote =
+        linked.length > 1
+          ? `Linked identities (link_member): ${linked.map((l) => `${l.platform}:${l.userId}`).join(', ')}\n`
+          : '';
+      if (rows.length === 0) return text(`${linkNote}No history for that user (within your conversations).`);
       return text(
-        untrusted(
-          `History for ${args.userId}`,
-          rows
-            .map(
-              (r) =>
-                `[${r.createdAt.toISOString()}] (${r.conversationId}) ${r.direction}: ${r.content.slice(0, 200)}`,
-            )
-            .join('\n'),
-        ),
+        linkNote +
+          untrusted(
+            `History for ${args.userId}`,
+            rows
+              .map(
+                (r) =>
+                  `[${r.createdAt.toISOString()}] (${r.conversationId}) ${r.direction}: ${r.content.slice(0, 200)}`,
+              )
+              .join('\n'),
+          ),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -783,6 +792,101 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const linkMemberTool = tool(
+    'link_member',
+    "Link two platform identities (e.g. a member's Discord account and WhatsApp number) as the same " +
+      'person, so forget_me/purge_user_data, the daily reply budget, and admin views (user_history) ' +
+      'follow the person, not the platform row. Both identities must already be known community members ' +
+      "(use add_member first). NEVER changes anyone's tier — a member linked to an admin still resolves " +
+      "as member-only. Linking expands forget_me's blast radius: once linked, forget_me from EITHER " +
+      'identity erases stored data for BOTH — that is the intended effect, which is why this requires ' +
+      'confirmation. Admin only.',
+    {
+      platformA: z.enum(['discord', 'whatsapp']).describe('Platform of the first identity'),
+      userIdA: z.string().min(1).describe('Platform user id of the first identity'),
+      platformB: z.enum(['discord', 'whatsapp']).describe('Platform of the second identity'),
+      userIdB: z.string().min(1).describe('Platform user id of the second identity'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'link_member');
+      const a = { platform: args.platformA, userId: normalizeMemberId(args.platformA, args.userIdA) };
+      const b = { platform: args.platformB, userId: normalizeMemberId(args.platformB, args.userIdB) };
+      if (a.platform === b.platform && a.userId === b.userId) {
+        return text('Refusing: cannot link an identity to itself.', true);
+      }
+      // Authority: an admin must have at least one identity on their own
+      // platform. Linking two identities that are *both* on another platform is
+      // super-admin-only — consistent with resolveMemberTarget's cross-platform
+      // gate on add_member/remove_member/unlink_member.
+      if (a.platform !== caller.platform && b.platform !== caller.platform) {
+        assertAtLeast(caller.role, 'super_admin', 'linking two identities both on another platform');
+      }
+      if (isSuperAdmin(a.platform, a.userId) || isSuperAdmin(b.platform, b.userId)) {
+        return text('Refusing: super admins are configured in the environment, not linkable here.', true);
+      }
+      if (!(await getMemberRole(a.platform, a.userId)) || !(await getMemberRole(b.platform, b.userId))) {
+        return text(
+          'Refusing: both identities must already be known community members (add_member first).',
+          true,
+        );
+      }
+      return requireConfirm(
+        `link ${a.platform}:${a.userId} and ${b.platform}:${b.userId} as the same person — ` +
+          'forget_me and the daily reply budget will apply across both afterwards',
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'link_member',
+            targetUserId: `${a.platform}:${a.userId}+${b.platform}:${b.userId}`,
+            params: { a, b },
+            run: async () => {
+              const { personId } = await linkMembers(a.platform, a.userId, b.platform, b.userId);
+              return `linked as person #${personId}`;
+            },
+          });
+          return success
+            ? `Linked ${a.platform}:${a.userId} and ${b.platform}:${b.userId}: ${result}.`
+            : `Failed: ${result}`;
+        },
+      );
+    },
+  );
+
+  const unlinkMemberTool = tool(
+    'unlink_member',
+    'Undo a previous link_member: the given identity becomes independently subject to forget_me/purge ' +
+      'and the daily reply budget again. Admin only.',
+    { userId: z.string().min(1).describe('Platform user id to unlink'), platform: platformArg },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'unlink_member');
+      const platform = args.platform ?? caller.platform;
+      const userId = normalizeMemberId(platform, args.userId);
+      // An admin may unlink an identity on their own platform, or one linked to
+      // an identity on their platform (they have authority over that person).
+      // Unlinking a foreign identity with no on-platform link is super-admin-only
+      // — symmetric with link_member's both-foreign gate above.
+      if (platform !== caller.platform) {
+        const group = await resolveLinkedIdentities(platform, userId);
+        if (!group.some((g) => g.platform === caller.platform)) {
+          assertAtLeast(caller.role, 'super_admin', 'unlinking an identity on another platform');
+        }
+      }
+      return requireConfirm(`unlink ${userId} on ${platform} from its linked identity`, 'admin', async () => {
+        const { success, result } = await audited({
+          actionKind: 'unlink_member',
+          targetUserId: userId,
+          params: { platform },
+          run: async () => {
+            const done = await unlinkMember(platform, userId);
+            if (!done) throw new Error('That identity is not currently linked to anyone.');
+            return 'unlinked';
+          },
+        });
+        return success ? `Unlinked ${userId} on ${platform}: ${result}.` : `Failed: ${result}`;
+      });
+    },
+  );
+
   // --- Super-admin tools -------------------------------------------------------
 
   const grantAdmin = tool(
@@ -977,6 +1081,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       resolveReportTool,
       addMember,
       removeMemberTool,
+      linkMemberTool,
+      unlinkMemberTool,
       grantAdmin,
       revokeAdmin,
       purgeUserDataTool,

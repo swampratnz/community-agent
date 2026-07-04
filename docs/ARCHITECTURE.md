@@ -118,6 +118,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
+| `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 
@@ -180,6 +181,34 @@ applied to abuse reports instead of pending guests:
 Because `list_reports` is conversation-scoped, a report filed from a DM (no
 ordinary admin is ever a "participant" of another member's 1:1 conversation)
 is only reachable by a super admin — see SECURITY.md's residual-risks note.
+
+## Cross-platform identity linking
+
+One human is often two unrelated `community_users` rows — a Discord account
+and a WhatsApp number — with heavy overlap being the norm for this community.
+Without linking, `forget_me`/`purge_user_data` only erase one platform
+identity, and `DAILY_REPLY_LIMIT_PER_USER` can be double-dipped by switching
+platforms.
+
+- **Schema**: a `persons` table plus a nullable `community_users.person_id`
+  FK. No backfill — links are created explicitly, never inferred.
+- **`link_member(platformA, userIdA, platformB, userIdB)`** groups two
+  identities into one person (or merges their existing groups). Both must
+  already be known community members. Admin tier, CONFIRM-gated, audited,
+  super-admin-alerted — the same pattern as every other privileged tool.
+- **`unlink_member(userId, platform?)`** removes an identity from its group;
+  if that leaves fewer than two linked identities, the whole group is
+  dissolved (no dangling `person_id`, no orphaned `persons` row).
+- **Effects of a link**: `resolveLinkedIdentities` (repository.ts) is the one
+  place that expands a single identity into its full linked set. `forget_me`/
+  `purge_user_data` and the daily reply budget (`countRepliesToUser`) both
+  consult it, so either now operates across every linked identity. `user_history`
+  surfaces the linkage to admins.
+- **Invariant: tier never propagates.** Linking never touches `role` — a
+  member linked to an admin still resolves as member-only. See SECURITY.md
+  for the accepted blast-radius trade-off this design makes (linking expands
+  what a single `forget_me` call erases) and the tests that pin both
+  invariants.
 
 ## Concurrency model
 

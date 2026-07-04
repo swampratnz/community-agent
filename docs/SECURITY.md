@@ -65,7 +65,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   eliminate it — see "Residual risks".
 - **Privileged targets are validated**: `moderate`/`announce` refuse targets
   (conversations/users) the bot has never seen, so a manipulated admin turn
-  cannot message arbitrary phone numbers or unknown channels.
+  cannot message arbitrary phone numbers or unknown channels. `link_member`
+  applies the same pattern: both identities must already be known community
+  members (a `community_users` row exists) — it cannot conjure membership,
+  only associate two identities that already have it.
 - `settingSources: []` prevents loading the host's `~/.claude` config.
 
 ### 2. Secret exposure
@@ -118,7 +121,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   AI assistant logs interactions (Discord/WhatsApp etiquette + NZ Privacy Act
   2020 expectations).
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
-  by `user_id` on request (`forget_me` / `purge_user_data`).
+  by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
+  identity has been linked (`link_member`) to another platform identity as the
+  same person, the deletion cascades to that identity too — see "Cross-platform
+  identity linking" below.
 - **Retention policy**: set `INTERACTION_RETENTION_DAYS` to age-purge raw
   `interactions` (default unset = disabled, no behaviour change on upgrade).
   A daily in-process timer (`src/index.ts`) deletes rows older than the
@@ -127,6 +133,47 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   recall for users still mid-conversation. `knowledge` (curated, durable
   facts), `admin_audit` (accountability trail), and `sessions` (governed by
   `SESSION_MAX_TURNS`/`_AGE_HOURS`) are never touched by this purge.
+
+### 7. Cross-platform identity linking (`link_member` / `unlink_member`)
+A member's Discord account and WhatsApp number are, by default, two unrelated
+`community_users` rows — `forget_me` on one silently leaves the other's data
+in place, and the daily reply budget (`DAILY_REPLY_LIMIT_PER_USER`) can be
+double-dipped by switching platforms. `link_member` closes this gap by
+grouping identities under a shared `persons.id` (`community_users.person_id`).
+
+**Controls**
+- Admin-tier, CONFIRM-gated (both `link_member` and `unlink_member`), audited
+  to `admin_audit`, and super-admin-alerted — the same treatment as every
+  other privileged tool.
+- **Cross-platform authority**: an admin must have at least one identity on
+  their own platform. Linking two identities that are *both* on another
+  platform — or unlinking a foreign identity with no on-platform co-member —
+  requires super_admin, consistent with the cross-platform gate on
+  `add_member` / `remove_member`. This stops a Discord-only admin from
+  operating solely on WhatsApp identities (and vice versa).
+- **Target validation**: both identities must already be known community
+  members; linking can never grant membership, only associate two identities
+  that already have it.
+- **NEVER propagates tier**: linking never touches `role`. A member linked to
+  an admin still resolves as member-only — tier stays strictly per-platform-
+  row, which kills the obvious link-to-an-admin escalation vector. Covered by
+  a `SECURITY:` test in `tests/repository.test.ts`.
+- **Unlinking is total, not partial**: dropping below two linked identities
+  dissolves the whole group (every remaining member's `person_id` cleared,
+  the `persons` row deleted) rather than leaving a dangling one-member group
+  for a future link to reattach to unexpectedly.
+
+**Deliberate blast-radius expansion (accepted, tested)**: linking two
+identities means `forget_me` — a member-tier, self-scoped tool with no
+CONFIRM gate of its own — now erases stored data for **both** linked
+identities, not just the caller's. This is the intended
+effect (a coherent "delete everything about me" for the linked person), but it
+does mean an admin who links a victim's account to a throwaway/controlled
+identity gives that throwaway the power to erase the victim's data via
+`forget_me`. The mitigation is that the *link* itself — not the eventual
+purge — is the gated, visible, reversible step: CONFIRM + `admin_audit` +
+super-admin DM alert. See the `SECURITY:` cascade test in
+`tests/repository.test.ts` for the asserted behaviour.
 
 ## Platform-specific notes
 
@@ -212,7 +259,10 @@ the supported path.
   knowledge entries *sourced from* them, and content reports *they submitted
   as reporter*. Membership rows, the admin audit log, and reports where the
   user is only the *target* (not the reporter) are retained deliberately
-  (accountability) — the same precedent already applied to `admin_audit`.
+  (accountability) — the same precedent already applied to `admin_audit`. If
+  the identity is linked (`link_member`), this scope applies to every linked
+  identity, not just the one the request came from — see "Cross-platform
+  identity linking" above for why that expanded blast radius is accepted.
 - **DM-originated content reports are visible only to super admins.**
   `list_reports` is scoped exactly like `moderation_history`/
   `list_access_requests`: an admin only sees reports from conversations they

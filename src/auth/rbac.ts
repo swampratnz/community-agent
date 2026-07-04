@@ -63,6 +63,8 @@ export const ADMIN_TOOLS = [
   'mcp__community__moderation_history',
   'mcp__community__add_member',
   'mcp__community__remove_member',
+  'mcp__community__link_member',
+  'mcp__community__unlink_member',
   'mcp__community__list_reports',
   'mcp__community__resolve_report',
 ] as const;

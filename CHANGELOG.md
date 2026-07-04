@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-04
+
+### Added
+- `link_member`/`unlink_member` admin tools to link a member's Discord and WhatsApp identities as one person, so `forget_me`/`purge_user_data` and the daily reply budget follow the person instead of the platform row (#44).
+
 ## 2026-07-03
 
 ### Added
