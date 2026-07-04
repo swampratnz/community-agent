@@ -11,9 +11,9 @@ name: Pipeline build worker
 #   2. Add repo secret CLAUDE_CODE_OAUTH_TOKEN (Settings → Secrets → Actions).
 #
 # COST: every run draws on the SAME Max pool as the production bot and every
-# other session. `concurrency` is now per-issue (see below), so distinct
-# issues build in parallel; `--max-turns` + `timeout-minutes` bound a single
-# run, and releasing issues in small batches bounds total parallel draw.
+# other session. Builds are SERIALISED (see the `concurrency` block below —
+# one at a time repo-wide) precisely because that shared pool can't sustain
+# parallel builds; `--max-turns` + `timeout-minutes` bound a single run.
 #
 # WHY the explicit allowedTools + verify step: an earlier run finished with
 # conclusion=success but 12 permission denials and no branch/PR/relabel — the
