@@ -864,6 +864,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     `DELETE FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
     [platform, userId],
   );
+  // response_style_prefs (issue #126) is keyed the same way — purge coherence
+  // for anyone who opted into the plain-language preference.
+  const { rowCount: responseStyle } = await pool.query(
+    `DELETE FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
   return (
     (messages ?? 0) +
     (knowledge ?? 0) +
@@ -871,7 +877,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     (roster ?? 0) +
     (notes ?? 0) +
     (suggestions ?? 0) +
-    (digestSends ?? 0)
+    (digestSends ?? 0) +
+    (responseStyle ?? 0)
   );
 }
 
@@ -879,8 +886,9 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * Delete a user's stored data: their inbound messages, the bot's replies to
  * them, knowledge entries sourced from them, content reports *they
  * submitted* as reporter, their server_roster row, admin notes kept *about*
- * them (member_notes), suggestions they filed, and any context digest built
- * over their purged interactions — across every identity linked to them via
+ * them (member_notes), suggestions they filed, their response-style
+ * preference, and any context digest built over their purged interactions —
+ * across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
  * *both*, which is why `link_member` is CONFIRM-gated, audited, and
@@ -1638,6 +1646,37 @@ export async function recordAdminDigestSent(platform: Platform, platformUserId: 
      VALUES ($1, $2, now())
      ON CONFLICT (platform, platform_user_id) DO UPDATE SET sent_at = now()`,
     [platform, platformUserId],
+  );
+}
+
+// --- Standing response-style preference (issue #126) ------------------------
+
+export type ResponseStyle = 'standard' | 'plain';
+
+/**
+ * The caller's standing response-style preference, or 'standard' (today's
+ * default behaviour) when they've never called `set_response_style`. A
+ * single primary-key lookup, so this is a negligible per-turn cost.
+ */
+export async function getResponseStyle(platform: Platform, userId: string): Promise<ResponseStyle> {
+  const { rows } = await pool.query(
+    `SELECT style FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  return rows[0]?.style === 'plain' ? 'plain' : 'standard';
+}
+
+/** Upsert the caller's response-style preference. */
+export async function setResponseStyle(
+  platform: Platform,
+  userId: string,
+  style: ResponseStyle,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO response_style_prefs (platform, user_id, style, updated_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (platform, user_id) DO UPDATE SET style = $3, updated_at = now()`,
+    [platform, userId, style],
   );
 }
 

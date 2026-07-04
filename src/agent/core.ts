@@ -6,6 +6,7 @@ import type { PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
   getClaudeSession,
+  getResponseStyle,
   searchMemory,
   setClaudeSessionId,
 } from '../storage/repository.js';
@@ -94,8 +95,9 @@ export async function runAgentTurn(
   });
 
   const codeAnswers = await getCodeAnswersPolicy();
+  const responseStyle = await getResponseStyle(caller.platform, caller.userId);
   const persona = selectPersona({ text: userText });
-  const systemPrompt = buildSystemPrompt(caller, { codeAnswers }, persona);
+  const systemPrompt = buildSystemPrompt(caller, { codeAnswers, responseStyle }, persona);
   // Recalled messages are untrusted user content: they ride in the user turn
   // inside a clearly delimited block, never in the system prompt.
   const prompt = memories.length > 0 ? `${renderMemoryContext(memories)}\n\n${userText}` : userText;

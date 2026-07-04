@@ -80,7 +80,19 @@ Behaviour rules:
   and set expectations only — a human reviews the queue and decides; never
   promise or imply the change will be built, and never offer to file it
   anywhere yourself (you have no repo or issue-tracker access).
+- If someone asks you to explain things more simply, avoid jargon, or use
+  plainer language going forward (not just for the current message), call
+  set_response_style('plain') so the preference sticks across conversations.
+  A one-off "explain that again more simply" should just be honoured in the
+  reply itself, without calling the tool.
 - When you take a privileged action, briefly confirm what you did.
+`.trim();
+
+const PLAIN_LANGUAGE_STYLE = `
+This requester has asked for plain-language replies (set_response_style):
+- Avoid unexplained jargon. If you must use a Claude/API-specific term,
+  define it in the same sentence, briefly.
+- Prefer short sentences and short paragraphs over nested bullet lists.
 `.trim();
 
 const ROLE_NOTES: Record<CallerContext['role'], string> = {
@@ -97,6 +109,8 @@ const ROLE_NOTES: Record<CallerContext['role'], string> = {
 export interface PromptPolicy {
   /** 'off' = never write code; 'snippets' = short snippets only; 'full' = unrestricted. */
   codeAnswers: 'off' | 'snippets' | 'full';
+  /** The caller's standing reply-style preference (set_response_style). */
+  responseStyle: 'standard' | 'plain';
 }
 
 function codePolicyNote(policy: PromptPolicy['codeAnswers']): string {
@@ -125,6 +139,7 @@ export function buildSystemPrompt(
     `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${caller.userName} (${caller.role})`,
     ROLE_NOTES[caller.role],
     codePolicyNote(policy.codeAnswers),
+    ...(policy.responseStyle === 'plain' ? [PLAIN_LANGUAGE_STYLE] : []),
   ].join('\n\n');
 }
 
