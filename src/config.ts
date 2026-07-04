@@ -94,6 +94,14 @@ const EnvSchema = z.object({
   // vs long replies draw differently; tune to your traffic). Unset/0 =
   // disabled (no timer, no behaviour change on upgrade).
   USAGE_ALERT_DAILY_REPLIES: z.coerce.number().int().nonnegative().default(0),
+  // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
+  // with no other content — sends one static reply instead. Off by default;
+  // an operator opts in after confirming the canned reply tone fits their
+  // community. See src/ackClassifier.ts.
+  ACK_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -195,6 +203,7 @@ export const config = {
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
     usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
+    ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
   },
   log: {
     level: env.LOG_LEVEL,
