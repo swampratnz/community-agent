@@ -61,6 +61,13 @@ jobs:
   discover:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Read-only: this job only runs `gh pr list`/`gh pr view`. A job-level
+    # override REPLACES the workflow-level grant, so discover never carries the
+    # write scopes the resolve job needs (least privilege — it does no writes
+    # and runs no agent/untrusted code).
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     outputs:
