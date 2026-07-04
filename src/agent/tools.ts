@@ -150,7 +150,23 @@ async function notifySuperAdmins(
 
 const MEMBER_APPROVED_MESSAGE =
   "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
-  'Feel free to message the bot here anytime.';
+  'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
+
+/**
+ * Plain-language rundown of what a member can ask the bot to do, named by
+ * behaviour rather than tool id (issue #92) — every entry in MEMBER_TOOLS
+ * gets a line, most safety-relevant (report_content) first. Kept to a few
+ * short lines deliberately: a wall of text reads worse than the terse blurb
+ * it replaces.
+ */
+const MEMBER_CAPABILITIES_TEXT =
+  'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
+  "Here's what you can ask me to do:\n" +
+  '- Flag harassment, spam, or a rule violation to admins ("report this")\n' +
+  '- Answer questions from curated community knowledge — just ask\n' +
+  '- Search back through your own past messages for something said earlier\n' +
+  '- Suggest how the bot or community could be better\n' +
+  '- Erase all your stored data any time ("forget me")';
 
 /**
  * Best-effort confirmation DM for a member grant. Fires only on an actual
@@ -282,14 +298,19 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   const communityInfo = tool(
     'community_info',
-    'Get high-level facts about the NZ Claude community and how the bot can help.',
+    'Tell the caller, in concrete terms, what they can ask this bot to do. Call this whenever someone ' +
+      'asks "what can you do?", "how do I report someone?", or otherwise wants a capability rundown — ' +
+      'do not answer that from general knowledge alone.',
     {},
-    async () =>
-      text(
-        'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
-          'The bot answers questions, remembers this conversation, and searches curated community knowledge. ' +
-          'Admins additionally moderate, announce, and manage membership. Access is member-gated; admins can add members.',
-      ),
+    async () => {
+      if (caller.role === 'admin' || caller.role === 'super_admin') {
+        return text(
+          `${MEMBER_CAPABILITIES_TEXT}\n` +
+            'You also have moderation, announcement, and membership-management tools — ask "what\'s new" for a fuller rundown.',
+        );
+      }
+      return text(MEMBER_CAPABILITIES_TEXT);
+    },
     { annotations: { readOnlyHint: true } },
   );
 
@@ -1316,12 +1337,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
   const usageStatsTool = tool(
     'usage_stats',
     'Show message volume, cost and top users over recent days. Super admin only.',
-    { days: z.number().optional().describe('Window in days (default 7)') },
+    { days: z.number().optional().describe('Window in days (default 7, max 365)') },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'usage_stats');
-      const s = await usageStats(args.days ?? 7);
+      const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 365);
+      const s = await usageStats(days);
       return text(
-        `Last ${args.days ?? 7} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+        `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
           `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
           `Top users:\n${s.topUsers.map((u) => `- ${u.userName ?? u.userId}: ${u.messages} msgs`).join('\n') || '- none'}`,
       );
