@@ -1,5 +1,7 @@
 import type { CallerContext } from '../auth/rbac.js';
 import type { MemoryHit } from '../storage/repository.js';
+import { config } from '../config.js';
+import { memoryHitJumpLink } from './discordLink.js';
 import { getPersona, type Persona } from './personas.js';
 
 /**
@@ -137,7 +139,8 @@ export function renderMemoryContext(memories: MemoryHit[]): string {
   const items = memories
     .map((m, i) => {
       const clean = m.content.replace(/[<>]/g, ' ').slice(0, 300);
-      return `${i + 1}. [${m.direction}${m.userName ? ` by ${m.userName}` : ''}] ${clean}`;
+      const link = memoryHitJumpLink(m, config.discord.guildId);
+      return `${i + 1}. [${m.direction}${m.userName ? ` by ${m.userName}` : ''}] ${clean}${link ? ` (${link})` : ''}`;
     })
     .join('\n');
   return [

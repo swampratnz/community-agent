@@ -42,9 +42,11 @@ const {
   createSuggestion,
   createContentReport,
   REPORT_RATE_LIMIT_PER_DAY,
+  recordInteraction,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
+const { config } = await import('../src/config.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -54,6 +56,7 @@ const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
+const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
 
 after(async () => {
   if (hasDb) {
@@ -65,6 +68,7 @@ after(async () => {
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${REPORT_CONTENT_HANDLER_USER}%`,
     ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [REMEMBER_SEARCH_HANDLER_SCOPE]);
   }
   await closeDb();
 });
@@ -557,6 +561,54 @@ test(
 
     assert.match(text, /% match\)/, 'a genuinely relevant hit must surface its match percentage');
     assert.match(text, new RegExp(uniqueTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  },
+);
+
+test(
+  'remember_search tool handler appends a Discord jump link for a hit with a stored message id (issue #137)',
+  { skip },
+  async () => {
+    const uniqueContent = `Zorbnix rollout details ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: REMEMBER_SEARCH_HANDLER_SCOPE,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: uniqueContent,
+      messageId: `${RUN}-jump-msg`,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: REMEMBER_SEARCH_HANDLER_SCOPE,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['remember_search'];
+
+    const result = await registeredTool.handler({ query: 'Zorbnix rollout' });
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, new RegExp(uniqueContent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(
+      text,
+      new RegExp(
+        `https://discord\\.com/channels/${config.discord.guildId}/${REMEMBER_SEARCH_HANDLER_SCOPE}/${RUN}-jump-msg`,
+      ),
+    );
   },
 );
 
