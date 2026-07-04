@@ -57,6 +57,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - **Memory is conversation-scoped**: automatic recall and `remember_search`
   only see the current conversation. Cross-conversation search (which could
   expose other members' DMs) is admin-only.
+- **Knowledge scope is enforced at read time, not just write time** (issue
+  #106): `knowledge.scope` (`'global'` | a platform | a conversation id) is
+  applied as a SQL filter in `searchKnowledge()` — a caller only ever gets
+  `'global'` entries plus entries scoped to their own platform or
+  conversation. The `knowledge_search` tool always passes the caller's real
+  `(platform, conversationId)`, so an admin who saves a channel-scoped FAQ
+  can no longer have the bot recite it in a different channel or on the
+  other platform. The near-duplicate nudge in `save_knowledge` applies the
+  same scope filter, so it never surfaces another scope's entry content to
+  an admin saving into a scope they may not be in. `list_knowledge` (admin
+  browse/curation) is the one deliberate exception: it keeps browsing by
+  explicit scope, unrestricted by the caller's own conversation — it's an
+  admin-tier curation view, not member-facing recall.
 - **Recalled content is quarantined**: memories are injected into the *user*
   turn inside a delimited `<recalled-messages>` block with angle brackets
   stripped (so recalled text can't fake a closing tag), and the system prompt
