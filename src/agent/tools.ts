@@ -554,14 +554,20 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'save_knowledge');
-      const id = await saveKnowledge({
+      const { id, similarEntry } = await saveKnowledge({
         title: args.title,
         content: args.content,
         scope: args.scope,
         sourceUserId: caller.userId,
         createdByRole: caller.role,
       });
-      return text(`Saved knowledge entry #${id}.`);
+      let reply = `Saved knowledge entry #${id}.`;
+      if (similarEntry) {
+        const pct = (similarEntry.similarity * 100).toFixed(0);
+        const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
+        reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
+      }
+      return text(reply);
     },
   );
 

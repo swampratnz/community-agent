@@ -348,24 +348,62 @@ export async function isKnownUser(platform: Platform, userId: string): Promise<b
 
 // --- Knowledge -------------------------------------------------------------
 
+/**
+ * Higher than QUESTION_CLUSTER_SIMILARITY_THRESHOLD (0.85, used to cluster
+ * interactions): a missed duplicate nudge here is only a minor inconvenience,
+ * but a false one is noise on every admin save, so we require a tighter match.
+ */
+const KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD = 0.92;
+
+export interface KnowledgeDuplicateMatch {
+  id: number;
+  title: string | null;
+  content: string;
+  similarity: number;
+}
+
 export async function saveKnowledge(input: {
   content: string;
   title?: string;
   scope?: string;
   sourceUserId?: string;
   createdByRole?: Tier;
-}): Promise<number> {
+}): Promise<{ id: number; similarEntry?: KnowledgeDuplicateMatch }> {
+  const scope = input.scope ?? 'global';
   let embedding: number[] | null = null;
   try {
     embedding = await embed(input.title ? `${input.title}\n${input.content}` : input.content);
   } catch (err) {
     logger.warn({ err }, 'Embedding failed for knowledge entry');
   }
+
+  let similarEntry: KnowledgeDuplicateMatch | undefined;
+  if (embedding) {
+    const vec = pgvector.toSql(embedding);
+    const { rows: matches } = await pool.query(
+      `SELECT id, title, content, 1 - (embedding <=> $1) AS similarity
+         FROM knowledge
+        WHERE scope = $2 AND embedding IS NOT NULL
+        ORDER BY embedding <=> $1
+        LIMIT 1`,
+      [vec, scope],
+    );
+    const top = matches[0];
+    if (top && Number(top.similarity) >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD) {
+      similarEntry = {
+        id: Number(top.id),
+        title: top.title,
+        content: top.content,
+        similarity: Number(top.similarity),
+      };
+    }
+  }
+
   const { rows } = await pool.query(
     `INSERT INTO knowledge (scope, title, content, source_user_id, created_by_role, embedding)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
     [
-      input.scope ?? 'global',
+      scope,
       input.title ?? null,
       input.content,
       input.sourceUserId ?? null,
@@ -373,7 +411,7 @@ export async function saveKnowledge(input: {
       embedding ? pgvector.toSql(embedding) : null,
     ],
   );
-  return Number(rows[0].id);
+  return { id: Number(rows[0].id), similarEntry };
 }
 
 export async function searchKnowledge(

@@ -99,7 +99,7 @@ test(
       ['discord', conversationId, userId, 'member', 'inbound', 'just over the cutoff — must be purged'],
     );
 
-    const kId = await saveKnowledge({
+    const { id: kId } = await saveKnowledge({
       content: 'durable fact',
       title: 'K',
       scope: 'global',
@@ -173,12 +173,12 @@ test(
       direction: 'inbound',
       content: 'other user message',
     });
-    const targetKnowledgeId = await saveKnowledge({
+    const { id: targetKnowledgeId } = await saveKnowledge({
       content: 'from target',
       sourceUserId: targetUser,
       scope: 'global',
     });
-    const otherKnowledgeId = await saveKnowledge({
+    const { id: otherKnowledgeId } = await saveKnowledge({
       content: 'from other',
       sourceUserId: otherUser,
       scope: 'global',
@@ -255,7 +255,7 @@ test(
   'repository: knowledge CRUD — insert, search finds it, update re-embeds and bumps updated_at, delete removes it',
   { skip },
   async () => {
-    const id = await saveKnowledge({
+    const { id } = await saveKnowledge({
       title: 'Meetup schedule',
       content: 'We meet monthly on the first Tuesday.',
       scope: `${RUN}-scope`,
@@ -295,6 +295,52 @@ test(
 
     const deletedAgain = await deleteKnowledge(id);
     assert.equal(deletedAgain, false, 'deleting a nonexistent id returns false, not an error');
+  },
+);
+
+test(
+  'repository: saveKnowledge nudges on a near-duplicate in the same scope, but not on a distinct entry',
+  { skip },
+  async () => {
+    const scope = `${RUN}-dup-scope`;
+    const { id: firstId, similarEntry: firstSimilar } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    assert.equal(firstSimilar, undefined, 'nothing to match against yet');
+
+    const { id: dupId, similarEntry: dupSimilar } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    assert.ok(dupSimilar, 'near-duplicate content in the same scope triggers a nudge');
+    assert.equal(dupSimilar.id, firstId, 'nudge points at the pre-existing entry, not the new one');
+    assert.ok(dupSimilar.similarity >= 0.92, 'reported similarity clears the duplicate threshold');
+    assert.equal(dupSimilar.title, 'WhatsApp linking steps');
+
+    const { id: distinctId, similarEntry: distinctSimilar } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+    assert.equal(distinctSimilar, undefined, 'an unrelated entry does not trigger a nudge');
+
+    const { similarEntry: crossScopeSimilar } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: `${RUN}-other-scope`,
+    });
+    assert.equal(
+      crossScopeSimilar,
+      undefined,
+      'a near-duplicate in a different scope does not trigger a nudge',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);
+    void dupId;
+    void distinctId;
   },
 );
 
