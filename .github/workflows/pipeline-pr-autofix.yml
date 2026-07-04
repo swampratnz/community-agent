@@ -64,7 +64,11 @@ jobs:
       HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
       RUN_ID: ${{ github.event.workflow_run.id }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      MARKER: '<!-- pipeline-autofix -->'
+      # Only ATTEMPT_MARKER comments count toward the 2-try cap. The terminal
+      # escalation comment uses a DIFFERENT marker so it can't inflate the count
+      # (a re-run of the same failed CI must not read one real attempt as two).
+      ATTEMPT_MARKER: '<!-- pipeline-autofix-attempt -->'
+      ESCALATE_MARKER: '<!-- pipeline-autofix-escalation -->'
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -93,8 +97,8 @@ jobs:
             echo "PR #$number is not an eligible (same-repo, bot-authored) PR — skipping."
             exit 0
           fi
-          # Prior autofix attempts = number of marker comments already on the PR.
-          attempts="$(gh pr view "$number" --json comments --jq "[.comments[] | select(.body | contains(\"$MARKER\"))] | length")"
+          # Prior autofix attempts = number of ATTEMPT_MARKER comments (only).
+          attempts="$(gh pr view "$number" --json comments --jq "[.comments[] | select(.body | contains(\"$ATTEMPT_MARKER\"))] | length")"
           {
             echo "number=$number"
             echo "attempts=$attempts"
@@ -107,7 +111,7 @@ jobs:
           set -euo pipefail
           n="${{ steps.pr.outputs.number }}"
           gh pr edit "$n" --add-label needs-human || true
-          gh pr comment "$n" --body "${MARKER}
+          gh pr comment "$n" --body "${ESCALATE_MARKER}
           🤖 Autofix has already tried twice and CI is still red. Stopping to avoid a fix-fail loop; labelled \`needs-human\` for a maintainer. Latest failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
 
       - name: Mark attempt + record current HEAD
@@ -147,22 +151,31 @@ jobs:
                DATABASE_URL, so run the full gate and make EVERY check green:
                npm run typecheck && npm run lint && npm run format:check &&
                npm run migrate && npm test && npm run build && npm run test:security
-            3. Commit and push to THIS SAME branch with a normal fast-forward
-               push — NEVER force-push (the branch may carry commits you did not
-               make). Do NOT open a new PR and do NOT merge. If the fix needs a
-               change under `.github/workflows/` (you cannot push those — the
-               token lacks the `workflows` scope) or the failure is not something
-               you can safely fix, then just STOP without pushing: a later step
-               detects "no new commit" and escalates `needs-human` for you.
-          # `gh` is restricted to READ subcommands (diagnose the failure); the
-          # agent's only write is `git push` to this branch. Merging, closing,
-          # labelling and commenting are done by the deterministic shell steps
-          # (with GITHUB_TOKEN), not the model — so "never merges"/"escalate on
-          # failure" are structurally enforced, not just asked for in the prompt.
+            3. Stage and commit your fix, then push it to THIS branch with
+               EXACTLY this command (nothing else — no other push form is
+               permitted): `git push origin HEAD`. NEVER force-push and NEVER
+               push any other ref or branch. Do NOT open a new PR and do NOT
+               merge. If the fix needs a change under `.github/workflows/` (you
+               cannot push those — the token lacks the `workflows` scope) or the
+               failure is not something you can safely fix, then just STOP
+               without committing/pushing: a later step detects "no new commit"
+               and escalates `needs-human` for you.
+          # Tool surface is least-privilege so the safety guarantees are
+          # structural, not prompt-only:
+          #   * `gh` is READ-only (diagnose the failure) — no merge/close/create.
+          #   * `git` excludes `reset`/`remote`/blanket push; the ONLY push form
+          #     allowed is `git push origin HEAD` (Bash(git push origin HEAD:*)),
+          #     which cannot target `main` or another branch. The push must run
+          #     via the action's App token (a GITHUB_TOKEN push would not
+          #     re-trigger CI), so it stays with the agent rather than moving to
+          #     a deterministic step; force-push-to-own-branch is the one residue
+          #     left to the prompt, since a trailing `--force` flag can't be
+          #     denied by prefix matching. Labelling/commenting/escalation are
+          #     done by the deterministic shell steps (GITHUB_TOKEN), not here.
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD:*),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a fix was pushed (else escalate loudly)
         if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
@@ -177,6 +190,6 @@ jobs:
           fi
           echo "::error::Autofix produced no new commit on ${HEAD_BRANCH}."
           gh pr edit "$n" --add-label needs-human || true
-          gh pr comment "$n" --body "${MARKER}
+          gh pr comment "$n" --body "${ESCALATE_MARKER}
           🤖 Autofix attempt ${{ steps.mark.outputs.attempt }} pushed no fix — either the cause needs a workflow-file change I can't push, or it wasn't safely fixable. Labelled \`needs-human\`."
           exit 1
