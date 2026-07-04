@@ -116,6 +116,22 @@ test('SECURITY: member-note tools are admin-only — a member can never read or 
   }
 });
 
+test('SECURITY: link_member and unlink_member are admin-only, never reachable by member/guest — the only way person_id can change is this explicit, CONFIRM-gated admin tool, never message content (issue #44)', () => {
+  const tools = ['mcp__community__link_member', 'mcp__community__unlink_member'];
+  for (const t of tools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
 test('SECURITY: list_context_digests is admin-only — digests derive from member content and never reach member turns (issue #51)', () => {
   const tool = 'mcp__community__list_context_digests';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_context_digests must be in ADMIN_TOOLS');

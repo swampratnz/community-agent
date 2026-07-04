@@ -19,6 +19,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // `community_users` state — only the (unreachable, harmlessly-caught) DB.
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
+const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
 const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
 const { logger } = await import('../src/logger.js');
@@ -257,4 +258,19 @@ test('router: a gated-out guest never reaches respond() — zero typing indicato
   assert.equal(typingCalls.length, 0, 'a gated-out guest must never trigger the typing indicator');
   assert.equal(sent.length, 1, 'the guest still gets the gated notice');
   assert.match(sent[0].text, /member-only/i);
+});
+
+test('config: ACK_SHORTCUT_ENABLED defaults to false when unset', () => {
+  assert.equal(config.behaviour.ackShortcutEnabled, false);
+});
+
+test('router: ACK_SHORTCUT_ENABLED default (off) — an exact ack message still runs the full agent turn, byte-for-byte unchanged', async () => {
+  const router = new Router(async () => makeReply('real answer'), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'thanks' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'real answer', 'with the flag off, even an exact ack must reach the agent');
 });

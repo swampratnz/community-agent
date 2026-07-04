@@ -127,6 +127,14 @@ const EnvSchema = z.object({
   CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
   CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
   CONTEXT_EXPORT_PATH: z.string().default('docs/COMMUNITY-CONTEXT.md'),
+  // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
+  // with no other content — sends one static reply instead. Off by default;
+  // an operator opts in after confirming the canned reply tone fits their
+  // community. See src/ackClassifier.ts.
+  ACK_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -241,6 +249,7 @@ export const config = {
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
     usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
+    ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
   },
   log: {
     level: env.LOG_LEVEL,

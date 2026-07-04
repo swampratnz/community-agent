@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
@@ -17,6 +18,13 @@ import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from './rateLimitNoti
 
 const GATED_NOTICE =
   'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
+
+// Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
+// ackClassifier.ts). Sent via send() so outbound filtering still applies;
+// deliberately not counted toward the daily reply budget (no outbound
+// recordInteraction call for it — only respond() records outbound), since
+// it isn't a real answer.
+const ACK_REPLY_TEXT = 'No worries!';
 
 /**
  * Routes normalised messages to the agent and replies on the originating
@@ -92,6 +100,21 @@ export class Router {
   /** Outbound filtering (secrets + code policy) lives in the adapters' send paths. */
   private async send(adapter: PlatformAdapter, conversationId: string, text: string): Promise<void> {
     await adapter.sendMessage({ conversationId, text });
+  }
+
+  /**
+   * Serialise `task` behind whatever else is already queued for `key` (a
+   * real turn or a prior ack reply), so a fast path can never overtake a
+   * slower one already in flight for the same conversation.
+   */
+  private async enqueue(key: string, label: string, task: () => Promise<void>): Promise<void> {
+    const prev = this.chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task).catch((err) => logger.error({ err }, `${label} failed`));
+    const tracked = next.finally(() => {
+      if (this.chains.get(key) === tracked) this.chains.delete(key);
+    });
+    this.chains.set(key, tracked);
+    await tracked;
   }
 
   private async handle(msg: IncomingMessage): Promise<void> {
@@ -243,17 +266,25 @@ export class Router {
     // agent turn runs (so recall can see it and ordering stays sane).
     await recorded;
 
-    // Serialise per conversation so session resume stays consistent.
     const key = this.convoKey(msg);
-    const prev = this.chains.get(key) ?? Promise.resolve();
-    const next = prev
-      .then(() => this.respond(msg, role, adapter))
-      .catch((err) => logger.error({ err }, 'respond failed'));
-    const tracked = next.finally(() => {
-      if (this.chains.get(key) === tracked) this.chains.delete(key);
-    });
-    this.chains.set(key, tracked);
-    await tracked;
+
+    // Deterministic short-circuit for pure acknowledgements ("thanks", "👍")
+    // that carry no information for the agent to act on: skip the expensive
+    // turn (memory recall + a query() subprocess against the shared Max
+    // pool) and send one static reply instead. Off by default. Routed
+    // through the same per-conversation chain as a real turn so it can
+    // never overtake one already in flight.
+    if (config.behaviour.ackShortcutEnabled && isPureAcknowledgement(msg.text)) {
+      logger.debug(
+        { platform: msg.platform, conversationId: msg.conversationId },
+        'ack_shortcut_skipped_turn',
+      );
+      await this.enqueue(key, 'ack reply', () => this.send(adapter, msg.conversationId, ACK_REPLY_TEXT));
+      return;
+    }
+
+    // Serialise per conversation so session resume stays consistent.
+    await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter));
   }
 
   private async respond(msg: IncomingMessage, role: Tier, adapter: PlatformAdapter): Promise<void> {

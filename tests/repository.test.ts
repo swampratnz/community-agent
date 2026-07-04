@@ -40,7 +40,6 @@ const {
   markRosterLeave,
   listRoster,
   rosterCounts,
-  upsertMember,
   addMemberNote,
   listMemberNotes,
   deleteMemberNote,
@@ -50,6 +49,13 @@ const {
   resolveSuggestion,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   SUGGESTION_MAX_CHARS,
+  upsertMember,
+  getMemberRole,
+  removeMember,
+  linkMembers,
+  unlinkMember,
+  resolveLinkedIdentities,
+  countRepliesToUser,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -1138,5 +1144,355 @@ test(
     assert.ok(allowed, 'an unrestricted (super-admin) scope can resolve any report');
 
     await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
+  },
+);
+
+// --- Cross-platform identity linking (issue #44) ----------------------------
+
+test(
+  'repository: linkMembers merges two members into one person; idempotent re-link; unlinkMember dissolves the group cleanly, leaving no dangling person_id or orphaned persons row',
+  { skip },
+  async () => {
+    const discordUser = `${RUN}-link-d`;
+    const whatsappUser = `${RUN}-link-w`;
+    await upsertMember({ platform: 'discord', userId: discordUser, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${RUN}-admin`,
+    });
+
+    const solo = await resolveLinkedIdentities('discord', discordUser);
+    assert.deepEqual(
+      solo,
+      [{ platform: 'discord', userId: discordUser }],
+      'unlinked member resolves to itself',
+    );
+
+    const { personId } = await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+    assert.ok(personId);
+
+    const linked = await resolveLinkedIdentities('discord', discordUser);
+    assert.equal(linked.length, 2, 'both identities now resolve together');
+    assert.ok(linked.some((l) => l.platform === 'whatsapp' && l.userId === whatsappUser));
+    const linkedFromOtherSide = await resolveLinkedIdentities('whatsapp', whatsappUser);
+    assert.equal(linkedFromOtherSide.length, 2, 'the link is symmetric — resolvable from either identity');
+
+    // Re-linking the same pair is a no-op success, not an error.
+    const again = await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+    assert.equal(again.personId, personId, 're-linking an already-linked pair returns the same person id');
+
+    const unlinked = await unlinkMember('discord', discordUser);
+    assert.equal(unlinked, true);
+
+    const afterUnlinkA = await resolveLinkedIdentities('discord', discordUser);
+    assert.deepEqual(afterUnlinkA, [{ platform: 'discord', userId: discordUser }]);
+    const afterUnlinkB = await resolveLinkedIdentities('whatsapp', whatsappUser);
+    assert.deepEqual(
+      afterUnlinkB,
+      [{ platform: 'whatsapp', userId: whatsappUser }],
+      'the OTHER identity is also independently resolvable again — unlinking one side dissolves the whole group, not just the caller side',
+    );
+
+    const personIdRows = await pool.query(
+      `SELECT person_id FROM community_users
+        WHERE (platform = 'discord' AND platform_user_id = $1) OR (platform = 'whatsapp' AND platform_user_id = $2)`,
+      [discordUser, whatsappUser],
+    );
+    assert.ok(
+      personIdRows.rows.every((r) => r.person_id === null),
+      'no dangling person_id survives on either row after unlink',
+    );
+    const orphanedPersonsRow = await pool.query(`SELECT 1 FROM persons WHERE id = $1`, [personId]);
+    assert.equal(
+      orphanedPersonsRow.rows.length,
+      0,
+      'the now-empty persons row is deleted, not left dangling for a future link to reattach to unexpectedly',
+    );
+
+    const unlinkingAgain = await unlinkMember('discord', discordUser);
+    assert.equal(unlinkingAgain, false, 'unlinking an already-unlinked identity reports false, not an error');
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      discordUser,
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      whatsappUser,
+    ]);
+  },
+);
+
+test(
+  'repository: linkMembers merges two pre-existing person groups when linking across them',
+  { skip },
+  async () => {
+    const d1 = `${RUN}-merge-d1`;
+    const w1 = `${RUN}-merge-w1`;
+    const d2 = `${RUN}-merge-d2`;
+    const w2 = `${RUN}-merge-w2`;
+    for (const [platform, userId] of [
+      ['discord', d1],
+      ['whatsapp', w1],
+      ['discord', d2],
+      ['whatsapp', w2],
+    ] as const) {
+      await upsertMember({ platform, userId, role: 'member', addedBy: `${RUN}-admin` });
+    }
+
+    const groupOne = await linkMembers('discord', d1, 'whatsapp', w1);
+    const groupTwo = await linkMembers('discord', d2, 'whatsapp', w2);
+    assert.notEqual(
+      groupOne.personId,
+      groupTwo.personId,
+      'two independent links start as two separate groups',
+    );
+
+    // Link across the two existing groups (via one member of each).
+    const merged = await linkMembers('whatsapp', w1, 'discord', d2);
+    assert.ok(merged.personId === groupOne.personId || merged.personId === groupTwo.personId);
+
+    const finalGroup = await resolveLinkedIdentities('discord', d1);
+    assert.equal(finalGroup.length, 4, 'all four identities now share one person after the cross-group link');
+
+    const remainingPersonsRows = await pool.query(`SELECT count(*) AS n FROM persons WHERE id = ANY($1)`, [
+      [groupOne.personId, groupTwo.personId],
+    ]);
+    assert.equal(
+      Number(remainingPersonsRows.rows[0].n),
+      1,
+      "the losing group's now-empty persons row is deleted on merge, not left dangling",
+    );
+
+    await pool.query(
+      `DELETE FROM community_users WHERE (platform = 'discord' AND platform_user_id = ANY($1))
+                                       OR (platform = 'whatsapp' AND platform_user_id = ANY($2))`,
+      [
+        [d1, d2],
+        [w1, w2],
+      ],
+    );
+  },
+);
+
+test(
+  'SECURITY: repository: linkMembers refuses an identity that is not already a known community member',
+  { skip },
+  async () => {
+    const knownMember = `${RUN}-known-for-link`;
+    const unknownUser = `${RUN}-never-added`;
+    await upsertMember({
+      platform: 'discord',
+      userId: knownMember,
+      role: 'member',
+      addedBy: `${RUN}-admin`,
+    });
+
+    await assert.rejects(
+      linkMembers('discord', knownMember, 'whatsapp', unknownUser),
+      /must already be known community members/,
+      'SECURITY: linking must refuse a target the bot has no community_users row for',
+    );
+
+    const row = await pool.query(
+      `SELECT person_id FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`,
+      [knownMember],
+    );
+    assert.equal(row.rows[0].person_id, null, 'the known identity is left unlinked, not partially linked');
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      knownMember,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me/purge_user_data) cascades across linked identities — linking deliberately expands the blast radius, so forget_me from EITHER identity erases BOTH (see docs/SECURITY.md)',
+  { skip },
+  async () => {
+    const discordUser = `${RUN}-cascade-d`;
+    const whatsappUser = `${RUN}-cascade-w`;
+    const conversationId = `${RUN}-c-cascade`;
+    await upsertMember({ platform: 'discord', userId: discordUser, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${RUN}-admin`,
+    });
+    await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: discordUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'discord-side message that must be purged by a whatsapp-side forget_me',
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: whatsappUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'whatsapp-side message',
+    });
+
+    // forget_me/purge_user_data invoked from the WHATSAPP identity only.
+    const purged = await purgeUserData('whatsapp', whatsappUser);
+    assert.ok(purged >= 2, 'both linked identities contribute to the purged count from a single call');
+
+    const discordRows = await pool.query(
+      `SELECT 1 FROM interactions WHERE platform = 'discord' AND user_id = $1`,
+      [discordUser],
+    );
+    assert.equal(
+      discordRows.rows.length,
+      0,
+      'SECURITY: forget_me from the linked WhatsApp identity also erases the Discord identity — the intended cascade',
+    );
+    const whatsappRows = await pool.query(
+      `SELECT 1 FROM interactions WHERE platform = 'whatsapp' AND user_id = $1`,
+      [whatsappUser],
+    );
+    assert.equal(whatsappRows.rows.length, 0);
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      discordUser,
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      whatsappUser,
+    ]);
+  },
+);
+
+test(
+  'repository: removeMember dissolves a person group it would leave with a single member (no orphaned persons row)',
+  { skip },
+  async () => {
+    const d = `${RUN}-rm-d`;
+    const w = `${RUN}-rm-w`;
+    await upsertMember({ platform: 'discord', userId: d, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({ platform: 'whatsapp', userId: w, role: 'member', addedBy: `${RUN}-admin` });
+    const { personId } = await linkMembers('discord', d, 'whatsapp', w);
+
+    const removed = await removeMember('discord', d);
+    assert.equal(removed, true, 'the linked member row is removed');
+
+    // The surviving identity must not be stranded in a one-member group...
+    const survivors = await resolveLinkedIdentities('whatsapp', w);
+    assert.deepEqual(
+      survivors,
+      [{ platform: 'whatsapp', userId: w }],
+      'the surviving identity is unlinked once its only co-member is removed',
+    );
+    // ...and the now-empty persons row must be deleted, not orphaned.
+    const { rows } = await pool.query('SELECT count(*)::int AS n FROM persons WHERE id = $1', [personId]);
+    assert.equal(rows[0].n, 0, 'the emptied persons row is deleted');
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      w,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: linking a member to an admin never propagates tier — each identity keeps its own role',
+  { skip },
+  async () => {
+    const memberUser = `${RUN}-notier-member`;
+    const adminUser = `${RUN}-notier-admin`;
+    await upsertMember({ platform: 'discord', userId: memberUser, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({ platform: 'whatsapp', userId: adminUser, role: 'admin', addedBy: `${RUN}-admin` });
+
+    await linkMembers('discord', memberUser, 'whatsapp', adminUser);
+
+    // The link must actually have taken effect, else the role assertions below
+    // are vacuously true (getMemberRole is per-row) and this guards nothing.
+    const linked = await resolveLinkedIdentities('discord', memberUser);
+    assert.equal(linked.length, 2, 'precondition: the two identities resolve as one linked person');
+
+    assert.equal(
+      await getMemberRole('discord', memberUser),
+      'member',
+      'SECURITY: a member linked to an admin must still resolve as member-only, never inheriting the admin tier',
+    );
+    assert.equal(
+      await getMemberRole('whatsapp', adminUser),
+      'admin',
+      'the admin identity keeps its own role too — linking is symmetric-safe',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      memberUser,
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      adminUser,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: countRepliesToUser (daily reply budget) aggregates across linked identities so the budget cannot be double-dipped cross-platform',
+  { skip },
+  async () => {
+    const discordUser = `${RUN}-budget-d`;
+    const whatsappUser = `${RUN}-budget-w`;
+    const conversationId = `${RUN}-c-budget`;
+    await upsertMember({ platform: 'discord', userId: discordUser, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${RUN}-admin`,
+    });
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply on discord',
+      meta: { replyToUserId: discordUser },
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply on whatsapp',
+      meta: { replyToUserId: whatsappUser },
+    });
+
+    assert.equal(
+      await countRepliesToUser('discord', discordUser),
+      1,
+      'before linking, each identity is independent',
+    );
+    assert.equal(await countRepliesToUser('whatsapp', whatsappUser), 1);
+
+    await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+    assert.equal(
+      await countRepliesToUser('discord', discordUser),
+      2,
+      'SECURITY: after linking, the count from the discord identity includes the linked whatsapp replies too',
+    );
+    assert.equal(
+      await countRepliesToUser('whatsapp', whatsappUser),
+      2,
+      'symmetric: the count from the whatsapp identity includes the linked discord replies too',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      discordUser,
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      whatsappUser,
+    ]);
   },
 );

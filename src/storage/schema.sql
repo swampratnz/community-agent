@@ -108,6 +108,24 @@ CREATE TRIGGER community_users_set_updated_at
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------------------------------------------------------------------------
+-- Cross-platform identity linking: a `persons` row groups the
+-- community_users rows that are the same human (e.g. one member's Discord
+-- account and WhatsApp number) so forget_me/purge, the daily reply budget,
+-- and admin views can follow the person, not the platform row. Created only
+-- via the admin-tier `link_member` tool (see repository.ts) — never inferred
+-- from message content, and never touches `role` (tier stays per-platform-row
+-- by design; see docs/SECURITY.md).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS persons (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE community_users ADD COLUMN IF NOT EXISTS person_id BIGINT REFERENCES persons(id);
+
+CREATE INDEX IF NOT EXISTS community_users_person_idx ON community_users (person_id);
+
+-- ---------------------------------------------------------------------------
 -- Runtime policies set by super admins (e.g. code_answers, paused).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS policies (
