@@ -75,6 +75,17 @@ test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant', 
   assert.match(calls[0][1], /approved/i);
 });
 
+test('notifyMemberApproved signposts the community_info discovery path (issue #92)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(adapter, 'user-1', false);
+
+  assert.match(calls[0], /what can you do/i);
+});
+
 test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
@@ -123,6 +134,60 @@ test('SECURITY: moderation_history rejects an actionKind outside the allow-list 
     );
   }
   assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'actionKind stays optional');
+});
+
+// community_info (issue #92): the reply is fully determined by caller.role
+// (already trusted, tier-resolved data), so the handler is exercised directly
+// via the MCP server's registered tool, same pattern as the
+// moderation_history zod test above — no DB, no adapter behaviour involved.
+function communityInfoHandler(role: 'member' | 'admin' | 'super_admin') {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'caller-1',
+    userName: 'Caller',
+    role,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['community_info'];
+  return registeredTool.handler();
+}
+
+test('community_info names every member capability for a member caller (issue #92)', async () => {
+  const result = await communityInfoHandler('member');
+  const replyText = result.content[0]?.text ?? '';
+
+  assert.match(replyText, /report/i, 'must mention report_content');
+  assert.match(replyText, /forget/i, 'must mention forget_me');
+  assert.match(replyText, /suggest/i, 'must mention suggest_improvement');
+  assert.match(replyText, /knowledge/i, 'must mention knowledge_search');
+  assert.match(replyText, /past messages|remember/i, 'must mention remember_search');
+});
+
+test('community_info reply stays concise, not a wall of text (issue #92)', async () => {
+  const result = await communityInfoHandler('member');
+  const replyText = result.content[0]?.text ?? '';
+
+  assert.ok(replyText.length < 700, `reply should stay short; was ${replyText.length} chars`);
+});
+
+test('community_info appends an admin-extras line for admin/super_admin callers, on top of the member content (issue #92)', async () => {
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+  assert.ok(adminReply.startsWith(memberReply), 'admin reply must include the full member content');
+  assert.match(adminReply, /moderat/i, 'admin reply must note extra moderation/management capabilities');
+  assert.equal(superAdminReply, adminReply, 'super_admin sees the same extras line as admin');
+  assert.notEqual(adminReply, memberReply, 'admin reply must differ from the member-only reply');
 });
 
 // formatKnowledgeSearchResults holds all of knowledge_search's relevance-
