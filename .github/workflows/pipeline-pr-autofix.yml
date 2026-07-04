@@ -138,6 +138,21 @@ jobs:
             echo "attempt=$attempt"
           } >> "$GITHUB_OUTPUT"
 
+      # Create the base schema deterministically before the fix agent runs, so
+      # its `npm test` sees a migrated DB (same fix as pipeline-build.yml — an
+      # un-migrated DB makes every DB-integration test fail with "relation does
+      # not exist"). node_modules persists into the fix step.
+      - name: Migrate base schema (deterministic — do not leave to the agent)
+        if: env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+        run: |
+          npm ci
+          npm run migrate
+
       - name: Fix the failing checks
         id: fix
         if: env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'

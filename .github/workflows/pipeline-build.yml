@@ -99,6 +99,19 @@ jobs:
       - uses: actions/checkout@v4
         if: env.HAS_TOKEN == 'true'
 
+      # Create the base schema deterministically BEFORE the agent runs, so its
+      # `npm test` sees a migrated DB. Leaving migration to the agent's prose
+      # gate was fragile: a run that executed `npm test` before `npm run migrate`
+      # failed EVERY DB-integration test with "relation does not exist" and
+      # produced no PR (run 28693678835). node_modules persists into the action
+      # step below; the agent still re-runs `npm run migrate` after adding any
+      # new migration of its own (idempotent).
+      - name: Migrate base schema (deterministic — do not leave to the agent)
+        if: env.HAS_TOKEN == 'true'
+        run: |
+          npm ci
+          npm run migrate
+
       - name: Build the approved proposal
         id: build
         if: env.HAS_TOKEN == 'true'
