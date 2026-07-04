@@ -16,7 +16,7 @@
 // invariants that already have a SECURITY: test.
 // ---------------------------------------------------------------------------
 import { spawnSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -29,20 +29,29 @@ const testsDir = path.join(repoRoot, 'tests');
 // then to 57 with the approved-issues batch build (#45-#53), then to 59 with
 // the PR #91 review round (ambient recall scoping + URL-path token scrub),
 // then to 61 with the WhatsApp Cloud app-secret redaction tests (#110),
-// then to 66 with the chat-triggered redeploy tool (#101): fixed-argv +
+// then to 62 with the module-mocks runner-flag canary (#109),
+// then to 67 with the chat-triggered redeploy tool (#101): fixed-argv +
 // no-hang-on-missing-sudoers coverage in redeploy.test.ts, the RBAC-surface
 // test in rbac.test.ts, and the pending-action/assertAtLeast tests in
 // tools.test.ts.
-const MIN_SECURITY_TESTS = 66;
+const MIN_SECURITY_TESTS = 67;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
   .map((f) => path.join('tests', f));
 
+// Derive the node:test runner flags from package.json's own "test" script
+// (e.g. `--experimental-test-module-mocks`) instead of hardcoding a second
+// copy here, so this gate can never silently drift onto a different runtime
+// config than `npm test` — see #109.
+const { scripts } = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+const [, ...testScriptArgs] = scripts.test.trim().split(/\s+/);
+const runnerFlags = testScriptArgs.filter((arg) => !arg.startsWith('tests/'));
+
 const tsxBin = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
 const result = spawnSync(
   tsxBin,
-  ['--test', '--test-reporter=tap', '--test-name-pattern=^SECURITY:', ...testFiles],
+  [...runnerFlags, '--test-reporter=tap', '--test-name-pattern=^SECURITY:', ...testFiles],
   { cwd: repoRoot, encoding: 'utf8' },
 );
 
