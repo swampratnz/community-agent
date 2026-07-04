@@ -53,7 +53,14 @@ This repo is developed by a supervised multi-session pipeline — see
 ownership rules:
 
 - **Only the build loop** writes code or opens PRs. PR-review comments only;
-  research & adversarial touch issues only.
+  research & adversarial touch issues only. One exception: the **autofix loop**
+  (`pipeline-pr-autofix.yml`) may push fixes to an existing build-worker PR
+  branch when its CI fails — bounded to 2 attempts, same-repo bot PRs only,
+  then it escalates `needs-human`. It never opens or merges PRs.
+- The build worker runs the **full CI gate** (typecheck, lint, format:check,
+  migrate, test against a real pgvector Postgres, build, test:security) BEFORE
+  opening a PR, so "green locally" matches CI. Keep it that way when editing
+  either `pipeline-build.yml` or `ci.yml` — they must run the same checks.
 - **No loop merges PRs** — a human merges.
 - WIP caps: ≤3 open `status:draft`. Builds run per-issue-parallel (the build
   worker's `concurrency` is keyed by issue number), so multiple

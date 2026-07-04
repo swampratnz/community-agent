@@ -1,0 +1,211 @@
+name: Pipeline PR autofix
+
+# Event-driven CURE loop: when CI fails on a build-worker PR, invoke Claude to
+# fix the branch and push, so a red PR gets repaired without a human doing it by
+# hand. Prevention is the primary lever (pipeline-build.yml now runs the full CI
+# gate — lint, real-DB tests, test:security — BEFORE opening a PR); this is the
+# safety net for the residue: genuine flakes and re-breaks when main advances
+# under an open PR.
+#
+# Guardrails (this spends the shared Max pool and pushes code, so they matter):
+#   * Same-repo PRs only. workflow_run carries secrets even for fork PRs, so
+#     running a fix on fork-controlled code would be an injection vector — the
+#     `if` below hard-requires head_repository == this repo.
+#   * Bot-authored PRs only (the build worker). Human PRs are left alone.
+#   * Hard cap of 2 attempts per PR, counted via marker comments. After that it
+#     STOPS and escalates `needs-human` — without this it could fix→fail→fix in
+#     a loop that drains the weekly token pool.
+#   * It CANNOT push .github/workflows/* (the App token lacks the `workflows`
+#     scope), so the prompt tells it to escalate those rather than thrash.
+#   * Never merges — a human merges.
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+concurrency:
+  group: pipeline-autofix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write # claude-code-action mints its GitHub App token via OIDC
+
+jobs:
+  autofix:
+    # Only react to a FAILED CI run triggered by a same-repo pull request.
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Same pgvector Postgres as the build/CI jobs so the autofix agent can run
+    # the full gate (incl. DB-integration tests) locally before pushing.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: community_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      # NB: GH_TOKEN is deliberately NOT job-level. It is set per-step on the
+      # deterministic gh steps only, so the claude-code-action "Fix" step (whose
+      # agent runs node/npm/cat and reads untrusted CI logs) never inherits a
+      # GITHUB_TOKEN it could exfiltrate. The agent gets its own gh/git auth from
+      # the action's App token.
+      # Only ATTEMPT_MARKER comments count toward the 2-try cap. The terminal
+      # escalation comment uses a DIFFERENT marker so it can't inflate the count
+      # (a re-run of the same failed CI must not read one real attempt as two).
+      ATTEMPT_MARKER: '<!-- pipeline-autofix-attempt -->'
+      ESCALATE_MARKER: '<!-- pipeline-autofix-escalation -->'
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR autofix worker is inert."
+
+      - uses: actions/checkout@v4
+        if: env.HAS_TOKEN == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: Resolve PR + eligibility
+        id: pr
+        if: env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh pr list --head "$HEAD_BRANCH" --state open --json number,author,isCrossRepository --limit 1)"
+          number="$(jq -r '.[0].number // empty' <<<"$pr_json")"
+          if [ -z "$number" ]; then
+            echo "No open PR for branch $HEAD_BRANCH — nothing to autofix."
+            exit 0
+          fi
+          is_bot="$(jq -r '.[0].author.is_bot // false' <<<"$pr_json")"
+          xrepo="$(jq -r '.[0].isCrossRepository // false' <<<"$pr_json")"
+          if [ "$is_bot" != "true" ] || [ "$xrepo" = "true" ]; then
+            echo "PR #$number is not an eligible (same-repo, bot-authored) PR — skipping."
+            exit 0
+          fi
+          # Prior autofix attempts = number of ATTEMPT_MARKER comments (only).
+          attempts="$(gh pr view "$number" --json comments --jq "[.comments[] | select(.body | contains(\"$ATTEMPT_MARKER\"))] | length")"
+          {
+            echo "number=$number"
+            echo "attempts=$attempts"
+            echo "eligible=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Escalate if attempt cap reached
+        if: env.HAS_TOKEN == 'true' && steps.pr.outputs.eligible == 'true' && fromJSON(steps.pr.outputs.attempts) >= 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          n="${{ steps.pr.outputs.number }}"
+          gh pr edit "$n" --add-label needs-human || true
+          gh pr comment "$n" --body "${ESCALATE_MARKER}
+          🤖 Autofix has already tried twice and CI is still red. Stopping to avoid a fix-fail loop; labelled \`needs-human\` for a maintainer. Latest failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+
+      - name: Mark attempt + record current HEAD
+        id: mark
+        if: env.HAS_TOKEN == 'true' && steps.pr.outputs.eligible == 'true' && fromJSON(steps.pr.outputs.attempts) < 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          n="${{ steps.pr.outputs.number }}"
+          attempt=$(( ${{ steps.pr.outputs.attempts }} + 1 ))
+          gh pr comment "$n" --body "${ATTEMPT_MARKER}
+          🤖 Autofix attempt ${attempt}/2: CI failed, attempting a fix on this branch."
+          {
+            echo "head_before=$(git rev-parse HEAD)"
+            echo "attempt=$attempt"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fix the failing checks
+        id: fix
+        if: env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
+        continue-on-error: true # the verify step below is the source of truth
+        uses: anthropics/claude-code-action@v1
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            CI failed on pull request #${{ steps.pr.outputs.number }} for the NZ
+            Claude Community agent. The PR's branch is already checked out here.
+
+            1. Find what failed: `gh run view ${{ env.RUN_ID }} --log-failed` and
+               `gh pr checks ${{ steps.pr.outputs.number }}`.
+            2. Read CLAUDE.md (conventions + security posture you must not regress).
+               Fix the cause on this branch. A pgvector Postgres is available at
+               DATABASE_URL, so run the full gate and make EVERY check green:
+               npm run typecheck && npm run lint && npm run format:check &&
+               npm run migrate && npm test && npm run build && npm run test:security
+            3. Stage and commit your fix, then push it to THIS branch with
+               EXACTLY this command (nothing else — no other push form is
+               permitted): `git push origin HEAD`. NEVER force-push and NEVER
+               push any other ref or branch. Do NOT open a new PR and do NOT
+               merge. If the fix needs a change under `.github/workflows/` (you
+               cannot push those — the token lacks the `workflows` scope) or the
+               failure is not something you can safely fix, then just STOP
+               without committing/pushing: a later step detects "no new commit"
+               and escalates `needs-human` for you.
+          # Tool surface is least-privilege so the safety guarantees are
+          # structural, not prompt-only:
+          #   * `gh` is READ-only (diagnose the failure) — no merge/close/create.
+          #   * `git` excludes `reset`/`remote`/blanket push. The only push tool
+          #     is `Bash(git push origin HEAD)` with NO `:*` wildcard, i.e. an
+          #     EXACT match: the agent may run only that literal command. A
+          #     wildcard form (`git push origin HEAD:*`) would also permit
+          #     `git push origin HEAD:main` (refspec src:dst) and
+          #     `git push origin HEAD --force`; the exact match forbids both, so
+          #     it can push ONLY the current branch, fast-forward, never main and
+          #     never force. The push runs via the action's App token because a
+          #     GITHUB_TOKEN push wouldn't re-trigger CI. Labelling/commenting/
+          #     escalation are done by the deterministic shell steps, not here.
+          #   * Defence in depth: branch protection on `main` (blocking direct/
+          #     force pushes) is the recommended backstop regardless of token —
+          #     see docs. It is a repo setting, not something this file enforces.
+          claude_args: |
+            --max-turns 200
+            --model sonnet
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      - name: Verify a fix was pushed (else escalate loudly)
+        if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          n="${{ steps.pr.outputs.number }}"
+          git fetch origin "$HEAD_BRANCH"
+          after="$(git rev-parse "origin/$HEAD_BRANCH")"
+          if [ "$after" != "${{ steps.mark.outputs.head_before }}" ]; then
+            echo "Autofix pushed a change; CI will re-run on the new commit."
+            exit 0
+          fi
+          echo "::error::Autofix produced no new commit on ${HEAD_BRANCH}."
+          gh pr edit "$n" --add-label needs-human || true
+          gh pr comment "$n" --body "${ESCALATE_MARKER}
+          🤖 Autofix attempt ${{ steps.mark.outputs.attempt }} pushed no fix — either the cause needs a workflow-file change I can't push, or it wasn't safely fixable. Labelled \`needs-human\`."
+          exit 1
