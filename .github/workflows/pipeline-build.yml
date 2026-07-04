@@ -53,11 +53,37 @@ jobs:
     # 300 turns can legitimately run ~40 min; 60 keeps headroom without
     # letting a hung run camp on the concurrency slot all day.
     timeout-minutes: 60
+    # A real pgvector Postgres so the worker's OWN verification runs the
+    # DB-integration tests (which skip without DATABASE_URL) against the same
+    # database CI will use on the PR. Without this the worker "passes" locally
+    # while DB-behaviour/latency bugs only surface in CI's build job (see #79).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: community_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       # secrets are allowed in job-level env; this keeps the action step inert
       # until the token exists, so the workflow is safe to merge beforehand.
       HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
+      # Dummy app config so the repo's tests/migrate can load config.ts; only
+      # DATABASE_URL is real. CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT set
+      # here — the action injects the real one for the agent, and overriding it
+      # would break the agent's auth.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+      DISCORD_BOT_TOKEN: ci-dummy-token
+      DISCORD_GUILD_ID: ci-dummy-guild
+      WHATSAPP_PROVIDER: disabled
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -87,9 +113,19 @@ jobs:
             Read CLAUDE.md (conventions + security posture you must not regress) and
             docs/PIPELINE.md (ownership rules) first, then:
             1. Relabel this issue `status:building` and comment that you've claimed it.
-            2. Implement the approved proposal on a new branch. Match existing style,
-               write/extend tests, and make `npm run typecheck`, `npm test`, and
-               `npm run build` all pass.
+            2. Implement the approved proposal on a new branch. Match existing style
+               and write/extend tests. A pgvector Postgres is available at
+               DATABASE_URL, so run the FULL gate CI will run on your PR and make
+               every one green BEFORE opening it:
+                 - npm run typecheck
+                 - npm run lint
+                 - npm run format:check   (run `npm run format` to fix, then re-check)
+                 - npm run migrate
+                 - npm test               (DB-integration tests run here — NOT skipped)
+                 - npm run build
+                 - npm run test:security
+               Do not open the PR until all of these pass. CI runs the identical
+               checks, so a red PR only creates rework for a human.
             3. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
                summarising the change, its security/privacy impact, and how you verified
                it. Then relabel the issue `status:built`.
