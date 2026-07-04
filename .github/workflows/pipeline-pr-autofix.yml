@@ -121,7 +121,7 @@ jobs:
           set -euo pipefail
           n="${{ steps.pr.outputs.number }}"
           attempt=$(( ${{ steps.pr.outputs.attempts }} + 1 ))
-          gh pr comment "$n" --body "${MARKER}
+          gh pr comment "$n" --body "${ATTEMPT_MARKER}
           🤖 Autofix attempt ${attempt}/2: CI failed, attempting a fix on this branch."
           {
             echo "head_before=$(git rev-parse HEAD)"
