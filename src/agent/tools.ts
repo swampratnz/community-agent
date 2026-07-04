@@ -191,7 +191,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
    * authority, so it requires super_admin. The id is shape-checked per platform
    * so a WhatsApp number can't be silently filed as a Discord user (issue #78).
    */
-  function resolveMemberTarget(rawUserId: string, platformArg?: Platform): { platform: Platform; userId: string } {
+  function resolveMemberTarget(
+    rawUserId: string,
+    platformArg?: Platform,
+  ): { platform: Platform; userId: string } {
     const platform = platformArg ?? caller.platform;
     if (platform !== caller.platform) {
       assertAtLeast(caller.role, 'super_admin', `managing a ${platform} user from ${caller.platform}`);
