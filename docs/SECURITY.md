@@ -243,3 +243,8 @@ number could reach an unrelated person).
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.
+- [ ] **Branch protection on `main`** blocks direct and force pushes (require a
+      PR + review). This is the backstop for the pipeline's write-scoped
+      automation — the build and autofix workers hold a `contents: write` token,
+      so branch protection is what guarantees nothing reaches `main` without a
+      human merge even if a worker is prompt-injected into misusing `git push`.

@@ -63,7 +63,11 @@ jobs:
       HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
       HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
       RUN_ID: ${{ github.event.workflow_run.id }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # NB: GH_TOKEN is deliberately NOT job-level. It is set per-step on the
+      # deterministic gh steps only, so the claude-code-action "Fix" step (whose
+      # agent runs node/npm/cat and reads untrusted CI logs) never inherits a
+      # GITHUB_TOKEN it could exfiltrate. The agent gets its own gh/git auth from
+      # the action's App token.
       # Only ATTEMPT_MARKER comments count toward the 2-try cap. The terminal
       # escalation comment uses a DIFFERENT marker so it can't inflate the count
       # (a re-run of the same failed CI must not read one real attempt as two).
@@ -83,6 +87,8 @@ jobs:
       - name: Resolve PR + eligibility
         id: pr
         if: env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pr_json="$(gh pr list --head "$HEAD_BRANCH" --state open --json number,author,isCrossRepository --limit 1)"
@@ -107,6 +113,8 @@ jobs:
 
       - name: Escalate if attempt cap reached
         if: env.HAS_TOKEN == 'true' && steps.pr.outputs.eligible == 'true' && fromJSON(steps.pr.outputs.attempts) >= 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           n="${{ steps.pr.outputs.number }}"
@@ -117,6 +125,8 @@ jobs:
       - name: Mark attempt + record current HEAD
         id: mark
         if: env.HAS_TOKEN == 'true' && steps.pr.outputs.eligible == 'true' && fromJSON(steps.pr.outputs.attempts) < 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           n="${{ steps.pr.outputs.number }}"
@@ -163,22 +173,28 @@ jobs:
           # Tool surface is least-privilege so the safety guarantees are
           # structural, not prompt-only:
           #   * `gh` is READ-only (diagnose the failure) — no merge/close/create.
-          #   * `git` excludes `reset`/`remote`/blanket push; the ONLY push form
-          #     allowed is `git push origin HEAD` (Bash(git push origin HEAD:*)),
-          #     which cannot target `main` or another branch. The push must run
-          #     via the action's App token (a GITHUB_TOKEN push would not
-          #     re-trigger CI), so it stays with the agent rather than moving to
-          #     a deterministic step; force-push-to-own-branch is the one residue
-          #     left to the prompt, since a trailing `--force` flag can't be
-          #     denied by prefix matching. Labelling/commenting/escalation are
-          #     done by the deterministic shell steps (GITHUB_TOKEN), not here.
+          #   * `git` excludes `reset`/`remote`/blanket push. The only push tool
+          #     is `Bash(git push origin HEAD)` with NO `:*` wildcard, i.e. an
+          #     EXACT match: the agent may run only that literal command. A
+          #     wildcard form (`git push origin HEAD:*`) would also permit
+          #     `git push origin HEAD:main` (refspec src:dst) and
+          #     `git push origin HEAD --force`; the exact match forbids both, so
+          #     it can push ONLY the current branch, fast-forward, never main and
+          #     never force. The push runs via the action's App token because a
+          #     GITHUB_TOKEN push wouldn't re-trigger CI. Labelling/commenting/
+          #     escalation are done by the deterministic shell steps, not here.
+          #   * Defence in depth: branch protection on `main` (blocking direct/
+          #     force pushes) is the recommended backstop regardless of token —
+          #     see docs. It is a repo setting, not something this file enforces.
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD:*),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a fix was pushed (else escalate loudly)
         if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           n="${{ steps.pr.outputs.number }}"
