@@ -26,11 +26,12 @@ const skip = hasDb
 const {
   notifyMemberApproved,
   notifySuggestionResolved,
+  notifyReportResolved,
   buildToolServer,
   formatKnowledgeSearchResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
 } = await import('../src/agent/tools.js');
-const { MODERATION_ACTION_KINDS, saveKnowledge, createSuggestion } =
+const { MODERATION_ACTION_KINDS, saveKnowledge, createSuggestion, createContentReport } =
   await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
@@ -41,11 +42,15 @@ const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pen
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
+const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 
 after(async () => {
   if (hasDb) {
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_SEARCH_HANDLER_SCOPE]);
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
+    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = $1`, [
+      RESOLVE_REPORT_HANDLER_USER,
+    ]);
   }
   await closeDb();
 });
@@ -152,6 +157,62 @@ test('notifySuggestionResolved swallows a DM failure rather than throwing (resol
   });
 
   await assert.doesNotReject(notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode'));
+});
+
+// notifyReportResolved holds all of resolve_report's new (issue #120)
+// notification behaviour, tested directly here the same way
+// notifySuggestionResolved is above.
+test('notifyReportResolved sends a DM naming the outcome, wording differing per status', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyReportResolved(adapter, 'user-1', 'resolved', 'someone was spamming the general channel');
+  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was spamming the general channel');
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /resolved/i);
+  assert.match(calls[0][1], /someone was spamming the general channel/);
+  assert.notEqual(calls[0][1], calls[1][1], 'resolved and dismissed get distinct wording');
+});
+
+test('notifyReportResolved keeps the dismissed-path wording neutral-to-supportive, not a bare rejection (issue #120)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was spamming the general channel');
+
+  assert.match(calls[0], /thanks/i, 'dismissed copy still acknowledges the reporter');
+  assert.doesNotMatch(
+    calls[0],
+    /frivolous|invalid|wrong|no action needed/i,
+    'dismissed copy must not imply the report was frivolous or the reporter at fault',
+  );
+});
+
+test('notifyReportResolved truncates a long report reason in the echoed confirmation', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'x'.repeat(500);
+
+  await notifyReportResolved(adapter, 'user-1', 'resolved', longReason);
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
+  assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
+});
+
+test('notifyReportResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyReportResolved(adapter, 'user-1', 'resolved', 'reason'));
 });
 
 test('SECURITY: moderation_history rejects an actionKind outside the allow-list at the zod schema boundary', () => {
@@ -514,5 +575,171 @@ test(
     });
 
     assert.match(result.content[0]?.text ?? '', /marked done/, 'resolve_suggestion still reports success');
+  },
+);
+
+// resolve_report tool handler (issue #120): notifyReportResolved itself is
+// unit-tested above without the MCP transport; these exercise the handler's
+// wiring — the same-platform guard in particular — against a real resolved
+// row, which requires the DB. Same pattern as resolveSuggestionHandler above.
+function resolveReportHandler(caller: { platform: 'discord' | 'whatsapp'; adapter: PlatformAdapter }) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            id: number;
+            status: 'resolved' | 'dismissed';
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['resolve_report'];
+}
+
+test(
+  'resolve_report sends the reporter a DM when resolved on their own platform (issue #120)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: RESOLVE_REPORT_HANDLER_USER,
+      conversationId: 'convo-1',
+      reason: 'same-platform resolution',
+    });
+    assert.ok(created);
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, text) => {
+      calls.push([userId, text]);
+    });
+
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'resolved',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+    assert.equal(calls.length, 1, 'the reporter is notified when the admin is on the same platform');
+    assert.equal(calls[0][0], RESOLVE_REPORT_HANDLER_USER);
+    assert.match(calls[0][1], /resolved/i);
+  },
+);
+
+test(
+  'SECURITY: resolve_report sends no DM when the resolving admin is on a different platform than the report (issue #120)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: RESOLVE_REPORT_HANDLER_USER,
+      conversationId: 'convo-1',
+      reason: 'cross-platform resolution must not misaddress a DM',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // The report was filed on whatsapp; the admin resolving it is calling
+    // from discord — sendDirectMessage must never fire, since the per-turn
+    // adapter has no way to reach the whatsapp identity safely.
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'resolved',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolution itself still succeeds');
+    assert.equal(calls.length, 0, 'a cross-platform resolution sends no DM');
+  },
+);
+
+test(
+  'resolve_report sends no DM and reports failure for an unknown report id (issue #120)',
+  { skip },
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: 999_999_999,
+      status: 'resolved',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /Failed/);
+    assert.equal(calls.length, 0, 'no row resolved means no notification');
+  },
+);
+
+test(
+  "resolve_report's own reported outcome is unaffected by a DM delivery failure (issue #120)",
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: RESOLVE_REPORT_HANDLER_USER,
+      conversationId: 'convo-1',
+      reason: 'DM will fail to send',
+    });
+    assert.ok(created);
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+
+    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'resolved',
+    });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolve_report still reports success');
+  },
+);
+
+test(
+  "SECURITY: resolve_report's notification DM never includes the reported user's identity (issue #120)",
+  { skip },
+  async () => {
+    const targetUserId = `${RUN}-resolve-report-target`;
+    const created = await createContentReport({
+      platform: 'discord',
+      reporterUserId: RESOLVE_REPORT_HANDLER_USER,
+      conversationId: 'convo-1',
+      targetUserId,
+      reason: 'they were harassing me',
+    });
+    assert.ok(created);
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    await resolveReportHandler({ platform: 'discord', adapter }).handler({
+      id: created.id,
+      status: 'dismissed',
+    });
+
+    assert.equal(calls.length, 1);
+    assert.ok(
+      !calls[0].includes(targetUserId),
+      "SECURITY: the reporter's resolution DM must never include the reported user's identity",
+    );
+    assert.match(calls[0], /they were harassing me/, "the reporter's own reason is echoed");
   },
 );

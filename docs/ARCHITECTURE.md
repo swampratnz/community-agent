@@ -314,7 +314,12 @@ applied to abuse reports instead of pending guests:
    itself can't become a spam vector against admin attention.
 2. Admins triage with `list_reports` (conversation-scoped, same pattern as
    `moderation_history`) and `resolve_report` (marks `resolved`/`dismissed`,
-   audited, non-destructive so no CONFIRM gate).
+   audited, non-destructive so no CONFIRM gate). Resolving a report
+   best-effort DMs the reporter naming the outcome (`notifyReportResolved`,
+   issue #120, same fire-and-forget shape as `notifySuggestionResolved`) —
+   but only when the resolving admin's current platform matches the report's
+   stored platform; see SECURITY.md's residual risks for the cross-platform
+   limitation.
 3. No automation beyond intake: the queue is purely informational. Admins
    still decide and act via the existing `moderate` tool.
 

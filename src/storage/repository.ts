@@ -1778,26 +1778,36 @@ export async function listReports(
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
  * to `conversationIds` so an admin can only resolve reports from
  * conversations they actually participate in (same invariant as `moderate`/
- * `announce`). Returns false if no matching row was found (unknown id, or
- * the id exists but is outside the caller's scope).
+ * `announce`). Returns the resolved row's platform/reporterUserId/reason (so
+ * the caller can notify the reporter, issue #120 — same "RETURNING" shape as
+ * `resolveSuggestion`) or null if no matching row was found (unknown id, or
+ * the id exists but is outside the caller's scope) — same "no match" signal
+ * the old boolean return gave.
  */
 export async function resolveContentReport(
   id: number,
   status: 'resolved' | 'dismissed',
   resolvedBy: string,
   conversationIds?: readonly string[],
-): Promise<boolean> {
+): Promise<{ platform: Platform; reporterUserId: string; reason: string } | null> {
   const params: unknown[] = [id, status, resolvedBy];
   let scope = '';
   if (conversationIds) {
     params.push([...conversationIds]);
     scope = `AND conversation_id = ANY($${params.length})`;
   }
-  const { rowCount } = await pool.query(
+  const { rows } = await pool.query(
     `UPDATE content_reports
         SET status = $2, resolved_by = $3, resolved_at = now()
-      WHERE id = $1 ${scope}`,
+      WHERE id = $1 ${scope}
+      RETURNING platform, reporter_user_id, reason`,
     params,
   );
-  return (rowCount ?? 0) > 0;
+  return rows[0]
+    ? {
+        platform: rows[0].platform as Platform,
+        reporterUserId: rows[0].reporter_user_id,
+        reason: rows[0].reason,
+      }
+    : null;
 }

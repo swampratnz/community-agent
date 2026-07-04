@@ -224,6 +224,37 @@ export async function notifySuggestionResolved(
 }
 
 /**
+ * Best-effort confirmation DM to a member when their report_content
+ * submission is resolved — closes the same "shout into the void" gap
+ * `notifySuggestionResolved` closed for suggestions (issue #120), same
+ * fire-and-forget shape: `.catch(logger.warn)`, never blocks or changes
+ * resolve_report's own reported outcome. The `dismissed` wording is
+ * deliberately neutral-to-supportive rather than a bare "dismissed" — an
+ * unsolicited DM telling someone their safety report was rejected must not
+ * read as dismissive of the underlying concern, even when the triage
+ * outcome itself is correct. Only echoes the reporter's own previously-
+ * submitted reason (truncated) plus a status word — never the reported
+ * user's identity or any other report's fields. Exported separately so it's
+ * unit-testable without the MCP tool-call transport, same convention as
+ * notifySuggestionResolved.
+ */
+export async function notifyReportResolved(
+  adapter: PlatformAdapter,
+  userId: string,
+  status: 'resolved' | 'dismissed',
+  reason: string,
+): Promise<void> {
+  const echoed = truncateForEcho(reason);
+  const message =
+    status === 'dismissed'
+      ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
+      : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
+  await adapter
+    .sendDirectMessage(userId, message)
+    .catch((err) => logger.warn({ err, userId }, 'Report resolution DM failed'));
+}
+
+/**
  * Build the in-process MCP tool server for one agent turn. The tools close
  * over the caller context and the adapter handling this conversation, so
  * RBAC and platform routing are baked in. Layers:
@@ -1101,15 +1132,26 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'resolve_report');
       const allowed = await callerScope();
+      const state: { row: { platform: Platform; reporterUserId: string; reason: string } | null } = {
+        row: null,
+      };
       const { success, result } = await audited({
         actionKind: 'resolve_report',
         params: { id: args.id, status: args.status },
         run: async () => {
-          const done = await resolveContentReport(args.id, args.status, caller.userId, allowed ?? undefined);
-          if (!done) throw new Error(`No report with id ${args.id} in your conversations.`);
+          const row = await resolveContentReport(args.id, args.status, caller.userId, allowed ?? undefined);
+          if (!row) throw new Error(`No report with id ${args.id} in your conversations.`);
+          state.row = row;
           return `marked ${args.status}`;
         },
       });
+      // Same-platform-only, mirroring resolve_suggestion's identical
+      // limitation (issue #116): a per-turn tool handler only has the
+      // current turn's adapter, no cross-platform adapter registry —
+      // cross-platform resolution sends no DM rather than misaddressing one.
+      if (success && state.row && state.row.platform === caller.platform) {
+        await notifyReportResolved(adapter, state.row.reporterUserId, args.status, state.row.reason);
+      }
       return text(success ? `Report #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
     },
   );

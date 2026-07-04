@@ -38,8 +38,10 @@ const testsDir = path.join(repoRoot, 'tests');
 // no-hang-on-missing-sudoers coverage in redeploy.test.ts, the RBAC-surface
 // test in rbac.test.ts, and the pending-action/assertAtLeast tests in
 // tools.test.ts,
-// then to 80 with the suggestion-resolution cross-platform-notify guard (#116).
-const MIN_SECURITY_TESTS = 80;
+// then to 80 with the suggestion-resolution cross-platform-notify guard (#116),
+// then to 82 with the report-resolution cross-platform-notify guard and the
+// no-target-identity-in-DM test (#120).
+const MIN_SECURITY_TESTS = 82;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))
