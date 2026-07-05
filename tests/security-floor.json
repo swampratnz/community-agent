@@ -9,6 +9,7 @@
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,
   "discordAdapter.test.ts": 2,
+  "grokImage.test.ts": 1,
   "knowledgeScope.test.ts": 3,
   "moderation.test.ts": 3,
   "moderationRepo.test.ts": 1,

@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
@@ -276,7 +277,14 @@ const EnvSchemaChecked = EnvSchema.refine(
       message: `ROSTER_DEPARTED_RETENTION_DAYS must be 0 (disabled) or at least ${MIN_ROSTER_DEPARTED_RETENTION_DAYS}`,
       path: ['ROSTER_DEPARTED_RETENTION_DAYS'],
     },
-  );
+  )
+  .refine((e) => !e.IMAGE_GEN_ENABLED || isAbsolute(e.GROK_BIN), {
+    // A bare `grok` is PATH-resolved; a writable PATH entry could shadow it with
+    // a hostile binary run as the service user (see docs/SECURITY.md §8). Fail
+    // fast when the feature is on rather than trusting the deploy to get it right.
+    message: 'GROK_BIN must be an absolute path when IMAGE_GEN_ENABLED=true (avoids PATH hijack)',
+    path: ['GROK_BIN'],
+  });
 
 const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
 if (!parsed.success) {
