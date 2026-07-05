@@ -46,6 +46,9 @@ export const MEMBER_TOOLS = [
   'mcp__community__remember_search',
   'mcp__community__forget_me',
   'mcp__community__report_content',
+  // Reporter can retract their OWN report(s) — scoped in SQL to
+  // reporter_user_id, so it can never touch anyone else's report.
+  'mcp__community__withdraw_report',
   // Write-only into the member's own queue (rate-capped); the read side
   // (list_suggestions) is admin-tier — a member can never read the queue.
   'mcp__community__suggest_improvement',

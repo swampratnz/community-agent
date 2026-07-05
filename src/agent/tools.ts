@@ -53,6 +53,7 @@ import {
   resolveLinkedIdentities,
   saveKnowledge,
   setResponseStyle,
+  withdrawOwnReports,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   searchKnowledge,
@@ -282,6 +283,32 @@ export async function notifyReportFiled(
   if (report.targetUserId) lines.push(`Target user: ${report.targetUserId}`);
   if (report.messageId) lines.push(`Message id: ${report.messageId}`);
   await notifySuperAdmins(adapter, platform, lines.join('\n'), report.reporterUserId);
+}
+
+/**
+ * Best-effort super-admin alert when a reporter withdraws their own report(s)
+ * (companion to `notifyReportFiled`). A withdrawal is surfaced, not silent, so
+ * a withdrawn *serious* complaint doesn't just vanish unnoticed — e.g. if a
+ * reporter were pressured into retracting one, super admins still see it and
+ * can follow up. Exposes nothing beyond the report ids + the reporter already
+ * visible via `list_reports`. Fire-and-forget (`void ... .catch`), never
+ * blocks or changes the tool's own outcome. Exported for unit testing, same
+ * convention as `notifyReportFiled`.
+ */
+export async function notifyReportWithdrawn(
+  adapter: PlatformAdapter,
+  platform: Platform,
+  info: { ids: number[]; reporterUserId: string; reporterName: string | null },
+): Promise<void> {
+  const list = info.ids.map((id) => `#${id}`).join(', ');
+  const plural = info.ids.length > 1;
+  await notifySuperAdmins(
+    adapter,
+    platform,
+    `Report${plural ? 's' : ''} ${list} withdrawn by the reporter ${info.reporterName ?? info.reporterUserId}. ` +
+      `Marked 'withdrawn' and kept on record — no action needed unless you want to check in.`,
+    info.reporterUserId,
+  );
 }
 
 /**
@@ -565,6 +592,31 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       });
       return text(`Report #${created.id} recorded for this conversation's admins. Thanks for flagging it.`);
     },
+  );
+
+  const withdrawReport = tool(
+    'withdraw_report',
+    'Withdraw your OWN previously-filed content report(s) — use this if you filed one by mistake or as a ' +
+      'joke and no longer want it reviewed. It only ever affects reports YOU filed; it cannot touch anyone ' +
+      "else's. The report is marked withdrawn and kept on record (not deleted), and the admins are notified.",
+    {},
+    async () => {
+      const ids = await withdrawOwnReports(caller.platform, caller.userId);
+      if (ids.length === 0) {
+        return text('You have no open reports to withdraw.', true);
+      }
+      void notifyReportWithdrawn(adapter, caller.platform, {
+        ids,
+        reporterUserId: caller.userId,
+        reporterName: caller.userName,
+      });
+      const list = ids.map((id) => `#${id}`).join(', ');
+      return text(
+        `Withdrew your report${ids.length > 1 ? 's' : ''} ${list}. ` +
+          "They won't be actioned; the admins have been notified of the withdrawal.",
+      );
+    },
+    { annotations: { readOnlyHint: false } },
   );
 
   const suggestImprovement = tool(
@@ -1363,7 +1415,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       'here even to admins — only to a super admin. Admin only.',
     {
       status: z
-        .enum(['open', 'resolved', 'dismissed'])
+        .enum(['open', 'resolved', 'dismissed', 'withdrawn'])
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50)'),
@@ -1861,6 +1913,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       rememberSearch,
       forgetMe,
       reportContent,
+      withdrawReport,
       suggestImprovement,
       rateAnswer,
       setResponseStyleTool,

@@ -32,6 +32,7 @@ const {
   notifySuggestionResolved,
   notifyReportResolved,
   notifyReportFiled,
+  notifyReportWithdrawn,
   buildToolServer,
   formatKnowledgeSearchResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
@@ -280,6 +281,28 @@ test('notifyReportFiled DMs every configured super admin with the report details
       /Reporter said: "someone was spamming the general channel"/,
       'the reporter-supplied reason is explicitly quoted/labelled, not left to blend into the alert prefix',
     );
+  }
+});
+
+test('notifyReportWithdrawn DMs every super admin so a reporter retraction is never silent', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  await notifyReportWithdrawn(adapter, 'whatsapp', {
+    ids: [42, 43],
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+  });
+
+  assert.equal(calls.length, 2, 'both configured super admins are DMed');
+  assert.deepEqual(calls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  for (const [, message] of calls) {
+    assert.match(message, /#42/, 'includes each withdrawn report id');
+    assert.match(message, /#43/);
+    assert.match(message, /Reporter One/, 'names the reporter');
+    assert.match(message, /withdrawn/i, 'states it was withdrawn, not deleted');
   }
 });
 

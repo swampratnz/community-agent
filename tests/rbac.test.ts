@@ -63,6 +63,14 @@ test('SECURITY: report_content is member+ (guests never get it in gated mode; ma
   }
 });
 
+test('SECURITY: withdraw_report is member+ (retract your own report; scoping to own reports is enforced in SQL)', () => {
+  const tool = 'mcp__community__withdraw_report';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'withdraw_report must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach withdraw_report`);
+  }
+});
+
 test('SECURITY: rate_answer is member+ (guests never get it in gated mode; matches MEMBER_TOOLS)', () => {
   const tool = 'mcp__community__rate_answer';
   assert.ok(MEMBER_TOOLS.includes(tool), 'rate_answer must be in MEMBER_TOOLS');

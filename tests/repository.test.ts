@@ -44,6 +44,7 @@ const {
   createContentReport,
   listReports,
   resolveContentReport,
+  withdrawOwnReports,
   countOpenReports,
   REPORT_RATE_LIMIT_PER_DAY,
   recordAccessRequest,
@@ -166,6 +167,59 @@ test(
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [userId]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [kId]);
     await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "SECURITY: repository: withdrawOwnReports only touches the caller's OWN open reports — never another reporter's, never a non-open one",
+  { skip },
+  async () => {
+    const reporterA = `${RUN}-wd-A`;
+    const reporterB = `${RUN}-wd-B`;
+    const conv = `${RUN}-c-withdraw`;
+
+    // A files two reports; B files one. All start 'open'.
+    const a1 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporterA,
+      conversationId: conv,
+      reason: "A's first report",
+    });
+    const a2 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporterA,
+      conversationId: conv,
+      reason: "A's second report",
+    });
+    const b1 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporterB,
+      conversationId: conv,
+      reason: "B's report",
+    });
+    assert.ok(a1 && a2 && b1, 'fixtures recorded');
+
+    // A's second report is already resolved by an admin — withdrawal must skip it.
+    await resolveContentReport(a2.id, 'resolved', 'some-admin');
+
+    const withdrawn = await withdrawOwnReports('discord', reporterA);
+
+    assert.deepEqual(withdrawn, [a1.id], "only A's single OPEN report is withdrawn");
+
+    const statusOf = async (id: number) =>
+      (await pool.query(`SELECT status FROM content_reports WHERE id = $1`, [id])).rows[0]?.status;
+    assert.equal(await statusOf(a1.id), 'withdrawn', "A's open report is now withdrawn");
+    assert.equal(await statusOf(a2.id), 'resolved', "A's already-resolved report is untouched");
+    assert.equal(
+      await statusOf(b1.id),
+      'open',
+      "SECURITY: B's report must be untouched — a member can only withdraw their own",
+    );
+
+    // Wrong platform is also scoped out: withdrawing as A on whatsapp touches nothing.
+    assert.deepEqual(await withdrawOwnReports('whatsapp', reporterA), [], 'platform is part of the scope');
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
   },
 );
 
