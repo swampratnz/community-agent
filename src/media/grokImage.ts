@@ -143,23 +143,36 @@ async function locateSessionImage(
   return null;
 }
 
+/**
+ * The argv for the grok subprocess. Exported and kept pure so a test can assert
+ * the security-critical flags never silently drift:
+ *  - `--tools GenerateImage` is the allowlist that makes unattended
+ *    `--always-approve` safe (no Bash/file/exec tool for it to approve). If a
+ *    refactor drops it, `--always-approve` becomes a host-code-execution surface.
+ *  - `--output-format json` is how we read the session id back to locate the image.
+ */
+export function buildGrokArgs(instruction: string): string[] {
+  return [
+    '--tools',
+    'GenerateImage',
+    '--output-format',
+    'json',
+    '--always-approve',
+    '--disable-web-search',
+    '-p',
+    instruction,
+  ];
+}
+
 /** Spawn grok headlessly, locked to the image tool, and resolve its stdout. */
 function runGrok(instruction: string, cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      config.imageGen.grokBin,
-      [
-        '--tools',
-        'GenerateImage',
-        '--output-format',
-        'json',
-        '--always-approve',
-        '--disable-web-search',
-        '-p',
-        instruction,
-      ],
-      { cwd, env: grokEnv(), stdio: ['ignore', 'pipe', 'pipe'], timeout: config.imageGen.timeoutMs },
-    );
+    const child = spawn(config.imageGen.grokBin, buildGrokArgs(instruction), {
+      cwd,
+      env: grokEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: config.imageGen.timeoutMs,
+    });
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (d: Buffer) => {

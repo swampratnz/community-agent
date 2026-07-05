@@ -7,7 +7,7 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { sniffImageType, parseSessionId } = await import('../src/media/grokImage.js');
+const { sniffImageType, parseSessionId, buildGrokArgs } = await import('../src/media/grokImage.js');
 
 test('sniffImageType detects JPEG / PNG / WebP from magic bytes', () => {
   assert.deepEqual(sniffImageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), {
@@ -27,6 +27,22 @@ test('sniffImageType returns null for non-image or empty bytes (never mislabels)
   assert.equal(sniffImageType(Buffer.alloc(0)), null);
   // A near-miss that shares no full signature must not be treated as an image.
   assert.equal(sniffImageType(Buffer.from([0xff, 0xd8, 0x00])), null);
+});
+
+test('SECURITY: buildGrokArgs locks the CLI to the image tool so --always-approve is safe', () => {
+  const args = buildGrokArgs('draw a cat');
+  // The allowlist that removes Bash/file/exec — without it, --always-approve
+  // becomes a host-code-execution surface. --tools must be immediately followed
+  // by exactly GenerateImage.
+  const i = args.indexOf('--tools');
+  assert.ok(i >= 0, '--tools must be present');
+  assert.equal(args[i + 1], 'GenerateImage');
+  assert.ok(args.includes('--always-approve'));
+  assert.ok(args.includes('--disable-web-search'));
+  // The free-text prompt is the value of -p, an argv element (never a shell string).
+  const p = args.indexOf('-p');
+  assert.ok(p >= 0);
+  assert.equal(args[p + 1], 'draw a cat');
 });
 
 test('parseSessionId reads the session id from grok JSON stdout', () => {

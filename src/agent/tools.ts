@@ -303,6 +303,11 @@ const imageGenDaily = new Map<string, { day: string; count: number }>();
  * Reserve one image-generation slot for `key` against today's per-user cap.
  * Returns false (and does not increment) if the cap is already reached.
  * A limit of 0 means unlimited.
+ *
+ * A reservation is deliberately NOT refunded if the generation later fails: the
+ * cap bounds heavyweight `grok` subprocess spawns, and a failed attempt still
+ * spawned (and paid for) one — so a timeout/crash counts, and induced-failure
+ * retry spam can't bypass the cap.
  */
 function reserveImageGenDaily(key: string, limit: number): boolean {
   if (limit <= 0) return true;
