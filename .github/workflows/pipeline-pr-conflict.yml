@@ -240,7 +240,38 @@ jobs:
           # persisted git credential is needed anywhere.
           persist-credentials: false
 
+      # Superseded-run guard: discovery and dispatch are decoupled, so two
+      # triggers landing close together (push-to-main + PR-opened + the sweep)
+      # can each dispatch a resolve for the SAME PR. Without this re-check the
+      # second run would merge nothing, see "no new commit", and mislabel the
+      # already-resolved PR `needs-human` — which permanently excludes it from
+      # future auto-resolution (that label is the discover filter's stop).
+      # Re-reading `mergeable` here makes a duplicate dispatch a clean no-op.
+      # A still-UNKNOWN state after the bounded poll also skips (never guess;
+      # the 6-hourly sweep re-evaluates), matching the discover job's policy.
+      - name: Skip if no longer conflicting (superseded or already resolved)
+        id: precheck
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          state='UNKNOWN'; mergeable='UNKNOWN'
+          for _ in $(seq 1 10); do
+            read -r state mergeable < <(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --json state,mergeable --jq '[.state, .mergeable] | join(" ")')
+            [ "$mergeable" != 'UNKNOWN' ] && break
+            sleep 3
+          done
+          if [ "$state" = 'OPEN' ] && [ "$mergeable" = 'CONFLICTING' ]; then
+            echo "PR #${PR_NUMBER} is still conflicting — proceeding."
+            echo "still_conflicting=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PR #${PR_NUMBER}: state=${state} mergeable=${mergeable} — nothing to resolve; skipping (superseded run)."
+            echo "still_conflicting=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Mark attempt + record current HEAD
+        if: steps.precheck.outputs.still_conflicting == 'true'
         id: mark
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -255,6 +286,7 @@ jobs:
       # workflows — an un-migrated DB fails every DB-integration test with
       # "relation does not exist"). node_modules persists into the fix step.
       - name: Migrate base schema (deterministic — do not leave to the agent)
+        if: steps.precheck.outputs.still_conflicting == 'true'
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token
@@ -268,6 +300,7 @@ jobs:
           npm run migrate
 
       - name: Resolve the merge conflict
+        if: steps.precheck.outputs.still_conflicting == 'true'
         id: fix
         continue-on-error: true # the verify step below is the source of truth
         uses: anthropics/claude-code-action@v1
@@ -346,7 +379,7 @@ jobs:
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge origin/main),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin main),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify the conflict was resolved (else escalate loudly)
-        if: always()
+        if: always() && steps.precheck.outputs.still_conflicting == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
