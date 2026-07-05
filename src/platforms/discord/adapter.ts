@@ -437,6 +437,23 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     await this.sendDirectMessage(userId, text);
   }
 
+  /** Post an image attachment (with an optional caption) to a channel. */
+  async sendImage(
+    conversationId: string,
+    image: { data: Buffer; filename: string; mimeType: string },
+    caption?: string,
+  ): Promise<void> {
+    const channel = await this.client.channels.fetch(conversationId).catch(() => null);
+    if (!channel?.isTextBased() || channel.isDMBased()) {
+      throw new Error(`Discord channel ${conversationId} is not sendable`);
+    }
+    await channel.send({
+      content: caption ? await this.filtered(caption) : undefined,
+      files: [{ attachment: image.data, name: image.filename }],
+      allowedMentions: { parse: [] },
+    });
+  }
+
   /** Post a public warning in the channel the offending message was posted in. */
   async warnInChannel(channelId: string, text: string): Promise<void> {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);

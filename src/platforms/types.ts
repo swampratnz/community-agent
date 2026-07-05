@@ -106,6 +106,17 @@ export interface PlatformAdapter {
   sendDirectMessage(userId: string, text: string): Promise<void>;
 
   /**
+   * Post an image attachment to a conversation. Optional — adapters with no
+   * media send path (e.g. webhook-only) omit it, and callers must feature-check
+   * before use.
+   */
+  sendImage?(
+    conversationId: string,
+    image: { data: Buffer; filename: string; mimeType: string },
+    caption?: string,
+  ): Promise<void>;
+
+  /**
    * Conversation ids the given user actually participates in right now
    * (Discord: channels their permissions let them view; WhatsApp: groups
    * they are a member of plus their own DM). Backs admin data scoping.
