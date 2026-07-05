@@ -36,11 +36,16 @@ permissions:
 
 jobs:
   autofix:
-    # Only react to a FAILED CI run triggered by a same-repo pull request.
+    # Only react to a FAILED CI run triggered by a same-repo pull request —
+    # and only from the run's SECOND attempt onward: ci-retry.yml gives every
+    # failed CI run one free machine rerun first (transient npm/runner
+    # failures — the ETIMEDOUT class — recover there for zero agent cost), so
+    # spending a fix agent on attempt 1 would mostly chase flakes.
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.run_attempt >= 2
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Same pgvector Postgres as the build/CI jobs so the autofix agent can run
@@ -174,6 +179,15 @@ jobs:
           WHATSAPP_PROVIDER: disabled
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # This workflow fires on workflow_run of a CI run whose actor is the
+          # claude[bot] App (it pushed the PR branch), and claude-code-action
+          # refuses non-human actors by default ("Workflow initiated by
+          # non-human actor: claude (type: Bot)") — which is why BOTH of this
+          # loop's real firings failed without the agent ever starting (runs
+          # 28708913230 and 28716222221). Same allow-list setting
+          # pipeline-pr-review.yml already uses for the same reason; the
+          # eligibility step above still hard-requires a same-repo bot PR.
+          allowed_bots: '*'
           prompt: |
             CI failed on pull request #${{ steps.pr.outputs.number }} for the NZ
             Claude Community agent. The PR's branch is already checked out here.
