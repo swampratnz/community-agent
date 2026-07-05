@@ -48,8 +48,13 @@ jobs:
         if: env.HAS_TOKEN == 'true'
 
       # Read-only review: produce the verdict as the FINAL text message. Only
-      # read tools are allowed, so there are no permission denials and no
-      # max-turns thrash. The model is explicitly told NOT to post anything.
+      # read tools are allowed, so there are no permission denials. The model is
+      # explicitly told NOT to post anything.
+      # Turn cap: 20 was too low for a large PR — reviewing a big diff means
+      # reading the diff + many changed files, and a ~15-file/~1200-line PR
+      # exhausted 20 turns and finished with `error_max_turns` and NO review
+      # text, failing the check. 60 gives large PRs room; the review is
+      # read-only + posts once, so it can't run away.
       - id: analyze
         if: env.HAS_TOKEN == 'true'
         continue-on-error: true # a bad run must still reach the post step below
@@ -86,7 +91,7 @@ jobs:
               or "Changes requested", or "Needs a human decision".
             - Then the findings as short bullets, or "No issues found." if clean.
           claude_args: |
-            --max-turns 20
+            --max-turns 60
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob,TodoWrite"
 
       # Deterministic: extract the review text from the action's execution log
