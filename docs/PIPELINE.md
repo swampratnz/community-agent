@@ -54,7 +54,10 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   as autofix; it never opens or merges PRs. Do not misflag its merge commits
   as an ownership violation either.
 - **No loop merges PRs.** A human merges — especially important for this
-  security-sensitive bot.
+  security-sensitive bot. This is enforced structurally, not just by prompt:
+  the build worker's `--allowedTools` in `pipeline-build.yml` grants no blanket
+  `git:*`/`gh:*`/`npx:*`/`node:*` and no form of `gh pr merge` or `gh api`
+  (matching the autofix worker's least-privilege standard, #107).
 - **WIP caps:** ≤3 open `status:draft`. Builds run **per-issue** (each issue its
   own `concurrency` group — distinct issues in parallel, no cross-eviction; a
   single shared group would silently *cancel* queued builds, which aren't
