@@ -14,6 +14,9 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ### Changed
 - Auto-moderation warnings are now **public and minimal**: the warning is posted in the channel the offending message was posted in (not only the private admin channel), and names **only the member** — no user id, matched word, or message excerpt. The detailed record (id + matched term, needed for `clear_warnings`) still goes to the private admin channel, and the member still gets a DM. Follow-up to the auto-moderation feature (#141).
 
+### Fixed
+- Membership tool replies (`add_member`, `remove_member`, `grant_admin`, `revoke_admin`, `unlink_member`) now name the member (from the membership row or the server roster) instead of echoing a raw platform id — e.g. "Granted admin to **Adam H** on discord" rather than "…to 310697646731952132". Falls back to the id only when no name is known.
+
 ## 2026-07-04
 
 ### Added

@@ -65,6 +65,7 @@ const {
   SUGGESTION_MAX_CHARS,
   upsertMember,
   getMemberRole,
+  resolveDisplayName,
   removeMember,
   linkMembers,
   unlinkMember,
@@ -2038,6 +2039,39 @@ test(
     await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
       w,
     ]);
+  },
+);
+
+test(
+  'resolveDisplayName prefers the membership row, falls back to the roster, else null',
+  { skip },
+  async () => {
+    const uid = `${RUN}-name`;
+    assert.equal(await resolveDisplayName('discord', uid), null, 'unknown user has no stored name');
+
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, 'Roster Name')`,
+      [uid],
+    );
+    assert.equal(await resolveDisplayName('discord', uid), 'Roster Name', 'falls back to the roster name');
+
+    await upsertMember({
+      platform: 'discord',
+      userId: uid,
+      role: 'member',
+      addedBy: `${RUN}-admin`,
+      displayName: 'Member Name',
+    });
+    assert.equal(
+      await resolveDisplayName('discord', uid),
+      'Member Name',
+      'the membership display name takes precedence over the roster',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      uid,
+    ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [uid]);
   },
 );
 
