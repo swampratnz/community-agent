@@ -48,6 +48,29 @@ test('SECURITY: report_content is member+ (guests never get it in gated mode; ma
   }
 });
 
+test('SECURITY: rate_answer is member+ (guests never get it in gated mode; matches MEMBER_TOOLS)', () => {
+  const tool = 'mcp__community__rate_answer';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'rate_answer must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach rate_answer`);
+  }
+});
+
+test('SECURITY: list_answer_feedback is admin-only — a member can never read the aggregate rating queue, including ratings they themselves submitted (issue #118)', () => {
+  const tool = 'mcp__community__list_answer_feedback';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_answer_feedback must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'list_answer_feedback must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_answer_feedback`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_answer_feedback`);
+  }
+});
+
 test('SECURITY: list_reports and resolve_report are admin-only (member/guest must never reach them)', () => {
   const tools = ['mcp__community__list_reports', 'mcp__community__resolve_report'];
   for (const t of tools) {

@@ -72,6 +72,9 @@ const {
   countRepliesToUser,
   getResponseStyle,
   setResponseStyle,
+  createAnswerFeedback,
+  listAnswerFeedback,
+  RATE_ANSWER_DAILY_LIMIT,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -2184,5 +2187,362 @@ test(
       'standard',
       'SECURITY: after purge, the caller reverts to the default as if they never set a preference',
     );
+  },
+);
+
+// --- Answer feedback (member rating of the bot's own answers, issue #118) ---
+
+/** Narrows createAnswerFeedback's result, failing the test with a clear message on a refusal. */
+function expectFeedbackId(
+  result: Awaited<ReturnType<typeof createAnswerFeedback>>,
+  message = 'expected the rating to be recorded',
+): number {
+  if (result === 'no_recent_answer' || result === 'rate_limited') {
+    assert.fail(`${message} (got "${result}")`);
+  }
+  return result.id;
+}
+
+test(
+  "repository: createAnswerFeedback binds to the caller's most recent outbound reply and listAnswerFeedback returns it",
+  { skip },
+  async () => {
+    const userId = `${RUN}-rate-answer-user`;
+    const conversationId = `${RUN}-c-rate-answer`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'what does the bot do?',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'here is the answer',
+      meta: { replyToUserId: userId },
+    });
+
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+    );
+
+    const listed = await listAnswerFeedback([conversationId]);
+    const row = listed.find((r) => r.id === feedbackId);
+    assert.ok(row, 'the rating is visible via listAnswerFeedback');
+    assert.equal(row.helpful, true);
+    assert.equal(row.userId, userId);
+    assert.ok(row.interactionId !== null, 'bound to the resolved outbound interaction');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "SECURITY: repository: createAnswerFeedback binds to the caller's OWN outbound reply, never a concurrent reply to a different member in the same busy conversation",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-rate-answer-group`;
+    const memberA = `${RUN}-rate-answer-member-a`;
+    const memberB = `${RUN}-rate-answer-member-b`;
+
+    // The bot answers member A first...
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'answer for member A',
+      meta: { replyToUserId: memberA },
+    });
+    // ...then answers member B more recently. Without caller-scoped
+    // resolution, a naive "most recent outbound in this conversation" query
+    // would wrongly bind member A's rating below to THIS reply.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'answer for member B',
+      meta: { replyToUserId: memberB },
+    });
+
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: memberA, helpful: true }),
+    );
+
+    const rows = await pool.query(
+      `SELECT content FROM interactions WHERE id = (
+         SELECT interaction_id FROM answer_feedback WHERE platform = 'discord' AND user_id = $1
+       )`,
+      [memberA],
+    );
+    assert.equal(
+      rows.rows[0]?.content,
+      'answer for member A',
+      "SECURITY: member A's rating must bind to the answer the bot gave THEM, not the more-recent reply to member B",
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [memberA]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "repository: createAnswerFeedback falls back to the conversation's most-recent outbound reply when no caller-scoped match exists (e.g. a legacy row with no replyToUserId)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-rate-answer-fallback`;
+    const userId = `${RUN}-rate-answer-fallback-user`;
+
+    // Simulate a legacy outbound row predating the replyToUserId meta field —
+    // inserted directly, since recordInteraction always sets meta now.
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, meta)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'legacy reply with no replyToUserId meta', '{}'::jsonb)`,
+      [conversationId],
+    );
+
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      'falls back to the conversation-most-recent reply',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "repository: createAnswerFeedback declines gracefully with 'no_recent_answer' when there is nothing to rate yet",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-rate-answer-empty`;
+    const userId = `${RUN}-rate-answer-empty-user`;
+
+    const result = await createAnswerFeedback({
+      platform: 'discord',
+      conversationId,
+      userId,
+      helpful: true,
+    });
+    assert.equal(result, 'no_recent_answer');
+
+    const rows = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [userId]);
+    assert.equal(rows.rows.length, 0, 'no row is inserted when there is no answer to bind to');
+  },
+);
+
+test(
+  'SECURITY: repository: createAnswerFeedback enforces a DB-backed rolling-24h cap per rater, robust to a simulated process restart',
+  { skip },
+  async () => {
+    const userId = `${RUN}-rate-answer-cap-user`;
+    const conversationId = `${RUN}-c-rate-answer-cap`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer being rated repeatedly',
+      meta: { replyToUserId: userId },
+    });
+
+    // Seed cap-many ratings via direct SQL, as if written by a previous
+    // process instance, so an in-memory counter would wrongly admit the next
+    // one but the DB-backed COUNT(*) refuses it (same pattern as
+    // createContentReport/createSuggestion's rate-cap tests).
+    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO answer_feedback (platform, conversation_id, user_id, helpful) VALUES ($1,$2,$3,$4)`,
+        ['discord', conversationId, userId, i % 2 === 0],
+      );
+    }
+
+    const rejected = await createAnswerFeedback({
+      platform: 'discord',
+      conversationId,
+      userId,
+      helpful: true,
+    });
+    assert.equal(rejected, 'rate_limited', 'the (cap+1)th rating in 24h is refused, not silently accepted');
+
+    const countAfterRejection = await pool.query(
+      `SELECT count(*) AS n FROM answer_feedback WHERE user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      Number(countAfterRejection.rows[0].n),
+      RATE_ANSWER_DAILY_LIMIT,
+      'no row is inserted for a refused rating',
+    );
+
+    // Age one rating past the 24h window — it should no longer count.
+    await pool.query(
+      `UPDATE answer_feedback SET created_at = now() - interval '25 hours'
+        WHERE id = (SELECT id FROM answer_feedback WHERE user_id = $1 ORDER BY id LIMIT 1)`,
+      [userId],
+    );
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      'a rating should be accepted again once an old one falls outside the rolling window',
+    );
+
+    // A different rater is unaffected by another user's cap.
+    const otherUser = `${RUN}-rate-answer-cap-other`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'answer for the other rater',
+      meta: { replyToUserId: otherUser },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: otherUser, helpful: true }),
+      'the cap should be per-rater, not global',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[userId, otherUser]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: listAnswerFeedback scopes by conversation and filters by unhelpfulOnly',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-feedback-list-in`;
+    const outOfScopeConvo = `${RUN}-c-feedback-list-out`;
+    const helpfulUser = `${RUN}-feedback-list-helpful`;
+    const unhelpfulUser = `${RUN}-feedback-list-unhelpful`;
+    const outOfScopeUser = `${RUN}-feedback-list-outscope`;
+
+    for (const [convo, user] of [
+      [inScopeConvo, helpfulUser],
+      [inScopeConvo, unhelpfulUser],
+      [outOfScopeConvo, outOfScopeUser],
+    ] as const) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: convo,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${user}`,
+        meta: { replyToUserId: user },
+      });
+    }
+
+    const inScopeHelpfulId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId: inScopeConvo,
+        userId: helpfulUser,
+        helpful: true,
+      }),
+    );
+    const inScopeUnhelpfulId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId: inScopeConvo,
+        userId: unhelpfulUser,
+        helpful: false,
+      }),
+    );
+    const outOfScopeId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId: outOfScopeConvo,
+        userId: outOfScopeUser,
+        helpful: false,
+      }),
+    );
+
+    const scoped = await listAnswerFeedback([inScopeConvo]);
+    assert.ok(
+      scoped.some((r) => r.id === inScopeHelpfulId),
+      'the in-scope helpful rating is visible',
+    );
+    assert.ok(
+      !scoped.some((r) => r.id === outOfScopeId),
+      'SECURITY: a rating outside the scope filter must never be returned',
+    );
+
+    const unscoped = await listAnswerFeedback(null);
+    assert.ok(
+      unscoped.some((r) => r.id === outOfScopeId),
+      'null scope (super admin) sees every conversation',
+    );
+
+    const unhelpfulOnly = await listAnswerFeedback([inScopeConvo], true);
+    assert.ok(
+      unhelpfulOnly.some((r) => r.id === inScopeUnhelpfulId),
+      'unhelpfulOnly includes the unhelpful rating',
+    );
+    assert.ok(
+      !unhelpfulOnly.some((r) => r.id === inScopeHelpfulId),
+      'unhelpfulOnly excludes the helpful rating',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [helpfulUser, unhelpfulUser, outOfScopeUser],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData deletes the rater's OWN answer_feedback rows, and separately purging the RATED interaction's recipient nulls interaction_id via ON DELETE SET NULL rather than deleting the feedback row",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-feedback-purge`;
+    const rater = `${RUN}-feedback-purge-rater`;
+    const recipient = `${RUN}-feedback-purge-recipient`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer that will later be purged',
+      meta: { replyToUserId: recipient },
+    });
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: rater, helpful: true }),
+    );
+
+    // Purging the RECIPIENT (the person the rated answer was sent to) deletes
+    // their outbound interaction, which must SET NULL on the FK rather than
+    // deleting or orphaning the rater's feedback row.
+    await purgeUserData('discord', recipient);
+    const afterRecipientPurge = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
+      feedbackId,
+    ]);
+    assert.equal(afterRecipientPurge.rows.length, 1, "the rater's feedback row itself survives");
+    assert.equal(
+      afterRecipientPurge.rows[0].interaction_id,
+      null,
+      'SECURITY: interaction_id is nulled (ON DELETE SET NULL), not left dangling, once the rated reply is purged',
+    );
+
+    const purgedRater = await purgeUserData('discord', rater);
+    assert.ok(purgedRater >= 1, "purge count includes the rater's own feedback rows");
+    const afterRaterPurge = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [rater]);
+    assert.equal(afterRaterPurge.rows.length, 0, "the rater's own feedback rows are gone after their purge");
   },
 );

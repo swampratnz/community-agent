@@ -12,6 +12,7 @@ import {
   addMemberNote,
   clearAccessRequest,
   clearWarnings,
+  createAnswerFeedback,
   createContentReport,
   createSuggestion,
   declineKnowledgeCandidate,
@@ -29,6 +30,7 @@ import {
   isKnownUser,
   linkMembers,
   listAccessRequests,
+  listAnswerFeedback,
   listContextDigests,
   listKnowledge,
   listReports,
@@ -36,6 +38,7 @@ import {
   listSuggestions,
   MODERATION_ACTION_KINDS,
   purgeUserData,
+  RATE_ANSWER_DAILY_LIMIT,
   recentAuditEntries,
   recentModerationEntries,
   recentQuestionClusters,
@@ -564,6 +567,36 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
           'but no promises on if/when it gets built.',
       );
+    },
+  );
+
+  const rateAnswer = tool(
+    'rate_answer',
+    "Record whether the bot's most recent answer to the caller in this conversation was helpful. Call " +
+      'this ONLY on a clear, explicit member cue about the bot\'s own last answer (e.g. "that helped, ' +
+      'thanks", "that\'s wrong", a 👍/👎) — never on general positivity, ambiguous chatter, or feedback ' +
+      "about something other than the bot's last reply.",
+    {
+      helpful: z.boolean().describe('true if the answer helped, false if it did not'),
+    },
+    async (args) => {
+      const created = await createAnswerFeedback({
+        platform: caller.platform,
+        conversationId: caller.conversationId,
+        userId: caller.userId,
+        helpful: args.helpful,
+      });
+      if (created === 'no_recent_answer') {
+        return text("I don't have a recent answer of mine to rate in this conversation yet.", true);
+      }
+      if (created === 'rate_limited') {
+        return text(
+          `You've already rated ${RATE_ANSWER_DAILY_LIMIT} answers in the last 24 hours. ` +
+            'Please wait before rating another.',
+          true,
+        );
+      }
+      return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
     },
   );
 
@@ -1362,6 +1395,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     },
   );
 
+  const listAnswerFeedbackTool = tool(
+    'list_answer_feedback',
+    "List member ratings (helpful/unhelpful) of the bot's answers from your conversations. A rating from " +
+      'a conversation you do not participate in is not visible here even to admins — only to a super ' +
+      'admin. Admin only.',
+    {
+      unhelpfulOnly: z.boolean().optional().describe('Only show unhelpful (thumbs-down) ratings'),
+      limit: z.number().optional().describe('Max entries (default 50)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_answer_feedback');
+      const allowed = await callerScope();
+      const rows = await listAnswerFeedback(allowed, args.unhelpfulOnly ?? false, args.limit ?? 50);
+      if (rows.length === 0) return text('No answer feedback found (within your conversations).');
+      return text(
+        rows
+          .map(
+            (r) =>
+              `#${r.id} [${r.helpful ? 'helpful' : 'unhelpful'}] ${r.platform} ${r.conversationId} — ` +
+              `from ${r.userId}${r.interactionId ? `, answer #${r.interactionId}` : ' (rated answer since purged)'}` +
+              ` (${r.createdAt.toISOString()})`,
+          )
+          .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -1725,6 +1786,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       forgetMe,
       reportContent,
       suggestImprovement,
+      rateAnswer,
       setResponseStyleTool,
       whatsNew,
       userHistory,
@@ -1748,6 +1810,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       moderationHistory,
       listReportsTool,
       resolveReportTool,
+      listAnswerFeedbackTool,
       listSuggestionsTool,
       resolveSuggestionTool,
       addMember,

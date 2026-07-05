@@ -43,6 +43,7 @@ const {
   createContentReport,
   getResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
+  RATE_ANSWER_DAILY_LIMIT,
   recordInteraction,
   insertContextDigest,
   insertKnowledgeCandidate,
@@ -60,6 +61,7 @@ const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
+const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 
 after(async () => {
@@ -73,14 +75,17 @@ after(async () => {
       `${REPORT_CONTENT_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [REMEMBER_SEARCH_HANDLER_SCOPE]);
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id LIKE $1`, [`${RATE_ANSWER_HANDLER_USER}%`]);
     // Safety net for the knowledge-candidate tool tests (issue #102): the
     // action_kind values are unique to this feature, so this can't collide
-    // with any other test's audit rows even if an assertion fails mid-test
-    // before the per-test inline cleanup runs.
+    // with any other test's audit rows even if an assertion fails mid-test.
     await pool.query(
       `DELETE FROM admin_audit WHERE action_kind IN ('accept_knowledge_candidate', 'decline_knowledge_candidate') AND actor_user_id = $1`,
       [KNOWLEDGE_CANDIDATE_HANDLER_ADMIN],
     );
+    await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [
+      `${RATE_ANSWER_HANDLER_USER}%`,
+    ]);
   }
   await closeDb();
 });
@@ -1111,6 +1116,107 @@ test(
       result.content[0]?.text ?? '',
       /recorded/,
       'the reporter confirmation is unaffected by a failed best-effort alert',
+    );
+  },
+);
+
+// rate_answer tool handler (issue #118): exercises the handler's three
+// outcomes (recorded / no_recent_answer / rate_limited) against a real
+// DB-backed resolution + rate cap, same DB-integration pattern as
+// reportContentHandler above.
+function rateAnswerHandler(userId: string, conversationId: string) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Rating Member',
+      role: 'member' as const,
+      conversationId,
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            helpful: boolean;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['rate_answer'];
+}
+
+test(
+  "rate_answer records a helpful rating against the bot's most recent reply to the caller",
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-success`;
+    const conversationId = `${RATE_ANSWER_HANDLER_USER}-convo-1`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer',
+      meta: { replyToUserId: userId },
+    });
+
+    const result = await rateAnswerHandler(userId, conversationId).handler({ helpful: true });
+    assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+    assert.notEqual(result.isError, true);
+  },
+);
+
+test(
+  'rate_answer declines gracefully when the caller has no recent answer to rate in this conversation',
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-empty`;
+    const result = await rateAnswerHandler(userId, `${RATE_ANSWER_HANDLER_USER}-convo-empty`).handler({
+      helpful: true,
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /don't have a recent answer/i);
+  },
+);
+
+test(
+  'SECURITY: rate_answer declines gracefully once the caller is over the daily rating cap, without inserting another row',
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-cap`;
+    const conversationId = `${RATE_ANSWER_HANDLER_USER}-convo-cap`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the repeatedly-rated answer',
+      meta: { replyToUserId: userId },
+    });
+
+    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
+      const ok = await rateAnswerHandler(userId, conversationId).handler({ helpful: i % 2 === 0 });
+      assert.notEqual(ok.isError, true, `rating ${i} within the cap should succeed`);
+    }
+
+    const overCap = await rateAnswerHandler(userId, conversationId).handler({ helpful: true });
+    assert.equal(overCap.isError, true);
+    assert.match(overCap.content[0]?.text ?? '', /already rated/i);
+
+    const countRow = await pool.query(`SELECT count(*) AS n FROM answer_feedback WHERE user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(
+      Number(countRow.rows[0].n),
+      RATE_ANSWER_DAILY_LIMIT,
+      'the over-cap attempt must not insert another row',
     );
   },
 );

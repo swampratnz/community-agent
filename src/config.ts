@@ -177,17 +177,26 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
-  // Anonymised community-context export (issue #53): render digests into
-  // docs/COMMUNITY-CONTEXT.md for the research loop. Off by default. The
-  // export applies its own k-floor and PII scrub — see src/context/export.ts
-  // and SECURITY.md for the egress boundary.
+  // Anonymised community-context export (issue #53): render digests into a
+  // file the research loop can read. Off by default. The export applies its
+  // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
+  // the egress boundary.
+  //
+  // The default path is untracked/git-ignored (issue #108): the *committed*
+  // docs/COMMUNITY-CONTEXT.md is a human artefact (#53), refreshed only by a
+  // human running `npm run export:context` — pointed at the docs file if they
+  // want to overwrite it — and reviewing + committing the result. If this
+  // defaulted to a tracked path, the in-process exporter would dirty a
+  // tracked file on the server after every producing builder run, and
+  // scripts/redeploy.sh's clean-tree check would then permanently abort the
+  // nightly redeploy.
   CONTEXT_EXPORT_ENABLED: z
     .string()
     .optional()
     .transform((v) => v === 'true'),
   CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
   CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
-  CONTEXT_EXPORT_PATH: z.string().default('docs/COMMUNITY-CONTEXT.md'),
+  CONTEXT_EXPORT_PATH: z.string().default('var/community-context.md'),
   // Weekly proactive per-admin DM digest of recurring-question clusters in
   // their own scoped conversations (issue #97) — a push companion to the
   // on-demand `question_digest` tool. Off by default (no timer, no extra

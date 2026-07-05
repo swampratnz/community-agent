@@ -143,6 +143,14 @@ test('guidelines offer suggest_improvement for feature ideas without promising d
   assert.match(prompt, /no repo or issue-tracker access/);
 });
 
+test('guidelines pin a conservative rate_answer trigger: clear explicit cues only, never general positivity or ambiguous chatter (issue #118)', () => {
+  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  assert.match(prompt, /rate_answer ONLY when a member gives a CLEAR, EXPLICIT cue/);
+  assert.match(prompt, /YOUR OWN LAST answer/);
+  assert.match(prompt, /Do NOT call it on general positivity/);
+  assert.match(prompt, /When in doubt, don't call it/);
+});
+
 test('memory block is capped per entry', () => {
   const rendered = renderMemoryContext([hit('x'.repeat(5000))]);
   assert.ok(rendered.length < 1000, 'long memories must be truncated');

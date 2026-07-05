@@ -968,6 +968,16 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
     [platform, userId],
   );
+  // answer_feedback (issue #118) rows this identity submitted AS RATER go
+  // with them, same as suggestions/reports above. A row where this identity
+  // was only the RECIPIENT of the rated answer is not deleted here — its
+  // interaction_id is nulled automatically by the interactions delete above
+  // via the table's ON DELETE SET NULL foreign key, leaving the rater's own
+  // helpful/unhelpful signal intact.
+  const { rowCount: answerFeedback } = await pool.query(
+    `DELETE FROM answer_feedback WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
   return (
     (messages ?? 0) +
     (knowledge ?? 0) +
@@ -978,7 +988,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     (digestSends ?? 0) +
     (responseStyle ?? 0) +
     (warnings ?? 0) +
-    candidates
+    candidates +
+    (answerFeedback ?? 0)
   );
 }
 
@@ -987,9 +998,10 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * them, knowledge entries sourced from them, content reports *they
  * submitted* as reporter, their server_roster row, admin notes kept *about*
  * them (member_notes), suggestions they filed, their response-style
- * preference, any context digest built over their purged interactions, and
- * any still-pending knowledge_candidates drafted from an invalidated digest
- * (issue #102) — across every identity linked to them via
+ * preference, answer ratings *they submitted* (issue #118), any context
+ * digest built over their purged interactions, and any still-pending
+ * knowledge_candidates drafted from an invalidated digest (issue #102) —
+ * across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
  * *both*, which is why `link_member` is CONFIRM-gated, audited, and
@@ -2238,4 +2250,146 @@ export async function resolveContentReport(
         reason: rows[0].reason,
       }
     : null;
+}
+
+// --- Answer feedback (member rating of the bot's own answers, issue #118) ---
+
+/** Per-rater cap on new ratings within a rolling 24h window (DB-backed, same pattern as reports/suggestions). */
+export const RATE_ANSWER_DAILY_LIMIT = 20;
+
+export interface AnswerFeedback {
+  id: number;
+  platform: Platform;
+  conversationId: string;
+  userId: string;
+  interactionId: number | null;
+  helpful: boolean;
+  createdAt: Date;
+}
+
+function mapAnswerFeedback(r: {
+  id: number | string;
+  platform: string;
+  conversation_id: string;
+  user_id: string;
+  interaction_id: number | string | null;
+  helpful: boolean;
+  created_at: Date;
+}): AnswerFeedback {
+  return {
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    conversationId: r.conversation_id,
+    userId: r.user_id,
+    interactionId: r.interaction_id != null ? Number(r.interaction_id) : null,
+    helpful: r.helpful,
+    createdAt: r.created_at,
+  };
+}
+
+/**
+ * Resolve the interaction a `rate_answer` call should bind to. Prefers the
+ * caller's OWN most-recent outbound reply in this conversation
+ * (`meta->>'replyToUserId' = userId`, stamped by router.ts on every send),
+ * falling back to the conversation's most-recent outbound reply only when no
+ * caller-scoped match exists (e.g. a row that predates that meta field).
+ * Without the caller-scoped preference, a busy multi-member channel could
+ * bind member A's "thanks, that helped" to the answer the bot just gave
+ * member B — silently corrupting the signal this feature exists to produce.
+ */
+async function resolveAnswerFeedbackTarget(
+  platform: Platform,
+  conversationId: string,
+  userId: string,
+): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(
+       (SELECT id FROM interactions
+         WHERE platform = $1 AND conversation_id = $2 AND direction = 'outbound'
+           AND meta->>'replyToUserId' = $3
+         ORDER BY created_at DESC LIMIT 1),
+       (SELECT id FROM interactions
+         WHERE platform = $1 AND conversation_id = $2 AND direction = 'outbound'
+         ORDER BY created_at DESC LIMIT 1)
+     ) AS id`,
+    [platform, conversationId, userId],
+  );
+  return rows[0]?.id != null ? Number(rows[0].id) : null;
+}
+
+/**
+ * Record a member's helpful/unhelpful rating of the bot's most recent answer
+ * to them in this conversation. Enforces a DB-backed rolling-24h cap per
+ * rater (`RATE_ANSWER_DAILY_LIMIT`), the same restart-proof
+ * COUNT(*)-inside-the-insert pattern as createSuggestion/createContentReport
+ * (never an in-memory counter). Returns:
+ *  - `{ id }` on success
+ *  - `'no_recent_answer'` when there is no outbound interaction to bind to
+ *    yet (e.g. the member has not been answered in this conversation)
+ *  - `'rate_limited'` when the caller is at/over the cap
+ */
+export async function createAnswerFeedback(input: {
+  platform: Platform;
+  conversationId: string;
+  userId: string;
+  helpful: boolean;
+}): Promise<{ id: number } | 'no_recent_answer' | 'rate_limited'> {
+  const interactionId = await resolveAnswerFeedbackTarget(input.platform, input.conversationId, input.userId);
+  if (interactionId === null) return 'no_recent_answer';
+
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM answer_feedback
+        WHERE platform = $1 AND user_id = $2
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful)
+     SELECT $1, $3, $2, $4, $5
+      WHERE (SELECT n FROM recent) < $6
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      input.conversationId,
+      interactionId,
+      input.helpful,
+      RATE_ANSWER_DAILY_LIMIT,
+    ],
+  );
+  return rows[0] ? { id: Number(rows[0].id) } : 'rate_limited';
+}
+
+/**
+ * Admin-tier view of answer feedback, scoped to `conversationIds` (null =
+ * super admin, unrestricted — same convention as `listReports`). A rating
+ * from a conversation no ordinary admin participates in is therefore only
+ * reachable here with the unrestricted (super admin) scope.
+ */
+export async function listAnswerFeedback(
+  conversationIds: readonly string[] | null,
+  unhelpfulOnly = false,
+  limit = 50,
+): Promise<AnswerFeedback[]> {
+  const params: unknown[] = [];
+  const filters: string[] = [];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`conversation_id = ANY($${params.length})`);
+  }
+  if (unhelpfulOnly) {
+    filters.push(`helpful = false`);
+  }
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+  params.push(clampedLimit);
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+  const { rows } = await pool.query(
+    `SELECT id, platform, conversation_id, user_id, interaction_id, helpful, created_at
+       FROM answer_feedback
+       ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map(mapAnswerFeedback);
 }
