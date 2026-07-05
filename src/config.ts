@@ -92,6 +92,9 @@ const EnvSchema = z.object({
   GROK_BIN: z.string().default('grok'),
   // Hard timeout for a single image generation (ms).
   IMAGE_GEN_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  // Max images one admin can generate per rolling calendar day (abuse cap on
+  // top of the per-user in-flight guard). 0 = unlimited.
+  IMAGE_GEN_DAILY_LIMIT: z.coerce.number().int().min(0).default(25),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -315,6 +318,7 @@ export const config = {
     enabled: env.IMAGE_GEN_ENABLED ?? false,
     grokBin: env.GROK_BIN,
     timeoutMs: env.IMAGE_GEN_TIMEOUT_MS,
+    dailyLimit: env.IMAGE_GEN_DAILY_LIMIT,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,

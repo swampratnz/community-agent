@@ -470,6 +470,53 @@ purge — is the gated, visible, reversible step: CONFIRM + `admin_audit` +
 super-admin DM alert. See the `SECURITY:` cascade test in
 `tests/repository.test.ts` for the asserted behaviour.
 
+### 8. Image generation via the host Grok CLI (`generate_image`)
+Off by default (`IMAGE_GEN_ENABLED=false`). When enabled, the admin/super-admin
+`generate_image` tool shells out to the host's **Grok Build CLI** (`grok`),
+signed in with a SuperGrok subscription (device-code login, no API key). Unlike
+every other tool, this one spawns a **third-party agentic CLI** as the service
+user, so it gets its own controls:
+
+- **Locked to one built-in tool.** The subprocess runs
+  `grok --tools GenerateImage …` — an *allowlist* that removes every other
+  built-in tool, including Bash, file-write, and exec. So even though the CLI is
+  driven with `--always-approve` (unattended, no interactive prompt), there is
+  no shell/file/exec tool for it to approve: the worst an admin turn — or a
+  prompt-injected one — can drive is "produce an image". Verified on the host:
+  with only `GenerateImage` allowed, the model's attempts to reach `Bash`/`Write`
+  are rejected as *"Tool not found"*. This is the deliberate difference from a
+  bare agentic CLI, and why `--always-approve` is acceptable here.
+- **No secret inheritance.** The `grok` subprocess is spawned with a **minimal,
+  explicit `env`** (`grokEnv()` in `src/media/grokImage.ts`): `PATH`, `HOME`,
+  `TERM`, `LANG`/`LC_ALL`, `USER`, and any `GROK_*`/`XDG_*` knobs — **never** the
+  bot's `process.env`. It therefore never sees `CLAUDE_CODE_OAUTH_TOKEN`,
+  `DISCORD_BOT_TOKEN`, `DATABASE_URL`, or the WhatsApp/session secrets. grok
+  authenticates from `$HOME/.grok/auth.json` (a file, not an env var), so the
+  scoped env is sufficient — proven on the host with `env -i`. This keeps the
+  Asset-#2 "secret exposure" boundary intact for the one tool that runs foreign
+  code.
+- **No shell string.** The prompt is passed as an argv element to `spawn`
+  (never interpolated into a shell command), so there is no shell-injection
+  surface even though the tool takes admin free text.
+- **Output is read back, not written to a path we name.** Because the file
+  tools are denied, grok can't copy the image anywhere we choose; `GenerateImage`
+  saves it under its own session storage and we read it back by the session id
+  from `--output-format json`, then delete the session directory. The bytes are
+  **magic-byte sniffed** (`sniffImageType`) — the real format is trusted from
+  the content, never a filename/extension.
+- **RBAC + abuse caps.** Admin/super-admin only (`ADMIN_TOOLS`,
+  `assertAtLeast('admin')`, with a `SECURITY:` test in `tests/rbac.test.ts`),
+  one generation in flight per user, and a per-user **daily cap**
+  (`IMAGE_GEN_DAILY_LIMIT`, default 25; 0 = unlimited). A hard timeout
+  (`IMAGE_GEN_TIMEOUT_MS`) bounds a single run.
+
+**Residual / operational.** `GROK_BIN` selects the binary; set it to an
+**absolute path** on a live deploy so a writable directory earlier in `PATH`
+can't hijack it (see docs/DEPLOYMENT.md). The device-code login is a person's
+SuperGrok subscription — treat `~/.grok/auth.json` as a credential (it's outside
+the repo, on the host). Generated images are unfiltered model output posted into
+the community under an admin's name; the admin who invokes it owns that.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

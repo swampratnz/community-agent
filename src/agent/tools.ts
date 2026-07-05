@@ -296,6 +296,26 @@ export async function notifyReportFiled(
  */
 /** Users with an image generation currently in flight — blocks overlapping spawns per user. */
 const imageGenInFlight = new Set<string>();
+/** Per-user image-generation tally for the current UTC day (abuse cap; see config.imageGen.dailyLimit). */
+const imageGenDaily = new Map<string, { day: string; count: number }>();
+
+/**
+ * Reserve one image-generation slot for `key` against today's per-user cap.
+ * Returns false (and does not increment) if the cap is already reached.
+ * A limit of 0 means unlimited.
+ */
+function reserveImageGenDaily(key: string, limit: number): boolean {
+  if (limit <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = imageGenDaily.get(key);
+  if (!entry || entry.day !== today) {
+    imageGenDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
 
 export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter) {
   /**
@@ -1797,6 +1817,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       const key = `${caller.platform}:${caller.userId}`;
       if (imageGenInFlight.has(key)) {
         return text('You already have an image generating — let it finish before starting another.', true);
+      }
+      if (!reserveImageGenDaily(key, config.imageGen.dailyLimit)) {
+        return text(
+          `You've hit today's image limit (${config.imageGen.dailyLimit}). Try again tomorrow.`,
+          true,
+        );
       }
       imageGenInFlight.add(key);
       try {
