@@ -44,8 +44,14 @@ const testsDir = path.join(repoRoot, 'tests');
 // preference's RBAC member-tier test and its purge-coherence test (#126), then
 // to 91 with the auto-moderation guards (mute-only-at-limit, admins never
 // warned/muted, clear_warnings admin-tier RBAC, warning-purge coherence) plus
-// the intervening additions already counted by the runner.
-const MIN_SECURITY_TESTS = 91;
+// the intervening additions already counted by the runner, then to 98 with
+// the rate_answer/list_answer_feedback feedback loop (#118): the
+// group-channel mis-attribution guard, the rate-cap test, the
+// list_answer_feedback conversation-scoping test, the purge-coherence test
+// (rater's own rows deleted, ON DELETE SET NULL on the rated interaction),
+// the rate_answer/list_answer_feedback RBAC tier tests, and the tool-layer
+// rate-cap test.
+const MIN_SECURITY_TESTS = 98;
 
 const testFiles = readdirSync(testsDir)
   .filter((f) => f.endsWith('.test.ts'))

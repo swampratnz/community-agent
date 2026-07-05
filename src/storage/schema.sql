@@ -397,3 +397,33 @@ CREATE TABLE IF NOT EXISTS member_warnings (
 CREATE INDEX IF NOT EXISTS member_warnings_active_idx
   ON member_warnings (platform, user_id)
   WHERE cleared_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Member feedback on the bot's own answers (issue #118) — the deferred
+-- feedback-loop half of #60 (which taught the model to attribute
+-- knowledge-base answers and flag general-knowledge ones, but explicitly
+-- deferred a rating mechanism). Boolean-only, no free text: a member rates
+-- the most recent answer the bot gave *them* in this conversation. Purge
+-- coherence: `interaction_id` is `ON DELETE SET NULL` so purging the rated
+-- reply (the recipient's own forget_me/purge_user_data, via
+-- purgeSingleIdentity's interactions delete) drops the dangling reference
+-- without orphaning or cascading into this table, keeping the aggregate
+-- helpful/unhelpful trend intact; `forget_me`/`purge_user_data` separately
+-- delete the rater's *own* answer_feedback rows (see repository.ts).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS answer_feedback (
+  id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform        TEXT        NOT NULL,
+  conversation_id TEXT        NOT NULL,
+  user_id         TEXT        NOT NULL,
+  interaction_id  BIGINT      REFERENCES interactions(id) ON DELETE SET NULL,
+  helpful         BOOLEAN     NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS answer_feedback_conversation_idx
+  ON answer_feedback (conversation_id, created_at DESC);
+
+-- Backs the per-rater rolling-24h rate cap (see repository.ts createAnswerFeedback).
+CREATE INDEX IF NOT EXISTS answer_feedback_user_rate_idx
+  ON answer_feedback (platform, user_id, created_at DESC);
