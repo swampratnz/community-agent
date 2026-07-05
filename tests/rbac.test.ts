@@ -181,6 +181,26 @@ test('SECURITY: list_context_digests is admin-only — digests derive from membe
   }
 });
 
+test('SECURITY: list_knowledge_candidates/accept_knowledge_candidate/decline_knowledge_candidate are admin-only — the review queue never reaches member/guest turns (issue #102)', () => {
+  const tools = [
+    'mcp__community__list_knowledge_candidates',
+    'mcp__community__accept_knowledge_candidate',
+    'mcp__community__decline_knowledge_candidate',
+  ];
+  for (const t of tools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
 test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachable by admin/member/guest', () => {
   const tool = 'mcp__community__redeploy_bot';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'redeploy_bot must be in SUPER_ADMIN_TOOLS');

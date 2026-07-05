@@ -167,6 +167,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
+| `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest into knowledge; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -262,8 +263,38 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 - **Restart-safe cadence**: the timer ticks 6-hourly but a freshness guard
   on the last digest's `created_at` makes it ~one run per day, so the
   nightly redeploy restart can't double-run it.
-- The `knowledge_candidates` review-queue idea from the proposal is
-  **deferred to a separate proposal** per the adversarial scope trim.
+
+### Knowledge candidates (issue #102)
+
+The `knowledge_candidates` review queue deferred from #51 turns a digest
+into a durable `knowledge` entry without an admin composing `save_knowledge`
+from scratch. Behind `CONTEXT_CANDIDATES_ENABLED` (off by default, and a
+no-op while the builder itself is off), the SAME per-cluster summarisation
+call that writes a digest also asks whether the cluster is one stable,
+answerable question and, if so, drafts a Q&A candidate — **no extra model
+call**, so the builder's hard per-run cost cap is unchanged with this on.
+
+- **Human-curated, like `knowledge` generally**: a candidate lands in
+  `knowledge_candidates` as `'pending'`. Nothing reaches `knowledge` (and
+  therefore no tier's `knowledge_search`) until an admin calls
+  `accept_knowledge_candidate`, which publishes via the existing
+  `save_knowledge` path (so the #93 near-duplicate nudge and embedding path
+  apply unchanged) and marks the candidate accepted. `decline_knowledge_candidate`
+  is a non-destructive status flip (no CONFIRM) that retains the row as
+  `'declined'` rather than deleting it. `list_knowledge_candidates` is the
+  admin browse view. All three tools are admin-tier only.
+- **Dedup guard**: the builder skips drafting a candidate whose topic
+  already has a `knowledge_candidates` row in *any* status (including
+  `'declined'` — a decline must stick on the very next run, not just until
+  the cluster re-summarises to the same topic label) or whose topic an
+  existing `knowledge` entry already covers above the relevance floor
+  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`).
+- **Deletion coherence inherits from #51**: a candidate's `topic` is
+  denormalized from its source digest at insert time. When a purge
+  invalidates a digest, its still-*pending* candidates are deleted with it;
+  accepted/declined candidates survive (their digest FK is `ON DELETE SET
+  NULL`) with the same accountability treatment as `knowledge`/`admin_audit`
+  generally.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,

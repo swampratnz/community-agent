@@ -413,6 +413,40 @@ export async function saveKnowledge(input: {
 }
 
 /**
+ * Relevance floor for `knowledge_search` hits, in cosine similarity
+ * (`1 - (embedding <=> query)`, same units as `searchKnowledge`'s returned
+ * `similarity`). This is a *relevance* floor ("is this topically usable at
+ * all"), not a *duplicate* floor like `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`
+ * below (0.85, "is this the same question") — it is deliberately much lower.
+ *
+ * The value is a function of the current embedding model
+ * (`config.db.embeddingModel`, currently Xenova/all-MiniLM-L6-v2) and query
+ * distribution, not a universal constant. It was derived empirically against
+ * `tests/fixtures/knowledgeEval.json` (see the `negativeQueries` case in
+ * knowledgeEval.test.ts): with this model, unambiguously off-topic queries
+ * (e.g. "what's the best coffee place near the venue") score ~0.15-0.22
+ * against every fixture entry, and a topically-adjacent near-miss (asking how
+ * long admin applications take to hear back — same topic as "Requesting admin
+ * role", but a question that entry doesn't answer) tops out at ~0.33, while
+ * all but a couple of the weakest genuine paraphrase matches score 0.36+. A
+ * small minority of very loosely-worded genuine matches score below this
+ * floor too (e.g. "what are the guidelines for behaving in this server" vs.
+ * the actual "Discord server rules" entry, ~0.30) — that's an intentional
+ * precision-over-recall trade-off: this feature exists specifically so a
+ * low-confidence hit results in "no confident match" (which the system
+ * prompt turns into an honest hedge) rather than a shaky answer stated as
+ * fact. If `EMBEDDING_MODEL` ever changes, this constant must be re-derived
+ * the same way — a model swap will otherwise silently degrade filtering with
+ * no test failure.
+ *
+ * Defined here (not in agent/tools.ts, which re-exports it for
+ * `knowledge_search`'s own filtering) so `knowledgeCoversTopic` below — the
+ * issue #102 candidate dedup guard — can share the exact same floor without
+ * agent/tools.ts and storage/repository.ts importing each other.
+ */
+export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
+
+/**
  * Semantic search over curated knowledge, scoped to what `caller` may see:
  * `'global'` entries, entries scoped to the caller's platform, and entries
  * scoped to the caller's exact conversation (SECURITY: issue #106 — `scope`
@@ -869,10 +903,28 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
   // over any purged interaction is invalidated outright — the next builder
   // run regenerates the topic without this person's signal. Digests store
   // interaction ids (never copied content) precisely so this is possible.
+  let candidates = 0;
   if (messages > 0) {
-    await pool.query(`DELETE FROM context_digests WHERE example_refs && $1::bigint[]`, [
-      deletedInteractions.map((r) => Number(r.id)),
-    ]);
+    const { rows: invalidatedDigests } = await pool.query(
+      `SELECT id FROM context_digests WHERE example_refs && $1::bigint[]`,
+      [deletedInteractions.map((r) => Number(r.id))],
+    );
+    const digestIds = invalidatedDigests.map((r) => Number(r.id));
+    if (digestIds.length > 0) {
+      // Deletion coherence for issue #102: a still-*pending* candidate drafted
+      // from a digest that's about to be invalidated goes with it — nothing
+      // purged should survive as an open suggestion. Accepted/declined
+      // candidates are kept (same accountability treatment as knowledge/
+      // admin_audit generally); their FK's ON DELETE SET NULL just drops the
+      // now-meaningless digest link, and `topic` (denormalized at insert
+      // time) keeps them readable/dedup-able regardless.
+      const { rowCount: deletedCandidates } = await pool.query(
+        `DELETE FROM knowledge_candidates WHERE digest_id = ANY($1::bigint[]) AND status = 'pending'`,
+        [digestIds],
+      );
+      candidates = deletedCandidates ?? 0;
+      await pool.query(`DELETE FROM context_digests WHERE id = ANY($1::bigint[])`, [digestIds]);
+    }
   }
   // knowledge has no platform column, so this keys on source_user_id alone.
   // Safe because Discord snowflakes (17-20 digits) and WhatsApp E.164 numbers
@@ -936,6 +988,7 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     (digestSends ?? 0) +
     (responseStyle ?? 0) +
     (warnings ?? 0) +
+    candidates +
     (answerFeedback ?? 0)
   );
 }
@@ -945,8 +998,10 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * them, knowledge entries sourced from them, content reports *they
  * submitted* as reporter, their server_roster row, admin notes kept *about*
  * them (member_notes), suggestions they filed, their response-style
- * preference, answer ratings *they submitted*, and any context digest built
- * over their purged interactions — across every identity linked to them via
+ * preference, answer ratings *they submitted* (issue #118), any context
+ * digest built over their purged interactions, and any still-pending
+ * knowledge_candidates drafted from an invalidated digest (issue #102) —
+ * across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
  * *both*, which is why `link_member` is CONFIRM-gated, audited, and
@@ -1300,6 +1355,196 @@ export async function listContextDigests(days = 30, limit = 20): Promise<Context
 export async function latestContextDigestAt(): Promise<Date | null> {
   const { rows } = await pool.query(`SELECT max(created_at) AS at FROM context_digests`);
   return rows[0]?.at ?? null;
+}
+
+// --- Knowledge candidates (issue #102, the knowledge_candidates half of #51
+// its adversarial review deferred) --------------------------------------------
+
+export type KnowledgeCandidateStatus = 'pending' | 'accepted' | 'declined';
+
+export interface KnowledgeCandidate {
+  id: number;
+  digestId: number | null;
+  topic: string;
+  title: string;
+  content: string;
+  status: KnowledgeCandidateStatus;
+  createdAt: Date;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+}
+
+function toKnowledgeCandidate(r: {
+  id: number | string;
+  digest_id: number | string | null;
+  topic: string;
+  title: string;
+  content: string;
+  status: string;
+  created_at: Date;
+  reviewed_by: string | null;
+  reviewed_at: Date | null;
+}): KnowledgeCandidate {
+  return {
+    id: Number(r.id),
+    digestId: r.digest_id === null ? null : Number(r.digest_id),
+    topic: r.topic,
+    title: r.title,
+    content: r.content,
+    status: r.status as KnowledgeCandidateStatus,
+    createdAt: r.created_at,
+    reviewedBy: r.reviewed_by,
+    reviewedAt: r.reviewed_at,
+  };
+}
+
+/**
+ * Draft a candidate from the context builder — always 'pending'. `topic` is
+ * copied from the source digest at insert time (not just reachable via
+ * `digestId`) so dedup/display survive the digest being nulled out by a
+ * later purge (see `purgeSingleIdentity` below).
+ */
+export async function insertKnowledgeCandidate(input: {
+  digestId: number;
+  topic: string;
+  title: string;
+  content: string;
+}): Promise<number> {
+  const { rows } = await pool.query(
+    `INSERT INTO knowledge_candidates (digest_id, topic, title, content)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    [input.digestId, input.topic, input.title, input.content],
+  );
+  return Number(rows[0].id);
+}
+
+/**
+ * Dedup guard for the builder: true if `topic` already has a
+ * `knowledge_candidates` row, in ANY status. Matched regardless of status
+ * (including 'declined') so an admin's decline sticks — the acceptance
+ * criteria (issue #102) requires the builder never re-emit the same topic
+ * on its very next run, and a matching cluster re-summarises to the same
+ * topic label run over run. `runContextBuilder` also checks
+ * `knowledgeCoversTopic` before insert, for the case where the suggestion
+ * was accepted instead. Matches case-insensitively since the summariser is
+ * free-text.
+ */
+export async function hasQueuedCandidateForTopic(topic: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM knowledge_candidates WHERE lower(topic) = lower($1) LIMIT 1`,
+    [topic],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * True if an existing `knowledge` entry already covers this topic above the
+ * #95 relevance floor (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) — the other
+ * half of the builder's dedup guard, so the candidate queue doesn't refill
+ * with a suggestion an admin already answered. Fails closed (false, i.e.
+ * "not covered") on an embedding error so a transient embedding outage can
+ * only ever produce an extra candidate for an admin to decline, never
+ * silently suppress a genuinely new one.
+ */
+export async function knowledgeCoversTopic(topic: string): Promise<boolean> {
+  let vec: number[];
+  try {
+    vec = await embed(topic);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for knowledge-candidate dedup check');
+    return false;
+  }
+  const { rows } = await pool.query(
+    `SELECT 1 - (embedding <=> $1) AS similarity
+       FROM knowledge
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <=> $1
+      LIMIT 1`,
+    [pgvector.toSql(vec)],
+  );
+  const top = rows[0];
+  return !!top && Number(top.similarity) >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
+}
+
+/** Admin-tier read of the candidate queue (`list_knowledge_candidates`). */
+export async function listKnowledgeCandidates(
+  status?: KnowledgeCandidateStatus,
+  limit = 50,
+): Promise<KnowledgeCandidate[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+  const params: unknown[] = [];
+  let where = '';
+  if (status) {
+    params.push(status);
+    where = `WHERE status = $${params.length}`;
+  }
+  params.push(clampedLimit);
+  const { rows } = await pool.query(
+    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at
+       FROM knowledge_candidates
+       ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map(toKnowledgeCandidate);
+}
+
+/**
+ * Accept a pending candidate: writes exactly one `knowledge` entry via the
+ * existing `saveKnowledge` (so the #93 near-duplicate nudge and embedding
+ * path apply unchanged) and marks the candidate accepted. Optional
+ * title/content let the admin fix wording at accept time without a separate
+ * update_knowledge round-trip. Returns null if `id` isn't a *pending*
+ * candidate (unknown id, or already accepted/declined) — the tool layer
+ * turns that into a refusal rather than silently double-accepting.
+ */
+export async function acceptKnowledgeCandidate(input: {
+  id: number;
+  title?: string;
+  content?: string;
+  reviewedBy: string;
+}): Promise<{ candidateId: number; knowledgeId: number; similarEntry?: KnowledgeDuplicateMatch } | null> {
+  const { rows } = await pool.query(
+    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at
+       FROM knowledge_candidates WHERE id = $1 AND status = 'pending'`,
+    [input.id],
+  );
+  const candidate = rows[0] ? toKnowledgeCandidate(rows[0]) : null;
+  if (!candidate) return null;
+
+  const { id: knowledgeId, similarEntry } = await saveKnowledge({
+    title: input.title ?? candidate.title,
+    content: input.content ?? candidate.content,
+    createdByRole: 'admin',
+  });
+
+  await pool.query(
+    `UPDATE knowledge_candidates SET status = 'accepted', reviewed_by = $2, reviewed_at = now() WHERE id = $1`,
+    [input.id, input.reviewedBy],
+  );
+
+  return { candidateId: candidate.id, knowledgeId, similarEntry };
+}
+
+/**
+ * Decline a pending candidate: a non-destructive status flip (no CONFIRM),
+ * audited by the tool layer. The row is retained as 'declined' (never
+ * deleted) so the builder's dedup guard can see it was already reviewed and
+ * `list_knowledge_candidates` keeps a record of what was rejected. Returns
+ * null if `id` isn't a pending candidate.
+ */
+export async function declineKnowledgeCandidate(
+  id: number,
+  reviewedBy: string,
+): Promise<KnowledgeCandidate | null> {
+  const { rows } = await pool.query(
+    `UPDATE knowledge_candidates SET status = 'declined', reviewed_by = $2, reviewed_at = now()
+      WHERE id = $1 AND status = 'pending'
+      RETURNING id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at`,
+    [id, reviewedBy],
+  );
+  return rows[0] ? toKnowledgeCandidate(rows[0]) : null;
 }
 
 /**

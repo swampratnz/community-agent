@@ -234,6 +234,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   a digest from becoming a single-person profile. Cost is bounded by a hard
   per-run cap on model calls plus an automatic skip while the usage-alert
   threshold is breached.
+- **Knowledge candidates** (`knowledge_candidates`, issue #102 — the
+  deferred half of #51): the offline builder can draft a Q&A candidate from
+  a recurring, answerable question cluster (behind `CONTEXT_CANDIDATES_ENABLED`,
+  off by default), but **the human-curation invariant this repo keeps for
+  `knowledge` generally is unchanged**: nothing reaches `knowledge` (and
+  therefore no tier's `knowledge_search`) until an admin explicitly calls
+  `accept_knowledge_candidate`, pinned by a `SECURITY:` test. Candidates are
+  model-written text derived from member chat — same provenance/injection
+  posture as digests (k-floor inherited from the source digest,
+  `untrusted()`-wrapped on `list_knowledge_candidates`) — and all three
+  tools (`list_knowledge_candidates`, `accept_knowledge_candidate`,
+  `decline_knowledge_candidate`) are admin-tier only, pinned by a
+  `SECURITY:` RBAC test. `decline_knowledge_candidate` is a non-destructive
+  status flip (no CONFIRM) that retains the row as `'declined'` rather than
+  deleting it, so the builder's dedup guard can see it was already reviewed.
+  Cost stays inside the builder's existing hard per-run model-call cap: a
+  candidate is drafted by the SAME summarisation call that writes the
+  digest, never a second call. Purge coherence: invalidating a digest
+  deletes its still-*pending* candidates; an accepted candidate (and the
+  knowledge entry it produced) is unaffected, matching how `knowledge`
+  itself outlives an unrelated purge.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The

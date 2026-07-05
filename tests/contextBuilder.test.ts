@@ -17,6 +17,11 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.CONTEXT_BUILDER_MAX_SUMMARIES = '1';
 process.env.CONTEXT_BUILDER_MIN_DISTINCT_USERS = '3';
 process.env.CONTEXT_BUILDER_WINDOW_DAYS = '1';
+// On for every test in this file (issue #102): harmless for tests whose
+// injected summariser never returns a `candidate` (the builder only acts on
+// one when both the flag AND a truthy candidate are present), and lets the
+// candidate-specific tests below skip re-declaring it per test.
+process.env.CONTEXT_CANDIDATES_ENABLED = 'true';
 
 const skip = hasDb
   ? false
@@ -26,13 +31,25 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { runContextBuilder, shouldRunContextBuilder } = await import('../src/context/builder.js');
-const { listContextDigests, purgeUserData } = await import('../src/storage/repository.js');
+const {
+  declineKnowledgeCandidate,
+  insertContextDigest,
+  insertKnowledgeCandidate,
+  listContextDigests,
+  listKnowledgeCandidates,
+  purgeUserData,
+  saveKnowledge,
+} = await import('../src/storage/repository.js');
 
 const RUN = `ctx${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
 after(async () => {
   if (hasDb) {
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}%`]);
+    await pool.query(
+      `DELETE FROM knowledge_candidates WHERE digest_id IN (SELECT id FROM context_digests WHERE topic LIKE $1)`,
+      [`${RUN}%`],
+    );
     await pool.query(`DELETE FROM context_digests WHERE topic LIKE $1`, [`${RUN}%`]);
   }
   await closeDb();
@@ -145,5 +162,154 @@ test(
     );
     const victimRows = await pool.query(`SELECT 1 FROM interactions WHERE user_id = $1`, [victim]);
     assert.equal(victimRows.rows.length, 0, 'the purge itself removed the raw rows');
+  },
+);
+
+test(
+  'context builder drafts a pending knowledge candidate from a summariser-proposed Q&A, referencing its digest, with no extra model call (issue #102)',
+  { skip },
+  async () => {
+    await seed(20, `${RUN}-e1`, 'does the community have a code of conduct?');
+    await seed(20, `${RUN}-e2`, 'is there a code of conduct doc?');
+    await seed(20, `${RUN}-e3`, 'looking for the code of conduct');
+
+    const calls: string[][] = [];
+    const result = await runContextBuilder(async (samples) => {
+      calls.push(samples);
+      return {
+        topic: `${RUN}-cand-topic`,
+        summary: 'members keep asking about the code of conduct',
+        candidate: { title: `${RUN} Code of conduct`, content: 'See the pinned #rules channel.' },
+      };
+    });
+    assert.equal(
+      calls.length,
+      1,
+      'drafting a candidate rides the SAME summarisation call, never a second one',
+    );
+    assert.equal(result.digests, 1);
+    assert.equal(result.candidates, 1, 'exactly one candidate is drafted for the one digest produced');
+
+    const [digest] = (await listContextDigests(1, 100)).filter((d) => d.topic === `${RUN}-cand-topic`);
+    assert.ok(digest, 'the digest landed');
+
+    const candidateRows = await listKnowledgeCandidates('pending', 200);
+    const mine = candidateRows.find((c) => c.title === `${RUN} Code of conduct`);
+    assert.ok(mine, 'the drafted candidate landed as pending');
+    assert.equal(mine.digestId, digest.id, 'the candidate references its source digest');
+    assert.equal(mine.content, 'See the pinned #rules channel.');
+    assert.equal(mine.topic, `${RUN}-cand-topic`, "the candidate's topic is denormalized from the digest");
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [mine.id]);
+    await pool.query(`DELETE FROM context_digests WHERE topic = $1`, [`${RUN}-cand-topic`]);
+  },
+);
+
+test(
+  'context builder never drafts a candidate when CONTEXT_CANDIDATES_ENABLED is off, even if the summariser proposes one (issue #102)',
+  { skip },
+  async () => {
+    await seed(21, `${RUN}-cd1`, 'does the community have a code of conduct?');
+    await seed(21, `${RUN}-cd2`, 'is there a code of conduct doc?');
+    await seed(21, `${RUN}-cd3`, 'looking for the code of conduct');
+
+    // Flip the flag off for this one call, restoring it immediately after —
+    // every other test in this file relies on the file-level default of on
+    // (see the process.env.CONTEXT_CANDIDATES_ENABLED set at the top).
+    // config is `as const` (deep-readonly at the type level only); the cast
+    // is confined to this one test.
+    const flag = config.contextCandidates as { enabled: boolean };
+    flag.enabled = false;
+    let result;
+    try {
+      result = await runContextBuilder(async () => ({
+        topic: `${RUN}-cd-topic`,
+        summary: 'summary',
+        candidate: { title: 'Code of conduct', content: 'See the pinned doc.' },
+      }));
+    } finally {
+      flag.enabled = true;
+    }
+    assert.equal(result.digests, 1, 'the digest itself is unaffected by the flag');
+    assert.equal(result.candidates, 0, 'no candidate is drafted while the flag is off');
+
+    const rows = await listKnowledgeCandidates('pending', 200);
+    assert.ok(!rows.some((c) => c.topic === `${RUN}-cd-topic`), 'no candidate row was inserted');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+    await pool.query(`DELETE FROM context_digests WHERE topic = $1`, [`${RUN}-cd-topic`]);
+  },
+);
+
+test(
+  "SECURITY: context builder's dedup guard skips drafting a candidate whose topic already has a queued candidate (even a DECLINED one) or is already answered by existing knowledge above the relevance floor (issue #102)",
+  { skip },
+  async () => {
+    // Cluster F: the topic already has a (declined) candidate queued.
+    await seed(22, `${RUN}-f1`, 'when is the next meetup happening');
+    await seed(22, `${RUN}-f2`, 'meetup timing please');
+    await seed(22, `${RUN}-f3`, 'any update on the meetup date');
+
+    const priorDigestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-dedup-queued-topic`,
+      summary: 'prior run summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const priorCandidateId = await insertKnowledgeCandidate({
+      digestId: priorDigestId,
+      topic: `${RUN}-dedup-queued-topic`,
+      title: 'prior title',
+      content: 'prior content',
+    });
+    await declineKnowledgeCandidate(priorCandidateId, 'admin-1');
+
+    const resultQueued = await runContextBuilder(async () => ({
+      topic: `${RUN}-dedup-queued-topic`,
+      summary: 'summary',
+      candidate: { title: 'new title', content: 'new content' },
+    }));
+    assert.equal(resultQueued.digests, 1, 'the digest itself is still written');
+    assert.equal(
+      resultQueued.candidates,
+      0,
+      'a topic with an existing (even declined) candidate is never re-queued',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+
+    // Cluster G: the topic is already answered by an existing knowledge entry.
+    await seed(23, `${RUN}-g1`, 'zylotrix onboarding help please');
+    await seed(23, `${RUN}-g2`, 'how do I onboard to zylotrix');
+    await seed(23, `${RUN}-g3`, 'zylotrix onboarding steps needed');
+
+    const { id: knowledgeId } = await saveKnowledge({
+      title: 'Zylotrix onboarding',
+      content: `${RUN} zylotrix onboarding: register on the portal and verify your email.`,
+      scope: 'global',
+    });
+
+    const resultAnswered = await runContextBuilder(async () => ({
+      topic: `${RUN} zylotrix onboarding steps`,
+      summary: 'summary',
+      candidate: { title: 'new title', content: 'new content' },
+    }));
+    assert.equal(resultAnswered.digests, 1);
+    assert.equal(
+      resultAnswered.candidates,
+      0,
+      'a topic an existing knowledge entry already covers is never queued as a new suggestion',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [priorCandidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE topic = ANY($1)`, [
+      [`${RUN}-dedup-queued-topic`, `${RUN} zylotrix onboarding steps`],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
   },
 );
