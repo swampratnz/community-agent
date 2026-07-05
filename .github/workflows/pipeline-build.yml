@@ -170,10 +170,17 @@ jobs:
                  - npm run test:security
                Do not open the PR until all of these pass. CI runs the identical
                checks, so a red PR only creates rework for a human.
-            3. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
+            3. FRESHEN before opening: main may have moved while you built
+               (another PR merging mid-build is how PRs get born already
+               conflicted). Run `git fetch origin main` then
+               `git merge origin/main`; if it merges clean with no changes,
+               continue. If it brings in changes or conflicts, resolve them
+               (preserve both sides' intent) and re-run the FULL gate above
+               before proceeding.
+            4. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
                summarising the change, its security/privacy impact, and how you verified
                it. Then relabel the issue `status:built`.
-            4. Do NOT merge — a human merges. If the proposal turns out infeasible or
+            5. Do NOT merge — a human merges. If the proposal turns out infeasible or
                unsafe as specified, add the `needs-human` label and explain instead of
                forcing it.
             Implement only this one approved issue.
@@ -222,7 +229,7 @@ jobs:
           claude_args: |
             --max-turns 300
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git checkout -b:*),Bash(git switch -c:*),Bash(git rev-parse:*),Bash(git fetch origin:*),Bash(git push -u origin HEAD),Bash(git push origin HEAD),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(npm:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git checkout -b:*),Bash(git switch -c:*),Bash(git rev-parse:*),Bash(git fetch origin:*),Bash(git merge origin/main),Bash(git push -u origin HEAD),Bash(git push origin HEAD),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(npm:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a PR was produced (else escalate + fail loudly)
         if: always() && env.HAS_TOKEN == 'true'

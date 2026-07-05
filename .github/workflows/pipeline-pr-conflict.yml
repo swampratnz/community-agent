@@ -1,12 +1,29 @@
 name: Pipeline PR conflict resolver
 
 # Event-driven MERGE-CONFLICT loop: when `main` advances, an open build-worker
-# PR can flip from mergeable to CONFLICTING. GitHub emits NO webhook for that
-# transition (and `mergeable` is computed asynchronously, so it isn't even known
-# at push time), so we trigger on every push to `main`, discover which same-repo
-# bot PRs have become conflicting, and have Claude merge `main` into each branch,
-# resolve the conflicts, re-run the full gate, and push — so a conflicting PR
-# gets un-stuck without a human doing the merge by hand.
+# PR can flip from mergeable to CONFLICTING — and a PR can also be BORN
+# conflicted, when its build started before an unrelated merge landed (that is
+# exactly how PR #146 sat `dirty` for hours with no resolver run: the only
+# trigger was push-to-main, and no push happened after it opened). GitHub emits
+# NO webhook for the conflicting transition (and `mergeable` is computed
+# asynchronously, so it isn't even known at push time), so we trigger on every
+# push to `main` AND on PR open/ready (born-conflicted case) AND on a slow
+# schedule (backstop for anything missed), discover which same-repo bot PRs are
+# conflicting, and have Claude merge `main` into each branch, resolve the
+# conflicts, re-run the full gate, and push — so a conflicting PR gets un-stuck
+# without a human doing the merge by hand.
+#
+# TWO-HOP STRUCTURE (discover → self-dispatch → resolve): claude-code-action
+# does not support running under `push`/`pull_request`-shaped payloads for this
+# use ("Unsupported event type: push" — observed on run 28715164317, the
+# resolver's only real firing, which meant it had NEVER successfully resolved
+# anything). `workflow_dispatch` IS supported, and it is one of the two
+# documented exceptions where a GITHUB_TOKEN-created event DOES start a
+# workflow run. So the discover job (any trigger) finds the conflicting PRs and
+# re-dispatches THIS workflow with the result as an input; the dispatched run
+# skips discovery and runs the resolve agent under a supported event type.
+# Recursion is bounded to depth 1: a run with `resolve_matrix` set never
+# dispatches again.
 #
 # Guardrails (mirrors pipeline-pr-autofix.yml — this spends the shared Max pool
 # and pushes code, so they matter):
@@ -42,13 +59,33 @@ name: Pipeline PR conflict resolver
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  # Born-conflicted PRs: a build that started before an unrelated merge opens
+  # its PR already CONFLICTING; push-to-main alone never sees it.
+  pull_request:
+    types: [opened, ready_for_review]
+  # Backstop sweep for anything the event triggers missed (e.g. a discover run
+  # superseded by concurrency, or a fork-PR trigger that couldn't dispatch).
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      resolve_matrix:
+        description: >-
+          Internal: JSON matrix ({"include":[{"number":N,"branch":"…"}]}) of
+          conflicting PRs to resolve, produced by the discover job. Leave empty
+          for a manual run — discovery will run and dispatch this for you.
+        type: string
+        required: false
+        default: ''
 
-# One resolver run at a time. A push to main while a resolution is in flight
-# queues rather than double-running; the next run re-discovers current state.
+# Discover runs are seconds long and stateless — the newest one supersedes any
+# queued one, so cancel-in-progress is fine there and prevents the known
+# concurrency-group pitfall (a QUEUED pending run being silently dropped while
+# a long run holds the group). Resolve runs are long and must not cancel each
+# other, so they queue in their own group.
 concurrency:
-  group: pipeline-pr-conflict
-  cancel-in-progress: false
+  group: pipeline-pr-conflict-${{ (github.event_name == 'workflow_dispatch' && inputs.resolve_matrix != '') && 'resolve' || 'discover' }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.resolve_matrix != '') }}
 
 permissions:
   contents: write
@@ -57,22 +94,30 @@ permissions:
   id-token: write # claude-code-action mints its GitHub App token via OIDC
 
 jobs:
-  # Find open same-repo bot PRs that have gone CONFLICTING against the new main.
+  # Find open same-repo bot PRs that are CONFLICTING against main, and
+  # self-dispatch the resolve run for them. Skipped entirely on a dispatched
+  # resolve run (resolve_matrix set) — that's the recursion bound. The
+  # fork-PR guard exists because a pull_request event from a fork carries a
+  # read-only GITHUB_TOKEN that could not dispatch anyway; eligible PRs are
+  # same-repo bot PRs, and the schedule sweep covers the rare case a
+  # conflicting bot PR coincides with fork activity.
   discover:
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.resolve_matrix == '') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Read-only: this job only runs `gh pr list`/`gh pr view`. A job-level
-    # override REPLACES the workflow-level grant, so discover never carries the
-    # write scopes the resolve job needs (least privilege — it does no writes
-    # and runs no agent/untrusted code).
+    # This job runs `gh pr list`/`gh pr view` plus ONE write: dispatching this
+    # same workflow (`actions: write`). It never touches repo contents or runs
+    # agent/untrusted code — the write scopes the resolve job needs stay
+    # confined to the resolve job (a job-level override REPLACES the
+    # workflow-level grant).
     permissions:
       contents: read
       pull-requests: read
+      actions: write
     env:
       HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-    outputs:
-      matrix: ${{ steps.scan.outputs.matrix }}
-      has_conflicts: ${{ steps.scan.outputs.has_conflicts }}
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -131,22 +176,34 @@ jobs:
           done
 
           matrix="$(jq -c -n --argjson inc "$include" '{include:$inc}')"
-          has_conflicts="$( [ "$(jq 'length' <<<"$include")" -gt 0 ] && echo true || echo false )"
-          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
-          echo "has_conflicts=${has_conflicts}" >> "$GITHUB_OUTPUT"
           echo "Conflicting PRs to resolve: ${matrix}"
+
+          if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
+            echo "No conflicting bot PRs — done."
+            exit 0
+          fi
+
+          # Self-dispatch the resolve run. workflow_dispatch is one of the two
+          # documented exceptions where a GITHUB_TOKEN-created event DOES start
+          # a workflow run — and it hands claude-code-action an event type it
+          # supports (it rejects `push`-shaped payloads; see header).
+          gh workflow run "pipeline-pr-conflict.yml" \
+            --repo "${{ github.repository }}" \
+            -f resolve_matrix="${matrix}"
+          echo "Dispatched resolve run for ${matrix}."
 
   # One resolver per conflicting PR, run serially (max-parallel 1) so parallel
   # merges don't collide on the shared Max pool and log lines stay readable.
+  # Runs ONLY in a dispatched run carrying the matrix from discover (see the
+  # two-hop note in the header).
   resolve:
-    needs: discover
-    if: needs.discover.outputs.has_conflicts == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.resolve_matrix != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       max-parallel: 1
       fail-fast: false
-      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+      matrix: ${{ fromJSON(inputs.resolve_matrix) }}
     # Same pgvector Postgres as the build/CI/autofix jobs so the resolver can
     # run the full gate (incl. DB-integration tests) locally before pushing.
     services:
@@ -221,6 +278,11 @@ jobs:
           WHATSAPP_PROVIDER: disabled
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The dispatched run's actor is github-actions[bot] (discover created
+          # it with GITHUB_TOKEN), and the action rejects non-human actors by
+          # default — the exact failure mode that kept pipeline-pr-autofix
+          # inert on bot PRs. Same setting pipeline-pr-review.yml already uses.
+          allowed_bots: '*'
           prompt: |
             Pull request #${{ matrix.number }} for the NZ Claude Community agent
             conflicts with `main`. Its branch (`${{ matrix.branch }}`) is already

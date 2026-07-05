@@ -1,0 +1,45 @@
+name: CI retry
+
+# One free machine rerun for a failed CI run, before any agent gets involved.
+#
+# Evidence this class is real (2026-07-04): `npm ci` died with
+# `AggregateError [ETIMEDOUT]` reaching the npm registry on runs 28703072249
+# (PR #112 — a human had to push an empty "ci: retry" commit) and 28715457148
+# (a push to main), and a 16:34–18:04 UTC cluster of six zero-step
+# runner-provisioning failures (runner_id 0, logs 404) took out runs across
+# four workflows. All of these recover on a plain rerun; none need a code fix.
+#
+# This intentionally does NOT inspect logs to classify the failure first: a
+# blind single retry costs one bounded CI run in the real-failure case, while
+# a classifier is another thing to maintain and another way to be wrong. The
+# division of labour downstream is explicit: pipeline-pr-autofix.yml only
+# engages from run_attempt >= 2, i.e. after this free retry has already been
+# spent, so a genuine failure flows attempt 1 (fail) → rerun (fail) → fix
+# agent → needs-human, and a flake costs zero agent tokens.
+#
+# Same mechanism and cap discipline as pipeline-build-retry.yml: `gh run
+# rerun --failed` re-runs only the failed jobs of the SAME run (run_attempt
+# increments), and the `< 2` guard means exactly one automatic retry.
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  actions: write # to re-run the failed CI run
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt < 2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run the failed jobs once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "CI run ${{ github.event.workflow_run.id }} failed on attempt ${{ github.event.workflow_run.run_attempt }} — re-running failed jobs (one free retry)."
+          gh run rerun "${{ github.event.workflow_run.id }}" --failed -R "${{ github.repository }}"
