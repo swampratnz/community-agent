@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS content_reports (
   target_user_id   TEXT,
   message_id       TEXT,
   reason           TEXT        NOT NULL,
-  status           TEXT        NOT NULL DEFAULT 'open', -- 'open' | 'resolved' | 'dismissed'
+  status           TEXT        NOT NULL DEFAULT 'open', -- 'open' | 'resolved' | 'dismissed' | 'withdrawn' (by reporter)
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   resolved_by      TEXT,
   resolved_at      TIMESTAMPTZ

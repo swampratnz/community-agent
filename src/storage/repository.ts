@@ -2089,7 +2089,7 @@ export async function clearWarnings(platform: string, userId: string, clearedBy:
 /** Per-reporter cap on new reports within a rolling window (anti-griefing on the admin queue). */
 export const REPORT_RATE_LIMIT_PER_DAY = 5;
 
-export type ContentReportStatus = 'open' | 'resolved' | 'dismissed';
+export type ContentReportStatus = 'open' | 'resolved' | 'dismissed' | 'withdrawn';
 
 export interface ContentReport {
   id: number;
@@ -2273,6 +2273,29 @@ export async function resolveContentReport(
         reason: rows[0].reason,
       }
     : null;
+}
+
+/**
+ * Let a reporter withdraw their OWN still-open report(s). Members had no
+ * self-service way to retract a report (e.g. one filed as a joke) — they had
+ * to ask an admin, who then dismisses it, which is awkward when the report is
+ * *about* an admin. Strictly scoped to the caller's own identity: the
+ * `reporter_user_id = $2` predicate means a member can only ever touch reports
+ * they themselves filed, never anyone else's. Non-destructive — the row is
+ * marked `'withdrawn'` (distinct from an admin-initiated `'dismissed'`) and
+ * kept on record for accountability, never deleted. `resolved_by` is set to
+ * the reporter's own id (they did it). Returns the withdrawn ids (empty array
+ * if the caller had no open reports).
+ */
+export async function withdrawOwnReports(platform: Platform, reporterUserId: string): Promise<number[]> {
+  const { rows } = await pool.query(
+    `UPDATE content_reports
+        SET status = 'withdrawn', resolved_by = $2, resolved_at = now()
+      WHERE platform = $1 AND reporter_user_id = $2 AND status = 'open'
+      RETURNING id`,
+    [platform, reporterUserId],
+  );
+  return rows.map((r) => Number(r.id));
 }
 
 // --- Answer feedback (member rating of the bot's own answers, issue #118) ---
