@@ -183,6 +183,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
           userId: message.author.id,
           userName: message.member?.displayName ?? message.author.username,
           text: this.cleanContent(message.content),
+          channelId: message.channelId,
         })
         .catch((err) => logger.warn({ err }, 'Moderation scan failed'));
     }
@@ -424,6 +425,15 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   /** DM a warned member — same outbound filter as every other DM. */
   async warnUser(userId: string, text: string): Promise<void> {
     await this.sendDirectMessage(userId, text);
+  }
+
+  /** Post a public warning in the channel the offending message was posted in. */
+  async warnInChannel(channelId: string, text: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId).catch(() => null);
+    if (!channel?.isTextBased() || channel.isDMBased()) return;
+    for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
+      await channel.send({ content: chunk, allowedMentions: { parse: [] } });
+    }
   }
 
   /** Assign the muted role (creating it + its deny-post overwrites if missing). */

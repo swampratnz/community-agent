@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-05
+
+### Changed
+- Auto-moderation warnings are now **public and minimal**: the warning is posted in the channel the offending message was posted in (not only the private admin channel), and names **only the member** — no user id, matched word, or message excerpt. The detailed record (id + matched term, needed for `clear_warnings`) still goes to the private admin channel, and the member still gets a DM. Follow-up to the auto-moderation feature (#141).
+
 ## 2026-07-04
 
 ### Added

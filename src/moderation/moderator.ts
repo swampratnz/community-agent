@@ -9,6 +9,8 @@ export interface ScanContext {
   userId: string;
   userName: string;
   text: string;
+  /** The channel the message was posted in — where the public warning goes. */
+  channelId: string;
 }
 
 /** Returns a Detection when the text is flagged, or null when clean. */
@@ -31,6 +33,8 @@ export interface ModerationStore {
 export interface ModerationEnforcer {
   /** DM the warned member. */
   warnUser(userId: string, text: string): Promise<void>;
+  /** Post a public warning in the channel the offending message was posted in. */
+  warnInChannel(channelId: string, text: string): Promise<void>;
   /** Assign the muted role (creating it if missing). Idempotent. */
   muteUser(userId: string): Promise<void>;
   /** Remove the muted role. Idempotent. */
@@ -60,6 +64,19 @@ export function warnDmText(active: number, limit: number): string {
 
 export function blockedDmText(): string {
   return `⛔ You've reached the warning limit and can no longer post in the server. ${MUTED_ROLE_NOTE}`;
+}
+
+/**
+ * Public, in-channel warning shown where the message was posted. Deliberately
+ * names only the member — no user id, no matched term, no message excerpt (the
+ * detailed record with those goes to the private admin channel instead).
+ */
+export function warnChannelText(userName: string, active: number, limit: number): string {
+  return `⚠️ **${userName}** — warning ${active}/${limit}. Please keep it respectful; at ${limit} warnings you'll be muted.`;
+}
+
+export function blockedChannelText(userName: string, limit: number): string {
+  return `⛔ **${userName}** reached ${limit} warnings and has been muted (blocked from posting). An admin can restore access.`;
 }
 
 export function warnAlertText(ctx: ScanContext, active: number, limit: number, hit: Detection): string {
@@ -116,12 +133,28 @@ export class Moderator {
 
     if (active >= this.deps.strikeLimit) {
       await this.safe(() => this.deps.enforcer.muteUser(ctx.userId), 'mute');
+      await this.safe(
+        () =>
+          this.deps.enforcer.warnInChannel(
+            ctx.channelId,
+            blockedChannelText(ctx.userName, this.deps.strikeLimit),
+          ),
+        'block-channel',
+      );
       await this.safe(() => this.deps.enforcer.warnUser(ctx.userId, blockedDmText()), 'block-dm');
       await this.safe(
         () => this.deps.enforcer.postAdminAlert(blockedAlertText(ctx, active, hit)),
         'block-alert',
       );
     } else {
+      await this.safe(
+        () =>
+          this.deps.enforcer.warnInChannel(
+            ctx.channelId,
+            warnChannelText(ctx.userName, active, this.deps.strikeLimit),
+          ),
+        'warn-channel',
+      );
       await this.safe(
         () => this.deps.enforcer.warnUser(ctx.userId, warnDmText(active, this.deps.strikeLimit)),
         'warn-dm',
