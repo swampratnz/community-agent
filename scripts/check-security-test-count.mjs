@@ -2,18 +2,34 @@
 // ---------------------------------------------------------------------------
 // Runs every SECURITY:-prefixed test (see CLAUDE.md) and enforces a count
 // floor: `npm run test:security` fails not just on a failing assertion but
-// also if fewer than MIN_SECURITY_TESTS ran at all. That turns "someone
+// also if fewer SECURITY tests exist than expected. That turns "someone
 // deleted or silently disabled a security test" from a still-green CI run
 // into a loud failure — see issue #42.
 //
+// The expected counts live in tests/security-floor.json as a PER-FILE map
+// (file → number of SECURITY: tests declared in it), not a single global
+// constant. The old `MIN_SECURITY_TESTS = N` constant was the repo's #1
+// merge-conflict hotspot: every PR that added a SECURITY test edited the same
+// line, so any two in-flight PRs conflicted with each other (9 of the 11
+// real PR conflicts in the first week were this one line). Per-file entries
+// mean concurrent PRs only conflict when they touch the SAME test file —
+// which is a conflict worth having.
+//
+// Convention (unchanged in spirit from #42): when you add a SECURITY: test,
+// bump that file's entry in tests/security-floor.json in the SAME diff (add
+// the entry if the file is new). The check is exact, not a floor, so the
+// manifest can never silently lag reality in either direction. A diff that
+// LOWERS an entry needs an explanation in the PR.
+//
 // Skipped tests (e.g. the DB-backed cases in repository.test.ts when no
 // DATABASE_URL is reachable — see CLAUDE.md) are reported by the Node test
-// runner as `ok ... # SKIP ...`, so they still count toward the floor. That
-// keeps the count stable across runners regardless of DB availability,
-// while still catching an outright deletion of a DB-dependent security test.
+// runner as `ok ... # SKIP ...`, so they still count toward the runtime
+// check. That keeps the count stable across runners regardless of DB
+// availability, while still catching an outright deletion of a DB-dependent
+// security test.
 //
-// This is a floor, not proof of total security coverage — it only pins the
-// invariants that already have a SECURITY: test.
+// This pins the invariants that already have a SECURITY: test — it is not
+// proof of total security coverage.
 // ---------------------------------------------------------------------------
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -22,40 +38,60 @@ import path from 'node:path';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const testsDir = path.join(repoRoot, 'tests');
+const manifestPath = path.join(testsDir, 'security-floor.json');
 
-// Count at merge time of #42. Bump this in the same diff that adds a new
-// SECURITY: test; a diff that only lowers it needs an explanation.
-// Raised to 41 with the cross-platform identity-linking SECURITY tests (#44),
-// then to 57 with the approved-issues batch build (#45-#53), then to 59 with
-// the PR #91 review round (ambient recall scoping + URL-path token scrub),
-// then to 61 with the WhatsApp Cloud app-secret redaction tests (#110),
-// then to 62 with the module-mocks runner-flag canary (#109),
-// then to 66 with issue #106 (knowledge_search scope enforcement: 3 new
-// tests/knowledgeScope.test.ts cases, plus the existing near-duplicate scope
-// test renamed into the SECURITY: namespace),
-// then to 74 with WhatsApp group ambient archiving parity (#103),
-// then to 79 with the chat-triggered redeploy tool (#101): fixed-argv +
-// no-hang-on-missing-sudoers coverage in redeploy.test.ts, the RBAC-surface
-// test in rbac.test.ts, and the pending-action/assertAtLeast tests in
-// tools.test.ts,
-// then to 80 with the suggestion-resolution cross-platform-notify guard (#116),
-// then to 82 with the report-resolution cross-platform-notify guard and the
-// no-target-identity-in-DM test (#120), then to 84 with the response-style
-// preference's RBAC member-tier test and its purge-coherence test (#126), then
-// to 91 with the auto-moderation guards (mute-only-at-limit, admins never
-// warned/muted, clear_warnings admin-tier RBAC, warning-purge coherence) plus
-// the intervening additions already counted by the runner, then higher with
-// two features that merged together: the knowledge_candidates review queue
-// (#102 — RBAC tier gating for the three new tools, the no-auto-publish gate,
-// and the purge cascade that deletes only still-pending candidates) and the
-// rate_answer/list_answer_feedback feedback loop (#118 — group-channel
-// mis-attribution guard, rate-cap, conversation-scoping, purge-coherence, and
-// RBAC tier tests). The count below reflects both.
-const MIN_SECURITY_TESTS = 104;
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
-const testFiles = readdirSync(testsDir)
-  .filter((f) => f.endsWith('.test.ts'))
-  .map((f) => path.join('tests', f));
+const testFileNames = readdirSync(testsDir).filter((f) => f.endsWith('.test.ts'));
+
+// ---- Static check: per-file declaration counts must match the manifest ----
+// Matches `test('SECURITY: …'`, `test("…`, `test(\`…`, and `test.skip(…` /
+// `test.only(…` forms, including names wrapped onto the next line by
+// prettier. Test names in this repo are static string literals, so a static
+// scan and the runtime count agree; if you ever build a SECURITY: test name
+// dynamically, don't — the gate (and grep-ability) depend on literal names.
+const declPattern = /\btest(?:\.[a-z]+)?\(\s*[`'"]SECURITY:/g;
+const staticCounts = {};
+for (const f of testFileNames) {
+  const n = (readFileSync(path.join(testsDir, f), 'utf8').match(declPattern) ?? []).length;
+  if (n > 0) staticCounts[f] = n;
+}
+
+const problems = [];
+for (const [file, expected] of Object.entries(manifest)) {
+  const actual = staticCounts[file] ?? 0;
+  if (actual < expected) {
+    problems.push(
+      `${file}: ${actual} SECURITY: test(s) declared, manifest expects ${expected}. A security test was ` +
+        `deleted or renamed out of the SECURITY: namespace. If intentional, lower this file's entry in ` +
+        `tests/security-floor.json and explain why in the PR.`,
+    );
+  } else if (actual > expected) {
+    problems.push(
+      `${file}: ${actual} SECURITY: test(s) declared, manifest expects ${expected}. You added a SECURITY: ` +
+        `test — bump this file's entry in tests/security-floor.json in the same diff.`,
+    );
+  }
+}
+for (const [file, actual] of Object.entries(staticCounts)) {
+  if (!(file in manifest)) {
+    problems.push(
+      `${file}: declares ${actual} SECURITY: test(s) but has no entry in tests/security-floor.json — ` +
+        `add one in the same diff.`,
+    );
+  }
+}
+
+if (problems.length > 0) {
+  console.error('check-security-test-count: manifest mismatch:');
+  for (const p of problems) console.error(`  ${p}`);
+  process.exit(1);
+}
+
+const expectedTotal = Object.values(manifest).reduce((a, b) => a + b, 0);
+
+// ---- Runtime check: every SECURITY: test runs (or SKIPs) and passes -------
+const testFiles = testFileNames.map((f) => path.join('tests', f));
 
 // Derive the node:test runner flags from package.json's own "test" script
 // (e.g. `--experimental-test-module-mocks`) instead of hardcoding a second
@@ -90,16 +126,16 @@ if (failed.length > 0) {
   process.exit(1);
 }
 
-if (passed.length < MIN_SECURITY_TESTS) {
+if (passed.length < expectedTotal) {
   console.error(
-    `\ncheck-security-test-count: only ${passed.length} SECURITY:-prefixed tests ran, expected at least ` +
-      `${MIN_SECURITY_TESTS}. A security test may have been deleted or renamed out of the SECURITY: ` +
-      `namespace. If this removal is intentional, lower MIN_SECURITY_TESTS in this script and explain why ` +
-      `in the PR.`,
+    `\ncheck-security-test-count: only ${passed.length} SECURITY:-prefixed tests ran, but ` +
+      `tests/security-floor.json expects ${expectedTotal}. A declared security test did not run — ` +
+      `check for a broken file glob or a runner config drift.`,
   );
   process.exit(1);
 }
 
 console.log(
-  `\ncheck-security-test-count: ${passed.length} SECURITY:-prefixed tests ran (floor: ${MIN_SECURITY_TESTS}).`,
+  `\ncheck-security-test-count: ${passed.length} SECURITY:-prefixed tests ran ` +
+    `(manifest total: ${expectedTotal} across ${Object.keys(manifest).length} files).`,
 );
