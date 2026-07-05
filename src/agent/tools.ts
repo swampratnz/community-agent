@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { Platform, PlatformAdapter } from '../platforms/types.js';
+import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
 import { normalizeMemberId } from '../auth/memberId.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
@@ -349,7 +349,18 @@ function reserveImageGenDaily(key: string, limit: number): boolean {
   return true;
 }
 
-export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter) {
+export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter, getAdapter?: AdapterLookup) {
+  /**
+   * Resolves the adapter to notify through for a row stored under
+   * `rowPlatform`: the current turn's own adapter when it matches, otherwise
+   * a lookup through `getAdapter` (issue #157) — undefined if that platform
+   * isn't registered in this deployment, which callers treat as today's
+   * silent skip.
+   */
+  function adapterFor(rowPlatform: Platform): PlatformAdapter | undefined {
+    return rowPlatform === caller.platform ? adapter : getAdapter?.(rowPlatform);
+  }
+
   /**
    * Conversations the caller may reach with privileged/data tools.
    * null = unrestricted (super admin). For admins this is their real,
@@ -1083,12 +1094,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           return `marked ${args.status}`;
         },
       });
-      // Same-platform-only, mirroring notifySuperAdmins' existing limitation:
-      // a per-turn tool handler only has the current turn's adapter, no
-      // cross-platform adapter registry (issue #116) — cross-platform
-      // resolution sends no DM rather than misaddressing one.
-      if (success && state.row && state.row.platform === caller.platform) {
-        await notifySuggestionResolved(adapter, state.row.userId, args.status, state.row.content);
+      // Cross-platform resolution DMs (issue #157): routes through the
+      // suggestion's ORIGIN platform's adapter, not the resolving admin's
+      // current-turn one, via Router's adapter registry — never misaddresses
+      // a DM to the wrong platform. Degrades to today's silent skip if that
+      // platform isn't registered in this deployment (e.g. WhatsApp not
+      // configured).
+      if (success && state.row) {
+        const target = adapterFor(state.row.platform);
+        if (target) await notifySuggestionResolved(target, state.row.userId, args.status, state.row.content);
       }
       return text(success ? `Suggestion #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
     },
@@ -1466,12 +1480,14 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           return `marked ${args.status}`;
         },
       });
-      // Same-platform-only, mirroring resolve_suggestion's identical
-      // limitation (issue #116): a per-turn tool handler only has the
-      // current turn's adapter, no cross-platform adapter registry —
-      // cross-platform resolution sends no DM rather than misaddressing one.
-      if (success && state.row && state.row.platform === caller.platform) {
-        await notifyReportResolved(adapter, state.row.reporterUserId, args.status, state.row.reason);
+      // Cross-platform resolution DMs (issue #157), identical mechanism to
+      // resolve_suggestion above: routes through the report's ORIGIN
+      // platform's adapter via Router's registry, degrading to a silent skip
+      // if that platform isn't registered in this deployment.
+      if (success && state.row) {
+        const target = adapterFor(state.row.platform);
+        if (target)
+          await notifyReportResolved(target, state.row.reporterUserId, args.status, state.row.reason);
       }
       return text(success ? `Report #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
     },

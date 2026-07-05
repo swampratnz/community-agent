@@ -3,7 +3,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
-import type { PlatformAdapter } from '../platforms/types.js';
+import type { AdapterLookup, PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
   getClaudeSession,
@@ -93,6 +93,7 @@ export async function runAgentTurn(
   caller: CallerContext,
   userText: string,
   adapter: PlatformAdapter,
+  getAdapter?: AdapterLookup,
 ): Promise<AgentReply> {
   // Memory recall is scoped to THIS conversation only. Cross-conversation
   // recall is available solely through the admin-gated tools, so a public
@@ -127,7 +128,7 @@ export async function runAgentTurn(
     );
   }
 
-  const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession);
+  const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession, getAdapter);
   let outcome = first;
 
   // If resuming a stale/foreign session failed (session files are CLI-local
@@ -139,7 +140,7 @@ export async function runAgentTurn(
       'Session resume failed; clearing stored session and retrying fresh',
     );
     await clearClaudeSessionId(caller.platform, caller.conversationId).catch(() => {});
-    outcome = await execTurn(caller, prompt, systemPrompt, adapter, null);
+    outcome = await execTurn(caller, prompt, systemPrompt, adapter, null, getAdapter);
   }
 
   if (outcome.sessionId) {
@@ -200,8 +201,9 @@ async function execTurn(
   systemPrompt: string,
   adapter: PlatformAdapter,
   resumeSession: string | null,
+  getAdapter?: AdapterLookup,
 ): Promise<TurnOutcome> {
-  const toolServer = buildToolServer(caller, adapter);
+  const toolServer = buildToolServer(caller, adapter, getAdapter);
 
   // Text of the assistant message currently being streamed. Reset per
   // assistant message so tool-use narration from earlier turns never leaks

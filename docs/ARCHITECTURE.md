@@ -326,10 +326,11 @@ shoehorned into a knowledge note). Same pull-queue shape as
    injection vector) and `resolve_suggestion` (reviewed/declined/done,
    audited, non-destructive so no CONFIRM). Resolving a suggestion best-effort
    DMs the submitter naming the outcome (`notifySuggestionResolved`, issue
-   #116, same fire-and-forget shape as `notifyMemberApproved`) — but only
-   when the resolving admin's current platform matches the suggestion's
-   stored platform; see SECURITY.md's residual risks for the cross-platform
-   limitation.
+   #116, same fire-and-forget shape as `notifyMemberApproved`), routed through
+   the suggestion's *origin* platform's adapter rather than the resolving
+   admin's current-turn one (issue #157, via the `getAdapter` lookup threaded
+   from `Router`'s adapter registry) — see SECURITY.md's residual risks for
+   the single-platform-deployment limitation that remains.
 3. **The bridge to the pipeline stays human**: an admin files anything
    worthwhile as a GitHub `proposal` issue themselves. The bot never touches
    the repo — untrusted chat must never be able to write into the issue
@@ -376,10 +377,10 @@ applied to abuse reports instead of pending guests:
    `moderation_history`) and `resolve_report` (marks `resolved`/`dismissed`,
    audited, non-destructive so no CONFIRM gate). Resolving a report
    best-effort DMs the reporter naming the outcome (`notifyReportResolved`,
-   issue #120, same fire-and-forget shape as `notifySuggestionResolved`) —
-   but only when the resolving admin's current platform matches the report's
-   stored platform; see SECURITY.md's residual risks for the cross-platform
-   limitation.
+   issue #120, same fire-and-forget shape as `notifySuggestionResolved`),
+   routed through the report's *origin* platform's adapter the same way
+   `resolve_suggestion` is (issue #157) — see SECURITY.md's residual risks
+   for the single-platform-deployment limitation that remains.
 3. No automation beyond intake: the queue is purely informational. Admins
    still decide and act via the existing `moderate` tool.
 

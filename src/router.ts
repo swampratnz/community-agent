@@ -343,7 +343,10 @@ export class Router {
       // per-request only.
       let reply: AgentReply;
       try {
-        reply = await this.runTurn(caller, msg.text, adapter);
+        // Backs cross-platform resolution DMs (issue #157): a per-turn tool
+        // handler can look up another platform's already-registered adapter
+        // through this instead of only ever having its own turn's adapter.
+        reply = await this.runTurn(caller, msg.text, adapter, (platform) => this.adapters.get(platform));
       } catch (err) {
         logger.error(
           { err, conversationId: msg.conversationId },
