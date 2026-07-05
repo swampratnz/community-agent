@@ -30,6 +30,13 @@ const {
   deleteKnowledge,
   listKnowledge,
   recordKnowledgeRetrieval,
+  insertContextDigest,
+  insertKnowledgeCandidate,
+  listKnowledgeCandidates,
+  acceptKnowledgeCandidate,
+  declineKnowledgeCandidate,
+  hasQueuedCandidateForTopic,
+  knowledgeCoversTopic,
   recordAdminAction,
   recentQuestionClusters,
   recentModerationEntries,
@@ -65,6 +72,9 @@ const {
   countRepliesToUser,
   getResponseStyle,
   setResponseStyle,
+  createAnswerFeedback,
+  listAnswerFeedback,
+  RATE_ANSWER_DAILY_LIMIT,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -396,6 +406,283 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);
     void dupId;
     void distinctId;
+  },
+);
+
+test(
+  'repository: knowledge candidate CRUD — insert is pending, list filters by status, accept publishes via saveKnowledge (propagating the #93 duplicate nudge) and marks accepted, decline retains the row as declined and never touches knowledge (issue #102)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const acceptId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-topic`,
+      title: 'Drafted title',
+      content: 'Drafted answer content.',
+    });
+    const declineId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-topic-2`,
+      title: 'Another drafted title',
+      content: 'Another drafted answer.',
+    });
+
+    const pendingOnly = await listKnowledgeCandidates('pending', 200);
+    assert.ok(
+      pendingOnly.some((c) => c.id === acceptId),
+      'a freshly-inserted candidate is pending',
+    );
+    assert.ok(pendingOnly.some((c) => c.id === declineId));
+    assert.ok(
+      pendingOnly.every((c) => c.status === 'pending'),
+      'the status filter excludes non-pending rows',
+    );
+
+    // Accept with an override — the override text, not the drafted text, must land in knowledge.
+    const accepted = await acceptKnowledgeCandidate({
+      id: acceptId,
+      title: 'Overridden title',
+      content: 'Overridden answer content, fixed at accept time.',
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(accepted);
+    const knowledgeRow = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [
+      accepted.knowledgeId,
+    ]);
+    assert.equal(knowledgeRow.rows[0].title, 'Overridden title');
+    assert.equal(knowledgeRow.rows[0].content, 'Overridden answer content, fixed at accept time.');
+
+    const acceptedRow = (await listKnowledgeCandidates('accepted', 200)).find((c) => c.id === acceptId);
+    assert.ok(acceptedRow, 'the accepted candidate now shows up under the accepted filter');
+    assert.equal(acceptedRow.reviewedBy, 'admin-1');
+    assert.ok(acceptedRow.reviewedAt);
+
+    const reAccept = await acceptKnowledgeCandidate({ id: acceptId, reviewedBy: 'admin-2' });
+    assert.equal(reAccept, null, 'accepting an already-accepted candidate is a no-op, not a double publish');
+
+    // Decline the other candidate: retained as 'declined', knowledge untouched.
+    const declined = await declineKnowledgeCandidate(declineId, 'admin-1');
+    assert.ok(declined);
+    assert.equal(declined.status, 'declined');
+    const declinedKnowledgeSearch = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [
+      'Another drafted answer.',
+    ]);
+    assert.equal(
+      declinedKnowledgeSearch.rows.length,
+      0,
+      'declining a candidate must never write a knowledge row',
+    );
+
+    const reDecline = await declineKnowledgeCandidate(declineId, 'admin-2');
+    assert.equal(reDecline, null, 'declining an already-declined candidate is a no-op');
+
+    const unknownAccept = await acceptKnowledgeCandidate({ id: 999_999_999, reviewedBy: 'admin-1' });
+    assert.equal(unknownAccept, null, 'accepting an unknown id returns null, not an error');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[acceptId, declineId]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: repository: a pending knowledge candidate never reaches knowledge/knowledge_search until accept_knowledge_candidate — the human-curation gate (issue #102)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-gate-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const uniqueContent = `${RUN} gate fixture: the answer is exactly forty-two.`;
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-gate-topic`,
+      title: 'Gate fixture title',
+      content: uniqueContent,
+    });
+
+    const beforeAccept = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [uniqueContent]);
+    assert.equal(
+      beforeAccept.rows.length,
+      0,
+      'SECURITY: inserting a candidate must never itself create a knowledge row',
+    );
+    const searchBefore = await searchKnowledge(uniqueContent, { platform: 'discord', conversationId: 'x' });
+    assert.ok(
+      !searchBefore.some((h) => h.content === uniqueContent),
+      'SECURITY: a pending candidate must never surface from knowledge_search',
+    );
+
+    const accepted = await acceptKnowledgeCandidate({ id: candidateId, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const afterAccept = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [uniqueContent]);
+    assert.equal(afterAccept.rows.length, 1, 'accepting produces exactly one knowledge row');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  "repository: the builder's dedup guard — hasQueuedCandidateForTopic matches case-insensitively and INCLUDES declined rows (so a decline sticks), knowledgeCoversTopic flags a topic an existing entry already answers (issue #102)",
+  { skip },
+  async () => {
+    const topic = `${RUN} zylotrix onboarding steps`;
+    assert.equal(await hasQueuedCandidateForTopic(topic), false, 'nothing queued yet');
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const candidateId = await insertKnowledgeCandidate({ digestId, topic, title: 't', content: 'c' });
+
+    assert.equal(
+      await hasQueuedCandidateForTopic(topic),
+      true,
+      'a queued candidate on this topic blocks re-emission',
+    );
+    assert.equal(
+      await hasQueuedCandidateForTopic(topic.toUpperCase()),
+      true,
+      'the match is case-insensitive',
+    );
+    assert.equal(
+      await hasQueuedCandidateForTopic(`${RUN} something entirely unrelated`),
+      false,
+      'a different topic is unaffected',
+    );
+
+    await declineKnowledgeCandidate(candidateId, 'admin-1');
+    assert.equal(
+      await hasQueuedCandidateForTopic(topic),
+      true,
+      'SECURITY: a DECLINED candidate still blocks re-emission of the same topic on the next builder run',
+    );
+
+    // Deliberately RUN-free, invented words (not real English, and not the
+    // ${RUN} tag) for the two knowledgeCoversTopic checks below: it scans ALL
+    // knowledge unscoped (by design — a digest signal is cross-platform
+    // aggregate), so in a full-suite run other files' fixture rows are
+    // present too. Sharing the numeric ${RUN} tag between the fixture and a
+    // query text is itself a lexical overlap the embedding model can pick up
+    // on — an unrelated-in-meaning false positive — so keep it out of both.
+    const { id: knowledgeId } = await saveKnowledge({
+      title: 'Zyquavexolorpin onboarding',
+      content: 'Zyquavexolorpin onboarding: register on the portal and verify your email address.',
+      scope: 'global',
+    });
+    assert.equal(
+      await knowledgeCoversTopic('zyquavexolorpin onboarding steps'),
+      true,
+      'an existing knowledge entry above the relevance floor counts as already answered',
+    );
+    assert.equal(
+      await knowledgeCoversTopic('qzxvbfrobnicator gloopington snorlaxian doorknob'),
+      false,
+      'an unrelated (and lexically unrelated) topic is not flagged as already covered',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData deletes only a still-PENDING knowledge_candidates row referencing an invalidated digest — an ACCEPTED candidate (and its resulting knowledge entry) survives, keeping the same accountability treatment as knowledge/admin_audit generally (issue #102)',
+  { skip },
+  async () => {
+    const victim = `${RUN}-kc-purge-victim`;
+    const conversationId = `${RUN}-c-kc-purge`;
+
+    const { rows: interactionRows } = await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content)
+       VALUES ('discord', $1, $2, 'member', 'inbound', 'kc purge fixture') RETURNING id`,
+      [conversationId, victim],
+    );
+    const interactionId = Number(interactionRows[0].id);
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-purge-topic`,
+      summary: 'summary built partly over the purged user',
+      exampleRefs: [interactionId],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const pendingId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-purge-topic`,
+      title: 'Still pending',
+      content: 'never reviewed',
+    });
+    const toAcceptId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-purge-topic`,
+      title: 'Will be accepted',
+      content: 'accepted candidate content',
+    });
+    const accepted = await acceptKnowledgeCandidate({ id: toAcceptId, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+
+    await purgeUserData('discord', victim);
+
+    const digestGone = await pool.query(`SELECT 1 FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      digestGone.rows.length,
+      0,
+      'the digest referencing the purged interaction is invalidated, matching existing #51 behaviour',
+    );
+
+    const pendingRow = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE id = $1`, [pendingId]);
+    assert.equal(
+      pendingRow.rows.length,
+      0,
+      'SECURITY: the still-pending candidate is deleted along with its invalidated digest',
+    );
+
+    const acceptedRow = await pool.query(`SELECT status, digest_id FROM knowledge_candidates WHERE id = $1`, [
+      toAcceptId,
+    ]);
+    assert.equal(acceptedRow.rows.length, 1, 'the accepted candidate row survives the purge');
+    assert.equal(acceptedRow.rows[0].status, 'accepted');
+    assert.equal(
+      acceptedRow.rows[0].digest_id,
+      null,
+      "ON DELETE SET NULL drops the now-meaningless digest link, but the row itself isn't deleted",
+    );
+
+    const knowledgeRow = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    assert.equal(
+      knowledgeRow.rows.length,
+      1,
+      'the knowledge entry produced by acceptance is unaffected by the purge',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[pendingId, toAcceptId]]);
   },
 );
 
@@ -1900,5 +2187,362 @@ test(
       'standard',
       'SECURITY: after purge, the caller reverts to the default as if they never set a preference',
     );
+  },
+);
+
+// --- Answer feedback (member rating of the bot's own answers, issue #118) ---
+
+/** Narrows createAnswerFeedback's result, failing the test with a clear message on a refusal. */
+function expectFeedbackId(
+  result: Awaited<ReturnType<typeof createAnswerFeedback>>,
+  message = 'expected the rating to be recorded',
+): number {
+  if (result === 'no_recent_answer' || result === 'rate_limited') {
+    assert.fail(`${message} (got "${result}")`);
+  }
+  return result.id;
+}
+
+test(
+  "repository: createAnswerFeedback binds to the caller's most recent outbound reply and listAnswerFeedback returns it",
+  { skip },
+  async () => {
+    const userId = `${RUN}-rate-answer-user`;
+    const conversationId = `${RUN}-c-rate-answer`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'what does the bot do?',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'here is the answer',
+      meta: { replyToUserId: userId },
+    });
+
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+    );
+
+    const listed = await listAnswerFeedback([conversationId]);
+    const row = listed.find((r) => r.id === feedbackId);
+    assert.ok(row, 'the rating is visible via listAnswerFeedback');
+    assert.equal(row.helpful, true);
+    assert.equal(row.userId, userId);
+    assert.ok(row.interactionId !== null, 'bound to the resolved outbound interaction');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "SECURITY: repository: createAnswerFeedback binds to the caller's OWN outbound reply, never a concurrent reply to a different member in the same busy conversation",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-rate-answer-group`;
+    const memberA = `${RUN}-rate-answer-member-a`;
+    const memberB = `${RUN}-rate-answer-member-b`;
+
+    // The bot answers member A first...
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'answer for member A',
+      meta: { replyToUserId: memberA },
+    });
+    // ...then answers member B more recently. Without caller-scoped
+    // resolution, a naive "most recent outbound in this conversation" query
+    // would wrongly bind member A's rating below to THIS reply.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'answer for member B',
+      meta: { replyToUserId: memberB },
+    });
+
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: memberA, helpful: true }),
+    );
+
+    const rows = await pool.query(
+      `SELECT content FROM interactions WHERE id = (
+         SELECT interaction_id FROM answer_feedback WHERE platform = 'discord' AND user_id = $1
+       )`,
+      [memberA],
+    );
+    assert.equal(
+      rows.rows[0]?.content,
+      'answer for member A',
+      "SECURITY: member A's rating must bind to the answer the bot gave THEM, not the more-recent reply to member B",
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [memberA]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "repository: createAnswerFeedback falls back to the conversation's most-recent outbound reply when no caller-scoped match exists (e.g. a legacy row with no replyToUserId)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-rate-answer-fallback`;
+    const userId = `${RUN}-rate-answer-fallback-user`;
+
+    // Simulate a legacy outbound row predating the replyToUserId meta field —
+    // inserted directly, since recordInteraction always sets meta now.
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, meta)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'legacy reply with no replyToUserId meta', '{}'::jsonb)`,
+      [conversationId],
+    );
+
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      'falls back to the conversation-most-recent reply',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "repository: createAnswerFeedback declines gracefully with 'no_recent_answer' when there is nothing to rate yet",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-rate-answer-empty`;
+    const userId = `${RUN}-rate-answer-empty-user`;
+
+    const result = await createAnswerFeedback({
+      platform: 'discord',
+      conversationId,
+      userId,
+      helpful: true,
+    });
+    assert.equal(result, 'no_recent_answer');
+
+    const rows = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [userId]);
+    assert.equal(rows.rows.length, 0, 'no row is inserted when there is no answer to bind to');
+  },
+);
+
+test(
+  'SECURITY: repository: createAnswerFeedback enforces a DB-backed rolling-24h cap per rater, robust to a simulated process restart',
+  { skip },
+  async () => {
+    const userId = `${RUN}-rate-answer-cap-user`;
+    const conversationId = `${RUN}-c-rate-answer-cap`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer being rated repeatedly',
+      meta: { replyToUserId: userId },
+    });
+
+    // Seed cap-many ratings via direct SQL, as if written by a previous
+    // process instance, so an in-memory counter would wrongly admit the next
+    // one but the DB-backed COUNT(*) refuses it (same pattern as
+    // createContentReport/createSuggestion's rate-cap tests).
+    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO answer_feedback (platform, conversation_id, user_id, helpful) VALUES ($1,$2,$3,$4)`,
+        ['discord', conversationId, userId, i % 2 === 0],
+      );
+    }
+
+    const rejected = await createAnswerFeedback({
+      platform: 'discord',
+      conversationId,
+      userId,
+      helpful: true,
+    });
+    assert.equal(rejected, 'rate_limited', 'the (cap+1)th rating in 24h is refused, not silently accepted');
+
+    const countAfterRejection = await pool.query(
+      `SELECT count(*) AS n FROM answer_feedback WHERE user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      Number(countAfterRejection.rows[0].n),
+      RATE_ANSWER_DAILY_LIMIT,
+      'no row is inserted for a refused rating',
+    );
+
+    // Age one rating past the 24h window — it should no longer count.
+    await pool.query(
+      `UPDATE answer_feedback SET created_at = now() - interval '25 hours'
+        WHERE id = (SELECT id FROM answer_feedback WHERE user_id = $1 ORDER BY id LIMIT 1)`,
+      [userId],
+    );
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      'a rating should be accepted again once an old one falls outside the rolling window',
+    );
+
+    // A different rater is unaffected by another user's cap.
+    const otherUser = `${RUN}-rate-answer-cap-other`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'answer for the other rater',
+      meta: { replyToUserId: otherUser },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: otherUser, helpful: true }),
+      'the cap should be per-rater, not global',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[userId, otherUser]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: listAnswerFeedback scopes by conversation and filters by unhelpfulOnly',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-feedback-list-in`;
+    const outOfScopeConvo = `${RUN}-c-feedback-list-out`;
+    const helpfulUser = `${RUN}-feedback-list-helpful`;
+    const unhelpfulUser = `${RUN}-feedback-list-unhelpful`;
+    const outOfScopeUser = `${RUN}-feedback-list-outscope`;
+
+    for (const [convo, user] of [
+      [inScopeConvo, helpfulUser],
+      [inScopeConvo, unhelpfulUser],
+      [outOfScopeConvo, outOfScopeUser],
+    ] as const) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: convo,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${user}`,
+        meta: { replyToUserId: user },
+      });
+    }
+
+    const inScopeHelpfulId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId: inScopeConvo,
+        userId: helpfulUser,
+        helpful: true,
+      }),
+    );
+    const inScopeUnhelpfulId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId: inScopeConvo,
+        userId: unhelpfulUser,
+        helpful: false,
+      }),
+    );
+    const outOfScopeId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId: outOfScopeConvo,
+        userId: outOfScopeUser,
+        helpful: false,
+      }),
+    );
+
+    const scoped = await listAnswerFeedback([inScopeConvo]);
+    assert.ok(
+      scoped.some((r) => r.id === inScopeHelpfulId),
+      'the in-scope helpful rating is visible',
+    );
+    assert.ok(
+      !scoped.some((r) => r.id === outOfScopeId),
+      'SECURITY: a rating outside the scope filter must never be returned',
+    );
+
+    const unscoped = await listAnswerFeedback(null);
+    assert.ok(
+      unscoped.some((r) => r.id === outOfScopeId),
+      'null scope (super admin) sees every conversation',
+    );
+
+    const unhelpfulOnly = await listAnswerFeedback([inScopeConvo], true);
+    assert.ok(
+      unhelpfulOnly.some((r) => r.id === inScopeUnhelpfulId),
+      'unhelpfulOnly includes the unhelpful rating',
+    );
+    assert.ok(
+      !unhelpfulOnly.some((r) => r.id === inScopeHelpfulId),
+      'unhelpfulOnly excludes the helpful rating',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [helpfulUser, unhelpfulUser, outOfScopeUser],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData deletes the rater's OWN answer_feedback rows, and separately purging the RATED interaction's recipient nulls interaction_id via ON DELETE SET NULL rather than deleting the feedback row",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-feedback-purge`;
+    const rater = `${RUN}-feedback-purge-rater`;
+    const recipient = `${RUN}-feedback-purge-recipient`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer that will later be purged',
+      meta: { replyToUserId: recipient },
+    });
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: rater, helpful: true }),
+    );
+
+    // Purging the RECIPIENT (the person the rated answer was sent to) deletes
+    // their outbound interaction, which must SET NULL on the FK rather than
+    // deleting or orphaning the rater's feedback row.
+    await purgeUserData('discord', recipient);
+    const afterRecipientPurge = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
+      feedbackId,
+    ]);
+    assert.equal(afterRecipientPurge.rows.length, 1, "the rater's feedback row itself survives");
+    assert.equal(
+      afterRecipientPurge.rows[0].interaction_id,
+      null,
+      'SECURITY: interaction_id is nulled (ON DELETE SET NULL), not left dangling, once the rated reply is purged',
+    );
+
+    const purgedRater = await purgeUserData('discord', rater);
+    assert.ok(purgedRater >= 1, "purge count includes the rater's own feedback rows");
+    const afterRaterPurge = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [rater]);
+    assert.equal(afterRaterPurge.rows.length, 0, "the rater's own feedback rows are gone after their purge");
   },
 );

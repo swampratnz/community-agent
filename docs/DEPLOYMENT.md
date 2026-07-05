@@ -141,12 +141,20 @@ systemctl list-timers community-agent-redeploy.timer   # shows the next 1am run
 
 What a run does, in order: `flock` (no overlapping runs) → clean-tree check
 (untracked files like `.env`/`dist/` are fine; *modified tracked* files
-abort) → `git fetch` → **fast-forward-only** update to `origin/main` (a
-diverged or rewritten history aborts; nothing is ever force-reset over local
-commits) → `npm ci` → `npm run build` → `npm run migrate:prod` → `systemctl
+abort, and the abort line names the offending paths so a wedge is
+diagnosable straight from `journalctl` — see issue #108) → `git fetch` →
+**fast-forward-only** update to `origin/main` (a diverged or rewritten
+history aborts; nothing is ever force-reset over local commits) →
+`npm ci` → `npm run build` → `npm run migrate:prod` → `systemctl
 restart` → health poll (`HEALTH_URL` if set, else `systemctl is-active`).
 If nothing was merged since the last run it exits 0 at the fetch step
 ("up to date") — the nightly tick is effectively free.
+
+Note: any in-process job that writes files inside `APP_DIR` (e.g. the
+community-context exporter, issue #53) must write to an **untracked**
+path — `CONTEXT_EXPORT_PATH` defaults to a git-ignored `var/` file for
+exactly this reason (issue #108). Writing to a tracked path there would
+permanently trip the clean-tree check above.
 
 Fail-safe behaviour:
 

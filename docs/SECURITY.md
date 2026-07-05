@@ -234,6 +234,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   a digest from becoming a single-person profile. Cost is bounded by a hard
   per-run cap on model calls plus an automatic skip while the usage-alert
   threshold is breached.
+- **Knowledge candidates** (`knowledge_candidates`, issue #102 — the
+  deferred half of #51): the offline builder can draft a Q&A candidate from
+  a recurring, answerable question cluster (behind `CONTEXT_CANDIDATES_ENABLED`,
+  off by default), but **the human-curation invariant this repo keeps for
+  `knowledge` generally is unchanged**: nothing reaches `knowledge` (and
+  therefore no tier's `knowledge_search`) until an admin explicitly calls
+  `accept_knowledge_candidate`, pinned by a `SECURITY:` test. Candidates are
+  model-written text derived from member chat — same provenance/injection
+  posture as digests (k-floor inherited from the source digest,
+  `untrusted()`-wrapped on `list_knowledge_candidates`) — and all three
+  tools (`list_knowledge_candidates`, `accept_knowledge_candidate`,
+  `decline_knowledge_candidate`) are admin-tier only, pinned by a
+  `SECURITY:` RBAC test. `decline_knowledge_candidate` is a non-destructive
+  status flip (no CONFIRM) that retains the row as `'declined'` rather than
+  deleting it, so the builder's dedup guard can see it was already reviewed.
+  Cost stays inside the builder's existing hard per-run model-call cap: a
+  candidate is drafted by the SAME summarisation call that writes the
+  digest, never a second call. Purge coherence: invalidating a digest
+  deletes its still-*pending* candidates; an accepted candidate (and the
+  knowledge entry it produced) is unaffected, matching how `knowledge`
+  itself outlives an unrelated purge.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The
@@ -253,7 +274,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   acceptable **only because this repo is private** — if the repo's
   visibility ever changes, re-evaluate this export before flipping the
   switch. Committing the regenerated file is a deliberate human step; the
-  bot never pushes.
+  bot never pushes — and the on-server `CONTEXT_EXPORT_PATH` default is an
+  **untracked** `var/` file (issue #108), precisely so the unattended
+  in-process exporter can never write to the tracked `docs/` path itself
+  (which would otherwise dirty the deploy checkout and deadlock the
+  nightly redeploy's clean-tree check — see docs/DEPLOYMENT.md).
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no
@@ -262,6 +287,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   The pipeline bridge stays human — the bot has **no** GitHub access, so an
   injected "suggestion" can never become a repo issue a build worker acts
   on without an admin consciously filing it.
+- **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
+  admin rates the bot's most recent answer to them with `rate_answer(helpful:
+  boolean)` — **no free-text input at all**, a smaller surface than
+  `report_content`/`suggest_improvement` (which have a `reason`/`content`
+  field), since this was the explicit condition #60 set for revisiting a
+  rating mechanism. Write-only at member tier, DB-backed rolling-24h cap
+  (`RATE_ANSWER_DAILY_LIMIT`, default 20 — higher than
+  `report_content`/`suggest_improvement` because a rating carries no
+  admin-triage cost per submission), non-destructive so no CONFIRM gate.
+  **Caller-scoped interaction resolution**: the rated interaction is resolved
+  via `meta->>'replyToUserId' = caller` (same stamp `router.ts` writes on
+  every outbound send and `purgeSingleIdentity`/`countRepliesToUser` already
+  key on) before falling back to the conversation's most-recent outbound
+  reply — this is a deliberate anti-mis-attribution guard: without it, a busy
+  multi-member channel could bind one member's "thanks, that helped" to the
+  answer the bot just gave a *different* member, corrupting the exact signal
+  this feature exists to produce (pinned by a `SECURITY:` test). Admin-only
+  read via `list_answer_feedback`, conversation-scoped identically to
+  `list_reports` — a rating from a conversation the admin doesn't participate
+  in is only reachable by a super admin. The system prompt's guideline is
+  deliberately conservative: fire only on a clear, explicit member cue about
+  the bot's own last answer, never on general positivity or ambiguous
+  chatter, since this signal is model-inferred rather than an explicit
+  member request (unlike `report_content`). Purge-coherent:
+  `forget_me`/`purge_user_data` delete the rater's own rows; the FK to
+  `interactions` is `ON DELETE SET NULL`, so purging the *rated* interaction
+  (the recipient's own purge, a different identity than the rater) clears the
+  reference rather than deleting the feedback row or leaving a dangling FK —
+  the aggregate helpful/unhelpful trend survives.
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard

@@ -167,6 +167,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
+| `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest into knowledge; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
@@ -262,15 +263,50 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 - **Restart-safe cadence**: the timer ticks 6-hourly but a freshness guard
   on the last digest's `created_at` makes it ~one run per day, so the
   nightly redeploy restart can't double-run it.
-- The `knowledge_candidates` review-queue idea from the proposal is
-  **deferred to a separate proposal** per the adversarial scope trim.
+
+### Knowledge candidates (issue #102)
+
+The `knowledge_candidates` review queue deferred from #51 turns a digest
+into a durable `knowledge` entry without an admin composing `save_knowledge`
+from scratch. Behind `CONTEXT_CANDIDATES_ENABLED` (off by default, and a
+no-op while the builder itself is off), the SAME per-cluster summarisation
+call that writes a digest also asks whether the cluster is one stable,
+answerable question and, if so, drafts a Q&A candidate — **no extra model
+call**, so the builder's hard per-run cost cap is unchanged with this on.
+
+- **Human-curated, like `knowledge` generally**: a candidate lands in
+  `knowledge_candidates` as `'pending'`. Nothing reaches `knowledge` (and
+  therefore no tier's `knowledge_search`) until an admin calls
+  `accept_knowledge_candidate`, which publishes via the existing
+  `save_knowledge` path (so the #93 near-duplicate nudge and embedding path
+  apply unchanged) and marks the candidate accepted. `decline_knowledge_candidate`
+  is a non-destructive status flip (no CONFIRM) that retains the row as
+  `'declined'` rather than deleting it. `list_knowledge_candidates` is the
+  admin browse view. All three tools are admin-tier only.
+- **Dedup guard**: the builder skips drafting a candidate whose topic
+  already has a `knowledge_candidates` row in *any* status (including
+  `'declined'` — a decline must stick on the very next run, not just until
+  the cluster re-summarises to the same topic label) or whose topic an
+  existing `knowledge` entry already covers above the relevance floor
+  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`).
+- **Deletion coherence inherits from #51**: a candidate's `topic` is
+  denormalized from its source digest at insert time. When a purge
+  invalidates a digest, its still-*pending* candidates are deleted with it;
+  accepted/declined candidates survive (their digest FK is `ON DELETE SET
+  NULL`) with the same accountability treatment as `knowledge`/`admin_audit`
+  generally.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
-`src/context/export.ts` regenerates `docs/COMMUNITY-CONTEXT.md` —
+`src/context/export.ts` regenerates its copy at `CONTEXT_EXPORT_PATH` —
 aggregate-only (its own k-floor + PII scrub; the egress boundary lives in
-SECURITY.md) — which the research loop reads (file-only, no DB access) once
-a human commits it. `npm run export:context` regenerates it manually.
+SECURITY.md). That default path is an **untracked** `var/` file (issue
+#108), not the committed `docs/COMMUNITY-CONTEXT.md` — the exporter running
+unattended on the server must never dirty a tracked file (it would
+permanently wedge the nightly redeploy's clean-tree check, #50). A human
+periodically points `CONTEXT_EXPORT_PATH` at `docs/COMMUNITY-CONTEXT.md`,
+runs `npm run export:context` against production, reviews, and commits —
+which the research loop then reads (file-only, no DB access).
 
 ## Suggestion capture
 
@@ -350,6 +386,48 @@ applied to abuse reports instead of pending guests:
 Because `list_reports` is conversation-scoped, a report filed from a DM (no
 ordinary admin is ever a "participant" of another member's 1:1 conversation)
 is only reachable by a super admin — see SECURITY.md's residual-risks note.
+
+## Answer feedback
+
+`rate_answer`/`list_answer_feedback` (issue #118) close the deferred half of
+#60: #60 taught the model to attribute knowledge-base answers and flag
+general-knowledge ones, but explicitly deferred a rating mechanism as its own
+proposal. There was previously no calibrated signal on whether an answer
+actually helped — only that one was sent.
+
+1. A member (or admin/super admin) calls `rate_answer(helpful: boolean)`. No
+   free-text input at all — a smaller surface than `report_content`/
+   `suggest_improvement`, which was the explicit condition #60 set for
+   revisiting this. The handler resolves the interaction to bind to via
+   `repository.ts`'s `resolveAnswerFeedbackTarget`: it prefers the caller's
+   OWN most recent outbound reply in the current conversation
+   (`meta->>'replyToUserId' = caller`, the same stamp `router.ts` writes on
+   every send and `countRepliesToUser`/`purgeSingleIdentity` already key on),
+   falling back to the conversation's most-recent outbound reply only when no
+   caller-scoped match exists (e.g. a row predating that meta field). Without
+   the caller-scoped preference, a busy multi-member Discord channel could
+   silently bind member A's "thanks, that helped" to the answer the bot just
+   gave member B. Capped at `RATE_ANSWER_DAILY_LIMIT` (default 20) per rolling
+   24h, the same DB-backed count-inside-the-insert pattern as
+   `report_content`/`suggest_improvement`; higher than those two because a
+   rating carries no admin-triage cost per submission, so the cap only needs
+   to bound DB writes. If there is no answer to bind to yet, the tool declines
+   gracefully rather than recording a meaningless row.
+2. The system prompt's `GUIDELINES` pin a conservative trigger: call
+   `rate_answer` only on a clear, explicit member cue about the bot's own
+   last answer ("that helped, thanks" / "that's wrong" / a 👍 or 👎) — never
+   on general positivity or ambiguous chatter. A missed rating is harmless; a
+   wrong one corrupts the aggregate signal this feature exists to produce.
+3. Admins read the aggregate with `list_answer_feedback(unhelpfulOnly?)`,
+   conversation-scoped exactly like `list_reports`/`moderation_history`. No
+   member-tier read path exists — a member can only ever write their own
+   rating, never browse the queue.
+4. `forget_me`/`purge_user_data` delete the rater's own `answer_feedback`
+   rows. If the *rated* interaction is later purged (the recipient's own
+   forget_me/purge, a different identity than the rater), the
+   `interaction_id` foreign key is `ON DELETE SET NULL`, so the row survives
+   with its interaction reference cleared rather than being deleted or left
+   dangling — the aggregate helpful/unhelpful trend stays intact.
 
 ## Auto-moderation (Discord)
 

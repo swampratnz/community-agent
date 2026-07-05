@@ -43,18 +43,30 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   research & adversarial touch issues only (no files ⇒ no git conflicts). One
   exception: the **autofix loop** (`pipeline-pr-autofix.yml`) may push fixes to
   an existing build-worker PR branch when its CI fails — same-repo bot PRs only,
-  capped at 2 attempts, then it escalates `needs-human`. It never opens or
-  merges PRs. Do not misflag its pushes as an ownership violation.
+  capped at 2 attempts, and only from CI `run_attempt` ≥ 2 (**ci-retry.yml**
+  gives every failed CI run one blind machine rerun first, so transient
+  npm-registry/runner flakes recover for zero agent cost), then it escalates
+  `needs-human`. It never opens or merges PRs. Do not misflag its pushes as an
+  ownership violation.
 - A second exception: the **conflict-resolver loop**
   (`pipeline-pr-conflict.yml`) may push a `main`-merge to an existing
-  build-worker PR branch that has gone CONFLICTING — same-repo bot PRs only,
+  build-worker PR branch that is CONFLICTING — same-repo bot PRs only,
   one attempt per conflict, then it escalates `needs-human` (and skips
-  `needs-human` PRs thereafter). It runs on every push to `main` because no
-  webhook fires for a mergeable→conflicting transition. Same push guardrails
-  as autofix; it never opens or merges PRs. Do not misflag its merge commits
-  as an ownership violation either.
+  `needs-human` PRs thereafter). It is two-hop: `discover` (on push to `main`,
+  on PR opened/ready-for-review — a PR whose build started before an unrelated
+  merge can be *born* conflicted — and on a 6-hourly sweep) self-dispatches
+  `resolve` via `workflow_dispatch`, since claude-code-action won't run under a
+  `push` event. The dispatch payload carries PR numbers only; `resolve`
+  re-derives the branch and re-verifies the whole eligibility contract from the
+  API before checkout, so a hand-crafted dispatch can't retarget it and a
+  superseded duplicate run no-ops. Same push guardrails as autofix; it never
+  opens or merges PRs. Do not misflag its merge commits as an ownership
+  violation either.
 - **No loop merges PRs.** A human merges — especially important for this
-  security-sensitive bot.
+  security-sensitive bot. This is enforced structurally, not just by prompt:
+  the build worker's `--allowedTools` in `pipeline-build.yml` grants no blanket
+  `git:*`/`gh:*`/`npx:*`/`node:*` and no form of `gh pr merge` or `gh api`
+  (matching the autofix worker's least-privilege standard, #107).
 - **WIP caps:** ≤3 open `status:draft`. Builds run **per-issue** (each issue its
   own `concurrency` group — distinct issues in parallel, no cross-eviction; a
   single shared group would silently *cancel* queued builds, which aren't
@@ -233,13 +245,18 @@ One proposal per run. If nothing clears the rubric or you're at capacity, end wi
 ```
 
 **How COMMUNITY-CONTEXT.md stays fresh (the closed learning loop, issues
-#51 + #53):** interactions → nightly `context_digests` (builder) → the
-exporter regenerates `docs/COMMUNITY-CONTEXT.md` (aggregate-only,
-k-floored, PII-scrubbed — the egress boundary is documented in SECURITY.md)
-→ a **human** reviews and commits the regenerated file (the bot never
-pushes) → the research loop reads it and files grounded proposals → build →
-nightly redeploy (#50). The research loop's access is the committed file
-only — it must never gain DB or recall access.
+#51 + #53 + #108):** interactions → nightly `context_digests` (builder) →
+the exporter regenerates its on-server copy at `CONTEXT_EXPORT_PATH`
+(aggregate-only, k-floored, PII-scrubbed — the egress boundary is
+documented in SECURITY.md). That default path is an **untracked** `var/`
+file (issue #108) — deliberately not `docs/COMMUNITY-CONTEXT.md` itself, so
+an automatic producing run can never dirty a tracked file and wedge the
+nightly redeploy's clean-tree check (#50). A **human** periodically runs
+`CONTEXT_EXPORT_PATH=docs/COMMUNITY-CONTEXT.md npm run export:context`
+against the production DB, reviews the result, and commits it (the bot
+never pushes) → the research loop reads the committed file and files
+grounded proposals → build → nightly redeploy (#50). The research loop's
+access is the committed file only — it must never gain DB or recall access.
 
 **Adversarial** (every ~2h):
 ```

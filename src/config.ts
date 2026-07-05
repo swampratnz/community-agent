@@ -166,17 +166,37 @@ const EnvSchema = z.object({
   // k-floor: a cluster needs at least this many distinct authors to be
   // digested, so a digest can't become a one-person profile. Never below 2.
   CONTEXT_BUILDER_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
-  // Anonymised community-context export (issue #53): render digests into
-  // docs/COMMUNITY-CONTEXT.md for the research loop. Off by default. The
-  // export applies its own k-floor and PII scrub — see src/context/export.ts
-  // and SECURITY.md for the egress boundary.
+  // Knowledge-candidate generation (issue #102, the deferred half of #51):
+  // rides the existing builder run's per-digest summarisation call — no new
+  // job, no extra model call, so the documented CONTEXT_BUILDER_MAX_SUMMARIES
+  // worst case is unchanged with this on. Off by default, and off whenever
+  // the builder itself is off. Candidates are review-gated (admin-only,
+  // accept_knowledge_candidate) — this flag only controls whether they're
+  // ever drafted.
+  CONTEXT_CANDIDATES_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Anonymised community-context export (issue #53): render digests into a
+  // file the research loop can read. Off by default. The export applies its
+  // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
+  // the egress boundary.
+  //
+  // The default path is untracked/git-ignored (issue #108): the *committed*
+  // docs/COMMUNITY-CONTEXT.md is a human artefact (#53), refreshed only by a
+  // human running `npm run export:context` — pointed at the docs file if they
+  // want to overwrite it — and reviewing + committing the result. If this
+  // defaulted to a tracked path, the in-process exporter would dirty a
+  // tracked file on the server after every producing builder run, and
+  // scripts/redeploy.sh's clean-tree check would then permanently abort the
+  // nightly redeploy.
   CONTEXT_EXPORT_ENABLED: z
     .string()
     .optional()
     .transform((v) => v === 'true'),
   CONTEXT_EXPORT_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(30),
   CONTEXT_EXPORT_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
-  CONTEXT_EXPORT_PATH: z.string().default('docs/COMMUNITY-CONTEXT.md'),
+  CONTEXT_EXPORT_PATH: z.string().default('var/community-context.md'),
   // Weekly proactive per-admin DM digest of recurring-question clusters in
   // their own scoped conversations (issue #97) — a push companion to the
   // on-demand `question_digest` tool. Off by default (no timer, no extra
@@ -316,6 +336,9 @@ export const config = {
     windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
     maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
     minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
+  },
+  contextCandidates: {
+    enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
   },
   contextExport: {
     enabled: env.CONTEXT_EXPORT_ENABLED ?? false,

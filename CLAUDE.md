@@ -15,6 +15,13 @@ with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
 - `npm test` — Node test runner via tsx; must pass. Security invariants live
   here (tool gating, confirm flow, secret redaction, WhatsApp wire helpers) —
   when you touch those areas, extend the tests.
+- `npm run test:security` — runs every `SECURITY:`-prefixed test and enforces
+  `tests/security-floor.json`, a per-file map of how many `SECURITY:` tests
+  each test file declares (exact match, not a floor). When you add (or
+  intentionally remove) a `SECURITY:` test, update that file's entry in the
+  SAME diff — the gate's error message tells you exactly which entry. Per-file
+  entries exist so concurrent PRs don't all conflict on one shared counter
+  line, which is what the old global `MIN_SECURITY_TESTS` constant caused.
 - `tests/knowledgeEval.test.ts` + `tests/fixtures/knowledgeEval.json` — a
   golden-query regression eval for `knowledge_search` retrieval quality
   (precision@K against a curated, paraphrased query set with distractors).
@@ -56,15 +63,25 @@ ownership rules:
   research & adversarial touch issues only. One exception: the **autofix loop**
   (`pipeline-pr-autofix.yml`) may push fixes to an existing build-worker PR
   branch when its CI fails — bounded to 2 attempts, same-repo bot PRs only,
-  then it escalates `needs-human`. It never opens or merges PRs.
+  and only from CI `run_attempt` ≥ 2 (the ci-retry loop below gets one free
+  machine rerun first, so agents never chase one-off flakes), then it
+  escalates `needs-human`. It never opens or merges PRs.
 - The **conflict-resolver loop** (`pipeline-pr-conflict.yml`) may push a
-  `main`-merge to an existing build-worker PR branch when that PR has gone
-  CONFLICTING (no webhook fires for that transition, so it runs on every push
-  to `main`, discovers conflicting same-repo bot PRs, and merges `main` in +
-  resolves). One attempt per conflict: a failed resolution escalates
-  `needs-human`, and the discover filter skips `needs-human` PRs so it never
-  thrashes. Same push guardrails as autofix (read-only `gh`, exact
-  `git push origin HEAD`). It never opens or merges PRs.
+  `main`-merge to an existing build-worker PR branch when that PR is
+  CONFLICTING. It is two-hop: a `discover` job (triggered on every push to
+  `main`, on PR opened/ready-for-review — a PR can be *born* conflicted — and
+  on a 6-hourly backstop sweep) finds conflicting same-repo bot PRs and
+  self-dispatches the `resolve` job via `workflow_dispatch`, because
+  claude-code-action won't run under a `push` event. The dispatch payload
+  carries PR **numbers only**; resolve re-derives the branch from the API and
+  re-verifies the full eligibility contract (same-repo, bot-authored,
+  `Closes #`, no `needs-human`, still CONFLICTING) before checkout, so a
+  hand-crafted dispatch can't aim it at an arbitrary branch, and a superseded
+  duplicate run no-ops instead of mislabelling. One attempt per conflict: a
+  failed resolution escalates `needs-human`, and the eligibility filter skips
+  `needs-human` PRs so it never thrashes. Same push guardrails as autofix
+  (read-only `gh`, exact `git push origin HEAD`). It never opens or merges
+  PRs.
 - The **build-retry loop** (`pipeline-build-retry.yml`) auto-re-runs a build
   worker run that failed to produce a PR, via `gh run rerun`, bounded by
   `run_attempt` (≤3 total attempts). The build worker escalates `needs-human`
@@ -72,6 +89,11 @@ ownership rules:
   a human is pinged only for persistent ones — don't re-add manual re-trigger
   steps for build failures. (A GITHUB_TOKEN label toggle can't re-trigger the
   build worker, which is why this uses rerun, not a label change.)
+- The **ci-retry loop** (`ci-retry.yml`) gives a failed CI run one blind
+  machine rerun (`gh run rerun --failed`, `run_attempt` < 2) before any agent
+  engages — transient npm-registry/runner failures recover for zero agent
+  cost. It holds `actions: write` only, touches no code, and hands off to
+  autofix from attempt 2.
 - The build worker runs the **full CI gate** (typecheck, lint, format:check,
   migrate, test against a real pgvector Postgres, build, test:security) BEFORE
   opening a PR, so "green locally" matches CI. Keep it that way when editing

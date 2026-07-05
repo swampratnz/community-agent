@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { installCrashHandlers } from './crashHandlers.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
@@ -67,6 +68,11 @@ function startContextBuilder(): ReturnType<typeof setInterval> | null {
 
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
+
+  // 0. Global crash handlers first, so an unhandled rejection / uncaught throw
+  //    anywhere below is logged (not silent) and an uncaught exception triggers
+  //    a clean systemd restart rather than an undefined-state hang.
+  installCrashHandlers(logger);
 
   // 1. Auth: force subscription-based Claude auth.
   configureSubscriptionAuth();

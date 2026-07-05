@@ -24,6 +24,10 @@ logs/
 .cache/
 models/
 
+# Server-side scratch state (untracked so the redeploy clean-tree check never
+# trips on it) — e.g. the default community-context export target, issue #108
+/var/
+
 # OS / editor
 .DS_Store
 *.swp

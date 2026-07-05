@@ -397,3 +397,67 @@ CREATE TABLE IF NOT EXISTS member_warnings (
 CREATE INDEX IF NOT EXISTS member_warnings_active_idx
   ON member_warnings (platform, user_id)
   WHERE cleared_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Admin-reviewed queue that turns a recurring `context_digests` cluster into
+-- a durable `knowledge` entry (issue #102 — the `knowledge_candidates` half
+-- of #51 that its adversarial review deferred). Model-drafted Q&A text over
+-- member chat; nothing ever reaches `knowledge` (and therefore no tier's
+-- `knowledge_search`) except through an explicit admin
+-- `accept_knowledge_candidate` call — the human-curation invariant this repo
+-- keeps for `knowledge` generally. `topic` is denormalized from the source
+-- digest at insert time (not just read through `digest_id`) so the builder's
+-- dedup guard and this queue's display keep working after a purge nulls
+-- `digest_id` (see `purgeSingleIdentity` in repository.ts, which deletes
+-- still-*pending* candidates outright when their digest is invalidated, and
+-- only nulls the link for accepted/declined ones — accepted candidates are
+-- already admin-reviewed knowledge and get the same accountability
+-- treatment as `knowledge`/`admin_audit` generally).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_candidates (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  digest_id     BIGINT REFERENCES context_digests(id) ON DELETE SET NULL,
+  topic         TEXT        NOT NULL,
+  title         TEXT        NOT NULL,
+  content       TEXT        NOT NULL,
+  status        TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_by   TEXT,
+  reviewed_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_candidates_status_idx
+  ON knowledge_candidates (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS knowledge_candidates_digest_idx
+  ON knowledge_candidates (digest_id);
+
+-- ---------------------------------------------------------------------------
+-- Member feedback on the bot's own answers (issue #118) — the deferred
+-- feedback-loop half of #60 (which taught the model to attribute
+-- knowledge-base answers and flag general-knowledge ones, but explicitly
+-- deferred a rating mechanism). Boolean-only, no free text: a member rates
+-- the most recent answer the bot gave *them* in this conversation. Purge
+-- coherence: `interaction_id` is `ON DELETE SET NULL` so purging the rated
+-- reply (the recipient's own forget_me/purge_user_data, via
+-- purgeSingleIdentity's interactions delete) drops the dangling reference
+-- without orphaning or cascading into this table, keeping the aggregate
+-- helpful/unhelpful trend intact; `forget_me`/`purge_user_data` separately
+-- delete the rater's *own* answer_feedback rows (see repository.ts).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS answer_feedback (
+  id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform        TEXT        NOT NULL,
+  conversation_id TEXT        NOT NULL,
+  user_id         TEXT        NOT NULL,
+  interaction_id  BIGINT      REFERENCES interactions(id) ON DELETE SET NULL,
+  helpful         BOOLEAN     NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS answer_feedback_conversation_idx
+  ON answer_feedback (conversation_id, created_at DESC);
+
+-- Backs the per-rater rolling-24h rate cap (see repository.ts createAnswerFeedback).
+CREATE INDEX IF NOT EXISTS answer_feedback_user_rate_idx
+  ON answer_feedback (platform, user_id, created_at DESC);

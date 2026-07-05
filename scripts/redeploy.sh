@@ -102,9 +102,15 @@ main() {
 
   # Never deploy over local state: a dirty tree means a human is mid-change.
   # Untracked files are expected (.env, dist/, node_modules/, whatsapp-auth/)
-  # — only modifications to TRACKED files block the deploy.
-  [ -z "$(run_as_app git status --porcelain --untracked-files=no)" ] ||
-    die "working tree has local modifications; not touching anything"
+  # — only modifications to TRACKED files block the deploy. Name the
+  # offending paths in the abort so any future same-class wedge (some
+  # process writing tracked files on the server, e.g. issue #108) is
+  # diagnosable straight from the journal instead of requiring an SSH
+  # session to reproduce.
+  local dirty
+  dirty="$(run_as_app git status --porcelain --untracked-files=no)"
+  [ -z "$dirty" ] ||
+    die "working tree has local modifications, not touching anything: $(printf '%s' "$dirty" | tr '\n' ';')"
 
   run_as_app git fetch origin "$BRANCH" || die "git fetch failed"
 

@@ -154,7 +154,10 @@ jobs:
             Read CLAUDE.md (conventions + security posture you must not regress) and
             docs/PIPELINE.md (ownership rules) first, then:
             1. Relabel this issue `status:building` and comment that you've claimed it.
-            2. Implement the approved proposal on a new branch. Match existing style
+            2. Implement the approved proposal on a new branch (create it with
+               `git checkout -b <branch>`). When you push, use EXACTLY
+               `git push -u origin HEAD` (no other push form is permitted —
+               `HEAD` pushes the branch you just created). Match existing style
                and write/extend tests. A pgvector Postgres is available at
                DATABASE_URL, so run the FULL gate CI will run on your PR and make
                every one green BEFORE opening it:
@@ -167,10 +170,17 @@ jobs:
                  - npm run test:security
                Do not open the PR until all of these pass. CI runs the identical
                checks, so a red PR only creates rework for a human.
-            3. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
+            3. FRESHEN before opening: main may have moved while you built
+               (another PR merging mid-build is how PRs get born already
+               conflicted). Run `git fetch origin main` then
+               `git merge origin/main`; if it merges clean with no changes,
+               continue. If it brings in changes or conflicts, resolve them
+               (preserve both sides' intent) and re-run the FULL gate above
+               before proceeding.
+            4. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
                summarising the change, its security/privacy impact, and how you verified
                it. Then relabel the issue `status:built`.
-            4. Do NOT merge — a human merges. If the proposal turns out infeasible or
+            5. Do NOT merge — a human merges. If the proposal turns out infeasible or
                unsafe as specified, add the `needs-human` label and explain instead of
                forcing it.
             Implement only this one approved issue.
@@ -180,7 +190,35 @@ jobs:
           # Deliberately NO bare `rm`/`sed`: the build worker processes
           # (potentially adversarial) issue content, so we keep the shell
           # surface minimal — file rewrites go through Edit/Write and tracked
-          # deletions through `git rm` (covered by Bash(git:*)).
+          # deletions through `git rm`.
+          #
+          # Least-privilege, matching the autofix worker's standard (#107):
+          # the "merge is human-only" invariant is enforced STRUCTURALLY by this
+          # allowlist, not just by convention — no listed form expands to
+          # `gh pr merge` or `gh api`, and there is no blanket `git:*`, `gh:*`,
+          # `npx:*`, or `node:*` grant (npx/node are arbitrary-code-execution
+          # primitives; the full CI gate only ever needs `npm run ...`, covered
+          # by Bash(npm:*)).
+          #   * `git`: named subcommands a build uses, plus an EXACT-match push
+          #     `Bash(git push -u origin HEAD)` / `Bash(git push origin HEAD)`
+          #     (NO `:*` wildcard, mirroring autofix). `HEAD` symbolically
+          #     pushes the current branch, so no wildcard is needed — and a
+          #     wildcard after `origin` would also permit `git push origin
+          #     <branch> --force` and `git push origin HEAD:main`, which the
+          #     exact form forbids. `git fetch` is likewise pinned to
+          #     `Bash(git fetch origin:*)` so it can't fetch an arbitrary remote.
+          #     NOTE this is defence-in-depth, not a hard stop against a push to
+          #     `main`: a build must create its own branch (`git checkout -b`)
+          #     and runs `npm` (code execution), so it could in principle rename
+          #     its branch or rewrite `.git/HEAD`. Branch protection on `main`
+          #     is the enforceable guarantee that no loop reaches `main` without
+          #     a human merge (see docs/PIPELINE.md); this allowlist raises the
+          #     bar and closes the force-push / arbitrary-refspec / other-branch
+          #     holes, but does not replace branch protection.
+          #   * `gh`: exactly the writes a build needs (`issue edit`, `issue
+          #     comment`, `pr create`) plus reads (`pr list/view/diff`, `run
+          #     view`). No `gh pr merge`, no `gh api`, no `gh repo edit`, no
+          #     `gh workflow run`.
           # Turn-cap history: 40 died at turn 41 on a small 4-file proposal
           # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
           # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
@@ -191,7 +229,7 @@ jobs:
           claude_args: |
             --max-turns 300
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git checkout -b:*),Bash(git switch -c:*),Bash(git rev-parse:*),Bash(git fetch origin:*),Bash(git merge origin/main),Bash(git push -u origin HEAD),Bash(git push origin HEAD),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(npm:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a PR was produced (else escalate + fail loudly)
         if: always() && env.HAS_TOKEN == 'true'
