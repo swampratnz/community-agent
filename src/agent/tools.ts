@@ -66,6 +66,7 @@ import {
 import { updatePolicy } from '../storage/policies.js';
 import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
+import { generateImage } from '../media/grokImage.js';
 import { triggerRedeploy } from './redeploy.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
@@ -293,6 +294,29 @@ export async function notifyReportFiled(
  *  4. Destructive actions require an out-of-band CONFIRM (pendingActions.ts).
  *  5. Everything privileged is audited and alerted to super admins.
  */
+/** Users with an image generation currently in flight — blocks overlapping spawns per user. */
+const imageGenInFlight = new Set<string>();
+/** Per-user image-generation tally for the current UTC day (abuse cap; see config.imageGen.dailyLimit). */
+const imageGenDaily = new Map<string, { day: string; count: number }>();
+
+/**
+ * Reserve one image-generation slot for `key` against today's per-user cap.
+ * Returns false (and does not increment) if the cap is already reached.
+ * A limit of 0 means unlimited.
+ */
+function reserveImageGenDaily(key: string, limit: number): boolean {
+  if (limit <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = imageGenDaily.get(key);
+  if (!entry || entry.day !== today) {
+    imageGenDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
 export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter) {
   /**
    * Conversations the caller may reach with privileged/data tools.
@@ -1777,6 +1801,52 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
 
   // Attach everything; the per-turn allowedTools list (rbac.toolsForRole) is
   // what actually restricts which of these the model can call.
+  const generateImageTool = tool(
+    'generate_image',
+    'Generate an image from a text description and post it into the current conversation. Admin only. ' +
+      "Uses the host's Grok Build CLI (SuperGrok subscription). Takes up to a minute.",
+    { prompt: z.string().min(1).max(1000).describe('Description of the image to generate') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'generate_image');
+      if (!config.imageGen.enabled) {
+        return text('Image generation is not enabled on this server.', true);
+      }
+      if (!adapter.sendImage) {
+        return text(`Image generation isn't available on ${caller.platform}.`, true);
+      }
+      const key = `${caller.platform}:${caller.userId}`;
+      if (imageGenInFlight.has(key)) {
+        return text('You already have an image generating — let it finish before starting another.', true);
+      }
+      if (!reserveImageGenDaily(key, config.imageGen.dailyLimit)) {
+        return text(
+          `You've hit today's image limit (${config.imageGen.dailyLimit}). Try again tomorrow.`,
+          true,
+        );
+      }
+      imageGenInFlight.add(key);
+      try {
+        const image = await generateImage(args.prompt);
+        await adapter.sendImage(caller.conversationId, {
+          data: image.data,
+          filename: `image.${image.ext}`,
+          mimeType: image.mimeType,
+        });
+        logger.info(
+          { actor: caller.userId, platform: caller.platform, bytes: image.data.length },
+          'generate_image posted',
+        );
+        return text('Image posted.');
+      } catch (err) {
+        logger.warn({ err, actor: caller.userId }, 'generate_image failed');
+        return text(`Image generation failed: ${err instanceof Error ? err.message : String(err)}`, true);
+      } finally {
+        imageGenInFlight.delete(key);
+      }
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
   return createSdkMcpServer({
     name: 'community',
     version: '2.0.0',
@@ -1827,6 +1897,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       resumeBot,
       setPolicy,
       redeployBot,
+      generateImageTool,
     ],
   });
 }

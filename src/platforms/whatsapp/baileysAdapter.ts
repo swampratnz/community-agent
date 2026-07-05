@@ -336,6 +336,19 @@ export class BaileysAdapter implements PlatformAdapter {
       .catch((err) => logger.debug({ err }, 'Failed to clear WhatsApp presence'));
   }
 
+  /** Post an image (with an optional caption) to a conversation. */
+  async sendImage(
+    conversationId: string,
+    image: { data: Buffer; filename: string; mimeType: string },
+    caption?: string,
+  ): Promise<void> {
+    if (!this.sock) throw new Error('WhatsApp socket not connected');
+    await this.sock.sendMessage(conversationId, {
+      image: image.data,
+      caption: caption ? await this.filtered(caption) : undefined,
+    });
+  }
+
   /** Best-effort "composing…" presence update while a turn is in flight. */
   async sendTypingIndicator(message: IncomingMessage): Promise<void> {
     if (!this.sock) return;

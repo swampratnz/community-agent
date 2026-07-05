@@ -60,6 +60,7 @@ export const MEMBER_TOOLS = [
 /** Additional tools for admins — data access scoped to their conversations. */
 export const ADMIN_TOOLS = [
   'mcp__community__whats_new',
+  'mcp__community__generate_image',
   'mcp__community__user_history',
   'mcp__community__moderate',
   'mcp__community__clear_warnings',

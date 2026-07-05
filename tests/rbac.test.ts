@@ -40,6 +40,21 @@ test('SECURITY: whats_new is admin-only (binding requirement from #55)', () => {
   }
 });
 
+test('SECURITY: generate_image is admin/super-admin only, never members or guests', () => {
+  const tool = 'mcp__community__generate_image';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'generate_image must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'generate_image must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach generate_image`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach generate_image`);
+  }
+});
+
 test('SECURITY: report_content is member+ (guests never get it in gated mode; matches MEMBER_TOOLS)', () => {
   const tool = 'mcp__community__report_content';
   assert.ok(MEMBER_TOOLS.includes(tool), 'report_content must be in MEMBER_TOOLS');

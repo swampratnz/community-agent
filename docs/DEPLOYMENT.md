@@ -221,6 +221,38 @@ this line the tool fails immediately with a clear error (`sudo -n` never
 prompts or hangs waiting for a password) — it does not silently do nothing
 and does not wedge the CONFIRM flow.
 
+## Image generation via Grok CLI (opt-in, off by default)
+
+The admin/super-admin `generate_image` tool shells out to the **Grok Build CLI**
+on the host. It's off unless `IMAGE_GEN_ENABLED=true`. To enable it:
+
+1. **Install the CLI** as the service user (or globally) and **log in once**
+   with a SuperGrok subscription — device-code flow, no API key:
+   ```bash
+   sudo -u community-agent -H bash -lc 'grok login --device-auth'
+   ```
+   This writes `~/.grok/auth.json` under the service user's `HOME`
+   (`/opt/community-agent/home/.grok/`). Treat that file as a credential — it is
+   the subscription login, and it lives on the host, outside the repo.
+2. **Set the env** in `/opt/community-agent/.env`:
+   ```
+   IMAGE_GEN_ENABLED=true
+   GROK_BIN=/opt/community-agent/home/.grok/bin/grok
+   # optional: IMAGE_GEN_TIMEOUT_MS=180000  IMAGE_GEN_DAILY_LIMIT=25
+   ```
+   **Set `GROK_BIN` to an absolute path**, not a bare `grok`. With a bare name
+   the binary is resolved via `PATH`, so any directory earlier in the service's
+   `PATH` that an attacker (or a careless deploy) can write to could shadow the
+   real CLI with a hostile one that then runs as the service user. An absolute
+   path removes that PATH-hijack surface. The systemd unit runs with a fixed
+   `Environment=PATH`, so keep the binary outside any writable path.
+3. **Restart**: `sudo systemctl restart community-agent`.
+
+Security posture (scoped subprocess env, single-tool lockdown so
+`--always-approve` can't execute host code, RBAC, daily cap) is documented in
+docs/SECURITY.md §8. The CLI runs under the same sandboxed unit as the bot
+(`ProtectHome`, `ProtectSystem=strict`, `PrivateTmp`), which bounds it further.
+
 ## Backups
 Back up the database (memory + audit) and the WhatsApp auth dir:
 ```bash

@@ -82,6 +82,19 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Image generation via the host Grok Build CLI (uses its SuperGrok
+  // subscription login — no API key). OFF by default; admin/super-admin only.
+  IMAGE_GEN_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Path to the `grok` binary (installed + logged in on the host).
+  GROK_BIN: z.string().default('grok'),
+  // Hard timeout for a single image generation (ms).
+  IMAGE_GEN_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  // Max images one admin can generate per rolling calendar day (abuse cap on
+  // top of the per-user in-flight guard). 0 = unlimited.
+  IMAGE_GEN_DAILY_LIMIT: z.coerce.number().int().min(0).default(25),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -300,6 +313,12 @@ export const config = {
     mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
+  },
+  imageGen: {
+    enabled: env.IMAGE_GEN_ENABLED ?? false,
+    grokBin: env.GROK_BIN,
+    timeoutMs: env.IMAGE_GEN_TIMEOUT_MS,
+    dailyLimit: env.IMAGE_GEN_DAILY_LIMIT,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,
