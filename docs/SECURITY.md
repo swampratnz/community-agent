@@ -266,6 +266,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   The pipeline bridge stays human — the bot has **no** GitHub access, so an
   injected "suggestion" can never become a repo issue a build worker acts
   on without an admin consciously filing it.
+- **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
+  admin rates the bot's most recent answer to them with `rate_answer(helpful:
+  boolean)` — **no free-text input at all**, a smaller surface than
+  `report_content`/`suggest_improvement` (which have a `reason`/`content`
+  field), since this was the explicit condition #60 set for revisiting a
+  rating mechanism. Write-only at member tier, DB-backed rolling-24h cap
+  (`RATE_ANSWER_DAILY_LIMIT`, default 20 — higher than
+  `report_content`/`suggest_improvement` because a rating carries no
+  admin-triage cost per submission), non-destructive so no CONFIRM gate.
+  **Caller-scoped interaction resolution**: the rated interaction is resolved
+  via `meta->>'replyToUserId' = caller` (same stamp `router.ts` writes on
+  every outbound send and `purgeSingleIdentity`/`countRepliesToUser` already
+  key on) before falling back to the conversation's most-recent outbound
+  reply — this is a deliberate anti-mis-attribution guard: without it, a busy
+  multi-member channel could bind one member's "thanks, that helped" to the
+  answer the bot just gave a *different* member, corrupting the exact signal
+  this feature exists to produce (pinned by a `SECURITY:` test). Admin-only
+  read via `list_answer_feedback`, conversation-scoped identically to
+  `list_reports` — a rating from a conversation the admin doesn't participate
+  in is only reachable by a super admin. The system prompt's guideline is
+  deliberately conservative: fire only on a clear, explicit member cue about
+  the bot's own last answer, never on general positivity or ambiguous
+  chatter, since this signal is model-inferred rather than an explicit
+  member request (unlike `report_content`). Purge-coherent:
+  `forget_me`/`purge_user_data` delete the rater's own rows; the FK to
+  `interactions` is `ON DELETE SET NULL`, so purging the *rated* interaction
+  (the recipient's own purge, a different identity than the rater) clears the
+  reference rather than deleting the feedback row or leaving a dangling FK —
+  the aggregate helpful/unhelpful trend survives.
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard

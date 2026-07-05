@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-05
+
+### Added
+- Members can now rate the bot's last answer with `rate_answer` (helpful/unhelpful, no free text, rate-capped) so admins finally get a calibrated signal on answer quality — the deferred half of #60. Admins read the aggregate, scoped to their own conversations, with the new `list_answer_feedback` tool (#118).
+
 ## 2026-07-04
 
 ### Added
