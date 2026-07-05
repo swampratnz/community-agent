@@ -36,6 +36,7 @@ function makeStore() {
 function makeEnforcer(overrides: Record<string, unknown> = {}) {
   const calls = {
     warnUser: [] as Array<[string, string]>,
+    warnInChannel: [] as Array<[string, string]>,
     muteUser: [] as string[],
     unmuteUser: [] as string[],
     postAdminAlert: [] as string[],
@@ -44,6 +45,9 @@ function makeEnforcer(overrides: Record<string, unknown> = {}) {
     calls,
     async warnUser(userId: string, text: string) {
       calls.warnUser.push([userId, text]);
+    },
+    async warnInChannel(channelId: string, text: string) {
+      calls.warnInChannel.push([channelId, text]);
     },
     async muteUser(userId: string) {
       calls.muteUser.push(userId);
@@ -89,6 +93,7 @@ const msg = (text: string, userId = 'u1') => ({
   userId,
   userName: 'Someone',
   text,
+  channelId: 'chan1',
 });
 
 // --- wordlist detector -------------------------------------------------------
@@ -136,8 +141,22 @@ test('Moderator warns (but does not mute) on the first flagged message', async (
   assert.equal(store.added.length, 1);
   assert.equal(store.added[0].source, 'auto');
   assert.equal(enforcer.calls.warnUser.length, 1, 'the member gets a warning DM');
+  assert.equal(enforcer.calls.warnInChannel.length, 1, 'a public warning is posted in-channel');
   assert.equal(enforcer.calls.postAdminAlert.length, 1, 'the admin channel is notified');
   assert.equal(enforcer.calls.muteUser.length, 0, 'not muted below the limit');
+});
+
+test('the public in-channel warning names the member only — no user id, matched word, or excerpt', async () => {
+  const { moderator, enforcer } = makeModerator({ strikeLimit: 3 });
+  await moderator.scan(msg('you asshole', 'user-12345'));
+  assert.equal(enforcer.calls.warnInChannel.length, 1);
+  const [channelId, text] = enforcer.calls.warnInChannel[0];
+  assert.equal(channelId, 'chan1', 'posted in the channel the message came from');
+  assert.match(text, /Someone/, 'names the member');
+  assert.doesNotMatch(text, /user-12345/, 'must not leak the user id');
+  assert.doesNotMatch(text, /asshole/i, 'must not echo the matched word or excerpt');
+  // The detailed record (id + matched word) still goes to the private admin channel.
+  assert.match(enforcer.calls.postAdminAlert[0], /user-12345/, 'admin log keeps the id for clear_warnings');
 });
 
 test('SECURITY: a member is muted only once the active-strike count reaches the limit, never before', async () => {
