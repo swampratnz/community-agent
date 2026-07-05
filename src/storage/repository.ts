@@ -599,6 +599,29 @@ export async function getMemberRole(platform: Platform, userId: string): Promise
 }
 
 /**
+ * Best-known human-readable name for a platform user — the membership row's
+ * display name first, then the server roster — so tool replies can name the
+ * member instead of echoing a raw platform id. Returns null when nothing is
+ * stored (the caller decides on a fallback).
+ */
+export async function resolveDisplayName(platform: Platform, userId: string): Promise<string | null> {
+  const { rows } = await pool.query(
+    `SELECT display_name FROM (
+       SELECT display_name, 0 AS pref FROM community_users
+         WHERE platform = $1 AND platform_user_id = $2
+       UNION ALL
+       SELECT display_name, 1 AS pref FROM server_roster
+         WHERE platform = $1 AND user_id = $2
+     ) names
+     WHERE display_name IS NOT NULL AND display_name <> ''
+     ORDER BY pref
+     LIMIT 1`,
+    [platform, userId],
+  );
+  return rows[0]?.display_name ?? null;
+}
+
+/**
  * Upsert a membership grant. Never downgrades: adding an existing admin as a
  * member keeps them admin (downgrades go through revoke_admin explicitly).
  */

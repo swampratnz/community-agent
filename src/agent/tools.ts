@@ -47,6 +47,7 @@ import {
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
+  resolveDisplayName,
   resolveSuggestion,
   rosterCounts,
   resolveLinkedIdentities,
@@ -1452,7 +1453,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
       await notifyMemberApproved(adapter, userId, wasAlreadyMember);
-      return text(`Added ${args.displayName ?? userId} as ${finalRole} on ${platform}.`);
+      const label = args.displayName ?? (await resolveDisplayName(platform, userId)) ?? userId;
+      return text(`Added ${label} as ${finalRole} on ${platform}.`);
     },
   );
 
@@ -1463,6 +1465,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'remove_member');
       const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      // Resolve the name before the row is deleted (roster still has it after).
+      const label = (await resolveDisplayName(platform, userId)) ?? userId;
       if (isSuperAdmin(platform, userId)) {
         return text('Refusing: that user is a super admin.', true);
       }
@@ -1478,7 +1482,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
         },
       });
       return text(
-        result === 'membership removed' ? `Removed ${userId} from ${platform} members.` : `Failed: ${result}`,
+        result === 'membership removed' ? `Removed ${label} from ${platform} members.` : `Failed: ${result}`,
         result !== 'membership removed',
       );
     },
@@ -1553,6 +1557,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       assertAtLeast(caller.role, 'admin', 'unlink_member');
       const platform = args.platform ?? caller.platform;
       const userId = normalizeMemberId(platform, args.userId);
+      const label = (await resolveDisplayName(platform, userId)) ?? userId;
       // An admin may unlink an identity on their own platform, or one linked to
       // an identity on their platform (they have authority over that person).
       // Unlinking a foreign identity with no on-platform link is super-admin-only
@@ -1563,7 +1568,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           assertAtLeast(caller.role, 'super_admin', 'unlinking an identity on another platform');
         }
       }
-      return requireConfirm(`unlink ${userId} on ${platform} from its linked identity`, 'admin', async () => {
+      return requireConfirm(`unlink ${label} on ${platform} from its linked identity`, 'admin', async () => {
         const { success, result } = await audited({
           actionKind: 'unlink_member',
           targetUserId: userId,
@@ -1574,7 +1579,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
             return 'unlinked';
           },
         });
-        return success ? `Unlinked ${userId} on ${platform}: ${result}.` : `Failed: ${result}`;
+        return success ? `Unlinked ${label} on ${platform}: ${result}.` : `Failed: ${result}`;
       });
     },
   );
@@ -1592,33 +1597,28 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'grant_admin');
       const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const label = args.displayName ?? (await resolveDisplayName(platform, userId)) ?? userId;
       // Privilege escalation is the highest-blast-radius action in the
       // system — CONFIRM-gated like kick/purge so an injected turn can
       // request but never complete it.
-      return requireConfirm(
-        `GRANT ADMIN to ${args.displayName ?? userId} (${userId}) on ${platform}`,
-        'super_admin',
-        async () => {
-          const { success, result } = await audited({
-            actionKind: 'grant_admin',
-            targetUserId: userId,
-            params: { platform },
-            run: async () => {
-              await upsertMember({
-                platform,
-                userId,
-                role: 'admin',
-                addedBy: caller.userId,
-                displayName: args.displayName,
-              });
-              return 'granted';
-            },
-          });
-          return success
-            ? `Granted admin to ${args.displayName ?? userId} on ${platform}.`
-            : `Failed: ${result}`;
-        },
-      );
+      return requireConfirm(`GRANT ADMIN to ${label} on ${platform}`, 'super_admin', async () => {
+        const { success, result } = await audited({
+          actionKind: 'grant_admin',
+          targetUserId: userId,
+          params: { platform },
+          run: async () => {
+            await upsertMember({
+              platform,
+              userId,
+              role: 'admin',
+              addedBy: caller.userId,
+              displayName: args.displayName,
+            });
+            return 'granted';
+          },
+        });
+        return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
+      });
     },
   );
 
@@ -1629,6 +1629,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'revoke_admin');
       const { platform, userId } = resolveMemberTarget(args.userId, args.platform);
+      const label = (await resolveDisplayName(platform, userId)) ?? userId;
       if (isSuperAdmin(platform, userId)) {
         return text('Refusing: super admins are configured in the environment, not manageable here.', true);
       }
@@ -1642,7 +1643,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
           return 'demoted to member';
         },
       });
-      return text(success ? `${userId} is now a member on ${platform}.` : `Failed: ${result}`, !success);
+      return text(success ? `${label} is now a member on ${platform}.` : `Failed: ${result}`, !success);
     },
   );
 
