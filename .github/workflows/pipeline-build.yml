@@ -180,7 +180,26 @@ jobs:
           # Deliberately NO bare `rm`/`sed`: the build worker processes
           # (potentially adversarial) issue content, so we keep the shell
           # surface minimal — file rewrites go through Edit/Write and tracked
-          # deletions through `git rm` (covered by Bash(git:*)).
+          # deletions through `git rm`.
+          #
+          # Least-privilege, matching the autofix worker's standard (#107):
+          # the "merge is human-only" invariant is enforced STRUCTURALLY by this
+          # allowlist, not just by convention — no listed form expands to
+          # `gh pr merge` or `gh api`, and there is no blanket `git:*`, `gh:*`,
+          # `npx:*`, or `node:*` grant (npx/node are arbitrary-code-execution
+          # primitives; the full CI gate only ever needs `npm run ...`, covered
+          # by Bash(npm:*)).
+          #   * `git`: named subcommands a build uses, plus a constrained push.
+          #     `Bash(git push origin:*)` / `Bash(git push -u origin:*)` permit
+          #     pushing the new branch but exclude a LEADING `--force` or a
+          #     non-`origin` remote/ref (they break the prefix before `origin`).
+          #     They do NOT exclude `--force` appended AFTER `origin <branch>` —
+          #     branch protection on `main` remains the required backstop for
+          #     that refspec trick, the same caveat autofix documents.
+          #   * `gh`: exactly the writes a build needs (`issue edit`, `issue
+          #     comment`, `pr create`) plus reads (`pr list/view/diff`, `run
+          #     view`). No `gh pr merge`, no `gh api`, no `gh repo edit`, no
+          #     `gh workflow run`.
           # Turn-cap history: 40 died at turn 41 on a small 4-file proposal
           # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
           # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
@@ -191,7 +210,7 @@ jobs:
           claude_args: |
             --max-turns 300
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git checkout -b:*),Bash(git switch -c:*),Bash(git rev-parse:*),Bash(git fetch:*),Bash(git push -u origin:*),Bash(git push origin:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(npm:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify a PR was produced (else escalate + fail loudly)
         if: always() && env.HAS_TOKEN == 'true'
