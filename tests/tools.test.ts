@@ -44,6 +44,8 @@ const {
   getResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
   recordInteraction,
+  insertContextDigest,
+  insertKnowledgeCandidate,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
@@ -58,6 +60,7 @@ const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
+const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 
 after(async () => {
   if (hasDb) {
@@ -70,6 +73,14 @@ after(async () => {
       `${REPORT_CONTENT_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [REMEMBER_SEARCH_HANDLER_SCOPE]);
+    // Safety net for the knowledge-candidate tool tests (issue #102): the
+    // action_kind values are unique to this feature, so this can't collide
+    // with any other test's audit rows even if an assertion fails mid-test
+    // before the per-test inline cleanup runs.
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind IN ('accept_knowledge_candidate', 'decline_knowledge_candidate') AND actor_user_id = $1`,
+      [KNOWLEDGE_CANDIDATE_HANDLER_ADMIN],
+    );
   }
   await closeDb();
 });
@@ -1101,5 +1112,152 @@ test(
       /recorded/,
       'the reporter confirmation is unaffected by a failed best-effort alert',
     );
+  },
+);
+
+// list_knowledge_candidates / accept_knowledge_candidate / decline_knowledge_candidate
+// (issue #102): the review queue that turns a context-builder digest into a
+// durable knowledge entry. RBAC gating itself is pinned in rbac.test.ts; these
+// exercise the handlers' wiring against a real DB — the audit trail and the
+// no-auto-publish gate in particular.
+function knowledgeCandidateHandlers() {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: KNOWLEDGE_CANDIDATE_HANDLER_ADMIN,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, unknown>,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools;
+}
+
+test(
+  'accept_knowledge_candidate publishes exactly one knowledge entry via save_knowledge, marks the candidate accepted, and writes exactly one admin_audit row (issue #102)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-tool-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const candidateContent = `${RUN} kc tool fixture: the answer is exactly forty-two.`;
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tool-topic`,
+      title: 'KC tool fixture title',
+      content: candidateContent,
+    });
+
+    const beforeAudit = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'accept_knowledge_candidate' AND actor_user_id = $1`,
+      [KNOWLEDGE_CANDIDATE_HANDLER_ADMIN],
+    );
+
+    const tools = knowledgeCandidateHandlers();
+    const result = await tools['accept_knowledge_candidate'].handler({ id: candidateId });
+
+    assert.equal(result.isError, false, 'a successful accept is not an error result');
+    assert.match(result.content[0]?.text ?? '', /Accepted candidate/);
+    assert.match(result.content[0]?.text ?? '', /knowledge entry #/);
+
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [candidateContent]);
+    assert.equal(knowledgeRows.rows.length, 1, 'accept produces exactly one knowledge entry');
+    const knowledgeId = Number(knowledgeRows.rows[0].id);
+
+    const candidateRow = await pool.query(
+      `SELECT status, reviewed_by FROM knowledge_candidates WHERE id = $1`,
+      [candidateId],
+    );
+    assert.equal(candidateRow.rows[0].status, 'accepted');
+    assert.equal(candidateRow.rows[0].reviewed_by, KNOWLEDGE_CANDIDATE_HANDLER_ADMIN);
+
+    const afterAudit = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'accept_knowledge_candidate' AND actor_user_id = $1`,
+      [KNOWLEDGE_CANDIDATE_HANDLER_ADMIN],
+    );
+    assert.equal(
+      afterAudit.rows[0].n,
+      beforeAudit.rows[0].n + 1,
+      'SECURITY: exactly one admin_audit row is written for the accept',
+    );
+
+    const failed = await tools['accept_knowledge_candidate'].handler({ id: 999_999_999 });
+    assert.equal(failed.isError, true);
+    assert.match(failed.content[0]?.text ?? '', /Failed/);
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: a pending knowledge candidate never reaches knowledge_search until accept_knowledge_candidate runs; decline_knowledge_candidate never publishes and needs no CONFIRM (issue #102)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-tool-decline-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const candidateContent = `${RUN} kc decline fixture content`;
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tool-decline-topic`,
+      title: 'KC decline fixture title',
+      content: candidateContent,
+    });
+
+    const tools = knowledgeCandidateHandlers();
+
+    const listedBefore = await tools['list_knowledge_candidates'].handler({ status: 'pending' });
+    assert.match(listedBefore.content[0]?.text ?? '', /KC decline fixture title/);
+
+    // No CONFIRM round-trip required — decline resolves in one call, unlike
+    // delete_knowledge/forget_me.
+    const declineResult = await tools['decline_knowledge_candidate'].handler({ id: candidateId });
+    assert.equal(declineResult.isError, false);
+    assert.match(declineResult.content[0]?.text ?? '', /Declined candidate/);
+    assert.doesNotMatch(declineResult.content[0]?.text ?? '', /CONFIRM/);
+
+    const knowledgeRows = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [candidateContent]);
+    assert.equal(knowledgeRows.rows.length, 0, 'SECURITY: declining must never write a knowledge row');
+
+    const candidateRow = await pool.query(`SELECT status FROM knowledge_candidates WHERE id = $1`, [
+      candidateId,
+    ]);
+    assert.equal(candidateRow.rows[0].status, 'declined', 'the row is retained as declined, never deleted');
+
+    const listedAfter = await tools['list_knowledge_candidates'].handler({ status: 'declined' });
+    assert.match(listedAfter.content[0]?.text ?? '', /KC decline fixture title/);
+
+    const reDecline = await tools['decline_knowledge_candidate'].handler({ id: candidateId });
+    assert.equal(reDecline.isError, true, 'declining an already-declined candidate reports failure');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
   },
 );

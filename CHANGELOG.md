@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-05
+
+### Added
+- Knowledge-candidate review queue (opt-in, `CONTEXT_CANDIDATES_ENABLED`, off by default and a no-op while the builder itself is off): the offline context builder can now draft a Q&A candidate from a recurring, answerable question cluster — the same summarisation call that writes the digest, never a second model call. Candidates land in a `pending` queue admins browse with `list_knowledge_candidates` and turn into durable knowledge with `accept_knowledge_candidate` (which publishes via the existing `save_knowledge` path) or reject with `decline_knowledge_candidate` (non-destructive, no CONFIRM). Nothing reaches `knowledge`/`knowledge_search` without that explicit accept — the human-curation invariant this repo keeps for knowledge generally is unchanged. Closes the deferred half of #51 (#102).
+
 ## 2026-07-04
 
 ### Added

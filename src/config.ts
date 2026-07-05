@@ -166,6 +166,17 @@ const EnvSchema = z.object({
   // k-floor: a cluster needs at least this many distinct authors to be
   // digested, so a digest can't become a one-person profile. Never below 2.
   CONTEXT_BUILDER_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
+  // Knowledge-candidate generation (issue #102, the deferred half of #51):
+  // rides the existing builder run's per-digest summarisation call — no new
+  // job, no extra model call, so the documented CONTEXT_BUILDER_MAX_SUMMARIES
+  // worst case is unchanged with this on. Off by default, and off whenever
+  // the builder itself is off. Candidates are review-gated (admin-only,
+  // accept_knowledge_candidate) — this flag only controls whether they're
+  // ever drafted.
+  CONTEXT_CANDIDATES_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Anonymised community-context export (issue #53): render digests into
   // docs/COMMUNITY-CONTEXT.md for the research loop. Off by default. The
   // export applies its own k-floor and PII scrub — see src/context/export.ts
@@ -316,6 +327,9 @@ export const config = {
     windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
     maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
     minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
+  },
+  contextCandidates: {
+    enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
   },
   contextExport: {
     enabled: env.CONTEXT_EXPORT_ENABLED ?? false,

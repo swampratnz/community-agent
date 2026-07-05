@@ -397,3 +397,37 @@ CREATE TABLE IF NOT EXISTS member_warnings (
 CREATE INDEX IF NOT EXISTS member_warnings_active_idx
   ON member_warnings (platform, user_id)
   WHERE cleared_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Admin-reviewed queue that turns a recurring `context_digests` cluster into
+-- a durable `knowledge` entry (issue #102 — the `knowledge_candidates` half
+-- of #51 that its adversarial review deferred). Model-drafted Q&A text over
+-- member chat; nothing ever reaches `knowledge` (and therefore no tier's
+-- `knowledge_search`) except through an explicit admin
+-- `accept_knowledge_candidate` call — the human-curation invariant this repo
+-- keeps for `knowledge` generally. `topic` is denormalized from the source
+-- digest at insert time (not just read through `digest_id`) so the builder's
+-- dedup guard and this queue's display keep working after a purge nulls
+-- `digest_id` (see `purgeSingleIdentity` in repository.ts, which deletes
+-- still-*pending* candidates outright when their digest is invalidated, and
+-- only nulls the link for accepted/declined ones — accepted candidates are
+-- already admin-reviewed knowledge and get the same accountability
+-- treatment as `knowledge`/`admin_audit` generally).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_candidates (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  digest_id     BIGINT REFERENCES context_digests(id) ON DELETE SET NULL,
+  topic         TEXT        NOT NULL,
+  title         TEXT        NOT NULL,
+  content       TEXT        NOT NULL,
+  status        TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_by   TEXT,
+  reviewed_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_candidates_status_idx
+  ON knowledge_candidates (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS knowledge_candidates_digest_idx
+  ON knowledge_candidates (digest_id);

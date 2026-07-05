@@ -30,6 +30,13 @@ const {
   deleteKnowledge,
   listKnowledge,
   recordKnowledgeRetrieval,
+  insertContextDigest,
+  insertKnowledgeCandidate,
+  listKnowledgeCandidates,
+  acceptKnowledgeCandidate,
+  declineKnowledgeCandidate,
+  hasQueuedCandidateForTopic,
+  knowledgeCoversTopic,
   recordAdminAction,
   recentQuestionClusters,
   recentModerationEntries,
@@ -396,6 +403,283 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);
     void dupId;
     void distinctId;
+  },
+);
+
+test(
+  'repository: knowledge candidate CRUD — insert is pending, list filters by status, accept publishes via saveKnowledge (propagating the #93 duplicate nudge) and marks accepted, decline retains the row as declined and never touches knowledge (issue #102)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const acceptId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-topic`,
+      title: 'Drafted title',
+      content: 'Drafted answer content.',
+    });
+    const declineId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-topic-2`,
+      title: 'Another drafted title',
+      content: 'Another drafted answer.',
+    });
+
+    const pendingOnly = await listKnowledgeCandidates('pending', 200);
+    assert.ok(
+      pendingOnly.some((c) => c.id === acceptId),
+      'a freshly-inserted candidate is pending',
+    );
+    assert.ok(pendingOnly.some((c) => c.id === declineId));
+    assert.ok(
+      pendingOnly.every((c) => c.status === 'pending'),
+      'the status filter excludes non-pending rows',
+    );
+
+    // Accept with an override — the override text, not the drafted text, must land in knowledge.
+    const accepted = await acceptKnowledgeCandidate({
+      id: acceptId,
+      title: 'Overridden title',
+      content: 'Overridden answer content, fixed at accept time.',
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(accepted);
+    const knowledgeRow = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [
+      accepted.knowledgeId,
+    ]);
+    assert.equal(knowledgeRow.rows[0].title, 'Overridden title');
+    assert.equal(knowledgeRow.rows[0].content, 'Overridden answer content, fixed at accept time.');
+
+    const acceptedRow = (await listKnowledgeCandidates('accepted', 200)).find((c) => c.id === acceptId);
+    assert.ok(acceptedRow, 'the accepted candidate now shows up under the accepted filter');
+    assert.equal(acceptedRow.reviewedBy, 'admin-1');
+    assert.ok(acceptedRow.reviewedAt);
+
+    const reAccept = await acceptKnowledgeCandidate({ id: acceptId, reviewedBy: 'admin-2' });
+    assert.equal(reAccept, null, 'accepting an already-accepted candidate is a no-op, not a double publish');
+
+    // Decline the other candidate: retained as 'declined', knowledge untouched.
+    const declined = await declineKnowledgeCandidate(declineId, 'admin-1');
+    assert.ok(declined);
+    assert.equal(declined.status, 'declined');
+    const declinedKnowledgeSearch = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [
+      'Another drafted answer.',
+    ]);
+    assert.equal(
+      declinedKnowledgeSearch.rows.length,
+      0,
+      'declining a candidate must never write a knowledge row',
+    );
+
+    const reDecline = await declineKnowledgeCandidate(declineId, 'admin-2');
+    assert.equal(reDecline, null, 'declining an already-declined candidate is a no-op');
+
+    const unknownAccept = await acceptKnowledgeCandidate({ id: 999_999_999, reviewedBy: 'admin-1' });
+    assert.equal(unknownAccept, null, 'accepting an unknown id returns null, not an error');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[acceptId, declineId]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: repository: a pending knowledge candidate never reaches knowledge/knowledge_search until accept_knowledge_candidate — the human-curation gate (issue #102)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-gate-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const uniqueContent = `${RUN} gate fixture: the answer is exactly forty-two.`;
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-gate-topic`,
+      title: 'Gate fixture title',
+      content: uniqueContent,
+    });
+
+    const beforeAccept = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [uniqueContent]);
+    assert.equal(
+      beforeAccept.rows.length,
+      0,
+      'SECURITY: inserting a candidate must never itself create a knowledge row',
+    );
+    const searchBefore = await searchKnowledge(uniqueContent, { platform: 'discord', conversationId: 'x' });
+    assert.ok(
+      !searchBefore.some((h) => h.content === uniqueContent),
+      'SECURITY: a pending candidate must never surface from knowledge_search',
+    );
+
+    const accepted = await acceptKnowledgeCandidate({ id: candidateId, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const afterAccept = await pool.query(`SELECT 1 FROM knowledge WHERE content = $1`, [uniqueContent]);
+    assert.equal(afterAccept.rows.length, 1, 'accepting produces exactly one knowledge row');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  "repository: the builder's dedup guard — hasQueuedCandidateForTopic matches case-insensitively and INCLUDES declined rows (so a decline sticks), knowledgeCoversTopic flags a topic an existing entry already answers (issue #102)",
+  { skip },
+  async () => {
+    const topic = `${RUN} zylotrix onboarding steps`;
+    assert.equal(await hasQueuedCandidateForTopic(topic), false, 'nothing queued yet');
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const candidateId = await insertKnowledgeCandidate({ digestId, topic, title: 't', content: 'c' });
+
+    assert.equal(
+      await hasQueuedCandidateForTopic(topic),
+      true,
+      'a queued candidate on this topic blocks re-emission',
+    );
+    assert.equal(
+      await hasQueuedCandidateForTopic(topic.toUpperCase()),
+      true,
+      'the match is case-insensitive',
+    );
+    assert.equal(
+      await hasQueuedCandidateForTopic(`${RUN} something entirely unrelated`),
+      false,
+      'a different topic is unaffected',
+    );
+
+    await declineKnowledgeCandidate(candidateId, 'admin-1');
+    assert.equal(
+      await hasQueuedCandidateForTopic(topic),
+      true,
+      'SECURITY: a DECLINED candidate still blocks re-emission of the same topic on the next builder run',
+    );
+
+    // Deliberately RUN-free, invented words (not real English, and not the
+    // ${RUN} tag) for the two knowledgeCoversTopic checks below: it scans ALL
+    // knowledge unscoped (by design — a digest signal is cross-platform
+    // aggregate), so in a full-suite run other files' fixture rows are
+    // present too. Sharing the numeric ${RUN} tag between the fixture and a
+    // query text is itself a lexical overlap the embedding model can pick up
+    // on — an unrelated-in-meaning false positive — so keep it out of both.
+    const { id: knowledgeId } = await saveKnowledge({
+      title: 'Zyquavexolorpin onboarding',
+      content: 'Zyquavexolorpin onboarding: register on the portal and verify your email address.',
+      scope: 'global',
+    });
+    assert.equal(
+      await knowledgeCoversTopic('zyquavexolorpin onboarding steps'),
+      true,
+      'an existing knowledge entry above the relevance floor counts as already answered',
+    );
+    assert.equal(
+      await knowledgeCoversTopic('qzxvbfrobnicator gloopington snorlaxian doorknob'),
+      false,
+      'an unrelated (and lexically unrelated) topic is not flagged as already covered',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData deletes only a still-PENDING knowledge_candidates row referencing an invalidated digest — an ACCEPTED candidate (and its resulting knowledge entry) survives, keeping the same accountability treatment as knowledge/admin_audit generally (issue #102)',
+  { skip },
+  async () => {
+    const victim = `${RUN}-kc-purge-victim`;
+    const conversationId = `${RUN}-c-kc-purge`;
+
+    const { rows: interactionRows } = await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content)
+       VALUES ('discord', $1, $2, 'member', 'inbound', 'kc purge fixture') RETURNING id`,
+      [conversationId, victim],
+    );
+    const interactionId = Number(interactionRows[0].id);
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-purge-topic`,
+      summary: 'summary built partly over the purged user',
+      exampleRefs: [interactionId],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const pendingId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-purge-topic`,
+      title: 'Still pending',
+      content: 'never reviewed',
+    });
+    const toAcceptId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-purge-topic`,
+      title: 'Will be accepted',
+      content: 'accepted candidate content',
+    });
+    const accepted = await acceptKnowledgeCandidate({ id: toAcceptId, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+
+    await purgeUserData('discord', victim);
+
+    const digestGone = await pool.query(`SELECT 1 FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      digestGone.rows.length,
+      0,
+      'the digest referencing the purged interaction is invalidated, matching existing #51 behaviour',
+    );
+
+    const pendingRow = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE id = $1`, [pendingId]);
+    assert.equal(
+      pendingRow.rows.length,
+      0,
+      'SECURITY: the still-pending candidate is deleted along with its invalidated digest',
+    );
+
+    const acceptedRow = await pool.query(`SELECT status, digest_id FROM knowledge_candidates WHERE id = $1`, [
+      toAcceptId,
+    ]);
+    assert.equal(acceptedRow.rows.length, 1, 'the accepted candidate row survives the purge');
+    assert.equal(acceptedRow.rows[0].status, 'accepted');
+    assert.equal(
+      acceptedRow.rows[0].digest_id,
+      null,
+      "ON DELETE SET NULL drops the now-meaningless digest link, but the row itself isn't deleted",
+    );
+
+    const knowledgeRow = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    assert.equal(
+      knowledgeRow.rows.length,
+      1,
+      'the knowledge entry produced by acceptance is unaffected by the purge',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[pendingId, toAcceptId]]);
   },
 );
 

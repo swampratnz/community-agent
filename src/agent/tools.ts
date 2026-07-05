@@ -8,16 +8,21 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import {
+  acceptKnowledgeCandidate,
   addMemberNote,
   clearAccessRequest,
   clearWarnings,
   createContentReport,
   createSuggestion,
+  declineKnowledgeCandidate,
   deleteKnowledge,
   deleteMemberNote,
   demoteAdmin,
   getMemberNote,
   getMemberRole,
+  KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  type KnowledgeDuplicateMatch,
+  listKnowledgeCandidates,
   listMemberNotes,
   MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
@@ -88,35 +93,12 @@ function formatRelativeAge(updatedAt: Date): string {
   return `~${years} year${years === 1 ? '' : 's'} ago`;
 }
 
-/**
- * Relevance floor for `knowledge_search` hits, in cosine similarity
- * (`1 - (embedding <=> query)`, same units as `searchKnowledge`'s returned
- * `similarity`). This is a *relevance* floor ("is this topically usable at
- * all"), not a *duplicate* floor like `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`
- * in repository.ts (0.85, "is this the same question") — it is deliberately
- * much lower.
- *
- * The value is a function of the current embedding model
- * (`config.db.embeddingModel`, currently Xenova/all-MiniLM-L6-v2) and query
- * distribution, not a universal constant. It was derived empirically against
- * `tests/fixtures/knowledgeEval.json` (see the `negativeQueries` case in
- * knowledgeEval.test.ts): with this model, unambiguously off-topic queries
- * (e.g. "what's the best coffee place near the venue") score ~0.15-0.22
- * against every fixture entry, and a topically-adjacent near-miss (asking how
- * long admin applications take to hear back — same topic as "Requesting admin
- * role", but a question that entry doesn't answer) tops out at ~0.33, while
- * all but a couple of the weakest genuine paraphrase matches score 0.36+. A
- * small minority of very loosely-worded genuine matches score below this
- * floor too (e.g. "what are the guidelines for behaving in this server" vs.
- * the actual "Discord server rules" entry, ~0.30) — that's an intentional
- * precision-over-recall trade-off: this feature exists specifically so a
- * low-confidence hit results in "no confident match" (which the system
- * prompt turns into an honest hedge) rather than a shaky answer stated as
- * fact. If `EMBEDDING_MODEL` ever changes, this constant must be re-derived
- * the same way — a model swap will otherwise silently degrade filtering with
- * no test failure.
- */
-export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
+// Re-exported (not defined here — see the import above) so storage/
+// repository.ts's own `knowledgeCoversTopic` dedup guard (issue #102) can
+// share the exact same floor without a repository.ts <-> agent/tools.ts
+// import cycle. See the full derivation comment on the definition in
+// repository.ts.
+export { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD };
 
 /**
  * Filters `knowledge_search` hits to ones that clear the relevance floor and
@@ -1161,6 +1143,103 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: true } },
   );
 
+  const listKnowledgeCandidatesTool = tool(
+    'list_knowledge_candidates',
+    'Browse the knowledge-candidate review queue: Q&A drafts the offline context builder proposed from ' +
+      'recurring, answerable questions in community chat (behind CONTEXT_CANDIDATES_ENABLED). Nothing here ' +
+      'is visible to members — review each with accept_knowledge_candidate or decline_knowledge_candidate. ' +
+      'Admin only.',
+    {
+      status: z
+        .enum(['pending', 'accepted', 'declined'])
+        .optional()
+        .describe('Filter by status (default: all statuses)'),
+      limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_knowledge_candidates');
+      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50);
+      if (rows.length === 0) return text('No knowledge candidates found.');
+      return text(
+        untrusted(
+          'Knowledge candidates',
+          rows
+            .map(
+              (c) =>
+                `#${c.id} [${c.status}] ${c.title}: ${c.content} ` +
+                `(topic: ${c.topic}, drafted ${c.createdAt.toISOString()}` +
+                `${c.digestId ? `, digest #${c.digestId}` : ''})`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const acceptKnowledgeCandidateTool = tool(
+    'accept_knowledge_candidate',
+    "Accept a pending knowledge candidate, publishing it as a durable knowledge entry via save_knowledge's " +
+      'own path (so the near-duplicate nudge applies). Optional title/content override lets you fix wording ' +
+      'at accept time without a separate update_knowledge call. Audited. Admin only.',
+    {
+      id: z.number().describe('Candidate id (from list_knowledge_candidates)'),
+      title: z.string().optional().describe('Override title; omit to publish the drafted title as-is'),
+      content: z.string().optional().describe('Override content; omit to publish the drafted content as-is'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'accept_knowledge_candidate');
+      const state: {
+        outcome: { knowledgeId: number; similarEntry?: KnowledgeDuplicateMatch } | null;
+      } = { outcome: null };
+      const { success, result } = await audited({
+        actionKind: 'accept_knowledge_candidate',
+        params: { id: args.id, title: args.title, content: args.content },
+        run: async () => {
+          const outcome = await acceptKnowledgeCandidate({
+            id: args.id,
+            title: args.title,
+            content: args.content,
+            reviewedBy: caller.userId,
+          });
+          if (!outcome) throw new Error(`No pending knowledge candidate with id ${args.id}.`);
+          state.outcome = outcome;
+          return `published as knowledge #${outcome.knowledgeId}`;
+        },
+      });
+      if (!success || !state.outcome) return text(`Failed: ${result}`, true);
+      let reply = `Accepted candidate #${args.id} — saved as knowledge entry #${state.outcome.knowledgeId}.`;
+      if (state.outcome.similarEntry) {
+        const { similarEntry } = state.outcome;
+        const pct = (similarEntry.similarity * 100).toFixed(0);
+        const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
+        reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
+      }
+      return text(reply);
+    },
+  );
+
+  const declineKnowledgeCandidateTool = tool(
+    'decline_knowledge_candidate',
+    'Decline a pending knowledge candidate — retained as declined (never published, and the builder will ' +
+      'not re-propose the same topic) rather than deleted. Non-destructive status change (no CONFIRM ' +
+      'needed), audited. Admin only.',
+    { id: z.number().describe('Candidate id (from list_knowledge_candidates)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'decline_knowledge_candidate');
+      const { success, result } = await audited({
+        actionKind: 'decline_knowledge_candidate',
+        params: { id: args.id },
+        run: async () => {
+          const declined = await declineKnowledgeCandidate(args.id, caller.userId);
+          if (!declined) throw new Error(`No pending knowledge candidate with id ${args.id}.`);
+          return 'declined';
+        },
+      });
+      return text(success ? `Declined candidate #${args.id}.` : `Failed: ${result}`, !success);
+    },
+  );
+
   const questionDigest = tool(
     'question_digest',
     'Show recurring questions asked in your conversations over recent days (count >= 2), a signal for what should become a knowledge entry. Admin only.',
@@ -1662,6 +1741,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       deleteMemberNoteTool,
       listRosterTool,
       listContextDigestsTool,
+      listKnowledgeCandidatesTool,
+      acceptKnowledgeCandidateTool,
+      declineKnowledgeCandidateTool,
       questionDigest,
       moderationHistory,
       listReportsTool,
