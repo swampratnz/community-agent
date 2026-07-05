@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -48,4 +49,19 @@ test('config: ROSTER_DEPARTED_RETENTION_DAYS unset (default) is disabled — zer
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
   assert.equal(config.whatsapp.welcome.enabled, false);
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);
+});
+
+test('SECURITY: default CONTEXT_EXPORT_PATH is untracked (issue #108) — the unattended exporter must never dirty a tracked file the nightly redeploy checks', () => {
+  assert.equal(config.contextExport.path, 'var/community-context.md');
+  assert.notEqual(
+    config.contextExport.path,
+    'docs/COMMUNITY-CONTEXT.md',
+    'must not default to the committed, human-curated file',
+  );
+
+  const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+  assert.ok(
+    gitignore.split('\n').some((line) => line.trim() === '/var/'),
+    ".gitignore must exclude the export default path's directory",
+  );
 });

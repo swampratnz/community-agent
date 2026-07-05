@@ -267,10 +267,15 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
-`src/context/export.ts` regenerates `docs/COMMUNITY-CONTEXT.md` —
+`src/context/export.ts` regenerates its copy at `CONTEXT_EXPORT_PATH` —
 aggregate-only (its own k-floor + PII scrub; the egress boundary lives in
-SECURITY.md) — which the research loop reads (file-only, no DB access) once
-a human commits it. `npm run export:context` regenerates it manually.
+SECURITY.md). That default path is an **untracked** `var/` file (issue
+#108), not the committed `docs/COMMUNITY-CONTEXT.md` — the exporter running
+unattended on the server must never dirty a tracked file (it would
+permanently wedge the nightly redeploy's clean-tree check, #50). A human
+periodically points `CONTEXT_EXPORT_PATH` at `docs/COMMUNITY-CONTEXT.md`,
+runs `npm run export:context` against production, reviews, and commits —
+which the research loop then reads (file-only, no DB access).
 
 ## Suggestion capture
 

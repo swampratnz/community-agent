@@ -253,7 +253,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   acceptable **only because this repo is private** — if the repo's
   visibility ever changes, re-evaluate this export before flipping the
   switch. Committing the regenerated file is a deliberate human step; the
-  bot never pushes.
+  bot never pushes — and the on-server `CONTEXT_EXPORT_PATH` default is an
+  **untracked** `var/` file (issue #108), precisely so the unattended
+  in-process exporter can never write to the tracked `docs/` path itself
+  (which would otherwise dirty the deploy checkout and deadlock the
+  nightly redeploy's clean-tree check — see docs/DEPLOYMENT.md).
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no

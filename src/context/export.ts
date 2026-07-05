@@ -1,6 +1,6 @@
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { closeDb } from '../storage/db.js';
@@ -8,10 +8,11 @@ import { listContextDigests, type ContextDigest } from '../storage/repository.js
 
 /**
  * Anonymised community-context export (issue #53): renders `context_digests`
- * into docs/COMMUNITY-CONTEXT.md so the research loop can ground proposals in
- * what the community actually needs. This file is the hard privacy boundary
- * between the DB and anything that reaches the (private) GitHub repo, so the
- * controls are enforced HERE in code, not by prompt:
+ * into CONTEXT_EXPORT_PATH (default: an untracked `var/` file, issue #108) so
+ * the research loop can ground proposals in what the community actually
+ * needs. This is the hard privacy boundary between the DB and anything that
+ * reaches the (private) GitHub repo, so the controls are enforced HERE in
+ * code, not by prompt:
  *
  *  - Aggregate only: topic labels, counts, summaries, period stamps. No raw
  *    message content, no user ids, no display names, no conversation ids —
@@ -27,8 +28,12 @@ import { listContextDigests, type ContextDigest } from '../storage/repository.js
  * a summary can still be semantically identifying. Acceptable only because
  * the sink is a PRIVATE repo; re-evaluate before ever making it public.
  *
- * Committing the regenerated file is a HUMAN step (the bot never pushes);
- * see docs/PIPELINE.md.
+ * The committed docs/COMMUNITY-CONTEXT.md is a separate, human-curated
+ * artefact: a human runs `npm run export:context` with CONTEXT_EXPORT_PATH
+ * pointed at that file, reviews it, and commits it themselves (the bot never
+ * pushes) — see docs/PIPELINE.md. The server's own copy stays untracked so an
+ * automatic producing run can never dirty a tracked file (issue #108: that
+ * used to permanently wedge scripts/redeploy.sh's clean-tree check).
  */
 
 const EXPORT_HEADER = '# Community context (anonymised export)';
@@ -121,6 +126,11 @@ export async function writeCommunityContextExport(
     windowDays: config.contextExport.windowDays,
     minDistinctUsers: config.contextExport.minDistinctUsers,
   });
+  // The default path (var/, issue #108) is untracked and may not exist yet on
+  // a fresh checkout — an explicit CONTEXT_EXPORT_PATH (e.g. the docs file
+  // for the human refresh flow) already has its directory tracked, so this
+  // is a no-op there.
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, markdown, 'utf8');
   if (droppedBelowFloor > 0) {
     logger.info({ droppedBelowFloor }, 'Community-context export dropped topics below the k-floor');
