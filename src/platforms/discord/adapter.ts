@@ -2,6 +2,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   Partials,
   PermissionFlagsBits,
   type GuildMember,
@@ -327,9 +328,14 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       throw new Error(`Discord channel ${out.conversationId} is not sendable`);
     }
     // Discord caps messages at 2000 chars; chunk longer replies. Mentions are
-    // never parsed so an injected "@everyone" can't mass-ping.
+    // never parsed so an injected "@everyone" can't mass-ping. SuppressEmbeds
+    // stops Discord from expanding any links in the reply into preview cards.
     for (const chunk of chunkText(await this.filtered(out.text), MAX_DISCORD_LEN)) {
-      await channel.send({ content: chunk, allowedMentions: { parse: [] } });
+      await channel.send({
+        content: chunk,
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      });
     }
   }
 
@@ -343,7 +349,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   async sendDirectMessage(userId: string, text: string): Promise<void> {
     const user = await this.client.users.fetch(userId);
     for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
-      await user.send({ content: chunk, allowedMentions: { parse: [] } });
+      await user.send({
+        content: chunk,
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      });
     }
   }
 

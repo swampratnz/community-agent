@@ -12,6 +12,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 - Members can now rate the bot's last answer with `rate_answer` (helpful/unhelpful, no free text, rate-capped) so admins finally get a calibrated signal on answer quality — the deferred half of #60. Admins read the aggregate, scoped to their own conversations, with the new `list_answer_feedback` tool (#118).
 
 ### Changed
+- Discord replies and DMs now send with `SuppressEmbeds`, so links the bot posts no longer expand into large preview cards — the message text is unchanged, just no auto-embed.
 - Auto-moderation warnings are now **public and minimal**: the warning is posted in the channel the offending message was posted in (not only the private admin channel), and names **only the member** — no user id, matched word, or message excerpt. The detailed record (id + matched term, needed for `clear_warnings`) still goes to the private admin channel, and the member still gets a DM. Follow-up to the auto-moderation feature (#141).
 
 ### Fixed
