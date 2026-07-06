@@ -26,7 +26,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.201",
     "@hapi/boom": "^10.0.1",
     "@huggingface/transformers": "^4.2.0",
     "@whiskeysockets/baileys": "6.7.23",
@@ -41,15 +41,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.10.2",
+    "@types/node": "^26.1.0",
     "@types/pg": "^8.11.10",
     "@types/qrcode-terminal": "^0.12.2",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
     "prettier": "^3.9.4",
-    "tsx": "^4.19.2",
-    "typescript": "^5.9.3",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.1"
   }
 }
