@@ -2077,11 +2077,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       imageGenInFlight.add(key);
       try {
         const image = await generateImage(args.prompt);
-        await adapter.sendImage(caller.conversationId, {
-          data: image.data,
-          filename: `image.${image.ext}`,
-          mimeType: image.mimeType,
-        });
+        await adapter.sendImage(
+          caller.conversationId,
+          {
+            data: image.data,
+            filename: `image.${image.ext}`,
+            mimeType: image.mimeType,
+          },
+          args.prompt,
+        );
         logger.info(
           { actor: caller.userId, platform: caller.platform, bytes: image.data.length },
           'generate_image posted',
