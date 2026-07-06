@@ -203,6 +203,26 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
   // Max agentic turns for one topic's web-research call (bounds cost).
   KNOWLEDGE_REFRESH_MAX_TURNS: z.coerce.number().int().positive().max(30).default(10),
+  // Docs ingest: backfill Anthropic's official docs into the knowledge base as
+  // RAG chunks (provenance 'docs'), refreshed ~weekly with a content diff so
+  // only changed sections re-embed. OFF by default. Reads ONE fixed official
+  // source over HTTPS (the llms.txt index → per-page .md); no model in the loop.
+  DOCS_INGEST_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // The official machine-readable docs index (llms.txt). Fixed default; override
+  // only if Anthropic moves it.
+  DOCS_INGEST_INDEX_URL: z
+    .string()
+    .url()
+    .startsWith('https://', 'DOCS_INGEST_INDEX_URL must be https')
+    .default('https://platform.claude.com/llms.txt'),
+  // Safety caps so a bloated index can't run away (pages fetched, chunks written).
+  DOCS_INGEST_MAX_PAGES: z.coerce.number().int().positive().max(5000).default(2500),
+  DOCS_INGEST_MAX_CHUNKS: z.coerce.number().int().positive().max(20000).default(8000),
+  // Concurrent page fetches — kept small to be polite to the docs host.
+  DOCS_INGEST_CONCURRENCY: z.coerce.number().int().positive().max(16).default(5),
   // Anonymised community-context export (issue #53): render digests into a
   // file the research loop can read. Off by default. The export applies its
   // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
@@ -403,6 +423,13 @@ export const config = {
   knowledgeRefresh: {
     enabled: env.KNOWLEDGE_REFRESH_ENABLED ?? false,
     maxTurns: env.KNOWLEDGE_REFRESH_MAX_TURNS,
+  },
+  docsIngest: {
+    enabled: env.DOCS_INGEST_ENABLED ?? false,
+    indexUrl: env.DOCS_INGEST_INDEX_URL,
+    maxPages: env.DOCS_INGEST_MAX_PAGES,
+    maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
+    concurrency: env.DOCS_INGEST_CONCURRENCY,
   },
   contextCandidates: {
     enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,

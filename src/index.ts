@@ -12,6 +12,7 @@ import {
   runKnowledgeRefresh,
   shouldRunKnowledgeRefresh,
 } from './context/knowledgeRefresh.js';
+import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './context/docsIngest.js';
 import { writeCommunityContextExport } from './context/export.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
@@ -96,6 +97,30 @@ function startKnowledgeRefresh(): ReturnType<typeof setInterval> | null {
   return timer;
 }
 
+/**
+ * Docs ingest (off unless DOCS_INGEST_ENABLED). Ticks every 6h but a ~weekly
+ * freshness guard makes it effectively one run per week and redeploy-safe. It
+ * fetches Anthropic's official docs and diff-upserts them into knowledge — see
+ * src/context/docsIngest.ts.
+ */
+function startDocsIngest(): ReturnType<typeof setInterval> | null {
+  if (!config.docsIngest.enabled) return null;
+  const run = async () => {
+    try {
+      const latest = await latestDocsIngestAt();
+      if (!shouldRunDocsIngest(latest, Date.now())) return;
+      const result = await runDocsIngest();
+      logger.info(result, 'Docs ingest run complete');
+    } catch (err) {
+      logger.error({ err }, 'Docs ingest run failed');
+    }
+  };
+  void run();
+  const timer = setInterval(() => void run(), 6 * 3_600_000);
+  timer.unref();
+  return timer;
+}
+
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
 
@@ -154,6 +179,9 @@ async function main(): Promise<void> {
   // 4e-bis. Optional daily knowledge refresh (disabled unless configured).
   const knowledgeRefreshTimer = startKnowledgeRefresh();
 
+  // 4e-ter. Optional weekly docs ingest (disabled unless configured).
+  const docsIngestTimer = startDocsIngest();
+
   // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
   const adminDigestTimer = startAdminDigest(adapters);
 
@@ -166,6 +194,7 @@ async function main(): Promise<void> {
     if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
     if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
+    if (docsIngestTimer) clearInterval(docsIngestTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
     if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));
