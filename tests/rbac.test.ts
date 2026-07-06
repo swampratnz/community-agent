@@ -71,6 +71,28 @@ test('SECURITY: withdraw_report is member+ (retract your own report; scoping to 
   }
 });
 
+test('SECURITY: my_submissions is member+ and strictly narrower than the shared queue tools (list_suggestions/list_reports, both admin-only)', () => {
+  const tool = 'mcp__community__my_submissions';
+  const sharedQueueTools = ['mcp__community__list_suggestions', 'mcp__community__list_reports'];
+
+  assert.ok(MEMBER_TOOLS.includes(tool), 'my_submissions must be in MEMBER_TOOLS');
+  for (const t of sharedQueueTools) {
+    assert.ok(
+      !(MEMBER_TOOLS as readonly string[]).includes(t),
+      `${t} (the shared queue) must never be in MEMBER_TOOLS even though my_submissions is`,
+    );
+  }
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach my_submissions`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of sharedQueueTools) {
+      assert.ok(!surface.includes(t), `${role} must not reach the shared queue via ${t}`);
+    }
+  }
+});
+
 test('SECURITY: rate_answer is member+ (guests never get it in gated mode; matches MEMBER_TOOLS)', () => {
   const tool = 'mcp__community__rate_answer';
   assert.ok(MEMBER_TOOLS.includes(tool), 'rate_answer must be in MEMBER_TOOLS');

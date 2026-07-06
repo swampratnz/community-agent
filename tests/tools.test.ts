@@ -42,6 +42,8 @@ const {
   saveKnowledge,
   createSuggestion,
   createContentReport,
+  resolveSuggestion,
+  resolveContentReport,
   getResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
   RATE_ANSWER_DAILY_LIMIT,
@@ -64,6 +66,7 @@ const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
 const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
+const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
 
 after(async () => {
   if (hasDb) {
@@ -86,6 +89,10 @@ after(async () => {
     );
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [
       `${RATE_ANSWER_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [`${MY_SUBMISSIONS_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
+      `${MY_SUBMISSIONS_HANDLER_USER}%`,
     ]);
   }
   await closeDb();
@@ -1478,5 +1485,119 @@ test(
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+// my_submissions (issue #160): a member-tier, read-only pull of the caller's
+// OWN suggestions/reports, filling the gap left by best-effort resolution
+// DMs. Exercises the handler's wiring on top of the repository.test.ts
+// coverage of listOwnSuggestions/listOwnReports's SQL scoping.
+function mySubmissionsHandler(userId = MY_SUBMISSIONS_HANDLER_USER) {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Submitting Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['my_submissions'];
+}
+
+test(
+  'my_submissions tells a member with nothing filed that clearly, not an error or empty silence (issue #160)',
+  { skip },
+  async () => {
+    const result = await mySubmissionsHandler(`${MY_SUBMISSIONS_HANDLER_USER}-empty`).handler();
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /haven't filed any/i);
+  },
+);
+
+test(
+  "my_submissions lists the caller's own suggestion and report with status and content preview (issue #160)",
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-basic`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add a dark mode',
+    });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'someone was spamming',
+    });
+    assert.ok(suggestion && report, 'fixtures recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add a dark mode`));
+    assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*someone was spamming`));
+  },
+);
+
+test(
+  "SECURITY: my_submissions never leaks another member's content or the reviewing admin's identity (issue #160)",
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-security`;
+    const otherUser = `${MY_SUBMISSIONS_HANDLER_USER}-security-other`;
+    const resolverAdminId = `${MY_SUBMISSIONS_HANDLER_USER}-resolver-admin`;
+
+    const mine = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'my own suggestion, later resolved',
+    });
+    assert.ok(mine);
+    await resolveSuggestion(mine.id, 'done', resolverAdminId);
+
+    const theirs = await createSuggestion({
+      platform: 'whatsapp',
+      userId: otherUser,
+      content: "someone else's private suggestion",
+    });
+    const theirReport = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: otherUser,
+      conversationId: 'convo-1',
+      reason: "someone else's private report",
+    });
+    assert.ok(theirs && theirReport);
+    await resolveContentReport(theirReport.id, 'resolved', resolverAdminId);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /my own suggestion, later resolved/, 'the caller sees their own resolved item');
+    assert.doesNotMatch(
+      output,
+      new RegExp(resolverAdminId),
+      "SECURITY: the reviewing admin's identity must never appear in the caller's own view",
+    );
+    assert.doesNotMatch(
+      output,
+      /someone else's private suggestion/,
+      "SECURITY: another member's suggestion content must never leak",
+    );
+    assert.doesNotMatch(
+      output,
+      /someone else's private report/,
+      "SECURITY: another member's report content must never leak",
+    );
   },
 );

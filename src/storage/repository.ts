@@ -1652,7 +1652,10 @@ export async function createSuggestion(input: {
   return rows[0] ? { id: Number(rows[0].id) } : null;
 }
 
-/** Admin-tier read of the suggestion queue (there is deliberately no member read path). */
+/**
+ * Admin-tier read of the shared suggestion queue, unscoped by submitter — a
+ * member's own-only view is `listOwnSuggestions` below, not this function.
+ */
 export async function listSuggestions(status?: SuggestionStatus, limit = 50): Promise<Suggestion[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
   const params: unknown[] = [];
@@ -1669,6 +1672,41 @@ export async function listSuggestions(status?: SuggestionStatus, limit = 50): Pr
       ORDER BY created_at DESC
       LIMIT $${params.length}`,
     params,
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    displayName: r.display_name,
+    content: r.content,
+    status: r.status as SuggestionStatus,
+    createdAt: r.created_at,
+    reviewedBy: r.reviewed_by,
+    reviewedAt: r.reviewed_at,
+  }));
+}
+
+/**
+ * Self-scoped read of a member's OWN suggestions — the only member-reachable
+ * read of this table (the shared queue itself stays admin-only; see the doc
+ * comment on listSuggestions above). Same query shape as listSuggestions with
+ * `user_id = $2` appended, the same one-predicate-append technique
+ * withdrawOwnReports uses to narrow listReports's admin-scoped query down to
+ * the caller's own identity.
+ */
+export async function listOwnSuggestions(
+  platform: Platform,
+  userId: string,
+  limit = 10,
+): Promise<Suggestion[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, display_name, content, status, created_at, reviewed_by, reviewed_at
+       FROM suggestions
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
   );
   return rows.map((r) => ({
     id: Number(r.id),
@@ -2296,6 +2334,30 @@ export async function withdrawOwnReports(platform: Platform, reporterUserId: str
     [platform, reporterUserId],
   );
   return rows.map((r) => Number(r.id));
+}
+
+/**
+ * Self-scoped read of a member's OWN content reports — mirrors
+ * listOwnSuggestions above and reuses withdrawOwnReports's
+ * `reporter_user_id = $2` scoping, so a member can only ever see reports they
+ * themselves filed, never anyone else's.
+ */
+export async function listOwnReports(
+  platform: Platform,
+  reporterUserId: string,
+  limit = 10,
+): Promise<ContentReport[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, platform, reporter_user_id, reporter_name, conversation_id, target_user_id,
+            message_id, reason, status, created_at, resolved_by, resolved_at
+       FROM content_reports
+      WHERE platform = $1 AND reporter_user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, reporterUserId, clampedLimit],
+  );
+  return rows.map(mapContentReport);
 }
 
 // --- Answer feedback (member rating of the bot's own answers, issue #118) ---

@@ -43,6 +43,7 @@ const {
   usageStats,
   createContentReport,
   listReports,
+  listOwnReports,
   resolveContentReport,
   withdrawOwnReports,
   countOpenReports,
@@ -61,6 +62,7 @@ const {
   MEMBER_NOTE_MAX_CHARS,
   createSuggestion,
   listSuggestions,
+  listOwnSuggestions,
   resolveSuggestion,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   SUGGESTION_MAX_CHARS,
@@ -1493,6 +1495,97 @@ test(
     assert.equal(afterPurge.rows.length, 0, "the user's suggestions are gone after purge");
 
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [`${RUN}-suggester-other`]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnSuggestions only returns the caller's OWN suggestions — never another user's, never cross-platform (issue #160)",
+  { skip },
+  async () => {
+    const userA = `${RUN}-my-sub-A`;
+    const userB = `${RUN}-my-sub-B`;
+
+    const a1 = await createSuggestion({
+      platform: 'discord',
+      userId: userA,
+      content: "A's first suggestion",
+    });
+    const a2 = await createSuggestion({
+      platform: 'discord',
+      userId: userA,
+      content: "A's second suggestion",
+    });
+    const b1 = await createSuggestion({ platform: 'discord', userId: userB, content: "B's suggestion" });
+    assert.ok(a1 && a2 && b1, 'fixtures recorded');
+
+    const ownA = await listOwnSuggestions('discord', userA);
+    assert.deepEqual(
+      ownA.map((s) => s.id).sort(),
+      [a1.id, a2.id].sort(),
+      "only A's own suggestions are returned",
+    );
+    assert.ok(
+      !ownA.some((s) => s.id === b1.id),
+      "SECURITY: B's suggestion must never appear in A's own-submissions list",
+    );
+
+    assert.deepEqual(
+      await listOwnSuggestions('whatsapp', userA),
+      [],
+      'platform is part of the scope — A has no whatsapp suggestions',
+    );
+
+    await pool.query(`DELETE FROM suggestions WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnReports only returns reports the caller filed — never another reporter's, and never rows where they're only the target (issue #160)",
+  { skip },
+  async () => {
+    const reporterA = `${RUN}-my-rep-A`;
+    const reporterB = `${RUN}-my-rep-B`;
+    const conv = `${RUN}-c-my-submissions`;
+
+    const a1 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporterA,
+      conversationId: conv,
+      reason: "A's report",
+    });
+    const b1 = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporterB,
+      conversationId: conv,
+      reason: "B's report",
+    });
+    // A report naming A only as the *target* (reported by B) must never
+    // surface in A's own-submissions list — A didn't file it.
+    const aIsTarget = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporterB,
+      conversationId: conv,
+      targetUserId: reporterA,
+      reason: 'B reports A for something',
+    });
+    assert.ok(a1 && b1 && aIsTarget, 'fixtures recorded');
+
+    const ownA = await listOwnReports('discord', reporterA);
+    assert.deepEqual(
+      ownA.map((r) => r.id),
+      [a1.id],
+      "only A's own filed report is returned",
+    );
+    assert.ok(
+      !ownA.some((r) => r.id === b1.id),
+      "SECURITY: B's report must never appear in A's own-submissions list",
+    );
+    assert.ok(
+      !ownA.some((r) => r.id === aIsTarget.id),
+      'SECURITY: a report where A is only the target (not the filer) must never appear here',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[a1.id, b1.id, aIsTarget.id]]);
   },
 );
 
