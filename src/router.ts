@@ -13,7 +13,13 @@ import {
   takePendingAction,
 } from './agent/pendingActions.js';
 import { isPaused } from './storage/policies.js';
-import { countRepliesToUser, recordAccessRequest, recordInteraction } from './storage/repository.js';
+import {
+  countRepliesToUser,
+  recordAccessRequest,
+  recordInteraction,
+  recordKnowledgeRetrieval,
+  searchKnowledge,
+} from './storage/repository.js';
 import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from './rateLimitNotice.js';
 import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from './pauseNotice.js';
 
@@ -26,6 +32,13 @@ const GATED_NOTICE =
 // recordInteraction call for it — only respond() records outbound), since
 // it isn't a real answer.
 const ACK_REPLY_TEXT = 'No worries!';
+
+// Suffix appended to a KNOWLEDGE_SHORTCUT_ENABLED reply so the member always
+// has an escape hatch to a real agent turn (issue #162) — unlike the ack
+// shortcut, this reply carries real content standing in for the model, so it
+// must be attributed rather than look like the agent answered directly.
+const KNOWLEDGE_SHORTCUT_SUFFIX =
+  "\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.";
 
 /**
  * Routes normalised messages to the agent and replies on the originating
@@ -62,15 +75,18 @@ export class Router {
    * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
    * sane production cadence (Discord auto-clears its own indicator after
    * ~10s, so re-firing every 8s keeps it continuously visible). `checkPaused`
-   * defaults to the real policy read. All three are overridable in tests so
-   * the typing-indicator and pause behaviour can be exercised without
-   * spawning a real Claude Code subprocess, waiting 8 real seconds, or a live
-   * DB-backed policy.
+   * defaults to the real policy read. `searchKnowledgeForShortcut` and
+   * `recordShortcutRetrieval` default to the real DB-backed implementations.
+   * All are overridable in tests so the typing-indicator, pause, and
+   * knowledge-shortcut behaviour can be exercised without spawning a real
+   * Claude Code subprocess, waiting 8 real seconds, or a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
     private readonly typingRefireMs = 8_000,
     private readonly checkPaused: typeof isPaused = isPaused,
+    private readonly searchKnowledgeForShortcut: typeof searchKnowledge = searchKnowledge,
+    private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval = recordKnowledgeRetrieval,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -308,8 +324,81 @@ export class Router {
       return;
     }
 
+    // Deterministic-ish near-exact FAQ short-circuit (issue #162): if the
+    // message scores at or above a strict floor against an existing
+    // knowledge entry, reply with that entry's content instead of spawning a
+    // full agent turn. Looked up here (before the per-conversation chain) so
+    // a slow embed/DB round-trip never blocks other conversations, but the
+    // actual send is still routed through `enqueue` so it can never overtake
+    // a turn already in flight for THIS conversation, mirroring the ack
+    // shortcut. A lookup/DB failure falls through to a normal turn rather
+    // than dropping the message.
+    if (config.behaviour.knowledgeShortcutEnabled) {
+      const hit = await this.tryKnowledgeShortcut(msg);
+      if (hit) {
+        await this.enqueue(key, 'knowledge shortcut reply', () =>
+          this.sendKnowledgeShortcut(msg, adapter, hit),
+        );
+        return;
+      }
+    }
+
     // Serialise per conversation so session resume stays consistent.
     await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter));
+  }
+
+  /**
+   * Top-1 knowledge-search lookup against the strict shortcut threshold
+   * (separate from, and much stricter than, `knowledge_search`'s own
+   * relevance floor — see config.ts). Returns null on a sub-threshold match
+   * OR a lookup failure; either way the caller falls through to a full turn.
+   */
+  private async tryKnowledgeShortcut(msg: IncomingMessage): Promise<{ id: number; content: string } | null> {
+    let hits: Awaited<ReturnType<typeof searchKnowledge>>;
+    try {
+      hits = await this.searchKnowledgeForShortcut(
+        msg.text,
+        { platform: msg.platform, conversationId: msg.conversationId },
+        1,
+      );
+    } catch (err) {
+      logger.warn({ err }, 'Knowledge shortcut lookup failed; falling through to a full turn');
+      return null;
+    }
+    const top = hits[0];
+    if (!top || top.similarity < config.behaviour.knowledgeShortcutThreshold) return null;
+    return { id: top.id, content: top.content };
+  }
+
+  /**
+   * Sends the shortcut's KB content and records it exactly like a normal
+   * agent reply (issue #162, point 4): counted toward
+   * `dailyReplyLimitPerUser`, visible to admin history/digest views, and
+   * bumps the served entry's `retrieval_count`/`last_retrieved_at` — unlike
+   * the ack shortcut, this reply stands in for a real answer, not a
+   * no-content courtesy reply.
+   */
+  private async sendKnowledgeShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    hit: { id: number; content: string },
+  ): Promise<void> {
+    logger.debug({ platform: msg.platform, conversationId: msg.conversationId }, 'knowledge_shortcut_hit');
+    const replyText = `${hit.content}${KNOWLEDGE_SHORTCUT_SUFFIX}`;
+    await this.send(adapter, msg.conversationId, replyText);
+    this.recordShortcutRetrieval([hit.id]).catch((err) =>
+      logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),
+    );
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: msg.conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: { replyToUserId: msg.userId, knowledgeShortcut: true },
+    }).catch((err) => logger.error({ err }, 'Failed to record knowledge-shortcut outbound interaction'));
   }
 
   private async respond(msg: IncomingMessage, role: Tier, adapter: PlatformAdapter): Promise<void> {

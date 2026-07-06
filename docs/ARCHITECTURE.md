@@ -529,6 +529,28 @@ one), ack replies are not counted against `dailyReplyLimitPerUser` — an ack
 isn't a real answer, so it doesn't draw down the budget. Off by default; an
 operator opts in once the canned reply tone fits their community.
 
+**Knowledge shortcut** (`KNOWLEDGE_SHORTCUT_ENABLED`, off by default): checked
+immediately after the ack shortcut, this skips the agent turn when a message
+scores at or above `KNOWLEDGE_SHORTCUT_THRESHOLD` (default 0.9 cosine
+similarity — deliberately much stricter than `knowledge_search`'s own 0.35
+relevance floor, since this gates an unsupervised full-turn skip rather than a
+hedged suggestion) against an existing knowledge entry, using the same
+caller-scoped `searchKnowledge()` the `knowledge_search` tool itself calls
+(top-1 only). The matched entry's content is sent directly, suffixed with an
+attribution line so the member always has an escape hatch to a real agent
+turn by asking again. Unlike the ack shortcut, this reply stands in for a real
+answer: it updates `retrieval_count`/`last_retrieved_at` on the served entry
+(same as a normal `knowledge_search` hit) and is recorded via the normal
+outbound `recordInteraction`, so it counts against `dailyReplyLimitPerUser`
+and shows up in admin history/digest views like any other reply. The lookup
+runs before the message is routed into the per-conversation chain (so a slow
+embed/DB round-trip for one conversation never blocks another), but the send
+itself is still routed through that chain so it can never be delivered ahead
+of a turn already in flight; a lookup or DB failure falls through to a normal
+agent turn rather than dropping the message. Off by default; an operator opts
+in after confirming the threshold behaves well against their own knowledge
+base's size and content.
+
 ## Health & monitoring
 
 `Restart=always` (`deploy/community-agent.service`) and the startup

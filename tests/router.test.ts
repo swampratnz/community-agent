@@ -294,3 +294,28 @@ test('router: ACK_SHORTCUT_ENABLED default (off) — an exact ack message still 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'real answer', 'with the flag off, even an exact ack must reach the agent');
 });
+
+test('config: KNOWLEDGE_SHORTCUT_ENABLED defaults to false when unset', () => {
+  assert.equal(config.behaviour.knowledgeShortcutEnabled, false);
+});
+
+test('router: KNOWLEDGE_SHORTCUT_ENABLED default (off) — a near-exact knowledge match still runs the full agent turn (issue #162)', async () => {
+  const router = new Router(
+    async () => makeReply('real answer'),
+    20,
+    undefined,
+    async () => {
+      throw new Error('knowledge shortcut lookup must never run while the flag is off');
+    },
+    async () => {
+      throw new Error('retrieval must never be recorded while the flag is off');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'what are the server rules?' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'real answer', 'with the flag off, the shortcut lookup must not even run');
+});
