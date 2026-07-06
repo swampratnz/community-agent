@@ -587,10 +587,17 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   Intended for an external uptime monitor; bind to localhost and put a
   reverse proxy in front if exposing it, same guidance as the Cloud API
   webhook port.
-- `WhatsAppCloudAdapter.isConnected()` reflects whether its local HTTP
-  listener is up, not whether Meta can currently reach it — it's a
-  stateless webhook receiver with no persistent connection to track the way
-  Baileys/Discord have.
+- `WhatsAppCloudAdapter.isConnected()` — a stateless webhook receiver has no
+  persistent connection to track the way Baileys/Discord have, so this
+  instead reflects the local HTTP listener being up AND the last 3
+  consecutive real message sends not having all failed (an expired/revoked
+  token or broken egress path fails every send; an ordinary per-recipient
+  failure doesn't, because the next successful send anywhere resets the
+  counter). Recovery is sticky — once flipped `false`, it only returns to
+  `true` on the next successful send, so an idle deployment stays reported
+  as disconnected until outbound traffic resumes even after the underlying
+  issue is fixed. Best-effort typing-indicator failures never affect this
+  signal.
 
 The debounce/payload logic lives in `src/healthState.ts`, deliberately free
 of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`

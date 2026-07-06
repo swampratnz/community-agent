@@ -220,6 +220,130 @@ test('sendTypingIndicator: a Graph API failure throws — the router treats this
   }
 });
 
+test('isConnected(): true before start() ever succeeds is not claimed — but stays true after fewer than the threshold of consecutive send failures', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const { fetchMock } = mockFetch([
+    { ok: false, status: 500 },
+    { ok: false, status: 500 },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(() => adapter.sendDirectMessage('64211234567', 'a'));
+    await assert.rejects(() => adapter.sendDirectMessage('64211234567', 'b'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'below-threshold consecutive failures must not flip isConnected()',
+  );
+});
+
+test('isConnected(): flips false once SEND_FAILURE_THRESHOLD (3) consecutive send failures are reached', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() => adapter.sendDirectMessage('64211234567', `attempt ${i}`));
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(adapter.isConnected(), false, 'isConnected() must flip false once the threshold is crossed');
+});
+
+test('isConnected(): a single successful send after crossing the threshold resets the counter and restores isConnected()', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const originalFetch = globalThis.fetch;
+  try {
+    let { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+    globalThis.fetch = fetchMock as typeof fetch;
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() => adapter.sendDirectMessage('64211234567', `attempt ${i}`));
+    }
+    assert.equal(adapter.isConnected(), false, 'sanity check: threshold crossed');
+
+    ({ fetchMock } = mockFetch([{ ok: true }]));
+    globalThis.fetch = fetchMock as typeof fetch;
+    await adapter.sendDirectMessage('64211234567', 'recovered');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'a successful send must reset the failure counter and restore isConnected()',
+  );
+});
+
+test('isConnected(): a failure to one recipient followed by a success to a different recipient does not trip the threshold', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211111111');
+  markInboundNow(adapter, '64222222222');
+  const originalFetch = globalThis.fetch;
+  try {
+    for (let i = 0; i < 5; i++) {
+      const { fetchMock: failMock } = mockFetch([{ ok: false, status: 500 }]);
+      globalThis.fetch = failMock as typeof fetch;
+      await assert.rejects(() => adapter.sendDirectMessage('64211111111', `attempt ${i}`));
+
+      const { fetchMock: okMock } = mockFetch([{ ok: true }]);
+      globalThis.fetch = okMock as typeof fetch;
+      await adapter.sendDirectMessage('64222222222', `attempt ${i}`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'a success to any recipient resets the process-wide counter, so an alternating pattern never trips the threshold',
+  );
+});
+
+test('sendTypingIndicator failures never drive isConnected() — only real message sends (sendChunk) do', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    for (let i = 0; i < 5; i++) {
+      await assert.rejects(() =>
+        adapter.sendTypingIndicator({
+          platform: 'whatsapp',
+          conversationId: '64211234567',
+          userId: '64211234567',
+          userName: 'User',
+          text: 'hi',
+          isDirect: true,
+          addressedToBot: true,
+          timestamp: Date.now(),
+          raw: { from: '64211234567', id: `wamid.${i}`, timestampMs: Date.now(), text: 'hi', name: 'User' },
+        }),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'typing-indicator failures are best-effort and must never flip the connectivity signal',
+  );
+});
+
 test('outside the 24h customer-service window: throws before any Graph API call, regardless of message length', async () => {
   const adapter = new WhatsAppCloudAdapter();
   // No markInboundNow — this user has no recent inbound message.

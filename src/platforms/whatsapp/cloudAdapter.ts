@@ -35,6 +35,15 @@ const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60_000;
 const WHATSAPP_CLOUD_MAX_LEN = 4096;
 /** How often to prune `lastInboundAt` entries older than the window, so long-running processes don't grow it forever. */
 const LAST_INBOUND_SWEEP_MS = 60 * 60_000;
+/**
+ * Consecutive real-message send failures (across all recipients) before
+ * `isConnected()` flips `false`. A single recipient-specific failure (bad
+ * number, template requirement, a transient Meta 5xx) doesn't trip this,
+ * because the very next successful send — to any recipient — resets the
+ * counter to 0. Only a systemic, persistent failure (expired/revoked token,
+ * broken egress) survives long enough to cross the threshold.
+ */
+const SEND_FAILURE_THRESHOLD = 3;
 
 /**
  * WhatsApp via the official Meta Business Cloud API. ToS-compliant
@@ -59,6 +68,14 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * doesn't grow this map forever.
    */
   private readonly lastInboundAt = new Map<string, number>();
+
+  /**
+   * Consecutive `sendChunk` (real message send) failures, process-wide. Only
+   * `sendChunk` drives this — `sendTypingIndicator`'s best-effort Graph API
+   * calls deliberately do NOT, so a typing-indicator hiccup can never flip
+   * the connectivity signal.
+   */
+  private consecutiveSendFailures = 0;
 
   onMessage(handler: MessageHandler): void {
     this.handler = handler;
@@ -103,13 +120,21 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   }
 
   /**
-   * Always true while `start()` has succeeded: this is a stateless webhook
-   * receiver, not a persistent socket — there's no "connection" to drop the
-   * way Baileys/Discord have. Reflects whether the local HTTP listener is
-   * up, not whether Meta can currently reach it.
+   * This is a stateless webhook receiver, not a persistent socket — there's
+   * no "connection" to drop the way Baileys/Discord have — so this reflects
+   * the local HTTP listener being up AND the last `SEND_FAILURE_THRESHOLD`
+   * real message sends not having all failed (a proxy for Meta actually
+   * being reachable with a valid token).
+   *
+   * Recovery is sticky: once flipped `false`, this only returns to `true` on
+   * the next successful send. On an idle deployment (no outbound attempts
+   * after the outage clears) `isConnected()` — and therefore `/healthz` and
+   * the sustained-disconnect alert — stays `false` until traffic resumes.
+   * That's a bounded false-"down", the safer failure mode versus the
+   * permanent false-"up" this replaces.
    */
   isConnected(): boolean {
-    return this.server !== null;
+    return this.server !== null && this.consecutiveSendFailures < SEND_FAILURE_THRESHOLD;
   }
 
   /** Drop tracked senders whose last inbound message has aged out of the 24h window. */
@@ -291,9 +316,17 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       }),
     });
     if (!res.ok) {
+      this.consecutiveSendFailures++;
+      if (this.consecutiveSendFailures === SEND_FAILURE_THRESHOLD) {
+        logger.warn(
+          { consecutiveSendFailures: this.consecutiveSendFailures },
+          'WhatsApp Cloud: consecutive send failures crossed threshold, reporting disconnected',
+        );
+      }
       const detail = await res.text().catch(() => '');
       throw new Error(`WhatsApp Cloud send failed: ${res.status} ${detail}`);
     }
+    this.consecutiveSendFailures = 0;
   }
 
   /** No groups on the Cloud API — a user's only conversation is their 1:1 with the bot. */
