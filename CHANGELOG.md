@@ -8,6 +8,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ## 2026-07-05
 
 ### Changed
+- Docs ingest now **scopes out low-value sections** (`DOCS_INGEST_EXCLUDE_PATHS`): the default drops the auto-generated per-language SDK/CLI reference (`api/go`, `api/python`, `api/typescript`, …), which was ~90% of the corpus by volume (~24k of ~29k chunks) and near-useless for a chat bot, while keeping the conceptual guides + core API. Excluded pages are neither fetched nor counted as in-index, so their previously-ingested chunks are pruned on the next run. Result: a focused few-thousand-chunk KB of the docs people actually ask about, instead of drowning them in SDK method reference. Tune via the env var (empty = ingest everything).
 - Docs ingest chunks **coarser** (splits at H2 only, folding `###` subheadings inline) so API-reference pages no longer explode into thousands of one-parameter fragments — the full corpus now fits well under the (raised) chunk cap instead of truncating to the first ~16%. Pruning is now **index-based**: a `docs` chunk is removed only when its page drops out of the upstream index, not when a fetch fails — so the ~157 habitually-404 URLs in the index no longer disable cleanup. (Changing the chunking means a one-time `docs` wipe + re-ingest on the deploy that enables this.)
 
 ### Added

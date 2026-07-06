@@ -223,6 +223,13 @@ const EnvSchema = z.object({
   DOCS_INGEST_MAX_CHUNKS: z.coerce.number().int().positive().max(60000).default(20000),
   // Concurrent page fetches — kept small to be polite to the docs host.
   DOCS_INGEST_CONCURRENCY: z.coerce.number().int().positive().max(16).default(5),
+  // Doc-path prefixes to EXCLUDE from ingest (comma-separated, matched against
+  // the page path, e.g. "api/go"). Default drops the auto-generated per-language
+  // SDK/CLI reference — ~90% of the corpus by volume and near-useless for a chat
+  // bot — keeping the conceptual guides + core API. Set empty to ingest all.
+  DOCS_INGEST_EXCLUDE_PATHS: z
+    .string()
+    .default('api/go,api/csharp,api/java,api/python,api/typescript,api/ruby,api/php,api/cli,api/compliance'),
   // Anonymised community-context export (issue #53): render digests into a
   // file the research loop can read. Off by default. The export applies its
   // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
@@ -430,6 +437,7 @@ export const config = {
     maxPages: env.DOCS_INGEST_MAX_PAGES,
     maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
     concurrency: env.DOCS_INGEST_CONCURRENCY,
+    excludePaths: csv(env.DOCS_INGEST_EXCLUDE_PATHS),
   },
   contextCandidates: {
     enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,

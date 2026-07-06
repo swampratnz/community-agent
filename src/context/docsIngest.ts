@@ -65,14 +65,32 @@ export function parseDocIndex(indexText: string, allowedOrigin: string): string[
   return [...urls];
 }
 
-/** A short, stable, human-readable title from a page URL, e.g. "docs: api/messages". */
-export function titleForUrl(url: string): string {
-  const path = url
+/** The normalised doc path of a page URL, e.g. "api/messages" (drops host, .md, and the docs/en prefix). */
+export function docPathOf(url: string): string {
+  return url
     .replace(/^https?:\/\/[^/]+\//, '')
     .replace(/\.md$/, '')
     .replace(/^docs\/en\//, '')
     .replace(/^en\//, '');
-  return `docs: ${path}`;
+}
+
+/** A short, stable, human-readable title from a page URL, e.g. "docs: api/messages". */
+export function titleForUrl(url: string): string {
+  return `docs: ${docPathOf(url)}`;
+}
+
+/**
+ * Drop page URLs whose doc path is at or under any excluded prefix
+ * (config.docsIngest.excludePaths). Applied to the FULL index list so excluded
+ * pages are neither fetched NOR counted as "in the index" — which means their
+ * chunks are also pruned on the next run if they were previously ingested.
+ */
+export function filterExcludedUrls(urls: string[], excludePaths: readonly string[]): string[] {
+  if (excludePaths.length === 0) return urls;
+  return urls.filter((u) => {
+    const path = docPathOf(u);
+    return !excludePaths.some((p) => path === p || path.startsWith(`${p}/`));
+  });
 }
 
 /**
@@ -231,7 +249,10 @@ export async function runDocsIngest(
   // we fetch this run. Keeping these separate means a page we simply didn't
   // fetch (because it's past the cap) is never mistaken for a removed page and
   // deleted — it's still listed upstream.
-  const allUrls = parseDocIndex(indexText, allowedOrigin);
+  // Drop excluded sections (e.g. the per-language SDK reference) from the FULL
+  // list, so they're neither fetched nor treated as still-in-the-index (their
+  // previously-ingested chunks get pruned below).
+  const allUrls = filterExcludedUrls(parseDocIndex(indexText, allowedOrigin), config.docsIngest.excludePaths);
   const urls = allUrls.slice(0, config.docsIngest.maxPages);
   result.pages = urls.length;
   if (urls.length === 0) {
