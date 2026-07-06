@@ -9,6 +9,7 @@
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,
   "discordAdapter.test.ts": 2,
+  "docsIngest.test.ts": 1,
   "grokImage.test.ts": 1,
   "guestKnowledgeShortcut.test.ts": 2,
   "guestKnowledgeShortcutRouter.test.ts": 1,

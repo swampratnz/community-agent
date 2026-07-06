@@ -391,14 +391,25 @@ export interface KnowledgeDuplicateMatch {
   similarity: number;
 }
 
+/**
+ * Machine-ingestion provenance stored in `knowledge.created_by_role` alongside
+ * the human RBAC tiers. 'auto' = daily web-research (quarantined untrusted at
+ * retrieval); 'docs' = official Anthropic docs backfill (trusted, verbatim).
+ * No model-facing tool can set these — `save_knowledge` always passes the
+ * caller's `Tier`, so only internal ingestion code writes them.
+ */
+export type KnowledgeProvenance = 'auto' | 'docs';
+
 export async function saveKnowledge(input: {
   content: string;
   title?: string;
   scope?: string;
   sourceUserId?: string;
-  // 'auto' marks a machine-researched entry (daily knowledge refresh) so it can
-  // be quarantined as untrusted at retrieval — see searchKnowledge / knowledge_search.
-  createdByRole?: Tier | 'auto';
+  // Machine-ingested provenance markers on top of the human RBAC tiers:
+  //  - 'auto': daily web-research (quarantined as untrusted at retrieval).
+  //  - 'docs': official Anthropic docs backfill (trusted — served verbatim).
+  // See searchKnowledge / knowledge_search for how these are treated.
+  createdByRole?: Tier | KnowledgeProvenance;
 }): Promise<{ id: number; similarEntry?: KnowledgeDuplicateMatch }> {
   const scope = input.scope ?? 'global';
   let embedding: number[] | null = null;
@@ -692,6 +703,79 @@ export async function latestKnowledgeUpdateAt(titles: readonly string[]): Promis
     [[...titles]],
   );
   return rows[0]?.latest ?? null;
+}
+
+export type KnowledgeSyncOutcome = 'created' | 'updated' | 'unchanged' | 'title-taken-by-other';
+
+/**
+ * Idempotent, content-diffing upsert of one `global` knowledge chunk under a
+ * machine-ingestion `provenance` (src/context/docsIngest.ts). Keyed by title:
+ *  - existing row of the SAME provenance, identical content -> 'unchanged'
+ *    (NO re-embed — this is what makes the ~weekly docs refresh cheap: only
+ *    genuinely changed sections pay the embedding cost).
+ *  - existing row of the SAME provenance, different content -> re-embed,'updated'.
+ *  - existing row of a DIFFERENT provenance (human/other) -> 'title-taken-by-other',
+ *    never overwritten (a human entry always wins its title).
+ *  - no row -> insert with this provenance, 'created'.
+ */
+export async function syncGlobalKnowledgeByProvenance(
+  title: string,
+  content: string,
+  provenance: KnowledgeProvenance,
+): Promise<KnowledgeSyncOutcome> {
+  const { rows } = await pool.query(
+    `SELECT id, content, created_by_role FROM knowledge WHERE title = $1 AND scope = 'global' ORDER BY id LIMIT 1`,
+    [title],
+  );
+  if (rows[0]) {
+    if (rows[0].created_by_role !== provenance) return 'title-taken-by-other';
+    if (rows[0].content === content) return 'unchanged';
+    await updateKnowledge({ id: Number(rows[0].id), content });
+    return 'updated';
+  }
+  await saveKnowledge({ title, content, scope: 'global', createdByRole: provenance });
+  return 'created';
+}
+
+/** Most recent `updated_at` across all `global` entries of a machine provenance — the ingest freshness guard (redeploy-safe). Null if none exist yet. */
+export async function latestKnowledgeUpdateAtByProvenance(
+  provenance: KnowledgeProvenance,
+): Promise<Date | null> {
+  const { rows } = await pool.query(
+    `SELECT max(updated_at) AS latest FROM knowledge WHERE scope = 'global' AND created_by_role = $1`,
+    [provenance],
+  );
+  return rows[0]?.latest ?? null;
+}
+
+/** All `global` knowledge titles written under a given machine provenance. */
+export async function listGlobalKnowledgeTitlesByProvenance(
+  provenance: KnowledgeProvenance,
+): Promise<string[]> {
+  const { rows } = await pool.query(
+    `SELECT title FROM knowledge WHERE scope = 'global' AND created_by_role = $1 AND title IS NOT NULL`,
+    [provenance],
+  );
+  return rows.map((r) => r.title as string);
+}
+
+/**
+ * Delete `global` entries of the given provenance whose title is NOT in `keep`
+ * — i.e. sections that vanished upstream since the last ingest. Scoped by
+ * provenance so it can never touch a human- or other-provenance row. Returns
+ * the number removed.
+ */
+export async function deleteStaleProvenancedKnowledge(
+  provenance: KnowledgeProvenance,
+  keep: readonly string[],
+): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM knowledge
+       WHERE scope = 'global' AND created_by_role = $1
+         AND NOT (title = ANY($2))`,
+    [provenance, [...keep]],
+  );
+  return rowCount ?? 0;
 }
 
 // --- Membership (three-tier RBAC) -------------------------------------------

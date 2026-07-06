@@ -300,6 +300,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   for member/admin-authored knowledge or for candidates — only this narrow,
   labelled, fixed-topic surface publishes without review, and even it is
   quarantined on the way out.
+- **Docs ingest** (`DOCS_INGEST_ENABLED`, off by default —
+  src/context/docsIngest.ts): backfills Anthropic's official developer docs into
+  `knowledge` as RAG chunks (provenance `'docs'`), refreshed ~weekly with a
+  content diff. Unlike the `'auto'` web-research refresh, `'docs'` entries are
+  treated as **trusted** (served verbatim by `knowledge_search`, shortcut-
+  eligible) — a deliberate call, because the source is **one fixed, official,
+  first-party HTTPS source** (`DOCS_INGEST_INDEX_URL` → each page's `.md`), not
+  arbitrary open-web content, and no model is in the loop (deterministic
+  fetch/chunk/embed; the fetch URLs come from Anthropic's own index, never from
+  chat/env). Bounds: fixed source URL (override-only), `DOCS_INGEST_MAX_PAGES`/
+  `DOCS_INGEST_MAX_CHUNKS` caps, polite fetch concurrency, and a redeploy-safe
+  ~weekly freshness guard. Provenance safety mirrors the refresh: writes only
+  ever touch existing `'docs'` rows or create new ones — a human- (or other-)
+  authored entry sharing a title is never overwritten and never pruned (pruning
+  of vanished sections is scoped to the `'docs'` provenance, and only runs when
+  the fetch mostly succeeded, so a bad fetch can't nuke the corpus). No model-
+  facing tool can set the `'docs'` (or `'auto'`) provenance — `save_knowledge`
+  always writes the caller's `Tier`. Both invariants are pinned by `SECURITY:`
+  tests. If you'd rather be strict, treat `'docs'` like `'auto'` by
+  quarantining it in `formatKnowledgeSearchResults` — the flag already flows
+  through `searchKnowledge`.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The
