@@ -264,13 +264,24 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   what gets researched), each topic upserts a **single** `global` entry by a
   stable title (the base is refreshed, never grown unbounded), and every entry
   carries an explicit *"auto-researched … machine-generated … verify against
-  official sources"* footer so both readers and the answering model know it is
-  unreviewed. Web-search results are treated as untrusted data in the research
-  prompt (summarise, never follow), matching the WebSearch posture elsewhere;
-  the job defers to a busy live bot (usage-alert threshold) and is bounded to
+  official sources"* footer so a human skimming `list_knowledge` knows it is
+  unreviewed. **The load-bearing control is at retrieval, not in the prompt:**
+  auto entries are written with `created_by_role='auto'`, and `knowledge_search`
+  (`formatKnowledgeSearchResults`) **quarantines** any `auto` hit before it
+  reaches the answering model — angle brackets stripped and framed as
+  reference-only data the model must never follow instructions from, exactly
+  the `untrusted()` treatment recalled chat gets. So even if a prompt-injection
+  string in a web page survived summarisation into an entry, it is served
+  neutralised, not at full trust (pinned by a `SECURITY:` test on
+  `formatKnowledgeSearchResults`, plus one asserting refresh entries carry the
+  `auto` provenance). Human-authored/accepted `knowledge` stays trusted and
+  verbatim — the quarantine is scoped to the `auto` provenance only. Prompt-side
+  "treat search results as untrusted" is kept as defence-in-depth, the job
+  defers to a busy live bot (usage-alert threshold), and it is bounded to
   `KNOWLEDGE_REFRESH_MAX_TURNS` per topic. This does not relax the invariant
   for member/admin-authored knowledge or for candidates — only this narrow,
-  labelled, fixed-topic surface publishes without review.
+  labelled, fixed-topic surface publishes without review, and even it is
+  quarantined on the way out.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The

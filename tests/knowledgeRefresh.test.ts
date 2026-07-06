@@ -43,6 +43,27 @@ test('shouldRunKnowledgeRefresh: runs when never run, and only again after the i
 });
 
 test(
+  'SECURITY: refresh writes only global, auto-provenance entries under the fixed titles — the marker knowledge_search keys its untrusted quarantine on',
+  { skip },
+  async () => {
+    await runKnowledgeRefresh(async () => 'Briefing bullet.');
+    const { rows } = await pool.query(
+      `SELECT title, scope, created_by_role FROM knowledge WHERE title = ANY($1)`,
+      [[...REFRESH_TITLES]],
+    );
+    assert.equal(rows.length, REFRESH_TOPICS.length, 'one entry per fixed topic');
+    for (const r of rows) {
+      assert.equal(r.scope, 'global', 'auto entries are global-scoped only');
+      assert.equal(
+        r.created_by_role,
+        'auto',
+        'auto provenance must be set — it is what knowledge_search uses to quarantine this unreviewed content',
+      );
+    }
+  },
+);
+
+test(
   'runKnowledgeRefresh upserts one entry per topic (create then update, never duplicate)',
   { skip },
   async () => {

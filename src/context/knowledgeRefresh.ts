@@ -14,9 +14,13 @@ import { latestKnowledgeUpdateAt, upsertGlobalKnowledgeByTitle, usageStats } fro
  *    can ever be researched;
  *  - each entry is UPSERTED by a stable title, so the base never accumulates
  *    duplicates — the refresh keeps ~2 entries fresh, it doesn't grow unbounded;
- *  - each entry carries an explicit "auto-researched, unverified" footer so a
- *    reader (and the answering model) knows it is machine-generated;
- *  - web-search results are treated as untrusted data in the research prompt;
+ *  - each entry carries an explicit "auto-researched, unverified" footer, and —
+ *    the load-bearing control — is written with created_by_role='auto' so
+ *    knowledge_search QUARANTINES it (untrusted-wrapped) before it reaches the
+ *    answering model, exactly like recalled chat; a prompt-injection string
+ *    that survived summarisation is served neutralised, not at full trust;
+ *  - web-search results are also flagged untrusted in the research prompt
+ *    (defence-in-depth on top of the retrieval-time quarantine above);
  *  - the run defers to a busy live bot (usage-alert threshold) and is bounded
  *    to KNOWLEDGE_REFRESH_MAX_TURNS per topic.
  * See docs/SECURITY.md.
