@@ -101,6 +101,18 @@ test('SECURITY: rate_answer is member+ (guests never get it in gated mode; match
   }
 });
 
+test('SECURITY: catch_up is member+ (guests reach it in open mode; matches MEMBER_TOOLS) — issue #167', () => {
+  const tool = 'mcp__community__catch_up';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'catch_up must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach catch_up`);
+  }
+  assert.ok(
+    toolsForRole('guest').includes(tool),
+    'guests reach catch_up too (open mode; same as MEMBER_TOOLS)',
+  );
+});
+
 test('SECURITY: list_answer_feedback is admin-only — a member can never read the aggregate rating queue, including ratings they themselves submitted (issue #118)', () => {
   const tool = 'mcp__community__list_answer_feedback';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_answer_feedback must be in ADMIN_TOOLS');
