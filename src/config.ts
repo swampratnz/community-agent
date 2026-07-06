@@ -220,7 +220,7 @@ const EnvSchema = z.object({
     .default('https://platform.claude.com/llms.txt'),
   // Safety caps so a bloated index can't run away (pages fetched, chunks written).
   DOCS_INGEST_MAX_PAGES: z.coerce.number().int().positive().max(5000).default(2500),
-  DOCS_INGEST_MAX_CHUNKS: z.coerce.number().int().positive().max(20000).default(8000),
+  DOCS_INGEST_MAX_CHUNKS: z.coerce.number().int().positive().max(60000).default(20000),
   // Concurrent page fetches — kept small to be polite to the docs host.
   DOCS_INGEST_CONCURRENCY: z.coerce.number().int().positive().max(16).default(5),
   // Anonymised community-context export (issue #53): render digests into a

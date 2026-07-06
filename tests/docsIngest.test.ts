@@ -52,17 +52,30 @@ test('titleForUrl derives a short stable title', () => {
   assert.equal(titleForUrl('https://platform.claude.com/docs/en/api/messages.md'), 'docs: api/messages');
 });
 
-test('chunkMarkdown splits by heading, prefixes the page title, and caps long sections', () => {
-  const md = ['intro paragraph', '', '## Section A', 'body a', '', '## Section B', 'body b'].join('\n');
+test('chunkMarkdown splits at H2 only (### folds inline), prefixes the page title, and caps long sections', () => {
+  const md = [
+    '# Page Title',
+    'intro paragraph',
+    '',
+    '## Section A',
+    'body a',
+    '### Sub A1',
+    'sub detail a1',
+    '',
+    '## Section B',
+    'body b',
+  ].join('\n');
   const chunks = chunkMarkdown('docs: api/messages', md);
   const titles = chunks.map((c) => c.title);
-  assert.deepEqual(titles, [
-    'docs: api/messages',
-    'docs: api/messages › Section A',
-    'docs: api/messages › Section B',
-  ]);
+  assert.deepEqual(
+    titles,
+    ['docs: api/messages', 'docs: api/messages › Section A', 'docs: api/messages › Section B'],
+    'H1 and H3 do not create their own chunks — only H2 does',
+  );
   assert.match(chunks[1].content, /^docs: api\/messages › Section A/, 'chunk carries its own context prefix');
   assert.match(chunks[1].content, /body a/);
+  assert.match(chunks[1].content, /### Sub A1/, 'the ### subheading stays inline within its H2 chunk');
+  assert.match(chunks[1].content, /sub detail a1/);
 
   // A very long section is hard-split into "(part N)".
   const long = ['## Big', ...Array.from({ length: 400 }, (_, i) => `line ${i} with some words`)].join('\n');
@@ -129,6 +142,67 @@ test(
     assert.equal(remaining.rows.length, 1, 'only the surviving page remains');
     assert.equal(remaining.rows[0].created_by_role, 'docs');
     assert.match(remaining.rows[0].content, /v2 — new params/);
+  },
+);
+
+test(
+  'runDocsIngest: a page still listed in the index but transiently failing to fetch is NOT pruned (prune keys off the index, not fetch success)',
+  { skip },
+  async () => {
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    const u2 = 'https://platform.claude.com/docs/en/api/models.md';
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+
+    await runDocsIngest(fakeFetcher({ [u1]: 'Messages.', [u2]: 'Models.' })); // both created
+
+    // Both stay in the index, but u2's fetch 404s this run.
+    const u2Fails = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${u1})\n- [b](${u2})`;
+      if (url === u1) return 'Messages.';
+      throw new Error(`404 ${url}`);
+    };
+    const res = await runDocsIngest(u2Fails);
+    assert.ok(res.failed >= 1, 'u2 failed to fetch');
+    assert.equal(res.removed, 0, 'a still-indexed page that failed to fetch must NOT be pruned');
+
+    const kept = await pool.query(
+      `SELECT count(*) AS n FROM knowledge WHERE created_by_role = $1 AND title LIKE 'docs: api/models%'`,
+      [DOCS_PROVENANCE],
+    );
+    assert.ok(Number(kept.rows[0].n) >= 1, "u2's chunk survives a transient fetch failure");
+
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+  },
+);
+
+test(
+  'runDocsIngest: a page beyond DOCS_INGEST_MAX_PAGES is NOT pruned — prune keys off the FULL index, not the fetch cap',
+  { skip },
+  async () => {
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    const u2 = 'https://platform.claude.com/docs/en/api/models.md';
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+
+    // Seed both pages (default cap fetches both).
+    await runDocsIngest(fakeFetcher({ [u1]: 'Messages.', [u2]: 'Models.' }));
+
+    // Cap the fetch to one page — u2 is now past the cap but STILL in the index.
+    const orig = config.docsIngest.maxPages;
+    (config.docsIngest as { maxPages: number }).maxPages = 1;
+    try {
+      const res = await runDocsIngest(fakeFetcher({ [u1]: 'Messages.', [u2]: 'Models.' }));
+      assert.equal(res.pages, 1, 'fetch is capped to one page');
+      assert.equal(res.removed, 0, 'a still-indexed page past the fetch cap must NOT be pruned');
+    } finally {
+      (config.docsIngest as { maxPages: number }).maxPages = orig;
+    }
+
+    const kept = await pool.query(
+      `SELECT count(*) AS n FROM knowledge WHERE created_by_role = $1 AND title LIKE 'docs: api/models%'`,
+      [DOCS_PROVENANCE],
+    );
+    assert.ok(Number(kept.rows[0].n) >= 1, 'u2 survives being past the fetch cap');
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
   },
 );
 
