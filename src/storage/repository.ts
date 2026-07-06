@@ -760,20 +760,21 @@ export async function listGlobalKnowledgeTitlesByProvenance(
 }
 
 /**
- * Delete `global` entries of the given provenance whose title is NOT in `keep`
- * — i.e. sections that vanished upstream since the last ingest. Scoped by
- * provenance so it can never touch a human- or other-provenance row. Returns
- * the number removed.
+ * Delete the named `global` entries of the given provenance. Scoped by
+ * provenance so it can never touch a human- or other-provenance row even if a
+ * title collides. Returns the number removed. Used by docs ingest to prune the
+ * chunks of pages that vanished from the upstream index (the caller computes the
+ * doomed titles from the index, so a transient fetch failure can't cause a
+ * deletion). No-op on an empty list.
  */
-export async function deleteStaleProvenancedKnowledge(
+export async function deleteProvenancedKnowledgeByTitles(
   provenance: KnowledgeProvenance,
-  keep: readonly string[],
+  titles: readonly string[],
 ): Promise<number> {
+  if (titles.length === 0) return 0;
   const { rowCount } = await pool.query(
-    `DELETE FROM knowledge
-       WHERE scope = 'global' AND created_by_role = $1
-         AND NOT (title = ANY($2))`,
-    [provenance, [...keep]],
+    `DELETE FROM knowledge WHERE scope = 'global' AND created_by_role = $1 AND title = ANY($2)`,
+    [provenance, [...titles]],
   );
   return rowCount ?? 0;
 }

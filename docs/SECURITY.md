@@ -313,10 +313,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `parseDocIndex` keeps only `.md` URLs whose origin matches
   `DOCS_INGEST_INDEX_URL` (which must be `https://`), so a stray or compromised
   third-party link in the upstream index is dropped rather than ingested as
-  trusted — pinned by a `SECURITY:` test. Removals are also fail-safe: stale
-  sections are pruned only on a **zero-failure** run (a failed fetch is
-  indistinguishable from a removed page, so a transient blip can never delete
-  live content — a genuinely-removed page waits for the next clean run). Bounds:
+  trusted — pinned by a `SECURITY:` test. Removals are fail-safe: pruning keys
+  off the **index**, not fetch success — a `'docs'` chunk is removed only when
+  its page is no longer listed in the index at all, so a page that transiently
+  404s/times out (the index habitually lists some dead URLs) is never deleted.
+  Bounds:
   fixed source URL (override-only), `DOCS_INGEST_MAX_PAGES`/
   `DOCS_INGEST_MAX_CHUNKS` caps, polite fetch concurrency, and a redeploy-safe
   ~weekly freshness guard. Provenance safety mirrors the refresh: writes only
