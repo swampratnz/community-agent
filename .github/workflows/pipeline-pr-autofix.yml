@@ -181,7 +181,7 @@ jobs:
         id: fix
         if: env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
         continue-on-error: true # the verify step below is the source of truth
-        uses: anthropics/claude-code-action@81be147df53fcd867cac5c68e80f40ba7b29c2b6 # v1.0.165
+        uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1.0.165
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token
