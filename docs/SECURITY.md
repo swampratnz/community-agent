@@ -472,11 +472,16 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     creates/assigns the one configured muted role and the one alerts channel,
     but a compromised bot token with these permissions can do more than one
     without them; grant them deliberately.
-  - **Enforcement is best-effort, not airtight**: the muted role's
-    deny-SendMessages overwrites are applied to channels that exist when a mute
-    happens — **channels created later won't inherit them** until the next mute
-    re-applies. A determined member could also leave/rejoin to shed the role.
-    Treat it as a strong deterrent, not a hard containment boundary.
+  - **Enforcement narrows two former gaps, but stays best-effort, not
+    airtight**: a new text/forum channel or category now gets the
+    deny-SendMessages overwrite the moment it's created (a `ChannelCreate`
+    listener), and a member who leaves and rejoins while still at/above the
+    strike limit is automatically re-muted (with an admin alert) before any
+    welcome-message logic runs — both closing bypasses this document used to
+    call out by name (pinned by `SECURITY:` tests). What's still best-effort:
+    a permission-overwrite call that fails (e.g. a transient Discord API
+    error) is logged, not retried until the next mute; treat the muted role as
+    a strong deterrent, not a hard containment boundary.
   - **Stage 2 (LLM abuse) is opt-in** (`MODERATION_LLM_ABUSE_ENABLED`, off):
     only wordlist-clean messages escalate, one Claude call each on the shared
     Max pool — deliberately gated so it can't silently run up cost/scan volume.

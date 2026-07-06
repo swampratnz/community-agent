@@ -9,6 +9,11 @@ import {
   type Guild,
   type Role,
   type TextChannel,
+  type NewsChannel,
+  type ForumChannel,
+  type CategoryChannel,
+  type GuildBasedChannel,
+  type NonThreadGuildBasedChannel,
   type PartialGuildMember,
   type Message,
   type PartialMessage,
@@ -20,7 +25,10 @@ import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy } from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
+import { atLeast } from '../../auth/rbac.js';
+import { resolveRole } from '../../auth/roles.js';
 import {
+  countActiveWarnings,
   deleteInteractionByMessageId,
   markRosterLeave,
   updateInteractionByMessageId,
@@ -121,6 +129,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     });
     this.client.on(Events.GuildMemberRemove, (member) => {
       this.onGuildMemberRemove(member).catch((err) => logger.error({ err }, 'Roster leave failed'));
+    });
+    // Closes the "new channel doesn't inherit the muted role" gap (see
+    // ensureMutedRole's doc comment / SECURITY.md): apply the overwrite to a
+    // new channel immediately instead of waiting for the next mute event.
+    this.client.on(Events.ChannelCreate, (channel) => {
+      this.onChannelCreate(channel).catch((err) => logger.error({ err }, 'Channel create handling failed'));
     });
 
     this.client.once(Events.ClientReady, (c) => {
@@ -255,6 +269,15 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         userId: member.id,
         displayName: member.displayName,
       }).catch((err) => logger.warn({ err, userId: member.id }, 'Roster join record failed'));
+
+      // Closes the "leave/rejoin sheds the muted role" gap (see SECURITY.md):
+      // re-mute before any welcome-message logic runs, gated the same as the
+      // rest of moderation.
+      if (config.moderation.enabled) {
+        await this.remuteOnRejoinIfNeeded(member).catch((err) =>
+          logger.warn({ err, userId: member.id }, 'Rejoin re-mute check failed'),
+        );
+      }
     }
 
     if (!config.discord.welcome.enabled) return;
@@ -278,6 +301,27 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     } catch (err) {
       logger.warn({ err, userId: member.id, channelId }, 'Welcome channel fallback failed');
     }
+  }
+
+  /**
+   * A muted member can shed the role by leaving and rejoining (SECURITY.md
+   * documented bypass) — re-mute immediately if they're still at/above the
+   * strike limit. Honours the same exemption guard as `Moderator.scan`
+   * (moderator.ts:112: `isExempt` = admin-tier-or-above), so a member who
+   * accrued warnings before being promoted is not auto-muted on rejoin.
+   * Unlike the routine new-channel re-apply (which stays silent), this posts
+   * an admin alert — an evasion attempt was just auto-handled and admins
+   * should know.
+   */
+  private async remuteOnRejoinIfNeeded(member: GuildMember): Promise<void> {
+    if (atLeast(await resolveRole('discord', member.id), 'admin')) return;
+    const active = await countActiveWarnings('discord', member.id);
+    if (active < config.moderation.strikeLimit) return;
+    await this.muteUser(member.id);
+    await this.postAdminAlert(
+      `🔁 **${member.displayName}** (\`${member.id}\`) left and rejoined while still at ` +
+        `${active}/${config.moderation.strikeLimit} warnings — automatically re-muted.`,
+    );
   }
 
   private async onGuildMemberRemove(member: GuildMember | PartialGuildMember): Promise<void> {
@@ -505,9 +549,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   /**
    * Find or create the muted role and make sure it actually blocks posting: a
    * deny-SendMessages overwrite is applied to every current text/forum channel
-   * and category. Channels created LATER won't inherit it (documented
-   * limitation, see SECURITY.md) — the next mute re-runs this and re-applies to
-   * all current channels. Needs the bot to have Manage Roles + Manage Channels.
+   * and category. `onChannelCreate` now applies the same overwrite the moment
+   * a new channel or category appears, so this full re-scan is a fallback (a
+   * channel created while the bot was offline, or a prior overwrite attempt
+   * that failed) rather than the only path — see SECURITY.md. Needs the bot
+   * to have Manage Roles + Manage Channels.
    */
   private async ensureMutedRole(guild: Guild): Promise<Role> {
     let role = this.findMutedRole(guild);
@@ -523,28 +569,57 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
     const channels = await guild.channels.fetch();
     for (const channel of channels.values()) {
-      if (
-        !channel ||
-        (channel.type !== ChannelType.GuildText &&
-          channel.type !== ChannelType.GuildAnnouncement &&
-          channel.type !== ChannelType.GuildForum &&
-          channel.type !== ChannelType.GuildCategory)
-      ) {
-        continue;
-      }
-      try {
-        await channel.permissionOverwrites.edit(role, {
-          SendMessages: false,
-          SendMessagesInThreads: false,
-          CreatePublicThreads: false,
-          CreatePrivateThreads: false,
-          AddReactions: false,
-        });
-      } catch (err) {
-        logger.warn({ err, channelId: channel.id }, 'Failed to apply muted-role overwrite');
-      }
+      if (!channel || !this.isMutableOverwriteChannel(channel)) continue;
+      await this.applyMutedRoleOverwrite(channel, role);
     }
     return role;
+  }
+
+  /**
+   * New channels/categories don't inherit an existing muted role's overwrite
+   * from Discord itself — creating a channel via the API never copies a
+   * parent category's overwrites unless the client explicitly requests it, so
+   * this fires for every new channel regardless of nesting, not just
+   * top-level ones. Closes the "channels created later won't inherit it"
+   * SECURITY.md gap; no-op if moderation is off, the channel is outside the
+   * configured guild, its type never carries overwrites, or no mute has ever
+   * happened (nothing to inherit yet).
+   */
+  private async onChannelCreate(channel: NonThreadGuildBasedChannel): Promise<void> {
+    if (!config.moderation.enabled) return;
+    if (channel.guild.id !== config.discord.guildId) return;
+    if (!this.isMutableOverwriteChannel(channel)) return;
+    const role = this.findMutedRole(channel.guild);
+    if (!role) return;
+    await this.applyMutedRoleOverwrite(channel, role);
+  }
+
+  private isMutableOverwriteChannel(
+    channel: GuildBasedChannel,
+  ): channel is TextChannel | NewsChannel | ForumChannel | CategoryChannel {
+    return (
+      channel.type === ChannelType.GuildText ||
+      channel.type === ChannelType.GuildAnnouncement ||
+      channel.type === ChannelType.GuildForum ||
+      channel.type === ChannelType.GuildCategory
+    );
+  }
+
+  private async applyMutedRoleOverwrite(
+    channel: TextChannel | NewsChannel | ForumChannel | CategoryChannel,
+    role: Role,
+  ): Promise<void> {
+    try {
+      await channel.permissionOverwrites.edit(role, {
+        SendMessages: false,
+        SendMessagesInThreads: false,
+        CreatePublicThreads: false,
+        CreatePrivateThreads: false,
+        AddReactions: false,
+      });
+    } catch (err) {
+      logger.warn({ err, channelId: channel.id }, 'Failed to apply muted-role overwrite');
+    }
   }
 
   /**
