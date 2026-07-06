@@ -23,6 +23,7 @@ import {
   demoteAdmin,
   getMemberNote,
   getMemberRole,
+  getMyDataSummary,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeDuplicateMatch,
   listKnowledgeCandidates,
@@ -744,6 +745,33 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         return text(`You've reached the warning limit (${active}/${limit}). An admin can clear this.`);
       }
       return text(`You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`);
+    },
+  );
+
+  const myData = tool(
+    'my_data',
+    'Summarize what the bot has stored about the caller: their own message count, replies the bot has ' +
+      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, and ' +
+      'their standing response-style preference. Use this when a member asks what the bot knows about ' +
+      'them, or wants to see what forget_me would erase before deciding to invoke it. Read-only, scoped ' +
+      "exactly like forget_me — the caller's own identity plus any identity linked via link_member — so " +
+      "it can never see another member's data. Does not cover active warnings (see my_warnings) or the " +
+      'status of a specific filed item (see my_submissions), which already have their own tools; also ' +
+      'never includes admin notes about the caller (member_notes stays admin-only).',
+    {},
+    async () => {
+      const summary = await getMyDataSummary(caller.platform, caller.userId);
+      const lines = [
+        `Messages you've sent: ${summary.ownMessages}`,
+        `Replies the bot has sent you: ${summary.repliesToThem}`,
+        `Knowledge entries sourced from you: ${summary.knowledgeEntries}`,
+        `Content reports you've filed: ${summary.reportsFiled}`,
+        `Suggestions you've filed: ${summary.suggestionsFiled}`,
+        `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
+        '',
+        'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
+      ];
+      return text(lines.join('\n'));
     },
   );
 
@@ -2113,6 +2141,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       withdrawReport,
       mySubmissions,
       myWarnings,
+      myData,
       suggestImprovement,
       rateAnswer,
       setResponseStyleTool,
