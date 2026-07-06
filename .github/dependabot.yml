@@ -1,0 +1,24 @@
+# Keeps the SHA-pinned actions in .github/workflows/ fresh (Dependabot bumps
+# the pin and its trailing version comment together) and batches npm updates.
+#
+# Interplay with the pipeline (docs/PIPELINE.md): Dependabot PRs are same-repo
+# bot PRs, so the PR-review worker reviews each one — a shared-Max-pool cost,
+# which is why npm updates are grouped into one monthly PR instead of a stream
+# of singles. They carry no `Closes #<n>` body, so the autofix and
+# conflict-resolver loops deliberately ignore them, and a human merges as
+# always.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      npm-all:
+        patterns:
+          - '*'

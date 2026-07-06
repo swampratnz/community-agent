@@ -118,8 +118,17 @@ jobs:
         if: env.HAS_TOKEN == 'true'
         run: echo "STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
         if: env.HAS_TOKEN == 'true'
+        with:
+          # Do NOT leave the job's GITHUB_TOKEN in .git/config: the build agent
+          # processes (potentially adversarial) issue content and can read the
+          # file via `cat`/Read or an npm script, then exfiltrate it — and this
+          # job's token carries contents+issues+PR write. Same threat model and
+          # fix as pipeline-pr-autofix / pipeline-pr-conflict: the agent gets
+          # its git/gh auth from the action's App token, and the verify step
+          # uses GH_TOKEN env, so no persisted credential is needed anywhere.
+          persist-credentials: false
 
       # Create the base schema deterministically BEFORE the agent runs, so its
       # `npm test` sees a migrated DB. Leaving migration to the agent's prose
@@ -144,7 +153,7 @@ jobs:
         id: build
         if: env.HAS_TOKEN == 'true'
         continue-on-error: true # never let a mid-run failure hide the outcome; the verify step below is the source of truth
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@81be147df53fcd867cac5c68e80f40ba7b29c2b6 # v1.0.165
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |

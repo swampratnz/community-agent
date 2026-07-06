@@ -289,7 +289,7 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
         if: steps.precheck.outputs.proceed == 'true'
         with:
           # The branch precheck derived from the PR number via the API — NEVER
@@ -336,7 +336,7 @@ jobs:
         if: steps.precheck.outputs.proceed == 'true'
         id: fix
         continue-on-error: true # the verify step below is the source of truth
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@81be147df53fcd867cac5c68e80f40ba7b29c2b6 # v1.0.165
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token

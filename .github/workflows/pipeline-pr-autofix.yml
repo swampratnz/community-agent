@@ -11,7 +11,13 @@ name: Pipeline PR autofix
 #   * Same-repo PRs only. workflow_run carries secrets even for fork PRs, so
 #     running a fix on fork-controlled code would be an injection vector — the
 #     `if` below hard-requires head_repository == this repo.
-#   * Bot-authored PRs only (the build worker). Human PRs are left alone.
+#   * Bot-authored BUILD-WORKER PRs only, identified by their `Closes #<n>`
+#     body — the build worker's contract, the same signal the conflict
+#     resolver's discover filter keys on. Human PRs and unrelated same-repo
+#     bot PRs (e.g. a Dependabot bump) are left alone.
+#   * PRs already labelled `needs-human` are SKIPPED — that label is the stop
+#     (same policy as the conflict resolver), so a cap-escalated PR never gets
+#     further agent runs or duplicate escalation comments.
 #   * Hard cap of 2 attempts per PR, counted via marker comments. After that it
 #     STOPS and escalates `needs-human` — without this it could fix→fail→fix in
 #     a loop that drains the weekly token pool.
@@ -83,7 +89,7 @@ jobs:
         if: env.HAS_TOKEN != 'true'
         run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR autofix worker is inert."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
         if: env.HAS_TOKEN == 'true'
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
@@ -102,7 +108,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          pr_json="$(gh pr list --head "$HEAD_BRANCH" --state open --json number,author,isCrossRepository --limit 1)"
+          pr_json="$(gh pr list --head "$HEAD_BRANCH" --state open --json number,author,isCrossRepository,labels,body --limit 1)"
           number="$(jq -r '.[0].number // empty' <<<"$pr_json")"
           if [ -z "$number" ]; then
             echo "No open PR for branch $HEAD_BRANCH — nothing to autofix."
@@ -110,8 +116,12 @@ jobs:
           fi
           is_bot="$(jq -r '.[0].author.is_bot // false' <<<"$pr_json")"
           xrepo="$(jq -r '.[0].isCrossRepository // false' <<<"$pr_json")"
-          if [ "$is_bot" != "true" ] || [ "$xrepo" = "true" ]; then
-            echo "PR #$number is not an eligible (same-repo, bot-authored) PR — skipping."
+          # Build-worker PRs only (`Closes #<n>` body) and not already escalated
+          # (`needs-human` is the stop label) — see the header guardrails.
+          is_build="$(jq -r '(.[0].body // "") | test("[Cc]loses #[0-9]+")' <<<"$pr_json")"
+          escalated="$(jq -r '[.[0].labels[]?.name] | index("needs-human") != null' <<<"$pr_json")"
+          if [ "$is_bot" != "true" ] || [ "$xrepo" = "true" ] || [ "$is_build" != "true" ] || [ "$escalated" = "true" ]; then
+            echo "PR #$number is not an eligible (same-repo, bot-authored, build-worker, not needs-human) PR — skipping."
             exit 0
           fi
           # Prior autofix attempts = number of ATTEMPT_MARKER comments (only).
@@ -171,7 +181,7 @@ jobs:
         id: fix
         if: env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
         continue-on-error: true # the verify step below is the source of truth
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@81be147df53fcd867cac5c68e80f40ba7b29c2b6 # v1.0.165
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token

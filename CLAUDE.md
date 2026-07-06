@@ -62,10 +62,12 @@ ownership rules:
 - **Only the build loop** writes code or opens PRs. PR-review comments only;
   research & adversarial touch issues only. One exception: the **autofix loop**
   (`pipeline-pr-autofix.yml`) may push fixes to an existing build-worker PR
-  branch when its CI fails — bounded to 2 attempts, same-repo bot PRs only,
-  and only from CI `run_attempt` ≥ 2 (the ci-retry loop below gets one free
-  machine rerun first, so agents never chase one-off flakes), then it
-  escalates `needs-human`. It never opens or merges PRs.
+  branch when its CI fails — bounded to 2 attempts; same-repo bot PRs with a
+  `Closes #` body only (unrelated bot PRs like Dependabot bumps and PRs
+  already labelled `needs-human` are skipped); and only from CI
+  `run_attempt` ≥ 2 (the ci-retry loop below gets one free machine rerun
+  first, so agents never chase one-off flakes), then it escalates
+  `needs-human`. It never opens or merges PRs.
 - The **conflict-resolver loop** (`pipeline-pr-conflict.yml`) may push a
   `main`-merge to an existing build-worker PR branch when that PR is
   CONFLICTING. It is two-hop: a `discover` job (triggered on every push to

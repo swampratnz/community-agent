@@ -42,8 +42,11 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
 - **Only the build loop** writes code / opens PRs. PR-review comments only;
   research & adversarial touch issues only (no files ⇒ no git conflicts). One
   exception: the **autofix loop** (`pipeline-pr-autofix.yml`) may push fixes to
-  an existing build-worker PR branch when its CI fails — same-repo bot PRs only,
-  capped at 2 attempts, and only from CI `run_attempt` ≥ 2 (**ci-retry.yml**
+  an existing build-worker PR branch when its CI fails — same-repo bot PRs
+  with a `Closes #` body only (the build worker's contract; unrelated bot PRs
+  like Dependabot bumps are ignored, as are PRs already labelled
+  `needs-human`), capped at 2 attempts, and only from CI `run_attempt` ≥ 2
+  (**ci-retry.yml**
   gives every failed CI run one blind machine rerun first, so transient
   npm-registry/runner flakes recover for zero agent cost), then it escalates
   `needs-human`. It never opens or merges PRs. Do not misflag its pushes as an
@@ -285,8 +288,11 @@ sessions:
 
 - `.github/workflows/pipeline-build.yml` — fires on `issues.labeled ==
   status:approved`, implements on a branch, opens a PR "Closes #N", relabels
-  `status:built`. `concurrency` serialises builds (WIP=1); `--max-turns 40` +
-  a 45-min job timeout bound a run.
+  `status:built`. Builds run **per-issue** (each issue its own `concurrency`
+  group — distinct issues in parallel, no cross-eviction); `--max-turns 300` +
+  a 120-min job timeout bound a run, sized generously so a pool-contended
+  build finishes slowly instead of being killed mid-gate (see the WIP-caps
+  bullet above).
 - `.github/workflows/pipeline-pr-review.yml` — fires on `pull_request`
   events; reviews the diff (security-focused), comments/approves, never merges.
 
