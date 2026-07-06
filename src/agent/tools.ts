@@ -15,6 +15,7 @@ import {
   createAnswerFeedback,
   createContentReport,
   createSuggestion,
+  clearUserSessions,
   declineKnowledgeCandidate,
   deleteKnowledge,
   deleteMemberNote,
@@ -311,6 +312,24 @@ export async function notifyReportWithdrawn(
       `Marked 'withdrawn' and kept on record — no action needed unless you want to check in.`,
     info.reporterUserId,
   );
+}
+
+/**
+ * After a role change (grant_admin/revoke_admin) commits, reset the target's
+ * active-conversation sessions so their new tier takes effect on the very next
+ * message rather than being shadowed by stale in-session context until the
+ * session rolls over (see `clearUserSessions`). Best-effort: a reset failure is
+ * logged but never fails or reverses the already-committed role change.
+ */
+async function resetSessionsForRoleChange(platform: Platform, userId: string, action: string): Promise<void> {
+  try {
+    const cleared = await clearUserSessions(platform, userId);
+    if (cleared > 0) {
+      logger.info({ action, platform, userId, cleared }, 'Reset target sessions after role change');
+    }
+  } catch (err) {
+    logger.warn({ err, action, platform, userId }, 'Failed to reset target sessions after role change');
+  }
 }
 
 /**
@@ -1757,6 +1776,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
             return 'granted';
           },
         });
+        if (success) await resetSessionsForRoleChange(platform, userId, 'grant_admin');
         return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
       });
     },
@@ -1783,6 +1803,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           return 'demoted to member';
         },
       });
+      if (success) await resetSessionsForRoleChange(platform, userId, 'revoke_admin');
       return text(success ? `${label} is now a member on ${platform}.` : `Failed: ${result}`, !success);
     },
   );

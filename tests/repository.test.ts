@@ -21,6 +21,9 @@ const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const {
   recordInteraction,
+  setClaudeSessionId,
+  getClaudeSession,
+  clearUserSessions,
   userMessages,
   purgeOldInteractions,
   purgeUserData,
@@ -169,6 +172,53 @@ test(
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [userId]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [kId]);
     await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "repository: clearUserSessions resets the target user's active-conversation sessions and only those (role change takes effect immediately)",
+  { skip },
+  async () => {
+    const userA = `${RUN}-cus-A`;
+    const userB = `${RUN}-cus-B`;
+    const convA1 = `${RUN}-cus-a1`; // A is active here
+    const convA2 = `${RUN}-cus-a2`; // A is active here too
+    const convB = `${RUN}-cus-b`; // only B is active here
+
+    // A talks in two conversations, B in a third. Each conversation has a live session.
+    for (const [conv, user] of [
+      [convA1, userA],
+      [convA2, userA],
+      [convB, userB],
+    ] as const) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: conv,
+        userId: user,
+        role: 'member',
+        direction: 'inbound',
+        content: 'hi',
+      });
+      await setClaudeSessionId('discord', conv, `sess-${conv}`);
+    }
+
+    const cleared = await clearUserSessions('discord', userA);
+    assert.equal(cleared, 2, "only A's two conversation sessions are cleared");
+
+    assert.equal(await getClaudeSession('discord', convA1), null, "A's session in convA1 is reset");
+    assert.equal(await getClaudeSession('discord', convA2), null, "A's session in convA2 is reset");
+    const bSession = await getClaudeSession('discord', convB);
+    assert.equal(
+      bSession?.sessionId,
+      `sess-${convB}`,
+      "an unrelated user's session must be untouched — reset is scoped to the target's own conversations",
+    );
+
+    // Wrong platform is scoped out too.
+    assert.equal(await clearUserSessions('whatsapp', userA), 0, 'platform is part of the scope');
+
+    await pool.query(`DELETE FROM sessions WHERE conversation_id = ANY($1)`, [[convA1, convA2, convB]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convA1, convA2, convB]]);
   },
 );
 
