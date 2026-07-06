@@ -93,6 +93,28 @@ test('SECURITY: my_submissions is member+ and strictly narrower than the shared 
   }
 });
 
+test('SECURITY: my_warnings is member+ and strictly narrower than the admin-only moderation tools (clear_warnings/moderation_history)', () => {
+  const tool = 'mcp__community__my_warnings';
+  const adminOnlyModerationTools = ['mcp__community__clear_warnings', 'mcp__community__moderation_history'];
+
+  assert.ok(MEMBER_TOOLS.includes(tool), 'my_warnings must be in MEMBER_TOOLS');
+  for (const t of adminOnlyModerationTools) {
+    assert.ok(
+      !(MEMBER_TOOLS as readonly string[]).includes(t),
+      `${t} must never be in MEMBER_TOOLS even though my_warnings is`,
+    );
+  }
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach my_warnings`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of adminOnlyModerationTools) {
+      assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+    }
+  }
+});
+
 test('SECURITY: rate_answer is member+ (guests never get it in gated mode; matches MEMBER_TOOLS)', () => {
   const tool = 'mcp__community__rate_answer';
   assert.ok(MEMBER_TOOLS.includes(tool), 'rate_answer must be in MEMBER_TOOLS');
