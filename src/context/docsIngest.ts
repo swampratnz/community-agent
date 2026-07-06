@@ -43,10 +43,24 @@ export function latestDocsIngestAt(): Promise<Date | null> {
   return latestKnowledgeUpdateAtByProvenance(DOCS_PROVENANCE);
 }
 
-/** Pull every per-page `.md` URL out of the llms.txt index. */
-export function parseDocIndex(indexText: string): string[] {
+/**
+ * Pull every per-page `.md` URL out of the llms.txt index, keeping ONLY those
+ * on the same origin as the index. This enforces the "one fixed, first-party
+ * source" invariant the trust model relies on (docs are served verbatim and are
+ * shortcut-eligible): a stray/compromised third-party `.md` link in the index
+ * is dropped, never ingested as trusted. `titleForUrl` also strips the host, so
+ * this same-origin gate is what stops a foreign same-path URL from silently
+ * overwriting a legitimate docs row.
+ */
+export function parseDocIndex(indexText: string, allowedOrigin: string): string[] {
   const urls = new Set<string>();
-  for (const m of indexText.matchAll(/https?:\/\/[^\s)"'<>]+\.md/g)) urls.add(m[0]);
+  for (const m of indexText.matchAll(/https?:\/\/[^\s)"'<>]+\.md/g)) {
+    try {
+      if (new URL(m[0]).origin === allowedOrigin) urls.add(m[0]);
+    } catch {
+      // malformed URL — skip
+    }
+  }
   return [...urls];
 }
 
@@ -77,15 +91,23 @@ export function chunkMarkdown(pageTitle: string, md: string): Array<{ title: str
   }
 
   const out: Array<{ title: string; content: string }> = [];
+  // Guard against a page repeating a heading (e.g. two "## Examples"): identical
+  // titles would otherwise upsert onto each other and lose content.
+  const seenTitles = new Map<string, number>();
+  const dedupe = (title: string): string => {
+    const n = (seenTitles.get(title) ?? 0) + 1;
+    seenTitles.set(title, n);
+    return n === 1 ? title : `${title} #${n}`;
+  };
   for (const s of sections) {
     const text = s.body.join('\n').trim();
     if (!text) continue;
     const sectionTitle = s.heading ? `${pageTitle} › ${s.heading}` : pageTitle;
     const pieces = splitToSize(text, MAX_CHUNK_CHARS);
     pieces.forEach((piece, i) => {
-      const title = pieces.length > 1 ? `${sectionTitle} (part ${i + 1})` : sectionTitle;
+      const base = pieces.length > 1 ? `${sectionTitle} (part ${i + 1})` : sectionTitle;
       // Prefix the page title so the embedded chunk carries its own context.
-      out.push({ title, content: `${sectionTitle}\n\n${piece}` });
+      out.push({ title: dedupe(base), content: `${sectionTitle}\n\n${piece}` });
     });
   }
   return out;
@@ -182,7 +204,9 @@ export async function runDocsIngest(
     return result;
   }
 
-  const urls = parseDocIndex(indexText).slice(0, config.docsIngest.maxPages);
+  // Same-origin as the (fixed, official) index URL only — see parseDocIndex.
+  const allowedOrigin = new URL(config.docsIngest.indexUrl).origin;
+  const urls = parseDocIndex(indexText, allowedOrigin).slice(0, config.docsIngest.maxPages);
   result.pages = urls.length;
   if (urls.length === 0) {
     logger.warn('Docs ingest: index parsed to zero page URLs; leaving existing docs entries untouched');
@@ -222,10 +246,19 @@ export async function runDocsIngest(
 
   await runPool(urls, config.docsIngest.concurrency, worker);
 
-  // Prune docs chunks that no longer exist upstream — but only if we actually
-  // fetched a meaningful amount (never nuke the corpus on a mostly-failed run).
-  if (seen.size > 0 && result.failed < result.pages) {
+  // Prune docs chunks that no longer exist upstream — but ONLY on a fully clean
+  // run. A failed page fetch is indistinguishable from a removed page here (both
+  // leave the page's titles out of `seen`), so pruning while any fetch failed
+  // could delete still-valid content over a transient blip. A genuinely-removed
+  // page is instead pruned on the next zero-failure run; lingering a stale entry
+  // is strictly safer than deleting a live one.
+  if (seen.size > 0 && result.failed === 0) {
     result.removed = await deleteStaleProvenancedKnowledge(DOCS_PROVENANCE, [...seen]);
+  } else if (result.failed > 0) {
+    logger.info(
+      { failed: result.failed, pages: result.pages },
+      'Docs ingest: skipping prune (some page fetches failed); removals wait for a clean run',
+    );
   }
   return result;
 }

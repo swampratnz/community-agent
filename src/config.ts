@@ -213,7 +213,11 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
   // The official machine-readable docs index (llms.txt). Fixed default; override
   // only if Anthropic moves it.
-  DOCS_INGEST_INDEX_URL: z.string().url().default('https://platform.claude.com/llms.txt'),
+  DOCS_INGEST_INDEX_URL: z
+    .string()
+    .url()
+    .startsWith('https://', 'DOCS_INGEST_INDEX_URL must be https')
+    .default('https://platform.claude.com/llms.txt'),
   // Safety caps so a bloated index can't run away (pages fetched, chunks written).
   DOCS_INGEST_MAX_PAGES: z.coerce.number().int().positive().max(5000).default(2500),
   DOCS_INGEST_MAX_CHUNKS: z.coerce.number().int().positive().max(20000).default(8000),

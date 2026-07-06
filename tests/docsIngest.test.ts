@@ -31,19 +31,21 @@ after(async () => {
 
 // --- pure ------------------------------------------------------------------
 
-test('parseDocIndex extracts and dedups .md page URLs from the index', () => {
+test('SECURITY: parseDocIndex keeps only SAME-ORIGIN .md URLs — a third-party .md in the index is dropped, never ingested as trusted', () => {
   const idx = [
     '# Index',
     '- [Overview](https://platform.claude.com/docs/en/build-with-claude/overview.md)',
     'https://platform.claude.com/docs/en/api/messages.md',
     '- [dup](https://platform.claude.com/docs/en/api/messages.md)',
+    '- [evil, same path different host](https://evil.example.com/docs/en/api/messages.md)',
     'not a url, and https://example.com/page.html should be ignored',
   ].join('\n');
-  const urls = parseDocIndex(idx);
+  const urls = parseDocIndex(idx, 'https://platform.claude.com');
   assert.deepEqual(urls.sort(), [
     'https://platform.claude.com/docs/en/api/messages.md',
     'https://platform.claude.com/docs/en/build-with-claude/overview.md',
   ]);
+  assert.ok(!urls.some((u) => u.includes('evil')), 'a foreign-origin .md must never survive the index parse');
 });
 
 test('titleForUrl derives a short stable title', () => {
@@ -68,6 +70,11 @@ test('chunkMarkdown splits by heading, prefixes the page title, and caps long se
   assert.ok(bigChunks.length >= 2, 'long section is split');
   assert.match(bigChunks[0].title, /Big \(part 1\)/);
   assert.match(bigChunks[1].title, /Big \(part 2\)/);
+
+  // A page repeating a heading disambiguates the titles (never collides/overwrites).
+  const dup = ['## Examples', 'first', '## Examples', 'second'].join('\n');
+  const dupTitles = chunkMarkdown('docs: y', dup).map((c) => c.title);
+  assert.equal(new Set(dupTitles).size, dupTitles.length, 'duplicate-heading chunk titles are made unique');
 });
 
 test('shouldRunDocsIngest: first run always, then only after ~a week', () => {

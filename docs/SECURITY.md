@@ -309,7 +309,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   first-party HTTPS source** (`DOCS_INGEST_INDEX_URL` → each page's `.md`), not
   arbitrary open-web content, and no model is in the loop (deterministic
   fetch/chunk/embed; the fetch URLs come from Anthropic's own index, never from
-  chat/env). Bounds: fixed source URL (override-only), `DOCS_INGEST_MAX_PAGES`/
+  chat/env). The "first-party source" claim is **enforced, not assumed**:
+  `parseDocIndex` keeps only `.md` URLs whose origin matches
+  `DOCS_INGEST_INDEX_URL` (which must be `https://`), so a stray or compromised
+  third-party link in the upstream index is dropped rather than ingested as
+  trusted — pinned by a `SECURITY:` test. Removals are also fail-safe: stale
+  sections are pruned only on a **zero-failure** run (a failed fetch is
+  indistinguishable from a removed page, so a transient blip can never delete
+  live content — a genuinely-removed page waits for the next clean run). Bounds:
+  fixed source URL (override-only), `DOCS_INGEST_MAX_PAGES`/
   `DOCS_INGEST_MAX_CHUNKS` caps, polite fetch concurrency, and a redeploy-safe
   ~weekly freshness guard. Provenance safety mirrors the refresh: writes only
   ever touch existing `'docs'` rows or create new ones — a human- (or other-)
