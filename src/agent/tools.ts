@@ -33,6 +33,8 @@ import {
   listAnswerFeedback,
   listContextDigests,
   listKnowledge,
+  listOwnReports,
+  listOwnSuggestions,
   listReports,
   listRoster,
   listSuggestions,
@@ -619,11 +621,52 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
     { annotations: { readOnlyHint: false } },
   );
 
+  const mySubmissions = tool(
+    'my_submissions',
+    "List the caller's OWN previously-filed suggestions and content reports — id, a short content preview, " +
+      'current status, and when each was filed. Use this when a member asks what happened to something ' +
+      'they submitted earlier (e.g. "what happened to my report?"). Never returns another member\'s ' +
+      "content or the reviewing admin's identity — only the shared admin queue (list_suggestions/" +
+      'list_reports) exposes that, and this tool never reaches it.',
+    {},
+    async () => {
+      const [suggestions, reports] = await Promise.all([
+        listOwnSuggestions(caller.platform, caller.userId, 10),
+        listOwnReports(caller.platform, caller.userId, 10),
+      ]);
+
+      if (suggestions.length === 0 && reports.length === 0) {
+        return text("You haven't filed any suggestions or reports yet.", true);
+      }
+
+      const lines: string[] = [];
+      if (suggestions.length > 0) {
+        lines.push('Your suggestions:');
+        for (const s of suggestions) {
+          lines.push(
+            `- #${s.id} [${s.status}] ${truncateForEcho(s.content)} — filed ${formatRelativeAge(s.createdAt)}`,
+          );
+        }
+      }
+      if (reports.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('Your reports:');
+        for (const r of reports) {
+          lines.push(
+            `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — filed ${formatRelativeAge(r.createdAt)}`,
+          );
+        }
+      }
+      return text(lines.join('\n'));
+    },
+  );
+
   const suggestImprovement = tool(
     'suggest_improvement',
     "Record a member's suggestion for how this assistant/community bot could be improved, so the human " +
       'maintainers see it. Capture only: a human reviews these and decides — never promise the change ' +
-      'will be built. Members cannot read the queue back; admins triage it with list_suggestions.',
+      'will be built. The shared queue stays admin-only (triaged with list_suggestions); the member can ' +
+      'check their own status with my_submissions.',
     {
       content: z
         .string()
@@ -1914,6 +1957,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter)
       forgetMe,
       reportContent,
       withdrawReport,
+      mySubmissions,
       suggestImprovement,
       rateAnswer,
       setResponseStyleTool,

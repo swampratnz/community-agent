@@ -49,8 +49,13 @@ export const MEMBER_TOOLS = [
   // Reporter can retract their OWN report(s) — scoped in SQL to
   // reporter_user_id, so it can never touch anyone else's report.
   'mcp__community__withdraw_report',
-  // Write-only into the member's own queue (rate-capped); the read side
-  // (list_suggestions) is admin-tier — a member can never read the queue.
+  // Self-scoped read of the caller's OWN suggestions/reports (never the
+  // shared queue, never another member's rows, never reviewer identity) —
+  // the pull-based counterpart to the best-effort resolution DMs.
+  'mcp__community__my_submissions',
+  // Write-only into the member's own queue (rate-capped); the shared-queue
+  // read side (list_suggestions) is admin-tier — a member can never read
+  // anyone else's suggestion, only their own via my_submissions.
   'mcp__community__suggest_improvement',
   // Write-only, boolean-only rating of the bot's own last answer to the
   // caller (rate-capped); the read side (list_answer_feedback) is
