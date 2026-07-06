@@ -82,6 +82,10 @@ const {
   createAnswerFeedback,
   listAnswerFeedback,
   RATE_ANSWER_DAILY_LIMIT,
+  recordAdminDigestSent,
+  getMyDataSummary,
+  addWarning,
+  countActiveWarnings,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -2775,5 +2779,223 @@ test(
     assert.ok(purgedRater >= 1, "purge count includes the rater's own feedback rows");
     const afterRaterPurge = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [rater]);
     assert.equal(afterRaterPurge.rows.length, 0, "the rater's own feedback rows are gone after their purge");
+  },
+);
+
+// --- Self-service data summary (my_data, issue #188 — the IPP6 access-right
+// counterpart to forget_me/purge_user_data's deletion path) --------------------
+
+test(
+  'SECURITY: repository: getMyDataSummary counts reconcile PER-TABLE with forget_me/purgeUserData, and never counts member_notes/member_warnings/server_roster/admin_digest_sends/answer_feedback even though purgeUserData deletes all of them too (issue #188)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-my-data-user`;
+    const conversationId = `${RUN}-c-my-data`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'my own message one',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'my own message two',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a reply to me',
+      meta: { replyToUserId: userId },
+    });
+
+    await saveKnowledge({ content: 'a fact sourced from this user', sourceUserId: userId });
+    const suggestion = await createSuggestion({ platform: 'discord', userId, content: 'my idea' });
+    const report = await createContentReport({
+      platform: 'discord',
+      reporterUserId: userId,
+      conversationId,
+      reason: 'my report',
+    });
+    assert.ok(suggestion && report, 'fixtures recorded');
+    await setResponseStyle('discord', userId, 'plain');
+
+    // Fixtures for tables getMyDataSummary must NEVER count or query, even
+    // though forget_me/purgeUserData deletes every one of them too (issue
+    // #45 for member_notes specifically; the others by the same "purge-only,
+    // never member-readable" boundary).
+    await addMemberNote({
+      platform: 'discord',
+      userId,
+      note: 'admin-only context about this member',
+      createdBy: `${RUN}-my-data-admin`,
+    });
+    await addWarning({
+      platform: 'discord',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Roster Name' });
+    await recordAdminDigestSent('discord', userId);
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+      'answer_feedback fixture must be recorded',
+    );
+
+    const summary = await getMyDataSummary('discord', userId);
+    assert.equal(summary.ownMessages, 2, "counts the caller's own inbound messages");
+    assert.equal(summary.repliesToThem, 1, "counts the bot's replies to the caller");
+    assert.equal(summary.knowledgeEntries, 1);
+    assert.equal(summary.reportsFiled, 1);
+    assert.equal(summary.suggestionsFiled, 1);
+    assert.equal(summary.responseStyle, 'plain');
+    assert.deepEqual(
+      Object.keys(summary).sort(),
+      [
+        'knowledgeEntries',
+        'ownMessages',
+        'repliesToThem',
+        'reportsFiled',
+        'responseStyle',
+        'suggestionsFiled',
+      ],
+      'SECURITY: getMyDataSummary never grows a member_notes/warnings/roster/digest-sends/feedback field',
+    );
+
+    // Per-table reconcile (NOT total): forget_me/purgeUserData deletes a
+    // strict SUPERSET of what getMyDataSummary reports. This asserts the
+    // divergence is intended, not a bug a naive "reconcile the totals"
+    // implementation would paper over by adding a member_notes count.
+    const reportedTotal =
+      summary.ownMessages +
+      summary.repliesToThem +
+      summary.knowledgeEntries +
+      summary.reportsFiled +
+      summary.suggestionsFiled;
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(
+      purged > reportedTotal,
+      'SECURITY: forget_me deletes strictly more than my_data ever reported — member_notes, member_warnings, ' +
+        'server_roster, admin_digest_sends, and answer_feedback are purged despite never being surfaced',
+    );
+
+    const afterPurge = await getMyDataSummary('discord', userId);
+    assert.deepEqual(
+      afterPurge,
+      {
+        ownMessages: 0,
+        repliesToThem: 0,
+        knowledgeEntries: 0,
+        reportsFiled: 0,
+        suggestionsFiled: 0,
+        responseStyle: 'standard',
+      },
+      'every table getMyDataSummary reports is empty after purge — reconciled per-table with the DELETE',
+    );
+
+    // And the excluded tables are indeed gone too, proving purgeUserData's
+    // superset claim above rather than just asserting a bigger number.
+    const remainingNotes = await listMemberNotes('discord', userId);
+    assert.equal(
+      remainingNotes.length,
+      0,
+      'member_notes purged even though my_data never reported it (issue #45)',
+    );
+    assert.equal(
+      await countActiveWarnings('discord', userId),
+      0,
+      'member_warnings purged though never reported',
+    );
+    const { rows: rosterRows } = await pool.query(
+      `SELECT 1 FROM server_roster WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(rosterRows.length, 0, 'server_roster purged though never reported');
+    const { rows: digestRows } = await pool.query(
+      `SELECT 1 FROM admin_digest_sends WHERE platform = 'discord' AND platform_user_id = $1`,
+      [userId],
+    );
+    assert.equal(digestRows.length, 0, 'admin_digest_sends purged though never reported');
+    const { rows: feedbackRows } = await pool.query(
+      `SELECT 1 FROM answer_feedback WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(feedbackRows.length, 0, 'answer_feedback purged though never reported');
+  },
+);
+
+test(
+  'SECURITY: repository: getMyDataSummary aggregates across identities linked via link_member, exactly like forget_me/purgeUserData does — so the counts a member sees always match what forget_me would actually erase',
+  { skip },
+  async () => {
+    const discordUser = `${RUN}-my-data-cascade-d`;
+    const whatsappUser = `${RUN}-my-data-cascade-w`;
+    const conversationId = `${RUN}-c-my-data-cascade`;
+    await upsertMember({ platform: 'discord', userId: discordUser, role: 'member', addedBy: `${RUN}-admin` });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappUser,
+      role: 'member',
+      addedBy: `${RUN}-admin`,
+    });
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: discordUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'discord-side message',
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: whatsappUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'whatsapp-side message',
+    });
+
+    assert.equal(
+      (await getMyDataSummary('discord', discordUser)).ownMessages,
+      1,
+      'before linking, each identity is independent',
+    );
+    assert.equal((await getMyDataSummary('whatsapp', whatsappUser)).ownMessages, 1);
+
+    await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+    assert.equal(
+      (await getMyDataSummary('discord', discordUser)).ownMessages,
+      2,
+      'SECURITY: after linking, the summary from the discord identity includes the linked whatsapp message too — matching exactly what forget_me from either identity would erase',
+    );
+    assert.equal(
+      (await getMyDataSummary('whatsapp', whatsappUser)).ownMessages,
+      2,
+      'symmetric: the whatsapp identity sees the linked discord message too',
+    );
+
+    const purged = await purgeUserData('discord', discordUser);
+    assert.ok(purged >= 2, 'a single forget_me call from either linked identity purges both');
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      discordUser,
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      whatsappUser,
+    ]);
   },
 );

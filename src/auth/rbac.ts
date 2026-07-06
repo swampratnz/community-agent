@@ -57,6 +57,12 @@ export const MEMBER_TOOLS = [
   // configured limit — never a warning's reason/excerpt (admin-only context,
   // see moderation_history) and never another member's warnings.
   'mcp__community__my_warnings',
+  // Self-scoped, read-only summary of what's stored about the caller —
+  // counts mirroring exactly what forget_me/purge_user_data would delete,
+  // scoped the same way (own identity + linked identities). Never queries
+  // member_notes (issue #45: no member self-access to notes about
+  // themselves) or any other admin-only table.
+  'mcp__community__my_data',
   // Write-only into the member's own queue (rate-capped); the shared-queue
   // read side (list_suggestions) is admin-tier — a member can never read
   // anyone else's suggestion, only their own via my_submissions.
