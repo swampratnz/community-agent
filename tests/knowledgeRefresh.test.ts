@@ -64,9 +64,44 @@ test(
 );
 
 test(
+  'SECURITY: refresh never overwrites a human-curated entry that shares a fixed title — it skips, so unreviewed content can never inherit trusted (non-auto) provenance',
+  { skip },
+  async () => {
+    const title = REFRESH_TOPICS[0].title;
+    await pool.query(`DELETE FROM knowledge WHERE title = ANY($1)`, [[...REFRESH_TITLES]]);
+    // A human curates an entry that happens to share the fixed title (the titles
+    // are printed in docs and visible via list_knowledge, so this is a real path).
+    await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ('global', $1, $2, 'admin')`,
+      [title, 'Human-curated, trusted content.'],
+    );
+
+    const res = await runKnowledgeRefresh(async () => 'Fresh unreviewed web briefing.');
+
+    const rows = (
+      await pool.query(
+        `SELECT content, created_by_role FROM knowledge WHERE title = $1 AND scope = 'global'`,
+        [title],
+      )
+    ).rows;
+    assert.equal(rows.length, 1, 'no colliding duplicate row is created');
+    assert.equal(rows[0].created_by_role, 'admin', 'the human entry keeps its trusted provenance');
+    assert.equal(
+      rows[0].content,
+      'Human-curated, trusted content.',
+      'the human entry is never overwritten with unreviewed research',
+    );
+    assert.ok(res.skipped >= 1, 'the collided topic is reported skipped, not created/updated');
+  },
+);
+
+test(
   'runKnowledgeRefresh upserts one entry per topic (create then update, never duplicate)',
   { skip },
   async () => {
+    // Order-independent: other tests in this file also create these fixed-title
+    // entries, so start from a clean slate to assert the create-vs-update counts.
+    await pool.query(`DELETE FROM knowledge WHERE title = ANY($1)`, [[...REFRESH_TITLES]]);
     // First run: a briefing for every topic → all created.
     const first = await runKnowledgeRefresh(async () => 'First briefing bullet.');
     assert.equal(first.topics, REFRESH_TOPICS.length);

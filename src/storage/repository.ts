@@ -656,12 +656,19 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
 export async function upsertGlobalKnowledgeByTitle(
   title: string,
   content: string,
-): Promise<{ id: number; created: boolean }> {
+): Promise<{ id: number; created: boolean } | 'title-taken-by-human'> {
+  // Look at whatever already owns this (title, global) — including its
+  // provenance. The quarantine model downstream (knowledge_search wrapping,
+  // shortcut exclusion) keys off created_by_role='auto', so this write must
+  // NEVER splice unreviewed research into a human-owned row, nor create a
+  // colliding duplicate. The fixed titles are printed in docs/CHANGELOG and
+  // visible via list_knowledge, so a human recreating one is a real path.
   const { rows } = await pool.query(
-    `SELECT id FROM knowledge WHERE title = $1 AND scope = 'global' ORDER BY id LIMIT 1`,
+    `SELECT id, created_by_role FROM knowledge WHERE title = $1 AND scope = 'global' ORDER BY id LIMIT 1`,
     [title],
   );
   if (rows[0]) {
+    if (rows[0].created_by_role !== 'auto') return 'title-taken-by-human';
     const id = Number(rows[0].id);
     await updateKnowledge({ id, content });
     return { id, created: false };

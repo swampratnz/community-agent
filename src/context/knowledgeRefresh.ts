@@ -140,9 +140,20 @@ export async function runKnowledgeRefresh(research: TopicResearcher = researchTo
       const content =
         `${briefing}\n\n(Auto-researched ${stamp} by the daily knowledge refresh — machine-generated ` +
         `from web search, may be incomplete or out of date; verify against official sources.)`;
-      const { created } = await upsertGlobalKnowledgeByTitle(topic.title, content);
-      if (created) result.created += 1;
-      else result.updated += 1;
+      const outcome = await upsertGlobalKnowledgeByTitle(topic.title, content);
+      if (outcome === 'title-taken-by-human') {
+        // A human-curated entry owns this title — never overwrite it with
+        // unreviewed research (it wouldn't be quarantined). Leave it alone.
+        logger.warn(
+          { title: topic.title },
+          'Knowledge refresh: a non-auto entry owns this title; skipping to avoid overwriting curated content',
+        );
+        result.skipped += 1;
+      } else if (outcome.created) {
+        result.created += 1;
+      } else {
+        result.updated += 1;
+      }
     } catch (err) {
       logger.warn({ err, title: topic.title }, 'Knowledge refresh: topic failed');
       result.skipped += 1;
