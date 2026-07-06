@@ -551,6 +551,22 @@ agent turn rather than dropping the message. Off by default; an operator opts
 in after confirming the threshold behaves well against their own knowledge
 base's size and content.
 
+**Guest knowledge shortcut** (`GUEST_KNOWLEDGE_SHORTCUT_ENABLED`, off by
+default, issue #165): extends the same mechanism to a gated guest's first
+message, checked *before* the static "ask an admin" pointer. Uses the identical
+`KNOWLEDGE_SHORTCUT_THRESHOLD` floor and the same zero-token local-embedding
+lookup, but calls `searchKnowledge()` with `scopeRestriction: 'global-only'`
+so a guest — who has no meaningful conversation scope — can never be served a
+platform- or conversation-scoped entry that may assume member context. On a
+hit, the guest gets the entry's content plus the usual attribution line and a
+short nudge to ask an admin for membership; `retrieval_count`/
+`last_retrieved_at` is bumped like any other shortcut hit. On a miss (or the
+flag off), the gated-guest path falls through to exactly today's behaviour —
+the `access_requests` upsert still happens either way. Unlike the member-tier
+shortcut, a served guest reply is never recorded via `recordInteraction`: the
+"gated-guest content is never stored" invariant (docs/SECURITY.md) covers the
+bot's reply here too, not just the guest's own message.
+
 ## Health & monitoring
 
 `Restart=always` (`deploy/community-agent.service`) and the startup

@@ -77,6 +77,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   browse/curation) is the one deliberate exception: it keeps browsing by
   explicit scope, unrestricted by the caller's own conversation — it's an
   admin-tier curation view, not member-facing recall.
+- **Guest FAQ shortcut is global-scope only** (`GUEST_KNOWLEDGE_SHORTCUT_ENABLED`,
+  off by default, issue #165): a gated guest's first message may be answered
+  from `knowledge` before the static "ask an admin" pointer, but the lookup
+  passes `scopeRestriction: 'global-only'` — a guest can never be served a
+  platform- or conversation-scoped entry, even at very high similarity,
+  because a guest has no meaningful conversation scope and platform-scoped
+  entries may assume member context (pinned by test). No new stored data: the
+  guest's message is used only in-memory to compute a transient embedding, and
+  neither the guest's message nor the shortcut's reply is written to
+  `interactions` — the existing "guest content not stored" invariant below
+  covers this reply too, not just the inbound message. The only DB write
+  remains the existing `access_requests` upsert, unaffected by whether a
+  shortcut answer was served.
 - **Recalled content is quarantined**: memories are injected into the *user*
   turn inside a delimited `<recalled-messages>` block with angle brackets
   stripped (so recalled text can't fake a closing tag), and the system prompt
