@@ -228,6 +228,21 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Skip the agent turn entirely when a message near-exactly matches an
+  // existing knowledge entry — replies with that entry's content directly
+  // instead of spawning a query() turn. Off by default; see src/router.ts
+  // and docs/ARCHITECTURE.md "Known cost/latency characteristic".
+  KNOWLEDGE_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Cosine-similarity floor for the knowledge shortcut above — deliberately
+  // much stricter than KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD (0.35, the
+  // `knowledge_search` tool's "worth mentioning" floor): this bar gates an
+  // unsupervised full-turn skip, not a suggestion the model can hedge on, so
+  // it must only fire on a near-exact match. Tuned against
+  // tests/fixtures/knowledgeEval.json's negativeQueries.
+  KNOWLEDGE_SHORTCUT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -388,6 +403,8 @@ export const config = {
     usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
     upstreamLimitAlertEnabled: env.UPSTREAM_LIMIT_ALERT_ENABLED ?? false,
     ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
+    knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
+    knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
   },
   log: {
     level: env.LOG_LEVEL,
