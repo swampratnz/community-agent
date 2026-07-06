@@ -18,8 +18,15 @@ const skip = hasDb
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { parseDocIndex, titleForUrl, chunkMarkdown, shouldRunDocsIngest, runDocsIngest, DOCS_PROVENANCE } =
-  await import('../src/context/docsIngest.js');
+const {
+  parseDocIndex,
+  titleForUrl,
+  filterExcludedUrls,
+  chunkMarkdown,
+  shouldRunDocsIngest,
+  runDocsIngest,
+  DOCS_PROVENANCE,
+} = await import('../src/context/docsIngest.js');
 
 after(async () => {
   if (hasDb) {
@@ -50,6 +57,24 @@ test('SECURITY: parseDocIndex keeps only SAME-ORIGIN .md URLs — a third-party 
 
 test('titleForUrl derives a short stable title', () => {
   assert.equal(titleForUrl('https://platform.claude.com/docs/en/api/messages.md'), 'docs: api/messages');
+});
+
+test('filterExcludedUrls drops pages at/under an excluded prefix, keeps everything else (and prefix boundaries are respected)', () => {
+  const base = 'https://platform.claude.com/docs/en';
+  const urls = [
+    `${base}/api/messages.md`,
+    `${base}/api/python.md`, // the section index page itself
+    `${base}/api/python/client.md`, // under it
+    `${base}/api/pythonic/thing.md`, // NOT under api/python (boundary)
+    `${base}/build-with-claude/tool-use.md`,
+  ];
+  const kept = filterExcludedUrls(urls, ['api/python', 'api/go']);
+  assert.deepEqual(kept, [
+    `${base}/api/messages.md`,
+    `${base}/api/pythonic/thing.md`,
+    `${base}/build-with-claude/tool-use.md`,
+  ]);
+  assert.equal(filterExcludedUrls(urls, []).length, urls.length, 'empty exclude list keeps everything');
 });
 
 test('chunkMarkdown splits at H2 only (### folds inline), prefixes the page title, and caps long sections', () => {
