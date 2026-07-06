@@ -67,6 +67,9 @@ export const MEMBER_TOOLS = [
   'mcp__community__rate_answer',
   // Self-service, non-destructive, instantly reversible — no CONFIRM gate.
   'mcp__community__set_response_style',
+  // Same self-service shape as set_response_style, closed enum — no CONFIRM
+  // gate (issue #189).
+  'mcp__community__set_language_preference',
   // Time-windowed recap of the caller's OWN current conversation (issue
   // #167) — always scoped to caller.platform/caller.conversationId, never a
   // model-supplied id; same conversation-scope discipline as

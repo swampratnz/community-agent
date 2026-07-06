@@ -453,6 +453,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   open mode too. No row means today's default (`'standard'`) behaviour —
   zero change for anyone who never calls the tool. Purge-coherent:
   `forget_me`/`purge_user_data` delete the caller's row.
+- **Standing language preference** (`language_prefs`, issue #189):
+  structurally identical to `response_style_prefs` above — a member/guest-tier
+  tool, `set_language_preference`, lets any caller opt into always receiving
+  replies in NZ English or te reo Māori regardless of what language their own
+  messages are written in, instead of relying on the existing per-message
+  mirroring (issue #68). The argument is a closed three-value enum
+  (`auto`/`en`/`mi`) — no free text, so no untrusted string is ever
+  interpolated into the system prompt (the same reason `set_response_style`
+  uses a closed enum). Non-destructive and instantly reversible by calling it
+  again, so it is deliberately **not** CONFIRM-gated. Keyed on raw
+  `(platform, user_id)` like `response_style_prefs`, so it works for a guest
+  in open mode too. No row (or `'auto'`) means today's default per-message
+  mirroring behaviour — zero change for anyone who never calls the tool. The
+  `mi` instruction block does not relax the charter's existing te reo Māori
+  caution: it explicitly re-states keeping replies simple/short, preserving
+  macrons and diacritics, keeping Claude/API terms/product names/code in
+  English, and falling back to NZ English for content the model cannot
+  render confidently and accurately in te reo Māori — preventing a standing
+  preference from forcing a low-quality translation of technical content.
+  Purge-coherent: `forget_me`/`purge_user_data` delete the caller's row.
 - **Auto-moderation** (`DISCORD_MODERATION_ENABLED`, `member_warnings`, off by
   default): when enabled, the Discord adapter scans **every** in-scope guild
   message for bad language / abuse — a privacy-posture change of the same class

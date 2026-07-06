@@ -93,6 +93,11 @@ Behaviour rules:
   set_response_style('plain') so the preference sticks across conversations.
   A one-off "explain that again more simply" should just be honoured in the
   reply itself, without calling the tool.
+- If someone asks you to ALWAYS reply in a specific language from now on
+  (e.g. "always reply to me in te reo Māori", "reply in English from now
+  on"), call set_language_preference('en' or 'mi') so it sticks across every
+  conversation. A one-off "reply in Māori just now" should just be honoured
+  in that reply, without calling the tool.
 - When you take a privileged action, briefly confirm what you did.
 `.trim();
 
@@ -101,6 +106,27 @@ This requester has asked for plain-language replies (set_response_style):
 - Avoid unexplained jargon. If you must use a Claude/API-specific term,
   define it in the same sentence, briefly.
 - Prefer short sentences and short paragraphs over nested bullet lists.
+`.trim();
+
+const EN_LANGUAGE_PREFERENCE = `
+This requester has asked to always receive replies in NZ English
+(set_language_preference), regardless of what language their own message is
+written in, unless they ask you to switch.
+`.trim();
+
+const MI_LANGUAGE_PREFERENCE = `
+This requester has asked to always receive replies in te reo Māori
+(set_language_preference), regardless of what language their own message is
+written in, unless they ask you to switch. This does NOT relax the charter's
+existing te reo guidance above — it still applies in full:
+- Keep replies simple and short rather than overreaching, and preserve
+  macrons and other diacritics exactly.
+- Keep Claude/API-specific terms, product names, and code untouched (in
+  English), same as any other language.
+- If you cannot render some content (a technical explanation, code, an error
+  message) confidently and accurately in te reo Māori, fall back to NZ
+  English for that part rather than forcing a low-quality translation —
+  accuracy comes before honouring the language preference.
 `.trim();
 
 const ROLE_NOTES: Record<CallerContext['role'], string> = {
@@ -119,6 +145,8 @@ export interface PromptPolicy {
   codeAnswers: 'off' | 'snippets' | 'full';
   /** The caller's standing reply-style preference (set_response_style). */
   responseStyle: 'standard' | 'plain';
+  /** The caller's standing reply-language preference (set_language_preference). */
+  languagePreference: 'auto' | 'en' | 'mi';
 }
 
 function codePolicyNote(policy: PromptPolicy['codeAnswers']): string {
@@ -167,6 +195,8 @@ export function buildSystemPrompt(
     ROLE_NOTES[caller.role],
     codePolicyNote(policy.codeAnswers),
     ...(policy.responseStyle === 'plain' ? [PLAIN_LANGUAGE_STYLE] : []),
+    ...(policy.languagePreference === 'en' ? [EN_LANGUAGE_PREFERENCE] : []),
+    ...(policy.languagePreference === 'mi' ? [MI_LANGUAGE_PREFERENCE] : []),
   ].join('\n\n');
 }
 

@@ -79,6 +79,8 @@ const {
   countRepliesToUser,
   getResponseStyle,
   setResponseStyle,
+  getLanguagePreference,
+  setLanguagePreference,
   createAnswerFeedback,
   listAnswerFeedback,
   RATE_ANSWER_DAILY_LIMIT,
@@ -2416,6 +2418,56 @@ test(
     assert.equal(
       await getResponseStyle('discord', userId),
       'standard',
+      'SECURITY: after purge, the caller reverts to the default as if they never set a preference',
+    );
+  },
+);
+
+test(
+  'repository: getLanguagePreference defaults to auto with no row, and round-trips through setLanguagePreference (issue #189)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-language-preference-user`;
+
+    assert.equal(
+      await getLanguagePreference('discord', userId),
+      'auto',
+      "a caller who never called set_language_preference gets today's default mirroring behaviour",
+    );
+
+    await setLanguagePreference('discord', userId, 'mi');
+    assert.equal(await getLanguagePreference('discord', userId), 'mi');
+
+    await setLanguagePreference('discord', userId, 'en');
+    assert.equal(await getLanguagePreference('discord', userId), 'en');
+
+    // Calling it again (upsert) updates in place rather than erroring or duplicating.
+    await setLanguagePreference('discord', userId, 'auto');
+    assert.equal(await getLanguagePreference('discord', userId), 'auto');
+    const { rows } = await pool.query(
+      `SELECT count(*) AS n FROM language_prefs WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(Number(rows[0].n), 1, 'setLanguagePreference upserts one row, never duplicates');
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me/purge_user_data) removes the language preference (issue #189)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-language-preference-purge-user`;
+
+    await setLanguagePreference('discord', userId, 'mi');
+    assert.equal(await getLanguagePreference('discord', userId), 'mi');
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the language-preference row');
+    assert.equal(
+      await getLanguagePreference('discord', userId),
+      'auto',
       'SECURITY: after purge, the caller reverts to the default as if they never set a preference',
     );
   },
