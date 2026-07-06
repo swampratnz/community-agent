@@ -15,7 +15,9 @@ jobs:
   labels:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false # the script uses GH_TOKEN env, not git
       - name: Create labels
         env:
           GH_TOKEN: ${{ github.token }}

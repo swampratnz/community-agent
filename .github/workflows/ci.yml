@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+# Rapid pushes to a PR would otherwise stack redundant full CI runs (each with
+# its own pgvector service). Supersede-and-cancel applies to PR runs ONLY —
+# pushes to main always run to completion. A superseded run concludes
+# `cancelled`, not `failure`, so ci-retry / pipeline-pr-autofix (both keyed on
+# failure) ignore it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -31,8 +40,13 @@ jobs:
       WHATSAPP_PROVIDER: disabled
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # persist-credentials:false everywhere in this repo's workflows: no CI
+      # step needs a git credential after checkout, and `npm test` executes
+      # PR code, so the job token must not sit readable in .git/config.
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm
@@ -45,8 +59,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm
@@ -71,8 +87,10 @@ jobs:
       DISCORD_GUILD_ID: ci-dummy-guild
       WHATSAPP_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: npm

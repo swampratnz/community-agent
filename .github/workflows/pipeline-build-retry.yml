@@ -39,6 +39,7 @@ jobs:
       github.event.workflow_run.event == 'issues' &&
       github.event.workflow_run.run_attempt < 3
     runs-on: ubuntu-latest
+    timeout-minutes: 5 # a single gh call; don't let a hung runner sit for the 6 h default
     steps:
       - name: Re-run the failed build
         env:

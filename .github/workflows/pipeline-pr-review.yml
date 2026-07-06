@@ -44,8 +44,14 @@ jobs:
         if: env.HAS_TOKEN != 'true'
         run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR review worker is inert. Add the secret + install the Claude GitHub App to enable."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
         if: env.HAS_TOKEN == 'true'
+        with:
+          # The review agent reads untrusted PR content and its final text is
+          # posted publicly, so don't leave the job's GITHUB_TOKEN readable in
+          # .git/config; nothing here needs a persisted git credential (the
+          # post step uses GH_TOKEN env).
+          persist-credentials: false
 
       # Read-only review: produce the verdict as the FINAL text message. Only
       # read tools are allowed, so there are no permission denials. The model is
@@ -58,7 +64,7 @@ jobs:
       - id: analyze
         if: env.HAS_TOKEN == 'true'
         continue-on-error: true # a bad run must still reach the post step below
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@81be147df53fcd867cac5c68e80f40ba7b29c2b6 # v1.0.165
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The build worker opens its PRs as the `claude[bot]` GitHub App, and
@@ -90,8 +96,12 @@ jobs:
             - A one-line verdict: "LGTM, looks good and ready for a human to merge",
               or "Changes requested", or "Needs a human decision".
             - Then the findings as short bullets, or "No issues found." if clean.
+          # --model pinned explicitly (like every other agent workflow here)
+          # so the reviewer matches the documented model plan in
+          # docs/PIPELINE.md instead of floating on the action's default.
           claude_args: |
             --max-turns 60
+            --model sonnet
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob,TodoWrite"
 
       # Deterministic: extract the review text from the action's execution log
