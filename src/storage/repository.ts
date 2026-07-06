@@ -190,6 +190,58 @@ export async function searchMemory(
   }));
 }
 
+export interface ConversationHistoryEntry {
+  content: string;
+  userName: string | null;
+  direction: string;
+  createdAt: Date;
+  platform: Platform;
+  /** Platform-native conversation/channel id (Discord jump links, issue #137). */
+  conversationId: string;
+  /** Platform-native message id, when it was captured (issue #48). Null for pre-archiving rows. */
+  messageId: string | null;
+  isDirect: boolean;
+}
+
+/**
+ * Recap query for the `catch_up` tool (issue #167): the MOST RECENT `limit`
+ * interactions in one conversation since `since`, returned oldest→newest for
+ * chronological display. Ordering matters here — `ORDER BY created_at ASC
+ * LIMIT n` would return the OLDEST n rows in the window (the opposite of a
+ * recap), so this orders DESC to pick the most recent n and reverses in JS.
+ * Always scoped to the exact (platform, conversationId) the caller passes —
+ * callers (agent/tools.ts) must pass only `caller.platform`/
+ * `caller.conversationId`, never a model-supplied id.
+ */
+export async function recentConversationHistory(
+  platform: Platform,
+  conversationId: string,
+  since: Date,
+  limit: number,
+): Promise<ConversationHistoryEntry[]> {
+  const { rows } = await pool.query(
+    `SELECT content, user_name, direction, created_at, platform,
+            conversation_id, message_id, is_direct
+       FROM interactions
+      WHERE platform = $1 AND conversation_id = $2 AND created_at >= $3
+      ORDER BY created_at DESC
+      LIMIT $4`,
+    [platform, conversationId, since, limit],
+  );
+  return rows
+    .map((r) => ({
+      content: r.content,
+      userName: r.user_name,
+      direction: r.direction,
+      createdAt: r.created_at,
+      platform: r.platform,
+      conversationId: r.conversation_id,
+      messageId: r.message_id,
+      isDirect: r.is_direct,
+    }))
+    .reverse();
+}
+
 /**
  * Honour a platform-level message deletion (issue #48): hard-delete the
  * stored copy. Returns the number of rows removed (0 when the message was
