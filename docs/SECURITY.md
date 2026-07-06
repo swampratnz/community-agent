@@ -255,6 +255,22 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deletes its still-*pending* candidates; an accepted candidate (and the
   knowledge entry it produced) is unaffected, matching how `knowledge`
   itself outlives an unrelated purge.
+- **Daily knowledge refresh** (`KNOWLEDGE_REFRESH_ENABLED`, off by default —
+  src/context/knowledgeRefresh.ts): the one path that writes to `knowledge`
+  **without** the human-curation gate above — a deliberate, operator-enabled
+  exception for keeping a couple of fast-moving Claude/Anthropic topics
+  current. Its blast radius is bounded by construction: the topic list is
+  **fixed in code** (not user- or env-supplied, so chat/injection can't steer
+  what gets researched), each topic upserts a **single** `global` entry by a
+  stable title (the base is refreshed, never grown unbounded), and every entry
+  carries an explicit *"auto-researched … machine-generated … verify against
+  official sources"* footer so both readers and the answering model know it is
+  unreviewed. Web-search results are treated as untrusted data in the research
+  prompt (summarise, never follow), matching the WebSearch posture elsewhere;
+  the job defers to a busy live bot (usage-alert threshold) and is bounded to
+  `KNOWLEDGE_REFRESH_MAX_TURNS` per topic. This does not relax the invariant
+  for member/admin-authored knowledge or for candidates — only this narrow,
+  labelled, fixed-topic surface publishes without review.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The

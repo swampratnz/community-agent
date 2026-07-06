@@ -616,6 +616,47 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+/**
+ * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
+ * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic
+ * has a stable title, so this refreshes the SAME row every run rather than
+ * accumulating duplicates. Updates the existing row's content (re-embedding via
+ * `updateKnowledge`) or inserts a new one. Returns the id and whether it was
+ * created. Deliberately global-scope only — the refresh never writes anywhere
+ * else.
+ */
+export async function upsertGlobalKnowledgeByTitle(
+  title: string,
+  content: string,
+): Promise<{ id: number; created: boolean }> {
+  const { rows } = await pool.query(
+    `SELECT id FROM knowledge WHERE title = $1 AND scope = 'global' ORDER BY id LIMIT 1`,
+    [title],
+  );
+  if (rows[0]) {
+    const id = Number(rows[0].id);
+    await updateKnowledge({ id, content });
+    return { id, created: false };
+  }
+  const saved = await saveKnowledge({ title, content, scope: 'global', createdByRole: 'admin' });
+  return { id: saved.id, created: true };
+}
+
+/**
+ * Most recent `updated_at` across knowledge entries whose title is in `titles`
+ * — the daily knowledge refresh's freshness guard, so a redeploy (which
+ * restarts the process) can't re-run the research within the same day. Null
+ * when none of those entries exist yet (first ever run).
+ */
+export async function latestKnowledgeUpdateAt(titles: readonly string[]): Promise<Date | null> {
+  if (titles.length === 0) return null;
+  const { rows } = await pool.query(
+    `SELECT max(updated_at) AS latest FROM knowledge WHERE scope = 'global' AND title = ANY($1)`,
+    [[...titles]],
+  );
+  return rows[0]?.latest ?? null;
+}
+
 // --- Membership (three-tier RBAC) -------------------------------------------
 
 export type StoredRole = 'admin' | 'member';

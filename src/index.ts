@@ -7,6 +7,11 @@ import { closeDb, healthcheck } from './storage/db.js';
 import { latestContextDigestAt, purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
 import { startRosterRetentionPurge } from './rosterRetention.js';
 import { runContextBuilder, shouldRunContextBuilder } from './context/builder.js';
+import {
+  latestRefreshAt,
+  runKnowledgeRefresh,
+  shouldRunKnowledgeRefresh,
+} from './context/knowledgeRefresh.js';
 import { writeCommunityContextExport } from './context/export.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
@@ -58,6 +63,31 @@ function startContextBuilder(): ReturnType<typeof setInterval> | null {
       }
     } catch (err) {
       logger.error({ err }, 'Context builder run failed');
+    }
+  };
+  void run();
+  const timer = setInterval(() => void run(), 6 * 3_600_000);
+  timer.unref();
+  return timer;
+}
+
+/**
+ * Daily knowledge refresh (off unless KNOWLEDGE_REFRESH_ENABLED). Ticks every
+ * 6h but a ~daily freshness guard (last auto-entry's updated_at) makes it
+ * effectively one run per day and restart-safe, so frequent redeploys can't
+ * re-trigger the web research. Unlike the review-gated context builder, this
+ * writes straight to the knowledge base — see src/context/knowledgeRefresh.ts.
+ */
+function startKnowledgeRefresh(): ReturnType<typeof setInterval> | null {
+  if (!config.knowledgeRefresh.enabled) return null;
+  const run = async () => {
+    try {
+      const latest = await latestRefreshAt();
+      if (!shouldRunKnowledgeRefresh(latest, Date.now())) return;
+      const result = await runKnowledgeRefresh();
+      logger.info(result, 'Knowledge refresh run complete');
+    } catch (err) {
+      logger.error({ err }, 'Knowledge refresh run failed');
     }
   };
   void run();
@@ -121,6 +151,9 @@ async function main(): Promise<void> {
   // 4e. Optional offline context builder (disabled unless configured).
   const contextBuilderTimer = startContextBuilder();
 
+  // 4e-bis. Optional daily knowledge refresh (disabled unless configured).
+  const knowledgeRefreshTimer = startKnowledgeRefresh();
+
   // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
   const adminDigestTimer = startAdminDigest(adapters);
 
@@ -132,6 +165,7 @@ async function main(): Promise<void> {
     clearInterval(disconnectAlertTimer);
     if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
+    if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
     if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));
