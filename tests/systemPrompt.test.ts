@@ -151,6 +151,40 @@ test('guidelines pin a conservative rate_answer trigger: clear explicit cues onl
   assert.match(prompt, /When in doubt, don't call it/);
 });
 
+test('system prompt includes the current NZ date and weekday, day-granularity only (issue #169)', () => {
+  const winter = buildSystemPrompt(
+    caller,
+    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    undefined,
+    new Date('2026-07-06T02:00:00Z'),
+  );
+  assert.match(winter, /Current date \(NZ\): Monday, 6 July 2026/);
+  // Day-granularity only: no time-of-day, so the prompt stays byte-identical
+  // (and cache-stable) across turns within the same NZ day.
+  assert.doesNotMatch(winter, /\d{1,2}:\d{2}/);
+});
+
+test('the NZST/NZDT transition is handled by Intl, not a hard-coded offset (issue #169)', () => {
+  // Same UTC time-of-day (11:30 UTC), one NZST (winter, UTC+12) instant and
+  // one NZDT (summer, UTC+13) instant. The +13 offset rolls this instant
+  // over to the next NZ calendar day; the +12 offset does not. A hard-coded
+  // fixed offset could not produce this divergence from the same wall time.
+  const winter = buildSystemPrompt(
+    caller,
+    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    undefined,
+    new Date('2026-07-05T11:30:00Z'),
+  );
+  const summer = buildSystemPrompt(
+    caller,
+    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    undefined,
+    new Date('2026-01-05T11:30:00Z'),
+  );
+  assert.match(winter, /Current date \(NZ\): Sunday, 5 July 2026/);
+  assert.match(summer, /Current date \(NZ\): Tuesday, 6 January 2026/);
+});
+
 test('memory block is capped per entry', () => {
   const rendered = renderMemoryContext([hit('x'.repeat(5000))]);
   assert.ok(rendered.length < 1000, 'long memories must be truncated');
