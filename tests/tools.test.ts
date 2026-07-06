@@ -36,6 +36,9 @@ const {
   buildToolServer,
   formatKnowledgeSearchResults,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  CATCH_UP_DEFAULT_HOURS,
+  CATCH_UP_MAX_HOURS,
+  CATCH_UP_MAX_MESSAGES,
 } = await import('../src/agent/tools.js');
 const {
   MODERATION_ACTION_KINDS,
@@ -64,6 +67,8 @@ const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
+const CATCH_UP_HANDLER_SCOPE = `${RUN}-catch-up-handler`;
+const CATCH_UP_HANDLER_OTHER_SCOPE = `${RUN}-catch-up-handler-other`;
 const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
@@ -79,6 +84,9 @@ after(async () => {
       `${REPORT_CONTENT_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [REMEMBER_SEARCH_HANDLER_SCOPE]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [CATCH_UP_HANDLER_SCOPE, CATCH_UP_HANDLER_OTHER_SCOPE],
+    ]);
     await pool.query(`DELETE FROM answer_feedback WHERE user_id LIKE $1`, [`${RATE_ANSWER_HANDLER_USER}%`]);
     // Safety net for the knowledge-candidate tool tests (issue #102): the
     // action_kind values are unique to this feature, so this can't collide
@@ -726,6 +734,222 @@ test(
         `https://discord\\.com/channels/${config.discord.guildId}/${REMEMBER_SEARCH_HANDLER_SCOPE}/${RUN}-jump-msg`,
       ),
     );
+  },
+);
+
+// catch_up tool handler (issue #167): a time-windowed recap of the caller's
+// OWN current conversation. Exercised through the real MCP handler (not just
+// the repository function) so the RBAC-adjacent scope lock — always
+// caller.platform/caller.conversationId, never a model-supplied id — is
+// proven at the same layer a real tool call goes through.
+function catchUpHandlerFor(conversationId: string) {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId,
+  };
+  const server = buildToolServer(caller, adapter);
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, unknown>,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['catch_up'];
+}
+
+test(
+  "catch_up tool handler returns this conversation's recent history oldest→newest, untrusted-wrapped, with a Discord jump link when a message id was captured (issue #167)",
+  { skip },
+  async () => {
+    const older = `Older message ${RUN}`;
+    const newer = `Newer message ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: CATCH_UP_HANDLER_SCOPE,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: older,
+    });
+    // A small real-time gap so `created_at` orders deterministically, rather
+    // than relying on two INSERTs landing in the same clock tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: CATCH_UP_HANDLER_SCOPE,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: newer,
+      messageId: `${RUN}-catch-up-jump-msg`,
+    });
+
+    const registeredTool = catchUpHandlerFor(CATCH_UP_HANDLER_SCOPE);
+    const result = await registeredTool.handler({});
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(
+      text,
+      /untrusted past chat content/,
+      'must be wrapped in untrusted(), same as remember_search',
+    );
+    assert.match(text, new RegExp(older.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(text, new RegExp(newer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.ok(
+      text.indexOf(older) < text.indexOf(newer),
+      'must be ordered oldest -> newest, not newest first',
+    );
+    assert.match(
+      text,
+      new RegExp(
+        `https://discord\\.com/channels/${config.discord.guildId}/${CATCH_UP_HANDLER_SCOPE}/${RUN}-catch-up-jump-msg`,
+      ),
+    );
+  },
+);
+
+test(
+  'catch_up returns a plain "nothing new" reply for an empty window, not an error or an empty tool-result block (issue #167)',
+  { skip },
+  async () => {
+    const registeredTool = catchUpHandlerFor(`${RUN}-catch-up-empty`);
+    const result = await registeredTool.handler({});
+
+    assert.equal(result.isError, false, 'an empty recap is not an error condition');
+    const text = result.content[0]?.text ?? '';
+    assert.match(text, /nothing new/i);
+    assert.ok(text.length > 0, 'must not be an empty tool-result block');
+  },
+);
+
+test(
+  "SECURITY: catch_up never returns another conversation's history, even when the model passes a crafted conversationId argument — always caller.platform/caller.conversationId (issue #167)",
+  { skip },
+  async () => {
+    const mineContent = `Mine only ${RUN}`;
+    const otherContent = `Other conversation only — must never leak ${RUN}`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: CATCH_UP_HANDLER_SCOPE,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: mineContent,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: CATCH_UP_HANDLER_OTHER_SCOPE,
+      userId: 'member-1',
+      role: 'member',
+      direction: 'inbound',
+      content: otherContent,
+    });
+
+    const registeredTool = catchUpHandlerFor(CATCH_UP_HANDLER_SCOPE);
+    // A crafted call attempting to smuggle in another conversation id — the
+    // zod schema has no such field, so this must be silently ignored, never
+    // routed to the query.
+    const result = await registeredTool.handler({ conversationId: CATCH_UP_HANDLER_OTHER_SCOPE });
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, new RegExp(mineContent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(
+      text,
+      new RegExp(otherContent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      "SECURITY: another conversation's content must never appear, even for the same user id and even under a crafted arg",
+    );
+  },
+);
+
+test(
+  '`hours` is clamped server-side to CATCH_UP_MAX_HOURS regardless of what is requested (issue #167)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-catch-up-clamp`;
+    const insideMaxContent = `Inside max window ${RUN}`;
+    const beyondMaxContent = `Beyond max window — must never surface ${RUN}`;
+
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, created_at)
+       VALUES ('discord',$1,'member-1','member','inbound',$2, now() - interval '${CATCH_UP_MAX_HOURS - 1} hours')`,
+      [scope, insideMaxContent],
+    );
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, created_at)
+       VALUES ('discord',$1,'member-1','member','inbound',$2, now() - interval '${CATCH_UP_MAX_HOURS + 1} hours')`,
+      [scope, beyondMaxContent],
+    );
+
+    const registeredTool = catchUpHandlerFor(scope);
+    // Ask for a window far larger than the hard cap.
+    const result = await registeredTool.handler({ hours: CATCH_UP_MAX_HOURS * 100 });
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, new RegExp(insideMaxContent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(
+      text,
+      new RegExp(beyondMaxContent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'a requested window beyond CATCH_UP_MAX_HOURS must be clamped server-side, never honoured verbatim',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [scope]);
+  },
+);
+
+test(
+  'catch_up returns the MOST RECENT N interactions within the window (not the oldest N), oldest→newest, capped at CATCH_UP_MAX_MESSAGES (issue #167)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-catch-up-cap`;
+    const total = CATCH_UP_MAX_MESSAGES + 5;
+
+    // gs=0 is the oldest (total minutes ago), gs=total-1 is the newest (1
+    // minute ago) — all safely inside the default 24h window. The 5 oldest
+    // (gs=0..4) must be dropped by the row cap; a naive
+    // "ORDER BY created_at ASC LIMIT n" would keep exactly those instead.
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, created_at)
+       SELECT 'discord', $1, 'member-1', 'member', 'inbound',
+              'msg-' || gs || '-' || $2,
+              now() - (($3::int - gs) * interval '1 minute')
+         FROM generate_series(0, $3::int - 1) AS gs`,
+      [scope, RUN, total],
+    );
+
+    const registeredTool = catchUpHandlerFor(scope);
+    const result = await registeredTool.handler({});
+    const text = result.content[0]?.text ?? '';
+
+    for (let i = 0; i < 5; i++) {
+      assert.doesNotMatch(
+        text,
+        new RegExp(`msg-${i}-${RUN}`),
+        `msg-${i} is older than the most-recent-${CATCH_UP_MAX_MESSAGES} cutoff and must be dropped`,
+      );
+    }
+    const firstKeptIndex = 5;
+    const lastIndex = total - 1;
+    assert.match(
+      text,
+      new RegExp(`msg-${firstKeptIndex}-${RUN}`),
+      'the oldest SURVIVING message must be present',
+    );
+    assert.match(text, new RegExp(`msg-${lastIndex}-${RUN}`), 'the newest message must be present');
+    assert.ok(
+      text.indexOf(`msg-${firstKeptIndex}-${RUN}`) < text.indexOf(`msg-${lastIndex}-${RUN}`),
+      'the surviving window must still read oldest -> newest',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [scope]);
   },
 );
 

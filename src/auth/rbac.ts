@@ -63,6 +63,11 @@ export const MEMBER_TOOLS = [
   'mcp__community__rate_answer',
   // Self-service, non-destructive, instantly reversible — no CONFIRM gate.
   'mcp__community__set_response_style',
+  // Time-windowed recap of the caller's OWN current conversation (issue
+  // #167) — always scoped to caller.platform/caller.conversationId, never a
+  // model-supplied id; same conversation-scope discipline as
+  // remember_search's default scope.
+  'mcp__community__catch_up',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */
