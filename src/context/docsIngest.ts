@@ -1,8 +1,9 @@
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
-  deleteStaleProvenancedKnowledge,
+  deleteProvenancedKnowledgeByTitles,
   latestKnowledgeUpdateAtByProvenance,
+  listGlobalKnowledgeTitlesByProvenance,
   syncGlobalKnowledgeByProvenance,
 } from '../storage/repository.js';
 
@@ -75,16 +76,36 @@ export function titleForUrl(url: string): string {
 }
 
 /**
- * Chunk a page's markdown into retrieval-sized sections split at headings, each
- * prefixed with the page title for context and capped at MAX_CHUNK_CHARS (a long
- * section is hard-split at line boundaries into "… (part N)"). Deterministic.
+ * The page a chunk title belongs to — the `titleForUrl(...)` prefix, with the
+ * ` › section` and ` (part N)`/` #N` suffixes stripped. Used to decide, at prune
+ * time, whether a stored chunk's PAGE still exists in the index (robust to a
+ * page 404-ing on a given run).
+ */
+export function pageKeyOf(chunkTitle: string): string {
+  return chunkTitle
+    .split(' › ')[0]
+    .replace(/ \(part \d+\)$/, '')
+    .replace(/ #\d+$/, '');
+}
+
+/**
+ * Chunk a page's markdown into retrieval-sized sections, each prefixed with the
+ * page title for context and capped at MAX_CHUNK_CHARS (a long section is
+ * hard-split at line boundaries into "… (part N)"). Deterministic.
+ *
+ * Splits at H2 (`##`) ONLY — `#` (the page title) and `###`+ subheadings stay
+ * inline within their parent section. Splitting at every `###` over-fragments
+ * API-reference pages (one `###` per parameter → dozens of tiny chunks and a
+ * ~50k-chunk corpus); folding them into their H2 keeps chunks coherent and the
+ * corpus an order of magnitude smaller, while the size cap still bounds any one
+ * chunk to roughly what the local embedding model can see.
  */
 export function chunkMarkdown(pageTitle: string, md: string): Array<{ title: string; content: string }> {
   const lines = md.replace(/\r\n/g, '\n').split('\n');
   const sections: Array<{ heading: string | null; body: string[] }> = [{ heading: null, body: [] }];
   for (const line of lines) {
-    if (/^#{1,3}\s+\S/.test(line)) {
-      sections.push({ heading: line.replace(/^#{1,3}\s+/, '').trim(), body: [] });
+    if (/^##\s+\S/.test(line)) {
+      sections.push({ heading: line.replace(/^##\s+/, '').trim(), body: [] });
     } else {
       sections[sections.length - 1].body.push(line);
     }
@@ -246,19 +267,18 @@ export async function runDocsIngest(
 
   await runPool(urls, config.docsIngest.concurrency, worker);
 
-  // Prune docs chunks that no longer exist upstream — but ONLY on a fully clean
-  // run. A failed page fetch is indistinguishable from a removed page here (both
-  // leave the page's titles out of `seen`), so pruning while any fetch failed
-  // could delete still-valid content over a transient blip. A genuinely-removed
-  // page is instead pruned on the next zero-failure run; lingering a stale entry
-  // is strictly safer than deleting a live one.
-  if (seen.size > 0 && result.failed === 0) {
-    result.removed = await deleteStaleProvenancedKnowledge(DOCS_PROVENANCE, [...seen]);
-  } else if (result.failed > 0) {
-    logger.info(
-      { failed: result.failed, pages: result.pages },
-      'Docs ingest: skipping prune (some page fetches failed); removals wait for a clean run',
-    );
+  // Prune docs chunks whose PAGE no longer appears in the index. Keyed off the
+  // index (`urls`), NOT off which pages we managed to fetch this run — a page
+  // still listed in the index but transiently 404/timeout stays put; only a page
+  // genuinely dropped from the index is removed. This is safe even when many
+  // pages fail on a run (the docs index habitually lists some 404 URLs), unlike
+  // a fetch-success-based prune. Scoped to the 'docs' provenance, so it can
+  // never touch a human/other entry. `seen` avoids re-listing on an empty run.
+  if (seen.size > 0) {
+    const indexPages = new Set(urls.map(titleForUrl));
+    const stored = await listGlobalKnowledgeTitlesByProvenance(DOCS_PROVENANCE);
+    const doomed = stored.filter((t) => !indexPages.has(pageKeyOf(t)));
+    result.removed = await deleteProvenancedKnowledgeByTitles(DOCS_PROVENANCE, doomed);
   }
   return result;
 }
