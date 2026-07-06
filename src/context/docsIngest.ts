@@ -227,7 +227,12 @@ export async function runDocsIngest(
 
   // Same-origin as the (fixed, official) index URL only — see parseDocIndex.
   const allowedOrigin = new URL(config.docsIngest.indexUrl).origin;
-  const urls = parseDocIndex(indexText, allowedOrigin).slice(0, config.docsIngest.maxPages);
+  // The FULL index drives prune membership; the maxPages slice bounds only what
+  // we fetch this run. Keeping these separate means a page we simply didn't
+  // fetch (because it's past the cap) is never mistaken for a removed page and
+  // deleted — it's still listed upstream.
+  const allUrls = parseDocIndex(indexText, allowedOrigin);
+  const urls = allUrls.slice(0, config.docsIngest.maxPages);
   result.pages = urls.length;
   if (urls.length === 0) {
     logger.warn('Docs ingest: index parsed to zero page URLs; leaving existing docs entries untouched');
@@ -275,7 +280,7 @@ export async function runDocsIngest(
   // a fetch-success-based prune. Scoped to the 'docs' provenance, so it can
   // never touch a human/other entry. `seen` avoids re-listing on an empty run.
   if (seen.size > 0) {
-    const indexPages = new Set(urls.map(titleForUrl));
+    const indexPages = new Set(allUrls.map(titleForUrl)); // full index, not the fetch-capped slice
     const stored = await listGlobalKnowledgeTitlesByProvenance(DOCS_PROVENANCE);
     const doomed = stored.filter((t) => !indexPages.has(pageKeyOf(t)));
     result.removed = await deleteProvenancedKnowledgeByTitles(DOCS_PROVENANCE, doomed);

@@ -176,6 +176,37 @@ test(
 );
 
 test(
+  'runDocsIngest: a page beyond DOCS_INGEST_MAX_PAGES is NOT pruned — prune keys off the FULL index, not the fetch cap',
+  { skip },
+  async () => {
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    const u2 = 'https://platform.claude.com/docs/en/api/models.md';
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+
+    // Seed both pages (default cap fetches both).
+    await runDocsIngest(fakeFetcher({ [u1]: 'Messages.', [u2]: 'Models.' }));
+
+    // Cap the fetch to one page — u2 is now past the cap but STILL in the index.
+    const orig = config.docsIngest.maxPages;
+    (config.docsIngest as { maxPages: number }).maxPages = 1;
+    try {
+      const res = await runDocsIngest(fakeFetcher({ [u1]: 'Messages.', [u2]: 'Models.' }));
+      assert.equal(res.pages, 1, 'fetch is capped to one page');
+      assert.equal(res.removed, 0, 'a still-indexed page past the fetch cap must NOT be pruned');
+    } finally {
+      (config.docsIngest as { maxPages: number }).maxPages = orig;
+    }
+
+    const kept = await pool.query(
+      `SELECT count(*) AS n FROM knowledge WHERE created_by_role = $1 AND title LIKE 'docs: api/models%'`,
+      [DOCS_PROVENANCE],
+    );
+    assert.ok(Number(kept.rows[0].n) >= 1, 'u2 survives being past the fetch cap');
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+  },
+);
+
+test(
   'SECURITY: docs ingest never overwrites or prunes a human-authored entry sharing a docs title',
   { skip },
   async () => {
