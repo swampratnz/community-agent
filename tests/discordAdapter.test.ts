@@ -181,6 +181,71 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+interface FakeImageSendable {
+  isTextBased: () => boolean;
+  isDMBased: () => boolean;
+  send: (opts: {
+    content?: string;
+    files: Array<{ attachment: Buffer; name: string; description?: string }>;
+  }) => Promise<void>;
+}
+
+/** Stubs the client's channel fetch to capture the full `send` payload sendImage builds (issue #174). */
+function stubClientForImage(adapter: InstanceType<typeof DiscordAdapter>) {
+  const sent: Array<{
+    content?: string;
+    files: Array<{ attachment: Buffer; name: string; description?: string }>;
+  }> = [];
+  const record = async (opts: (typeof sent)[number]) => {
+    sent.push(opts);
+  };
+  const client = (
+    adapter as unknown as {
+      client: { channels: { fetch: (id: string) => Promise<FakeImageSendable> } };
+    }
+  ).client;
+  client.channels.fetch = async () => ({ isTextBased: () => true, isDMBased: () => false, send: record });
+  return sent;
+}
+
+test('sendImage sets the Discord attachment description (screen-reader alt-text) to the same caption used as the message content (issue #174)', async () => {
+  const adapter = new DiscordAdapter();
+  const sent = stubClientForImage(adapter);
+  await adapter.sendImage(
+    'chan-1',
+    { data: Buffer.from('fake-image'), filename: 'image.jpg', mimeType: 'image/jpeg' },
+    'a cat wearing a hat',
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].content, 'a cat wearing a hat');
+  assert.equal(
+    sent[0].files[0].description,
+    'a cat wearing a hat',
+    'the attachment description (Discord alt-text) must be set, not left bare',
+  );
+});
+
+test('SECURITY: sendImage filters the caption once and reuses it for both content and attachment description — a secret cannot reach the alt-text unredacted (issue #174)', async () => {
+  const adapter = new DiscordAdapter();
+  const sent = stubClientForImage(adapter);
+  const secretPrompt = 'draw sk-ant-' + 'y'.repeat(30) + ' as a logo';
+  await adapter.sendImage(
+    'chan-1',
+    { data: Buffer.from('fake-image'), filename: 'image.jpg', mimeType: 'image/jpeg' },
+    secretPrompt,
+  );
+  assert.ok(!sent[0].content?.includes('sk-ant-'), 'message content must be redacted');
+  assert.ok(
+    !sent[0].files[0].description?.includes('sk-ant-'),
+    'attachment description must also be redacted — it must not bypass the outbound filter',
+  );
+  assert.equal(
+    sent[0].content,
+    sent[0].files[0].description,
+    'content and description must be the exact same filtered value, computed once',
+  );
+});
+
 function fakeMessage(): IncomingMessage {
   return {
     platform: 'discord',

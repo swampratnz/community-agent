@@ -491,9 +491,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     if (!channel?.isTextBased() || channel.isDMBased()) {
       throw new Error(`Discord channel ${conversationId} is not sendable`);
     }
+    // Filter once and reuse for both fields — the attachment `description`
+    // (screen-reader alt-text) must never carry unfiltered text that `content` doesn't.
+    const filteredCaption = caption ? await this.filtered(caption) : undefined;
     await channel.send({
-      content: caption ? await this.filtered(caption) : undefined,
-      files: [{ attachment: image.data, name: image.filename }],
+      content: filteredCaption,
+      files: [{ attachment: image.data, name: image.filename, description: filteredCaption }],
       allowedMentions: { parse: [] },
     });
   }

@@ -62,6 +62,53 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+/** Stubs the socket's sendMessage to capture the native image+caption payload sendImage builds (issue #174). */
+function stubSocketForImage(adapter: InstanceType<typeof BaileysAdapter>) {
+  const sent: Array<{ image: Buffer; caption?: string }> = [];
+  (
+    adapter as unknown as {
+      sock: { sendMessage: (jid: string, msg: { image: Buffer; caption?: string }) => Promise<void> };
+    }
+  ).sock = {
+    sendMessage: async (_jid, msg) => {
+      sent.push(msg);
+    },
+  };
+  return sent;
+}
+
+test('sendImage forwards the caption as the native WhatsApp image caption (issue #174)', async () => {
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForImage(adapter);
+  await adapter.sendImage(
+    '64211234567@s.whatsapp.net',
+    { data: Buffer.from('fake-image'), filename: 'image.jpg', mimeType: 'image/jpeg' },
+    'a cat wearing a hat',
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].caption,
+    'a cat wearing a hat',
+    'no image may be posted bare — the prompt must be the caption',
+  );
+});
+
+test('SECURITY: sendImage routes the caption through filterOutbound — a secret cannot reach WhatsApp unredacted (issue #174)', async () => {
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForImage(adapter);
+  await adapter.sendImage(
+    '64211234567@s.whatsapp.net',
+    { data: Buffer.from('fake-image'), filename: 'image.jpg', mimeType: 'image/jpeg' },
+    'secret is sk-ant-' + 'y'.repeat(30) + ' end',
+  );
+  assert.equal(sent.length, 1);
+  assert.ok(!sent[0].caption?.includes('sk-ant-'), 'no raw secret fragment may reach the caption');
+  assert.ok(
+    sent[0].caption?.includes('[redacted]'),
+    'the secret must have been redacted, not silently dropped',
+  );
+});
+
 /** Stubs the socket with a `sendPresenceUpdate` spy, in addition to `sendMessage`. */
 function stubSocketWithPresence(
   adapter: InstanceType<typeof BaileysAdapter>,
