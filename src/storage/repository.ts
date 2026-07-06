@@ -290,6 +290,37 @@ export async function clearClaudeSessionId(platform: Platform, conversationId: s
 }
 
 /**
+ * Reset the stored Claude session for every conversation the given user is
+ * active in on `platform`, so a role change (grant_admin/revoke_admin) takes
+ * effect on their very next message instead of being shadowed by the old-role
+ * framing still in a live session's history until it rolls over
+ * (SESSION_MAX_TURNS/AGE). Without this, a freshly-promoted admin keeps getting
+ * refused, and — more importantly — a freshly-*revoked* admin's session could
+ * keep treating them as admin for up to a full session's worth of turns.
+ *
+ * Non-destructive: only clears session *continuity* (nulls `claude_session_id`,
+ * same primitive as `clearClaudeSessionId`); stored interactions/memory are
+ * untouched and the next turn rebuilds context from them. Scoped to
+ * conversations the user has actually participated in — in a group that means
+ * the group's shared thread resets, which is the same fresh-start that happens
+ * on normal rollover. Returns the number of sessions cleared.
+ */
+export async function clearUserSessions(platform: Platform, userId: string): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE sessions
+        SET claude_session_id = NULL, updated_at = now()
+      WHERE platform = $1
+        AND claude_session_id IS NOT NULL
+        AND conversation_id IN (
+          SELECT DISTINCT conversation_id FROM interactions
+           WHERE platform = $1 AND user_id = $2
+        )`,
+    [platform, userId],
+  );
+  return rowCount ?? 0;
+}
+
+/**
  * True if the bot has previously seen this conversation on this platform.
  * Used to stop privileged tools from targeting arbitrary ids (e.g. messaging
  * any phone number on WhatsApp).

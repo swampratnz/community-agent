@@ -18,6 +18,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 - Auto-moderation warnings are now **public and minimal**: the warning is posted in the channel the offending message was posted in (not only the private admin channel), and names **only the member** — no user id, matched word, or message excerpt. The detailed record (id + matched term, needed for `clear_warnings`) still goes to the private admin channel, and the member still gets a DM. Follow-up to the auto-moderation feature (#141).
 
 ### Fixed
+- A role change now takes effect on the target's **very next message**. Previously `grant_admin`/`revoke_admin` updated the role in the DB, but the target's live conversation session still carried the old-role framing in its history, so the bot would keep treating a freshly-promoted admin as a member (refusing admin actions) — or, worse, keep treating a freshly-*revoked* admin as an admin — until the session rolled over (30 turns / 24h). Both tools now reset the target's active-conversation session(s) on success (`clearUserSessions`, non-destructive — only session continuity is cleared, stored memory is untouched), so the new tier applies immediately.
 - Membership tool replies (`add_member`, `remove_member`, `grant_admin`, `revoke_admin`, `unlink_member`) now name the member (from the membership row or the server roster) instead of echoing a raw platform id — e.g. "Granted admin to **Adam H** on discord" rather than "…to 310697646731952132". Falls back to the id only when no name is known.
 
 ## 2026-07-04
