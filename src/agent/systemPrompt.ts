@@ -132,10 +132,29 @@ function codePolicyNote(policy: PromptPolicy['codeAnswers']): string {
   }
 }
 
+const NZ_DATE_FORMAT = new Intl.DateTimeFormat('en-NZ', {
+  timeZone: 'Pacific/Auckland',
+  weekday: 'long',
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+});
+
+/**
+ * Day-granularity only (no time-of-day): this string sits in the per-turn
+ * system prompt, which prefixes the growing conversation history under the
+ * Agent SDK's prompt cache. Minute precision would invalidate that cached
+ * prefix on every turn; day precision keeps it stable for a whole NZ day.
+ */
+function formatNzDate(now: Date): string {
+  return NZ_DATE_FORMAT.format(now);
+}
+
 export function buildSystemPrompt(
   caller: CallerContext,
   policy: PromptPolicy,
   persona: Persona = getPersona(null),
+  now: Date = new Date(),
 ): string {
   return [
     COMMUNITY_CHARTER,
@@ -144,7 +163,7 @@ export function buildSystemPrompt(
     GUIDELINES,
     `Persona:\n${persona.voice}`,
     HUMAN_STYLE,
-    `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${caller.userName} (${caller.role})`,
+    `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${caller.userName} (${caller.role})\n- Current date (NZ): ${formatNzDate(now)}`,
     ROLE_NOTES[caller.role],
     codePolicyNote(policy.codeAnswers),
     ...(policy.responseStyle === 'plain' ? [PLAIN_LANGUAGE_STYLE] : []),
