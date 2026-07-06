@@ -1295,6 +1295,86 @@ export async function purgeUserData(platform: Platform, userId: string): Promise
   return total;
 }
 
+export interface MyDataSummary {
+  ownMessages: number;
+  repliesToThem: number;
+  knowledgeEntries: number;
+  reportsFiled: number;
+  suggestionsFiled: number;
+  responseStyle: ResponseStyle;
+}
+
+/**
+ * Read-only counterpart to `purgeSingleIdentity` — counts, rather than
+ * deletes, exactly the per-table rows `forget_me`/`purge_user_data` would
+ * erase for this identity (issue #188, the IPP6 access-right counterpart to
+ * that deletion path), aggregated across every identity linked via
+ * `link_member` the same way `purgeSingleIdentity`/`resolveLinkedIdentities`
+ * already aggregate for `forget_me`. Interactions are split into the
+ * caller's own messages (`user_id = $2`) and the bot's replies to them
+ * (`direction = 'outbound' AND meta->>'replyToUserId' = $2`) — the same two
+ * halves of `purgeSingleIdentity`'s WHERE clause, reported separately rather
+ * than as one confusing lump.
+ *
+ * Deliberately excludes `member_notes` (issue #45: members have no
+ * self-access to notes about themselves, even though `forget_me` deletes
+ * them), `server_roster`, `admin_digest_sends`, `member_warnings` (already
+ * self-serve via `my_warnings`), and `answer_feedback` — those stay
+ * purge-only. Never add a count for any of them here to "reconcile" the
+ * total with `purgeSingleIdentity`; the asymmetry is intentional.
+ */
+export async function getMyDataSummary(platform: Platform, userId: string): Promise<MyDataSummary> {
+  const identities = await resolveLinkedIdentities(platform, userId);
+  let ownMessages = 0;
+  let repliesToThem = 0;
+  let knowledgeEntries = 0;
+  let reportsFiled = 0;
+  let suggestionsFiled = 0;
+  for (const identity of identities) {
+    const { rows: interactionRows } = await pool.query(
+      `SELECT
+         count(*) FILTER (WHERE user_id = $2) AS own_messages,
+         count(*) FILTER (WHERE direction = 'outbound' AND meta->>'replyToUserId' = $2) AS replies_to_them
+       FROM interactions WHERE platform = $1`,
+      [identity.platform, identity.userId],
+    );
+    ownMessages += Number(interactionRows[0]?.own_messages ?? 0);
+    repliesToThem += Number(interactionRows[0]?.replies_to_them ?? 0);
+
+    // knowledge has no platform column (see purgeSingleIdentity above), so
+    // this keys on source_user_id alone, same as the DELETE it reconciles with.
+    const { rows: knowledgeRows } = await pool.query(
+      `SELECT count(*) AS n FROM knowledge WHERE source_user_id = $1`,
+      [identity.userId],
+    );
+    knowledgeEntries += Number(knowledgeRows[0]?.n ?? 0);
+
+    const { rows: reportRows } = await pool.query(
+      `SELECT count(*) AS n FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
+      [identity.platform, identity.userId],
+    );
+    reportsFiled += Number(reportRows[0]?.n ?? 0);
+
+    const { rows: suggestionRows } = await pool.query(
+      `SELECT count(*) AS n FROM suggestions WHERE platform = $1 AND user_id = $2`,
+      [identity.platform, identity.userId],
+    );
+    suggestionsFiled += Number(suggestionRows[0]?.n ?? 0);
+  }
+
+  return {
+    ownMessages,
+    repliesToThem,
+    knowledgeEntries,
+    reportsFiled,
+    suggestionsFiled,
+    // The standing style preference isn't purge-scope data — it's a single
+    // per-identity row, so this reports the caller's own invoking identity
+    // only (same scoping set_response_style itself uses), not aggregated.
+    responseStyle: await getResponseStyle(platform, userId),
+  };
+}
+
 /**
  * Age-based retention: delete raw `interactions` older than `days`. Never
  * touches `knowledge` (curated facts are meant to be durable), `sessions`

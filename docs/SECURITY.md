@@ -733,6 +733,18 @@ the supported path.
   the identity is linked (`link_member`), this scope applies to every linked
   identity, not just the one the request came from — see "Cross-platform
   identity linking" above for why that expanded blast radius is accepted.
+- **`my_data` (issue #188) is the read-only, IPP6 access-right counterpart to
+  the deletion path above** — NZ Privacy Act 2020 gives individuals a right
+  to see what's held about them, not just to erase it. It reports counts for
+  exactly the same tables `forget_me` deletes (own messages, replies sent to
+  them, knowledge sourced from them, reports/suggestions they filed, their
+  response-style preference), scoped identically via `resolveLinkedIdentities`
+  so it can never see another member's data. It deliberately does **not**
+  count or query `member_notes` (issue #45's members-have-no-self-access
+  boundary), `member_warnings` (see `my_warnings` instead), `server_roster`,
+  `admin_digest_sends`, or `answer_feedback` — `forget_me` purges a strict
+  superset of what `my_data` ever reports, and that asymmetry is intentional,
+  not a bug to "reconcile" away.
 - **DM-originated content reports are visible only to super admins.**
   `list_reports` is scoped exactly like `moderation_history`/
   `list_access_requests`: an admin only sees reports from conversations they

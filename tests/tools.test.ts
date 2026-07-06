@@ -49,12 +49,14 @@ const {
   resolveContentReport,
   getResponseStyle,
   getLanguagePreference,
+  setResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
   RATE_ANSWER_DAILY_LIMIT,
   recordInteraction,
   insertContextDigest,
   insertKnowledgeCandidate,
   addWarning,
+  addMemberNote,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
@@ -75,6 +77,7 @@ const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
+const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
 
 after(async () => {
   if (hasDb) {
@@ -106,6 +109,17 @@ after(async () => {
       `${MY_SUBMISSIONS_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${MY_WARNINGS_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM interactions WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM interactions WHERE meta->>'replyToUserId' LIKE $1`, [
+      `${MY_DATA_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE source_user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
+      `${MY_DATA_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM response_style_prefs WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM member_notes WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
   }
   await closeDb();
 });
@@ -2109,5 +2123,185 @@ test(
       /no active warnings/i,
       "SECURITY: my_warnings must reflect only the real caller's own count, never another user's warnings",
     );
+  },
+);
+
+// my_data (issue #188): a member-tier, read-only summary of the caller's OWN
+// stored footprint — the IPP6 access-right counterpart to forget_me/
+// purge_user_data's deletion path. Exercises the handler's wiring on top of
+// repository.test.ts's coverage of getMyDataSummary's per-table counting and
+// linked-identity aggregation.
+function myDataHandler(userId = MY_DATA_HANDLER_USER, role: 'member' | 'admin' | 'super_admin' = 'member') {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Data Member',
+      role,
+      conversationId: 'convo-1',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { shape: Record<string, unknown>; safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['my_data'];
+}
+
+test('SECURITY: my_data takes no input at all — its zod schema has zero fields, so there is no target-user-id (or any other) parameter a model could supply to redirect the read (issue #188)', () => {
+  const registeredTool = myDataHandler();
+  assert.deepEqual(
+    Object.keys(registeredTool.inputSchema.shape),
+    [],
+    'my_data must have an empty {} input schema',
+  );
+  assert.equal(registeredTool.inputSchema.safeParse({}).success, true);
+});
+
+test(
+  'my_data reports all-zero counts and the default response style for a caller with nothing stored (issue #188)',
+  { skip },
+  async () => {
+    const result = await myDataHandler(`${MY_DATA_HANDLER_USER}-empty`).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false, 'a clean/empty summary is not an error');
+    assert.match(output, /Messages you've sent: 0/);
+    assert.match(output, /Replies the bot has sent you: 0/);
+    assert.match(output, /Knowledge entries sourced from you: 0/);
+    assert.match(output, /Content reports you've filed: 0/);
+    assert.match(output, /Suggestions you've filed: 0/);
+    assert.match(output, /Response style preference: standard \(default\)/);
+    assert.match(output, /my_warnings/, 'points to my_warnings for active-warning status');
+    assert.match(output, /my_submissions/, 'points to my_submissions for filed-item status');
+  },
+);
+
+test(
+  "my_data reports the caller's own message/knowledge/report/suggestion counts and standing style preference (issue #188)",
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-basic`;
+
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'my own message',
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a reply to me',
+      meta: { replyToUserId: userId },
+    });
+    await saveKnowledge({ content: 'fact sourced from this member', sourceUserId: userId });
+    const suggestion = await createSuggestion({ platform: 'whatsapp', userId, content: 'an idea' });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'a report',
+    });
+    assert.ok(suggestion && report, 'fixtures recorded');
+    await setResponseStyle('whatsapp', userId, 'plain');
+
+    const result = await myDataHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /Messages you've sent: 1/);
+    assert.match(output, /Replies the bot has sent you: 1/);
+    assert.match(output, /Knowledge entries sourced from you: 1/);
+    assert.match(output, /Content reports you've filed: 1/);
+    assert.match(output, /Suggestions you've filed: 1/);
+    assert.match(output, /Response style preference: plain/);
+  },
+);
+
+test(
+  "SECURITY: my_data never surfaces member_notes (admin-only context about the caller) even though a note exists for them — preserves issue #45's no-self-access boundary",
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-notes`;
+    const marker = `${MY_DATA_HANDLER_USER}-note-marker-must-not-leak`;
+    await addMemberNote({
+      platform: 'whatsapp',
+      userId,
+      note: marker,
+      createdBy: `${MY_DATA_HANDLER_USER}-notes-admin`,
+    });
+
+    const result = await myDataHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.doesNotMatch(
+      output,
+      new RegExp(marker),
+      'SECURITY: an admin note about the caller must never appear in my_data output',
+    );
+    assert.doesNotMatch(
+      output,
+      /note/i,
+      'SECURITY: my_data must not even mention notes exist — issue #45 gives members no self-access path to them',
+    );
+  },
+);
+
+test(
+  "SECURITY: my_data only ever reflects the real caller's own identity, never another user's messages/knowledge/reports/suggestions (issue #188)",
+  { skip },
+  async () => {
+    const caller = `${MY_DATA_HANDLER_USER}-identity-caller`;
+    const otherUser = `${MY_DATA_HANDLER_USER}-identity-other`;
+
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: otherUser,
+      role: 'member',
+      direction: 'inbound',
+      content: "someone else's message",
+    });
+    await saveKnowledge({ content: 'fact sourced from someone else', sourceUserId: otherUser });
+    await createSuggestion({ platform: 'whatsapp', userId: otherUser, content: "someone else's idea" });
+    await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: otherUser,
+      conversationId: 'convo-1',
+      reason: "someone else's report",
+    });
+
+    // The tool takes no arguments at all (pinned above) — there is no
+    // identifier a model could supply to redirect the read, so the caller's
+    // own (empty) footprint is all that can ever be reflected back.
+    const result = await myDataHandler(caller).handler();
+    const output = result.content[0]?.text ?? '';
+    assert.match(output, /Messages you've sent: 0/);
+    assert.match(output, /Knowledge entries sourced from you: 0/);
+    assert.match(output, /Content reports you've filed: 0/);
+    assert.match(output, /Suggestions you've filed: 0/);
+  },
+);
+
+test(
+  'my_data returns a clean zero result (never an error) for an admin caller, since it lives in MEMBER_TOOLS and is reachable by every tier (issue #188)',
+  { skip },
+  async () => {
+    const result = await myDataHandler(`${MY_DATA_HANDLER_USER}-admin-caller`, 'admin').handler();
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /Messages you've sent: 0/);
   },
 );
