@@ -77,6 +77,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   browse/curation) is the one deliberate exception: it keeps browsing by
   explicit scope, unrestricted by the caller's own conversation — it's an
   admin-tier curation view, not member-facing recall.
+- **Guest FAQ shortcut is global-scope only** (`GUEST_KNOWLEDGE_SHORTCUT_ENABLED`,
+  off by default, issue #165): a gated guest's first message may be answered
+  from `knowledge` before the static "ask an admin" pointer, but the lookup
+  passes `scopeRestriction: 'global-only'` — a guest can never be served a
+  platform- or conversation-scoped entry, even at very high similarity,
+  because a guest has no meaningful conversation scope and platform-scoped
+  entries may assume member context (pinned by test). No new stored data: the
+  guest's message is used only in-memory to compute a transient embedding, and
+  neither the guest's message nor the shortcut's reply is written to
+  `interactions` — the existing "guest content not stored" invariant below
+  covers this reply too, not just the inbound message. The only DB write
+  remains the existing `access_requests` upsert, unaffected by whether a
+  shortcut answer was served.
 - **Recalled content is quarantined**: memories are injected into the *user*
   turn inside a delimited `<recalled-messages>` block with angle brackets
   stripped (so recalled text can't fake a closing tag), and the system prompt
@@ -275,7 +288,12 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   neutralised, not at full trust (pinned by a `SECURITY:` test on
   `formatKnowledgeSearchResults`, plus one asserting refresh entries carry the
   `auto` provenance). Human-authored/accepted `knowledge` stays trusted and
-  verbatim — the quarantine is scoped to the `auto` provenance only. Prompt-side
+  verbatim — the quarantine is scoped to the `auto` provenance only. The
+  zero-token **knowledge shortcut** (which direct-serves a near-exact FAQ match
+  to members/guests, bypassing the model) likewise **excludes `auto` entries**
+  (`tryKnowledgeShortcut`, pinned by a `SECURITY:` router test), so unreviewed
+  content is never served on the trust-maximising path — it only reaches a user
+  through the model-mediated, quarantined `knowledge_search`. Prompt-side
   "treat search results as untrusted" is kept as defence-in-depth, the job
   defers to a busy live bot (usage-alert threshold), and it is bounded to
   `KNOWLEDGE_REFRESH_MAX_TURNS` per topic. This does not relax the invariant

@@ -255,6 +255,15 @@ const EnvSchema = z.object({
   // it must only fire on a near-exact match. Tuned against
   // tests/fixtures/knowledgeEval.json's negativeQueries.
   KNOWLEDGE_SHORTCUT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
+  // Extend the knowledge shortcut above to gated guests (issue #165),
+  // restricted to `scope='global'` entries only, before the static "ask an
+  // admin" pointer. Reuses KNOWLEDGE_SHORTCUT_THRESHOLD — no separate knob to
+  // tune. Off by default: with it unset, the gated-guest path is
+  // byte-for-byte unchanged. See src/router.ts.
+  GUEST_KNOWLEDGE_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -421,6 +430,7 @@ export const config = {
     ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
+    guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
   },
   log: {
     level: env.LOG_LEVEL,

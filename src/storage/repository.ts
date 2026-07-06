@@ -487,11 +487,18 @@ export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
  * entry had it recite to every tier, everywhere). `list_knowledge` (admin
  * browse) deliberately keeps its own unrestricted-by-default behaviour —
  * that's a curation view, not member-facing recall.
+ *
+ * `opts.scopeRestriction: 'global-only'` (issue #165) narrows the filter to
+ * `scope = 'global'` only, ignoring `caller` entirely — for the gated-guest
+ * knowledge shortcut, where a guest has no meaningful conversation scope and
+ * must never be served a platform- or conversation-scoped entry that may
+ * assume member context.
  */
 export async function searchKnowledge(
   query: string,
   caller: { platform: Platform; conversationId: string },
   topK = 5,
+  opts: { scopeRestriction?: 'global-only' } = {},
 ): Promise<
   Array<{
     id: number;
@@ -509,14 +516,24 @@ export async function searchKnowledge(
   } catch {
     return [];
   }
+  const globalOnly = opts.scopeRestriction === 'global-only';
   const { rows } = await pool.query(
-    `SELECT id, title, content, created_by_role, updated_at, 1 - (embedding <=> $1) AS similarity
-       FROM knowledge
-      WHERE embedding IS NOT NULL
-        AND scope IN ('global', $2, $3)
-      ORDER BY embedding <=> $1
-      LIMIT $4`,
-    [pgvector.toSql(queryVec), caller.platform, caller.conversationId, topK],
+    globalOnly
+      ? `SELECT id, title, content, created_by_role, updated_at, 1 - (embedding <=> $1) AS similarity
+           FROM knowledge
+          WHERE embedding IS NOT NULL
+            AND scope = 'global'
+          ORDER BY embedding <=> $1
+          LIMIT $2`
+      : `SELECT id, title, content, created_by_role, updated_at, 1 - (embedding <=> $1) AS similarity
+           FROM knowledge
+          WHERE embedding IS NOT NULL
+            AND scope IN ('global', $2, $3)
+          ORDER BY embedding <=> $1
+          LIMIT $4`,
+    globalOnly
+      ? [pgvector.toSql(queryVec), topK]
+      : [pgvector.toSql(queryVec), caller.platform, caller.conversationId, topK],
   );
   return rows.map((r) => ({
     id: Number(r.id),

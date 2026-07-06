@@ -5,17 +5,20 @@ import type { searchKnowledge } from '../src/storage/repository.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
-// ackShortcutRouter.test.ts. This file is the ONLY place
-// KNOWLEDGE_SHORTCUT_ENABLED is set to 'true' — router.test.ts and
-// ackShortcutRouter.test.ts leave it unset so the default-off path stays
-// covered untouched, and the node test runner isolates env per test file.
+// knowledgeShortcutRouter.test.ts. This file is the ONLY place
+// GUEST_KNOWLEDGE_SHORTCUT_ENABLED is set to 'true' with fully-injected
+// fakes (DATABASE_URL stays an unreachable dummy, matching
+// knowledgeShortcutRouter.test.ts) — router.test.ts leaves it unset so the
+// default-off path stays covered untouched, and
+// tests/guestKnowledgeShortcut.test.ts covers the DB-integration,
+// security-critical storage invariant end-to-end.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
-process.env.KNOWLEDGE_SHORTCUT_ENABLED = 'true';
+process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
@@ -68,9 +71,12 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
   return {
     platform: 'discord',
     conversationId: 'chan-1',
-    userId: 'super-1',
-    userName: 'Test User',
-    text: 'what are the server rules?',
+    // Not in SUPER_ADMIN_DISCORD_IDS and unresolvable in `community_users`
+    // (DB unreachable in this file) — resolves to 'guest', matching
+    // knowledgeShortcutRouter.test.ts's gated-guest test convention.
+    userId: 'unknown-guest-1',
+    userName: 'A Guest',
+    text: 'is this bot free to use?',
     isDirect: false,
     addressedToBot: true,
     timestamp: Date.now(),
@@ -82,28 +88,24 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
 function fixedHitSearch(similarity: number): SearchKnowledgeFn {
   return async () => [
     {
-      id: 1,
-      title: 'Rules',
-      content: 'Be kind and follow the code of conduct.',
+      id: 7,
+      title: 'Pricing FAQ',
+      content: 'Yes — this bot is free for members.',
       similarity,
       updatedAt: new Date(),
     },
   ];
 }
 
-test('config: KNOWLEDGE_SHORTCUT_ENABLED=true is reflected in config.behaviour.knowledgeShortcutEnabled', () => {
-  assert.equal(config.behaviour.knowledgeShortcutEnabled, true);
+test('config: GUEST_KNOWLEDGE_SHORTCUT_ENABLED=true is reflected in config.behaviour.guestKnowledgeShortcutEnabled', () => {
+  assert.equal(config.behaviour.guestKnowledgeShortcutEnabled, true);
 });
 
-test('config: KNOWLEDGE_SHORTCUT_THRESHOLD defaults to a strict 0.9', () => {
-  assert.equal(config.behaviour.knowledgeShortcutThreshold, 0.9);
-});
-
-test('router (knowledge shortcut): a near-exact match (>= threshold) skips runTurn and returns the KB content', async () => {
+test('router (guest knowledge shortcut): a near-exact global match (>= threshold) replies with KB content + admin nudge, never runTurn or the static notice', async () => {
   const recorded: number[][] = [];
   const router = new Router(
     async () => {
-      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+      throw new Error('runTurn must not be called for a gated guest');
     },
     20,
     undefined,
@@ -118,53 +120,51 @@ test('router (knowledge shortcut): a near-exact match (>= threshold) skips runTu
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /Be kind and follow the code of conduct\./);
+  assert.match(sent[0].text, /Yes — this bot is free for members\./);
   assert.match(sent[0].text, /From our knowledge base/i);
-  assert.deepEqual(recorded, [[1]], 'retrieval_count/last_retrieved_at must be bumped for the served entry');
+  assert.match(sent[0].text, /ask a community admin/i);
+  assert.doesNotMatch(sent[0].text, /member-only/i, 'the static gated notice must not also be sent');
+  assert.deepEqual(recorded, [[7]], 'retrieval_count/last_retrieved_at must be bumped for the served entry');
 });
 
-test('SECURITY: router (knowledge shortcut): an auto-researched near-exact match is NOT direct-served — it falls through to a full turn (where knowledge_search quarantines it)', async () => {
-  let ranTurn = false;
-  const autoHitSearch: SearchKnowledgeFn = async () => [
-    {
-      id: 7,
-      title: 'Claude Code — recent updates (auto-researched)',
-      content: 'unreviewed web-derived briefing',
-      similarity: 0.98, // well above the shortcut threshold
-      updatedAt: new Date(),
-      autoGenerated: true,
-    },
-  ];
+test("SECURITY: router (guest knowledge shortcut): the lookup is scope-restricted to global-only, never the caller's own conversation/platform scope (issue #165)", async () => {
+  let seenOpts: unknown;
+  const scopeSpy: SearchKnowledgeFn = async (query, caller, topK, opts) => {
+    seenOpts = opts;
+    return [];
+  };
   const router = new Router(
     async () => {
-      ranTurn = true;
-      return { text: 'real answer' };
+      throw new Error('runTurn must not be called for a gated guest');
     },
     20,
     undefined,
-    autoHitSearch,
+    scopeSpy,
     async () => {},
   );
-  const { adapter, sent, trigger } = makeAdapter();
+  const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
   await trigger(makeMessage());
 
-  assert.ok(ranTurn, 'an auto-researched hit must fall through to a full agent turn, never be direct-served');
-  assert.doesNotMatch(
-    sent[0]?.text ?? '',
-    /From our knowledge base/i,
-    'the trust-maximising shortcut must not fire for unreviewed auto content',
+  assert.deepEqual(
+    seenOpts,
+    { scopeRestriction: 'global-only' },
+    'the guest-path lookup must always pass scopeRestriction: global-only',
   );
 });
 
-test('router (knowledge shortcut): a middling match below threshold falls through to a normal agent turn', async () => {
+test('router (guest knowledge shortcut): a middling match below threshold falls through to the static gated notice', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
     20,
     undefined,
     fixedHitSearch(0.5), // above knowledge_search's 0.35 floor, below the 0.9 shortcut floor
-    async () => {},
+    async () => {
+      throw new Error('retrieval must not be recorded for a sub-threshold match');
+    },
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
@@ -172,12 +172,14 @@ test('router (knowledge shortcut): a middling match below threshold falls throug
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].text, 'real answer', 'must get the real agent reply, not a shortcut reply');
+  assert.match(sent[0].text, /member-only/i);
 });
 
-test('router (knowledge shortcut): no knowledge hits falls through to a normal agent turn', async () => {
+test('router (guest knowledge shortcut): no knowledge hits falls through to the static gated notice', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
     20,
     undefined,
     async () => [],
@@ -189,12 +191,14 @@ test('router (knowledge shortcut): no knowledge hits falls through to a normal a
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].text, 'real answer');
+  assert.match(sent[0].text, /member-only/i);
 });
 
-test('router (knowledge shortcut): a lookup failure falls through to a normal agent turn rather than dropping the message', async () => {
+test('router (guest knowledge shortcut): a lookup failure falls through to the static gated notice rather than dropping the message', async () => {
   const router = new Router(
-    async () => ({ text: 'real answer' }),
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
     20,
     undefined,
     async () => {
@@ -208,35 +212,28 @@ test('router (knowledge shortcut): a lookup failure falls through to a normal ag
   await trigger(makeMessage());
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].text, 'real answer');
+  assert.match(sent[0].text, /member-only/i);
 });
 
-// The flag-disabled path (including "flag off falls through regardless of
-// similarity") is covered in router.test.ts, which leaves
-// KNOWLEDGE_SHORTCUT_ENABLED unset — this file is the ONLY place it's set to
-// 'true', mirroring ackShortcutRouter.test.ts's convention.
-
-test('router (knowledge shortcut): the shortcut path still respects the gated-guest gate ahead of it', async () => {
+test('router (guest knowledge shortcut): a member (non-guest) is completely unaffected by the guest-only flag', async () => {
   const router = new Router(
-    async () => {
-      throw new Error('runTurn must not be called');
-    },
+    async () => ({ text: 'real answer' }),
     20,
     undefined,
-    fixedHitSearch(0.99),
+    fixedHitSearch(0.99), // would be an instant hit on the guest path — must never be consulted here
     async () => {
-      throw new Error('retrieval must not be recorded for a gated-out guest');
+      throw new Error(
+        'retrieval must not be recorded — KNOWLEDGE_SHORTCUT_ENABLED (the member-tier flag) is unset in this file',
+      );
     },
   );
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
-  // Default ACCESS_MODE_DISCORD is 'gated'; this user is not a super admin
-  // and unresolvable in community_users (DB unreachable in this test), so it
-  // resolves to 'guest' and must hit the gated-guest branch, never the
-  // knowledge shortcut.
-  await trigger(makeMessage({ userId: 'unknown-guest-1' }));
+  // 'super-1' is a super admin (SUPER_ADMIN_DISCORD_IDS), so this never
+  // reaches the gated-guest branch at all.
+  await trigger(makeMessage({ userId: 'super-1' }));
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /member-only/i);
+  assert.equal(sent[0].text, 'real answer', 'the member-tier turn must run untouched by the guest-only flag');
 });
