@@ -50,6 +50,7 @@ const {
   recordInteraction,
   insertContextDigest,
   insertKnowledgeCandidate,
+  addWarning,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction } = await import('../src/agent/pendingActions.js');
@@ -67,6 +68,7 @@ const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
 const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
+const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
 
 after(async () => {
   if (hasDb) {
@@ -94,6 +96,7 @@ after(async () => {
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${MY_SUBMISSIONS_HANDLER_USER}%`,
     ]);
+    await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${MY_WARNINGS_HANDLER_USER}%`]);
   }
   await closeDb();
 });
@@ -1630,6 +1633,166 @@ test(
       output,
       /someone else's private report/,
       "SECURITY: another member's report content must never leak",
+    );
+  },
+);
+
+// my_warnings (issue #182): a member-tier, read-only pull of the caller's OWN
+// active auto-moderation warning count vs. the configured limit, filling the
+// gap left by the one-time warn/block DMs (moderator.ts's warnDmText /
+// blockedDmText). Exercises the handler's wiring on top of
+// repository.test.ts's coverage of countActiveWarnings/addWarning.
+function myWarningsHandler(
+  userId = MY_WARNINGS_HANDLER_USER,
+  role: 'member' | 'admin' | 'super_admin' = 'member',
+) {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Warned Member',
+      role,
+      conversationId: 'convo-1',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['my_warnings'];
+}
+
+test(
+  'my_warnings reports no active warnings for a member with a clean record (issue #182)',
+  { skip },
+  async () => {
+    const result = await myWarningsHandler(`${MY_WARNINGS_HANDLER_USER}-clean`).handler();
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /no active warnings/i);
+  },
+);
+
+test(
+  'my_warnings reports the active count and limit while under the limit (issue #182)',
+  { skip },
+  async () => {
+    const userId = `${MY_WARNINGS_HANDLER_USER}-under-limit`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const result = await myWarningsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /1 active warning \(limit 3\)/);
+    assert.doesNotMatch(output, /reached the warning limit/i);
+  },
+);
+
+test(
+  "my_warnings reports the limit reached, without asserting a live mute, once the caller's count hits the limit (issue #182)",
+  { skip },
+  async () => {
+    const userId = `${MY_WARNINGS_HANDLER_USER}-at-limit`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: 'whatsapp',
+        userId,
+        reason: 'test',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const result = await myWarningsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, /reached the warning limit \(3\/3\)/);
+    assert.doesNotMatch(
+      output,
+      /you are currently muted/i,
+      'the tool cannot verify a live Discord mute role, so it must not assert one — only the count vs. limit',
+    );
+  },
+);
+
+test(
+  'my_warnings never includes a warning reason or excerpt, even when the caller has one on record (issue #182)',
+  { skip },
+  async () => {
+    const userId = `${MY_WARNINGS_HANDLER_USER}-no-excerpt`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'profanity-filter-hit',
+      excerpt: 'the exact flagged message text',
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const result = await myWarningsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.doesNotMatch(
+      output,
+      /profanity-filter-hit/,
+      'SECURITY: the warning reason must never leak to the member',
+    );
+    assert.doesNotMatch(
+      output,
+      /the exact flagged message text/,
+      'SECURITY: the flagged message excerpt is admin-only context and must never leak to the member',
+    );
+  },
+);
+
+test(
+  'my_warnings returns a clean zero result (never an error) for an admin caller, since it lives in MEMBER_TOOLS and is reachable by every tier (issue #182)',
+  { skip },
+  async () => {
+    const result = await myWarningsHandler(`${MY_WARNINGS_HANDLER_USER}-admin-caller`, 'admin').handler();
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /no active warnings/i);
+  },
+);
+
+test(
+  "SECURITY: my_warnings only ever reflects the real caller's own identity, never another user's warnings (issue #182)",
+  { skip },
+  async () => {
+    const caller = `${MY_WARNINGS_HANDLER_USER}-identity-caller`;
+    const otherUser = `${MY_WARNINGS_HANDLER_USER}-identity-other`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: 'whatsapp',
+        userId: otherUser,
+        reason: 'test',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    // The tool takes no arguments at all — there is no identifier a model
+    // could supply to redirect the read, so the caller's own (clean) record
+    // is all that can ever be reflected back.
+    const result = await myWarningsHandler(caller).handler();
+    assert.match(
+      result.content[0]?.text ?? '',
+      /no active warnings/i,
+      "SECURITY: my_warnings must reflect only the real caller's own count, never another user's warnings",
     );
   },
 );

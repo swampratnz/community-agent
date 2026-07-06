@@ -53,6 +53,10 @@ export const MEMBER_TOOLS = [
   // shared queue, never another member's rows, never reviewer identity) —
   // the pull-based counterpart to the best-effort resolution DMs.
   'mcp__community__my_submissions',
+  // Self-scoped read of the caller's OWN active warning count vs. the
+  // configured limit — never a warning's reason/excerpt (admin-only context,
+  // see moderation_history) and never another member's warnings.
+  'mcp__community__my_warnings',
   // Write-only into the member's own queue (rate-capped); the shared-queue
   // read side (list_suggestions) is admin-tier — a member can never read
   // anyone else's suggestion, only their own via my_submissions.

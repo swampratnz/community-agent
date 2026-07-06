@@ -12,6 +12,7 @@ import {
   addMemberNote,
   clearAccessRequest,
   clearWarnings,
+  countActiveWarnings,
   createAnswerFeedback,
   createContentReport,
   createSuggestion,
@@ -701,6 +702,26 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         }
       }
       return text(lines.join('\n'));
+    },
+  );
+
+  const myWarnings = tool(
+    'my_warnings',
+    "Check the caller's OWN active auto-moderation warning count and the configured limit — use this when " +
+      'a member asks how many warnings they have or whether they can still post. Always scoped to the ' +
+      "caller's own platform/user id, never a model-supplied identifier. Never includes a warning's reason " +
+      'or excerpt — that context stays admin-only (see moderation_history).',
+    {},
+    async () => {
+      const active = await countActiveWarnings(caller.platform, caller.userId);
+      const limit = config.moderation.strikeLimit;
+      if (active === 0) {
+        return text('You have no active warnings.');
+      }
+      if (active >= limit) {
+        return text(`You've reached the warning limit (${active}/${limit}). An admin can clear this.`);
+      }
+      return text(`You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`);
     },
   );
 
@@ -2008,6 +2029,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       reportContent,
       withdrawReport,
       mySubmissions,
+      myWarnings,
       suggestImprovement,
       rateAnswer,
       setResponseStyleTool,
