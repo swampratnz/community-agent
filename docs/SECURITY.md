@@ -268,6 +268,38 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deletes its still-*pending* candidates; an accepted candidate (and the
   knowledge entry it produced) is unaffected, matching how `knowledge`
   itself outlives an unrelated purge.
+- **Daily knowledge refresh** (`KNOWLEDGE_REFRESH_ENABLED`, off by default —
+  src/context/knowledgeRefresh.ts): the one path that writes to `knowledge`
+  **without** the human-curation gate above — a deliberate, operator-enabled
+  exception for keeping a couple of fast-moving Claude/Anthropic topics
+  current. Its blast radius is bounded by construction: the topic list is
+  **fixed in code** (not user- or env-supplied, so chat/injection can't steer
+  what gets researched), each topic upserts a **single** `global` entry by a
+  stable title (the base is refreshed, never grown unbounded), and every entry
+  carries an explicit *"auto-researched … machine-generated … verify against
+  official sources"* footer so a human skimming `list_knowledge` knows it is
+  unreviewed. **The load-bearing control is at retrieval, not in the prompt:**
+  auto entries are written with `created_by_role='auto'`, and `knowledge_search`
+  (`formatKnowledgeSearchResults`) **quarantines** any `auto` hit before it
+  reaches the answering model — angle brackets stripped and framed as
+  reference-only data the model must never follow instructions from, exactly
+  the `untrusted()` treatment recalled chat gets. So even if a prompt-injection
+  string in a web page survived summarisation into an entry, it is served
+  neutralised, not at full trust (pinned by a `SECURITY:` test on
+  `formatKnowledgeSearchResults`, plus one asserting refresh entries carry the
+  `auto` provenance). Human-authored/accepted `knowledge` stays trusted and
+  verbatim — the quarantine is scoped to the `auto` provenance only. The
+  zero-token **knowledge shortcut** (which direct-serves a near-exact FAQ match
+  to members/guests, bypassing the model) likewise **excludes `auto` entries**
+  (`tryKnowledgeShortcut`, pinned by a `SECURITY:` router test), so unreviewed
+  content is never served on the trust-maximising path — it only reaches a user
+  through the model-mediated, quarantined `knowledge_search`. Prompt-side
+  "treat search results as untrusted" is kept as defence-in-depth, the job
+  defers to a busy live bot (usage-alert threshold), and it is bounded to
+  `KNOWLEDGE_REFRESH_MAX_TURNS` per topic. This does not relax the invariant
+  for member/admin-authored knowledge or for candidates — only this narrow,
+  labelled, fixed-topic surface publishes without review, and even it is
+  quarantined on the way out.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The

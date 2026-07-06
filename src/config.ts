@@ -191,6 +191,18 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Daily knowledge refresh: a scheduled job web-researches a small fixed set
+  // of fast-moving Claude/Anthropic topics and writes the briefings straight
+  // into the knowledge base (one upserted entry per topic, clearly marked
+  // auto-generated). OFF by default. NOTE: unlike knowledge candidates, this
+  // path has NO human review gate — auto entries are labelled as machine-
+  // researched/unverified precisely because of that (see docs/SECURITY.md).
+  KNOWLEDGE_REFRESH_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Max agentic turns for one topic's web-research call (bounds cost).
+  KNOWLEDGE_REFRESH_MAX_TURNS: z.coerce.number().int().positive().max(30).default(10),
   // Anonymised community-context export (issue #53): render digests into a
   // file the research loop can read. Off by default. The export applies its
   // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
@@ -387,6 +399,10 @@ export const config = {
     windowDays: env.CONTEXT_BUILDER_WINDOW_DAYS,
     maxSummaries: env.CONTEXT_BUILDER_MAX_SUMMARIES,
     minDistinctUsers: env.CONTEXT_BUILDER_MIN_DISTINCT_USERS,
+  },
+  knowledgeRefresh: {
+    enabled: env.KNOWLEDGE_REFRESH_ENABLED ?? false,
+    maxTurns: env.KNOWLEDGE_REFRESH_MAX_TURNS,
   },
   contextCandidates: {
     enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
