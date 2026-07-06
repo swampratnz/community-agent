@@ -51,6 +51,19 @@ export interface OutgoingMessage {
 export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;
 
 /**
+ * Looks up the live adapter for a platform other than the one the current
+ * turn arrived on, backed by Router's adapter registry (issue #157). Lets a
+ * per-turn tool handler reach a different platform's already-known identity
+ * (e.g. DMing the submitter of a suggestion filed on a platform other than
+ * the resolving admin's current turn) without a new adapter instance or any
+ * new trust boundary — the target platform must already be registered in
+ * this deployment. Returns undefined when it isn't (e.g. WhatsApp not
+ * configured); callers must degrade to today's silent skip, never throw or
+ * misaddress.
+ */
+export type AdapterLookup = (platform: Platform) => PlatformAdapter | undefined;
+
+/**
  * A privileged action the agent can request against a platform. Adapters
  * advertise which capabilities they support; unsupported actions throw.
  * RBAC is enforced *before* these are ever invoked (tier-gated tools plus

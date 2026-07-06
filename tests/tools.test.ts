@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PlatformAdapter } from '../src/platforms/types.js';
+import type { AdapterLookup, PlatformAdapter } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -690,11 +690,15 @@ test(
   },
 );
 
-// resolve_suggestion tool handler (issue #116): notifySuggestionResolved
-// itself is unit-tested above without the MCP transport; these exercise the
-// handler's wiring — the same-platform guard in particular — against a real
-// resolved row, which requires the DB.
-function resolveSuggestionHandler(caller: { platform: 'discord' | 'whatsapp'; adapter: PlatformAdapter }) {
+// resolve_suggestion tool handler (issue #116, cross-platform routing issue
+// #157): notifySuggestionResolved itself is unit-tested above without the
+// MCP transport; these exercise the handler's wiring — the origin-platform
+// routing in particular — against a real resolved row, which requires the DB.
+function resolveSuggestionHandler(caller: {
+  platform: 'discord' | 'whatsapp';
+  adapter: PlatformAdapter;
+  getAdapter?: AdapterLookup;
+}) {
   const server = buildToolServer(
     {
       platform: caller.platform,
@@ -704,6 +708,7 @@ function resolveSuggestionHandler(caller: { platform: 'discord' | 'whatsapp'; ad
       conversationId: 'convo-1',
     },
     caller.adapter,
+    caller.getAdapter,
   );
   return (
     server.instance as unknown as {
@@ -749,13 +754,51 @@ test(
 );
 
 test(
-  'SECURITY: resolve_suggestion sends no DM when the resolving admin is on a different platform than the suggestion (issue #116)',
+  "SECURITY: resolve_suggestion routes a cross-platform DM through the suggestion's origin adapter, never the resolving admin's current-turn adapter (issue #157)",
   { skip },
   async () => {
     const created = await createSuggestion({
       platform: 'whatsapp',
       userId: RESOLVE_SUGGESTION_HANDLER_USER,
-      content: 'cross-platform resolution must not misaddress a DM',
+      content: "cross-platform resolution must reach the origin platform, not the admin's current one",
+    });
+    assert.ok(created);
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    // The suggestion was filed on whatsapp; the admin resolving it is
+    // calling from discord — the DM must go out through the whatsapp
+    // adapter (looked up via getAdapter), never through the discord
+    // adapter the current turn happens to be using.
+    const result = await resolveSuggestionHandler({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    }).handler({ id: created.id, status: 'done' });
+
+    assert.match(result.content[0]?.text ?? '', /marked done/, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+    assert.equal(originCalls.length, 1, "the submitter is notified via the suggestion's origin platform");
+    assert.equal(originCalls[0][0], RESOLVE_SUGGESTION_HANDLER_USER);
+    assert.match(originCalls[0][1], /done/i);
+  },
+);
+
+test(
+  'resolve_suggestion falls back to a silent skip when the origin platform has no adapter registered (issue #157)',
+  { skip },
+  async () => {
+    const created = await createSuggestion({
+      platform: 'whatsapp',
+      userId: RESOLVE_SUGGESTION_HANDLER_USER,
+      content: 'origin platform not configured in this deployment',
     });
     assert.ok(created);
 
@@ -764,16 +807,17 @@ test(
       calls.push(userId);
     });
 
-    // The suggestion was filed on whatsapp; the admin resolving it is
-    // calling from discord — sendDirectMessage must never fire, since the
-    // per-turn adapter has no way to reach the whatsapp identity safely.
-    const result = await resolveSuggestionHandler({ platform: 'discord', adapter }).handler({
-      id: created.id,
-      status: 'done',
-    });
+    // whatsapp isn't registered in this deployment (getAdapter returns
+    // undefined) — must degrade to exactly today's silence, never throw and
+    // never fall back to the resolving admin's own (wrong) adapter.
+    const result = await resolveSuggestionHandler({
+      platform: 'discord',
+      adapter,
+      getAdapter: () => undefined,
+    }).handler({ id: created.id, status: 'done' });
 
     assert.match(result.content[0]?.text ?? '', /marked done/, 'resolution itself still succeeds');
-    assert.equal(calls.length, 0, 'a cross-platform resolution sends no DM');
+    assert.equal(calls.length, 0, 'no adapter registered for the origin platform means no notification');
   },
 );
 
@@ -820,11 +864,16 @@ test(
   },
 );
 
-// resolve_report tool handler (issue #120): notifyReportResolved itself is
-// unit-tested above without the MCP transport; these exercise the handler's
-// wiring — the same-platform guard in particular — against a real resolved
-// row, which requires the DB. Same pattern as resolveSuggestionHandler above.
-function resolveReportHandler(caller: { platform: 'discord' | 'whatsapp'; adapter: PlatformAdapter }) {
+// resolve_report tool handler (issue #120, cross-platform routing issue
+// #157): notifyReportResolved itself is unit-tested above without the MCP
+// transport; these exercise the handler's wiring — the origin-platform
+// routing in particular — against a real resolved row, which requires the
+// DB. Same pattern as resolveSuggestionHandler above.
+function resolveReportHandler(caller: {
+  platform: 'discord' | 'whatsapp';
+  adapter: PlatformAdapter;
+  getAdapter?: AdapterLookup;
+}) {
   const server = buildToolServer(
     {
       platform: caller.platform,
@@ -834,6 +883,7 @@ function resolveReportHandler(caller: { platform: 'discord' | 'whatsapp'; adapte
       conversationId: 'convo-1',
     },
     caller.adapter,
+    caller.getAdapter,
   );
   return (
     server.instance as unknown as {
@@ -880,14 +930,53 @@ test(
 );
 
 test(
-  'SECURITY: resolve_report sends no DM when the resolving admin is on a different platform than the report (issue #120)',
+  "SECURITY: resolve_report routes a cross-platform DM through the report's origin adapter, never the resolving admin's current-turn adapter (issue #157)",
   { skip },
   async () => {
     const created = await createContentReport({
       platform: 'whatsapp',
       reporterUserId: RESOLVE_REPORT_HANDLER_USER,
       conversationId: 'convo-1',
-      reason: 'cross-platform resolution must not misaddress a DM',
+      reason: "cross-platform resolution must reach the origin platform, not the admin's current one",
+    });
+    assert.ok(created);
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    // The report was filed on whatsapp; the admin resolving it is calling
+    // from discord — the DM must go out through the whatsapp adapter
+    // (looked up via getAdapter), never through the discord adapter the
+    // current turn happens to be using.
+    const result = await resolveReportHandler({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    }).handler({ id: created.id, status: 'resolved' });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+    assert.equal(originCalls.length, 1, "the reporter is notified via the report's origin platform");
+    assert.equal(originCalls[0][0], RESOLVE_REPORT_HANDLER_USER);
+    assert.match(originCalls[0][1], /resolved/i);
+  },
+);
+
+test(
+  'resolve_report falls back to a silent skip when the origin platform has no adapter registered (issue #157)',
+  { skip },
+  async () => {
+    const created = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: RESOLVE_REPORT_HANDLER_USER,
+      conversationId: 'convo-1',
+      reason: 'origin platform not configured in this deployment',
     });
     assert.ok(created);
 
@@ -896,16 +985,17 @@ test(
       calls.push(userId);
     });
 
-    // The report was filed on whatsapp; the admin resolving it is calling
-    // from discord — sendDirectMessage must never fire, since the per-turn
-    // adapter has no way to reach the whatsapp identity safely.
-    const result = await resolveReportHandler({ platform: 'discord', adapter }).handler({
-      id: created.id,
-      status: 'resolved',
-    });
+    // whatsapp isn't registered in this deployment (getAdapter returns
+    // undefined) — must degrade to exactly today's silence, never throw and
+    // never fall back to the resolving admin's own (wrong) adapter.
+    const result = await resolveReportHandler({
+      platform: 'discord',
+      adapter,
+      getAdapter: () => undefined,
+    }).handler({ id: created.id, status: 'resolved' });
 
     assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolution itself still succeeds');
-    assert.equal(calls.length, 0, 'a cross-platform resolution sends no DM');
+    assert.equal(calls.length, 0, 'no adapter registered for the origin platform means no notification');
   },
 );
 
