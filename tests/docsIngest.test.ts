@@ -171,6 +171,77 @@ test(
 );
 
 test(
+  'runDocsIngest: created/updated chunks carry their source_url/source_title and a verified_at (issue #214)',
+  { skip },
+  async () => {
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+
+    await runDocsIngest(fakeFetcher({ [u1]: 'Messages API v1.' }));
+    const created = await pool.query(
+      `SELECT source_url, source_title, verified_at FROM knowledge WHERE created_by_role = $1`,
+      [DOCS_PROVENANCE],
+    );
+    assert.equal(created.rows.length, 1);
+    assert.equal(created.rows[0].source_url, u1, 'the page URL is populated automatically');
+    assert.match(created.rows[0].source_title, /^docs: api\/messages/);
+    assert.ok(created.rows[0].verified_at, 'verified_at is set at ingest time');
+
+    const firstVerifiedAt = new Date(created.rows[0].verified_at).getTime();
+    await new Promise((r) => setTimeout(r, 10));
+    await runDocsIngest(fakeFetcher({ [u1]: 'Messages API v2 — new params.' }));
+    const updated = await pool.query(
+      `SELECT source_url, verified_at FROM knowledge WHERE created_by_role = $1`,
+      [DOCS_PROVENANCE],
+    );
+    assert.equal(updated.rows[0].source_url, u1, 'source_url survives a content update');
+    assert.ok(
+      new Date(updated.rows[0].verified_at).getTime() >= firstVerifiedAt,
+      'a content-changed re-ingest re-verifies the citation',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+  },
+);
+
+test(
+  'runDocsIngest: an "unchanged" content diff still backfills a missing source_url without touching updated_at (pre-#214 rows)',
+  { skip },
+  async () => {
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+
+    // Seed a row, then null out its source fields to simulate one ingested
+    // before this feature existed.
+    await runDocsIngest(fakeFetcher({ [u1]: 'Messages API v1.' }));
+    await pool.query(
+      `UPDATE knowledge SET source_url = NULL, source_title = NULL, verified_at = NULL WHERE created_by_role = $1`,
+      [DOCS_PROVENANCE],
+    );
+    const before = await pool.query(`SELECT updated_at FROM knowledge WHERE created_by_role = $1`, [
+      DOCS_PROVENANCE,
+    ]);
+
+    const res = await runDocsIngest(fakeFetcher({ [u1]: 'Messages API v1.' })); // identical content -> unchanged
+    assert.equal(res.unchanged, 1);
+
+    const after = await pool.query(
+      `SELECT source_url, verified_at, updated_at FROM knowledge WHERE created_by_role = $1`,
+      [DOCS_PROVENANCE],
+    );
+    assert.equal(after.rows[0].source_url, u1, 'the backfill sets source_url even on an unchanged diff');
+    assert.ok(after.rows[0].verified_at);
+    assert.equal(
+      new Date(after.rows[0].updated_at).getTime(),
+      new Date(before.rows[0].updated_at).getTime(),
+      'backfilling source metadata must not bump updated_at',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+  },
+);
+
+test(
   'runDocsIngest: a page still listed in the index but transiently failing to fetch is NOT pruned (prune keys off the index, not fetch success)',
   { skip },
   async () => {
