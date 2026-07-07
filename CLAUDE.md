@@ -84,6 +84,20 @@ ownership rules:
   `needs-human` PRs so it never thrashes. Same push guardrails as autofix
   (read-only `gh`, exact `git push origin HEAD`). It never opens or merges
   PRs.
+- The **revise loop** (`pipeline-pr-revise.yml`) may push review-response
+  commits to an existing build-worker PR branch when the PR-review worker's
+  verdict is "Changes requested" — the green-CI case autofix (CI-failure
+  keyed) never touches. Two-hop like the conflict resolver: the review
+  workflow's post step self-dispatches it via `workflow_dispatch` (a
+  GITHUB_TOKEN-posted comment can never trigger a workflow), the payload
+  carries the PR number only, and eligibility (same-repo, bot, `Closes #`,
+  no `needs-human`) plus the still-pending verdict are re-verified from the
+  API before checkout. Bounded to 2 attempts per PR via marker comments,
+  then it escalates `needs-human`; a "Needs a human decision" verdict labels
+  `needs-human` directly from the review workflow. Same push guardrails as
+  autofix (exact `git push origin HEAD`; `gh` read-only except
+  `gh pr comment` for explaining a principled refusal). It never opens or
+  merges PRs.
 - The **build-retry loop** (`pipeline-build-retry.yml`) auto-re-runs a build
   worker run that failed to produce a PR, via `gh run rerun`, bounded by
   `run_attempt` (≤3 total attempts). The build worker escalates `needs-human`

@@ -1,0 +1,271 @@
+name: Pipeline PR revise
+
+# Event-driven REVIEW-RESPONSE loop: when the PR-review worker's verdict on a
+# build-worker PR is "Changes requested", invoke Claude to address the review
+# on the PR branch and push. This closes the state-machine edge
+# docs/PIPELINE.md always promised ("build ── addresses feedback ──▶ …") but
+# the Actions port of the build loop dropped: the build worker is one-shot
+# (fires only on `status:approved`), and the autofix loop reacts only to CI
+# *failure* — so a green-CI PR with a Changes-requested review had NO
+# responder and sat until a human noticed (observed on PR #196, which stalled
+# after a legitimate security finding).
+#
+# TRIGGERING (two-hop, same rationale as the conflict resolver): the review
+# worker posts its verdict comment with GITHUB_TOKEN, and GITHUB_TOKEN-created
+# events never start workflows — an `issue_comment` trigger here would simply
+# never fire. Instead pipeline-pr-review.yml's post step detects its own
+# "Changes requested" verdict and dispatches THIS workflow via
+# `workflow_dispatch` (one of the two documented exceptions where a
+# GITHUB_TOKEN-created event DOES start a run). The payload carries the PR
+# NUMBER only; everything else is re-derived from the API here.
+#
+# Guardrails (mirrors pipeline-pr-autofix.yml — this spends the shared Max
+# pool and pushes code, so they matter):
+#   * Same-repo, bot-authored BUILD-WORKER PRs only (`Closes #` body), never
+#     `needs-human`-labelled ones — re-verified from the API, never trusted
+#     from the dispatch payload (anyone with write access can hand-craft a
+#     dispatch, so the payload is attacker-shapeable in principle).
+#   * The LATEST automated-review verdict must still be "Changes requested"
+#     at run time — the superseded-run guard: a duplicate dispatch, or a
+#     verdict that flipped to LGTM after a manual fix, no-ops instead of
+#     thrashing or mislabelling.
+#   * Hard cap of 2 attempts per PR via marker comments, then escalate
+#     `needs-human`. The revise push re-triggers CI AND re-review, so without
+#     this cap a reviewer-vs-reviser disagreement would loop forever on the
+#     shared pool.
+#   * Same push discipline as autofix: the agent's `gh` is read-only except
+#     `gh pr comment` (so it can explain a principled refusal), its ONLY push
+#     tool is the EXACT `git push origin HEAD` (no `:*`), the checkout uses
+#     `persist-credentials: false`, and GH_TOKEN is set per-step on the
+#     deterministic steps only. As everywhere else, branch protection on
+#     `main` is the enforceable stop (docs/SECURITY.md); the allowlist raises
+#     the bar but does not replace it.
+#   * It CANNOT push .github/workflows/* (App token lacks the `workflows`
+#     scope) — the prompt tells it to stop rather than thrash.
+#   * Never merges — a human merges.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: >-
+          PR number whose latest automated review requested changes. Normally
+          dispatched by pipeline-pr-review.yml; safe to run manually —
+          eligibility and the pending verdict are re-verified from the API
+          before anything runs.
+        type: string
+        required: true
+
+concurrency:
+  group: pipeline-pr-revise-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write # claude-code-action mints its GitHub App token via OIDC
+
+jobs:
+  revise:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Same pgvector Postgres as the build/CI/autofix jobs so the revise agent
+    # can run the full gate (incl. DB-integration tests) before pushing.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: community_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      # NB: GH_TOKEN is deliberately NOT job-level — set per-step on the
+      # deterministic gh steps only, so the agent step never inherits a
+      # GITHUB_TOKEN it could exfiltrate (see pipeline-pr-autofix.yml).
+      # Only ATTEMPT_MARKER comments count toward the 2-try cap; the terminal
+      # escalation comment uses a DIFFERENT marker so it can't inflate the
+      # count.
+      ATTEMPT_MARKER: '<!-- pipeline-pr-revise-attempt -->'
+      ESCALATE_MARKER: '<!-- pipeline-pr-revise-escalation -->'
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR revise worker is inert."
+
+      - name: Re-verify eligibility + pending verdict (never trust the payload)
+        id: precheck
+        if: env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          info="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --json state,headRefName,isCrossRepository,author,labels,body,comments)"
+          eligible="$(jq -r '
+            (.state == "OPEN")
+            and (.isCrossRepository | not)
+            and (.author.is_bot == true)
+            and ((.body // "") | test("[Cc]loses #[0-9]+"))
+            and ([.labels[].name] | index("needs-human") | not)
+          ' <<<"$info")"
+          # The LATEST automated-review comment must still request changes —
+          # the superseded-run guard (see header).
+          verdict_pending="$(jq -r '
+            [.comments[] | select(.body | contains("PR review (automated)"))] | last
+            | ((.body // "") | test("[Cc]hanges requested"))
+          ' <<<"$info")"
+          attempts="$(jq --arg m "$ATTEMPT_MARKER" -r \
+            '[.comments[] | select(.body | contains($m))] | length' <<<"$info")"
+          branch="$(jq -r '.headRefName' <<<"$info")"
+
+          if [ "$eligible" != "true" ] || [ "$verdict_pending" != "true" ]; then
+            echo "PR #${PR_NUMBER}: not eligible, or no pending Changes-requested verdict — skipping."
+            jq -c '{state,isCrossRepository,author:.author.login,is_bot:.author.is_bot,labels:[.labels[].name]}' <<<"$info"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$attempts" -ge 2 ]; then
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label needs-human || true
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${ESCALATE_MARKER}
+          🤖 Revise worker has already tried twice and the automated review still requests changes. Stopping to avoid a reviewer-vs-reviser loop; labelled \`needs-human\` for a maintainer."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "proceed=true"
+            echo "branch=${branch}"
+            echo "attempt=$(( attempts + 1 ))"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: steps.precheck.outputs.proceed == 'true'
+        with:
+          # The branch precheck derived from the PR number via the API — NEVER
+          # a branch name passed in the dispatch payload.
+          ref: ${{ steps.precheck.outputs.branch }}
+          fetch-depth: 0
+          # Do NOT leave the job's GITHUB_TOKEN in .git/config: the agent
+          # reads untrusted PR/review content and can `cat`/`node` it out.
+          # The agent pushes with the action's own App token, and the
+          # deterministic steps use `gh` (GH_TOKEN env), so no persisted git
+          # credential is needed anywhere.
+          persist-credentials: false
+
+      - name: Mark attempt + record current HEAD
+        id: mark
+        if: steps.precheck.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${ATTEMPT_MARKER}
+          🤖 Revise attempt ${{ steps.precheck.outputs.attempt }}/2: the automated review requested changes — attempting to address them on this branch."
+          echo "head_before=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Create the base schema deterministically before the agent runs, so its
+      # `npm test` sees a migrated DB (same fix as the other pipeline
+      # workflows — an un-migrated DB fails every DB-integration test with
+      # "relation does not exist"). node_modules persists into the agent step.
+      - name: Migrate base schema (deterministic — do not leave to the agent)
+        if: steps.mark.outcome == 'success'
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+          # migrate loads config.ts which requires this; migrate never calls
+          # Claude, so a dummy satisfies the schema (see pipeline-build.yml).
+          CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
+        run: |
+          npm ci
+          npm run migrate
+
+      - name: Address the requested changes
+        id: fix
+        if: steps.mark.outcome == 'success'
+        continue-on-error: true # the verify step below is the source of truth
+        uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1.0.165
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The dispatched run's actor is github-actions[bot] (the review
+          # workflow dispatched it with GITHUB_TOKEN), and the action rejects
+          # non-human actors by default — same setting every other pipeline
+          # agent workflow uses for the same reason.
+          allowed_bots: '*'
+          prompt: |
+            The automated PR review on pull request #${{ env.PR_NUMBER }} for
+            the NZ Claude Community agent requested changes. The PR's branch
+            (`${{ steps.precheck.outputs.branch }}`) is already checked out
+            here.
+
+            1. Read the review: `gh pr view ${{ env.PR_NUMBER }} --comments` —
+               the LATEST comment starting "PR review (automated)" lists the
+               requested changes. Also read the diff
+               (`gh pr diff ${{ env.PR_NUMBER }}`) and CLAUDE.md (conventions
+               + security posture you must not regress).
+            2. Address every requested change on this branch. Extend tests to
+               pin each fix (update tests/security-floor.json in the SAME diff
+               if you add or remove `SECURITY:` tests). A pgvector Postgres is
+               available at DATABASE_URL, so run the FULL gate and make EVERY
+               check green before pushing:
+               npm run typecheck && npm run lint && npm run format:check &&
+               npm run migrate && npm test && npm run build && npm run test:security
+            3. Stage and commit, then push with EXACTLY this command (nothing
+               else — no other push form is permitted): `git push origin HEAD`.
+               NEVER force-push and NEVER push any other ref or branch. Do NOT
+               open a new PR and do NOT merge.
+            4. If a requested change is genuinely wrong, unsafe, or infeasible
+               — or needs a `.github/workflows/` change (you cannot push those
+               — the token lacks the `workflows` scope) — do NOT force it:
+               post a short `gh pr comment` explaining exactly why, and STOP
+               without committing/pushing. A later step detects "no new
+               commit" and escalates `needs-human` so a maintainer decides.
+          # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml).
+          # Differences from autofix, both deliberate: `gh pr comment` is
+          # allowed so a principled refusal is explained on the PR rather
+          # than silent (still no merge/close/create/api), and `git rm` is
+          # allowed because addressing a review can require removing a file
+          # (tracked deletions only — still no bare `rm`). The ONLY push
+          # tool remains the EXACT `git push origin HEAD`; the enforceable
+          # main-push stop is branch protection (see header).
+          claude_args: |
+            --max-turns 200
+            --model sonnet
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git fetch origin:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      - name: Verify a revision was pushed (else escalate loudly)
+        if: always() && steps.mark.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Read the branch's current remote tip via the API (gh/GH_TOKEN)
+          # rather than `git fetch` — with persist-credentials:false there is
+          # no git credential in .git/config for a fetch (see autofix).
+          after="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
+          if [ "$after" != "${{ steps.mark.outputs.head_before }}" ]; then
+            echo "Revise worker pushed a change; CI and the review worker will re-run on the new commit."
+            exit 0
+          fi
+          echo "::error::Revise worker produced no new commit on PR #${PR_NUMBER}."
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label needs-human || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${ESCALATE_MARKER}
+          🤖 Revise attempt ${{ steps.precheck.outputs.attempt }} pushed no revision — either it disagreed with the review (see its comment above), the change needs a \`.github/workflows/\` edit it can't push, or it wasn't safely fixable. Labelled \`needs-human\` for a maintainer. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1
