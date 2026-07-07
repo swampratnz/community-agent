@@ -67,6 +67,8 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'remove_community_role',
     'list_assignable_roles',
     'create_poll',
+    'create_thread',
+    'archive_thread',
   ]);
 
   private readonly client: Client;
@@ -606,6 +608,31 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
           allowedMentions: { parse: [] },
         });
         return `Poll posted with ${answers.length} option(s), open ${durationHours}h.`;
+      }
+      case 'create_thread': {
+        // Only text/announcement channels expose GuildTextThreadManager
+        // (forum/media channels use a different, tag-based creation API this
+        // tool doesn't support — out of scope, see docs/SECURITY.md §11).
+        const channel = await this.client.channels.fetch(action.conversationId!);
+        if (
+          !channel ||
+          (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)
+        ) {
+          throw new Error(`Discord channel ${action.conversationId} does not support threads`);
+        }
+        const name = await this.filtered(paramString(action.params?.name));
+        if (!name) throw new Error('create_thread requires params.name');
+        const seedMessageId = paramString(action.params?.seedMessageId) || undefined;
+        const thread = await channel.threads.create({ name, startMessage: seedMessageId });
+        return `Created thread "${name}" (${thread.id}).`;
+      }
+      case 'archive_thread': {
+        const channel = await this.client.channels.fetch(action.conversationId!);
+        if (!channel || !channel.isThread()) {
+          throw new Error(`Discord channel ${action.conversationId} is not a thread`);
+        }
+        await channel.setArchived(true, paramString(action.params?.reason, 'Archived via bot'));
+        return `Archived thread ${action.conversationId}.`;
       }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);

@@ -411,6 +411,23 @@ test('SECURITY: create_poll is admin-tier — never reachable by member/guest (i
   }
 });
 
+test('SECURITY: create_thread / archive_thread are admin-tier — never reachable by member/guest (issue #229)', () => {
+  for (const tool of ['mcp__community__create_thread', 'mcp__community__archive_thread']) {
+    assert.ok(ADMIN_TOOLS.includes(tool), `${tool} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must not be in MEMBER_TOOLS`);
+    assert.ok(
+      !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+      `${tool} must not be double-listed in SUPER_ADMIN_TOOLS`,
+    );
+    for (const role of ['guest', 'member'] as const) {
+      assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach ${tool}`);
+    }
+    for (const role of ['admin', 'super_admin'] as const) {
+      assert.ok(toolsForRole(role).includes(tool), `${role} must reach ${tool}`);
+    }
+  }
+});
+
 test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachable by admin/member/guest', () => {
   const tool = 'mcp__community__redeploy_bot';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'redeploy_bot must be in SUPER_ADMIN_TOOLS');

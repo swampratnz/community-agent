@@ -281,6 +281,18 @@ export const POLL_DEFAULT_DURATION_HOURS = 24;
  */
 export const POLL_RATE_LIMIT_PER_HOUR = 5;
 
+/** create_thread (issue #229) bound — Discord's own hard limit on a thread's name. */
+export const THREAD_NAME_MAX_CHARS = 100;
+
+/**
+ * Per-channel cap on new threads within a rolling hour, same additive/
+ * rate-capped-not-CONFIRM-gated treatment as `create_poll` (issue #228) — the
+ * adversarial review for #229 agreed `create_thread` is additive and can be
+ * ungated with a per-window cap, unlike `archive_thread` (CONFIRM-gated, it
+ * hides an active discussion).
+ */
+export const THREAD_CREATE_RATE_LIMIT_PER_HOUR = 5;
+
 const MEMBER_APPROVED_MESSAGE =
   "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
   'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
@@ -566,6 +578,27 @@ function reservePollSlot(conversationId: string, limit: number): boolean {
   }
   recent.push(now);
   pollTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/** create_thread timestamps per parent channel, for the rolling-hour cap (THREAD_CREATE_RATE_LIMIT_PER_HOUR). */
+const threadTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one create_thread slot for `conversationId` against a rolling
+ * hourly cap, same sliding-window shape as `reservePollSlot`. Returns false
+ * without reserving if the channel already hit `limit` within the last hour.
+ */
+function reserveThreadSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (threadTimestampsByConversation.get(conversationId) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= limit) {
+    threadTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  threadTimestampsByConversation.set(conversationId, recent);
   return true;
 }
 
@@ -1555,6 +1588,130 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           }),
       });
       return text(success ? `Poll posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const createThread = tool(
+    'create_thread',
+    'Open a Discord thread under a channel to split a longer discussion out of the main flow, optionally ' +
+      'seeded from an existing message. Discord only. Admins can only open threads in conversations they are in.',
+    {
+      name: z
+        .string()
+        .min(1)
+        .max(THREAD_NAME_MAX_CHARS)
+        .describe(`The thread's title, up to ${THREAD_NAME_MAX_CHARS} characters`),
+      channelId: z
+        .string()
+        .optional()
+        .describe('Parent channel id to open the thread under; defaults to the current conversation'),
+      seedMessageId: z
+        .string()
+        .optional()
+        .describe('Optional existing message id in that channel to start the thread from'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'create_thread');
+      if (!adapter.adminCapabilities.has('create_thread')) {
+        return text(`This platform (${adapter.platform}) does not support creating threads.`, true);
+      }
+      const target = args.channelId ?? caller.conversationId;
+      const allowed = await callerScope();
+      if (allowed && !allowed.includes(target)) {
+        return text(`Refusing: you are not a participant of conversation "${target}".`, true);
+      }
+      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+        return text(`Refusing: conversation "${target}" is unknown.`, true);
+      }
+      // Defensive guard (adversarial review, issue #229): thread messages are
+      // moderation-scanned under their PARENT channel's allowlist membership
+      // (DiscordAdapter.scopeChannelId resolves a thread to its parent for the
+      // scan gate in onDiscordMessage), so a thread opened under a
+      // non-allowlisted parent would be an unmoderated space the bot itself
+      // manufactured. Refuse rather than rely solely on that scan-side fix
+      // staying correct.
+      if (
+        config.moderation.enabled &&
+        config.discord.allowedChannelIds.length > 0 &&
+        !config.discord.allowedChannelIds.includes(target)
+      ) {
+        return text(
+          `Refusing: moderation is enabled with a channel allowlist and "${target}" is not on it — a thread ` +
+            'there would not be moderation-scanned.',
+          true,
+        );
+      }
+      if (args.seedMessageId && !(await isKnownMessage(caller.platform, target, args.seedMessageId))) {
+        return text(`Refusing: message "${args.seedMessageId}" is unknown in "${target}".`, true);
+      }
+      if (!reserveThreadSlot(target, THREAD_CREATE_RATE_LIMIT_PER_HOUR)) {
+        return text(
+          `Refusing: conversation "${target}" already hit the thread-creation limit ` +
+            `(${THREAD_CREATE_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+          true,
+        );
+      }
+      const params = { name: args.name, seedMessageId: args.seedMessageId };
+      const { success, result } = await audited({
+        actionKind: 'create_thread',
+        conversationId: target,
+        params,
+        run: () =>
+          adapter.performAdminAction({
+            kind: 'create_thread',
+            conversationId: target,
+            params,
+          }),
+      });
+      return text(success ? result : `Failed: ${result}`, !success);
+    },
+  );
+
+  const archiveThread = tool(
+    'archive_thread',
+    'Archive a Discord thread the bot can see, ending active discussion there. CONFIRM required — this hides ' +
+      "the thread from the channel's active list. Discord only. Admins can only archive threads in " +
+      'conversations they are in.',
+    {
+      threadId: z.string().describe('The thread id to archive'),
+      reason: z.string().optional().describe('Optional note for the audit log'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'archive_thread');
+      if (!adapter.adminCapabilities.has('archive_thread')) {
+        return text(`This platform (${adapter.platform}) does not support archiving threads.`, true);
+      }
+      const allowed = await callerScope();
+      if (allowed && !allowed.includes(args.threadId)) {
+        return text(`Refusing: you are not a participant of conversation "${args.threadId}".`, true);
+      }
+      if (
+        args.threadId !== caller.conversationId &&
+        !(await isKnownConversation(caller.platform, args.threadId))
+      ) {
+        return text(`Refusing: conversation "${args.threadId}" is unknown.`, true);
+      }
+      const params = { reason: args.reason };
+      const run = async () => {
+        const { success, result } = await audited({
+          actionKind: 'archive_thread',
+          conversationId: args.threadId,
+          params,
+          run: () =>
+            adapter.performAdminAction({
+              kind: 'archive_thread',
+              conversationId: args.threadId,
+              params,
+            }),
+        });
+        return success ? `Done: ${result}` : `Failed: ${result}`;
+      };
+
+      return requireConfirm(
+        `archive_thread on ${args.threadId}${args.reason ? ` (reason: ${args.reason})` : ''}`,
+        'admin',
+        run,
+      );
     },
   );
 
@@ -2852,6 +3009,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       clearWarningsTool,
       announce,
       createPoll,
+      createThread,
+      archiveThread,
       setCommunityGuidelines,
       saveKnowledgeTool,
       listKnowledgeTool,

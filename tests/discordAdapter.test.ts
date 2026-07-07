@@ -229,6 +229,120 @@ test('SECURITY: performAdminAction("create_poll") routes question/answers throug
   assert.equal(poll.duration, 24);
 });
 
+interface FakeThreadParentChannel {
+  type: ChannelType;
+  threads: { create: (opts: { name: string; startMessage?: string }) => Promise<{ id: string }> };
+}
+
+/** Stubs the client's channel fetch to capture the `threads.create` call performAdminAction('create_thread') makes. */
+function stubClientForThreadCreate(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  channelType: ChannelType = ChannelType.GuildText,
+) {
+  const calls: Array<{ name: string; startMessage?: string }> = [];
+  const channel: FakeThreadParentChannel = {
+    type: channelType,
+    threads: {
+      create: async (opts) => {
+        calls.push(opts);
+        return { id: 'thread-new-1' };
+      },
+    },
+  };
+  const client = (
+    adapter as unknown as {
+      client: { channels: { fetch: (id: string) => Promise<FakeThreadParentChannel | null> } };
+    }
+  ).client;
+  client.channels.fetch = async () => channel;
+  return calls;
+}
+
+test('SECURITY: performAdminAction("create_thread") routes the thread name through filterOutbound — a secret cannot reach a Discord thread title unredacted (issue #229)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubClientForThreadCreate(adapter);
+  const secret = 'sk-ant-' + 'y'.repeat(30);
+  const result = await adapter.performAdminAction({
+    kind: 'create_thread',
+    conversationId: 'chan-1',
+    params: { name: `secret is ${secret} end` },
+  });
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].name.includes('sk-ant-'), 'no raw secret fragment may reach the thread title');
+  assert.ok(calls[0].name.includes('[redacted]'), 'the name secret must be redacted, not dropped');
+  assert.match(result, /Created thread/);
+});
+
+test('performAdminAction("create_thread") passes seedMessageId through as the native startMessage option (issue #229)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubClientForThreadCreate(adapter);
+  await adapter.performAdminAction({
+    kind: 'create_thread',
+    conversationId: 'chan-1',
+    params: { name: 'Discussion', seedMessageId: 'msg-42' },
+  });
+  assert.equal(calls[0]?.startMessage, 'msg-42');
+});
+
+test('performAdminAction("create_thread") throws on a channel type that does not support threads, e.g. a voice channel (issue #229)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForThreadCreate(adapter, ChannelType.GuildVoice);
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'create_thread',
+        conversationId: 'chan-1',
+        params: { name: 'Discussion' },
+      }),
+    /does not support threads/,
+  );
+});
+
+interface FakeThreadChannel {
+  isThread: () => boolean;
+  setArchived: (archived: boolean, reason?: string) => Promise<unknown>;
+}
+
+/** Stubs the client's channel fetch to capture the `setArchived` call performAdminAction('archive_thread') makes. */
+function stubClientForThreadArchive(adapter: InstanceType<typeof DiscordAdapter>, isThread = true) {
+  const calls: Array<{ archived: boolean; reason?: string }> = [];
+  const channel: FakeThreadChannel = {
+    isThread: () => isThread,
+    setArchived: async (archived, reason) => {
+      calls.push({ archived, reason });
+    },
+  };
+  const client = (
+    adapter as unknown as {
+      client: { channels: { fetch: (id: string) => Promise<FakeThreadChannel | null> } };
+    }
+  ).client;
+  client.channels.fetch = async () => channel;
+  return calls;
+}
+
+test('performAdminAction("archive_thread") archives the thread with the given reason (issue #229)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubClientForThreadArchive(adapter);
+  const result = await adapter.performAdminAction({
+    kind: 'archive_thread',
+    conversationId: 'thread-1',
+    params: { reason: 'discussion wrapped up' },
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { archived: true, reason: 'discussion wrapped up' });
+  assert.match(result, /Archived thread thread-1/);
+});
+
+test('performAdminAction("archive_thread") throws when the target channel is not a thread (issue #229)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForThreadArchive(adapter, false);
+  await assert.rejects(
+    () => adapter.performAdminAction({ kind: 'archive_thread', conversationId: 'chan-1', params: {} }),
+    /is not a thread/,
+  );
+});
+
 interface FakeImageSendable {
   isTextBased: () => boolean;
   isDMBased: () => boolean;
