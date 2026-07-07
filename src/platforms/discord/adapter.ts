@@ -107,14 +107,16 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // updates the stored copy.
     if (config.discord.archiveAllMessages) {
       this.client.on(Events.MessageDelete, (message) => {
-        if (!this.inArchiveScope(message.guildId, message.channelId)) return;
+        if (!this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId)))
+          return;
         deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
           logger.warn({ err, messageId: message.id }, 'Stored-message delete failed'),
         );
       });
       this.client.on(Events.MessageBulkDelete, (messages) => {
         for (const message of messages.values()) {
-          if (!this.inArchiveScope(message.guildId, message.channelId)) continue;
+          if (!this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId)))
+            continue;
           deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
             logger.warn({ err, messageId: message.id }, 'Stored-message bulk delete failed'),
           );
@@ -192,11 +194,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // alone silently excludes every thread under an allowed channel — those
     // messages were never processed OR moderation-scanned. Resolve a thread to
     // its parent channel id for the allowlist decision (recall/session still
-    // key on the real thread id via `conversationId` below).
-    const gateChannelId =
-      !isDM && message.channel.isThread()
-        ? (message.channel.parentId ?? message.channelId)
-        : message.channelId;
+    // key on the real thread id via `conversationId` below). The same
+    // resolution is applied to the delete/edit-honouring listeners via
+    // `scopeChannelId`, so a thread message that is archived is also honoured
+    // when deleted/edited.
+    const gateChannelId = this.scopeChannelId(message.channel, message.channelId);
     if (
       !isDM &&
       config.discord.allowedChannelIds.length > 0 &&
@@ -256,8 +258,29 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     );
   }
 
+  /**
+   * Archive/allowlist scope is keyed on the PARENT channel: a thread reports
+   * its own id as `channelId`, and a thread id is never in `allowedChannelIds`.
+   * Resolve a thread to its parent for every scope decision — the allowlist
+   * gate in `onDiscordMessage` AND the delete/edit-honouring listeners — so a
+   * thread message under an allowed channel is both processed and, when later
+   * deleted/edited, has its stored copy honoured (issue #48). The stored
+   * `conversation_id` (and thus the delete/update match) stays the thread id;
+   * only the scope check uses the parent. Falls back to the raw id for a
+   * non-thread or an uncached channel.
+   */
+  private scopeChannelId(
+    channel: { isThread(): boolean; parentId?: string | null } | null | undefined,
+    channelId: string,
+  ): string {
+    return channel?.isThread() ? (channel.parentId ?? channelId) : channelId;
+  }
+
   private async onMessageUpdate(newMessage: Message | PartialMessage): Promise<void> {
-    if (!this.inArchiveScope(newMessage.guildId, newMessage.channelId)) return;
+    if (
+      !this.inArchiveScope(newMessage.guildId, this.scopeChannelId(newMessage.channel, newMessage.channelId))
+    )
+      return;
     const full = newMessage.partial ? await newMessage.fetch() : newMessage;
     if (full.author.bot || !full.content) return;
     await updateInteractionByMessageId('discord', full.channelId, full.id, this.cleanContent(full.content));

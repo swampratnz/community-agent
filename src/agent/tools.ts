@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
 import { normalizeMemberId } from '../auth/memberId.js';
+import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -681,7 +682,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           hits
             .map((h, i) => {
               const link = memoryHitJumpLink(h, config.discord.guildId);
-              return `${i + 1}. (${(h.similarity * 100).toFixed(0)}% match) [${h.direction}${h.userName ? ` by ${h.userName}` : ''}] ${h.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
+              // Sanitize the recalled author name (untrusted platform display
+              // name): untrusted() strips angle brackets but not newlines, so a
+              // `\n\n[SYSTEM] ...` nickname would otherwise land as an apparent
+              // standalone directive inside this result (finding A).
+              const name = sanitizeName(h.userName);
+              return `${i + 1}. (${(h.similarity * 100).toFixed(0)}% match) [${h.direction}${name ? ` by ${name}` : ''}] ${h.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
             })
             .join('\n'),
         ),
@@ -840,30 +846,30 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     async () => {
       const limit = config.moderation.strikeLimit;
       const windowDays = config.moderation.strikeWindowDays;
-      // Windowed count: what governs a NEW auto-mute. Unwindowed count: what a
-      // mute actually persists on (a mute is only ever lifted by
-      // clear_warnings, never by strikes aging out of the window) and what a
-      // leave/rejoin re-mute uses. Reporting only the windowed count told a
-      // still-muted member "you have no active warnings" once their strikes
-      // aged out of the window — actively misleading. When no window is
-      // configured the two are identical, so skip the extra read.
-      const windowed = await countActiveWarnings(caller.platform, caller.userId, windowDays);
-      const unwindowed = windowDays ? await countActiveWarnings(caller.platform, caller.userId) : windowed;
-
-      if (unwindowed >= limit) {
-        return text(
-          `You're currently muted (${unwindowed} active warning${unwindowed === 1 ? '' : 's'}, limit ${limit}). ` +
-            'An admin needs to clear your warnings to restore posting.',
-        );
-      }
-      if (unwindowed === 0) {
+      // Report on the UNWINDOWED count. A mute is only ever lifted by
+      // clear_warnings, never by strikes aging out of the window, so a member
+      // whose strikes have aged out of the window can still be blocked;
+      // reporting the windowed count alone told them "you have no active
+      // warnings" while they were still at/over the limit (advisory F5). This
+      // deliberately does NOT claim a live Discord mute — the tool can't read
+      // the role state (issue #182) — only the caller's count vs. the limit.
+      // When no window is configured the two counts are identical, so the
+      // extra read is skipped.
+      const active = await countActiveWarnings(caller.platform, caller.userId);
+      if (active === 0) {
         return text('You have no active warnings.');
       }
-      let msg = `You have ${windowed} active warning${windowed === 1 ? '' : 's'} counting toward the limit (${limit}).`;
-      if (unwindowed > windowed) {
-        msg +=
-          ` You also have ${unwindowed - windowed} older warning${unwindowed - windowed === 1 ? '' : 's'} ` +
-          'that no longer count toward the limit but would still apply if you left and rejoined.';
+      if (active >= limit) {
+        return text(`You've reached the warning limit (${active}/${limit}). An admin can clear this.`);
+      }
+      let msg = `You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`;
+      if (windowDays) {
+        const windowed = await countActiveWarnings(caller.platform, caller.userId, windowDays);
+        if (windowed < active) {
+          msg +=
+            ` ${active - windowed} of these are old enough not to count toward a new mute, but any uncleared ` +
+            'warning still applies if you leave and rejoin.';
+        }
       }
       return text(msg);
     },
@@ -1051,7 +1057,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           entries
             .map((e) => {
               const link = memoryHitJumpLink(e, config.discord.guildId);
-              return `[${e.createdAt.toISOString()}] [${e.direction}${e.userName ? ` by ${e.userName}` : ''}] ${e.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
+              // Same sanitization as remember_search above — the recalled
+              // author name is an untrusted, newline-unbounded display name
+              // (finding A).
+              const name = sanitizeName(e.userName);
+              return `[${e.createdAt.toISOString()}] [${e.direction}${name ? ` by ${name}` : ''}] ${e.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
             })
             .join('\n'),
         ),
