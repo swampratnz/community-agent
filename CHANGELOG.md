@@ -5,6 +5,23 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-07
+
+### Added
+- Community guidelines (#212): admins can set an authoritative, curated guidelines text with `set_community_guidelines`, and members can now read the rules — ask the bot, or it points you to them when relevant. Previously the bot referenced "rule violations" as a reportable category without anything actually telling members what the rules were. Reuses the existing policies store (no migration), 30s-cached.
+- `create_poll` (#228): an admin-tier tool that posts a **native Discord poll** (2–10 options, a real tallied vote with a set duration, default 24h) to a channel — for gauging interest in meetup dates, topics, and the like, instead of posting text and eyeballing reactions. Discord-only (WhatsApp cleanly reports it's unsupported), rate-capped per channel, and the question/options pass through the same outbound secret-redaction filter as every other send.
+- `react_to_message` (#231): a member-tier tool so the bot can acknowledge a message with an emoji instead of always replying in text. Restricted to a closed positive/neutral allowlist — `✅ 👍 👀 🎉` — and can only react to a message it has actually seen in your own conversation.
+- Assignable cosmetic Discord roles (#232): admin tools `assign_community_role` / `remove_community_role` (CONFIRM-gated, audited) and `list_assignable_roles` for handing out **purely cosmetic** roles — "verified builder", regional or interest tags. Strictly decorative and kept orthogonal to the bot's own permission tiers (super_admin/admin/member/guest still come from config + membership only, never from a Discord role).
+- Source citations + freshness on knowledge answers (#214): knowledge replies now show where the answer came from (source title + link) and how recently it was verified, plus a "may be outdated" nudge for stale entries (`KNOWLEDGE_STALE_DAYS`). Rendered deterministically on the send path — never model-invented text — and citations show only for trusted (admin-curated / docs-ingested) entries, so a quarantined auto-researched entry can't gain apparent authority from a source line. Admins can attach a source when saving/updating knowledge; docs-ingest fills sources in automatically.
+- Anthropic status check (#206, opt-in `STATUS_CHECK_ENABLED`, off by default): a member-tier `check_status` tool that reports Anthropic's current service status, read from Anthropic's official status page on a background poll (cached — a member's question never triggers a live fetch). Gives an authoritative "is this me or an Anthropic incident?" answer without opening web search to every member.
+
+### Changed
+- Security/privacy hardening across the untrusted-input surface (#233): the prompt-injection quarantine now sanitises display names (a crafted nickname can't inject a pseudo-directive or close the recall wrapper early); `forget_me` / `purge_user_data` erasure is completed (clears session continuity so purged messages can't survive in a resumed transcript, runs in one transaction, invalidates digests built over deleted rows); accused-admin report exclusion now follows linked identities; WhatsApp "delete/edit for everyone" is honoured only from the original author or a group admin; the CONFIRM gate deterministically surfaces the real pending action so an injected turn can't hide it behind an innocuous "reply CONFIRM"; `update_knowledge` is now CONFIRM-gated; and Discord mute enforcement covers voice/stage/media channels and threads and is reconciled on startup. No capability was widened.
+- A deterministic adversarial-corpus injection gate + red-team runbook (#227) now guards prompt-injection defences against regressions in CI.
+
+### Fixed
+- Graceful shutdown (#210): in-flight turns are now drained on shutdown/restart instead of being dropped mid-reply, so a redeploy no longer cuts off an answer someone was waiting on.
+- A batch of correctness fixes from a full-repo deep review (#215–#225).
 ## 2026-07-05
 
 ### Changed
