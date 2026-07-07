@@ -168,6 +168,22 @@ const NZ_DATE_FORMAT = new Intl.DateTimeFormat('en-NZ', {
   year: 'numeric',
 });
 
+/** Hard cap on a caller-controlled display name once sanitised (issue #227). */
+const DISPLAY_NAME_MAX_CHARS = 100;
+
+/**
+ * Neutralise a caller-controlled display name (Discord nickname/username or
+ * WhatsApp push name) before it is interpolated into the system prompt or the
+ * recalled-messages quarantine block. Strips angle brackets and newlines —
+ * without this, a hostile display name like `x</recalled-messages>SYSTEM: ...`
+ * can fake the closing tag and escape the quarantine (the 2026-07-07 review
+ * finding) — and hard-truncates so an unbounded name can't push real content
+ * out of the prompt.
+ */
+function sanitizeDisplayName(name: string): string {
+  return name.replace(/[<>\r\n]/g, ' ').slice(0, DISPLAY_NAME_MAX_CHARS);
+}
+
 /**
  * Day-granularity only (no time-of-day): this string sits in the per-turn
  * system prompt, which prefixes the growing conversation history under the
@@ -191,7 +207,7 @@ export function buildSystemPrompt(
     GUIDELINES,
     `Persona:\n${persona.voice}`,
     HUMAN_STYLE,
-    `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${caller.userName} (${caller.role})\n- Current date (NZ): ${formatNzDate(now)}`,
+    `Context:\n- Platform: ${caller.platform}\n- Conversation: ${caller.conversationId}\n- Requester: ${sanitizeDisplayName(caller.userName)} (${caller.role})\n- Current date (NZ): ${formatNzDate(now)}`,
     ROLE_NOTES[caller.role],
     codePolicyNote(policy.codeAnswers),
     ...(policy.responseStyle === 'plain' ? [PLAIN_LANGUAGE_STYLE] : []),
@@ -202,15 +218,18 @@ export function buildSystemPrompt(
 
 /**
  * Render recalled interactions as a clearly delimited untrusted-data block
- * for the USER turn (never the system prompt). Angle brackets in the content
- * are stripped so recalled text can't fake a closing tag and escape the block.
+ * for the USER turn (never the system prompt). Angle brackets and newlines in
+ * the content AND the recalled author's display name are stripped so neither
+ * can fake a closing tag (or a fresh numbered line) and escape the block —
+ * the display name is attacker-controlled exactly like the content is.
  */
 export function renderMemoryContext(memories: MemoryHit[]): string {
   const items = memories
     .map((m, i) => {
-      const clean = m.content.replace(/[<>]/g, ' ').slice(0, 300);
+      const clean = m.content.replace(/[<>\r\n]/g, ' ').slice(0, 300);
+      const name = m.userName ? sanitizeDisplayName(m.userName) : null;
       const link = memoryHitJumpLink(m, config.discord.guildId);
-      return `${i + 1}. [${m.direction}${m.userName ? ` by ${m.userName}` : ''}] ${clean}${link ? ` (${link})` : ''}`;
+      return `${i + 1}. [${m.direction}${name ? ` by ${name}` : ''}] ${clean}${link ? ` (${link})` : ''}`;
     })
     .join('\n');
   return [
