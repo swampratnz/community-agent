@@ -45,6 +45,14 @@ const {
   CATCH_UP_MAX_HOURS,
   CATCH_UP_MAX_MESSAGES,
   COMMUNITY_GUIDELINES_MAX_CHARS,
+  POLL_MIN_OPTIONS,
+  POLL_MAX_OPTIONS,
+  POLL_QUESTION_MAX_CHARS,
+  POLL_OPTION_MAX_CHARS,
+  POLL_MIN_DURATION_HOURS,
+  POLL_MAX_DURATION_HOURS,
+  POLL_DEFAULT_DURATION_HOURS,
+  POLL_RATE_LIMIT_PER_HOUR,
   ALLOWED_REACTION_EMOJI,
   REACTION_RATE_LIMIT_PER_DAY,
 } = await import('../src/agent/tools.js');
@@ -92,6 +100,7 @@ const CATCH_UP_HANDLER_OTHER_SCOPE = `${RUN}-catch-up-handler-other`;
 const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
+const POLL_HANDLER_ADMIN = `${RUN}-poll-handler-admin`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
 const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
 const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
@@ -147,6 +156,9 @@ after(async () => {
     ]);
     await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM response_style_prefs WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'create_poll' AND actor_user_id LIKE $1`, [
+      `${POLL_HANDLER_ADMIN}%`,
+    ]);
     await pool.query(`DELETE FROM member_notes WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM community_users WHERE platform_user_id LIKE $1`, [
       `${COMMUNITY_ROLE_HANDLER_USER}%`,
@@ -848,6 +860,249 @@ test('SECURITY: set_community_guidelines rejects text over the max length at the
     true,
     'an empty string (clear) must stay allowed',
   );
+});
+
+// create_poll (issue #228): a Discord-only, announce-class outward-posting
+// tool. This adapter stub advertises the capability (mirroring the real
+// DiscordAdapter) with controllable conversationsForUser/performAdminAction,
+// unlike stubAdapter (used elsewhere in this file) whose adminCapabilities is
+// always empty.
+function pollAdapter(opts: {
+  capabilities?: string[];
+  conversationsForUser?: PlatformAdapter['conversationsForUser'];
+  performAdminAction?: PlatformAdapter['performAdminAction'];
+}): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => {},
+    sendDirectMessage: async () => {},
+    conversationsForUser: opts.conversationsForUser ?? (async () => []),
+    adminCapabilities: new Set(opts.capabilities ?? ['create_poll']),
+    performAdminAction: opts.performAdminAction ?? (async () => 'Poll posted with 2 option(s), open 24h.'),
+  };
+}
+
+function createPollHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            question: string;
+            options: string[];
+            durationHours?: number;
+            conversationId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['create_poll'];
+}
+
+test('SECURITY: create_poll rejects a non-admin caller (assertAtLeast re-check, issue #228)', async () => {
+  const adapter = pollAdapter({});
+  const handler = createPollHandler({ role: 'member', adapter });
+  await assert.rejects(
+    () => handler.handler({ question: 'Meetup night?', options: ['Tue', 'Thu'] }),
+    /Permission denied/,
+  );
+});
+
+test('SECURITY: create_poll refuses on a platform whose adapter does not advertise the capability (issue #228)', async () => {
+  const adapter = pollAdapter({ capabilities: [] });
+  const handler = createPollHandler({ adapter });
+  const result = await handler.handler({ question: 'Meetup night?', options: ['Tue', 'Thu'] });
+  assert.match(result.content[0]?.text ?? '', /does not support polls/);
+  assert.equal(result.isError, true);
+});
+
+test('SECURITY: create_poll enforces the Discord Poll API bounds at the zod schema boundary (issue #228)', () => {
+  const adapter = pollAdapter({});
+  const handler = createPollHandler({ adapter });
+
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'Q', options: ['a', 'b'] }).success,
+    true,
+    `exactly the minimum option count (${POLL_MIN_OPTIONS}) is allowed`,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'Q', options: ['a'] }).success,
+    false,
+    'a single option must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: Array.from({ length: POLL_MAX_OPTIONS }, (_, i) => `o${i}`),
+    }).success,
+    true,
+    `exactly the maximum option count (${POLL_MAX_OPTIONS}) is allowed`,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: Array.from({ length: POLL_MAX_OPTIONS + 1 }, (_, i) => `o${i}`),
+    }).success,
+    false,
+    'one option over the maximum must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'x'.repeat(POLL_QUESTION_MAX_CHARS), options: ['a', 'b'] })
+      .success,
+    true,
+    'exactly the question max length is allowed',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'x'.repeat(POLL_QUESTION_MAX_CHARS + 1), options: ['a', 'b'] })
+      .success,
+    false,
+    'one character over the question max must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'Q', options: ['x'.repeat(POLL_OPTION_MAX_CHARS), 'b'] })
+      .success,
+    true,
+    'exactly the option max length is allowed',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'Q', options: ['x'.repeat(POLL_OPTION_MAX_CHARS + 1), 'b'] })
+      .success,
+    false,
+    'one character over the option max must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MIN_DURATION_HOURS,
+    }).success,
+    true,
+    `exactly the minimum duration (${POLL_MIN_DURATION_HOURS}h) is allowed`,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MIN_DURATION_HOURS - 1,
+    }).success,
+    false,
+    'one hour under the minimum duration must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MAX_DURATION_HOURS,
+    }).success,
+    true,
+    `exactly the maximum duration (${POLL_MAX_DURATION_HOURS}h) is allowed`,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MAX_DURATION_HOURS + 1,
+    }).success,
+    false,
+    'one hour over the maximum duration must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'Q', options: ['a', 'b'] }).success,
+    true,
+    'an omitted durationHours (default applied downstream) must stay allowed',
+  );
+});
+
+test('create_poll defaults an omitted durationHours and truncates an in-range fractional value (issue #228)', async () => {
+  const convo = `${RUN}-create-poll-duration`;
+  const captured: Array<{ durationHours?: unknown }> = [];
+  const adapter = pollAdapter({
+    performAdminAction: async (action) => {
+      captured.push(action.params ?? {});
+      return 'Poll posted with 2 option(s), open 24h.';
+    },
+  });
+  const handler = createPollHandler({ conversationId: convo, adapter });
+
+  const omitted = await handler.handler({ question: 'Q1', options: ['a', 'b'] });
+  assert.equal(omitted.isError, false);
+  assert.equal(
+    captured[0]?.durationHours,
+    POLL_DEFAULT_DURATION_HOURS,
+    'an omitted durationHours must default to POLL_DEFAULT_DURATION_HOURS',
+  );
+
+  const fractional = await handler.handler({ question: 'Q2', options: ['a', 'b'], durationHours: 5.9 });
+  assert.equal(fractional.isError, false);
+  assert.equal(
+    captured[1]?.durationHours,
+    5,
+    'an in-range fractional durationHours must be truncated to whole hours',
+  );
+});
+
+test('SECURITY: create_poll refuses a conversation the caller is not scoped to (issue #228)', async () => {
+  const adapter = pollAdapter({ conversationsForUser: async () => ['convo-other'] });
+  const handler = createPollHandler({ conversationId: 'convo-mine', adapter });
+  const result = await handler.handler({
+    question: 'Meetup night?',
+    options: ['Tue', 'Thu'],
+    conversationId: 'convo-unscoped',
+  });
+  assert.match(result.content[0]?.text ?? '', /not a participant/);
+  assert.equal(result.isError, true);
+});
+
+test(
+  "SECURITY: create_poll refuses a conversation the bot has never seen, even when the caller's own scope claims it (issue #228)",
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-create-poll-unknown`;
+    const adapter = pollAdapter({ conversationsForUser: async () => [targetConvo] });
+    const handler = createPollHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({
+      question: 'Meetup night?',
+      options: ['Tue', 'Thu'],
+      conversationId: targetConvo,
+    });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test('SECURITY: create_poll enforces a per-conversation rate cap instead of CONFIRM (issue #228)', async () => {
+  const convo = `${RUN}-create-poll-rate-cap`;
+  const adapter = pollAdapter({});
+  const handler = createPollHandler({ conversationId: convo, userId: POLL_HANDLER_ADMIN, adapter });
+
+  for (let i = 0; i < POLL_RATE_LIMIT_PER_HOUR; i++) {
+    const result = await handler.handler({ question: `Q${i}`, options: ['a', 'b'] });
+    assert.equal(result.isError, false, `poll ${i} within the cap must succeed`);
+  }
+  const overLimit = await handler.handler({ question: 'one too many', options: ['a', 'b'] });
+  assert.match(overLimit.content[0]?.text ?? '', /poll limit/);
+  assert.equal(overLimit.isError, true);
 });
 
 test(

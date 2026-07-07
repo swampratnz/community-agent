@@ -184,6 +184,51 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+interface FakePollSendable {
+  isTextBased: () => boolean;
+  send: (opts: {
+    poll: { question: { text: string }; answers: Array<{ text: string }>; duration: number };
+  }) => Promise<void>;
+}
+
+/** Stubs the client's channel fetch to capture the `poll` payload performAdminAction('create_poll') builds. */
+function stubClientForPoll(adapter: InstanceType<typeof DiscordAdapter>) {
+  const sent: Array<{
+    poll: { question: { text: string }; answers: Array<{ text: string }>; duration: number };
+  }> = [];
+  const record = async (opts: (typeof sent)[number]) => {
+    sent.push(opts);
+  };
+  const client = (
+    adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<FakePollSendable> } } }
+  ).client;
+  client.channels.fetch = async () => ({ isTextBased: () => true, send: record });
+  return sent;
+}
+
+test('SECURITY: performAdminAction("create_poll") routes question/answers through filterOutbound — a secret cannot reach a Discord poll unredacted (issue #228)', async () => {
+  const adapter = new DiscordAdapter();
+  const sent = stubClientForPoll(adapter);
+  const secret = 'sk-ant-' + 'y'.repeat(30);
+  await adapter.performAdminAction({
+    kind: 'create_poll',
+    conversationId: 'chan-1',
+    params: {
+      question: `secret is ${secret} end`,
+      options: [`also ${secret}`, 'a clean option'],
+      durationHours: 24,
+    },
+  });
+  assert.equal(sent.length, 1);
+  const { poll } = sent[0];
+  assert.ok(!poll.question.text.includes('sk-ant-'), 'no raw secret fragment may reach the poll question');
+  assert.ok(poll.question.text.includes('[redacted]'), 'the question secret must be redacted, not dropped');
+  assert.ok(!poll.answers[0].text.includes('sk-ant-'), 'no raw secret fragment may reach a poll answer');
+  assert.ok(poll.answers[0].text.includes('[redacted]'), 'the answer secret must be redacted, not dropped');
+  assert.equal(poll.answers[1].text, 'a clean option', 'an unaffected answer must pass through unchanged');
+  assert.equal(poll.duration, 24);
+});
+
 interface FakeImageSendable {
   isTextBased: () => boolean;
   isDMBased: () => boolean;

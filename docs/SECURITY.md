@@ -96,9 +96,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   instructs the model to treat recalled/tool-returned chat content as data,
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
-- **Privileged targets are validated**: `moderate`/`announce` refuse targets
-  (conversations/users) the bot has never seen, so a manipulated admin turn
-  cannot message arbitrary phone numbers or unknown channels. `link_member`
+- **Privileged targets are validated**: `moderate`/`announce`/`create_poll`
+  refuse targets (conversations/users) the bot has never seen, so a
+  manipulated admin turn cannot message arbitrary phone numbers or unknown
+  channels. `link_member`
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.
@@ -829,8 +830,12 @@ the supported path.
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and
-  the audit log. Non-confirm actions (`warn_user`, `announce` within scope)
-  remain a lever a successful injection could pull.
+  the audit log. Non-confirm actions (`warn_user`, `announce` within scope,
+  `create_poll` within scope) remain a lever a successful injection could
+  pull; `create_poll` is bounded further by a per-conversation rate cap
+  (`POLL_RATE_LIMIT_PER_HOUR`, in-memory) rather than CONFIRM, since it is
+  lower-consequence than `announce` and gating it harder would be
+  inconsistent (issue #228).
 - **Membership-scope staleness**: adapters cache an admin's conversation list
   for ~60s, so an admin removed from a channel/group can retain data scope for
   up to that window.
@@ -950,8 +955,8 @@ end-of-text, so an unclosed ``` cannot bypass the policy. Enforced *outside*
 the model — the filter (plus unconditional secret redaction: exact runtime
 secrets incl. WhatsApp Cloud tokens + common token patterns) lives **inside
 the adapters' send paths**, so every outbound message — router replies,
-`announce`, `warn_user` DMs, super-admin alerts — passes through it; no
-future send path can forget. Discord additionally sends with
+`announce`, `warn_user` DMs, super-admin alerts, `create_poll`'s
+question/answers — passes through it; no future send path can forget. Discord additionally sends with
 `allowedMentions: []` (no injected @everyone pings), and WhatsApp refuses to
 route `lid:`-fallback ids as phone JIDs (a LID's digits sent as a phone
 number could reach an unrelated person).
