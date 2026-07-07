@@ -196,6 +196,11 @@ async function main(): Promise<void> {
     if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
     if (docsIngestTimer) clearInterval(docsIngestTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
+    // Drain in-flight per-conversation turns BEFORE stopping any adapter, so
+    // a reply generated during the drain window can still be sent on a live
+    // connection (issue #210). Bounded by SHUTDOWN_DRAIN_TIMEOUT_MS so a
+    // stuck turn can't hang shutdown past systemd's TimeoutStopSec.
+    await router.drain(config.behaviour.shutdownDrainTimeoutMs);
     if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));
     await closeDb();

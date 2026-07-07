@@ -529,6 +529,16 @@ platforms.
 - Different conversations run in parallel.
 - A light **per-user rate limit** (8 msg / 60s) protects against spam and
   runaway cost.
+- **Shutdown drains in-flight turns** (issue #210): `Router.drain(timeoutMs)`
+  snapshots the same per-conversation chains once, then waits for them to
+  settle or `SHUTDOWN_DRAIN_TIMEOUT_MS` (default 20s) to elapse, whichever is
+  first. `src/index.ts`'s `shutdown()` calls it before any `adapter.stop()`,
+  so a reply generated during the drain window still sends on a live
+  connection instead of being silently dropped by the nightly 1am redeploy
+  restart (see `docs/DEPLOYMENT.md`). The snapshot is taken exactly once — a
+  message that arrives mid-drain starts a new chain that is deliberately not
+  waited on, so a busy conversation can't hold shutdown open past the
+  timeout. Zero in-flight chains is a fast no-op: no timer is armed.
 
 ### Known cost/latency characteristic
 

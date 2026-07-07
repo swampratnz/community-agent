@@ -126,6 +126,37 @@ export class Router {
     adapter.onMessage((msg) => this.handle(msg));
   }
 
+  /**
+   * Waits for every currently in-flight per-conversation chain to settle, or
+   * `timeoutMs`, whichever is first (issue #210) — called from shutdown()
+   * BEFORE adapter.stop(), so a reply generated during the drain window still
+   * goes out on a live connection. `enqueue`'s tracked chain wraps the full
+   * turn (generate → filter → send), so waiting on the snapshot already
+   * covers the send, not just generation.
+   *
+   * Snapshots `this.chains.values()` exactly ONCE. Adapters are still
+   * connected during the drain, so a message arriving mid-drain can start a
+   * NEW chain — deliberately not waited on, or a chatty (or adversarial)
+   * conversation could hold shutdown open for the full timeout every time.
+   * That late turn is best-effort only; the timeout is the backstop that
+   * still bounds total shutdown time regardless.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    const inFlight = [...this.chains.values()];
+    if (inFlight.length === 0) return;
+
+    const timedOut = await Promise.race([
+      Promise.allSettled(inFlight).then(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), timeoutMs).unref()),
+    ]);
+    logger.info(
+      { inFlight: inFlight.length, timedOut },
+      timedOut
+        ? 'Shutdown drain timed out with turns still in flight'
+        : 'Shutdown drain: all in-flight turns settled',
+    );
+  }
+
   private convoKey(msg: IncomingMessage): string {
     return `${msg.platform}:${msg.conversationId}`;
   }
