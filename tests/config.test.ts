@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -53,6 +55,35 @@ test('config: MODERATION_STRIKE_WINDOW_DAYS unset (default) is undefined — unb
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
   assert.equal(config.whatsapp.welcome.enabled, false);
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);
+});
+
+test('config: Anthropic status check (issue #206) is off by default, pointed at the real status endpoint, on a 5-minute poll', () => {
+  assert.equal(config.statusCheck.enabled, false);
+  assert.equal(config.statusCheck.apiUrl, 'https://status.claude.com/api/v2/summary.json');
+  assert.equal(config.statusCheck.pollMinutes, 5);
+});
+
+test('SECURITY: STATUS_CHECK_API_URL must be https — a non-https override fails config validation at startup, same enforcement as DOCS_INGEST_INDEX_URL', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        STATUS_CHECK_API_URL: 'http://status.claude.com/api/v2/summary.json',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'a non-https STATUS_CHECK_API_URL must fail config validation, not load');
+  assert.match(result.stderr, /STATUS_CHECK_API_URL must be https/);
 });
 
 test('SECURITY: default CONTEXT_EXPORT_PATH is untracked (issue #108) — the unattended exporter must never dirty a tracked file the nightly redeploy checks', () => {

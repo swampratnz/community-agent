@@ -76,6 +76,7 @@ import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
 import { triggerRedeploy } from './redeploy.js';
+import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
 function text(t: string, isError = false) {
@@ -563,6 +564,17 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       }
       return text(MEMBER_CAPABILITIES_TEXT);
     },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const checkStatus = tool(
+    'check_status',
+    'Check whether Anthropic has a known service incident right now — call this when a member reports an ' +
+      "error, timeout, or unexpected behaviour from Claude/the API and wants to know if it's a known Anthropic " +
+      "problem rather than something on their end. Read-only, no arguments, sourced from Anthropic's own public " +
+      'status page (a background poll, never a live fetch on this call).',
+    {},
+    async () => text(formatStatusMessage(getStatusCache(), Date.now())),
     { annotations: { readOnlyHint: true } },
   );
 
@@ -2216,6 +2228,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     version: '2.0.0',
     tools: [
       communityInfo,
+      checkStatus,
       knowledgeSearch,
       rememberSearch,
       forgetMe,

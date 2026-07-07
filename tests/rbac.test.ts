@@ -162,6 +162,21 @@ test('SECURITY: catch_up is member+ (guests reach it in open mode; matches MEMBE
   );
 });
 
+test('SECURITY: check_status is member+ (guests reach it in open mode; matches MEMBER_TOOLS) and never lands in ADMIN_TOOLS/SUPER_ADMIN_TOOLS — issue #206', () => {
+  const tool = 'mcp__community__check_status';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'check_status must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach check_status`);
+  }
+  assert.ok(
+    toolsForRole('guest').includes(tool),
+    'guests reach check_status too (open mode; same as MEMBER_TOOLS)',
+  );
+  for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+    assert.notEqual(t, tool, 'check_status must not appear in ADMIN_TOOLS/SUPER_ADMIN_TOOLS');
+  }
+});
+
 test('SECURITY: list_answer_feedback is admin-only — a member can never read the aggregate rating queue, including ratings they themselves submitted (issue #118)', () => {
   const tool = 'mcp__community__list_answer_feedback';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_answer_feedback must be in ADMIN_TOOLS');

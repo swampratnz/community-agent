@@ -325,6 +325,32 @@ periodically points `CONTEXT_EXPORT_PATH` at `docs/COMMUNITY-CONTEXT.md`,
 runs `npm run export:context` against production, reviews, and commits —
 which the research loop then reads (file-only, no DB access).
 
+## Anthropic status check
+
+`src/status/anthropicStatus.ts` (issue #206, off unless
+`STATUS_CHECK_ENABLED`) answers the most common support question in any
+Claude/API community — "is this me, or is Anthropic having an incident?" —
+with an authoritative source instead of general knowledge. A background
+timer (`startStatusCheck` in `src/index.ts`, same shape as `startDocsIngest`)
+polls Anthropic's official public Statuspage summary endpoint
+(`STATUS_CHECK_API_URL`, defaulting to the real endpoint, override-only,
+`https://`-enforced) every `STATUS_CHECK_POLL_MINUTES` and parses it into a
+small in-memory cache — no new DB table, no migration, since the data is
+already public, ephemeral, and re-fetchable.
+
+The member-tier `check_status` tool (no arguments, read-only) reads ONLY
+that cache — a member's turn never triggers a live fetch. A fetch failure or
+a malformed response body both degrade to the last-known-good cached value
+(with its age stated) rather than an error; before the first successful poll
+it says so plainly rather than guessing "operational". The formatted message
+also never asserts "no known incident" means the member's own issue is on
+their end — Anthropic's status page can lag or omit partial/region/model-
+specific degradations, so it's evidence, not proof.
+
+No model is in the fetch/parse loop — deterministic JSON parsing of one
+fixed, official, first-party HTTPS source, the same trust framing docs
+ingest already establishes (see SECURITY.md).
+
 ## Suggestion capture
 
 `suggest_improvement` (issue #46) closes the "the suggestion died in chat"
