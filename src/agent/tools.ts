@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
 import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
 import { normalizeMemberId } from '../auth/memberId.js';
+import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -19,6 +20,7 @@ import {
   clearUserSessions,
   declineKnowledgeCandidate,
   deleteKnowledge,
+  getKnowledgeContentById,
   deleteMemberNote,
   demoteAdmin,
   getMemberNote,
@@ -563,7 +565,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
    */
   function requireConfirm(
     description: string,
-    minTier: 'member' | 'admin' | 'super_admin',
+    minTier: 'guest' | 'member' | 'admin' | 'super_admin',
     run: () => Promise<string>,
   ) {
     registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
@@ -720,7 +722,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           hits
             .map((h, i) => {
               const link = memoryHitJumpLink(h, config.discord.guildId);
-              return `${i + 1}. (${(h.similarity * 100).toFixed(0)}% match) [${h.direction}${h.userName ? ` by ${h.userName}` : ''}] ${h.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
+              // Sanitize the recalled author name (untrusted platform display
+              // name): untrusted() strips angle brackets but not newlines, so a
+              // `\n\n[SYSTEM] ...` nickname would otherwise land as an apparent
+              // standalone directive inside this result (finding A).
+              const name = sanitizeName(h.userName);
+              return `${i + 1}. (${(h.similarity * 100).toFixed(0)}% match) [${h.direction}${name ? ` by ${name}` : ''}] ${h.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
             })
             .join('\n'),
         ),
@@ -738,7 +745,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     async () =>
       requireConfirm(
         `delete ALL of ${caller.userName}'s stored data on ${caller.platform} (messages, and any knowledge entries, content reports, suggestions, roster entry, or admin notes tied to them — across linked identities)`,
-        'member',
+        // Self-scoped: whatever tier the caller is, they can only ever purge
+        // their OWN data. An open-mode guest (whose content IS stored) can
+        // reach this tool, so gating the confirm at 'member' made their
+        // CONFIRM fail the tier re-check and report a false "your permissions
+        // changed". 'guest' is the correct floor for a self-scoped purge.
+        'guest',
         async () => {
           const n = await purgeUserData(caller.platform, caller.userId);
           return `Deleted ${n} stored record(s) for ${caller.userName}.`;
@@ -872,19 +884,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       'or excerpt — that context stays admin-only (see moderation_history).',
     {},
     async () => {
-      const active = await countActiveWarnings(
-        caller.platform,
-        caller.userId,
-        config.moderation.strikeWindowDays,
-      );
       const limit = config.moderation.strikeLimit;
+      const windowDays = config.moderation.strikeWindowDays;
+      // Report on the UNWINDOWED count. A mute is only ever lifted by
+      // clear_warnings, never by strikes aging out of the window, so a member
+      // whose strikes have aged out of the window can still be blocked;
+      // reporting the windowed count alone told them "you have no active
+      // warnings" while they were still at/over the limit (advisory F5). This
+      // deliberately does NOT claim a live Discord mute — the tool can't read
+      // the role state (issue #182) — only the caller's count vs. the limit.
+      // When no window is configured the two counts are identical, so the
+      // extra read is skipped.
+      const active = await countActiveWarnings(caller.platform, caller.userId);
       if (active === 0) {
         return text('You have no active warnings.');
       }
       if (active >= limit) {
         return text(`You've reached the warning limit (${active}/${limit}). An admin can clear this.`);
       }
-      return text(`You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`);
+      let msg = `You have ${active} active warning${active === 1 ? '' : 's'} (limit ${limit}).`;
+      if (windowDays) {
+        const windowed = await countActiveWarnings(caller.platform, caller.userId, windowDays);
+        if (windowed < active) {
+          msg +=
+            ` ${active - windowed} of these are old enough not to count toward a new mute, but any uncleared ` +
+            'warning still applies if you leave and rejoin.';
+        }
+      }
+      return text(msg);
     },
   );
 
@@ -1070,7 +1097,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           entries
             .map((e) => {
               const link = memoryHitJumpLink(e, config.discord.guildId);
-              return `[${e.createdAt.toISOString()}] [${e.direction}${e.userName ? ` by ${e.userName}` : ''}] ${e.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
+              // Same sanitization as remember_search above — the recalled
+              // author name is an untrusted, newline-unbounded display name
+              // (finding A).
+              const name = sanitizeName(e.userName);
+              return `[${e.createdAt.toISOString()}] [${e.direction}${name ? ` by ${name}` : ''}] ${e.content.slice(0, RECALL_TRUNCATION_CHARS)}${link ? ` (${link})` : ''}`;
             })
             .join('\n'),
         ),
@@ -1382,7 +1413,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
   const updateKnowledgeTool = tool(
     'update_knowledge',
     'Correct an existing knowledge entry (title/content/scope/source). Re-embeds the content. Setting ' +
-      'sourceUrl or sourceTitle re-verifies the citation (bumps verified_at to now). Admin only.',
+      'sourceUrl or sourceTitle re-verifies the citation (bumps verified_at to now). Requires ' +
+      'confirmation (the edit overwrites trusted, member-facing content in place). Admin only.',
     {
       id: z.number().describe('Knowledge entry id (from list_knowledge or knowledge_search)'),
       title: z.string().optional().describe('New title; omit to leave unchanged'),
@@ -1400,30 +1432,43 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'update_knowledge');
-      const { success, result } = await audited({
-        actionKind: 'update_knowledge',
-        params: {
-          id: args.id,
-          title: args.title,
-          content: args.content,
-          scope: args.scope,
-          sourceUrl: args.sourceUrl,
-          sourceTitle: args.sourceTitle,
-        },
-        run: async () => {
-          const updated = await updateKnowledge({
+      // CONFIRM-gated like delete_knowledge: an in-place overwrite of a
+      // knowledge entry is destructive to trusted content that's served
+      // verbatim to every tier (including via the zero-token shortcut), so an
+      // injected admin turn could otherwise silently replace the curated KB.
+      // The gate means an injection can request but never complete the edit.
+      return requireConfirm(`update knowledge entry #${args.id}`, 'admin', async () => {
+        // Capture the pre-edit text so the audit row records what was replaced
+        // (in-place UPDATE keeps no history) — recoverability if a bad/hostile
+        // edit slips through.
+        const prior = await getKnowledgeContentById(args.id);
+        const { success, result } = await audited({
+          actionKind: 'update_knowledge',
+          params: {
             id: args.id,
             title: args.title,
             content: args.content,
             scope: args.scope,
             sourceUrl: args.sourceUrl,
             sourceTitle: args.sourceTitle,
-          });
-          if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
-          return 'updated';
-        },
+            priorTitle: prior?.title,
+            priorContent: prior?.content,
+          },
+          run: async () => {
+            const updated = await updateKnowledge({
+              id: args.id,
+              title: args.title,
+              content: args.content,
+              scope: args.scope,
+              sourceUrl: args.sourceUrl,
+              sourceTitle: args.sourceTitle,
+            });
+            if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
+            return 'updated';
+          },
+        });
+        return success ? `Updated knowledge entry #${args.id}.` : `Failed: ${result}`;
       });
-      return text(success ? `Updated knowledge entry #${args.id}.` : `Failed: ${result}`, !success);
     },
   );
 
@@ -1899,7 +1944,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_reports');
       const allowed = await callerScope();
-      const rows = await listReports(allowed, args.status, args.limit ?? 50, caller.userId);
+      // The accused-admin exclusion must cover EVERY identity linked to this
+      // admin (issue #197 + link_member): a Discord+WhatsApp admin listing on
+      // one platform could otherwise see a DM report filed against their other
+      // identity, since a single raw id `<> ALL` their own list.
+      const viewerIds = (await resolveLinkedIdentities(caller.platform, caller.userId)).map((i) => i.userId);
+      const rows = await listReports(allowed, args.status, args.limit ?? 50, viewerIds);
       if (rows.length === 0) return text('No reports found (within your conversations).');
       return text(
         untrusted(
@@ -1931,6 +1981,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'resolve_report');
       const allowed = await callerScope();
+      // Same linked-identity-aware accused-admin exclusion as list_reports.
+      const viewerIds = (await resolveLinkedIdentities(caller.platform, caller.userId)).map((i) => i.userId);
       const state: { row: { platform: Platform; reporterUserId: string; reason: string } | null } = {
         row: null,
       };
@@ -1938,7 +1990,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         actionKind: 'resolve_report',
         params: { id: args.id, status: args.status },
         run: async () => {
-          const row = await resolveContentReport(args.id, args.status, caller.userId, allowed ?? undefined);
+          const row = await resolveContentReport(
+            args.id,
+            args.status,
+            caller.userId,
+            allowed ?? undefined,
+            viewerIds,
+          );
           if (!row) throw new Error(`No report with id ${args.id} in your conversations.`);
           state.row = row;
           return `marked ${args.status}`;
@@ -2220,19 +2278,38 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { userId: z.string().min(1).describe('Platform user id whose data to erase') },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'purge_user_data');
+      // Normalize the id the same way every other target-taking tool does
+      // (strip a leading '+', shape-check per platform) so a `+64…` number or
+      // a wrong-platform id is rejected up front instead of matching nothing
+      // and reporting a false-success "deleted 0 record(s)" for a deletion
+      // request. Uses the caller's own platform (this tool has no platform arg).
+      let userId: string;
+      try {
+        userId = normalizeMemberId(caller.platform, args.userId);
+      } catch (err) {
+        return text(err instanceof Error ? err.message : String(err), true);
+      }
       return requireConfirm(
-        `PURGE all stored messages (and knowledge entries/content reports sourced from) ${args.userId} on ${caller.platform}`,
+        `PURGE all stored messages (and knowledge entries/content reports sourced from) ${userId} on ${caller.platform}`,
         'super_admin',
         async () => {
           const { success, result } = await audited({
             actionKind: 'purge_user_data',
-            targetUserId: args.userId,
+            targetUserId: userId,
             run: async () => {
-              const n = await purgeUserData(caller.platform, args.userId);
+              const n = await purgeUserData(caller.platform, userId);
               return `deleted ${n} stored record(s)`;
             },
           });
-          return success ? `Done: ${result}.` : `Failed: ${result}`;
+          if (!success) return `Failed: ${result}`;
+          // A zero-row purge of a syntactically valid id almost always means
+          // the wrong id/platform, not "already clean" — say so plainly rather
+          // than reporting a reassuring "Done" for a request that erased
+          // nothing. `result` is the audited run's own "deleted N stored
+          // record(s)" string, so no second purge call is needed.
+          return result.startsWith('deleted 0 ')
+            ? `No stored data found for ${userId} on ${caller.platform} — double-check the id and platform. (${result}.)`
+            : `Done: ${result}.`;
         },
       );
     },

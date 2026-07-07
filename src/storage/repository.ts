@@ -242,26 +242,79 @@ export async function recentConversationHistory(
     .reverse();
 }
 
+/** A pooled connection or a transaction client — both expose `query`. */
+type Queryable = Pick<PoolClient, 'query'>;
+
+/**
+ * Invalidate every context digest whose provenance refs include any of
+ * `interactionIds`, deleting its still-*pending* knowledge candidates first
+ * (the same deletion-coherence logic `purgeSingleIdentity` applies, issues
+ * #51/#102). Shared so the delete/edit-honouring path (issue #48) invalidates
+ * digests built over a message the same way a privacy purge does — otherwise a
+ * deleted/edited message's content lives on inside a digest summary. Returns
+ * the number of pending candidates removed. No-op on an empty id list.
+ */
+async function invalidateDigestsForInteractions(
+  interactionIds: number[],
+  db: Queryable = pool,
+): Promise<number> {
+  if (interactionIds.length === 0) return 0;
+  const { rows: invalidatedDigests } = await db.query(
+    `SELECT id FROM context_digests WHERE example_refs && $1::bigint[]`,
+    [interactionIds],
+  );
+  const digestIds = invalidatedDigests.map((r) => Number(r.id));
+  if (digestIds.length === 0) return 0;
+  const { rowCount: deletedCandidates } = await db.query(
+    `DELETE FROM knowledge_candidates WHERE digest_id = ANY($1::bigint[]) AND status = 'pending'`,
+    [digestIds],
+  );
+  await db.query(`DELETE FROM context_digests WHERE id = ANY($1::bigint[])`, [digestIds]);
+  return deletedCandidates ?? 0;
+}
+
 /**
  * Honour a platform-level message deletion (issue #48): hard-delete the
- * stored copy. Returns the number of rows removed (0 when the message was
- * never stored, e.g. pre-archiving or a bot message).
+ * stored copy. Scoped to `(platform, conversationId, messageId)` — message
+ * ids are only unique *within* a conversation on some platforms (WhatsApp
+ * stanza ids are visible to every group member and a modified client can echo
+ * another chat's id), so omitting the conversation would let a revoke in one
+ * group delete a same-id row stored for another. Invalidates any context
+ * digest built over the deleted row (same deletion coherence as the purge
+ * path). Returns the number of rows removed (0 when the message was never
+ * stored, e.g. pre-archiving or a bot message).
  */
-export async function deleteInteractionByMessageId(platform: Platform, messageId: string): Promise<number> {
-  const { rowCount } = await pool.query(`DELETE FROM interactions WHERE platform = $1 AND message_id = $2`, [
-    platform,
-    messageId,
-  ]);
-  return rowCount ?? 0;
+export async function deleteInteractionByMessageId(
+  platform: Platform,
+  conversationId: string,
+  messageId: string,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `DELETE FROM interactions
+      WHERE platform = $1 AND conversation_id = $2 AND message_id = $3
+      RETURNING id`,
+    [platform, conversationId, messageId],
+  );
+  if (rows.length > 0) {
+    await invalidateDigestsForInteractions(rows.map((r) => Number(r.id))).catch((err) =>
+      logger.warn({ err }, 'Digest invalidation after message delete failed'),
+    );
+  }
+  return rows.length;
 }
 
 /**
  * Honour a platform-level message edit (issue #48): replace the stored
  * content and re-embed it (NULL embedding on failure, same best-effort
- * fallback as recordInteraction). Returns false if no stored row matched.
+ * fallback as recordInteraction). Scoped to `(platform, conversationId,
+ * messageId)` for the same cross-conversation-tamper reason as
+ * `deleteInteractionByMessageId`. Invalidates any context digest built over
+ * the row, since its summary was distilled from the pre-edit content. Returns
+ * false if no stored row matched.
  */
 export async function updateInteractionByMessageId(
   platform: Platform,
+  conversationId: string,
   messageId: string,
   content: string,
 ): Promise<boolean> {
@@ -271,12 +324,41 @@ export async function updateInteractionByMessageId(
   } catch (err) {
     logger.warn({ err }, 'Embedding failed for edited message; storing update without vector');
   }
-  const { rowCount } = await pool.query(
-    `UPDATE interactions SET content = $3, embedding = $4
-      WHERE platform = $1 AND message_id = $2`,
-    [platform, messageId, content, embedding ? pgvector.toSql(embedding) : null],
+  const { rows } = await pool.query(
+    `UPDATE interactions SET content = $4, embedding = $5
+      WHERE platform = $1 AND conversation_id = $2 AND message_id = $3
+      RETURNING id`,
+    [platform, conversationId, messageId, content, embedding ? pgvector.toSql(embedding) : null],
   );
-  return (rowCount ?? 0) > 0;
+  if (rows.length > 0) {
+    await invalidateDigestsForInteractions(rows.map((r) => Number(r.id))).catch((err) =>
+      logger.warn({ err }, 'Digest invalidation after message edit failed'),
+    );
+  }
+  return rows.length > 0;
+}
+
+/**
+ * The stored author (`user_id`) of an archived message, or null if the bot
+ * never stored it. Lets the WhatsApp revoke/edit path verify the revoker
+ * actually authored the target message before honouring a "delete/edit for
+ * everyone" — WhatsApp servers don't validate revoke/edit authorship, so
+ * without this any group member with a modified client could tamper with
+ * another user's archived message (memory poisoning / evidence destruction).
+ */
+export async function getInteractionAuthorByMessageId(
+  platform: Platform,
+  conversationId: string,
+  messageId: string,
+): Promise<string | null> {
+  const { rows } = await pool.query(
+    `SELECT user_id FROM interactions
+      WHERE platform = $1 AND conversation_id = $2 AND message_id = $3
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [platform, conversationId, messageId],
+  );
+  return rows[0]?.user_id ?? null;
 }
 
 // --- Sessions --------------------------------------------------------------
@@ -789,6 +871,19 @@ export async function updateKnowledge(input: {
   return (rowCount ?? 0) > 0;
 }
 
+/**
+ * The current title/content of a knowledge entry (or null if none), so
+ * `update_knowledge` can record the pre-edit text in its audit row — an
+ * in-place overwrite otherwise leaves no way to see (or recover) what an
+ * injected admin turn replaced.
+ */
+export async function getKnowledgeContentById(
+  id: number,
+): Promise<{ title: string | null; content: string } | null> {
+  const { rows } = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [id]);
+  return rows[0] ? { title: rows[0].title, content: rows[0].content } : null;
+}
+
 /** Delete a knowledge entry by id. Returns false if no row matched. */
 export async function deleteKnowledge(id: number): Promise<boolean> {
   const { rowCount } = await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
@@ -1278,122 +1373,140 @@ export async function countRepliesToUser(
   return Number(rows[0]?.n ?? 0);
 }
 
-/** Delete one identity's stored data — the single-identity core of `purgeUserData`. */
+/**
+ * Delete one identity's stored data — the single-identity core of
+ * `purgeUserData`. Runs every delete inside ONE transaction (issue: a crash
+ * partway used to leave, e.g., digests alive over already-deleted interactions
+ * that a retry could never re-find), mirroring the sibling `linkMembers`/
+ * `unlinkMember` pattern.
+ */
 async function purgeSingleIdentity(platform: Platform, userId: string): Promise<number> {
-  const { rows: deletedInteractions } = await pool.query(
-    `DELETE FROM interactions
-      WHERE platform = $1
-        AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))
-      RETURNING id`,
-    [platform, userId],
-  );
-  const messages = deletedInteractions.length;
-  // Deletion coherence (issue #51): a context digest whose summary was built
-  // over any purged interaction is invalidated outright — the next builder
-  // run regenerates the topic without this person's signal. Digests store
-  // interaction ids (never copied content) precisely so this is possible.
-  let candidates = 0;
-  if (messages > 0) {
-    const { rows: invalidatedDigests } = await pool.query(
-      `SELECT id FROM context_digests WHERE example_refs && $1::bigint[]`,
-      [deletedInteractions.map((r) => Number(r.id))],
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Clear session continuity FIRST, while the user's interactions still
+    // exist for the subquery to find the conversations they were active in.
+    // Without this the `sessions` row keeps mapping the conversation to a live
+    // Claude transcript that still contains the purged messages, so another
+    // member could ask the bot to recall them for up to
+    // SESSION_MAX_TURNS/AGE_HOURS. Same primitive as `clearUserSessions`, run
+    // in-transaction and before the interactions delete below.
+    await client.query(
+      `UPDATE sessions
+          SET claude_session_id = NULL, updated_at = now()
+        WHERE platform = $1
+          AND claude_session_id IS NOT NULL
+          AND conversation_id IN (
+            SELECT DISTINCT conversation_id FROM interactions
+             WHERE platform = $1 AND user_id = $2
+          )`,
+      [platform, userId],
     );
-    const digestIds = invalidatedDigests.map((r) => Number(r.id));
-    if (digestIds.length > 0) {
-      // Deletion coherence for issue #102: a still-*pending* candidate drafted
-      // from a digest that's about to be invalidated goes with it — nothing
-      // purged should survive as an open suggestion. Accepted/declined
-      // candidates are kept (same accountability treatment as knowledge/
-      // admin_audit generally); their FK's ON DELETE SET NULL just drops the
-      // now-meaningless digest link, and `topic` (denormalized at insert
-      // time) keeps them readable/dedup-able regardless.
-      const { rowCount: deletedCandidates } = await pool.query(
-        `DELETE FROM knowledge_candidates WHERE digest_id = ANY($1::bigint[]) AND status = 'pending'`,
-        [digestIds],
-      );
-      candidates = deletedCandidates ?? 0;
-      await pool.query(`DELETE FROM context_digests WHERE id = ANY($1::bigint[])`, [digestIds]);
-    }
+
+    const { rows: deletedInteractions } = await client.query(
+      `DELETE FROM interactions
+        WHERE platform = $1
+          AND (user_id = $2 OR (direction = 'outbound' AND meta->>'replyToUserId' = $2))
+        RETURNING id`,
+      [platform, userId],
+    );
+    const messages = deletedInteractions.length;
+    // Deletion coherence (issues #51/#102): a context digest whose summary was
+    // built over any purged interaction is invalidated outright — the next
+    // builder run regenerates the topic without this person's signal. Shared
+    // with the delete/edit-honouring path via `invalidateDigestsForInteractions`.
+    const candidates = await invalidateDigestsForInteractions(
+      deletedInteractions.map((r) => Number(r.id)),
+      client,
+    );
+    // knowledge has no platform column, so this keys on source_user_id alone.
+    // Safe because Discord snowflakes (17-20 digits) and WhatsApp E.164 numbers
+    // (7-15 digits) can't collide as strings (enforced by normalizeMemberId), so
+    // this never touches another platform's user. If that validation loosens, add
+    // a platform column to knowledge and filter on it here.
+    const { rowCount: knowledge } = await client.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
+      userId,
+    ]);
+    const { rowCount: reports } = await client.query(
+      `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
+      [platform, userId],
+    );
+    const { rowCount: roster } = await client.query(
+      `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    const { rowCount: notes } = await client.query(
+      `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    const { rowCount: suggestions } = await client.query(
+      `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    // admin_digest_sends (issue #97) is keyed on the same (platform, user id)
+    // identity — purge coherence for an offboarded admin.
+    const { rowCount: digestSends } = await client.query(
+      `DELETE FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
+      [platform, userId],
+    );
+    // response_style_prefs (issue #126) is keyed the same way — purge coherence
+    // for anyone who opted into the plain-language preference.
+    const { rowCount: responseStyle } = await client.query(
+      `DELETE FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    // language_prefs (issue #189) is keyed the same way — purge coherence for
+    // anyone who opted into a standing language preference.
+    const { rowCount: languagePreference } = await client.query(
+      `DELETE FROM language_prefs WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    // member_warnings (auto-moderation strikes) are keyed on raw (platform,
+    // user_id) too — a purged user's warning history goes with them.
+    const { rowCount: warnings } = await client.query(
+      `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    // answer_feedback (issue #118) rows this identity submitted AS RATER go
+    // with them, same as suggestions/reports above. A row where this identity
+    // was only the RECIPIENT of the rated answer is not deleted here — its
+    // interaction_id is nulled automatically by the interactions delete above
+    // via the table's ON DELETE SET NULL foreign key, leaving the rater's own
+    // helpful/unhelpful signal intact.
+    const { rowCount: answerFeedback } = await client.query(
+      `DELETE FROM answer_feedback WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    // knowledge_gaps (issue #208) is keyed the same way — purge coherence for
+    // anyone whose below-floor searches were logged.
+    const { rowCount: knowledgeGaps } = await client.query(
+      `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+
+    await client.query('COMMIT');
+    return (
+      (messages ?? 0) +
+      (knowledge ?? 0) +
+      (reports ?? 0) +
+      (roster ?? 0) +
+      (notes ?? 0) +
+      (suggestions ?? 0) +
+      (digestSends ?? 0) +
+      (responseStyle ?? 0) +
+      (languagePreference ?? 0) +
+      (warnings ?? 0) +
+      candidates +
+      (answerFeedback ?? 0) +
+      (knowledgeGaps ?? 0)
+    );
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-  // knowledge has no platform column, so this keys on source_user_id alone.
-  // Safe because Discord snowflakes (17-20 digits) and WhatsApp E.164 numbers
-  // (7-15 digits) can't collide as strings (enforced by normalizeMemberId), so
-  // this never touches another platform's user. If that validation loosens, add
-  // a platform column to knowledge and filter on it here.
-  const { rowCount: knowledge } = await pool.query(`DELETE FROM knowledge WHERE source_user_id = $1`, [
-    userId,
-  ]);
-  const { rowCount: reports } = await pool.query(
-    `DELETE FROM content_reports WHERE platform = $1 AND reporter_user_id = $2`,
-    [platform, userId],
-  );
-  const { rowCount: roster } = await pool.query(
-    `DELETE FROM server_roster WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  const { rowCount: notes } = await pool.query(
-    `DELETE FROM member_notes WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  const { rowCount: suggestions } = await pool.query(
-    `DELETE FROM suggestions WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  // admin_digest_sends (issue #97) is keyed on the same (platform, user id)
-  // identity — purge coherence for an offboarded admin.
-  const { rowCount: digestSends } = await pool.query(
-    `DELETE FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
-    [platform, userId],
-  );
-  // response_style_prefs (issue #126) is keyed the same way — purge coherence
-  // for anyone who opted into the plain-language preference.
-  const { rowCount: responseStyle } = await pool.query(
-    `DELETE FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  // language_prefs (issue #189) is keyed the same way — purge coherence for
-  // anyone who opted into a standing language preference.
-  const { rowCount: languagePreference } = await pool.query(
-    `DELETE FROM language_prefs WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  // member_warnings (auto-moderation strikes) are keyed on raw (platform,
-  // user_id) too — a purged user's warning history goes with them.
-  const { rowCount: warnings } = await pool.query(
-    `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  // answer_feedback (issue #118) rows this identity submitted AS RATER go
-  // with them, same as suggestions/reports above. A row where this identity
-  // was only the RECIPIENT of the rated answer is not deleted here — its
-  // interaction_id is nulled automatically by the interactions delete above
-  // via the table's ON DELETE SET NULL foreign key, leaving the rater's own
-  // helpful/unhelpful signal intact.
-  const { rowCount: answerFeedback } = await pool.query(
-    `DELETE FROM answer_feedback WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  // knowledge_gaps (issue #208) is keyed the same way — purge coherence for
-  // anyone whose below-floor searches were logged.
-  const { rowCount: knowledgeGaps } = await pool.query(
-    `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
-    [platform, userId],
-  );
-  return (
-    (messages ?? 0) +
-    (knowledge ?? 0) +
-    (reports ?? 0) +
-    (roster ?? 0) +
-    (notes ?? 0) +
-    (suggestions ?? 0) +
-    (digestSends ?? 0) +
-    (responseStyle ?? 0) +
-    (languagePreference ?? 0) +
-    (warnings ?? 0) +
-    candidates +
-    (answerFeedback ?? 0) +
-    (knowledgeGaps ?? 0)
-  );
 }
 
 /**
@@ -2868,25 +2981,29 @@ export async function createContentReport(input: {
  * additionally surfaced to a scoped admin via `OR is_dm` — except one filed
  * against that very admin (`target_user_id`), which stays reachable only by
  * a super admin so an accused admin can't see or dismiss a report about
- * themselves (issue #197). `viewerUserId` (the calling admin's own id) drives
- * that exclusion; omitting it leaves DM-originated reports invisible to a
- * scoped admin, same as before #197 — never widen scope without it.
+ * themselves (issue #197). `viewerUserIds` is the calling admin's own id
+ * PLUS every identity linked to them via `link_member` — a single raw id
+ * would let a dual-presence admin (Discord + WhatsApp, exactly the case
+ * `link_member` exists for) see a DM report filed against their *other*
+ * platform identity, since that id `IS DISTINCT FROM` their current-platform
+ * id. Omitting it leaves DM-originated reports invisible to a scoped admin,
+ * same as before #197 — never widen scope without it.
  */
 export async function listReports(
   conversationIds: readonly string[] | null,
   status?: ContentReportStatus,
   limit = 50,
-  viewerUserId?: string,
+  viewerUserIds?: readonly string[],
 ): Promise<ContentReport[]> {
   const params: unknown[] = [];
   const filters: string[] = [];
   if (conversationIds) {
     params.push([...conversationIds]);
     const convoIdx = params.length;
-    if (viewerUserId) {
-      params.push(viewerUserId);
+    if (viewerUserIds && viewerUserIds.length > 0) {
+      params.push([...viewerUserIds]);
       filters.push(
-        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND target_user_id IS DISTINCT FROM $${params.length}))`,
+        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND (target_user_id IS NULL OR target_user_id <> ALL($${params.length}))))`,
       );
     } else {
       filters.push(`conversation_id = ANY($${convoIdx})`);
@@ -2914,25 +3031,25 @@ export async function listReports(
 
 /**
  * Exact open-report count, scoped like `listReports` (`conversationIds`
- * null = unrestricted/super admin, `viewerUserId` drives the same
- * accused-admin exclusion on the `OR is_dm` broadening — see `listReports`)
- * — a dedicated `COUNT(*)` rather than `(await listReports(scope,
- * 'open')).length`, which would silently understate a backlog past that
- * function's clamped (≤200) `limit`.
+ * null = unrestricted/super admin, `viewerUserIds` drives the same
+ * linked-identity-aware accused-admin exclusion on the `OR is_dm` broadening
+ * — see `listReports`) — a dedicated `COUNT(*)` rather than `(await
+ * listReports(scope, 'open')).length`, which would silently understate a
+ * backlog past that function's clamped (≤200) `limit`.
  */
 export async function countOpenReports(
   conversationIds: readonly string[] | null,
-  viewerUserId?: string,
+  viewerUserIds?: readonly string[],
 ): Promise<number> {
   const params: unknown[] = [];
   const filters: string[] = [`status = 'open'`];
   if (conversationIds) {
     params.push([...conversationIds]);
     const convoIdx = params.length;
-    if (viewerUserId) {
-      params.push(viewerUserId);
+    if (viewerUserIds && viewerUserIds.length > 0) {
+      params.push([...viewerUserIds]);
       filters.push(
-        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND target_user_id IS DISTINCT FROM $${params.length}))`,
+        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND (target_user_id IS NULL OR target_user_id <> ALL($${params.length}))))`,
       );
     } else {
       filters.push(`conversation_id = ANY($${convoIdx})`);
@@ -2952,28 +3069,33 @@ export async function countOpenReports(
  * conversations they actually participate in (same invariant as `moderate`/
  * `announce`) — broadened by `OR is_dm` for the same reason as `listReports`
  * (a DM report has no conversation an ordinary admin is ever scoped to), with
- * the same accused-admin exclusion: `resolvedBy` (the acting admin's own id,
- * always supplied by the one production call site in tools.ts) can never
+ * the same accused-admin exclusion: the acting admin (and every identity
+ * linked to them via `link_member`, passed as `viewerUserIds`) can never
  * resolve a DM report filed against itself — that stays super-admin-only, so
- * an accused admin can't dismiss a report about themselves (issue #197).
- * Returns the resolved row's platform/reporterUserId/reason (so the caller
- * can notify the reporter, issue #120 — same "RETURNING" shape as
- * `resolveSuggestion`) or null if no matching row was found (unknown id, or
- * the id exists but is outside the caller's scope) — same "no match" signal
- * the old boolean return gave.
+ * an accused admin can't dismiss a report about themselves, and can't slip
+ * past the exclusion by resolving from a linked other-platform identity
+ * (issue #197). `resolvedBy` still records the single acting id.
+ * `viewerUserIds` defaults to `[resolvedBy]` when omitted. Returns the
+ * resolved row's platform/reporterUserId/reason (so the caller can notify the
+ * reporter, issue #120 — same "RETURNING" shape as `resolveSuggestion`) or
+ * null if no matching row was found (unknown id, or the id exists but is
+ * outside the caller's scope) — same "no match" signal the old boolean return
+ * gave.
  */
 export async function resolveContentReport(
   id: number,
   status: 'resolved' | 'dismissed',
   resolvedBy: string,
   conversationIds?: readonly string[],
+  viewerUserIds?: readonly string[],
 ): Promise<{ platform: Platform; reporterUserId: string; reason: string } | null> {
   const params: unknown[] = [id, status, resolvedBy];
-  const resolvedByIdx = params.length;
   let scope = '';
   if (conversationIds) {
     params.push([...conversationIds]);
-    scope = `AND (conversation_id = ANY($${params.length}) OR (is_dm AND target_user_id IS DISTINCT FROM $${resolvedByIdx}))`;
+    const convoIdx = params.length;
+    params.push([...(viewerUserIds && viewerUserIds.length > 0 ? viewerUserIds : [resolvedBy])]);
+    scope = `AND (conversation_id = ANY($${convoIdx}) OR (is_dm AND (target_user_id IS NULL OR target_user_id <> ALL($${params.length}))))`;
   }
   const { rows } = await pool.query(
     `UPDATE content_reports

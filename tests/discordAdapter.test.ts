@@ -314,6 +314,22 @@ test('onChannelCreate: applies the overwrite to a newly created category too', a
   );
 });
 
+test('SECURITY: onChannelCreate applies the muted-role deny to a new voice channel (its text chat is otherwise postable by a muted member)', async () => {
+  const adapter = new DiscordAdapter();
+  const guild = fakeGuildRef({
+    id: config.discord.guildId,
+    mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
+  });
+  // Voice/Stage/Media channels have a text surface but were excluded from the
+  // overwrite set, so a muted member could post freely in them.
+  for (const type of [ChannelType.GuildVoice, ChannelType.GuildStageVoice, ChannelType.GuildMedia]) {
+    const { channel, overwriteCalls } = fakeChannel({ id: `chan-${type}`, type, guild });
+    await fireChannelCreate(adapter, channel);
+    assert.equal(overwriteCalls.length, 1, `channel type ${type} must receive the deny overwrite`);
+    assert.equal(overwriteCalls[0].payload.SendMessages, false);
+  }
+});
+
 test("onChannelCreate: ignores thread channels — thread posting is blocked via the parent channel's SendMessagesInThreads:false instead", async () => {
   const adapter = new DiscordAdapter();
   const guild = fakeGuildRef({

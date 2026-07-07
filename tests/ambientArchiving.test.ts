@@ -286,24 +286,45 @@ test(
       kind: 'ambient',
     });
 
-    const updated = await updateInteractionByMessageId('discord', `${RUN}-m4`, 'edited text');
+    const updated = await updateInteractionByMessageId('discord', conversationId, `${RUN}-m4`, 'edited text');
     assert.equal(updated, true);
     const afterEdit = await pool.query(`SELECT content FROM interactions WHERE message_id = $1`, [
       `${RUN}-m4`,
     ]);
     assert.equal(afterEdit.rows[0].content, 'edited text', 'a Discord edit updates the stored copy');
 
-    const deleted = await deleteInteractionByMessageId('discord', `${RUN}-m4`);
+    // SECURITY: an edit/delete keyed to the same message id but a DIFFERENT
+    // conversation must never touch this row (cross-conversation tamper guard).
+    assert.equal(
+      await updateInteractionByMessageId('discord', `${RUN}-other-chan`, `${RUN}-m4`, 'tampered'),
+      false,
+      'a wrong-conversation edit is a no-op',
+    );
+    assert.equal(
+      await deleteInteractionByMessageId('discord', `${RUN}-other-chan`, `${RUN}-m4`),
+      0,
+      'a wrong-conversation delete is a no-op',
+    );
+    const stillThere = await pool.query(`SELECT content FROM interactions WHERE message_id = $1`, [
+      `${RUN}-m4`,
+    ]);
+    assert.equal(
+      stillThere.rows[0].content,
+      'edited text',
+      'the row survived the wrong-conversation attempts',
+    );
+
+    const deleted = await deleteInteractionByMessageId('discord', conversationId, `${RUN}-m4`);
     assert.equal(deleted, 1);
     const afterDelete = await pool.query(`SELECT 1 FROM interactions WHERE message_id = $1`, [`${RUN}-m4`]);
     assert.equal(afterDelete.rows.length, 0, 'a Discord delete hard-deletes the stored copy');
 
     assert.equal(
-      await updateInteractionByMessageId('discord', `${RUN}-m4`, 'x'),
+      await updateInteractionByMessageId('discord', conversationId, `${RUN}-m4`, 'x'),
       false,
       'updating an unknown message id is a clean no-op',
     );
-    assert.equal(await deleteInteractionByMessageId('discord', `${RUN}-m4`), 0);
+    assert.equal(await deleteInteractionByMessageId('discord', conversationId, `${RUN}-m4`), 0);
   },
 );
 
