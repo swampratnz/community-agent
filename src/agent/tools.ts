@@ -73,7 +73,7 @@ import {
   usageStats,
   userMessages,
 } from '../storage/repository.js';
-import { updatePolicy } from '../storage/policies.js';
+import { getCommunityGuidelines, updatePolicy } from '../storage/policies.js';
 import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
@@ -184,6 +184,18 @@ async function notifySuperAdmins(
   }
 }
 
+/**
+ * Cap on stored community guidelines text (issue #212). Bounded by Discord's
+ * hard 2000-character message limit — guidelines are appended to the static
+ * welcome message and sent unchunked (`member.send`/channel fallback), so an
+ * unbounded value could blow that limit and silently drop the whole welcome
+ * (both the DM and channel-fallback sends would fail the same way). Leaves
+ * headroom for the ~230-character static WELCOME_MESSAGE plus its guidelines
+ * preamble; WhatsApp has no comparable limit, so the tighter platform sets
+ * the bound.
+ */
+export const COMMUNITY_GUIDELINES_MAX_CHARS = 1500;
+
 const MEMBER_APPROVED_MESSAGE =
   "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
   'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
@@ -199,6 +211,7 @@ const MEMBER_CAPABILITIES_TEXT =
   'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
   "Here's what you can ask me to do:\n" +
   '- Flag harassment, spam, or a rule violation to admins ("report this")\n' +
+  '- Ask me for our community guidelines ("what are the rules here?")\n' +
   '- Answer questions from curated community knowledge — just ask\n' +
   '- Search back through your own past messages for something said earlier\n' +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -565,6 +578,19 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         );
       }
       return text(MEMBER_CAPABILITIES_TEXT);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const communityGuidelines = tool(
+    'community_guidelines',
+    "Return this community's guidelines/rules, exactly as an admin set them. Call this whenever someone " +
+      'asks "what are the rules?", "what am I not allowed to do?", or wants to know why they were warned ' +
+      'or muted. Relay the returned text to the caller verbatim — do not summarise, paraphrase, or add to it.',
+    {},
+    async () => {
+      const guidelines = await getCommunityGuidelines();
+      return text(guidelines ?? 'No community guidelines have been set yet — ask an admin.');
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -1213,6 +1239,32 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         },
       });
       return text(success ? `Announcement posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const setCommunityGuidelines = tool(
+    'set_community_guidelines',
+    'Set the community guidelines/rules text shown to members (appended verbatim to new-member welcome ' +
+      `messages and returned verbatim by community_guidelines). Max ${COMMUNITY_GUIDELINES_MAX_CHARS} ` +
+      'characters. Pass an empty string to clear. Admin only.',
+    {
+      text: z
+        .string()
+        .max(COMMUNITY_GUIDELINES_MAX_CHARS)
+        .describe(`The guidelines text, or "" to clear (max ${COMMUNITY_GUIDELINES_MAX_CHARS} characters)`),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'set_community_guidelines');
+      const { success, result } = await audited({
+        actionKind: 'set_community_guidelines',
+        params: { text: args.text },
+        run: async () => {
+          await updatePolicy('community_guidelines', args.text, caller.userId);
+          return args.text ? 'updated' : 'cleared';
+        },
+      });
+      if (!success) return text(`Failed: ${result}`, true);
+      return text(args.text ? 'Community guidelines updated.' : 'Community guidelines cleared.');
     },
   );
 
@@ -2265,6 +2317,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     version: '2.0.0',
     tools: [
       communityInfo,
+      communityGuidelines,
       checkStatus,
       knowledgeSearch,
       rememberSearch,
@@ -2284,6 +2337,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       moderate,
       clearWarningsTool,
       announce,
+      setCommunityGuidelines,
       saveKnowledgeTool,
       listKnowledgeTool,
       updateKnowledgeTool,

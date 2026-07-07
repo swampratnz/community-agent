@@ -23,7 +23,7 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { getCodeAnswersPolicy, getCommunityGuidelines } from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import { atLeast } from '../../auth/rbac.js';
 import { resolveRole } from '../../auth/roles.js';
@@ -47,7 +47,7 @@ import {
 const MAX_DISCORD_LEN = 2000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
-const WELCOME_MESSAGE =
+export const WELCOME_MESSAGE =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
   'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
   'and an admin will see your request.';
@@ -258,7 +258,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * call, same cost profile as the gated notice. The welcome stays off
    * unless DISCORD_WELCOME_ENABLED=true, so existing deployments are
    * unaffected. DM-first; falls back to the configured channel if the
-   * member has DMs closed.
+   * member has DMs closed. When community guidelines are set (issue #212),
+   * they're appended verbatim to the static message — never run through the
+   * model, so there's no paraphrase risk on this path.
    */
   private async onGuildMemberAdd(member: GuildMember): Promise<void> {
     if (member.guild.id !== config.discord.guildId) return;
@@ -282,8 +284,13 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
     if (!config.discord.welcome.enabled) return;
 
+    const guidelines = await getCommunityGuidelines();
+    const welcomeText = guidelines
+      ? `${WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
+      : WELCOME_MESSAGE;
+
     try {
-      await member.send({ content: WELCOME_MESSAGE, allowedMentions: { parse: [] } });
+      await member.send({ content: welcomeText, allowedMentions: { parse: [] } });
       return;
     } catch (err) {
       logger.warn({ err, userId: member.id }, 'Welcome DM failed; trying channel fallback');
@@ -295,7 +302,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased() || !('send' in channel)) return;
       await channel.send({
-        content: `Welcome <@${member.id}>! ${WELCOME_MESSAGE}`,
+        content: `Welcome <@${member.id}>! ${welcomeText}`,
         allowedMentions: { users: [member.id] },
       });
     } catch (err) {

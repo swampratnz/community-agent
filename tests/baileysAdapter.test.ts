@@ -12,9 +12,11 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { BaileysAdapter, initialWelcomeCooldownState, stepWelcomeCooldown } =
+const { BaileysAdapter, initialWelcomeCooldownState, stepWelcomeCooldown, WHATSAPP_GROUP_WELCOME_MESSAGE } =
   await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { config } = await import('../src/config.js');
+const { pool } = await import('../src/storage/db.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 
 /**
  * Stubs the Baileys socket so sendMessage / sendDirectMessage can be
@@ -312,6 +314,55 @@ test('WhatsApp group welcome: respects WHATSAPP_ALLOWED_JIDS — a group outside
   }
 
   assert.equal(sent.length, 0);
+});
+
+/** Mocks pool.query so a `community_guidelines` policy read returns `value` (or nothing, if omitted). */
+function stubPoliciesQuery(value?: string) {
+  return async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM policies') && params?.[0] === 'community_guidelines') {
+      return value === undefined ? { rows: [], rowCount: 0 } : { rows: [{ value }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+}
+
+test('WhatsApp group welcome: stays byte-identical to today when no guidelines are set (issue #212)', async (t) => {
+  resetPolicyCacheForTests();
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withWelcomeConfig({ enabled: true }, () =>
+    fireGroupJoin(adapter, {
+      id: 'group-guidelines-unset@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'add',
+    }),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, WHATSAPP_GROUP_WELCOME_MESSAGE);
+  resetPolicyCacheForTests();
+});
+
+test('WhatsApp group welcome: appends community guidelines verbatim when set (issue #212)', async (t) => {
+  resetPolicyCacheForTests();
+  const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withWelcomeConfig({ enabled: true }, () =>
+    fireGroupJoin(adapter, {
+      id: 'group-guidelines-set@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'add',
+    }),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, `${WHATSAPP_GROUP_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`);
+  resetPolicyCacheForTests();
 });
 
 for (const action of ['remove', 'promote', 'demote']) {

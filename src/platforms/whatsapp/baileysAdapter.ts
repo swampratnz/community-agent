@@ -13,7 +13,7 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { getCodeAnswersPolicy, getCommunityGuidelines } from '../../storage/policies.js';
 import { deleteInteractionByMessageId, updateInteractionByMessageId } from '../../storage/repository.js';
 import {
   extractText,
@@ -37,7 +37,7 @@ const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
 // Generic and static — no @-mention or echo of the joiner, so a bulk add
 // can't be turned into a mass-ping and no participant JID reaches the chat.
-const WHATSAPP_GROUP_WELCOME_MESSAGE =
+export const WHATSAPP_GROUP_WELCOME_MESSAGE =
   "Kia ora! 👋 This bot only replies to registered members. If you're new here, ask an admin in this group to add you as a member.";
 
 export interface WelcomeCooldownState {
@@ -300,6 +300,8 @@ export class BaileysAdapter implements PlatformAdapter {
    * exactly the Baileys ban-risk pattern this avoids. Baileys batches
    * simultaneous joins into one event already; the cooldown additionally
    * collapses sequential joins across time into a single message per window.
+   * When community guidelines are set (issue #212), they're appended
+   * verbatim to the static message — never run through the model.
    */
   private async onGroupParticipantsUpdate(
     update: BaileysEventMap['group-participants.update'],
@@ -314,7 +316,11 @@ export class BaileysAdapter implements PlatformAdapter {
     this.welcomeCooldown = step.state;
     if (!step.shouldSend) return;
 
-    await this.sock.sendMessage(update.id, { text: WHATSAPP_GROUP_WELCOME_MESSAGE });
+    const guidelines = await getCommunityGuidelines();
+    const welcomeText = guidelines
+      ? `${WHATSAPP_GROUP_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
+      : WHATSAPP_GROUP_WELCOME_MESSAGE;
+    await this.sock.sendMessage(update.id, { text: welcomeText });
   }
 
   /**

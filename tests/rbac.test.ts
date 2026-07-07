@@ -63,6 +63,32 @@ test('SECURITY: report_content is member+ (guests never get it in gated mode; ma
   }
 });
 
+test('SECURITY: community_guidelines is member+ (read-only rules text); set_community_guidelines is admin+ only, never members or guests (issue #212)', () => {
+  const readTool = 'mcp__community__community_guidelines';
+  const writeTool = 'mcp__community__set_community_guidelines';
+
+  assert.ok(MEMBER_TOOLS.includes(readTool), 'community_guidelines must be in MEMBER_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(writeTool),
+    'set_community_guidelines must not be in MEMBER_TOOLS',
+  );
+  assert.ok(ADMIN_TOOLS.includes(writeTool), 'set_community_guidelines must be in ADMIN_TOOLS');
+  assert.ok(
+    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(writeTool),
+    'set_community_guidelines is content curation (like save_knowledge), not super-admin runtime control like set_policy',
+  );
+
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(readTool), `${role} must reach community_guidelines`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(writeTool), `${role} must not reach set_community_guidelines`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(writeTool), `${role} must reach set_community_guidelines`);
+  }
+});
+
 test('SECURITY: withdraw_report is member+ (retract your own report; scoping to own reports is enforced in SQL)', () => {
   const tool = 'mcp__community__withdraw_report';
   assert.ok(MEMBER_TOOLS.includes(tool), 'withdraw_report must be in MEMBER_TOOLS');
