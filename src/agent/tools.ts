@@ -258,6 +258,29 @@ async function notifySuperAdmins(
  */
 export const COMMUNITY_GUIDELINES_MAX_CHARS = 1500;
 
+/**
+ * create_poll (issue #228) bounds — the Discord Poll API's own hard limits
+ * (question/answer length, answer count, duration), enforced here so a
+ * malformed request fails at our zod schema boundary instead of a late
+ * Discord API error: https://discord.com/developers/docs/resources/poll.
+ */
+export const POLL_MIN_OPTIONS = 2;
+export const POLL_MAX_OPTIONS = 10;
+export const POLL_QUESTION_MAX_CHARS = 300;
+export const POLL_OPTION_MAX_CHARS = 55;
+export const POLL_MIN_DURATION_HOURS = 1;
+export const POLL_MAX_DURATION_HOURS = 32 * 24;
+export const POLL_DEFAULT_DURATION_HOURS = 24;
+
+/**
+ * Per-conversation cap on new polls within a rolling hour. `create_poll` is
+ * an outward-posting, announce-class action (same abuse surface as
+ * `announce`); the adversarial review for #228 called for a per-window cap
+ * rather than CONFIRM-gating, since a poll is lower-consequence than an
+ * announcement and `announce` itself isn't CONFIRM-gated either.
+ */
+export const POLL_RATE_LIMIT_PER_HOUR = 5;
+
 const MEMBER_APPROVED_MESSAGE =
   "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
   'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
@@ -515,6 +538,28 @@ function reserveImageGenDaily(key: string, limit: number): boolean {
   }
   if (entry.count >= limit) return false;
   entry.count += 1;
+  return true;
+}
+
+/** create_poll timestamps per conversation, for the rolling-hour cap (POLL_RATE_LIMIT_PER_HOUR). */
+const pollTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one create_poll slot for `conversationId` against a rolling
+ * hourly cap (sliding window, unlike reserveImageGenDaily's calendar-day
+ * bucket — a 1-hour cap doesn't align to midnight). Returns false without
+ * reserving if the conversation already hit `limit` within the last hour.
+ */
+function reservePollSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (pollTimestampsByConversation.get(conversationId) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= limit) {
+    pollTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  pollTimestampsByConversation.set(conversationId, recent);
   return true;
 }
 
@@ -1439,6 +1484,71 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         },
       });
       return text(success ? `Announcement posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const createPoll = tool(
+    'create_poll',
+    'Post a native Discord poll to gauge interest (e.g. meetup dates, topic preferences) — a structured ' +
+      'vote with a visible tally and duration, unlike a reaction straw poll. Discord only. Admins can only ' +
+      'post in conversations they are in.',
+    {
+      question: z.string().max(POLL_QUESTION_MAX_CHARS).describe('The poll question'),
+      options: z
+        .array(z.string().max(POLL_OPTION_MAX_CHARS))
+        .min(POLL_MIN_OPTIONS)
+        .max(POLL_MAX_OPTIONS)
+        .describe(
+          `${POLL_MIN_OPTIONS}-${POLL_MAX_OPTIONS} answer options, each up to ${POLL_OPTION_MAX_CHARS} characters`,
+        ),
+      durationHours: z
+        .number()
+        .min(POLL_MIN_DURATION_HOURS)
+        .max(POLL_MAX_DURATION_HOURS)
+        .optional()
+        .describe(
+          `Poll duration in hours (${POLL_MIN_DURATION_HOURS}-${POLL_MAX_DURATION_HOURS}, default ${POLL_DEFAULT_DURATION_HOURS})`,
+        ),
+      conversationId: z
+        .string()
+        .optional()
+        .describe('Target channel/conversation id; defaults to the current one'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'create_poll');
+      if (!adapter.adminCapabilities.has('create_poll')) {
+        return text(`This platform (${adapter.platform}) does not support polls.`, true);
+      }
+      const target = args.conversationId ?? caller.conversationId;
+      const allowed = await callerScope();
+      if (allowed && !allowed.includes(target)) {
+        return text(`Refusing: you are not a participant of conversation "${target}".`, true);
+      }
+      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+        return text(`Refusing: conversation "${target}" is unknown.`, true);
+      }
+      if (!reservePollSlot(target, POLL_RATE_LIMIT_PER_HOUR)) {
+        return text(
+          `Refusing: conversation "${target}" already hit the poll limit (${POLL_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+          true,
+        );
+      }
+      // Range is enforced at the zod schema boundary above; only truncate to
+      // whole hours here (the schema permits fractional values in-range).
+      const duration = Math.trunc(args.durationHours ?? POLL_DEFAULT_DURATION_HOURS);
+      const params = { question: args.question, options: args.options, durationHours: duration };
+      const { success, result } = await audited({
+        actionKind: 'create_poll',
+        conversationId: target,
+        params,
+        run: () =>
+          adapter.performAdminAction({
+            kind: 'create_poll',
+            conversationId: target,
+            params,
+          }),
+      });
+      return text(success ? `Poll posted to ${target}.` : `Failed: ${result}`, !success);
     },
   );
 
@@ -2629,6 +2739,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       moderate,
       clearWarningsTool,
       announce,
+      createPoll,
       setCommunityGuidelines,
       saveKnowledgeTool,
       listKnowledgeTool,

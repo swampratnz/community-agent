@@ -63,6 +63,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'delete_message',
     'warn_user',
     'unmute_user',
+    'create_poll',
   ]);
 
   private readonly client: Client;
@@ -485,16 +486,16 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
-    const guild = await this.client.guilds.fetch(config.discord.guildId);
-
     switch (action.kind) {
       case 'timeout_user': {
+        const guild = await this.client.guilds.fetch(config.discord.guildId);
         const member = await guild.members.fetch(action.targetUserId!);
         const minutes = Number(action.params?.durationMinutes ?? 10);
         await member.timeout(minutes * 60_000, paramString(action.params?.reason, 'No reason given'));
         return `Timed out ${member.user.tag} for ${minutes} minute(s).`;
       }
       case 'kick_user': {
+        const guild = await this.client.guilds.fetch(config.discord.guildId);
         const member = await guild.members.fetch(action.targetUserId!);
         await member.kick(paramString(action.params?.reason, 'No reason given'));
         return `Kicked ${member.user.tag}.`;
@@ -521,6 +522,36 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         // clear_warnings admin tool after it clears the DB strikes.
         await this.removeMutedRole(action.targetUserId!);
         return `Unmuted ${action.targetUserId}.`;
+      }
+      case 'create_poll': {
+        // Outward-posting, same guard as sendMessage: refuse a channel the
+        // bot can't actually send into rather than let discord.js throw late.
+        const channel = await this.client.channels.fetch(action.conversationId!);
+        if (!channel || !channel.isTextBased() || !('send' in channel)) {
+          throw new Error(`Discord channel ${action.conversationId} is not sendable`);
+        }
+        const rawOptions = action.params?.options;
+        const options = Array.isArray(rawOptions) ? rawOptions.map((o) => String(o)) : [];
+        // Question/answers are member-facing text the model authored — run
+        // them through the same outbound filter as every other send path
+        // (secret redaction) before they reach the channel.
+        const question = await this.filtered(paramString(action.params?.question));
+        const answers = await Promise.all(options.map(async (o) => ({ text: await this.filtered(o) })));
+        const durationHours = Math.round(Number(action.params?.durationHours ?? 24));
+        await channel.send({
+          poll: {
+            question: { text: question },
+            answers,
+            duration: durationHours,
+            allowMultiselect: false,
+          },
+          // Poll question/answer text is a distinct media field (not
+          // `content`) and isn't mention-parsed, but every other outbound
+          // path here sets this — keep the invariant textually true rather
+          // than relying on that Discord behavior being unstated.
+          allowedMentions: { parse: [] },
+        });
+        return `Poll posted with ${answers.length} option(s), open ${durationHours}h.`;
       }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);

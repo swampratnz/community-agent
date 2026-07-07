@@ -172,6 +172,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_suggestions` / `resolve_suggestion` (triage the idea queue) | ❌ | ❌ | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
+| `create_poll` (native Discord poll; announce-class outward post, rate-capped instead of confirm-gated — Discord only) | ❌ | ❌ | ✅ *their conversations* | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `set_community_guidelines` (set/clear the rules text shown to members; content curation, not runtime control — same tier as `save_knowledge`) | ❌ | ❌ | ✅ | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |

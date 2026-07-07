@@ -105,6 +105,7 @@ export const ADMIN_TOOLS = [
   'mcp__community__moderate',
   'mcp__community__clear_warnings',
   'mcp__community__announce',
+  'mcp__community__create_poll',
   // Content curation, same tier as save_knowledge — not super-admin like
   // set_policy, which is runtime bot control (issue #212).
   'mcp__community__set_community_guidelines',
