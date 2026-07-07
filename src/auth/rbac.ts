@@ -106,6 +106,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__clear_warnings',
   'mcp__community__announce',
   'mcp__community__create_poll',
+  // Discord-only thread management (issue #229) — create_thread additive/
+  // rate-capped like create_poll, archive_thread CONFIRM-gated like moderate
+  // (it hides an active discussion). See docs/SECURITY.md §11.
+  'mcp__community__create_thread',
+  'mcp__community__archive_thread',
   // Discord Scheduled Event creation (issue #230) — outward + member-
   // notifying (RSVP/reminders), so admin-tier + CONFIRM, a genuinely higher
   // floor than announce/create_poll. See docs/SECURITY.md.

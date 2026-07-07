@@ -96,10 +96,10 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   instructs the model to treat recalled/tool-returned chat content as data,
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
-- **Privileged targets are validated**: `moderate`/`announce`/`create_poll`
-  refuse targets (conversations/users) the bot has never seen, so a
-  manipulated admin turn cannot message arbitrary phone numbers or unknown
-  channels. `link_member`
+- **Privileged targets are validated**: `moderate`/`announce`/`create_poll`/
+  `create_thread`/`archive_thread` refuse targets (conversations/users) the
+  bot has never seen, so a manipulated admin turn cannot message arbitrary
+  phone numbers or unknown channels. `link_member`
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.
@@ -753,6 +753,46 @@ assignment just fails, loudly), not a silent gap. Every role you list in
 time; the assign-time check above is what catches it if that ever stops
 being true.
 
+### 11. Discord thread management (`create_thread` / `archive_thread`, issue #229)
+A Discord-only tool pair splitting a longer discussion out of the main
+channel flow. `create_thread` is additive (same rate-capped-instead-of-
+CONFIRM-gated treatment as `create_poll`); `archive_thread` hides an active
+discussion, so it's CONFIRM-gated like `moderate`.
+
+**The real risk here is a bot-manufactured moderation blind spot, not the
+tools' own RBAC.** Thread messages are moderation-scanned under their
+**parent** channel's allowlist membership — `DiscordAdapter.scopeChannelId`
+resolves a thread's `channelId` to its parent for the scan gate in
+`onDiscordMessage` (pinned by `tests/discordThreadArchive.test.ts`, issue
+#48). Before this feature, that only mattered for threads a human created;
+`create_thread` lets the bot spin up new spaces, so a thread opened under a
+non-allowlisted parent would be unmoderated by construction. Controls:
+- **Defensive self-refuse (the load-bearing control)**: `create_thread`
+  refuses outright when `DISCORD_MODERATION_ENABLED` is set and
+  `DISCORD_ALLOWED_CHANNEL_IDS` is non-empty and doesn't include the target
+  parent channel — a code guard, not just documentation, so the tool can
+  never open an unmoderated space even if the scan-side fix ever regresses
+  (pinned by a `SECURITY:` test in `tests/createThreadModerationGuard.test.ts`,
+  its own file/process since it needs a fixed `DISCORD_ALLOWED_CHANNEL_IDS`
+  at `config.ts` import time).
+- **Admin-tier + target validation**, same "the bot must have actually seen
+  it" discipline as `moderate`/`announce`/`create_poll`: the parent channel
+  (`create_thread`) or the thread itself (`archive_thread`) must be a
+  conversation the caller is scoped to and the bot has already seen
+  (`isKnownConversation`); an optional `seedMessageId` must be a message the
+  bot has seen in that channel (`isKnownMessage`).
+- **In-memory per-channel rate cap** (`THREAD_CREATE_RATE_LIMIT_PER_HOUR`, 5),
+  same sliding-window shape as `create_poll`'s own cap.
+- **`archive_thread` is CONFIRM-gated** (it hides other members' active
+  discussion, the same consequence class as `delete_message`/`kick_user`);
+  `create_thread` carries no such gate since opening a thread is additive and
+  reversible (an admin can just archive it).
+- **Discord-only**: `PlatformAdapter.adminCapabilities` on both WhatsApp
+  adapters simply omits `create_thread`/`archive_thread`, so the tools reply
+  with an unsupported-platform message rather than erroring.
+- **Only text/announcement channels**: forum/media channels use a different,
+  tag-based thread-creation API this tool doesn't support; `create_thread`
+  throws rather than guessing at forum tags.
 ### 11. Scheduled events (`create_event`, issue #230)
 Creates a real Discord `GuildScheduledEvent` (RSVP + reminders in the
 server's Events tab) instead of a text announcement. Outward-facing *and*
@@ -875,11 +915,11 @@ the supported path.
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and
   the audit log. Non-confirm actions (`warn_user`, `announce` within scope,
-  `create_poll` within scope) remain a lever a successful injection could
-  pull; `create_poll` is bounded further by a per-conversation rate cap
-  (`POLL_RATE_LIMIT_PER_HOUR`, in-memory) rather than CONFIRM, since it is
-  lower-consequence than `announce` and gating it harder would be
-  inconsistent (issue #228).
+  `create_poll`/`create_thread` within scope) remain a lever a successful
+  injection could pull; both are bounded further by their own per-conversation
+  rate cap (`POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`,
+  in-memory) rather than CONFIRM, since each is lower-consequence than
+  `announce` and gating them harder would be inconsistent (issues #228, #229).
 - **Membership-scope staleness**: adapters cache an admin's conversation list
   for ~60s, so an admin removed from a channel/group can retain data scope for
   up to that window.

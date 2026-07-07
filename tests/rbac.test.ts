@@ -411,6 +411,23 @@ test('SECURITY: create_poll is admin-tier — never reachable by member/guest (i
   }
 });
 
+test('SECURITY: create_thread / archive_thread are admin-tier — never reachable by member/guest (issue #229)', () => {
+  for (const tool of ['mcp__community__create_thread', 'mcp__community__archive_thread']) {
+    assert.ok(ADMIN_TOOLS.includes(tool), `${tool} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), `${tool} must not be in MEMBER_TOOLS`);
+    assert.ok(
+      !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+      `${tool} must not be double-listed in SUPER_ADMIN_TOOLS`,
+    );
+    for (const role of ['guest', 'member'] as const) {
+      assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach ${tool}`);
+    }
+    for (const role of ['admin', 'super_admin'] as const) {
+      assert.ok(toolsForRole(role).includes(tool), `${role} must reach ${tool}`);
+    }
+  }
+});
+
 test('SECURITY: create_event is admin-tier — never reachable by member/guest (issue #230)', () => {
   const tool = 'mcp__community__create_event';
   assert.ok(ADMIN_TOOLS.includes(tool), 'create_event must be in ADMIN_TOOLS');
