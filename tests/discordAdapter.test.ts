@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ChannelType } from 'discord.js';
+import { ChannelType, GuildScheduledEventEntityType } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -227,6 +227,203 @@ test('SECURITY: performAdminAction("create_poll") routes question/answers throug
   assert.ok(poll.answers[0].text.includes('[redacted]'), 'the answer secret must be redacted, not dropped');
   assert.equal(poll.answers[1].text, 'a clean option', 'an unaffected answer must pass through unchanged');
   assert.equal(poll.duration, 24);
+});
+
+interface FakeScheduledEventGuild {
+  id: string;
+  scheduledEvents: {
+    create: (options: Record<string, unknown>) => Promise<{ name: string; scheduledStartAt: Date }>;
+  };
+}
+
+/**
+ * Stubs client.guilds.fetch + client.channels.fetch for
+ * performAdminAction('create_event') (issue #230): `channelFetch` lets each
+ * test control whether `location` resolves to a visible voice/stage channel
+ * in this guild (channel-hosted path) or not (external/physical location
+ * path) — mirrors the real DiscordAdapter's own fallback logic.
+ */
+function stubClientForEvent(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  channelFetch: (id: string) => Promise<unknown> = async () => {
+    throw new Error('channel not found');
+  },
+) {
+  const created: Array<Record<string, unknown>> = [];
+  const guild: FakeScheduledEventGuild = {
+    id: config.discord.guildId,
+    scheduledEvents: {
+      create: async (options: Record<string, unknown>) => {
+        created.push(options);
+        return {
+          name: options.name as string,
+          scheduledStartAt: new Date(options.scheduledStartTime as string),
+        };
+      },
+    },
+  };
+  const client = (
+    adapter as unknown as {
+      client: {
+        guilds: { fetch: (id: string) => Promise<FakeScheduledEventGuild> };
+        channels: { fetch: (id: string) => Promise<unknown> };
+      };
+    }
+  ).client;
+  client.guilds.fetch = async () => guild;
+  client.channels.fetch = channelFetch;
+  return created;
+}
+
+/** A minimal channel stand-in for create_event's location-resolution check. */
+function fakeLocationChannel(opts: { id: string; type: ChannelType; guildId?: string }) {
+  return {
+    id: opts.id,
+    type: opts.type,
+    guild: { id: opts.guildId ?? config.discord.guildId },
+    isDMBased: () => false,
+  };
+}
+
+const EVENT_FUTURE_START = '2099-06-01T19:00:00+12:00';
+const EVENT_FUTURE_END = '2099-06-01T21:00:00+12:00';
+
+test(
+  'SECURITY: performAdminAction("create_event") routes name/description through filterOutbound — a ' +
+    'secret cannot reach a Discord event unredacted (issue #230)',
+  async () => {
+    const adapter = new DiscordAdapter();
+    const created = stubClientForEvent(adapter);
+    const secret = 'sk-ant-' + 'y'.repeat(30);
+    await adapter.performAdminAction({
+      kind: 'create_event',
+      params: {
+        name: `secret is ${secret} end`,
+        description: `also ${secret}`,
+        startTime: EVENT_FUTURE_START,
+        endTime: EVENT_FUTURE_END,
+        location: 'Wellington Central Library',
+      },
+    });
+    assert.equal(created.length, 1);
+    const opts = created[0];
+    assert.ok(!(opts.name as string).includes('sk-ant-'), 'no raw secret fragment may reach the event name');
+    assert.ok((opts.name as string).includes('[redacted]'), 'the name secret must be redacted, not dropped');
+    assert.ok(
+      !(opts.description as string).includes('sk-ant-'),
+      'no raw secret fragment may reach the description',
+    );
+    assert.ok(
+      (opts.description as string).includes('[redacted]'),
+      'the description secret must be redacted, not dropped',
+    );
+  },
+);
+
+test('performAdminAction("create_event") treats an external/physical location as an EXTERNAL event with the location text filtered (issue #230)', async () => {
+  const adapter = new DiscordAdapter();
+  const created = stubClientForEvent(adapter);
+  await adapter.performAdminAction({
+    kind: 'create_event',
+    params: {
+      name: 'Auckland Meetup',
+      startTime: EVENT_FUTURE_START,
+      endTime: EVENT_FUTURE_END,
+      location: 'Wellington Central Library',
+    },
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].entityType, GuildScheduledEventEntityType.External);
+  assert.deepEqual(created[0].entityMetadata, { location: 'Wellington Central Library' });
+  assert.equal(created[0].channel, undefined);
+});
+
+test('SECURITY: performAdminAction("create_event") refuses an external location with no endTime — Discord requires one for non-channel events (issue #230)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForEvent(adapter);
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'create_event',
+        params: {
+          name: 'Auckland Meetup',
+          startTime: EVENT_FUTURE_START,
+          location: 'Wellington Central Library',
+        },
+      }),
+    /requires an endTime/,
+  );
+});
+
+test('performAdminAction("create_event") resolves a visible voice channel location to a channel-hosted VOICE event, endTime optional (issue #230)', async () => {
+  const adapter = new DiscordAdapter();
+  const voiceChannel = fakeLocationChannel({ id: 'chan-voice-1', type: ChannelType.GuildVoice });
+  const created = stubClientForEvent(adapter, async () => voiceChannel);
+  await adapter.performAdminAction({
+    kind: 'create_event',
+    params: { name: 'Voice hangout', startTime: EVENT_FUTURE_START, location: 'chan-voice-1' },
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].entityType, GuildScheduledEventEntityType.Voice);
+  assert.equal(created[0].channel, 'chan-voice-1');
+  assert.equal(created[0].entityMetadata, undefined);
+  assert.equal(created[0].scheduledEndTime, undefined);
+});
+
+test('performAdminAction("create_event") resolves a visible stage channel location to a channel-hosted STAGE_INSTANCE event (issue #230)', async () => {
+  const adapter = new DiscordAdapter();
+  const stageChannel = fakeLocationChannel({ id: 'chan-stage-1', type: ChannelType.GuildStageVoice });
+  const created = stubClientForEvent(adapter, async () => stageChannel);
+  await adapter.performAdminAction({
+    kind: 'create_event',
+    params: { name: 'Stage AMA', startTime: EVENT_FUTURE_START, location: 'chan-stage-1' },
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].entityType, GuildScheduledEventEntityType.StageInstance);
+  assert.equal(created[0].channel, 'chan-stage-1');
+});
+
+test('SECURITY: performAdminAction("create_event") falls back to an external location for a visible TEXT channel — only voice/stage channels are channel-hosted (issue #230)', async () => {
+  const adapter = new DiscordAdapter();
+  const textChannel = fakeLocationChannel({ id: 'chan-text-1', type: ChannelType.GuildText });
+  const created = stubClientForEvent(adapter, async () => textChannel);
+  await adapter.performAdminAction({
+    kind: 'create_event',
+    params: {
+      name: 'Text-channel-labelled meetup',
+      startTime: EVENT_FUTURE_START,
+      endTime: EVENT_FUTURE_END,
+      location: 'chan-text-1',
+    },
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].entityType, GuildScheduledEventEntityType.External);
+  assert.deepEqual(created[0].entityMetadata, { location: 'chan-text-1' });
+});
+
+test('SECURITY: performAdminAction("create_event") falls back to an external location for a voice channel in a DIFFERENT guild — a validated channel must be in THIS guild (issue #230)', async () => {
+  const adapter = new DiscordAdapter();
+  const otherGuildVoiceChannel = fakeLocationChannel({
+    id: 'chan-voice-other-guild',
+    type: ChannelType.GuildVoice,
+    guildId: 'some-other-guild',
+  });
+  const created = stubClientForEvent(adapter, async () => otherGuildVoiceChannel);
+  await adapter.performAdminAction({
+    kind: 'create_event',
+    params: {
+      name: 'Cross-guild location attempt',
+      startTime: EVENT_FUTURE_START,
+      endTime: EVENT_FUTURE_END,
+      location: 'chan-voice-other-guild',
+    },
+  });
+  assert.equal(created.length, 1);
+  assert.equal(
+    created[0].entityType,
+    GuildScheduledEventEntityType.External,
+    'a channel from another guild must never be treated as a channel-hosted location',
+  );
 });
 
 interface FakeImageSendable {

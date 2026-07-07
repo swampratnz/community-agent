@@ -281,6 +281,45 @@ export const POLL_DEFAULT_DURATION_HOURS = 24;
  */
 export const POLL_RATE_LIMIT_PER_HOUR = 5;
 
+/**
+ * create_event (issue #230) Discord Scheduled Event field bounds — Discord's
+ * own hard limits (name/description/location length), enforced at the zod
+ * schema boundary same as the create_poll bounds above:
+ * https://discord.com/developers/docs/resources/guild-scheduled-event.
+ */
+export const EVENT_NAME_MAX_CHARS = 100;
+export const EVENT_DESCRIPTION_MAX_CHARS = 1000;
+export const EVENT_LOCATION_MAX_CHARS = 100;
+
+/**
+ * create_event requires a concrete, resolved instant — never relative or
+ * ambiguous text like "next Tuesday 7pm" (the exact ambiguity the proposal
+ * calls out) — so this only accepts a strict ISO 8601 date-time with an
+ * explicit UTC offset or "Z", not anything `Date.parse` happens to also
+ * understand (e.g. "07/14/2026" parses inconsistently across engines and
+ * carries no explicit timezone). The model is expected to resolve relative
+ * phrases itself against the current NZ date already grounded in the system
+ * prompt (systemPrompt.ts's Pacific/Auckland date line) before calling this.
+ */
+const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+export function parseIsoInstant(value: string): Date | null {
+  if (!ISO_INSTANT_RE.test(value)) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : new Date(ms);
+}
+
+/** Shared zod shape for create_event's startTime/endTime — format only; future/ordering checks are cross-field and live in the handler. */
+function isoInstantSchema(description: string) {
+  return z
+    .string()
+    .describe(description)
+    .refine((v) => parseIsoInstant(v) !== null, {
+      message:
+        'Must be a concrete ISO 8601 timestamp with an explicit UTC offset or "Z" (e.g. "2026-07-14T19:00:00+12:00") — relative or ambiguous text (e.g. "next Tuesday 7pm") is rejected; resolve it to a concrete instant yourself first.',
+    });
+}
+
 const MEMBER_APPROVED_MESSAGE =
   "Kia ora! 👋 You've been approved — you're now a registered member of NZ Claude Community. " +
   'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
@@ -1555,6 +1594,88 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           }),
       });
       return text(success ? `Poll posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const createEvent = tool(
+    'create_event',
+    "Create a real Discord Scheduled Event (shows in the server's Events tab with RSVP + reminders) for a " +
+      'meetup — much higher signal than a text announcement that scrolls away. Discord only. Admin only; ' +
+      'requires confirmation, since it is an outward artifact that notifies the whole server. startTime/' +
+      'endTime must be concrete, resolved ISO 8601 timestamps — resolve relative phrases like "next Tuesday ' +
+      '7pm" against the current NZ date yourself first; never pass relative or ambiguous text.',
+    {
+      name: z.string().min(1).max(EVENT_NAME_MAX_CHARS).describe('Event name/title'),
+      startTime: isoInstantSchema(
+        'Concrete ISO 8601 start instant with an explicit offset or "Z", e.g. "2026-07-14T19:00:00+12:00" ' +
+          '(NZ = Pacific/Auckland). Must be in the future.',
+      ),
+      endTime: isoInstantSchema(
+        'Concrete ISO 8601 end instant, same format as startTime. Optional for a channel-hosted event; ' +
+          'required for an external/physical location.',
+      ).optional(),
+      description: z
+        .string()
+        .max(EVENT_DESCRIPTION_MAX_CHARS)
+        .optional()
+        .describe('Event description, shown on the event page'),
+      location: z
+        .string()
+        .min(1)
+        .max(EVENT_LOCATION_MAX_CHARS)
+        .describe(
+          'Either a physical/external location (e.g. "Wellington Central Library") or the id of a Discord ' +
+            'voice/stage channel the bot can see, for an online meetup.',
+        ),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'create_event');
+      if (!adapter.adminCapabilities.has('create_event')) {
+        return text(`This platform (${adapter.platform}) does not support scheduled events.`, true);
+      }
+      // Format validity is a zod schema boundary (isoInstantSchema); the
+      // future/ordering checks are cross-field and depend on wall-clock time,
+      // so they run here, before ever registering a CONFIRM — same discipline
+      // as assign_community_role's pre-checks (issue #232).
+      const start = parseIsoInstant(args.startTime)!;
+      if (start.getTime() <= Date.now()) {
+        return text('Refusing: startTime must be in the future.', true);
+      }
+      if (args.endTime) {
+        const end = parseIsoInstant(args.endTime)!;
+        if (end.getTime() <= start.getTime()) {
+          return text('Refusing: endTime must be after startTime.', true);
+        }
+      }
+      const params = {
+        name: args.name,
+        description: args.description ?? '',
+        startTime: args.startTime,
+        endTime: args.endTime,
+        location: args.location,
+      };
+      // CONFIRM text quotes every salient mutated field — name, start time,
+      // location, and a truncated description — verbatim (binding acceptance
+      // criterion from the adversarial verdict on #230, sharpened by review
+      // on the PR: location/description are just as outward-facing as
+      // name/startTime, so the human must see them too before confirming),
+      // so the human confirms the actual artifact rather than model-composed
+      // prose. Same truncation pattern as delete_member_note's note preview.
+      const descPreview = args.description
+        ? ` ("${args.description.slice(0, 80)}${args.description.length > 80 ? '…' : ''}")`
+        : '';
+      return requireConfirm(
+        `create event "${args.name}" starting ${args.startTime} at "${args.location}"${descPreview}`,
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'create_event',
+            params,
+            run: () => adapter.performAdminAction({ kind: 'create_event', params }),
+          });
+          return success ? `Done: ${result}` : `Failed: ${result}`;
+        },
+      );
     },
   );
 
@@ -2852,6 +2973,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       clearWarningsTool,
       announce,
       createPoll,
+      createEvent,
       setCommunityGuidelines,
       saveKnowledgeTool,
       listKnowledgeTool,
