@@ -12,8 +12,25 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const { makeWordlistDetector } = await import('../src/moderation/wordlist.js');
-const { Moderator, makeClassifier } = await import('../src/moderation/moderator.js');
+const { Moderator, makeClassifier, boundForClassifier } = await import('../src/moderation/moderator.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
+
+test('SECURITY: boundForClassifier keeps the tail so abuse hidden after filler is still classified', () => {
+  // A message can run to ~2000 chars; a flat slice(0, 500) never sees a slur
+  // placed after 500 chars of padding. boundForClassifier must include both
+  // the head and the tail of an over-length message.
+  const slur = 'ABUSIVE-TERM-AT-THE-END';
+  const padded = `${'benign filler '.repeat(200)}${slur}`;
+  assert.ok(padded.length > 500, 'the test input must exceed the flat 500-char cap to be meaningful');
+  const bounded = boundForClassifier(padded);
+  assert.ok(
+    bounded.includes(slur),
+    'the tail (where the abuse hides) must survive into the classifier input',
+  );
+  assert.ok(bounded.length < padded.length, 'the input is still bounded, not passed whole');
+  // A short message is passed through unchanged (only angle brackets stripped).
+  assert.equal(boundForClassifier('just a normal message'), 'just a normal message');
+});
 
 type ModeratorType = InstanceType<typeof Moderator>;
 

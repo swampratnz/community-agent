@@ -94,6 +94,8 @@ const {
   countActiveWarnings,
   countStaleKnowledge,
   isKnownMessage,
+  deleteInteractionByMessageId,
+  getInteractionAuthorByMessageId,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -1693,7 +1695,7 @@ test(
       'omitting viewerUserId leaves DM-originated reports invisible, same as before #197',
     );
 
-    const scoped = await listReports([inScopeConvo], undefined, 50, viewer);
+    const scoped = await listReports([inScopeConvo], undefined, 50, [viewer]);
     assert.ok(
       scoped.some((r) => r.id === dmReport.id),
       'a DM-originated report is visible to a scoped admin once viewerUserId is supplied',
@@ -1703,7 +1705,7 @@ test(
       'SECURITY: the OR is_dm broadening must not leak an out-of-scope, non-DM report',
     );
 
-    const scopedOpenCount = await countOpenReports([inScopeConvo], viewer);
+    const scopedOpenCount = await countOpenReports([inScopeConvo], [viewer]);
     assert.equal(
       scopedOpenCount,
       1,
@@ -1744,13 +1746,13 @@ test(
     });
     assert.ok(reportAgainstAccused);
 
-    const accusedView = await listReports([inScopeConvo], undefined, 50, accusedAdmin);
+    const accusedView = await listReports([inScopeConvo], undefined, 50, [accusedAdmin]);
     assert.ok(
       !accusedView.some((r) => r.id === reportAgainstAccused.id),
       'SECURITY: the accused admin must not see a DM report filed against themselves',
     );
     assert.equal(
-      await countOpenReports([inScopeConvo], accusedAdmin),
+      await countOpenReports([inScopeConvo], [accusedAdmin]),
       0,
       'SECURITY: the accused admin’s open count must not include a report against themselves',
     );
@@ -1763,13 +1765,13 @@ test(
       'SECURITY: the accused admin must not be able to dismiss a report filed against themselves',
     );
 
-    const otherView = await listReports([inScopeConvo], undefined, 50, otherAdmin);
+    const otherView = await listReports([inScopeConvo], undefined, 50, [otherAdmin]);
     assert.ok(
       otherView.some((r) => r.id === reportAgainstAccused.id),
       'a different scoped admin (not the accused) can still see the DM-originated report',
     );
 
-    const superAdminView = await listReports(null, undefined, 50, accusedAdmin);
+    const superAdminView = await listReports(null, undefined, 50, [accusedAdmin]);
     assert.ok(
       superAdminView.some((r) => r.id === reportAgainstAccused.id),
       'super-admin (null scope) visibility is unrestricted and unaffected by viewerUserId',
@@ -2667,6 +2669,185 @@ test(
     await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
       whatsappUser,
     ]);
+  },
+);
+
+test(
+  'SECURITY: repository: the accused-admin report exclusion covers a LINKED identity — an admin cannot see/resolve a DM report filed against their other-platform id (advisory C)',
+  { skip },
+  async () => {
+    const dA = `${RUN}-cadv-dA`; // Discord identity of admin A
+    const wA = `${RUN}-cadv-wA`; // WhatsApp identity of admin A (linked to dA)
+    const reporter = `${RUN}-cadv-reporter`;
+    const other = `${RUN}-cadv-other`; // an unrelated admin
+    const inScopeConvo = `${RUN}-cadv-in`;
+    const dmConvo = `${RUN}-cadv-dm`;
+
+    await upsertMember({ platform: 'discord', userId: dA, role: 'admin', addedBy: `${RUN}-super` });
+    await upsertMember({ platform: 'whatsapp', userId: wA, role: 'admin', addedBy: `${RUN}-super` });
+    await linkMembers('discord', dA, 'whatsapp', wA);
+
+    // A member DMs the bot on WhatsApp and reports admin A by A's WhatsApp number.
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: reporter,
+      conversationId: dmConvo,
+      targetUserId: wA,
+      reason: 'reporting the admin, by their other-platform id, from a DM',
+      isDirect: true,
+    });
+    assert.ok(report);
+
+    const linked = (await resolveLinkedIdentities('discord', dA)).map((i) => i.userId);
+    assert.ok(linked.includes(dA) && linked.includes(wA), 'admin A resolves to both linked identities');
+
+    // With only the raw current-platform id, the whatsapp-id target IS DISTINCT,
+    // so the report leaks to the accused admin — the gap the fix closes.
+    const rawIdOnly = await listReports([inScopeConvo], undefined, 50, [dA]);
+    assert.ok(
+      rawIdOnly.some((r) => r.id === report.id),
+      'a single raw id leaves the cross-platform gap open (this is what the fix must close)',
+    );
+
+    // With the full linked set the report is hidden, uncountable, unresolvable.
+    const withLinked = await listReports([inScopeConvo], undefined, 50, linked);
+    assert.ok(
+      !withLinked.some((r) => r.id === report.id),
+      'SECURITY: a report against A’s LINKED identity is hidden from A',
+    );
+    assert.equal(
+      await countOpenReports([inScopeConvo], linked),
+      0,
+      'SECURITY: and excluded from A’s open-report count',
+    );
+    assert.equal(
+      await resolveContentReport(report.id, 'dismissed', dA, [inScopeConvo], linked),
+      null,
+      'SECURITY: A cannot dismiss a report filed against their linked identity',
+    );
+
+    // A genuinely unrelated admin is unaffected and can still act on it.
+    const otherView = await listReports([inScopeConvo], undefined, 50, [other]);
+    assert.ok(
+      otherView.some((r) => r.id === report.id),
+      'an unrelated admin still sees the DM-originated report',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [[dA, wA]]);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData clears session continuity so purged messages are not recallable in a resumed transcript (advisory B1)',
+  { skip },
+  async () => {
+    const user = `${RUN}-b1-user`;
+    const convo = `${RUN}-b1-convo`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: convo,
+      userId: user,
+      role: 'member',
+      direction: 'inbound',
+      content: 'a secret the member later asks to forget',
+    });
+    await setClaudeSessionId('discord', convo, `sess-${convo}`);
+    assert.equal(
+      (await getClaudeSession('discord', convo))?.sessionId,
+      `sess-${convo}`,
+      'a live resumable session exists before the purge',
+    );
+
+    await purgeUserData('discord', user);
+
+    assert.equal(
+      await getClaudeSession('discord', convo),
+      null,
+      'SECURITY: purge nulls the resumed-session id, so the purged content cannot survive in a live Claude transcript',
+    );
+
+    await pool.query(`DELETE FROM sessions WHERE conversation_id = $1`, [convo]);
+  },
+);
+
+test(
+  'SECURITY: repository: deleting/editing a stored message by id invalidates any context digest built over it, scoped to its conversation (advisory B5/D)',
+  { skip },
+  async () => {
+    const user = `${RUN}-b5-user`;
+    const convo = `${RUN}-b5-convo`;
+    const otherConvo = `${RUN}-b5-other`;
+    const messageId = `${RUN}-b5-msg`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: convo,
+      userId: user,
+      role: 'member',
+      direction: 'inbound',
+      content: 'a message a digest is later built over',
+      messageId,
+    });
+    const { rows } = await pool.query(
+      `SELECT id FROM interactions WHERE platform = 'discord' AND conversation_id = $1 AND message_id = $2`,
+      [convo, messageId],
+    );
+    const interactionId = Number(rows[0].id);
+    const digestId = await insertContextDigest({
+      periodStart: new Date(0),
+      periodEnd: new Date(),
+      platform: 'discord',
+      topic: `${RUN}-b5-topic`,
+      summary: 'distilled from the member message',
+      exampleRefs: [interactionId],
+      distinctUsers: 2,
+      questionCount: 2,
+    });
+
+    // A revoke/delete keyed to the same id but a DIFFERENT conversation is a
+    // no-op (cross-conversation tamper guard) and leaves the digest intact.
+    assert.equal(await deleteInteractionByMessageId('discord', otherConvo, messageId), 0);
+    assert.equal(
+      (await pool.query(`SELECT 1 FROM context_digests WHERE id = $1`, [digestId])).rows.length,
+      1,
+      'SECURITY: a wrong-conversation delete neither removes the row nor invalidates the digest',
+    );
+
+    // The correctly-scoped delete removes the row AND invalidates the digest.
+    assert.equal(await deleteInteractionByMessageId('discord', convo, messageId), 1);
+    assert.equal(
+      (await pool.query(`SELECT 1 FROM context_digests WHERE id = $1`, [digestId])).rows.length,
+      0,
+      'SECURITY: the digest built over the deleted message is invalidated, matching the purge path',
+    );
+
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'repository: getInteractionAuthorByMessageId returns the stored author, scoped to its conversation',
+  { skip },
+  async () => {
+    const author = `${RUN}-author`;
+    const convo = `${RUN}-author-convo`;
+    const messageId = `${RUN}-author-msg`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: convo,
+      userId: author,
+      role: 'member',
+      direction: 'inbound',
+      content: 'authored message',
+      messageId,
+    });
+    assert.equal(await getInteractionAuthorByMessageId('whatsapp', convo, messageId), author);
+    assert.equal(
+      await getInteractionAuthorByMessageId('whatsapp', `${convo}-other`, messageId),
+      null,
+      'a wrong-conversation lookup finds nothing — the authorship check fails safe',
+    );
+    await pool.query(`DELETE FROM interactions WHERE platform = 'whatsapp' AND message_id = $1`, [messageId]);
   },
 );
 

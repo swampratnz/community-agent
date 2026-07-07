@@ -69,6 +69,25 @@ export function hasPendingAction(platform: Platform, conversationId: string, act
   return !!entry && entry.expiresAt >= Date.now();
 }
 
+/**
+ * Read (without removing) the actor's current fresh pending action, or null.
+ * Lets the router deterministically surface the REAL pending description to
+ * the human after a turn — the tool result that requireConfirm returns is
+ * composed into the final reply by the model, so an injected turn could
+ * register `grant_admin` as pending and then tell the user "reply CONFIRM to
+ * refresh my cache," hiding the warning. The router uses this to emit the
+ * authoritative `⚠️ Pending: <description>` itself.
+ */
+export function peekPendingAction(
+  platform: Platform,
+  conversationId: string,
+  actorUserId: string,
+): PendingAction | null {
+  const entry = pending.get(key(platform, conversationId, actorUserId));
+  if (!entry || entry.expiresAt < Date.now()) return null;
+  return entry;
+}
+
 /** Drop expired entries so abandoned pendings don't accumulate. */
 export function sweepExpiredPendingActions(): void {
   const now = Date.now();
