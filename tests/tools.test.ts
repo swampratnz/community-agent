@@ -1126,7 +1126,8 @@ function eventAdapter(opts: {
     sendDirectMessage: async () => {},
     conversationsForUser: async () => [],
     adminCapabilities: new Set(opts.capabilities ?? ['create_event']),
-    performAdminAction: opts.performAdminAction ?? (async () => 'Created event "Meetup" starting 2099-06-01T19:00:00.000Z.'),
+    performAdminAction:
+      opts.performAdminAction ?? (async () => 'Created event "Meetup" starting 2099-06-01T19:00:00.000Z.'),
   };
 }
 

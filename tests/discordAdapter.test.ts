@@ -345,7 +345,11 @@ test('SECURITY: performAdminAction("create_event") refuses an external location 
     () =>
       adapter.performAdminAction({
         kind: 'create_event',
-        params: { name: 'Auckland Meetup', startTime: EVENT_FUTURE_START, location: 'Wellington Central Library' },
+        params: {
+          name: 'Auckland Meetup',
+          startTime: EVENT_FUTURE_START,
+          location: 'Wellington Central Library',
+        },
       }),
     /requires an endTime/,
   );
