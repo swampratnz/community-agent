@@ -65,6 +65,24 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   superseded duplicate run no-ops. Same push guardrails as autofix; it never
   opens or merges PRs. Do not misflag its merge commits as an ownership
   violation either.
+- A third exception: the **revise loop** (`pipeline-pr-revise.yml`) may push
+  review-response commits to an existing build-worker PR branch when the
+  PR-review worker's verdict is "Changes requested". This is the "build ──
+  addresses feedback ──▶" edge of the state machine: the build worker is
+  one-shot and the autofix loop only reacts to CI *failure*, so a green-CI PR
+  with a Changes-requested review previously had no responder (PR #196 sat
+  stalled on a real security finding). Two-hop like the conflict resolver —
+  the review workflow's post step self-dispatches it via `workflow_dispatch`
+  (its verdict comment is GITHUB_TOKEN-posted, and GITHUB_TOKEN events never
+  trigger workflows); the payload carries the PR number only, and the revise
+  job re-verifies eligibility AND that the latest verdict still requests
+  changes before checkout (superseded runs no-op). Capped at 2 attempts per
+  PR via marker comments, then `needs-human` — the revise push re-triggers
+  CI and re-review, so the cap is what stops a reviewer-vs-reviser loop. A
+  "Needs a human decision" verdict labels `needs-human` directly. Same push
+  guardrails as autofix (`gh` read-only except `gh pr comment` so a
+  principled refusal is explained on the PR). It never opens or merges PRs.
+  Do not misflag its pushes as an ownership violation either.
 - **No loop merges PRs.** A human merges — especially important for this
   security-sensitive bot. This is enforced structurally, not just by prompt:
   the build worker's `--allowedTools` in `pipeline-build.yml` grants no blanket
@@ -295,8 +313,14 @@ sessions:
   bullet above).
 - `.github/workflows/pipeline-pr-review.yml` — fires on `pull_request`
   events; reviews the diff (security-focused), comments/approves, never merges.
+  On a "Changes requested" verdict it dispatches the revise worker; on a
+  "Needs a human decision" verdict it labels the PR `needs-human`.
+- `.github/workflows/pipeline-pr-revise.yml` — dispatched by the review
+  worker; addresses a Changes-requested review on the build-worker PR's own
+  branch and pushes (2 attempts per PR, then `needs-human`). See the third
+  ownership-rule exception above.
 
-Both use `anthropics/claude-code-action@v1` with **subscription auth** via the
+All of these use `anthropics/claude-code-action` with **subscription auth** via the
 `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) — same Max pool as
 the bot, not a metered key.
 

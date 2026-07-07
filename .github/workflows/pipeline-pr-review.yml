@@ -30,6 +30,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+  actions: write # dispatch pipeline-pr-revise.yml on a Changes-requested verdict
   id-token: write # claude-code-action mints its GitHub App token via OIDC
 
 jobs:
@@ -91,7 +92,9 @@ jobs:
 
             Produce your review as your FINAL text message. Do NOT try to post a
             comment, create a review, or push anything — a later automated step
-            posts your final message verbatim. Structure it as:
+            posts your final message verbatim, so it must contain ONLY the
+            review itself: no preamble, no narration (e.g. never "Now I'll
+            write the review"). Structure it as:
             - First line: "PR review (automated):"
             - A one-line verdict: "LGTM, looks good and ready for a human to merge",
               or "Changes requested", or "Needs a human decision".
@@ -139,3 +142,23 @@ jobs:
           # GitHub comment bodies cap ~65535 chars; keep well under.
           printf '%s' "$review" | head -c 60000 > review.txt
           gh pr comment "$PR" --body-file review.txt
+
+          # Route on the verdict (the state machine's missing edge — see
+          # pipeline-pr-revise.yml's header): "Changes requested" dispatches
+          # the revise worker via workflow_dispatch, the one event a
+          # GITHUB_TOKEN write CAN trigger (this very comment can't — GitHub
+          # never starts workflows off GITHUB_TOKEN-created events). "Needs a
+          # human decision" labels needs-human so it's visible and every
+          # pipeline loop skips the PR. Matching is confined to the first few
+          # lines (the verdict line) so a phrase inside a later finding
+          # bullet can't misroute; failures are warnings, never a red check —
+          # the review itself was posted successfully.
+          verdict="$(head -n 6 review.txt)"
+          if printf '%s' "$verdict" | grep -qiE 'changes requested'; then
+            echo "Verdict requests changes — dispatching the revise worker."
+            gh workflow run pipeline-pr-revise.yml -R "${{ github.repository }}" -f pr_number="$PR" ||
+              echo "::warning::Could not dispatch pipeline-pr-revise.yml (missing on the default branch yet?)"
+          elif printf '%s' "$verdict" | grep -qiE 'needs a human decision'; then
+            gh pr edit "$PR" --add-label needs-human ||
+              echo "::warning::Could not add needs-human label"
+          fi
