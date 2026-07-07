@@ -12,6 +12,9 @@ import {
   type NewsChannel,
   type ForumChannel,
   type CategoryChannel,
+  type VoiceChannel,
+  type StageChannel,
+  type MediaChannel,
   type GuildBasedChannel,
   type NonThreadGuildBasedChannel,
   type PartialGuildMember,
@@ -105,14 +108,14 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     if (config.discord.archiveAllMessages) {
       this.client.on(Events.MessageDelete, (message) => {
         if (!this.inArchiveScope(message.guildId, message.channelId)) return;
-        deleteInteractionByMessageId('discord', message.id).catch((err) =>
+        deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
           logger.warn({ err, messageId: message.id }, 'Stored-message delete failed'),
         );
       });
       this.client.on(Events.MessageBulkDelete, (messages) => {
         for (const message of messages.values()) {
           if (!this.inArchiveScope(message.guildId, message.channelId)) continue;
-          deleteInteractionByMessageId('discord', message.id).catch((err) =>
+          deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
             logger.warn({ err, messageId: message.id }, 'Stored-message bulk delete failed'),
           );
         }
@@ -144,6 +147,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       // covered, not just future joiners. Fire-and-forget: a backfill
       // failure must never block message handling.
       void this.backfillRoster();
+      // Re-apply the muted-role deny overwrite across all channels on startup,
+      // so a channel created while the bot was offline (which `onChannelCreate`
+      // never saw) doesn't stay postable for muted members until the next mute
+      // event. Fire-and-forget; no-op if moderation is off or no muted role
+      // exists yet.
+      void this.reconcileMutedRole();
     });
     // Steady-state signal for /healthz + disconnect alerting — discord.js
     // handles gateway resume internally, but a shard going down means we're
@@ -178,11 +187,20 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // Restrict to the configured guild (DMs always allowed).
     if (!isDM && message.guildId !== config.discord.guildId) return;
 
-    // Optional channel allowlist.
+    // Optional channel allowlist. A message posted in a thread reports the
+    // thread's own id as `channelId`, not its parent's, so gating on that id
+    // alone silently excludes every thread under an allowed channel — those
+    // messages were never processed OR moderation-scanned. Resolve a thread to
+    // its parent channel id for the allowlist decision (recall/session still
+    // key on the real thread id via `conversationId` below).
+    const gateChannelId =
+      !isDM && message.channel.isThread()
+        ? (message.channel.parentId ?? message.channelId)
+        : message.channelId;
     if (
       !isDM &&
       config.discord.allowedChannelIds.length > 0 &&
-      !config.discord.allowedChannelIds.includes(message.channelId)
+      !config.discord.allowedChannelIds.includes(gateChannelId)
     ) {
       return;
     }
@@ -242,7 +260,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     if (!this.inArchiveScope(newMessage.guildId, newMessage.channelId)) return;
     const full = newMessage.partial ? await newMessage.fetch() : newMessage;
     if (full.author.bot || !full.content) return;
-    await updateInteractionByMessageId('discord', full.id, this.cleanContent(full.content));
+    await updateInteractionByMessageId('discord', full.channelId, full.id, this.cleanContent(full.content));
   }
 
   private async isReplyToBot(message: Message): Promise<boolean> {
@@ -609,19 +627,52 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     await this.applyMutedRoleOverwrite(channel, role);
   }
 
+  /**
+   * Startup catch-up for the muted-role overwrites (SECURITY.md mute-bypass
+   * gap). Unlike `ensureMutedRole`, this deliberately does NOT create the role
+   * — if no member has ever been muted there is nothing to enforce yet — it
+   * only re-applies the deny overwrite to every channel when the role already
+   * exists, covering channels created while the bot was offline. No-op when
+   * moderation is off or the role doesn't exist.
+   */
+  private async reconcileMutedRole(): Promise<void> {
+    if (!config.moderation.enabled) return;
+    try {
+      const guild = await this.client.guilds.fetch(config.discord.guildId);
+      const role = this.findMutedRole(guild);
+      if (!role) return;
+      this.mutedRoleId = role.id;
+      const channels = await guild.channels.fetch();
+      for (const channel of channels.values()) {
+        if (!channel || !this.isMutableOverwriteChannel(channel)) continue;
+        await this.applyMutedRoleOverwrite(channel, role);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Muted-role startup reconcile failed');
+    }
+  }
+
   private isMutableOverwriteChannel(
     channel: GuildBasedChannel,
-  ): channel is TextChannel | NewsChannel | ForumChannel | CategoryChannel {
+  ): channel is
+    TextChannel | NewsChannel | ForumChannel | CategoryChannel | VoiceChannel | StageChannel | MediaChannel {
     return (
       channel.type === ChannelType.GuildText ||
       channel.type === ChannelType.GuildAnnouncement ||
       channel.type === ChannelType.GuildForum ||
-      channel.type === ChannelType.GuildCategory
+      channel.type === ChannelType.GuildCategory ||
+      // Voice/Stage channels have a built-in text chat and Media channels are
+      // post-bearing like forums — a muted member could otherwise post freely
+      // in any of them since the muted role carries no base permissions.
+      channel.type === ChannelType.GuildVoice ||
+      channel.type === ChannelType.GuildStageVoice ||
+      channel.type === ChannelType.GuildMedia
     );
   }
 
   private async applyMutedRoleOverwrite(
-    channel: TextChannel | NewsChannel | ForumChannel | CategoryChannel,
+    channel:
+      TextChannel | NewsChannel | ForumChannel | CategoryChannel | VoiceChannel | StageChannel | MediaChannel,
     role: Role,
   ): Promise<void> {
     try {
