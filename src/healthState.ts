@@ -49,3 +49,20 @@ export function buildHealthzPayload(dbOk: boolean, adapterStatus: Record<string,
   const allOk = dbOk && Object.values(adapterStatus).every(Boolean);
   return { status: allOk ? 'ok' : 'degraded', db: dbOk, adapters: adapterStatus };
 }
+
+export interface ReadyzPayload {
+  status: 'ok' | 'degraded';
+  db: boolean;
+}
+
+/**
+ * Readiness/liveness payload for /readyz: process is up AND the DB is
+ * reachable, deliberately independent of chat-adapter connectivity. A
+ * WhatsApp/Discord reconnect (which /healthz reports as degraded) must NOT
+ * make a deploy health-check roll the release back — the new build is running
+ * fine, it just hasn't finished reconnecting a socket (issue #216). Point the
+ * redeploy HEALTH_URL at /readyz; keep /healthz for adapter-aware monitoring.
+ */
+export function buildReadyzPayload(dbOk: boolean): ReadyzPayload {
+  return { status: dbOk ? 'ok' : 'degraded', db: dbOk };
+}

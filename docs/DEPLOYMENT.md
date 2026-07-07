@@ -55,9 +55,19 @@ default and independent of the interactions purge above.
 
 Sustained platform-disconnect alerting to super admins is always on
 (`HEALTH_ALERT_AFTER_MINUTES`, default 5 minutes). Optionally set
-`HEALTH_PORT` to expose an unauthenticated `GET /healthz` for an external
-uptime monitor — bind it to localhost and reverse-proxy it if you expose it
-publicly, same as the WhatsApp Cloud API webhook.
+`HEALTH_PORT` to expose two unauthenticated endpoints for an external uptime
+monitor:
+
+- `GET /healthz` — `{status, db, adapters}`; reports `degraded` (503) if any
+  chat adapter is disconnected. Use this for monitoring/alerting.
+- `GET /readyz` — `{status, db}`; liveness + DB reachability only,
+  independent of adapter connectivity. **The redeploy `HEALTH_URL` should
+  point here** so a WhatsApp/Discord socket still reconnecting after a
+  restart doesn't look unhealthy and trigger a rollback of a good build.
+
+The server binds to `HEALTH_HOST` (default `127.0.0.1`), so it is not
+reachable off-box unless you deliberately set a routable interface or
+reverse-proxy it, same as the WhatsApp Cloud API webhook.
 
 ## 5. Run migrations
 ```bash
@@ -146,7 +156,11 @@ diagnosable straight from `journalctl` — see issue #108) → `git fetch` →
 **fast-forward-only** update to `origin/main` (a diverged or rewritten
 history aborts; nothing is ever force-reset over local commits) →
 `npm ci` → `npm run build` → `npm run migrate:prod` → `systemctl
-restart` → health poll (`HEALTH_URL` if set, else `systemctl is-active`).
+restart` → health poll (`HEALTH_URL` — point it at `/readyz` — if set, else
+`systemctl is-active`). The health poll now requires several *consecutive*
+good polls (and, on the `systemctl is-active` path, that systemd hasn't
+auto-restarted the unit while watching), so a crash loop under
+`Restart=always` can't briefly look healthy and be accepted (issue #215).
 If nothing was merged since the last run it exits 0 at the fetch step
 ("up to date") — the nightly tick is effectively free.
 

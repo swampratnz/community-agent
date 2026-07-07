@@ -37,8 +37,11 @@ export function sniffImageType(buf: Buffer): { mimeType: string; ext: string } |
  * DISCORD_BOT_TOKEN, DATABASE_URL, WhatsApp/session secrets, …). It authenticates
  * from a file (`$HOME/.grok/auth.json`), not an env var, so a curated allowlist
  * of non-secret vars is sufficient — proven on the host with `env -i`.
+ *
+ * Exported so a test can pin that no bot secret ever passes through the
+ * allowlist (issue #225).
  */
-function grokEnv(): NodeJS.ProcessEnv {
+export function grokEnv(): NodeJS.ProcessEnv {
   const src = process.env;
   const env: NodeJS.ProcessEnv = {
     PATH: src.PATH,

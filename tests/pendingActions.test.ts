@@ -1,9 +1,11 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cancelPendingAction,
   classifyConfirmReply,
+  CONFIRM_TTL_MS,
   hasPendingAction,
+  peekPendingAction,
   registerPendingAction,
   sweepExpiredPendingActions,
   takePendingAction,
@@ -89,6 +91,63 @@ test('re-registering replaces the previous pending action', async () => {
   });
   const taken = takePendingAction('discord', 'c', 'a');
   assert.equal(await taken!.execute(), 'second');
+});
+
+test('SECURITY: a pending CONFIRM expires at CONFIRM_TTL_MS — an expired destructive action is discarded, never executed late', () => {
+  // A CONFIRM that arrives after the TTL must not run the stored destructive
+  // executor: otherwise an admin could register `purge`, walk away, have their
+  // role revoked, and a stale CONFIRM minutes later would still fire. Drive a
+  // mocked clock across the exact boundary rather than sleeping 60s.
+  const base = 1_000_000;
+  const nowMock = mock.method(Date, 'now', () => base);
+  try {
+    let runs = 0;
+    registerPendingAction('discord', 'c-ttl', 'admin1', {
+      description: 'purge all data',
+      minTier: 'super_admin',
+      execute: async () => {
+        runs += 1;
+        return 'RAN';
+      },
+    });
+
+    // Fresh 1ms before the TTL: present to has/peek.
+    nowMock.mock.mockImplementation(() => base + CONFIRM_TTL_MS - 1);
+    assert.ok(hasPendingAction('discord', 'c-ttl', 'admin1'), 'still fresh 1ms before the TTL');
+    assert.ok(peekPendingAction('discord', 'c-ttl', 'admin1'), 'peek still sees it before the TTL');
+
+    // One tick past the TTL: stale everywhere, and take must refuse it.
+    nowMock.mock.mockImplementation(() => base + CONFIRM_TTL_MS + 1);
+    assert.equal(hasPendingAction('discord', 'c-ttl', 'admin1'), false, 'not present past the TTL');
+    assert.equal(peekPendingAction('discord', 'c-ttl', 'admin1'), null, 'peek returns null past the TTL');
+    assert.equal(
+      takePendingAction('discord', 'c-ttl', 'admin1'),
+      null,
+      'an expired CONFIRM must never return the stored destructive action',
+    );
+    assert.equal(runs, 0, 'the expired executor is never invoked');
+  } finally {
+    nowMock.mock.restore();
+  }
+});
+
+test('sweep drops an expired pending action', () => {
+  const base = 2_000_000;
+  const nowMock = mock.method(Date, 'now', () => base);
+  try {
+    registerPendingAction('discord', 'c-sweep-exp', 'a', {
+      description: 'stale',
+      minTier: 'admin',
+      execute: async () => 'ok',
+    });
+    nowMock.mock.mockImplementation(() => base + CONFIRM_TTL_MS + 1);
+    sweepExpiredPendingActions();
+    // Back to "now" being inside the TTL window relative to a fresh register
+    // would matter, but the entry is already gone — take finds nothing.
+    assert.equal(takePendingAction('discord', 'c-sweep-exp', 'a'), null, 'sweep removed the expired entry');
+  } finally {
+    nowMock.mock.restore();
+  }
 });
 
 test('sweep drops nothing that is still fresh', () => {

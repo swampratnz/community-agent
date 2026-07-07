@@ -45,6 +45,15 @@ CREATE INDEX IF NOT EXISTS interactions_convo_idx
 CREATE INDEX IF NOT EXISTS interactions_user_idx
   ON interactions (platform, user_id, created_at DESC);
 
+-- Per-user daily reply budget (issue #217): countRepliesToUser counts recent
+-- OUTBOUND rows keyed on (platform, meta->>'replyToUserId', created_at). Without
+-- a matching index that count scans every outbound row on the hot inbound path.
+-- Partial (outbound only) + the JSONB reply-target expression = an index-only
+-- probe of exactly the rows the budget query touches.
+CREATE INDEX IF NOT EXISTS interactions_reply_budget_idx
+  ON interactions (platform, (meta->>'replyToUserId'), created_at DESC)
+  WHERE direction = 'outbound';
+
 -- Approximate nearest-neighbour index for semantic memory search.
 CREATE INDEX IF NOT EXISTS interactions_embedding_idx
   ON interactions USING hnsw (embedding vector_cosine_ops);

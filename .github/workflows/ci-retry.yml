@@ -28,6 +28,7 @@ on:
 
 permissions:
   actions: write # to re-run the failed CI run
+  contents: read # to compare the failed run's head_sha against the branch tip (staleness guard)
 
 jobs:
   retry:
@@ -37,10 +38,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5 # a single gh call; don't let a hung runner sit for the 6 h default
     steps:
-      - name: Re-run the failed jobs once
+      - name: Re-run the failed jobs once (unless the commit was superseded)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          FAILED_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-          echo "CI run ${{ github.event.workflow_run.id }} failed on attempt ${{ github.event.workflow_run.run_attempt }} — re-running failed jobs (one free retry)."
-          gh run rerun "${{ github.event.workflow_run.id }}" --failed -R "${{ github.repository }}"
+          # Staleness guard (issue #223): `gh run rerun` re-enters CI's
+          # `cancel-in-progress` concurrency group as the newest arrival, so
+          # rerunning a commit that a newer push has already superseded would
+          # CANCEL the newer commit's in-flight CI (and a cancelled run is
+          # invisible to this loop and to autofix — the branch would end with
+          # no CI verdict). Only rerun if the failed run's commit is still the
+          # branch tip. A fork PR's branch isn't in this repo (404) — treat an
+          # unresolvable tip as "not stale" and rerun, matching the prior
+          # always-rerun behaviour for that case.
+          tip="$(gh api "repos/${{ github.repository }}/commits/${HEAD_BRANCH}" --jq '.sha' 2>/dev/null || echo "")"
+          if [ -n "$tip" ] && [ "$tip" != "$FAILED_SHA" ]; then
+            echo "CI run ${RUN_ID} was for ${FAILED_SHA}, but ${HEAD_BRANCH} is now at ${tip} — superseded, not rerunning (the newer commit has its own CI)."
+            exit 0
+          fi
+          echo "CI run ${RUN_ID} failed on attempt ${{ github.event.workflow_run.run_attempt }} — re-running failed jobs (one free retry)."
+          gh run rerun "${RUN_ID}" --failed -R "${{ github.repository }}"

@@ -119,10 +119,18 @@ jobs:
             and ([.labels[].name] | index("needs-human") | not)
           ' <<<"$info")"
           # The LATEST automated-review comment must still request changes —
-          # the superseded-run guard (see header).
+          # the superseded-run guard (see header). Match the verdict the SAME
+          # way pipeline-pr-review.yml routes it (issue #222): look only at the
+          # first few lines and drop `-`/`*` bullet lines, so a finding bullet
+          # like "previous changes requested were addressed" inside an LGTM
+          # review can't be mistaken for a pending Changes-requested verdict
+          # (which would spin up the reviser to find nothing and mislabel the
+          # PR needs-human — the exact stall this guard exists to prevent).
           verdict_pending="$(jq -r '
             [.comments[] | select(.body | contains("PR review (automated)"))] | last
-            | ((.body // "") | test("[Cc]hanges requested"))
+            | ((.body // "") | split("\n")[0:4]
+               | map(select(test("^[[:space:]]*[-*]") | not)) | join("\n")
+               | test("[Cc]hanges requested"))
           ' <<<"$info")"
           attempts="$(jq --arg m "$ATTEMPT_MARKER" -r \
             '[.comments[] | select(.body | contains($m))] | length' <<<"$info")"
