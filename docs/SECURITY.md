@@ -753,6 +753,47 @@ assignment just fails, loudly), not a silent gap. Every role you list in
 time; the assign-time check above is what catches it if that ever stops
 being true.
 
+### 11. Scheduled events (`create_event`, issue #230)
+Creates a real Discord `GuildScheduledEvent` (RSVP + reminders in the
+server's Events tab) instead of a text announcement. Outward-facing *and*
+member-notifying — a genuinely higher floor than `announce`/`create_poll` —
+so it is:
+- **Admin-tier + CONFIRM-gated + audited**, same treatment as
+  `assign_community_role`/`grant_admin`. The CONFIRM text quotes the
+  **resolved** name and ISO start time verbatim, so the human confirms the
+  actual artifact rather than model-composed prose — mitigating the main
+  injection risk (a bogus/spam event from a manipulated admin turn).
+- **Strict input parsing**: `startTime`/`endTime` must be a concrete,
+  resolved ISO 8601 instant with an explicit UTC offset or `Z` — relative or
+  ambiguous text (e.g. "next Tuesday 7pm") is rejected at the zod schema
+  boundary, not trusted. `startTime` must be in the future and `endTime` (if
+  given) after `startTime`, checked before a pending action is ever
+  registered. The model is expected to resolve relative phrases itself
+  against the NZ date already grounded in the system prompt
+  (`Pacific/Auckland`, `systemPrompt.ts`).
+- **Location is either an external string or a validated, currently-visible
+  channel** in this guild: `DiscordAdapter.performAdminAction` tries to
+  resolve `location` as a real voice/stage channel live via the Discord
+  client first (channel-hosted event, `endTime` optional); anything else —
+  not found, a channel from a different guild, or a non-voice channel — falls
+  back to treating the string as an external/physical location, which
+  Discord requires an explicit `endTime` for and refuses cleanly otherwise.
+- Name/description/location text pass through the same `filterOutbound`
+  (secret redaction) as every other outward Discord send, applied at the
+  adapter's send boundary.
+- **Discord-only**: the WhatsApp adapters simply don't advertise
+  `create_event` in `adminCapabilities` (WhatsApp has no scheduled-event
+  primitive), so the tool replies with an unsupported-platform message.
+- **New Discord permission — Manage Events**: creating a `GuildScheduledEvent`
+  requires the bot's role to hold **Manage Events**, a real (if small) blast-
+  radius expansion of the bot token, in the same class as the Manage
+  Roles/Manage Channels grants auto-moderation needs. It is
+  operator-granted, least-privilege, and feature-gated: a single atomic API
+  call either creates the whole event or throws before creating anything, so
+  a missing grant fails clean rather than half-creating an event. See the
+  Discord platform notes below and docs/DEPLOYMENT.md's operational
+  checklist.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

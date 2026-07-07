@@ -1106,6 +1106,206 @@ test('SECURITY: create_poll enforces a per-conversation rate cap instead of CONF
   assert.equal(overLimit.isError, true);
 });
 
+// create_event (issue #230): a Discord-only, admin-tier + CONFIRM-gated tool
+// creating a real Discord Scheduled Event. Same stub-adapter pattern as
+// pollAdapter above — the real channel/entityType resolution lives in
+// DiscordAdapter and is covered by tests/discordAdapter.test.ts; this stub
+// lets the tools.ts layer (RBAC, CONFIRM, cross-field time validation, audit)
+// be exercised independently of the real Discord client.
+function eventAdapter(opts: {
+  capabilities?: string[];
+  performAdminAction?: PlatformAdapter['performAdminAction'];
+}): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => {},
+    sendDirectMessage: async () => {},
+    conversationsForUser: async () => [],
+    adminCapabilities: new Set(opts.capabilities ?? ['create_event']),
+    performAdminAction: opts.performAdminAction ?? (async () => 'Created event "Meetup" starting 2099-06-01T19:00:00.000Z.'),
+  };
+}
+
+function createEventHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            name: string;
+            startTime: string;
+            endTime?: string;
+            description?: string;
+            location: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['create_event'];
+}
+
+const EVENT_FUTURE_START = '2099-06-01T19:00:00+12:00';
+const EVENT_FUTURE_END = '2099-06-01T21:00:00+12:00';
+const EVENT_PAST_START = '2020-01-01T09:00:00+12:00';
+
+test('SECURITY: create_event rejects a non-admin caller (assertAtLeast re-check, issue #230)', async () => {
+  const adapter = eventAdapter({});
+  const handler = createEventHandler({ role: 'member', adapter });
+  await assert.rejects(
+    () => handler.handler({ name: 'Meetup', startTime: EVENT_FUTURE_START, location: 'Wellington' }),
+    /Permission denied/,
+  );
+});
+
+test('SECURITY: create_event refuses cleanly (no pending action) on a platform that does not support scheduled events — Discord-only (issue #230)', async () => {
+  const adapter = eventAdapter({ capabilities: [] });
+  const handler = createEventHandler({ conversationId: 'convo-event-unsupported', adapter });
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_FUTURE_START,
+    location: 'Wellington',
+  });
+  assert.match(result.content[0].text, /does not support/i);
+  assert.equal(
+    hasPendingAction('discord', 'convo-event-unsupported', 'admin-1'),
+    false,
+    'an unsupported platform must never register a pending action',
+  );
+});
+
+test('SECURITY: create_event rejects a non-parseable/relative startTime at the zod schema boundary — "next Tuesday 7pm" is never trusted as a concrete instant (issue #230)', () => {
+  const adapter = eventAdapter({});
+  const handler = createEventHandler({ adapter });
+  assert.equal(
+    handler.inputSchema.safeParse({
+      name: 'Meetup',
+      startTime: 'next Tuesday 7pm',
+      location: 'Wellington',
+    }).success,
+    false,
+    'relative/ambiguous text must fail schema validation, not be silently coerced',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      name: 'Meetup',
+      startTime: 'not a date at all',
+      location: 'Wellington',
+    }).success,
+    false,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      name: 'Meetup',
+      startTime: EVENT_FUTURE_START,
+      location: 'Wellington',
+    }).success,
+    true,
+    'a concrete, resolved ISO instant with an explicit offset must be accepted',
+  );
+});
+
+test('SECURITY: create_event refuses a past startTime before ever registering a pending action (issue #230)', async () => {
+  const conversationId = 'convo-event-past-start';
+  const adapter = eventAdapter({
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for a past startTime');
+    },
+  });
+  const handler = createEventHandler({ conversationId, adapter });
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_PAST_START,
+    location: 'Wellington',
+  });
+  assert.match(result.content[0].text, /must be in the future/);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: create_event refuses an endTime at or before startTime before ever registering a pending action (issue #230)', async () => {
+  const conversationId = 'convo-event-bad-end';
+  const adapter = eventAdapter({
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for a bad endTime');
+    },
+  });
+  const handler = createEventHandler({ conversationId, adapter });
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_FUTURE_START,
+    endTime: EVENT_FUTURE_START,
+    location: 'Wellington',
+  });
+  assert.match(result.content[0].text, /endTime must be after startTime/);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: create_event registers a CONFIRM-gated pending action whose description quotes the resolved name and ISO start time; executing it calls performAdminAction and audits (issue #230)', async () => {
+  const conversationId = 'convo-event-confirm';
+  const calls: Array<{ kind: string; params?: Record<string, unknown> }> = [];
+  const adapter = eventAdapter({
+    performAdminAction: async (action) => {
+      calls.push({ kind: action.kind, params: action.params });
+      return `Created event "${action.params?.name}" starting ${action.params?.startTime}.`;
+    },
+  });
+  const handler = createEventHandler({ conversationId, adapter });
+
+  const result = await handler.handler({
+    name: 'Wellington Winter Meetup',
+    startTime: EVENT_FUTURE_START,
+    endTime: EVENT_FUTURE_END,
+    description: 'A casual catch-up',
+    location: 'Wellington Central Library',
+  });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for confirmation, not run immediately');
+  assert.match(
+    result.content[0].text,
+    /Wellington Winter Meetup/,
+    'the CONFIRM text must quote the resolved event name',
+  );
+  assert.match(
+    result.content[0].text,
+    new RegExp(EVENT_FUTURE_START.replace(/[+.]/g, '\\$&')),
+    'the CONFIRM text must quote the resolved ISO start time',
+  );
+  assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
+
+  const pending = takePendingAction('discord', conversationId, 'admin-1');
+  assert.ok(pending, 'must register a pending action');
+  const execResult = await pending?.execute();
+  assert.match(execResult ?? '', /Done:/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'create_event');
+  assert.deepEqual(calls[0].params, {
+    name: 'Wellington Winter Meetup',
+    description: 'A casual catch-up',
+    startTime: EVENT_FUTURE_START,
+    endTime: EVENT_FUTURE_END,
+    location: 'Wellington Central Library',
+  });
+});
+
 test(
   'set_community_guidelines lets an admin set and clear guidelines; community_guidelines reflects the change verbatim, not paraphrased or truncated (issue #212)',
   { skip },
