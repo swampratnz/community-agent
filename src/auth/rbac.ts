@@ -111,6 +111,10 @@ export const ADMIN_TOOLS = [
   // (it hides an active discussion). See docs/SECURITY.md §11.
   'mcp__community__create_thread',
   'mcp__community__archive_thread',
+  // Discord Scheduled Event creation (issue #230) — outward + member-
+  // notifying (RSVP/reminders), so admin-tier + CONFIRM, a genuinely higher
+  // floor than announce/create_poll. See docs/SECURITY.md.
+  'mcp__community__create_event',
   // Content curation, same tier as save_knowledge — not super-admin like
   // set_policy, which is runtime bot control (issue #212).
   'mcp__community__set_community_guidelines',

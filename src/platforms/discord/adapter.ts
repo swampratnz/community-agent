@@ -2,6 +2,8 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  GuildScheduledEventEntityType,
+  GuildScheduledEventPrivacyLevel,
   MessageFlags,
   Partials,
   PermissionFlagsBits,
@@ -69,6 +71,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'create_poll',
     'create_thread',
     'archive_thread',
+    'create_event',
   ]);
 
   private readonly client: Client;
@@ -633,6 +636,65 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         }
         await channel.setArchived(true, paramString(action.params?.reason, 'Archived via bot'));
         return `Archived thread ${action.conversationId}.`;
+      }
+      case 'create_event': {
+        // Requires the bot's role to hold Manage Events (docs/SECURITY.md).
+        // A single atomic API call — either the whole event is created or
+        // discord.js throws before anything is created, so there is no
+        // half-created state to clean up if the permission is missing.
+        const guild = await this.client.guilds.fetch(config.discord.guildId);
+        const name = await this.filtered(paramString(action.params?.name));
+        const rawDescription = paramString(action.params?.description);
+        const description = rawDescription ? await this.filtered(rawDescription) : undefined;
+        const startTime = paramString(action.params?.startTime);
+        const endTime = paramString(action.params?.endTime) || undefined;
+        const rawLocation = paramString(action.params?.location);
+
+        // "location is either an external string or a validated channel the
+        // bot can see" (issue #230): try to resolve it as a real, visible
+        // voice/stage channel in THIS guild first — that becomes a proper
+        // channel-hosted event (endTime optional). Anything else (not found,
+        // a different guild, or a non-voice channel) falls back to treating
+        // the raw string as an external/physical location, which Discord
+        // requires an endTime for.
+        const channel = await this.client.channels.fetch(rawLocation).catch(() => null);
+        const isVoiceHosted =
+          channel !== null &&
+          !channel.isDMBased() &&
+          channel.guild.id === guild.id &&
+          (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice);
+
+        const created = isVoiceHosted
+          ? await guild.scheduledEvents.create({
+              name,
+              description,
+              scheduledStartTime: startTime,
+              scheduledEndTime: endTime,
+              privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
+              entityType:
+                channel.type === ChannelType.GuildStageVoice
+                  ? GuildScheduledEventEntityType.StageInstance
+                  : GuildScheduledEventEntityType.Voice,
+              channel: channel.id,
+            })
+          : await (async () => {
+              if (!endTime) {
+                throw new Error(
+                  'An event at an external/physical location requires an endTime (Discord requires an ' +
+                    'end time for events that are not hosted in a voice/stage channel).',
+                );
+              }
+              return guild.scheduledEvents.create({
+                name,
+                description,
+                scheduledStartTime: startTime,
+                scheduledEndTime: endTime,
+                privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
+                entityType: GuildScheduledEventEntityType.External,
+                entityMetadata: { location: await this.filtered(rawLocation) },
+              });
+            })();
+        return `Created event "${created.name}" starting ${created.scheduledStartAt?.toISOString() ?? startTime}.`;
       }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);

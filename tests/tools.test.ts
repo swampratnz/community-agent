@@ -1113,14 +1113,14 @@ test('SECURITY: create_poll enforces a per-conversation rate cap instead of CONF
   assert.equal(overLimit.isError, true);
 });
 
-// create_thread / archive_thread (issue #229): a Discord-only thread-
-// management pair. create_thread is additive/rate-capped like create_poll;
-// archive_thread is CONFIRM-gated like moderate (it hides an active
-// discussion). This adapter stub mirrors pollAdapter but advertises both
-// thread capabilities.
-function threadAdapter(opts: {
+// create_event (issue #230): a Discord-only, admin-tier + CONFIRM-gated tool
+// creating a real Discord Scheduled Event. Same stub-adapter pattern as
+// pollAdapter above — the real channel/entityType resolution lives in
+// DiscordAdapter and is covered by tests/discordAdapter.test.ts; this stub
+// lets the tools.ts layer (RBAC, CONFIRM, cross-field time validation, audit)
+// be exercised independently of the real Discord client.
+function eventAdapter(opts: {
   capabilities?: string[];
-  conversationsForUser?: PlatformAdapter['conversationsForUser'];
   performAdminAction?: PlatformAdapter['performAdminAction'];
 }): PlatformAdapter {
   return {
@@ -1131,21 +1131,19 @@ function threadAdapter(opts: {
     onMessage: () => {},
     sendMessage: async () => {},
     sendDirectMessage: async () => {},
-    conversationsForUser: opts.conversationsForUser ?? (async () => []),
-    adminCapabilities: new Set(opts.capabilities ?? ['create_thread', 'archive_thread']),
-    performAdminAction: opts.performAdminAction ?? (async () => 'Created thread "General chat" (thread-99).'),
+    conversationsForUser: async () => [],
+    adminCapabilities: new Set(opts.capabilities ?? ['create_event']),
+    performAdminAction:
+      opts.performAdminAction ?? (async () => 'Created event "Meetup" starting 2099-06-01T19:00:00.000Z.'),
   };
 }
 
-function threadToolHandler(
-  name: 'create_thread' | 'archive_thread',
-  caller: {
-    role?: 'member' | 'admin' | 'super_admin';
-    userId?: string;
-    conversationId?: string;
-    adapter: PlatformAdapter;
-  },
-) {
+function createEventHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
   const server = buildToolServer(
     {
       platform: 'discord',
@@ -1162,177 +1160,194 @@ function threadToolHandler(
         string,
         {
           handler: (args: {
-            name?: string;
-            channelId?: string;
-            seedMessageId?: string;
-            threadId?: string;
-            reason?: string;
+            name: string;
+            startTime: string;
+            endTime?: string;
+            description?: string;
+            location: string;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
           inputSchema: { safeParse: (v: unknown) => { success: boolean } };
         }
       >;
     }
-  )._registeredTools[name];
+  )._registeredTools['create_event'];
 }
 
-test('SECURITY: create_thread rejects a non-admin caller (assertAtLeast re-check, issue #229)', async () => {
-  const adapter = threadAdapter({});
-  const handler = threadToolHandler('create_thread', { role: 'member', adapter });
-  await assert.rejects(() => handler.handler({ name: 'Off-topic chat' }), /Permission denied/);
-});
+const EVENT_FUTURE_START = '2099-06-01T19:00:00+12:00';
+const EVENT_FUTURE_END = '2099-06-01T21:00:00+12:00';
+const EVENT_PAST_START = '2020-01-01T09:00:00+12:00';
 
-test('SECURITY: create_thread refuses on a platform whose adapter does not advertise the capability (issue #229)', async () => {
-  const adapter = threadAdapter({ capabilities: [] });
-  const handler = threadToolHandler('create_thread', { adapter });
-  const result = await handler.handler({ name: 'Off-topic chat' });
-  assert.match(result.content[0]?.text ?? '', /does not support creating threads/);
-  assert.equal(result.isError, true);
-});
-
-test('SECURITY: create_thread enforces the thread-name bound at the zod schema boundary (issue #229)', () => {
-  const adapter = threadAdapter({});
-  const handler = threadToolHandler('create_thread', { adapter });
-  assert.equal(
-    handler.inputSchema.safeParse({ name: 'x'.repeat(THREAD_NAME_MAX_CHARS) }).success,
-    true,
-    'exactly the max name length is allowed',
+test('SECURITY: create_event rejects a non-admin caller (assertAtLeast re-check, issue #230)', async () => {
+  const adapter = eventAdapter({});
+  const handler = createEventHandler({ role: 'member', adapter });
+  await assert.rejects(
+    () => handler.handler({ name: 'Meetup', startTime: EVENT_FUTURE_START, location: 'Wellington' }),
+    /Permission denied/,
   );
-  assert.equal(
-    handler.inputSchema.safeParse({ name: 'x'.repeat(THREAD_NAME_MAX_CHARS + 1) }).success,
-    false,
-    'one character over the max name length must be rejected',
-  );
-  assert.equal(handler.inputSchema.safeParse({ name: '' }).success, false, 'an empty name must be rejected');
 });
 
-test('SECURITY: create_thread refuses a conversation the caller is not scoped to (issue #229)', async () => {
-  const adapter = threadAdapter({ conversationsForUser: async () => ['convo-other'] });
-  const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
-  const result = await handler.handler({ name: 'Off-topic chat', channelId: 'convo-unscoped' });
-  assert.match(result.content[0]?.text ?? '', /not a participant/);
-  assert.equal(result.isError, true);
-});
-
-test(
-  "SECURITY: create_thread refuses a parent channel the bot has never seen, even when the caller's own scope claims it (issue #229)",
-  { skip },
-  async () => {
-    const targetChannel = `${RUN}-create-thread-unknown`;
-    const adapter = threadAdapter({ conversationsForUser: async () => [targetChannel] });
-    const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
-    const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
-    assert.equal(result.isError, true);
-  },
-);
-
-test('SECURITY: create_thread refuses an unknown seedMessageId (issue #229)', { skip }, async () => {
-  const convo = `${RUN}-create-thread-seed`;
-  const adapter = threadAdapter({});
-  const handler = threadToolHandler('create_thread', { conversationId: convo, adapter });
-  const result = await handler.handler({ name: 'Off-topic chat', seedMessageId: 'msg-never-seen' });
-  assert.match(result.content[0]?.text ?? '', /message "msg-never-seen" is unknown/);
-  assert.equal(result.isError, true);
-});
-
-test('SECURITY: create_thread enforces a per-channel rate cap instead of CONFIRM (issue #229)', async () => {
-  const convo = `${RUN}-create-thread-rate-cap`;
-  const adapter = threadAdapter({});
-  const handler = threadToolHandler('create_thread', {
-    conversationId: convo,
-    userId: THREAD_HANDLER_ADMIN,
-    adapter,
+test('SECURITY: create_event refuses cleanly (no pending action) on a platform that does not support scheduled events — Discord-only (issue #230)', async () => {
+  const adapter = eventAdapter({ capabilities: [] });
+  const handler = createEventHandler({ conversationId: 'convo-event-unsupported', adapter });
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_FUTURE_START,
+    location: 'Wellington',
   });
-
-  for (let i = 0; i < THREAD_CREATE_RATE_LIMIT_PER_HOUR; i++) {
-    const result = await handler.handler({ name: `Thread ${i}` });
-    assert.equal(result.isError, false, `thread ${i} within the cap must succeed`);
-  }
-  const overLimit = await handler.handler({ name: 'one too many' });
-  assert.match(overLimit.content[0]?.text ?? '', /thread-creation limit/);
-  assert.equal(overLimit.isError, true);
+  assert.match(result.content[0].text, /does not support/i);
+  assert.equal(
+    hasPendingAction('discord', 'convo-event-unsupported', 'admin-1'),
+    false,
+    'an unsupported platform must never register a pending action',
+  );
 });
 
-test('SECURITY: archive_thread rejects a non-admin caller (assertAtLeast re-check, issue #229)', async () => {
-  const adapter = threadAdapter({});
-  const handler = threadToolHandler('archive_thread', { role: 'member', adapter });
-  await assert.rejects(() => handler.handler({ threadId: 'thread-1' }), /Permission denied/);
+test('SECURITY: create_event rejects a non-parseable/relative startTime at the zod schema boundary — "next Tuesday 7pm" is never trusted as a concrete instant (issue #230)', () => {
+  const adapter = eventAdapter({});
+  const handler = createEventHandler({ adapter });
+  assert.equal(
+    handler.inputSchema.safeParse({
+      name: 'Meetup',
+      startTime: 'next Tuesday 7pm',
+      location: 'Wellington',
+    }).success,
+    false,
+    'relative/ambiguous text must fail schema validation, not be silently coerced',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      name: 'Meetup',
+      startTime: 'not a date at all',
+      location: 'Wellington',
+    }).success,
+    false,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      name: 'Meetup',
+      startTime: EVENT_FUTURE_START,
+      location: 'Wellington',
+    }).success,
+    true,
+    'a concrete, resolved ISO instant with an explicit offset must be accepted',
+  );
 });
 
-test('SECURITY: archive_thread refuses on a platform whose adapter does not advertise the capability (issue #229)', async () => {
-  const adapter = threadAdapter({ capabilities: [] });
-  const handler = threadToolHandler('archive_thread', { adapter });
-  const result = await handler.handler({ threadId: 'thread-1' });
-  assert.match(result.content[0]?.text ?? '', /does not support archiving threads/);
-  assert.equal(result.isError, true);
-});
-
-test('SECURITY: archive_thread refuses a conversation the caller is not scoped to (issue #229)', async () => {
-  const adapter = threadAdapter({ conversationsForUser: async () => ['convo-other'] });
-  const handler = threadToolHandler('archive_thread', { conversationId: 'convo-mine', adapter });
-  const result = await handler.handler({ threadId: 'thread-unscoped' });
-  assert.match(result.content[0]?.text ?? '', /not a participant/);
-  assert.equal(result.isError, true);
-});
-
-test(
-  "SECURITY: archive_thread refuses a thread the bot has never seen, even when the caller's own scope claims it (issue #229)",
-  { skip },
-  async () => {
-    const targetThread = `${RUN}-archive-thread-unknown`;
-    const adapter = threadAdapter({ conversationsForUser: async () => [targetThread] });
-    const handler = threadToolHandler('archive_thread', { conversationId: 'convo-mine', adapter });
-    const result = await handler.handler({ threadId: targetThread });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
-    assert.equal(result.isError, true);
-  },
-);
-
-test('SECURITY: archive_thread requires CONFIRM — a single call never executes performAdminAction directly (issue #229)', async () => {
-  const conversationId = `${RUN}-archive-thread-confirm`;
-  const adapter = threadAdapter({
+test('SECURITY: create_event refuses a past startTime before ever registering a pending action (issue #230)', async () => {
+  const conversationId = 'convo-event-past-start';
+  const adapter = eventAdapter({
     performAdminAction: async () => {
-      throw new Error('performAdminAction must never be reached before CONFIRM');
+      throw new Error('performAdminAction must never be reached for a past startTime');
     },
   });
-  const handler = threadToolHandler('archive_thread', {
-    conversationId,
-    userId: THREAD_HANDLER_ADMIN,
-    adapter,
+  const handler = createEventHandler({ conversationId, adapter });
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_PAST_START,
+    location: 'Wellington',
   });
-  const result = await handler.handler({ threadId: conversationId, reason: 'discussion wrapped up' });
-  assert.match(result.content[0]?.text ?? '', /Reply CONFIRM within 60 seconds/);
-  const pending = takePendingAction('discord', conversationId, THREAD_HANDLER_ADMIN);
-  assert.ok(pending, 'archive_thread must register a pending action, not execute directly');
+  assert.match(result.content[0].text, /must be in the future/);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
 });
 
-test(
-  "archive_thread's pending action calls performAdminAction and audits once confirmed (issue #229)",
-  { skip },
-  async () => {
-    const conversationId = `${RUN}-archive-thread-execute`;
-    const calls: Array<{ kind: string; conversationId?: string; params?: Record<string, unknown> }> = [];
-    const adapter = threadAdapter({
-      performAdminAction: async (action) => {
-        calls.push({ kind: action.kind, conversationId: action.conversationId, params: action.params });
-        return `Archived thread ${action.conversationId}.`;
-      },
-    });
-    const handler = threadToolHandler('archive_thread', {
-      conversationId,
-      userId: THREAD_HANDLER_ADMIN,
-      adapter,
-    });
-    await handler.handler({ threadId: conversationId, reason: 'discussion wrapped up' });
-    const pending = takePendingAction('discord', conversationId, THREAD_HANDLER_ADMIN);
-    assert.ok(pending);
-    const executed = await pending?.execute();
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].kind, 'archive_thread');
-    assert.equal(calls[0].conversationId, conversationId);
-    assert.match(executed ?? '', /^Done: Archived thread/);
-  },
-);
+test('SECURITY: create_event refuses an endTime at or before startTime before ever registering a pending action (issue #230)', async () => {
+  const conversationId = 'convo-event-bad-end';
+  const adapter = eventAdapter({
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for a bad endTime');
+    },
+  });
+  const handler = createEventHandler({ conversationId, adapter });
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_FUTURE_START,
+    endTime: EVENT_FUTURE_START,
+    location: 'Wellington',
+  });
+  assert.match(result.content[0].text, /endTime must be after startTime/);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: create_event registers a CONFIRM-gated pending action whose description quotes the resolved name, ISO start time, location, and description; executing it calls performAdminAction and audits (issue #230)', async () => {
+  const conversationId = 'convo-event-confirm';
+  const calls: Array<{ kind: string; params?: Record<string, unknown> }> = [];
+  const adapter = eventAdapter({
+    performAdminAction: async (action) => {
+      calls.push({ kind: action.kind, params: action.params });
+      return `Created event "${action.params?.name}" starting ${action.params?.startTime}.`;
+    },
+  });
+  const handler = createEventHandler({ conversationId, adapter });
+
+  const result = await handler.handler({
+    name: 'Wellington Winter Meetup',
+    startTime: EVENT_FUTURE_START,
+    endTime: EVENT_FUTURE_END,
+    description: 'A casual catch-up',
+    location: 'Wellington Central Library',
+  });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for confirmation, not run immediately');
+  assert.match(
+    result.content[0].text,
+    /Wellington Winter Meetup/,
+    'the CONFIRM text must quote the resolved event name',
+  );
+  assert.match(
+    result.content[0].text,
+    new RegExp(EVENT_FUTURE_START.replace(/[+.]/g, '\\$&')),
+    'the CONFIRM text must quote the resolved ISO start time',
+  );
+  assert.match(
+    result.content[0].text,
+    /Wellington Central Library/,
+    'the CONFIRM text must quote the resolved location — attacker-influenceable and just as outward-facing as name/startTime',
+  );
+  assert.match(
+    result.content[0].text,
+    /A casual catch-up/,
+    'the CONFIRM text must quote the resolved description',
+  );
+  assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
+
+  const pending = takePendingAction('discord', conversationId, 'admin-1');
+  assert.ok(pending, 'must register a pending action');
+  const execResult = await pending?.execute();
+  assert.match(execResult ?? '', /Done:/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'create_event');
+  assert.deepEqual(calls[0].params, {
+    name: 'Wellington Winter Meetup',
+    description: 'A casual catch-up',
+    startTime: EVENT_FUTURE_START,
+    endTime: EVENT_FUTURE_END,
+    location: 'Wellington Central Library',
+  });
+});
+
+test('SECURITY: create_event truncates a long description in the CONFIRM text to a bounded preview, same pattern as delete_member_note (issue #230)', async () => {
+  const conversationId = 'convo-event-confirm-long-desc';
+  const adapter = eventAdapter({});
+  const handler = createEventHandler({ conversationId, adapter });
+  const longDescription = 'x'.repeat(200);
+
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_FUTURE_START,
+    description: longDescription,
+    location: 'Wellington',
+  });
+  assert.match(result.content[0].text, /CONFIRM/);
+  assert.match(
+    result.content[0].text,
+    new RegExp(`x{80}…`),
+    'the CONFIRM text must truncate a long description to an 80-char preview with an ellipsis, not quote it verbatim',
+  );
+  assert.doesNotMatch(
+    result.content[0].text,
+    new RegExp(`x{200}`),
+    'the CONFIRM text must not contain the full untruncated description',
+  );
+});
 
 test(
   'set_community_guidelines lets an admin set and clear guidelines; community_guidelines reflects the change verbatim, not paraphrased or truncated (issue #212)',
@@ -4505,3 +4520,224 @@ test('list_assignable_roles is read-only and returns the adapter-reported listin
     'a read-only tool must never register a pending action',
   );
 });
+
+// create_thread / archive_thread (issue #229): a Discord-only thread-
+// management pair. create_thread is additive/rate-capped like create_poll;
+// archive_thread is CONFIRM-gated like moderate (it hides an active
+// discussion). This adapter stub mirrors pollAdapter but advertises both
+// thread capabilities.
+function threadAdapter(opts: {
+  capabilities?: string[];
+  conversationsForUser?: PlatformAdapter['conversationsForUser'];
+  performAdminAction?: PlatformAdapter['performAdminAction'];
+}): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => {},
+    sendDirectMessage: async () => {},
+    conversationsForUser: opts.conversationsForUser ?? (async () => []),
+    adminCapabilities: new Set(opts.capabilities ?? ['create_thread', 'archive_thread']),
+    performAdminAction: opts.performAdminAction ?? (async () => 'Created thread "General chat" (thread-99).'),
+  };
+}
+
+function threadToolHandler(
+  name: 'create_thread' | 'archive_thread',
+  caller: {
+    role?: 'member' | 'admin' | 'super_admin';
+    userId?: string;
+    conversationId?: string;
+    adapter: PlatformAdapter;
+  },
+) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            name?: string;
+            channelId?: string;
+            seedMessageId?: string;
+            threadId?: string;
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools[name];
+}
+
+test('SECURITY: create_thread rejects a non-admin caller (assertAtLeast re-check, issue #229)', async () => {
+  const adapter = threadAdapter({});
+  const handler = threadToolHandler('create_thread', { role: 'member', adapter });
+  await assert.rejects(() => handler.handler({ name: 'Off-topic chat' }), /Permission denied/);
+});
+
+test('SECURITY: create_thread refuses on a platform whose adapter does not advertise the capability (issue #229)', async () => {
+  const adapter = threadAdapter({ capabilities: [] });
+  const handler = threadToolHandler('create_thread', { adapter });
+  const result = await handler.handler({ name: 'Off-topic chat' });
+  assert.match(result.content[0]?.text ?? '', /does not support creating threads/);
+  assert.equal(result.isError, true);
+});
+
+test('SECURITY: create_thread enforces the thread-name bound at the zod schema boundary (issue #229)', () => {
+  const adapter = threadAdapter({});
+  const handler = threadToolHandler('create_thread', { adapter });
+  assert.equal(
+    handler.inputSchema.safeParse({ name: 'x'.repeat(THREAD_NAME_MAX_CHARS) }).success,
+    true,
+    'exactly the max name length is allowed',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ name: 'x'.repeat(THREAD_NAME_MAX_CHARS + 1) }).success,
+    false,
+    'one character over the max name length must be rejected',
+  );
+  assert.equal(handler.inputSchema.safeParse({ name: '' }).success, false, 'an empty name must be rejected');
+});
+
+test('SECURITY: create_thread refuses a conversation the caller is not scoped to (issue #229)', async () => {
+  const adapter = threadAdapter({ conversationsForUser: async () => ['convo-other'] });
+  const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
+  const result = await handler.handler({ name: 'Off-topic chat', channelId: 'convo-unscoped' });
+  assert.match(result.content[0]?.text ?? '', /not a participant/);
+  assert.equal(result.isError, true);
+});
+
+test(
+  "SECURITY: create_thread refuses a parent channel the bot has never seen, even when the caller's own scope claims it (issue #229)",
+  { skip },
+  async () => {
+    const targetChannel = `${RUN}-create-thread-unknown`;
+    const adapter = threadAdapter({ conversationsForUser: async () => [targetChannel] });
+    const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test('SECURITY: create_thread refuses an unknown seedMessageId (issue #229)', { skip }, async () => {
+  const convo = `${RUN}-create-thread-seed`;
+  const adapter = threadAdapter({});
+  const handler = threadToolHandler('create_thread', { conversationId: convo, adapter });
+  const result = await handler.handler({ name: 'Off-topic chat', seedMessageId: 'msg-never-seen' });
+  assert.match(result.content[0]?.text ?? '', /message "msg-never-seen" is unknown/);
+  assert.equal(result.isError, true);
+});
+
+test('SECURITY: create_thread enforces a per-channel rate cap instead of CONFIRM (issue #229)', async () => {
+  const convo = `${RUN}-create-thread-rate-cap`;
+  const adapter = threadAdapter({});
+  const handler = threadToolHandler('create_thread', {
+    conversationId: convo,
+    userId: THREAD_HANDLER_ADMIN,
+    adapter,
+  });
+
+  for (let i = 0; i < THREAD_CREATE_RATE_LIMIT_PER_HOUR; i++) {
+    const result = await handler.handler({ name: `Thread ${i}` });
+    assert.equal(result.isError, false, `thread ${i} within the cap must succeed`);
+  }
+  const overLimit = await handler.handler({ name: 'one too many' });
+  assert.match(overLimit.content[0]?.text ?? '', /thread-creation limit/);
+  assert.equal(overLimit.isError, true);
+});
+
+test('SECURITY: archive_thread rejects a non-admin caller (assertAtLeast re-check, issue #229)', async () => {
+  const adapter = threadAdapter({});
+  const handler = threadToolHandler('archive_thread', { role: 'member', adapter });
+  await assert.rejects(() => handler.handler({ threadId: 'thread-1' }), /Permission denied/);
+});
+
+test('SECURITY: archive_thread refuses on a platform whose adapter does not advertise the capability (issue #229)', async () => {
+  const adapter = threadAdapter({ capabilities: [] });
+  const handler = threadToolHandler('archive_thread', { adapter });
+  const result = await handler.handler({ threadId: 'thread-1' });
+  assert.match(result.content[0]?.text ?? '', /does not support archiving threads/);
+  assert.equal(result.isError, true);
+});
+
+test('SECURITY: archive_thread refuses a conversation the caller is not scoped to (issue #229)', async () => {
+  const adapter = threadAdapter({ conversationsForUser: async () => ['convo-other'] });
+  const handler = threadToolHandler('archive_thread', { conversationId: 'convo-mine', adapter });
+  const result = await handler.handler({ threadId: 'thread-unscoped' });
+  assert.match(result.content[0]?.text ?? '', /not a participant/);
+  assert.equal(result.isError, true);
+});
+
+test(
+  "SECURITY: archive_thread refuses a thread the bot has never seen, even when the caller's own scope claims it (issue #229)",
+  { skip },
+  async () => {
+    const targetThread = `${RUN}-archive-thread-unknown`;
+    const adapter = threadAdapter({ conversationsForUser: async () => [targetThread] });
+    const handler = threadToolHandler('archive_thread', { conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ threadId: targetThread });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test('SECURITY: archive_thread requires CONFIRM — a single call never executes performAdminAction directly (issue #229)', async () => {
+  const conversationId = `${RUN}-archive-thread-confirm`;
+  const adapter = threadAdapter({
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached before CONFIRM');
+    },
+  });
+  const handler = threadToolHandler('archive_thread', {
+    conversationId,
+    userId: THREAD_HANDLER_ADMIN,
+    adapter,
+  });
+  const result = await handler.handler({ threadId: conversationId, reason: 'discussion wrapped up' });
+  assert.match(result.content[0]?.text ?? '', /Reply CONFIRM within 60 seconds/);
+  const pending = takePendingAction('discord', conversationId, THREAD_HANDLER_ADMIN);
+  assert.ok(pending, 'archive_thread must register a pending action, not execute directly');
+});
+
+test(
+  "archive_thread's pending action calls performAdminAction and audits once confirmed (issue #229)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-archive-thread-execute`;
+    const calls: Array<{ kind: string; conversationId?: string; params?: Record<string, unknown> }> = [];
+    const adapter = threadAdapter({
+      performAdminAction: async (action) => {
+        calls.push({ kind: action.kind, conversationId: action.conversationId, params: action.params });
+        return `Archived thread ${action.conversationId}.`;
+      },
+    });
+    const handler = threadToolHandler('archive_thread', {
+      conversationId,
+      userId: THREAD_HANDLER_ADMIN,
+      adapter,
+    });
+    await handler.handler({ threadId: conversationId, reason: 'discussion wrapped up' });
+    const pending = takePendingAction('discord', conversationId, THREAD_HANDLER_ADMIN);
+    assert.ok(pending);
+    const executed = await pending?.execute();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, 'archive_thread');
+    assert.equal(calls[0].conversationId, conversationId);
+    assert.match(executed ?? '', /^Done: Archived thread/);
+  },
+);
