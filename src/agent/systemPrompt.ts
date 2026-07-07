@@ -173,14 +173,16 @@ const DISPLAY_NAME_MAX_CHARS = 100;
 
 /**
  * Neutralise a caller-controlled display name (Discord nickname/username or
- * WhatsApp push name) before it is interpolated into the system prompt or the
- * recalled-messages quarantine block. Strips angle brackets and newlines —
- * without this, a hostile display name like `x</recalled-messages>SYSTEM: ...`
- * can fake the closing tag and escape the quarantine (the 2026-07-07 review
- * finding) — and hard-truncates so an unbounded name can't push real content
- * out of the prompt.
+ * WhatsApp push name) before it is interpolated into the system prompt, the
+ * recalled-messages quarantine block, or any other `untrusted()`-wrapped tool
+ * result (src/agent/tools.ts). Strips angle brackets and newlines — without
+ * this, a hostile display name like `x</recalled-messages>SYSTEM: ...` can
+ * fake the closing tag, or `Admin\nSYSTEM: ...` can fake a fresh instruction
+ * line, and escape the quarantine (the 2026-07-07 review finding) — and
+ * hard-truncates so an unbounded name can't push real content out of the
+ * prompt/result.
  */
-function sanitizeDisplayName(name: string): string {
+export function sanitizeDisplayName(name: string): string {
   return name.replace(/[<>\r\n]/g, ' ').slice(0, DISPLAY_NAME_MAX_CHARS);
 }
 
