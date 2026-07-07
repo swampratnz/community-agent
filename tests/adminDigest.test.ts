@@ -31,8 +31,12 @@ const {
   clearAccessRequest,
   countAccessRequests,
   countPendingSuggestions,
+  countStaleKnowledge,
   createContentReport,
   createSuggestion,
+  saveKnowledge,
+  recordKnowledgeRetrieval,
+  deleteKnowledge,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -50,8 +54,8 @@ test('startAdminDigest: ADMIN_DIGEST_ENABLED unset (default) creates no timer', 
   assert.equal(timer, null, 'disabled by default — no timer, no extra queries');
 });
 
-test('buildAdminDigestMessage: all four signals zero -> null (no send, no noise on a quiet week)', () => {
-  assert.equal(buildAdminDigestMessage([], 0, 0, 0), null);
+test('buildAdminDigestMessage: all five signals zero -> null (no send, no noise on a quiet week)', () => {
+  assert.equal(buildAdminDigestMessage([], 0, 0, 0, 0, 0), null);
 });
 
 test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each length-bounded', () => {
@@ -61,7 +65,7 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
     count: i + 2,
   }));
 
-  const message = buildAdminDigestMessage(clusters, 0, 0, 0);
+  const message = buildAdminDigestMessage(clusters, 0, 0, 0, 0, 0);
   assert.ok(message, 'non-empty clusters produce a message');
   assert.match(message, /^🔔 7 recurring question\(s\)/);
   assert.ok(message.includes('question_digest'), 'points the admin at the on-demand tool for full detail');
@@ -77,29 +81,30 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
 
 test('buildAdminDigestMessage: pending-access-request line appears only when count > 0 (issue #133)', () => {
   assert.equal(
-    buildAdminDigestMessage([], 0, 0, 0),
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0),
     null,
-    'zero pending requests alongside zero clusters/reports/suggestions is still a quiet week',
+    'zero pending requests alongside zero clusters/reports/suggestions/stale-knowledge is still a quiet week',
   );
 
-  const message = buildAdminDigestMessage([], 3, 0, 0);
+  const message = buildAdminDigestMessage([], 3, 0, 0, 0, 0);
   assert.ok(message, 'a non-zero pending-request count alone still produces a DM');
   assert.match(message, /⏳ 3 pending access request\(s\) — run `list_access_requests`\./);
   assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
   assert.ok(!message.includes('🚩'), 'no report line when there are no open reports');
   assert.ok(!message.includes('💡'), 'no suggestion line when the count is zero');
+  assert.ok(!message.includes('📚'), 'no stale-knowledge line when the count is zero');
 });
 
 test('buildAdminDigestMessage: open-report line appears only when count > 0 (issue #133)', () => {
-  const message = buildAdminDigestMessage([], 0, 2, 0);
+  const message = buildAdminDigestMessage([], 0, 2, 0, 0, 0);
   assert.ok(message, 'a non-zero open-report count alone still produces a DM');
   assert.match(message, /🚩 2 open report\(s\) in your conversations — run `list_reports`\./);
   assert.ok(!message.includes('⏳'), 'no pending-request line when the count is zero');
   assert.ok(!message.includes('💡'), 'no suggestion line when the count is zero');
 });
 
-test('buildAdminDigestMessage: pending-suggestion line appears only when count > 0, independent of the other three signals (issue #193)', () => {
-  const message = buildAdminDigestMessage([], 0, 0, 4);
+test('buildAdminDigestMessage: pending-suggestion line appears only when count > 0, independent of the other signals (issue #193)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 4, 0, 0);
   assert.ok(message, 'a non-zero pending-suggestion count alone still produces a DM');
   assert.match(message, /^💡 4 pending suggestion\(s\) — run `list_suggestions`\.$/);
   assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
@@ -107,14 +112,14 @@ test('buildAdminDigestMessage: pending-suggestion line appears only when count >
   assert.ok(!message.includes('🚩'), 'no report line when there are no open reports');
 
   assert.equal(
-    buildAdminDigestMessage([], 0, 0, 0),
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0),
     null,
-    'zero pending suggestions alongside zero clusters/requests/reports is still a quiet week',
+    'zero pending suggestions alongside zero clusters/requests/reports/stale-knowledge is still a quiet week',
   );
 });
 
 test('buildAdminDigestMessage: the DM never contains suggestion content, display name, or user id — only the bare count (issue #193 privacy pin)', () => {
-  const message = buildAdminDigestMessage([], 0, 0, 4);
+  const message = buildAdminDigestMessage([], 0, 0, 4, 0, 0);
   assert.ok(message);
   assert.ok(
     !/suggest_improvement|display_name|reviewed_by/i.test(message),
@@ -122,14 +127,46 @@ test('buildAdminDigestMessage: the DM never contains suggestion content, display
   );
 });
 
-test('buildAdminDigestMessage: all four signals non-zero -> all four lines present', () => {
+test('buildAdminDigestMessage: stale-knowledge line appears only when count > 0, independent of the other signals (issue #199)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 5, 30);
+  assert.ok(message, 'a non-zero stale-knowledge count alone still produces a DM');
+  assert.match(message, /^📚 5 knowledge entries untouched for 30d\+ — run `list_knowledge` to review\.$/);
+  assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
+  assert.ok(!message.includes('⏳'), 'no pending-request line when the count is zero');
+  assert.ok(!message.includes('🚩'), 'no report line when there are no open reports');
+  assert.ok(!message.includes('💡'), 'no suggestion line when the count is zero');
+
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0),
+    null,
+    'zero stale-knowledge alongside zero clusters/requests/reports/suggestions is still a quiet week',
+  );
+});
+
+test('buildAdminDigestMessage: stale-knowledge singular/plural wording and threshold-day substitution (issue #199)', () => {
+  const singular = buildAdminDigestMessage([], 0, 0, 0, 1, 45);
+  assert.ok(singular);
+  assert.match(singular, /^📚 1 knowledge entry untouched for 45d\+ — run `list_knowledge` to review\.$/);
+});
+
+test('buildAdminDigestMessage: the stale-knowledge line never contains entry titles or content — only the bare count (issue #199 privacy pin)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 3, 30);
+  assert.ok(message);
+  assert.ok(
+    !/title|content/i.test(message),
+    'no knowledge entry field name or content ever leaks into the digest text',
+  );
+});
+
+test('buildAdminDigestMessage: all five signals non-zero -> all five lines present', () => {
   const clusters = [{ representative: 'a repeated question', count: 4 }];
-  const message = buildAdminDigestMessage(clusters, 1, 1, 1);
+  const message = buildAdminDigestMessage(clusters, 1, 1, 1, 1, 30);
   assert.ok(message);
   assert.ok(message.includes('🔔'), 'cluster line present');
   assert.ok(message.includes('⏳'), 'pending-request line present');
   assert.ok(message.includes('🚩'), 'open-report line present');
   assert.ok(message.includes('💡'), 'pending-suggestion line present');
+  assert.ok(message.includes('📚'), 'stale-knowledge line present');
 });
 
 function fakeAdapter(opts: {

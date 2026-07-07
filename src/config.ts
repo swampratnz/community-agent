@@ -259,6 +259,12 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Fifth admin-digest signal (issue #199): nudge admins toward knowledge
+  // entries neither edited nor retrieved in this many days. Unset/0 =
+  // disabled (no extra query, no behaviour change on upgrade), matching the
+  // "0 disabled, else a sane minimum" convention of
+  // INTERACTION_RETENTION_DAYS/ROSTER_DEPARTED_RETENTION_DAYS above.
+  KNOWLEDGE_STALE_DAYS: z.coerce.number().int().nonnegative().default(0),
   // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
   // with no other content — sends one static reply instead. Off by default;
   // an operator opts in after confirming the canned reply tone fits their
@@ -310,6 +316,10 @@ const MIN_INTERACTION_RETENTION_DAYS = 7;
 // floor comfortably preserves that pulse while still bounding retention.
 const MIN_ROSTER_DEPARTED_RETENTION_DAYS = 30;
 
+// A threshold below a month would flag entries an admin just as plausibly
+// hasn't gotten around to re-checking yet rather than ones that are stale.
+const MIN_KNOWLEDGE_STALE_DAYS = 30;
+
 const EnvSchemaChecked = EnvSchema.refine(
   (e) =>
     e.WHATSAPP_PROVIDER !== 'cloud' ||
@@ -341,6 +351,10 @@ const EnvSchemaChecked = EnvSchema.refine(
       path: ['ROSTER_DEPARTED_RETENTION_DAYS'],
     },
   )
+  .refine((e) => e.KNOWLEDGE_STALE_DAYS === 0 || e.KNOWLEDGE_STALE_DAYS >= MIN_KNOWLEDGE_STALE_DAYS, {
+    message: `KNOWLEDGE_STALE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_STALE_DAYS}`,
+    path: ['KNOWLEDGE_STALE_DAYS'],
+  })
   .refine((e) => !e.IMAGE_GEN_ENABLED || isAbsolute(e.GROK_BIN), {
     // A bare `grok` is PATH-resolved; a writable PATH entry could shadow it with
     // a hostile binary run as the service user (see docs/SECURITY.md §8). Fail
@@ -450,6 +464,7 @@ export const config = {
   },
   adminDigest: {
     enabled: env.ADMIN_DIGEST_ENABLED ?? false,
+    knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
