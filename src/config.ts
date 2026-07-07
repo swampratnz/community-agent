@@ -238,6 +238,27 @@ const EnvSchema = z.object({
   DOCS_INGEST_EXCLUDE_PATHS: z
     .string()
     .default('api/go,api/csharp,api/java,api/python,api/typescript,api/ruby,api/php,api/cli,api/compliance'),
+  // Anthropic status check (issue #206): poll Anthropic's own public status
+  // page on a background timer and expose the cached result via the
+  // member-tier check_status tool, so "is this me or an Anthropic incident"
+  // gets an authoritative answer without widening WebSearch (admin+ only)
+  // to every member. OFF by default, matching every other opt-in background
+  // poll in this repo. No model in the fetch/parse loop.
+  STATUS_CHECK_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Anthropic's official Statuspage summary endpoint. Fixed default; override
+  // only if Anthropic moves it. Same https-only enforcement as
+  // DOCS_INGEST_INDEX_URL — this is a config default, never user/chat-supplied.
+  STATUS_CHECK_API_URL: z
+    .string()
+    .url()
+    .startsWith('https://', 'STATUS_CHECK_API_URL must be https')
+    .default('https://status.claude.com/api/v2/summary.json'),
+  // How often to re-poll. A member's turn only ever reads the in-memory
+  // cache — it never triggers a live fetch.
+  STATUS_CHECK_POLL_MINUTES: z.coerce.number().int().positive().max(1440).default(5),
   // Anonymised community-context export (issue #53): render digests into a
   // file the research loop can read. Off by default. The export applies its
   // own k-floor and PII scrub — see src/context/export.ts and SECURITY.md for
@@ -466,6 +487,11 @@ export const config = {
     maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
     concurrency: env.DOCS_INGEST_CONCURRENCY,
     excludePaths: csv(env.DOCS_INGEST_EXCLUDE_PATHS),
+  },
+  statusCheck: {
+    enabled: env.STATUS_CHECK_ENABLED ?? false,
+    apiUrl: env.STATUS_CHECK_API_URL,
+    pollMinutes: env.STATUS_CHECK_POLL_MINUTES,
   },
   contextCandidates: {
     enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,

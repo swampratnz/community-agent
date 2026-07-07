@@ -46,9 +46,11 @@ import {
   RATE_ANSWER_DAILY_LIMIT,
   recentAuditEntries,
   recentConversationHistory,
+  recentKnowledgeGapClusters,
   recentModerationEntries,
   recentQuestionClusters,
   recordAdminAction,
+  recordKnowledgeGap,
   recordKnowledgeRetrieval,
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
@@ -76,6 +78,7 @@ import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
 import { triggerRedeploy } from './redeploy.js';
+import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
 function text(t: string, isError = false) {
@@ -566,6 +569,17 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { annotations: { readOnlyHint: true } },
   );
 
+  const checkStatus = tool(
+    'check_status',
+    'Check whether Anthropic has a known service incident right now — call this when a member reports an ' +
+      "error, timeout, or unexpected behaviour from Claude/the API and wants to know if it's a known Anthropic " +
+      "problem rather than something on their end. Read-only, no arguments, sourced from Anthropic's own public " +
+      'status page (a background poll, never a live fetch on this call).',
+    {},
+    async () => text(formatStatusMessage(getStatusCache(), Date.now())),
+    { annotations: { readOnlyHint: true } },
+  );
+
   const knowledgeSearch = tool(
     'knowledge_search',
     'Search curated community knowledge (FAQs, rules, resources admins have saved).',
@@ -587,6 +601,16 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       recordKnowledgeRetrieval(relevantIds).catch((err) =>
         logger.warn({ err }, 'Knowledge retrieval count update failed'),
       );
+      // Below-floor miss tracking (issue #208): only when hits existed but
+      // NONE cleared the floor — never on a plain empty result set, which is
+      // indistinguishable from a searchKnowledge embed() failure and would
+      // otherwise log every outage query as a false "gap". Fire-and-forget,
+      // same non-blocking style as the retrieval-count bump above.
+      if (hits.length > 0 && relevantIds.length === 0) {
+        recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
+          logger.warn({ err }, 'Knowledge gap recording failed'),
+        );
+      }
       return text(formatKnowledgeSearchResults(hits));
     },
     { annotations: { readOnlyHint: true } },
@@ -1670,6 +1694,31 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { annotations: { readOnlyHint: true } },
   );
 
+  const listKnowledgeGaps = tool(
+    'list_knowledge_gaps',
+    'Show searches (asked >= 2 times) in your conversations over recent days that found no confident answer — ' +
+      'the miss-specific complement to question_digest, a signal for what should become a knowledge entry. ' +
+      "Entries are searches with no confident answer, not necessarily members' verbatim questions. Admin only.",
+    {
+      days: z.number().optional().describe('Window in days (default 7, max 30)'),
+      limit: z.number().optional().describe('Max clusters to return (default 10)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_knowledge_gaps');
+      const allowed = await callerScope();
+      const clusters = await recentKnowledgeGapClusters(allowed, args.days ?? 7, args.limit ?? 10);
+      if (clusters.length === 0)
+        return text('No recurring knowledge-search misses in that window (within your conversations).');
+      return text(
+        untrusted(
+          'Knowledge-search misses',
+          clusters.map((c, i) => `${i + 1}. (${c.count}x) ${c.representative.slice(0, 300)}`).join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const moderationHistory = tool(
     'moderation_history',
     "Show recent moderation actions (warnings, timeouts, kicks, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
@@ -2216,6 +2265,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     version: '2.0.0',
     tools: [
       communityInfo,
+      checkStatus,
       knowledgeSearch,
       rememberSearch,
       forgetMe,
@@ -2248,6 +2298,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       acceptKnowledgeCandidateTool,
       declineKnowledgeCandidateTool,
       questionDigest,
+      listKnowledgeGaps,
       moderationHistory,
       listReportsTool,
       resolveReportTool,

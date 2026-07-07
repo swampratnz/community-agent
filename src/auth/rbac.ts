@@ -42,6 +42,10 @@ export function assertAtLeast(role: Tier, min: Tier, action: string): void {
 /** Tools (mcp__community__*) available to members (and guests in open mode). */
 export const MEMBER_TOOLS = [
   'mcp__community__community_info',
+  // Read-only, no arguments, reveals nothing about this community — only
+  // Anthropic's own public status page (issue #206) — so it's reachable by
+  // guests in open mode too, same tier as community_info/knowledge_search.
+  'mcp__community__check_status',
   'mcp__community__knowledge_search',
   'mcp__community__remember_search',
   'mcp__community__forget_me',
@@ -105,6 +109,7 @@ export const ADMIN_TOOLS = [
   'mcp__community__accept_knowledge_candidate',
   'mcp__community__decline_knowledge_candidate',
   'mcp__community__question_digest',
+  'mcp__community__list_knowledge_gaps',
   'mcp__community__moderation_history',
   'mcp__community__add_member',
   'mcp__community__remove_member',

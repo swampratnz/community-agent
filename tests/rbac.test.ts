@@ -162,6 +162,21 @@ test('SECURITY: catch_up is member+ (guests reach it in open mode; matches MEMBE
   );
 });
 
+test('SECURITY: check_status is member+ (guests reach it in open mode; matches MEMBER_TOOLS) and never lands in ADMIN_TOOLS/SUPER_ADMIN_TOOLS — issue #206', () => {
+  const tool = 'mcp__community__check_status';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'check_status must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach check_status`);
+  }
+  assert.ok(
+    toolsForRole('guest').includes(tool),
+    'guests reach check_status too (open mode; same as MEMBER_TOOLS)',
+  );
+  for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+    assert.notEqual(t, tool, 'check_status must not appear in ADMIN_TOOLS/SUPER_ADMIN_TOOLS');
+  }
+});
+
 test('SECURITY: list_answer_feedback is admin-only — a member can never read the aggregate rating queue, including ratings they themselves submitted (issue #118)', () => {
   const tool = 'mcp__community__list_answer_feedback';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_answer_feedback must be in ADMIN_TOOLS');
@@ -315,6 +330,25 @@ test('SECURITY: list_knowledge_candidates/accept_knowledge_candidate/decline_kno
   for (const role of ['admin', 'super_admin'] as const) {
     const surface = toolsForRole(role);
     for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
+test('SECURITY: list_knowledge_gaps is admin-only, conversation-scoped like question_digest — the below-floor knowledge_search miss signal never reaches member/guest turns (issue #208)', () => {
+  const tool = 'mcp__community__list_knowledge_gaps';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_knowledge_gaps must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'list_knowledge_gaps must not be in MEMBER_TOOLS',
+  );
+  assert.ok(
+    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    'list_knowledge_gaps must not be exclusively a SUPER_ADMIN_TOOLS entry',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_knowledge_gaps`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_knowledge_gaps`);
   }
 });
 
