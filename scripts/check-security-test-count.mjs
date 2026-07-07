@@ -82,6 +82,25 @@ for (const [file, actual] of Object.entries(staticCounts)) {
   }
 }
 
+// Unconditional skip/todo of a SECURITY test evades the gate (issue #221):
+// `test.skip(`/`test.todo(` keep the static count (declPattern matches them)
+// while removing the assertion, and node reports the skip as `ok … # SKIP`
+// which the runtime pass-counter below would otherwise credit. Ban the
+// METHOD forms outright — a genuine environment gate (e.g. DB-unavailable)
+// uses the OPTION form instead: `test('SECURITY: …', { skip }, fn)`, which is
+// not matched here and stays allowed.
+const bannedSkipPattern = /\btest\.(?:skip|todo)\(\s*[`'"]SECURITY:/g;
+for (const f of testFileNames) {
+  const n = (readFileSync(path.join(testsDir, f), 'utf8').match(bannedSkipPattern) ?? []).length;
+  if (n > 0) {
+    problems.push(
+      `${f}: ${n} SECURITY: test(s) use test.skip(/test.todo( — an unconditional skip/todo disables a security ` +
+        `test while keeping its count. Restore the assertion, or (only for a real environment gate) use the ` +
+        `conditional option form test('SECURITY: …', { skip: <cond> }, fn).`,
+    );
+  }
+}
+
 if (problems.length > 0) {
   console.error('check-security-test-count: manifest mismatch:');
   for (const p of problems) console.error(`  ${p}`);
@@ -118,11 +137,19 @@ if (result.status !== 0) {
 
 const lines = (result.stdout ?? '').split('\n');
 const failed = lines.filter((l) => /^not ok \d+ - SECURITY:/.test(l));
-const passed = lines.filter((l) => /^ok \d+ - SECURITY:/.test(l));
+// A `# TODO` directive makes node report a test as `ok … # TODO` even when it
+// doesn't assert anything — another way to neuter a SECURITY test while
+// keeping it green (issue #221). Treat any TODO-marked SECURITY line as a
+// failure, and never credit it toward the pass count. (`# SKIP` stays credited
+// so the DB-conditional { skip } option tests keep the count stable across
+// runners regardless of DATABASE_URL — see the header.)
+const todo = lines.filter((l) => /^(?:not )?ok \d+ - SECURITY:.*# TODO\b/.test(l));
+const passed = lines.filter((l) => /^ok \d+ - SECURITY:/.test(l) && !/# TODO\b/.test(l));
 
-if (failed.length > 0) {
-  console.error(`\ncheck-security-test-count: ${failed.length} SECURITY test(s) failed:`);
-  for (const l of failed) console.error(`  ${l}`);
+if (failed.length > 0 || todo.length > 0) {
+  const bad = [...failed, ...todo];
+  console.error(`\ncheck-security-test-count: ${bad.length} SECURITY test(s) failed or were marked TODO:`);
+  for (const l of bad) console.error(`  ${l}`);
   process.exit(1);
 }
 

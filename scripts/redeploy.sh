@@ -78,15 +78,36 @@ restart_service() {
 wait_healthy() {
   [ -z "$SERVICE_NAME" ] && return 0
   local deadline=$(($(date +%s) + HEALTH_TIMEOUT_SECS))
+  # A single "good" poll is not enough: under Restart=always a crash-looping
+  # service cycles activating -> active -> (crash) -> activating, so one
+  # is-active poll (or one lucky curl) can land in a momentary 'active' window
+  # and pronounce a flapping service healthy (issue #215). Require several
+  # consecutive good polls before returning healthy, and — for the systemctl
+  # path — also require that systemd has not auto-restarted the unit since we
+  # started watching (NRestarts climbing = it crashed and came back).
+  local need_ok=3 ok_streak=0 baseline_restarts cur_restarts
+  baseline_restarts="$(systemctl show -p NRestarts --value "$SERVICE_NAME" 2>/dev/null || echo 0)"
+  [ -n "$baseline_restarts" ] || baseline_restarts=0
   while [ "$(date +%s)" -lt "$deadline" ]; do
     sleep 5
     if [ -n "$HEALTH_URL" ]; then
-      if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then return 0; fi
+      if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+        ok_streak=$((ok_streak + 1))
+      else
+        ok_streak=0 # a crash loop can't answer curl for need_ok polls straight
+      fi
     else
-      # No health endpoint configured: "active and not flapping" is the best
-      # signal available (Restart=always means a crash loop stays 'activating').
-      if systemctl is-active --quiet "$SERVICE_NAME"; then return 0; fi
+      # No health endpoint: "active AND NRestarts hasn't climbed since we
+      # started watching" is the best crash-loop-aware signal available.
+      cur_restarts="$(systemctl show -p NRestarts --value "$SERVICE_NAME" 2>/dev/null || echo "$baseline_restarts")"
+      [ -n "$cur_restarts" ] || cur_restarts="$baseline_restarts"
+      if systemctl is-active --quiet "$SERVICE_NAME" && [ "$cur_restarts" -le "$baseline_restarts" ]; then
+        ok_streak=$((ok_streak + 1))
+      else
+        ok_streak=0
+      fi
     fi
+    [ "$ok_streak" -ge "$need_ok" ] && return 0
   done
   return 1
 }
@@ -138,8 +159,16 @@ main() {
     # backward-compatible within a deploy (docs/DEPLOYMENT.md).
     log "build/migrate FAILED for $new_sha; restoring $old_sha, service NOT restarted"
     run_as_app git reset --hard "$old_sha" >/dev/null
-    run_as_app npm ci --no-audit --no-fund >/dev/null 2>&1 || true
-    run_as_app npm run build >/dev/null 2>&1 || true
+    # The rebuild of the restored tree must not fail silently: if it does, the
+    # on-disk dist/ is left inconsistent with the still-running (or
+    # Restart=always-rebooting) service, and swallowing it with `|| true`
+    # hid exactly that (issue #215). Make it a loud, greppable journal marker.
+    if run_as_app npm ci --no-audit --no-fund >/dev/null 2>&1 &&
+      run_as_app npm run build >/dev/null 2>&1; then
+      log "restored and rebuilt $old_sha; service left on the old code"
+    else
+      log "RESTORE FAILED: could not rebuild $old_sha after the failed deploy — on-disk dist/ may be inconsistent with the running service; MANUAL INTERVENTION REQUIRED"
+    fi
     exit 1
   fi
 

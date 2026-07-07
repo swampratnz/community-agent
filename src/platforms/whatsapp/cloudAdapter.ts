@@ -302,31 +302,50 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     accessToken: string,
     body: string,
   ): Promise<void> {
-    const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body },
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to,
+          type: 'text',
+          text: { body },
+        }),
+      });
+    } catch (err) {
+      // A rejected fetch (DNS/TCP/TLS failure, timeout, offline) is just as
+      // much a send failure as a non-OK response — and it's the shape a real
+      // Graph API outage takes. Count it too, or isConnected() would never
+      // trip and the disconnect alert would never fire (issue #218).
+      this.recordSendFailure();
+      throw err instanceof Error ? err : new Error(`WhatsApp Cloud send failed: ${String(err)}`);
+    }
     if (!res.ok) {
-      this.consecutiveSendFailures++;
-      if (this.consecutiveSendFailures === SEND_FAILURE_THRESHOLD) {
-        logger.warn(
-          { consecutiveSendFailures: this.consecutiveSendFailures },
-          'WhatsApp Cloud: consecutive send failures crossed threshold, reporting disconnected',
-        );
-      }
+      this.recordSendFailure();
       const detail = await res.text().catch(() => '');
       throw new Error(`WhatsApp Cloud send failed: ${res.status} ${detail}`);
     }
     this.consecutiveSendFailures = 0;
+  }
+
+  /**
+   * Record one failed real-message send and, on crossing the threshold, log
+   * it once. Called for BOTH a non-OK response and a rejected fetch so
+   * isConnected() reflects a sustained outage regardless of its shape.
+   */
+  private recordSendFailure(): void {
+    this.consecutiveSendFailures++;
+    if (this.consecutiveSendFailures === SEND_FAILURE_THRESHOLD) {
+      logger.warn(
+        { consecutiveSendFailures: this.consecutiveSendFailures },
+        'WhatsApp Cloud: consecutive send failures crossed threshold, reporting disconnected',
+      );
+    }
   }
 
   /** No groups on the Cloud API — a user's only conversation is their 1:1 with the bot. */

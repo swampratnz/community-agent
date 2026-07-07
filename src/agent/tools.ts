@@ -6,7 +6,7 @@ import { normalizeMemberId } from '../auth/memberId.js';
 import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
-import { logger } from '../logger.js';
+import { logger, hashId } from '../logger.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import {
   acceptKnowledgeCandidate,
@@ -388,7 +388,7 @@ export async function notifySuggestionResolved(
         : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
   await adapter
     .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId }, 'Suggestion resolution DM failed'));
+    .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Suggestion resolution DM failed'));
 }
 
 /**
@@ -419,7 +419,7 @@ export async function notifyReportResolved(
       : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
   await adapter
     .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId }, 'Report resolution DM failed'));
+    .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Report resolution DM failed'));
 }
 
 /**
@@ -496,10 +496,16 @@ async function resetSessionsForRoleChange(platform: Platform, userId: string, ac
   try {
     const cleared = await clearUserSessions(platform, userId);
     if (cleared > 0) {
-      logger.info({ action, platform, userId, cleared }, 'Reset target sessions after role change');
+      logger.info(
+        { action, platform, userId: hashId(userId), cleared },
+        'Reset target sessions after role change',
+      );
     }
   } catch (err) {
-    logger.warn({ err, action, platform, userId }, 'Failed to reset target sessions after role change');
+    logger.warn(
+      { err, action, platform, userId: hashId(userId) },
+      'Failed to reset target sessions after role change',
+    );
   }
 }
 
@@ -680,7 +686,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         caller.userId,
       );
     }
-    logger.info({ action: input.actionKind, success, actor: caller.userId }, 'Privileged action');
+    logger.info({ action: input.actionKind, success, actor: hashId(caller.userId) }, 'Privileged action');
     return { success, result };
   }
 
@@ -1209,7 +1215,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       logger.info(
         {
           platform: caller.platform,
-          conversationId: caller.conversationId,
+          conversationId: hashId(caller.conversationId),
           hours,
           resultCount: entries.length,
         },
@@ -2805,12 +2811,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           args.prompt,
         );
         logger.info(
-          { actor: caller.userId, platform: caller.platform, bytes: image.data.length },
+          { actor: hashId(caller.userId), platform: caller.platform, bytes: image.data.length },
           'generate_image posted',
         );
         return text('Image posted.');
       } catch (err) {
-        logger.warn({ err, actor: caller.userId }, 'generate_image failed');
+        logger.warn({ err, actor: hashId(caller.userId) }, 'generate_image failed');
         return text(`Image generation failed: ${err instanceof Error ? err.message : String(err)}`, true);
       } finally {
         imageGenInFlight.delete(key);

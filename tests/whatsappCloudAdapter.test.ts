@@ -260,6 +260,34 @@ test('isConnected(): flips false once SEND_FAILURE_THRESHOLD (3) consecutive sen
   assert.equal(adapter.isConnected(), false, 'isConnected() must flip false once the threshold is crossed');
 });
 
+test('isConnected(): a REJECTED fetch (network error, not a non-OK response) also counts toward the failure threshold (issue #218)', async () => {
+  // A DNS/TCP/TLS failure or timeout rejects the fetch promise rather than
+  // returning res.ok===false. Before #218 that path skipped the failure
+  // counter entirely, so a total Graph API outage (every send rejecting)
+  // left isConnected() stuck true and the disconnect alert never fired.
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const rejectingFetch = async () => {
+    throw new Error('getaddrinfo ENOTFOUND graph.facebook.com');
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = rejectingFetch;
+  try {
+    for (let i = 0; i < 3; i++) {
+      // The original network error is re-thrown, not masked.
+      await assert.rejects(() => adapter.sendDirectMessage('64211234567', `attempt ${i}`), /ENOTFOUND/);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    false,
+    'consecutive rejected fetches must flip isConnected() just like consecutive non-OK responses',
+  );
+});
+
 test('isConnected(): a single successful send after crossing the threshold resets the counter and restores isConnected()', async () => {
   const adapter = new WhatsAppCloudAdapter();
   (adapter as unknown as { server: object }).server = {};

@@ -184,10 +184,20 @@ function fakeAdapter(opts: {
     onMessage() {},
     async sendMessage() {},
     async sendDirectMessage(userId, text) {
+      // runAdminDigestOnce iterates EVERY admin in the global community_users
+      // table (listAdmins is not test-scoped), so a concurrently-running test
+      // file's admin would otherwise be handed to this same fake adapter and
+      // inflate `sent`, making the `sent.length` assertions flaky (issue
+      // #224). Record only sends addressed to THIS run's admins.
+      if (!userId.startsWith(RUN)) return;
       opts.sent.push({ userId, text });
     },
-    async conversationsForUser() {
-      return opts.conversationIds;
+    async conversationsForUser(userId) {
+      // Same isolation: only this run's admins "participate" in the fake's
+      // conversations. A foreign admin then computes zero in-scope
+      // clusters/reports and never triggers a send — which would otherwise
+      // also write that admin's freshness row as a cross-file side effect.
+      return userId.startsWith(RUN) ? opts.conversationIds : [];
     },
     async performAdminAction() {
       return '';

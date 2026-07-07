@@ -340,9 +340,12 @@ const EnvSchema = z.object({
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
   // (see docs/DEPLOYMENT.md), so a normal restart never needs tuning this.
   SHUTDOWN_DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
-  // /healthz endpoint (native http, no auth). Unset = disabled; bind to
-  // localhost via reverse proxy if you expose it, like the Cloud webhook.
+  // /healthz + /readyz endpoints (native http, no auth). Unset = disabled.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
+  // Interface the health server binds to. Defaults to loopback so the
+  // unauthenticated endpoint is NOT reachable off-box unless the operator
+  // deliberately fronts it with a reverse proxy or sets 0.0.0.0 (issue #220).
+  HEALTH_HOST: z.string().min(1).default('127.0.0.1'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
   LOG_PRETTY: z
     .string()
@@ -525,6 +528,7 @@ export const config = {
     rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
     healthPort: env.HEALTH_PORT,
+    healthHost: env.HEALTH_HOST,
     usageAlertDailyReplies: env.USAGE_ALERT_DAILY_REPLIES,
     upstreamLimitAlertEnabled: env.UPSTREAM_LIMIT_ALERT_ENABLED ?? false,
     ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,

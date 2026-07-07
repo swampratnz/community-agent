@@ -84,6 +84,7 @@ const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
 const { getCommunityGuidelines, resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -4039,6 +4040,48 @@ test('SECURITY: assign_community_role / remove_community_role / list_assignable_
     /Permission denied/,
   );
   await assert.rejects(() => toolFrom(server, 'list_assignable_roles').handler({}), /Permission denied/);
+});
+
+test('SECURITY: EVERY admin/super-admin tool handler re-asserts the tier — a member caller is rejected by every one (defense-in-depth beyond surface gating, issue #225)', async () => {
+  // The tool SURFACE (which tools a role's turn even sees) is pinned in
+  // rbac.test.ts. This pins the SECOND layer CLAUDE.md mandates: every
+  // privileged handler calls assertAtLeast itself, so even if a tool ever
+  // leaked onto a member's surface (a bad toolsForRole edit, a duplicated
+  // registration), invoking it as a member still throws. Table-driven off the
+  // canonical lists so a newly-added privileged tool that FORGETS the
+  // re-assertion fails here automatically instead of shipping ungated.
+  const adapter = stubDiscordRoleAdapter(async () => 'must not be reached');
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-tier-reassert',
+  };
+  const server = buildToolServer(caller, adapter);
+
+  const privilegedNames = [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS].map((t) =>
+    t.replace('mcp__community__', ''),
+  );
+
+  for (const name of privilegedNames) {
+    const registered = toolFrom(server, name);
+    assert.ok(registered, `${name} must be registered on the server`);
+    await assert.rejects(
+      // Empty args: assertAtLeast is the first statement in every privileged
+      // handler, so it throws before any argument is dereferenced.
+      () => registered.handler({}),
+      /Permission denied/,
+      `member caller must be rejected by ${name}'s in-handler tier re-assertion`,
+    );
+    // A rejected privileged tool must never leave a pending destructive action
+    // queued for a later CONFIRM (the assert fires before requireConfirm).
+    assert.equal(
+      hasPendingAction('discord', 'convo-tier-reassert', 'member-1'),
+      false,
+      `${name} must not register a pending action for a denied member caller`,
+    );
+  }
 });
 
 test('SECURITY: assign_community_role refuses cleanly (no pending action) on a platform that does not support community roles — Discord-only (issue #232)', async () => {

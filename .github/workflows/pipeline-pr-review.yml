@@ -112,7 +112,12 @@ jobs:
       # a verdict; if no text was produced, post a visible failure and fail the
       # job so silence can never masquerade as a green check.
       - name: Post review verdict
-        if: ${{ always() && env.HAS_TOKEN == 'true' }}
+        # !cancelled() (not always()): a superseding push cancels the in-flight
+        # review, and always() would then run this step on the cancelled run —
+        # posting a spurious "no review output" failure on a healthy PR (issue
+        # #222). The analyze step has continue-on-error, so a genuine analyze
+        # failure still reaches this step; only cancellation is excluded.
+        if: ${{ !cancelled() && env.HAS_TOKEN == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           EXEC_FILE: ${{ steps.analyze.outputs.execution_file }}
@@ -134,7 +139,11 @@ jobs:
           fi
 
           if [ -z "$review" ]; then
-            gh pr comment "$PR" --body "PR review (automated): no review output was captured this run. If this PR modifies the review workflow itself, that's expected — the action only runs the workflow version on the default branch, so it will review normally once this is merged. Otherwise the reviewer genuinely produced nothing; see the workflow logs. Failing the check so this is never silent."
+            # NB: first line deliberately does NOT start with "PR review
+            # (automated)" — the revise precheck selects the latest comment
+            # matching that marker as the pending verdict, and a no-output
+            # notice must never be mistaken for one (issue #222).
+            gh pr comment "$PR" --body "Automated review: no output captured this run. If this PR modifies the review workflow itself, that's expected — the action only runs the workflow version on the default branch, so it will review normally once merged. Otherwise the reviewer genuinely produced nothing; see the workflow logs. Failing the check so this is never silent."
             echo "::error::PR review produced no text output"
             exit 1
           fi
@@ -149,16 +158,24 @@ jobs:
           # GITHUB_TOKEN write CAN trigger (this very comment can't — GitHub
           # never starts workflows off GITHUB_TOKEN-created events). "Needs a
           # human decision" labels needs-human so it's visible and every
-          # pipeline loop skips the PR. Matching is confined to the first few
-          # lines (the verdict line) so a phrase inside a later finding
-          # bullet can't misroute; failures are warnings, never a red check —
-          # the review itself was posted successfully.
-          verdict="$(head -n 6 review.txt)"
-          if printf '%s' "$verdict" | grep -qiE 'changes requested'; then
+          # pipeline loop skips the PR. Failures are warnings, never a red
+          # check — the review itself was posted successfully.
+          #
+          # Verdict extraction (issue #222): the mandated format is a header
+          # line then a one-line verdict, with findings as `-`/`*` bullets
+          # after. Look only at the first few lines AND drop bullet lines, so a
+          # phrase like "previous changes requested were addressed" inside a
+          # finding can't misroute an LGTM into the revise loop (which then
+          # finds nothing, pushes no commit, and mislabels the PR needs-human —
+          # the exact stall the loop exists to prevent). Evaluate "needs a
+          # human decision" BEFORE "changes requested" so a needs-human verdict
+          # that happens to mention changes isn't sent to revise instead.
+          verdict="$(head -n 4 review.txt | grep -vE '^[[:space:]]*[-*]')"
+          if printf '%s' "$verdict" | grep -qiE 'needs a human decision'; then
+            gh pr edit "$PR" --add-label needs-human ||
+              echo "::warning::Could not add needs-human label"
+          elif printf '%s' "$verdict" | grep -qiE 'changes requested'; then
             echo "Verdict requests changes — dispatching the revise worker."
             gh workflow run pipeline-pr-revise.yml -R "${{ github.repository }}" -f pr_number="$PR" ||
               echo "::warning::Could not dispatch pipeline-pr-revise.yml (missing on the default branch yet?)"
-          elif printf '%s' "$verdict" | grep -qiE 'needs a human decision'; then
-            gh pr edit "$PR" --add-label needs-human ||
-              echo "::warning::Could not add needs-human label"
           fi

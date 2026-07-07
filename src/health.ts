@@ -5,6 +5,7 @@ import { superAdminIds } from './auth/roles.js';
 import { healthcheck } from './storage/db.js';
 import {
   buildHealthzPayload,
+  buildReadyzPayload,
   initialTracker,
   stepDisconnectTracker,
   type DisconnectTracker,
@@ -65,30 +66,40 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
 }
 
 /**
- * GET /healthz -> {status, db, adapters}. No auth, minimal info (booleans
- * only — no message content or user ids). Disabled unless HEALTH_PORT is
- * set; bind to localhost and put a reverse proxy in front if exposing it.
+ * Health endpoints (native http, no auth, booleans only — no message content
+ * or user ids). Disabled unless HEALTH_PORT is set. Binds to HEALTH_HOST,
+ * which defaults to loopback so the unauthenticated server isn't reachable
+ * off-box (issue #220); front it with a reverse proxy or set HEALTH_HOST to
+ * expose it.
+ *
+ *   GET /healthz -> {status, db, adapters} — adapter-aware; degraded (503) if
+ *                   any chat adapter is disconnected. For monitoring.
+ *   GET /readyz  -> {status, db} — liveness + DB only, independent of adapter
+ *                   connectivity (issue #216). Point the deploy HEALTH_URL
+ *                   here so a reconnecting socket can't roll a good build back.
  */
 export function startHealthServer(adapters: readonly PlatformAdapter[]): Promise<Server | null> {
   const port = config.behaviour.healthPort;
   if (!port) return Promise.resolve(null);
+  const host = config.behaviour.healthHost;
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const path = req.url ? new URL(req.url, 'http://localhost').pathname : '/';
-      if (req.method !== 'GET' || path !== '/healthz') {
+      if (req.method !== 'GET' || (path !== '/healthz' && path !== '/readyz')) {
         res.writeHead(404).end();
         return;
       }
-      handleHealthz(adapters, res).catch((err) => {
+      const handler = path === '/readyz' ? handleReadyz(res) : handleHealthz(adapters, res);
+      handler.catch((err) => {
         logger.error({ err }, 'Health check failed');
         if (!res.headersSent) res.writeHead(500).end();
       });
     });
     server.once('error', reject);
-    server.listen(port, () => {
+    server.listen(port, host, () => {
       server.off('error', reject);
-      logger.info({ port }, 'Health endpoint listening');
+      logger.info({ port, host }, 'Health endpoint listening');
       resolve(server);
     });
   });
@@ -105,6 +116,19 @@ async function handleHealthz(adapters: readonly PlatformAdapter[], res: ServerRe
   for (const adapter of adapters) adapterStatus[adapter.platform] = adapter.isConnected();
 
   const payload = buildHealthzPayload(dbOk, adapterStatus);
+  res
+    .writeHead(payload.status === 'ok' ? 200 : 503, { 'Content-Type': 'application/json' })
+    .end(JSON.stringify(payload));
+}
+
+async function handleReadyz(res: ServerResponse): Promise<void> {
+  let dbOk = true;
+  try {
+    await healthcheck();
+  } catch {
+    dbOk = false;
+  }
+  const payload = buildReadyzPayload(dbOk);
   res
     .writeHead(payload.status === 'ok' ? 200 : 503, { 'Content-Type': 'application/json' })
     .end(JSON.stringify(payload));
