@@ -148,4 +148,6 @@ export interface CallerContext {
   userName: string;
   role: Tier;
   conversationId: string;
+  /** True for a 1:1 DM (WhatsApp is always DM; Discord DM channel) — see issue #197. */
+  isDirect: boolean;
 }

@@ -757,21 +757,30 @@ the supported path.
   `admin_digest_sends`, or `answer_feedback` — `forget_me` purges a strict
   superset of what `my_data` ever reports, and that asymmetry is intentional,
   not a bug to "reconcile" away.
-- **DM-originated content reports are visible only to super admins.**
-  `list_reports` is scoped exactly like `moderation_history`/
+- **DM-originated content reports are visible to every admin, not only
+  super admins (issue #197).** `list_reports`/`countOpenReports`/
+  `resolve_report` are otherwise scoped exactly like `moderation_history`/
   `list_access_requests`: an admin only sees reports from conversations they
   actually participate in. WhatsApp is 1:1 with the bot and Discord DMs
   likewise, so no ordinary admin is ever a "participant" of another member's
-  DM — a report filed from a DM therefore only reaches the unrestricted
-  (null-scope) super-admin view, never a scoped admin. This is a deliberate,
-  documented default (not a silent drop): the report is still recorded and
-  retrievable, just only by super admins, until/unless a routing mechanism
-  for DM-originated reports is added. This risk is narrowed, not eliminated,
-  by issue #90: filing a report now proactively DMs every super admin the
-  moment it's created (`notifyReportFiled`), so a DM-originated report no
-  longer sits unseen until someone thinks to poll `list_reports` —
-  conversation-scoped admins still can't see it via `list_reports` until
-  that routing mechanism exists.
+  DM — a report filed from a DM has no conversation any admin's scope array
+  can ever contain. Before #197 this was a deliberate default restricting
+  such reports to the unrestricted (null-scope) super-admin view; #197
+  reverses that default (not an accidental scoping gap being "fixed") on the
+  reasoning that a self-filed complaint intended for moderator action isn't
+  confidential from admins as a class — the same treatment already given to
+  guild-wide, no-natural-scope tables (`access_requests`, `suggestions`).
+  The reversal carries one carve-out the general precedent doesn't need: a
+  DM report whose `target_user_id` is the *viewing* admin themselves stays
+  super-admin-only, so an accused admin can never see or dismiss a report
+  filed against them — preserving DM as the one channel a member can use to
+  report an admin without that admin knowing. `is_dm` is derived from
+  platform/channel type at report-creation time (`CallerContext.isDirect`),
+  never from message content, so it cannot be spoofed by a report's text.
+  Reports created before #197 default `is_dm` to `false` (non-retroactive)
+  and keep their original super-admin-only visibility. Issue #90's proactive
+  super-admin DM on filing (`notifyReportFiled`) is unchanged — it does not
+  fan out to every admin, only to super admins, as before.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
 - **Suggestion/report-resolution DMs degrade to silent skip only when the

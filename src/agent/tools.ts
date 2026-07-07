@@ -674,6 +674,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         targetUserId: args.targetUserId,
         messageId: args.messageId,
         reason: args.reason,
+        isDirect: caller.isDirect,
       });
       if (!created) {
         return text(
@@ -1688,9 +1689,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
 
   const listReportsTool = tool(
     'list_reports',
-    'List member-submitted content reports (harassment/spam/rule violations) from your conversations. ' +
-      "A report from a conversation you do not participate in (e.g. another member's DM) is not visible " +
-      'here even to admins — only to a super admin. Admin only.',
+    'List member-submitted content reports (harassment/spam/rule violations) from your conversations, ' +
+      'plus any reports filed from a 1:1 DM (those have no conversation any regular admin naturally ' +
+      'participates in). Exception: a DM report filed against you is not shown here — only a super admin ' +
+      'can see and resolve a report about you, so you cannot dismiss one filed against yourself. Admin only.',
     {
       status: z
         .enum(['open', 'resolved', 'dismissed', 'withdrawn'])
@@ -1701,7 +1703,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_reports');
       const allowed = await callerScope();
-      const rows = await listReports(allowed, args.status, args.limit ?? 50);
+      const rows = await listReports(allowed, args.status, args.limit ?? 50, caller.userId);
       if (rows.length === 0) return text('No reports found (within your conversations).');
       return text(
         untrusted(
@@ -1723,7 +1725,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
   const resolveReportTool = tool(
     'resolve_report',
     'Mark a content report as resolved or dismissed once triaged. Non-destructive status change (no ' +
-      'CONFIRM needed), audited. Admins can only resolve reports from conversations they are in. Admin only.',
+      'CONFIRM needed), audited. Admins can resolve reports from conversations they are in, plus ' +
+      'DM-originated reports — except one filed against themselves, which stays super-admin-only. ' +
+      'Admin only.',
     {
       id: z.number().describe('Report id (from list_reports)'),
       status: z.enum(['resolved', 'dismissed']).describe('New status'),

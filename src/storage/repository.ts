@@ -2608,6 +2608,8 @@ export async function createContentReport(input: {
   targetUserId?: string;
   messageId?: string;
   reason: string;
+  /** Filed from a 1:1 DM? Defaults to false (matching the column default) for callers that don't track it. */
+  isDirect?: boolean;
 }): Promise<{ id: number } | null> {
   const { rows } = await pool.query(
     `WITH recent AS (
@@ -2616,8 +2618,8 @@ export async function createContentReport(input: {
           AND created_at > now() - interval '24 hours'
      )
      INSERT INTO content_reports
-       (platform, reporter_user_id, reporter_name, conversation_id, target_user_id, message_id, reason)
-     SELECT $1, $2, $3, $4, $5, $6, $7
+       (platform, reporter_user_id, reporter_name, conversation_id, target_user_id, message_id, reason, is_dm)
+     SELECT $1, $2, $3, $4, $5, $6, $7, $9
       WHERE (SELECT n FROM recent) < $8
      RETURNING id`,
     [
@@ -2629,6 +2631,7 @@ export async function createContentReport(input: {
       input.messageId ?? null,
       input.reason.slice(0, 500),
       REPORT_RATE_LIMIT_PER_DAY,
+      input.isDirect ?? false,
     ],
   );
   return rows[0] ? { id: Number(rows[0].id) } : null;
@@ -2637,21 +2640,34 @@ export async function createContentReport(input: {
 /**
  * Admin-tier view of reports, scoped to `conversationIds` (null = super
  * admin, unrestricted — same convention as recentModerationEntries). A
- * report from a conversation no ordinary admin participates in (e.g. a
- * WhatsApp/Discord-DM report) is therefore only reachable here with the
- * unrestricted (super admin) scope — a deliberate, documented limitation,
- * not a silent drop; see docs/SECURITY.md.
+ * report filed from a 1:1 DM (`is_dm`) has no conversation any ordinary
+ * admin can naturally be scoped to (each DM is unique per member), so it is
+ * additionally surfaced to a scoped admin via `OR is_dm` — except one filed
+ * against that very admin (`target_user_id`), which stays reachable only by
+ * a super admin so an accused admin can't see or dismiss a report about
+ * themselves (issue #197). `viewerUserId` (the calling admin's own id) drives
+ * that exclusion; omitting it leaves DM-originated reports invisible to a
+ * scoped admin, same as before #197 — never widen scope without it.
  */
 export async function listReports(
   conversationIds: readonly string[] | null,
   status?: ContentReportStatus,
   limit = 50,
+  viewerUserId?: string,
 ): Promise<ContentReport[]> {
   const params: unknown[] = [];
   const filters: string[] = [];
   if (conversationIds) {
     params.push([...conversationIds]);
-    filters.push(`conversation_id = ANY($${params.length})`);
+    const convoIdx = params.length;
+    if (viewerUserId) {
+      params.push(viewerUserId);
+      filters.push(
+        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND target_user_id IS DISTINCT FROM $${params.length}))`,
+      );
+    } else {
+      filters.push(`conversation_id = ANY($${convoIdx})`);
+    }
   }
   if (status) {
     params.push(status);
@@ -2675,16 +2691,29 @@ export async function listReports(
 
 /**
  * Exact open-report count, scoped like `listReports` (`conversationIds`
- * null = unrestricted/super admin) — a dedicated `COUNT(*)` rather than
- * `(await listReports(scope, 'open')).length`, which would silently
- * understate a backlog past that function's clamped (≤200) `limit`.
+ * null = unrestricted/super admin, `viewerUserId` drives the same
+ * accused-admin exclusion on the `OR is_dm` broadening — see `listReports`)
+ * — a dedicated `COUNT(*)` rather than `(await listReports(scope,
+ * 'open')).length`, which would silently understate a backlog past that
+ * function's clamped (≤200) `limit`.
  */
-export async function countOpenReports(conversationIds: readonly string[] | null): Promise<number> {
+export async function countOpenReports(
+  conversationIds: readonly string[] | null,
+  viewerUserId?: string,
+): Promise<number> {
   const params: unknown[] = [];
   const filters: string[] = [`status = 'open'`];
   if (conversationIds) {
     params.push([...conversationIds]);
-    filters.push(`conversation_id = ANY($${params.length})`);
+    const convoIdx = params.length;
+    if (viewerUserId) {
+      params.push(viewerUserId);
+      filters.push(
+        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND target_user_id IS DISTINCT FROM $${params.length}))`,
+      );
+    } else {
+      filters.push(`conversation_id = ANY($${convoIdx})`);
+    }
   }
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM content_reports WHERE ${filters.join(' AND ')}`,
@@ -2698,8 +2727,14 @@ export async function countOpenReports(conversationIds: readonly string[] | null
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
  * to `conversationIds` so an admin can only resolve reports from
  * conversations they actually participate in (same invariant as `moderate`/
- * `announce`). Returns the resolved row's platform/reporterUserId/reason (so
- * the caller can notify the reporter, issue #120 — same "RETURNING" shape as
+ * `announce`) — broadened by `OR is_dm` for the same reason as `listReports`
+ * (a DM report has no conversation an ordinary admin is ever scoped to), with
+ * the same accused-admin exclusion: `resolvedBy` (the acting admin's own id,
+ * always supplied by the one production call site in tools.ts) can never
+ * resolve a DM report filed against itself — that stays super-admin-only, so
+ * an accused admin can't dismiss a report about themselves (issue #197).
+ * Returns the resolved row's platform/reporterUserId/reason (so the caller
+ * can notify the reporter, issue #120 — same "RETURNING" shape as
  * `resolveSuggestion`) or null if no matching row was found (unknown id, or
  * the id exists but is outside the caller's scope) — same "no match" signal
  * the old boolean return gave.
@@ -2714,7 +2749,7 @@ export async function resolveContentReport(
   let scope = '';
   if (conversationIds) {
     params.push([...conversationIds]);
-    scope = `AND conversation_id = ANY($${params.length})`;
+    scope = `AND (conversation_id = ANY($${params.length}) OR (is_dm AND target_user_id IS DISTINCT FROM $3))`;
   }
   const { rows } = await pool.query(
     `UPDATE content_reports

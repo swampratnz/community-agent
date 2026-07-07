@@ -401,9 +401,11 @@ applied to abuse reports instead of pending guests:
 3. No automation beyond intake: the queue is purely informational. Admins
    still decide and act via the existing `moderate` tool.
 
-Because `list_reports` is conversation-scoped, a report filed from a DM (no
+`list_reports` is conversation-scoped, but a report filed from a DM (no
 ordinary admin is ever a "participant" of another member's 1:1 conversation)
-is only reachable by a super admin — see SECURITY.md's residual-risks note.
+is additionally surfaced to every admin via `is_dm`, except one filed
+against the viewing admin themselves, which stays reachable only by a super
+admin (issue #197) — see SECURITY.md's note on this.
 
 ## Answer feedback
 

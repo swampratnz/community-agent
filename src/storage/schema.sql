@@ -335,6 +335,13 @@ CREATE INDEX IF NOT EXISTS content_reports_conversation_idx
 CREATE INDEX IF NOT EXISTS content_reports_reporter_rate_idx
   ON content_reports (platform, reporter_user_id, created_at DESC);
 
+-- Was this report filed from a 1:1 DM (WhatsApp is always DM; Discord DM
+-- channel)? Derived from the platform/channel type at creation time, never
+-- from message content — see CallerContext.isDirect (issue #197). Existing
+-- rows default to false (non-retroactive: pre-#197 DM reports stay
+-- super-admin-only, matching their original visibility contract).
+ALTER TABLE content_reports ADD COLUMN IF NOT EXISTS is_dm BOOLEAN NOT NULL DEFAULT false;
+
 -- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard for the weekly proactive admin
 -- recurring-questions digest (issue #97): one row per admin identity, so a

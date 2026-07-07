@@ -1504,6 +1504,84 @@ test(
   },
 );
 
+// list_reports tool handler (issue #197): exercises that the handler passes
+// caller.userId through to repository.listReports as the viewerUserId that
+// drives the DM-report broadening and its accused-admin exclusion — the
+// repository-level mechanics themselves are covered directly in
+// repository.test.ts; this only pins the tools.ts wiring.
+function listReportsHandler(userId: string) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-1',
+      isDirect: false,
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { status?: string; limit?: number }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_reports'];
+}
+
+test(
+  'SECURITY: list_reports surfaces a DM-originated report from outside the caller conversation, except one filed against the caller (issue #197)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-reports-admin`;
+    const otherAdmin = `${RUN}-list-reports-other-admin`;
+    const reporter = `${RUN}-list-reports-reporter`;
+
+    const dmReport = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: `${RUN}-list-reports-dm-convo`,
+      reason: 'filed from a DM the calling admin does not participate in',
+      isDirect: true,
+    });
+    const dmReportAgainstAdmin = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: `${RUN}-list-reports-dm-convo-2`,
+      targetUserId: admin,
+      reason: 'a member reports the calling admin from a DM',
+      isDirect: true,
+    });
+    assert.ok(dmReport && dmReportAgainstAdmin);
+
+    const result = await listReportsHandler(admin).handler({});
+    const text = result.content[0]?.text ?? '';
+    assert.match(text, new RegExp(`#${dmReport.id}\\b`), 'the DM report against someone else is visible');
+    assert.ok(
+      !new RegExp(`#${dmReportAgainstAdmin.id}\\b`).test(text),
+      'SECURITY: the DM report filed against the calling admin themselves must not be visible to them',
+    );
+
+    const otherAdminResult = await listReportsHandler(otherAdmin).handler({});
+    assert.match(
+      otherAdminResult.content[0]?.text ?? '',
+      new RegExp(`#${dmReportAgainstAdmin.id}\\b`),
+      'a different admin can still see the DM report filed against the first admin',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [
+      [dmReport.id, dmReportAgainstAdmin.id],
+    ]);
+  },
+);
+
 // set_response_style (issue #126): a closed two-value enum, no CONFIRM gate —
 // the handler just upserts via repository.setResponseStyle, so this exercises
 // the real DB round-trip, same convention as the knowledge_search handler test.
@@ -1619,7 +1697,11 @@ test(
 // wiring — that a successful filing triggers the alert and a rate-limited
 // one doesn't — against a real DB-backed rate cap, same pattern as
 // resolveReportHandler above.
-function reportContentHandler(adapter: PlatformAdapter, userId = REPORT_CONTENT_HANDLER_USER) {
+function reportContentHandler(
+  adapter: PlatformAdapter,
+  userId = REPORT_CONTENT_HANDLER_USER,
+  isDirect = false,
+) {
   const server = buildToolServer(
     {
       // whatsapp, not discord: keeps SUPER_ADMIN_WHATSAPP_NUMBERS (configured
@@ -1631,6 +1713,7 @@ function reportContentHandler(adapter: PlatformAdapter, userId = REPORT_CONTENT_
       userName: 'Reporting Member',
       role: 'member' as const,
       conversationId: 'convo-1',
+      isDirect,
     },
     adapter,
   );
@@ -1715,6 +1798,34 @@ test(
       /recorded/,
       'the reporter confirmation is unaffected by a failed best-effort alert',
     );
+  },
+);
+
+test(
+  'SECURITY: report_content stores the caller.isDirect flag verbatim as is_dm, never inferred from the report text (issue #197)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const dmUser = `${REPORT_CONTENT_HANDLER_USER}-dm`;
+    const channelUser = `${REPORT_CONTENT_HANDLER_USER}-channel`;
+
+    const dmResult = await reportContentHandler(adapter, dmUser, true).handler({
+      reason: 'filed from a 1:1 DM',
+    });
+    const channelResult = await reportContentHandler(adapter, channelUser, false).handler({
+      reason: 'filed from a shared channel',
+    });
+
+    const dmId = Number(/#(\d+)/.exec(dmResult.content[0]?.text ?? '')?.[1]);
+    const channelId = Number(/#(\d+)/.exec(channelResult.content[0]?.text ?? '')?.[1]);
+    assert.ok(dmId && channelId);
+
+    const dmRow = await pool.query(`SELECT is_dm FROM content_reports WHERE id = $1`, [dmId]);
+    const channelRow = await pool.query(`SELECT is_dm FROM content_reports WHERE id = $1`, [channelId]);
+    assert.equal(dmRow.rows[0]?.is_dm, true, 'a DM-filed report is stored with is_dm = true');
+    assert.equal(channelRow.rows[0]?.is_dm, false, 'a channel-filed report is stored with is_dm = false');
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[dmId, channelId]]);
   },
 );
 
