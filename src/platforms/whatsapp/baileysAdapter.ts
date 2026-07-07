@@ -14,7 +14,11 @@ import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines } from '../../storage/policies.js';
-import { deleteInteractionByMessageId, updateInteractionByMessageId } from '../../storage/repository.js';
+import {
+  deleteInteractionByMessageId,
+  getInteractionAuthorByMessageId,
+  updateInteractionByMessageId,
+} from '../../storage/repository.js';
 import {
   extractText,
   isLidJid,
@@ -189,6 +193,14 @@ export class BaileysAdapter implements PlatformAdapter {
     const isDirect = remoteJid.endsWith('@s.whatsapp.net') || isLidJid(remoteJid);
     if (!isGroup && !isDirect) return; // newsletters/broadcast lists etc.
 
+    // Optional allowlist of conversations. Checked BEFORE protocol-message
+    // handling: a group we never process normal messages for was never
+    // archived, so there is nothing for a revoke/edit to legitimately act on,
+    // and a revoke/edit for a non-allowed JID must not reach the DB either.
+    if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(remoteJid)) {
+      return;
+    }
+
     // Delete/edit honouring for archived groups (issue #103, mirrors #48):
     // WhatsApp delivers "delete for everyone" and edits as a protocolMessage
     // over the same messages.upsert stream, not a separate socket event —
@@ -197,12 +209,6 @@ export class BaileysAdapter implements PlatformAdapter {
     // dropped by the `!text` check further down.
     if (await this.handleProtocolMessage(msg, remoteJid, isGroup)) return;
 
-    // Optional allowlist of conversations.
-    if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(remoteJid)) {
-      return;
-    }
-
-    const senderNumber = senderPhoneNumber(msg, isGroup);
     const { text: rawText, contextInfo } = extractText(msg);
 
     // In groups, only respond if the bot is mentioned OR the message quotes
@@ -228,8 +234,7 @@ export class BaileysAdapter implements PlatformAdapter {
     // LID sender without a resolvable number gets a `lid:`-prefixed id: it
     // can never match a member/admin grant AND can never be mis-routed as a
     // phone JID by warn/kick (see performAdminAction's isPhoneUserId guard).
-    const rawFallback = jidLocalPart(isGroup ? msg.key.participant : remoteJid);
-    const senderId = senderNumber || (rawFallback ? lidFallbackId(rawFallback) : 'unknown');
+    const senderId = this.resolveSenderId(msg, isGroup, remoteJid);
 
     const normalised: IncomingMessage = {
       platform: 'whatsapp',
@@ -266,9 +271,43 @@ export class BaileysAdapter implements PlatformAdapter {
     const targetId = protocolMessage?.key?.id;
     if (!protocolMessage || !targetId) return false;
     if (!this.inArchiveScope(remoteJid, isGroup)) return true;
+    const isRevoke = protocolMessage.type === proto.Message.ProtocolMessage.Type.REVOKE;
+    const isEdit =
+      protocolMessage.type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT &&
+      !!protocolMessage.editedMessage;
+    if (!isRevoke && !isEdit) return true;
 
-    if (protocolMessage.type === proto.Message.ProtocolMessage.Type.REVOKE) {
-      await deleteInteractionByMessageId('whatsapp', targetId).catch((err) =>
+    // AUTHORSHIP CHECK (security): WhatsApp servers don't validate revoke/edit
+    // authorship — only clients do — and stanza ids are visible to every group
+    // member, so a modified client can broadcast a revoke/edit keyed to
+    // ANOTHER user's message. Without this check that would let any participant
+    // delete another member's archived message (evidence destruction) or, on
+    // edit, re-embed attacker-chosen text attributed to the original author
+    // into pgvector (memory poisoning). Honour it only when the revoker
+    // actually authored the stored message, or is a group admin (legitimate
+    // "delete for everyone" moderation). Fail safe: if we can't confirm
+    // authorship, skip — a kept-but-stale copy is a lesser harm than honouring
+    // a forged one.
+    const storedAuthor = await getInteractionAuthorByMessageId('whatsapp', remoteJid, targetId).catch(
+      (err) => {
+        logger.warn({ err, messageId: targetId }, 'Failed to look up stored-message author');
+        return null;
+      },
+    );
+    if (!storedAuthor) return true; // nothing stored for this id in this chat — no-op
+
+    const revokerId = this.resolveSenderId(msg, isGroup, remoteJid);
+    const authored = storedAuthor === revokerId;
+    if (!authored && !(await this.isGroupAdmin(remoteJid, revokerId))) {
+      logger.warn(
+        { messageId: targetId, remoteJid },
+        'Ignoring revoke/edit from a non-author, non-admin participant',
+      );
+      return true;
+    }
+
+    if (isRevoke) {
+      await deleteInteractionByMessageId('whatsapp', remoteJid, targetId).catch((err) =>
         logger.warn({ err, messageId: targetId }, 'Stored-message delete failed'),
       );
       return true;
@@ -276,19 +315,44 @@ export class BaileysAdapter implements PlatformAdapter {
     // Edit-tracking is best-effort (Baileys protocol fidelity for edits
     // varies more than revokes); delete-honouring above is the load-bearing
     // privacy promise and always applies.
-    if (
-      protocolMessage.type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT &&
-      protocolMessage.editedMessage
-    ) {
-      const { text } = extractText({ key: msg.key, message: protocolMessage.editedMessage });
-      if (text) {
-        await updateInteractionByMessageId('whatsapp', targetId, text).catch((err) =>
-          logger.warn({ err, messageId: targetId }, 'Stored-message update failed'),
-        );
-      }
-      return true;
+    const { text } = extractText({ key: msg.key, message: protocolMessage.editedMessage! });
+    if (text) {
+      await updateInteractionByMessageId('whatsapp', remoteJid, targetId, text).catch((err) =>
+        logger.warn({ err, messageId: targetId }, 'Stored-message update failed'),
+      );
     }
     return true;
+  }
+
+  /** Resolve a message's sender to the same `user_id` form the normal path stores. */
+  private resolveSenderId(msg: WAMessage, isGroup: boolean, remoteJid: string): string {
+    const senderNumber = senderPhoneNumber(msg, isGroup);
+    const rawFallback = jidLocalPart(isGroup ? msg.key.participant : remoteJid);
+    return senderNumber || (rawFallback ? lidFallbackId(rawFallback) : 'unknown');
+  }
+
+  /**
+   * Best-effort check that `userId` is an admin/superadmin of `groupJid` — the
+   * one documented exception to the revoke/edit authorship rule (a real group
+   * admin legitimately deletes others' messages "for everyone"). Any lookup
+   * failure resolves to `false` (fail safe: don't honour a forged revoke on a
+   * metadata error). Matches participants the same way `conversationsForUser`
+   * does, tolerating phone/LID id forms.
+   */
+  private async isGroupAdmin(groupJid: string, userId: string): Promise<boolean> {
+    if (!this.sock || !groupJid.endsWith('@g.us')) return false;
+    try {
+      const meta = await this.sock.groupMetadata(groupJid);
+      return (meta.participants ?? []).some((p) => {
+        if (p.admin !== 'admin' && p.admin !== 'superadmin') return false;
+        const pid = jidLocalPart(p.id);
+        const pn = jidLocalPart((p as { phoneNumber?: string }).phoneNumber);
+        return pid === userId || pn === userId || lidFallbackId(pid) === userId;
+      });
+    } catch (err) {
+      logger.warn({ err, groupJid }, 'Failed to fetch group metadata for admin check');
+      return false;
+    }
   }
 
   /**
