@@ -20,14 +20,17 @@ type ModeratorType = InstanceType<typeof Moderator>;
 function makeStore() {
   const counts = new Map<string, number>();
   const added: Array<{ platform: string; userId: string; source: string; reason: string }> = [];
+  const windowDaysSeen: Array<number | undefined> = [];
   const key = (p: string, u: string) => `${p}:${u}`;
   return {
     added,
+    windowDaysSeen,
     async addWarning(w: { platform: string; userId: string; reason: string; source: string }) {
       added.push({ platform: w.platform, userId: w.userId, source: w.source, reason: w.reason });
       counts.set(key(w.platform, w.userId), (counts.get(key(w.platform, w.userId)) ?? 0) + 1);
     },
-    async countActiveWarnings(platform: string, userId: string) {
+    async countActiveWarnings(platform: string, userId: string, windowDays?: number) {
+      windowDaysSeen.push(windowDays);
       return counts.get(key(platform, userId)) ?? 0;
     },
   };
@@ -65,6 +68,7 @@ function makeEnforcer(overrides: Record<string, unknown> = {}) {
 function makeModerator(opts: {
   enabled?: boolean;
   strikeLimit?: number;
+  strikeWindowDays?: number;
   isExempt?: (p: string, u: string) => Promise<boolean>;
   classify?: (text: string) => Promise<{ reason: string; excerpt: string } | null>;
   store?: ReturnType<typeof makeStore>;
@@ -80,6 +84,7 @@ function makeModerator(opts: {
   const moderator = new Moderator({
     enabled: opts.enabled ?? true,
     strikeLimit: opts.strikeLimit ?? 3,
+    strikeWindowDays: opts.strikeWindowDays,
     classify: opts.classify ?? (async (t) => detect(t)),
     isExempt: opts.isExempt ?? (async () => false),
     store,
@@ -169,6 +174,18 @@ test('SECURITY: a member is muted only once the active-strike count reaches the 
   assert.equal(enforcer.calls.muteUser[0], 'u1');
   // The block alert (not just a warning) goes to the admin channel.
   assert.match(enforcer.calls.postAdminAlert.at(-1)!, /muted|blocked/i);
+});
+
+test('Moderator: unset strikeWindowDays threads through as undefined (unbounded, unset ⇒ unchanged behaviour)', async () => {
+  const { moderator, store } = makeModerator({ strikeLimit: 3 });
+  await moderator.scan(msg('you asshole'));
+  assert.deepEqual(store.windowDaysSeen, [undefined]);
+});
+
+test('Moderator: a configured strikeWindowDays is passed through to countActiveWarnings unchanged', async () => {
+  const { moderator, store } = makeModerator({ strikeLimit: 3, strikeWindowDays: 30 });
+  await moderator.scan(msg('you asshole'));
+  assert.deepEqual(store.windowDaysSeen, [30]);
 });
 
 test('SECURITY: admins and super admins are never warned or muted, even on a flagged message', async () => {

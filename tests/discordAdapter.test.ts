@@ -397,6 +397,31 @@ test('SECURITY: a member who leaves and rejoins while still at/above the strike 
   assert.match(recorded.adminAlerts[0], /rejoined/i);
 });
 
+test('SECURITY: the rejoin re-mute ignores MODERATION_STRIKE_WINDOW_DAYS — leaving and waiting out the window is not an unmute path', async (t) => {
+  const wasWindow = config.moderation.strikeWindowDays;
+  config.moderation.strikeWindowDays = 7;
+  try {
+    let windowParam: unknown = 'unqueried';
+    const stub = stubRejoinQueries({ activeWarnings: config.moderation.strikeLimit });
+    t.mock.method(pool, 'query', async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM member_warnings')) windowParam = params?.[2];
+      return stub(sql);
+    });
+    const adapter = new DiscordAdapter();
+    const recorded = stubMuteGuild(adapter);
+    const member = fakeGuildMember({ id: 'user-rejoin-window', guildId: config.discord.guildId });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(recorded.muted, ['user-rejoin-window']);
+    assert.equal(
+      windowParam,
+      null,
+      'the rejoin check must pass NO window (null bound param) — every uncleared strike counts on rejoin, so the strike window can never reopen the leave/rejoin bypass',
+    );
+  } finally {
+    config.moderation.strikeWindowDays = wasWindow;
+  }
+});
+
 test('onGuildMemberAdd: does not re-mute a rejoining member below the strike limit', async (t) => {
   t.mock.method(pool, 'query', stubRejoinQueries({ activeWarnings: config.moderation.strikeLimit - 1 }));
   const adapter = new DiscordAdapter();

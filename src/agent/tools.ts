@@ -737,7 +737,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       'or excerpt — that context stays admin-only (see moderation_history).',
     {},
     async () => {
-      const active = await countActiveWarnings(caller.platform, caller.userId);
+      const active = await countActiveWarnings(
+        caller.platform,
+        caller.userId,
+        config.moderation.strikeWindowDays,
+      );
       const limit = config.moderation.strikeLimit;
       if (active === 0) {
         return text('You have no active warnings.');

@@ -46,6 +46,10 @@ test('config: ROSTER_DEPARTED_RETENTION_DAYS unset (default) is disabled — zer
   assert.equal(config.behaviour.rosterDepartedRetentionDays, 0);
 });
 
+test('config: MODERATION_STRIKE_WINDOW_DAYS unset (default) is undefined — unbounded strike accumulation, unchanged from before this option existed (issue #194)', () => {
+  assert.equal(config.moderation.strikeWindowDays, undefined);
+});
+
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
   assert.equal(config.whatsapp.welcome.enabled, false);
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);

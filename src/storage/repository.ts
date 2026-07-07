@@ -2480,13 +2480,26 @@ export async function addWarning(w: NewWarning): Promise<void> {
   );
 }
 
-/** Active (uncleared) strike count for a member — the block trigger. */
-export async function countActiveWarnings(platform: string, userId: string): Promise<number> {
+/**
+ * Active (uncleared) strike count for a member — the block trigger. When
+ * `windowDays` is given, strikes older than that rolling window no longer
+ * count (MODERATION_STRIKE_WINDOW_DAYS); omitted, behaviour is unbounded
+ * (every uncleared strike counts, regardless of age — today's default). The
+ * window is always a bound parameter passed through `make_interval`, never
+ * interpolated into the query text, so the query shape can't be altered by a
+ * hostile/config value.
+ */
+export async function countActiveWarnings(
+  platform: string,
+  userId: string,
+  windowDays?: number,
+): Promise<number> {
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS n
        FROM member_warnings
-      WHERE platform = $1 AND user_id = $2 AND cleared_at IS NULL`,
-    [platform, userId],
+      WHERE platform = $1 AND user_id = $2 AND cleared_at IS NULL
+        AND ($3::int IS NULL OR created_at >= now() - make_interval(days => $3::int))`,
+    [platform, userId, windowDays ?? null],
   );
   return rows[0]?.n ?? 0;
 }

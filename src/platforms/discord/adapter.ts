@@ -315,6 +315,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    */
   private async remuteOnRejoinIfNeeded(member: GuildMember): Promise<void> {
     if (atLeast(await resolveRole('discord', member.id), 'admin')) return;
+    // Deliberately UNWINDOWED (no strikeWindowDays): this check exists to
+    // close the leave/rejoin mute-evasion bypass, so it must see every
+    // uncleared strike regardless of age — otherwise leaving and waiting out
+    // MODERATION_STRIKE_WINDOW_DAYS would be a de facto auto-unmute that
+    // bypasses clear_warnings (see docs/SECURITY.md).
     const active = await countActiveWarnings('discord', member.id);
     if (active < config.moderation.strikeLimit) return;
     await this.muteUser(member.id);

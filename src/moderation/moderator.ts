@@ -26,7 +26,7 @@ export interface ModerationStore {
     source: 'auto' | 'admin';
     issuedBy: string | null;
   }): Promise<void>;
-  countActiveWarnings(platform: string, userId: string): Promise<number>;
+  countActiveWarnings(platform: string, userId: string, windowDays?: number): Promise<number>;
 }
 
 /** Platform-specific enforcement (the Discord adapter implements this). */
@@ -46,6 +46,8 @@ export interface ModerationEnforcer {
 export interface ModeratorDeps {
   enabled: boolean;
   strikeLimit: number;
+  /** Optional rolling window (days) — see countActiveWarnings. Unset = unbounded. */
+  strikeWindowDays?: number;
   classify: Classifier;
   /** True for admins/super admins, who are never warned or muted. */
   isExempt: (platform: Platform, userId: string) => Promise<boolean>;
@@ -129,7 +131,11 @@ export class Moderator {
       issuedBy: null,
     });
 
-    const active = await this.deps.store.countActiveWarnings(ctx.platform, ctx.userId);
+    const active = await this.deps.store.countActiveWarnings(
+      ctx.platform,
+      ctx.userId,
+      this.deps.strikeWindowDays,
+    );
 
     if (active >= this.deps.strikeLimit) {
       await this.safe(() => this.deps.enforcer.muteUser(ctx.userId), 'mute');

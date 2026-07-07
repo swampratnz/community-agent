@@ -13,6 +13,7 @@ export function createModerator(enforcer: ModerationEnforcer): Moderator {
   return new Moderator({
     enabled: config.moderation.enabled,
     strikeLimit: config.moderation.strikeLimit,
+    strikeWindowDays: config.moderation.strikeWindowDays,
     classify: makeClassifier({
       badWords: config.moderation.badWords,
       llmAbuseEnabled: config.moderation.llmAbuseEnabled,

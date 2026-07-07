@@ -69,6 +69,14 @@ const EnvSchema = z.object({
   MODERATION_BAD_WORDS: z.string().optional(),
   // Active strikes at which the member is muted (blocked from posting).
   MODERATION_STRIKE_LIMIT: z.coerce.number().int().positive().default(3),
+  // Optional rolling window (days): only strikes newer than this count toward
+  // MODERATION_STRIKE_LIMIT. Unset = unbounded (today's behaviour — every
+  // uncleared strike counts forever, no matter its age). Never auto-unmutes:
+  // an already-muted member stays muted until an admin runs `clear_warnings`,
+  // even if their strikes age out of the window. The leave/rejoin re-mute
+  // check deliberately IGNORES this window (anti-evasion — otherwise leaving
+  // and waiting out the window would bypass clear_warnings; docs/SECURITY.md).
+  MODERATION_STRIKE_WINDOW_DAYS: z.coerce.number().int().positive().optional(),
   // Discord role the bot creates (if missing) and assigns to block posting;
   // per-channel overwrites deny it Send Messages. Removed when an admin clears.
   MODERATION_MUTED_ROLE_NAME: z.string().default('Muted'),
@@ -381,6 +389,7 @@ export const config = {
     enabled: env.DISCORD_MODERATION_ENABLED ?? false,
     badWords: csv(env.MODERATION_BAD_WORDS),
     strikeLimit: env.MODERATION_STRIKE_LIMIT,
+    strikeWindowDays: env.MODERATION_STRIKE_WINDOW_DAYS,
     mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
