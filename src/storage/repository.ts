@@ -2746,10 +2746,11 @@ export async function resolveContentReport(
   conversationIds?: readonly string[],
 ): Promise<{ platform: Platform; reporterUserId: string; reason: string } | null> {
   const params: unknown[] = [id, status, resolvedBy];
+  const resolvedByIdx = params.length;
   let scope = '';
   if (conversationIds) {
     params.push([...conversationIds]);
-    scope = `AND (conversation_id = ANY($${params.length}) OR (is_dm AND target_user_id IS DISTINCT FROM $3))`;
+    scope = `AND (conversation_id = ANY($${params.length}) OR (is_dm AND target_user_id IS DISTINCT FROM $${resolvedByIdx}))`;
   }
   const { rows } = await pool.query(
     `UPDATE content_reports

@@ -777,10 +777,19 @@ the supported path.
   report an admin without that admin knowing. `is_dm` is derived from
   platform/channel type at report-creation time (`CallerContext.isDirect`),
   never from message content, so it cannot be spoofed by a report's text.
-  Reports created before #197 default `is_dm` to `false` (non-retroactive)
-  and keep their original super-admin-only visibility. Issue #90's proactive
-  super-admin DM on filing (`notifyReportFiled`) is unchanged — it does not
-  fan out to every admin, only to super admins, as before.
+  `target_user_id` is reporter-supplied and unauthenticated, unlike
+  `moderate`/`clear_warnings`'s admin-supplied targets — `report_content`
+  therefore only stores it (and lets it drive the accused-admin exclusion) if
+  `isKnownUser` confirms the bot has actually seen that id before; an
+  unknown/typo'd id is dropped rather than silently excluding an unrelated
+  admin from a report that isn't about them. This narrows, but does not
+  eliminate, the exclusion being pointed at the wrong admin — a member who
+  already knows a real admin's platform id (e.g. from an @-mention) can still
+  name them as the target of an unrelated report. Reports created before #197
+  default `is_dm` to `false` (non-retroactive) and keep their original
+  super-admin-only visibility. Issue #90's proactive super-admin DM on filing
+  (`notifyReportFiled`) is unchanged — it does not fan out to every admin,
+  only to super admins, as before.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
   the budget degrades open (rate limiter still applies).
 - **Suggestion/report-resolution DMs degrade to silent skip only when the

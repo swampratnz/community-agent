@@ -666,12 +666,25 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       messageId: z.string().optional().describe('The specific message id being reported, if known'),
     },
     async (args) => {
+      // targetUserId is reporter-supplied and unauthenticated — unlike
+      // moderate/clear_warnings (admin-only, already gated by isKnownUser),
+      // any member can name anyone here. Since target_user_id also drives the
+      // accused-admin visibility exclusion (listReports/countOpenReports/
+      // resolveContentReport), an unverified id could be used to blind an
+      // unrelated admin from a report that isn't about them at all. Only a
+      // target the bot has actually seen before is trusted to drive that
+      // exclusion; an unknown/typo'd id is dropped rather than stored
+      // (issue #197 review).
+      const targetUserId =
+        args.targetUserId && (await isKnownUser(caller.platform, args.targetUserId))
+          ? args.targetUserId
+          : undefined;
       const created = await createContentReport({
         platform: caller.platform,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
         conversationId: caller.conversationId,
-        targetUserId: args.targetUserId,
+        targetUserId,
         messageId: args.messageId,
         reason: args.reason,
         isDirect: caller.isDirect,
@@ -688,7 +701,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
         conversationId: caller.conversationId,
-        targetUserId: args.targetUserId,
+        targetUserId,
         messageId: args.messageId,
         reason: args.reason,
       });

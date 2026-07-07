@@ -48,6 +48,7 @@ const {
   createContentReport,
   resolveSuggestion,
   resolveContentReport,
+  listReports,
   getResponseStyle,
   getLanguagePreference,
   setResponseStyle,
@@ -1826,6 +1827,83 @@ test(
     assert.equal(channelRow.rows[0]?.is_dm, false, 'a channel-filed report is stored with is_dm = false');
 
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[dmId, channelId]]);
+  },
+);
+
+test(
+  'SECURITY: report_content drops a spoofed/unverified targetUserId rather than letting it blind an unrelated admin (issue #197 review)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const knownAdmin = `${REPORT_CONTENT_HANDLER_USER}-known-admin`;
+    const spoofedTarget = `${REPORT_CONTENT_HANDLER_USER}-spoofed-target`;
+
+    // Only knownAdmin has ever been seen by the bot — spoofedTarget is a
+    // string an attacker could still plausibly guess/know (e.g. a real
+    // platform id format) but the bot has no record of it.
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: knownAdmin,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello',
+    });
+
+    const knownResult = await reportContentHandler(
+      adapter,
+      `${REPORT_CONTENT_HANDLER_USER}-r1`,
+      true,
+    ).handler({
+      reason: 'report naming a target the bot has actually seen before',
+      targetUserId: knownAdmin,
+    });
+    const spoofedResult = await reportContentHandler(
+      adapter,
+      `${REPORT_CONTENT_HANDLER_USER}-r2`,
+      true,
+    ).handler({
+      reason: 'report naming a target the bot has never seen',
+      targetUserId: spoofedTarget,
+    });
+
+    const knownId = Number(/#(\d+)/.exec(knownResult.content[0]?.text ?? '')?.[1]);
+    const spoofedId = Number(/#(\d+)/.exec(spoofedResult.content[0]?.text ?? '')?.[1]);
+    assert.ok(knownId && spoofedId);
+
+    const knownRow = await pool.query(`SELECT target_user_id FROM content_reports WHERE id = $1`, [knownId]);
+    const spoofedRow = await pool.query(`SELECT target_user_id FROM content_reports WHERE id = $1`, [
+      spoofedId,
+    ]);
+    assert.equal(
+      knownRow.rows[0]?.target_user_id,
+      knownAdmin,
+      'a target the bot has actually seen is stored and can drive the accused-admin exclusion',
+    );
+    assert.equal(
+      spoofedRow.rows[0]?.target_user_id,
+      null,
+      'SECURITY: an unverified/spoofed target must not be stored, so it can never drive the exclusion',
+    );
+
+    // Confirm the dropped target can't blind anyone: a scoped admin who
+    // doesn't even participate in convo-1 (so the only way this report could
+    // be visible to them is via the is_dm broadening) still sees it — even
+    // "viewed" as the exact spoofed string, the report (with target_user_id
+    // NULL) is not excluded, since NULL IS DISTINCT FROM anything is true.
+    const spoofedViewerScoped = await listReports(
+      [`${REPORT_CONTENT_HANDLER_USER}-unrelated-convo`],
+      undefined,
+      50,
+      spoofedTarget,
+    );
+    assert.ok(
+      spoofedViewerScoped.some((r) => r.id === spoofedId),
+      'SECURITY: the spoofed target never excludes any admin from seeing the report',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[knownId, spoofedId]]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [knownAdmin]);
   },
 );
 
