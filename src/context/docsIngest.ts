@@ -279,7 +279,10 @@ export async function runDocsIngest(
       result.chunks += 1;
       seen.add(chunk.title);
       try {
-        const outcome = await syncGlobalKnowledgeByProvenance(chunk.title, chunk.content, DOCS_PROVENANCE);
+        const outcome = await syncGlobalKnowledgeByProvenance(chunk.title, chunk.content, DOCS_PROVENANCE, {
+          url,
+          title: chunk.title,
+        });
         if (outcome === 'created') result.created += 1;
         else if (outcome === 'updated') result.updated += 1;
         else if (outcome === 'unchanged') result.unchanged += 1;
