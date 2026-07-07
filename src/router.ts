@@ -567,6 +567,7 @@ export class Router {
       role,
       conversationId: msg.conversationId,
       isDirect: msg.isDirect,
+      messageId: msg.messageId,
     };
 
     // Best-effort "processing…" signal, fired immediately and then re-fired

@@ -32,6 +32,7 @@ import {
   listMemberNotes,
   MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
+  isKnownMessage,
   isKnownUser,
   isKnowledgeStale,
   linkMembers,
@@ -301,6 +302,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
   '- Suggest how the bot or community could be better\n' +
   '- Ask me to explain things more simply from now on ("keep it simple")\n' +
+  '- React to a message with an emoji instead of replying\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -559,6 +561,66 @@ function reservePollSlot(conversationId: string, limit: number): boolean {
   recent.push(now);
   pollTimestampsByConversation.set(conversationId, recent);
   return true;
+}
+
+/**
+ * Closed emoji allowlist for `react_to_message` (issue #231) — positive/
+ * neutral only, deliberately excluding anything that could read as the bot
+ * editorialising against a member (no 👎). Never interpolate a model-supplied
+ * emoji string into the Discord API; only one of these fixed values ever
+ * reaches `adapter.reactToMessage`, matching the closed-enum discipline
+ * `set_language_preference` already uses for untrusted-string inputs.
+ */
+export const ALLOWED_REACTION_EMOJI = ['✅', '👍', '👀', '🎉'] as const;
+
+/** Per-user reaction tally for the current UTC day (anti-spam on the bot's own identity; issue #231). */
+export const REACTION_RATE_LIMIT_PER_DAY = 20;
+const reactionDaily = new Map<string, { day: string; count: number }>();
+
+/**
+ * Reserve one reaction slot for `key` against today's per-user cap, same
+ * restart-resets-the-window shape as `reserveImageGenDaily` — acceptable here
+ * because a reaction is far lower-consequence than an image-gen subprocess
+ * spawn, so an in-memory (not DB) cap is proportionate and needs no migration.
+ */
+function reserveReactionDaily(key: string): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = reactionDaily.get(key);
+  if (!entry || entry.day !== today) {
+    reactionDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= REACTION_RATE_LIMIT_PER_DAY) return false;
+  entry.count += 1;
+  return true;
+}
+
+/**
+ * Best-effort acknowledgement reaction on the message a `report_content`
+ * submission named (issue #231's binding "concrete wired use" requirement —
+ * a free-floating `react_to_message` the model may or may not call does not
+ * itself satisfy the acceptance criteria). Deterministic, not model-invoked:
+ * fires directly off a successful report filing, same fire-and-forget shape
+ * as `notifyReportFiled`. Silently skipped when the platform doesn't support
+ * reactions, no messageId was given, or the message isn't one the bot has
+ * actually seen in this conversation — never surfaces an error to the
+ * reporter, since the report itself already succeeded.
+ */
+function ackReportedMessage(
+  adapter: PlatformAdapter,
+  platform: Platform,
+  conversationId: string,
+  messageId: string | undefined,
+): void {
+  if (!messageId || !adapter.reactToMessage) return;
+  void (async () => {
+    try {
+      if (!(await isKnownMessage(platform, conversationId, messageId))) return;
+      await adapter.reactToMessage!(conversationId, messageId, '👀');
+    } catch (err) {
+      logger.warn({ err, messageId }, 'report_content acknowledgement reaction failed');
+    }
+  })();
 }
 
 export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter, getAdapter?: AdapterLookup) {
@@ -871,6 +933,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         messageId: args.messageId,
         reason: args.reason,
       });
+      ackReportedMessage(adapter, caller.platform, caller.conversationId, args.messageId);
       return text(`Report #${created.id} recorded for this conversation's admins. Thanks for flagging it.`);
     },
   );
@@ -1172,6 +1235,53 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       );
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const reactToMessage = tool(
+    'react_to_message',
+    'React to a message with an emoji instead of replying with text — a lightweight, low-noise ' +
+      `acknowledgement ("got it", "noted", "seen"). Only ${ALLOWED_REACTION_EMOJI.join(' ')} are allowed; ` +
+      'no other emoji, custom, or Nitro emoji can be used. Defaults to the message that triggered this ' +
+      'turn when messageId is omitted. Discord only.',
+    {
+      emoji: z
+        .enum(ALLOWED_REACTION_EMOJI)
+        .describe(`One of: ${ALLOWED_REACTION_EMOJI.join(' ')} — no other value is accepted`),
+      messageId: z
+        .string()
+        .optional()
+        .describe('Message id to react to; defaults to the message that triggered this turn'),
+    },
+    async (args) => {
+      if (!adapter.reactToMessage) {
+        return text(`Reactions aren't available on ${caller.platform}.`, true);
+      }
+      const messageId = args.messageId ?? caller.messageId;
+      if (!messageId) {
+        return text('No message to react to — the current message has no visible id.', true);
+      }
+      // Same "the bot must have actually seen it" discipline as
+      // moderate/announce's target validation, scoped to the caller's own
+      // conversation (a member never names a different one).
+      if (!(await isKnownMessage(caller.platform, caller.conversationId, messageId))) {
+        return text(`Refusing: message "${messageId}" has never been seen in this conversation.`, true);
+      }
+      const key = `${caller.platform}:${caller.userId}`;
+      if (!reserveReactionDaily(key)) {
+        return text(
+          `You've hit today's reaction limit (${REACTION_RATE_LIMIT_PER_DAY}). Try again tomorrow.`,
+          true,
+        );
+      }
+      try {
+        await adapter.reactToMessage(caller.conversationId, messageId, args.emoji);
+        return text(`Reacted ${args.emoji}.`);
+      } catch (err) {
+        logger.warn({ err, actor: caller.userId }, 'react_to_message failed');
+        return text('Failed to react to that message.', true);
+      }
+    },
+    { annotations: { readOnlyHint: false } },
   );
 
   // --- Admin tools (scoped to the admin's own conversations) ------------------
@@ -2623,6 +2733,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       setResponseStyleTool,
       setLanguagePreferenceTool,
       catchUp,
+      reactToMessage,
       whatsNew,
       userHistory,
       moderate,
