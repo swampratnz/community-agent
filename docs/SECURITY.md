@@ -792,9 +792,9 @@ so it is:
   Roles/Manage Channels grants auto-moderation needs. It is
   operator-granted, least-privilege, and feature-gated: a single atomic API
   call either creates the whole event or throws before creating anything, so
-  a missing grant fails clean rather than half-creating an event. See the
-  Discord platform notes below and docs/DEPLOYMENT.md's operational
-  checklist.
+  a missing grant fails clean rather than half-creating an event. Granted as
+  part of the base bot invite — see the Discord platform notes below and
+  docs/DEPLOYMENT.md step 7 ("Invite the Discord bot").
 
 ## Platform-specific notes
 
@@ -854,8 +854,9 @@ privileged tool, no RBAC surface.
   `GuildMembers` are privileged intents — enable them in the Developer Portal
   or the bot will fail to log in.**
 - Give the bot the least role permissions required for moderation (Timeout
-  Members, Kick Members, Manage Messages) and place its role appropriately in
-  the hierarchy.
+  Members, Kick Members, Manage Messages) plus Manage Events (required for the
+  admin `create_event` tool, §11), and place its role appropriately in the
+  hierarchy.
 
 ## Subscription-auth caveat
 Anthropic's Agent SDK docs state subscription/claude.ai login is **not

@@ -115,8 +115,10 @@ instead of attempting an unsupported send).
 ## 7. Invite the Discord bot
 In the Developer Portal, generate an OAuth2 URL with the `bot` scope and
 permissions: *Read Messages/View Channels, Send Messages, Read Message History,
-Moderate Members (timeout), Kick Members, Manage Messages*. Open it and add the
-bot to your server.
+Moderate Members (timeout), Kick Members, Manage Messages, Manage Events*. Open
+it and add the bot to your server. (Manage Events is required for the admin
+`create_event` tool, issue #230 — without it, `create_event` fails with a
+permission error.)
 
 ## 8. Install the service
 ```bash
