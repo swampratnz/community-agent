@@ -89,6 +89,7 @@ const {
   getMyDataSummary,
   addWarning,
   countActiveWarnings,
+  countStaleKnowledge,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -1467,6 +1468,67 @@ test(
       before,
       'clearing every inserted request restores the prior count',
     );
+  },
+);
+
+test(
+  'repository: countStaleKnowledge judges staleness by whichever of edit or retrieval is more recent (issue #199)',
+  { skip },
+  async () => {
+    const before = await countStaleKnowledge(30);
+
+    const { id: retrievedRecently } = await saveKnowledge({
+      content: `${RUN} retrieved recently but edited long ago`,
+      title: 'stale-check-retrieved-recently',
+      scope: 'global',
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '400 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [retrievedRecently],
+    );
+
+    const { id: editedRecently } = await saveKnowledge({
+      content: `${RUN} edited recently but never retrieved (the COALESCE-only bug)`,
+      title: 'stale-check-edited-recently',
+      scope: 'global',
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '1 day', last_retrieved_at = now() - interval '400 days'
+        WHERE id = $1`,
+      [editedRecently],
+    );
+
+    const { id: bothOld } = await saveKnowledge({
+      content: `${RUN} edited long ago and never retrieved`,
+      title: 'stale-check-both-old',
+      scope: 'global',
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '400 days', last_retrieved_at = now() - interval '400 days'
+        WHERE id = $1`,
+      [bothOld],
+    );
+
+    const { id: neverRetrievedButOld } = await saveKnowledge({
+      content: `${RUN} old edit, never retrieved at all (last_retrieved_at NULL)`,
+      title: 'stale-check-never-retrieved',
+      scope: 'global',
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+      neverRetrievedButOld,
+    ]);
+
+    assert.equal(
+      await countStaleKnowledge(30),
+      before + 2,
+      'only the two entries that are BOTH old-edited and old/never-retrieved count as stale',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [retrievedRecently, editedRecently, bothOld, neverRetrievedButOld],
+    ]);
+    assert.equal(await countStaleKnowledge(30), before, 'cleanup restores the prior stale count');
   },
 );
 

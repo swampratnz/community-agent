@@ -670,6 +670,28 @@ export async function listKnowledge(
   }));
 }
 
+/**
+ * Exact count of knowledge entries untouched — neither edited nor retrieved —
+ * in the last `days` (issue #199). `GREATEST(updated_at,
+ * COALESCE(last_retrieved_at, updated_at))` takes whichever of the two
+ * signals is more recent: an entry never retrieved falls back to its edit
+ * time, and one edited after its last retrieval is judged by that edit, not
+ * a stale `last_retrieved_at`. A plain `COALESCE` alone would get this
+ * second case backwards (it'd prefer a non-null but older
+ * `last_retrieved_at` over a fresh edit). Guild-wide, matching
+ * `countAccessRequests`/`countPendingSuggestions` — knowledge entries carry
+ * no conversation scope for `list_knowledge` to restrict by either.
+ */
+export async function countStaleKnowledge(days: number): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM knowledge
+      WHERE GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($1 || ' days')::interval`,
+    [days],
+  );
+  return Number(rows[0].n);
+}
+
 /** Update a knowledge entry's title/content/scope and re-embed. Returns false if no row matched. */
 export async function updateKnowledge(input: {
   id: number;
