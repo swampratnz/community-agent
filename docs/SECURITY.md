@@ -773,7 +773,15 @@ the supported path.
   conversation-scoped admins still can't see it via `list_reports` until
   that routing mechanism exists.
 - **The daily budget counts recorded replies** — if cost/usage recording fails,
-  the budget degrades open (rate limiter still applies).
+  the budget degrades open (rate limiter still applies). This is a deliberate
+  fail-open (issue #52: never block a real reply on a per-request DB hiccup),
+  but it is no longer silent (issue #203): a `countRepliesToUser` failure logs
+  an `error`-level line and DMs every super admin (at most once per 15
+  minutes, process-wide — a recording failure is a systemic condition, not a
+  per-user one), naming the failure with no message content or per-user
+  identifiers. The alert only fires on the message hot path, not via a
+  background poller — a sustained outage with no traffic produces no alert,
+  which is `health.ts`'s job, not this one's.
 - **Suggestion/report-resolution DMs degrade to silent skip only when the
   origin platform isn't registered in this deployment** (issue #157, closing
   the narrower gap #116/#120 left open): resolving a suggestion or report
