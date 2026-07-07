@@ -268,6 +268,32 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deletes its still-*pending* candidates; an accepted candidate (and the
   knowledge entry it produced) is unaffected, matching how `knowledge`
   itself outlives an unrelated purge.
+- **Knowledge gaps** (`knowledge_gaps`, issue #208): the `knowledge_search`
+  handler persists a below-floor miss — a call that came back with hits but
+  none cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — so admins can see
+  what real questions have no confident answer yet, the one curation signal
+  `question_digest`/`countStaleKnowledge`/`knowledge_candidates` don't
+  capture. **No new tier, no new untrusted input path**: `args.query` is
+  member-authored text already flowing through `recordInteraction`; this is
+  a second, smaller, purpose-built copy for cheap clustering, not a new
+  category of collection. Gated on `hits.length > 0 && relevantIds.length
+  === 0`, never on a plain empty result, pinned by a `SECURITY:` test — a
+  `searchKnowledge` `embed()` failure also returns `[]`, and gating on "zero
+  hits" alone would silently log an embedding outage as a wave of genuine
+  gaps. A conservative DB-backed rolling-24h insert cap per `(platform,
+  user_id)` (`KNOWLEDGE_GAP_DAILY_LIMIT`, 20/day, same COUNT(*)-inside-insert
+  pattern as `answer_feedback`/`suggestions`) bounds a chatty or adversarial
+  member flooding the signal, pinned by a `SECURITY:` test. The read side,
+  `list_knowledge_gaps`, is read-only, admin-tier, conversation-scoped via
+  `callerScope()` exactly like `question_digest` (pinned by a `SECURITY:`
+  RBAC-placement test and a scoping test mirroring
+  `repository.test.ts`'s `recentQuestionClusters` scope test), and
+  `untrusted()`-wraps its output like `list_suggestions`/`list_reports` since
+  the representative query text is member-authored. `forget_me`/
+  `purge_user_data` delete the caller's own `knowledge_gaps` rows, pinned by
+  a `SECURITY:` purge-coherence test — same treatment as `suggestions`/
+  `content_reports`/`answer_feedback`. No paid model call: the embedding is
+  the same free, local `embed()` every other memory/knowledge feature uses.
 - **Daily knowledge refresh** (`KNOWLEDGE_REFRESH_ENABLED`, off by default —
   src/context/knowledgeRefresh.ts): the one path that writes to `knowledge`
   **without** the human-curation gate above — a deliberate, operator-enabled

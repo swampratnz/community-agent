@@ -42,6 +42,9 @@ const {
   knowledgeCoversTopic,
   recordAdminAction,
   recentQuestionClusters,
+  recentKnowledgeGapClusters,
+  recordKnowledgeGap,
+  KNOWLEDGE_GAP_DAILY_LIMIT,
   recentModerationEntries,
   usageStats,
   createContentReport,
@@ -920,6 +923,178 @@ test(
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
       [inScopeConvo, outOfScopeConvo],
     ]);
+  },
+);
+
+test('repository: recordKnowledgeGap inserts a row with a real embedding', { skip }, async () => {
+  const conversationId = `${RUN}-c-gap-insert`;
+  const userId = `${RUN}-gap-insert-user`;
+  const query = 'how do I reset my Zylotrix session';
+
+  const result = await recordKnowledgeGap('discord', conversationId, userId, query);
+  assert.ok(result !== 'rate_limited', 'a fresh user is never rate-limited on the first insert');
+
+  const { rows } = await pool.query(
+    `SELECT platform, conversation_id, user_id, query_text, embedding FROM knowledge_gaps WHERE id = $1`,
+    [result.id],
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].platform, 'discord');
+  assert.equal(rows[0].conversation_id, conversationId);
+  assert.equal(rows[0].user_id, userId);
+  assert.equal(rows[0].query_text, query);
+  assert.ok(Array.isArray(rows[0].embedding), 'a real embedding vector must be stored');
+  assert.equal(rows[0].embedding.length, config.db.embeddingDim);
+
+  await pool.query(`DELETE FROM knowledge_gaps WHERE id = $1`, [result.id]);
+});
+
+test(
+  'repository: recentKnowledgeGapClusters groups near-duplicate embeddings, separates unrelated ones, and enforces count >= 2',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-cluster`;
+
+    // Hand-crafted vectors (not run through the real embedding model), same
+    // determinism convention as the recentQuestionClusters cluster test.
+    const dim = config.db.embeddingDim;
+    const sameQueryVec = new Array(dim).fill(0);
+    sameQueryVec[3] = 1;
+    const unrelatedVec = new Array(dim).fill(0);
+    unrelatedVec[4] = 1;
+
+    const insertGap = (queryText: string, vec: number[]) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5)`,
+        ['discord', conversationId, `${RUN}-gap-cluster-user`, queryText, pgvector.toSql(vec)],
+      );
+
+    await insertGap('how do I reset my session', sameQueryVec);
+    await insertGap('my session keeps resetting, how do I fix it', sameQueryVec);
+    await insertGap('what time is the next meetup', unrelatedVec);
+
+    const clusters = await recentKnowledgeGapClusters([conversationId], 7, 10);
+    assert.equal(clusters.length, 1, 'only the count >= 2 cluster survives; the singleton is dropped');
+    assert.equal(clusters[0].count, 2);
+    assert.equal(
+      clusters[0].representative,
+      'how do I reset my session',
+      'representative is the first gap seen',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: recentKnowledgeGapClusters excludes conversations outside the given scope',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-gap-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-gap-scope-out`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[5] = 1;
+
+    const insertGap = (conversationId: string, queryText: string) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5)`,
+        ['discord', conversationId, `${RUN}-gap-scope-user`, queryText, pgvector.toSql(vec)],
+      );
+
+    await insertGap(inScopeConvo, 'in-scope gap A');
+    await insertGap(inScopeConvo, 'in-scope gap B');
+    await insertGap(outOfScopeConvo, 'out-of-scope gap A');
+    await insertGap(outOfScopeConvo, 'out-of-scope gap B');
+
+    const scoped = await recentKnowledgeGapClusters([inScopeConvo], 7, 10);
+    assert.equal(scoped.length, 1, 'clusters only reflect the in-scope conversation');
+    assert.equal(scoped[0].count, 2);
+
+    const unscoped = await recentKnowledgeGapClusters(null, 7, 10);
+    const totalUnscoped = unscoped.reduce((n, c) => n + c.count, 0);
+    assert.ok(totalUnscoped >= 4, 'without a scope filter (super admin), both conversations contribute');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: recordKnowledgeGap enforces a DB-backed rolling-24h cap per (platform, user_id), robust to a simulated process restart',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-cap`;
+    const userId = `${RUN}-gap-cap-user`;
+
+    // Seed cap-many rows via direct SQL, as if written by a previous process
+    // instance, so an in-memory counter would wrongly admit the next insert
+    // but the DB-backed COUNT(*) refuses it — same pattern as
+    // createAnswerFeedback/createSuggestion's rate-cap tests.
+    for (let i = 0; i < KNOWLEDGE_GAP_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text) VALUES ($1,$2,$3,$4)`,
+        ['discord', conversationId, userId, `seeded gap ${i}`],
+      );
+    }
+
+    const rejected = await recordKnowledgeGap('discord', conversationId, userId, 'the (cap+1)th gap');
+    assert.equal(rejected, 'rate_limited', 'the (cap+1)th insert in 24h is refused, not silently accepted');
+
+    const countAfterRejection = await pool.query(
+      `SELECT count(*) AS n FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
+      ['discord', userId],
+    );
+    assert.equal(
+      Number(countAfterRejection.rows[0].n),
+      KNOWLEDGE_GAP_DAILY_LIMIT,
+      'no row is inserted for a refused insert',
+    );
+
+    // A different user is unaffected by this user's cap.
+    const otherUser = `${RUN}-gap-cap-other`;
+    const accepted = await recordKnowledgeGap(
+      'discord',
+      conversationId,
+      otherUser,
+      'a different user, own cap',
+    );
+    assert.ok(accepted !== 'rate_limited', "a different user's cap is independent");
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData (forget_me/purge_user_data) removes the caller's own knowledge_gaps rows (issue #208)",
+  { skip },
+  async () => {
+    const targetUser = `${RUN}-gap-purge-target`;
+    const otherUser = `${RUN}-gap-purge-other`;
+    const conversationId = `${RUN}-c-gap-purge`;
+
+    const targetGap = await recordKnowledgeGap(
+      'discord',
+      conversationId,
+      targetUser,
+      'target user gap query',
+    );
+    const otherGap = await recordKnowledgeGap('discord', conversationId, otherUser, 'other user gap query');
+    assert.ok(targetGap !== 'rate_limited' && otherGap !== 'rate_limited', 'fixture gaps were recorded');
+
+    const purged = await purgeUserData('discord', targetUser);
+    assert.ok(purged >= 1, 'purged count covers the target user gap row');
+
+    const targetRows = await pool.query(`SELECT 1 FROM knowledge_gaps WHERE user_id = $1`, [targetUser]);
+    assert.equal(targetRows.rows.length, 0, "the target user's knowledge_gaps rows are gone");
+
+    const otherRows = await pool.query(`SELECT 1 FROM knowledge_gaps WHERE user_id = $1`, [otherUser]);
+    assert.equal(otherRows.rows.length, 1, "another user's knowledge_gaps rows are untouched");
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE user_id = $1`, [otherUser]);
   },
 );
 

@@ -318,6 +318,25 @@ test('SECURITY: list_knowledge_candidates/accept_knowledge_candidate/decline_kno
   }
 });
 
+test('SECURITY: list_knowledge_gaps is admin-only, conversation-scoped like question_digest — the below-floor knowledge_search miss signal never reaches member/guest turns (issue #208)', () => {
+  const tool = 'mcp__community__list_knowledge_gaps';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_knowledge_gaps must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'list_knowledge_gaps must not be in MEMBER_TOOLS',
+  );
+  assert.ok(
+    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    'list_knowledge_gaps must not be exclusively a SUPER_ADMIN_TOOLS entry',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_knowledge_gaps`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_knowledge_gaps`);
+  }
+});
+
 test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachable by admin/member/guest', () => {
   const tool = 'mcp__community__redeploy_bot';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'redeploy_bot must be in SUPER_ADMIN_TOOLS');
