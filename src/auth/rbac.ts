@@ -88,6 +88,13 @@ export const MEMBER_TOOLS = [
   // model-supplied id; same conversation-scope discipline as
   // remember_search's default scope.
   'mcp__community__catch_up',
+  // Lightweight emoji acknowledgement (issue #231): closed positive/neutral
+  // allowlist only, and only on a message the bot has actually seen in this
+  // conversation — same "validate targets" discipline as moderate/announce,
+  // just scoped to the caller's own conversation rather than an admin's set.
+  // Discord-only; other adapters simply don't implement
+  // PlatformAdapter.reactToMessage.
+  'mcp__community__react_to_message',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */
@@ -166,4 +173,6 @@ export interface CallerContext {
   conversationId: string;
   /** True for a 1:1 DM (WhatsApp is always DM; Discord DM channel) — see issue #197. */
   isDirect: boolean;
+  /** Platform-native id of the message that triggered this turn, when the platform exposes one (issue #231: react_to_message's default target). */
+  messageId?: string;
 }

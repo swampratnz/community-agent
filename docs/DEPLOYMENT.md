@@ -271,7 +271,7 @@ unless `DISCORD_ASSIGNABLE_ROLES` is set. To enable it:
 
 1. **Pre-create each role in Discord** with **no permissions** (leave every
    permission toggle off — `@everyone`-level). The bot's assign-time check
-   (docs/SECURITY.md §9) will refuse to grant any role that carries a
+   (docs/SECURITY.md §10) will refuse to grant any role that carries a
    permission, even one listed below, so a permission-bearing role just
    fails loudly rather than being silently handed out.
 2. **Position the bot's own role above** every role you list, in the
