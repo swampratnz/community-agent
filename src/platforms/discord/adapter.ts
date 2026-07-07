@@ -315,7 +315,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    */
   private async remuteOnRejoinIfNeeded(member: GuildMember): Promise<void> {
     if (atLeast(await resolveRole('discord', member.id), 'admin')) return;
-    const active = await countActiveWarnings('discord', member.id);
+    const active = await countActiveWarnings('discord', member.id, config.moderation.strikeWindowDays);
     if (active < config.moderation.strikeLimit) return;
     await this.muteUser(member.id);
     await this.postAdminAlert(

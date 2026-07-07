@@ -508,6 +508,14 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
+  - **Strike accumulation is unbounded by default, and that's now a documented
+    choice, not an oversight**: `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset
+    by default) lets an admin opt into a rolling window so only strikes newer
+    than it count toward `MODERATION_STRIKE_LIMIT` — an isolated year-old strike
+    no longer counts the same as one from an hour ago. It never deletes or
+    mutates `member_warnings` rows (the audit trail is untouched) and never
+    auto-unmutes an already-muted member — lifting a mute still requires an
+    explicit `clear_warnings` (pinned by a `SECURITY:` test).
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
   identity has been linked (`link_member`) to another platform identity as the

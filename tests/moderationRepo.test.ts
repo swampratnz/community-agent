@@ -82,6 +82,143 @@ test(
 );
 
 test(
+  'countActiveWarnings with no window configured counts a strike regardless of age (regression: unset ⇒ unbounded, byte-for-byte identical to pre-window behaviour)',
+  { skip },
+  async () => {
+    const user = `${RUN}-no-window`;
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'old',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '400 days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [user],
+    );
+    assert.equal(
+      await countActiveWarnings('discord', user),
+      1,
+      'a year-old strike still counts when no window is configured',
+    );
+  },
+);
+
+test(
+  'countActiveWarnings with a configured window excludes a strike older than the window and includes one inside it',
+  { skip },
+  async () => {
+    const user = `${RUN}-window`;
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'old',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'recent',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    // Age only the first strike past a 30-day window; the second stays fresh.
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '31 days'
+        WHERE platform = 'discord' AND user_id = $1 AND reason = 'old'`,
+      [user],
+    );
+    assert.equal(
+      await countActiveWarnings('discord', user, 30),
+      1,
+      'only the strike inside the 30-day window counts',
+    );
+    assert.equal(
+      await countActiveWarnings('discord', user),
+      2,
+      'both strikes still count when no window is passed, confirming the window is opt-in per call',
+    );
+  },
+);
+
+test(
+  "SECURITY: countActiveWarnings' window is a bound query parameter, never string-interpolated — a hostile non-numeric value can't alter the query shape (e.g. inject via the interval)",
+  { skip },
+  async () => {
+    const user = `${RUN}-hostile-window`;
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'x',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const hostile = '1); DROP TABLE member_warnings; --';
+    await assert.rejects(
+      // windowDays is typed as `number`; simulate a hostile/misconfigured value
+      // reaching the query the same way a bound parameter would — it must be
+      // rejected by Postgres's own $3::int cast, not spliced into the SQL text.
+      countActiveWarnings('discord', user, hostile as unknown as number),
+      /invalid input syntax for type integer/,
+      'a non-numeric value is rejected by the bound ::int cast, proving the query text never changes shape',
+    );
+    // The table must still exist and the row must still be there — proof the
+    // hostile value never reached the query as literal SQL.
+    assert.equal(
+      await countActiveWarnings('discord', user),
+      1,
+      'the member_warnings table and row are untouched — no injection occurred',
+    );
+  },
+);
+
+test(
+  'SECURITY: a strike aging out of the configured window is never mutated or cleared — decay only changes what counts as active, never auto-unmutes (clear_warnings is still required)',
+  { skip },
+  async () => {
+    const user = `${RUN}-decay-no-mutate`;
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'aged-out',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '400 days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [user],
+    );
+    assert.equal(
+      await countActiveWarnings('discord', user, 30),
+      0,
+      'the aged-out strike no longer counts toward the mute threshold',
+    );
+    const { rows } = await pool.query(
+      `SELECT cleared_at FROM member_warnings WHERE platform = 'discord' AND user_id = $1`,
+      [user],
+    );
+    assert.equal(
+      rows[0]?.cleared_at,
+      null,
+      'decay must never set cleared_at itself — only an explicit clear_warnings call may',
+    );
+    // Confirm the still-uncleared row is exactly what an admin must act on:
+    // clearWarnings is the only path that ever flips cleared_at.
+    const cleared = await clearWarnings('discord', user, 'admin-1');
+    assert.equal(cleared, 1, 'clear_warnings is still required to actually clear the decayed-out strike');
+  },
+);
+
+test(
   "SECURITY: purge_user_data deletes a member's warning history (purge coherence)",
   {
     skip,

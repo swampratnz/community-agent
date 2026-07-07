@@ -466,7 +466,11 @@ enabled (every message is inspected) — treat it like ambient archiving.
   role** (created on demand, with deny-SendMessages overwrites on every text
   channel) so they can no longer post, and posts a block alert to the admin
   channel. The muted role is real Discord enforcement, not just the bot
-  ignoring them.
+  ignoring them. `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset/unbounded by
+  default) lets an admin age old strikes out of that active count via
+  `countActiveWarnings`' optional rolling window, so an isolated old strike
+  doesn't count toward the limit forever — it never deletes rows or
+  auto-unmutes; `clear_warnings` is still the only way to lift a mute.
 - **Admin channel**: the bot creates a private `mod-alerts` channel on demand
   (denied to `@everyone`, allowed to the bot + configured super admins;
   Discord Administrators see it regardless) and posts every warning and block
