@@ -32,6 +32,7 @@ const {
   updateKnowledge,
   deleteKnowledge,
   listKnowledge,
+  isKnowledgeStale,
   recordKnowledgeRetrieval,
   insertContextDigest,
   insertKnowledgeCandidate,
@@ -480,6 +481,62 @@ test(
 
     const deletedAgain = await deleteKnowledge(id);
     assert.equal(deletedAgain, false, 'deleting a nonexistent id returns false, not an error');
+  },
+);
+
+test(
+  'repository: saveKnowledge/updateKnowledge source_url/source_title (issue #214) — verified_at is set only when a source_url is supplied, and updateKnowledge re-verifies only when the caller explicitly supplies one',
+  { skip },
+  async () => {
+    const noSource = await saveKnowledge({ content: `${RUN} no-source fixture` });
+    const noSourceRow = await pool.query(
+      `SELECT source_url, source_title, verified_at FROM knowledge WHERE id = $1`,
+      [noSource.id],
+    );
+    assert.equal(noSourceRow.rows[0].source_url, null);
+    assert.equal(noSourceRow.rows[0].verified_at, null, 'no source_url means no verified_at either');
+
+    const withSource = await saveKnowledge({
+      content: `${RUN} with-source fixture`,
+      sourceUrl: 'https://example.com/repo-fixture',
+      sourceTitle: 'Repo fixture doc',
+    });
+    const withSourceRow = await pool.query(
+      `SELECT source_url, source_title, verified_at FROM knowledge WHERE id = $1`,
+      [withSource.id],
+    );
+    assert.equal(withSourceRow.rows[0].source_url, 'https://example.com/repo-fixture');
+    assert.equal(withSourceRow.rows[0].source_title, 'Repo fixture doc');
+    assert.ok(withSourceRow.rows[0].verified_at, 'a source_url at save time sets verified_at');
+
+    // update_knowledge: a content-only edit leaves source_url/verified_at untouched.
+    const firstVerifiedAt = new Date(withSourceRow.rows[0].verified_at).getTime();
+    await updateKnowledge({ id: withSource.id, content: 'content only, no citation change' });
+    const afterContentEdit = await pool.query(`SELECT source_url, verified_at FROM knowledge WHERE id = $1`, [
+      withSource.id,
+    ]);
+    assert.equal(afterContentEdit.rows[0].source_url, 'https://example.com/repo-fixture');
+    assert.equal(new Date(afterContentEdit.rows[0].verified_at).getTime(), firstVerifiedAt);
+
+    // Explicitly re-supplying sourceUrl re-verifies (bumps verified_at).
+    await new Promise((r) => setTimeout(r, 10));
+    await updateKnowledge({ id: withSource.id, sourceUrl: 'https://example.com/repo-fixture-v2' });
+    const afterSourceEdit = await pool.query(`SELECT source_url, verified_at FROM knowledge WHERE id = $1`, [
+      withSource.id,
+    ]);
+    assert.equal(afterSourceEdit.rows[0].source_url, 'https://example.com/repo-fixture-v2');
+    assert.ok(new Date(afterSourceEdit.rows[0].verified_at).getTime() > firstVerifiedAt);
+
+    // searchKnowledge surfaces the new fields end-to-end.
+    const hits = await searchKnowledge(`${RUN} with-source fixture`, {
+      platform: 'discord',
+      conversationId: 'x',
+    });
+    const hit = hits.find((h) => h.id === withSource.id);
+    assert.ok(hit);
+    assert.equal(hit.sourceUrl, 'https://example.com/repo-fixture-v2');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[noSource.id, withSource.id]]);
   },
 );
 
@@ -1869,6 +1926,37 @@ test(
     assert.equal(await countStaleKnowledge(30), before, 'cleanup restores the prior stale count');
   },
 );
+
+test("isKnowledgeStale (issue #214) mirrors countStaleKnowledge's edit-or-retrieval-whichever-is-newer definition, as a pure function", () => {
+  const oldDate = new Date(Date.now() - 400 * 86_400_000);
+  const recentDate = new Date(Date.now() - 1 * 86_400_000);
+
+  assert.equal(
+    isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: recentDate }, 30),
+    false,
+    'retrieved recently but edited long ago is NOT stale',
+  );
+  assert.equal(
+    isKnowledgeStale({ updatedAt: recentDate, lastRetrievedAt: oldDate }, 30),
+    false,
+    'edited recently but never-recently-retrieved is NOT stale (the COALESCE-only bug)',
+  );
+  assert.equal(
+    isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: oldDate }, 30),
+    true,
+    'both old is stale',
+  );
+  assert.equal(
+    isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: null }, 30),
+    true,
+    'old edit, never retrieved at all, is stale',
+  );
+  assert.equal(
+    isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: null }, 0),
+    false,
+    'staleDays=0 (KNOWLEDGE_STALE_DAYS unset) disables the feature entirely, regardless of age',
+  );
+});
 
 test(
   'repository: createSuggestion enforces a DB-backed rolling-24h cap per user, robust to a simulated restart (issue #46)',
