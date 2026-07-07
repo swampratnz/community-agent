@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS knowledge (
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS retrieval_count INT NOT NULL DEFAULT 0;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS last_retrieved_at TIMESTAMPTZ;
 
+-- Source citation + freshness (issue #214). source_url/source_title are
+-- optional provenance metadata: docs-ingest populates them automatically from
+-- the page it ingested; admin-tier save_knowledge/update_knowledge/
+-- accept_knowledge_candidate calls may set them explicitly. verified_at is set
+-- to now() whenever a save/update call supplies a source_url — "admin-set on
+-- save" for human curation, "ingest time" for docs-ingest — and is otherwise
+-- left null. Deliberately excluded from the knowledge_set_updated_at trigger's
+-- column list below, same exclusion as retrieval_count/last_retrieved_at:
+-- editing citation metadata is not a content edit.
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_url TEXT;
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_title TEXT;
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
 
