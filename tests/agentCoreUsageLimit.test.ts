@@ -80,6 +80,7 @@ function makeCaller(): CallerContext {
     userName: 'Member',
     role: 'member',
     conversationId: 'convo-1',
+    isDirect: false,
   };
 }
 

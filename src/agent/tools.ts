@@ -666,14 +666,28 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       messageId: z.string().optional().describe('The specific message id being reported, if known'),
     },
     async (args) => {
+      // targetUserId is reporter-supplied and unauthenticated — unlike
+      // moderate/clear_warnings (admin-only, already gated by isKnownUser),
+      // any member can name anyone here. Since target_user_id also drives the
+      // accused-admin visibility exclusion (listReports/countOpenReports/
+      // resolveContentReport), an unverified id could be used to blind an
+      // unrelated admin from a report that isn't about them at all. Only a
+      // target the bot has actually seen before is trusted to drive that
+      // exclusion; an unknown/typo'd id is dropped rather than stored
+      // (issue #197 review).
+      const targetUserId =
+        args.targetUserId && (await isKnownUser(caller.platform, args.targetUserId))
+          ? args.targetUserId
+          : undefined;
       const created = await createContentReport({
         platform: caller.platform,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
         conversationId: caller.conversationId,
-        targetUserId: args.targetUserId,
+        targetUserId,
         messageId: args.messageId,
         reason: args.reason,
+        isDirect: caller.isDirect,
       });
       if (!created) {
         return text(
@@ -687,7 +701,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
         conversationId: caller.conversationId,
-        targetUserId: args.targetUserId,
+        targetUserId,
         messageId: args.messageId,
         reason: args.reason,
       });
@@ -1688,9 +1702,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
 
   const listReportsTool = tool(
     'list_reports',
-    'List member-submitted content reports (harassment/spam/rule violations) from your conversations. ' +
-      "A report from a conversation you do not participate in (e.g. another member's DM) is not visible " +
-      'here even to admins — only to a super admin. Admin only.',
+    'List member-submitted content reports (harassment/spam/rule violations) from your conversations, ' +
+      'plus any reports filed from a 1:1 DM (those have no conversation any regular admin naturally ' +
+      'participates in). Exception: a DM report filed against you is not shown here — only a super admin ' +
+      'can see and resolve a report about you, so you cannot dismiss one filed against yourself. Admin only.',
     {
       status: z
         .enum(['open', 'resolved', 'dismissed', 'withdrawn'])
@@ -1701,7 +1716,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_reports');
       const allowed = await callerScope();
-      const rows = await listReports(allowed, args.status, args.limit ?? 50);
+      const rows = await listReports(allowed, args.status, args.limit ?? 50, caller.userId);
       if (rows.length === 0) return text('No reports found (within your conversations).');
       return text(
         untrusted(
@@ -1723,7 +1738,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
   const resolveReportTool = tool(
     'resolve_report',
     'Mark a content report as resolved or dismissed once triaged. Non-destructive status change (no ' +
-      'CONFIRM needed), audited. Admins can only resolve reports from conversations they are in. Admin only.',
+      'CONFIRM needed), audited. Admins can resolve reports from conversations they are in, plus ' +
+      'DM-originated reports — except one filed against themselves, which stays super-admin-only. ' +
+      'Admin only.',
     {
       id: z.number().describe('Report id (from list_reports)'),
       status: z.enum(['resolved', 'dismissed']).describe('New status'),

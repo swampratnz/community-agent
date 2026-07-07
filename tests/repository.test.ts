@@ -1444,6 +1444,123 @@ test(
 );
 
 test(
+  'SECURITY: repository: listReports/countOpenReports/resolveContentReport broaden a scoped admin to DM-originated reports outside their conversation scope (issue #197)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-dmreports-in`;
+    const outOfScopeConvo = `${RUN}-c-dmreports-out`;
+    const dmConvo = `${RUN}-c-dmreports-dm`;
+    const reporter = `${RUN}-dmreports-reporter`;
+    const viewer = `${RUN}-dmreports-viewer-admin`;
+
+    const dmReport = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: dmConvo,
+      reason: 'DM-originated, no admin naturally scoped to this conversation',
+      isDirect: true,
+    });
+    const channelReport = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: outOfScopeConvo,
+      reason: 'shared-channel report the viewer does not participate in — must stay excluded',
+    });
+    assert.ok(dmReport && channelReport);
+
+    const withoutViewer = await listReports([inScopeConvo]);
+    assert.ok(
+      !withoutViewer.some((r) => r.id === dmReport.id),
+      'omitting viewerUserId leaves DM-originated reports invisible, same as before #197',
+    );
+
+    const scoped = await listReports([inScopeConvo], undefined, 50, viewer);
+    assert.ok(
+      scoped.some((r) => r.id === dmReport.id),
+      'a DM-originated report is visible to a scoped admin once viewerUserId is supplied',
+    );
+    assert.ok(
+      !scoped.some((r) => r.id === channelReport.id),
+      'SECURITY: the OR is_dm broadening must not leak an out-of-scope, non-DM report',
+    );
+
+    const scopedOpenCount = await countOpenReports([inScopeConvo], viewer);
+    assert.equal(
+      scopedOpenCount,
+      1,
+      'countOpenReports includes the DM-originated open report, not the channel one',
+    );
+
+    const resolved = await resolveContentReport(dmReport.id, 'resolved', viewer, [inScopeConvo]);
+    assert.ok(resolved, 'a scoped admin can resolve a DM-originated report via the broadened predicate');
+
+    const channelRefused = await resolveContentReport(channelReport.id, 'resolved', viewer, [inScopeConvo]);
+    assert.equal(
+      channelRefused,
+      null,
+      'SECURITY: the broadening must not let a scoped admin resolve an out-of-scope, non-DM report',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[dmReport.id, channelReport.id]]);
+  },
+);
+
+test(
+  'SECURITY: repository: a DM-originated report filed against the viewing admin stays reachable only by a super admin (issue #197)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-dmself-in`;
+    const dmConvo = `${RUN}-c-dmself-dm`;
+    const reporter = `${RUN}-dmself-reporter`;
+    const accusedAdmin = `${RUN}-dmself-accused-admin`;
+    const otherAdmin = `${RUN}-dmself-other-admin`;
+
+    const reportAgainstAccused = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: dmConvo,
+      targetUserId: accusedAdmin,
+      reason: 'a member privately reports the accused admin from a DM',
+      isDirect: true,
+    });
+    assert.ok(reportAgainstAccused);
+
+    const accusedView = await listReports([inScopeConvo], undefined, 50, accusedAdmin);
+    assert.ok(
+      !accusedView.some((r) => r.id === reportAgainstAccused.id),
+      'SECURITY: the accused admin must not see a DM report filed against themselves',
+    );
+    assert.equal(
+      await countOpenReports([inScopeConvo], accusedAdmin),
+      0,
+      'SECURITY: the accused admin’s open count must not include a report against themselves',
+    );
+    const selfResolve = await resolveContentReport(reportAgainstAccused.id, 'dismissed', accusedAdmin, [
+      inScopeConvo,
+    ]);
+    assert.equal(
+      selfResolve,
+      null,
+      'SECURITY: the accused admin must not be able to dismiss a report filed against themselves',
+    );
+
+    const otherView = await listReports([inScopeConvo], undefined, 50, otherAdmin);
+    assert.ok(
+      otherView.some((r) => r.id === reportAgainstAccused.id),
+      'a different scoped admin (not the accused) can still see the DM-originated report',
+    );
+
+    const superAdminView = await listReports(null, undefined, 50, accusedAdmin);
+    assert.ok(
+      superAdminView.some((r) => r.id === reportAgainstAccused.id),
+      'super-admin (null scope) visibility is unrestricted and unaffected by viewerUserId',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportAgainstAccused.id]);
+  },
+);
+
+test(
   'repository: countAccessRequests is exact and unaffected by listAccessRequests default limit (issue #133)',
   { skip },
   async () => {

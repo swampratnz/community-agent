@@ -17,6 +17,7 @@ const caller = {
   userName: 'Chris',
   role: 'member' as const,
   conversationId: 'chan1',
+  isDirect: false,
 };
 
 test('default persona is Dave and resolves for unknown/empty ids', () => {

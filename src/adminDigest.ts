@@ -90,8 +90,11 @@ export function buildAdminDigestMessage(
  * Scoping mirrors the `question_digest` admin path exactly:
  * `adapter.conversationsForUser(admin.platformUserId)` feeds both
  * `recentQuestionClusters` and `countOpenReports`, so an admin never sees a
- * cluster or report sourced from a conversation outside their own
- * membership. `countAccessRequests`, `countPendingSuggestions`, and
+ * cluster sourced from a conversation outside their own membership. Reports
+ * additionally include any DM-originated report (`is_dm`) except one filed
+ * against the admin themselves (`countOpenReports`'s `viewerUserId` —
+ * `admin.platformUserId` here — drives that exclusion; see issue #197).
+ * `countAccessRequests`, `countPendingSuggestions`, and
  * `countStaleKnowledge` are guild-wide by design (matching
  * `list_access_requests`/`list_suggestions`/`list_knowledge`'s own unscoped
  * behaviour — none of those tables have a conversation/channel column), so
@@ -133,7 +136,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         await Promise.all([
           recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
           countAccessRequests(),
-          countOpenReports(scope),
+          countOpenReports(scope, admin.platformUserId),
           countPendingSuggestions(),
           knowledgeStaleDays > 0 ? countStaleKnowledge(knowledgeStaleDays) : Promise.resolve(0),
         ]);

@@ -76,6 +76,7 @@ test('generate_image passes the generation prompt through as the image caption â
     userName: 'Admin',
     role: 'admin' as const,
     conversationId: 'convo-1',
+    isDirect: false,
   };
   const server = buildToolServer(caller, adapter);
   const registeredTool = (
