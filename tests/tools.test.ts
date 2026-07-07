@@ -3014,7 +3014,10 @@ test(
     )._registeredTools;
 
     // Content-only edit: leaves the citation untouched (no re-verify).
+    // update_knowledge is CONFIRM-gated (advisory E2), so the handler only
+    // registers a pending action — drive it to completion before asserting.
     await tools['update_knowledge'].handler({ id, content: 'Updated content, no citation change.' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
     const afterContentEdit = await pool.query(`SELECT source_url, verified_at FROM knowledge WHERE id = $1`, [
       id,
     ]);
@@ -3028,6 +3031,7 @@ test(
     await new Promise((r) => setTimeout(r, 10));
     // Explicit sourceUrl re-supply: re-verifies (bumps verified_at).
     await tools['update_knowledge'].handler({ id, sourceUrl: 'https://example.com/updated' });
+    await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
     const afterSourceEdit = await pool.query(`SELECT source_url, verified_at FROM knowledge WHERE id = $1`, [
       id,
     ]);
