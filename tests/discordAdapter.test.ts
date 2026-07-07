@@ -283,6 +283,51 @@ test('sendTypingIndicator: a channel that cannot signal typing (no sendTyping) i
   await assert.doesNotReject(() => adapter.sendTypingIndicator(fakeMessage()));
 });
 
+// --- reactToMessage: emoji acknowledgement (issue #231) --------------------
+
+interface FakeReactable {
+  isTextBased: () => boolean;
+  messages: { fetch: (id: string) => Promise<{ react: (emoji: string) => Promise<void> }> };
+}
+
+function stubClientForReact(adapter: InstanceType<typeof DiscordAdapter>) {
+  const reacted: Array<{ messageId: string; emoji: string }> = [];
+  const fetchCalls: string[] = [];
+  const client = (
+    adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<FakeReactable> } } }
+  ).client;
+  client.channels.fetch = async () => ({
+    isTextBased: () => true,
+    messages: {
+      fetch: async (messageId: string) => {
+        fetchCalls.push(messageId);
+        return {
+          react: async (emoji: string) => {
+            reacted.push({ messageId, emoji });
+          },
+        };
+      },
+    },
+  });
+  return { reacted, fetchCalls };
+}
+
+test('reactToMessage fetches the target message in the given channel and reacts with the given emoji', async () => {
+  const adapter = new DiscordAdapter();
+  const { reacted, fetchCalls } = stubClientForReact(adapter);
+  await adapter.reactToMessage('chan-1', 'msg-1', '👀');
+  assert.deepEqual(fetchCalls, ['msg-1']);
+  assert.deepEqual(reacted, [{ messageId: 'msg-1', emoji: '👀' }]);
+});
+
+test('reactToMessage throws when the channel is not accessible/text-based, rather than reacting blind', async () => {
+  const adapter = new DiscordAdapter();
+  const client = (adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<unknown> } } })
+    .client;
+  client.channels.fetch = async () => null;
+  await assert.rejects(() => adapter.reactToMessage('chan-missing', 'msg-1', '👀'));
+});
+
 // --- onChannelCreate: new channels/categories inherit the muted role's overwrite immediately (issue #171) ---
 
 test('onChannelCreate: applies the muted-role deny-post overwrite to a new text channel when a muted role already exists', async () => {

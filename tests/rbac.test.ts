@@ -188,6 +188,23 @@ test('SECURITY: catch_up is member+ (guests reach it in open mode; matches MEMBE
   );
 });
 
+test('SECURITY: react_to_message is member+ (guests reach it in open mode; matches MEMBER_TOOLS) and never lands in ADMIN_TOOLS/SUPER_ADMIN_TOOLS — issue #231', () => {
+  const tool = 'mcp__community__react_to_message';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'react_to_message must be in MEMBER_TOOLS');
+  assert.ok(!ADMIN_TOOLS.includes(tool), 'react_to_message must not be duplicated into ADMIN_TOOLS');
+  assert.ok(
+    !SUPER_ADMIN_TOOLS.includes(tool),
+    'react_to_message must not be duplicated into SUPER_ADMIN_TOOLS',
+  );
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach react_to_message`);
+  }
+  assert.ok(
+    toolsForRole('guest').includes(tool),
+    'guests reach react_to_message too (open mode; same as MEMBER_TOOLS)',
+  );
+});
+
 test('SECURITY: check_status is member+ (guests reach it in open mode; matches MEMBER_TOOLS) and never lands in ADMIN_TOOLS/SUPER_ADMIN_TOOLS — issue #206', () => {
   const tool = 'mcp__community__check_status';
   assert.ok(MEMBER_TOOLS.includes(tool), 'check_status must be in MEMBER_TOOLS');

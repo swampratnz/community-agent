@@ -130,6 +130,15 @@ export interface PlatformAdapter {
   ): Promise<void>;
 
   /**
+   * React to an existing message with an emoji (issue #231). Optional —
+   * platforms with no reaction primitive (WhatsApp, both providers, for now)
+   * omit it, and callers must feature-check before use. `emoji` is always one
+   * of a small closed allowlist enforced by the caller (`react_to_message`),
+   * never a model-supplied free-form string reaching the adapter.
+   */
+  reactToMessage?(conversationId: string, messageId: string, emoji: string): Promise<void>;
+
+  /**
    * Conversation ids the given user actually participates in right now
    * (Discord: channels their permissions let them view; WhatsApp: groups
    * they are a member of plus their own DM). Backs admin data scoping.
