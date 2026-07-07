@@ -30,7 +30,7 @@
   "secrets.test.ts": 2,
   "securityGateCanary.test.ts": 1,
   "systemPrompt.test.ts": 4,
-  "tools.test.ts": 26,
+  "tools.test.ts": 30,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 1,
   "whatsappCloudWire.test.ts": 5,
