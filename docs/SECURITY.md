@@ -759,10 +759,12 @@ server's Events tab) instead of a text announcement. Outward-facing *and*
 member-notifying — a genuinely higher floor than `announce`/`create_poll` —
 so it is:
 - **Admin-tier + CONFIRM-gated + audited**, same treatment as
-  `assign_community_role`/`grant_admin`. The CONFIRM text quotes the
-  **resolved** name and ISO start time verbatim, so the human confirms the
-  actual artifact rather than model-composed prose — mitigating the main
-  injection risk (a bogus/spam event from a manipulated admin turn).
+  `assign_community_role`/`grant_admin`. The CONFIRM text quotes every
+  salient mutated field — the **resolved** name, ISO start time, location,
+  and a truncated (80-char) description preview — verbatim, so the human
+  confirms the actual artifact rather than model-composed prose — mitigating
+  the main injection risk (a bogus/spam event, or a spoofed
+  location/description, from a manipulated admin turn).
 - **Strict input parsing**: `startTime`/`endTime` must be a concrete,
   resolved ISO 8601 instant with an explicit UTC offset or `Z` — relative or
   ambiguous text (e.g. "next Tuesday 7pm") is rejected at the zod schema

@@ -1654,17 +1654,28 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         endTime: args.endTime,
         location: args.location,
       };
-      // CONFIRM text quotes the resolved name + start time verbatim (binding
-      // acceptance criterion from the adversarial verdict on #230), so the
-      // human confirms the actual artifact rather than model-composed prose.
-      return requireConfirm(`create event "${args.name}" starting ${args.startTime}`, 'admin', async () => {
-        const { success, result } = await audited({
-          actionKind: 'create_event',
-          params,
-          run: () => adapter.performAdminAction({ kind: 'create_event', params }),
-        });
-        return success ? `Done: ${result}` : `Failed: ${result}`;
-      });
+      // CONFIRM text quotes every salient mutated field — name, start time,
+      // location, and a truncated description — verbatim (binding acceptance
+      // criterion from the adversarial verdict on #230, sharpened by review
+      // on the PR: location/description are just as outward-facing as
+      // name/startTime, so the human must see them too before confirming),
+      // so the human confirms the actual artifact rather than model-composed
+      // prose. Same truncation pattern as delete_member_note's note preview.
+      const descPreview = args.description
+        ? ` ("${args.description.slice(0, 80)}${args.description.length > 80 ? '…' : ''}")`
+        : '';
+      return requireConfirm(
+        `create event "${args.name}" starting ${args.startTime} at "${args.location}"${descPreview}`,
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'create_event',
+            params,
+            run: () => adapter.performAdminAction({ kind: 'create_event', params }),
+          });
+          return success ? `Done: ${result}` : `Failed: ${result}`;
+        },
+      );
     },
   );
 

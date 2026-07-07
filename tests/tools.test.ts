@@ -1261,7 +1261,7 @@ test('SECURITY: create_event refuses an endTime at or before startTime before ev
   assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
 });
 
-test('SECURITY: create_event registers a CONFIRM-gated pending action whose description quotes the resolved name and ISO start time; executing it calls performAdminAction and audits (issue #230)', async () => {
+test('SECURITY: create_event registers a CONFIRM-gated pending action whose description quotes the resolved name, ISO start time, location, and description; executing it calls performAdminAction and audits (issue #230)', async () => {
   const conversationId = 'convo-event-confirm';
   const calls: Array<{ kind: string; params?: Record<string, unknown> }> = [];
   const adapter = eventAdapter({
@@ -1290,6 +1290,16 @@ test('SECURITY: create_event registers a CONFIRM-gated pending action whose desc
     new RegExp(EVENT_FUTURE_START.replace(/[+.]/g, '\\$&')),
     'the CONFIRM text must quote the resolved ISO start time',
   );
+  assert.match(
+    result.content[0].text,
+    /Wellington Central Library/,
+    'the CONFIRM text must quote the resolved location — attacker-influenceable and just as outward-facing as name/startTime',
+  );
+  assert.match(
+    result.content[0].text,
+    /A casual catch-up/,
+    'the CONFIRM text must quote the resolved description',
+  );
   assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
 
   const pending = takePendingAction('discord', conversationId, 'admin-1');
@@ -1305,6 +1315,31 @@ test('SECURITY: create_event registers a CONFIRM-gated pending action whose desc
     endTime: EVENT_FUTURE_END,
     location: 'Wellington Central Library',
   });
+});
+
+test('SECURITY: create_event truncates a long description in the CONFIRM text to a bounded preview, same pattern as delete_member_note (issue #230)', async () => {
+  const conversationId = 'convo-event-confirm-long-desc';
+  const adapter = eventAdapter({});
+  const handler = createEventHandler({ conversationId, adapter });
+  const longDescription = 'x'.repeat(200);
+
+  const result = await handler.handler({
+    name: 'Meetup',
+    startTime: EVENT_FUTURE_START,
+    description: longDescription,
+    location: 'Wellington',
+  });
+  assert.match(result.content[0].text, /CONFIRM/);
+  assert.match(
+    result.content[0].text,
+    new RegExp(`x{80}…`),
+    'the CONFIRM text must truncate a long description to an 80-char preview with an ellipsis, not quote it verbatim',
+  );
+  assert.doesNotMatch(
+    result.content[0].text,
+    new RegExp(`x{200}`),
+    'the CONFIRM text must not contain the full untruncated description',
+  );
 });
 
 test(
