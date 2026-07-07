@@ -470,7 +470,9 @@ enabled (every message is inspected) — treat it like ambient archiving.
   default) lets an admin age old strikes out of that active count via
   `countActiveWarnings`' optional rolling window, so an isolated old strike
   doesn't count toward the limit forever — it never deletes rows or
-  auto-unmutes; `clear_warnings` is still the only way to lift a mute.
+  auto-unmutes; `clear_warnings` is still the only way to lift a mute, and
+  the rejoin re-mute check ignores the window entirely (anti-evasion: on
+  rejoin every uncleared strike counts, whatever its age).
 - **Admin channel**: the bot creates a private `mod-alerts` channel on demand
   (denied to `@everyone`, allowed to the bot + configured super admins;
   Discord Administrators see it regardless) and posts every warning and block

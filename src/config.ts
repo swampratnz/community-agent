@@ -73,7 +73,9 @@ const EnvSchema = z.object({
   // MODERATION_STRIKE_LIMIT. Unset = unbounded (today's behaviour — every
   // uncleared strike counts forever, no matter its age). Never auto-unmutes:
   // an already-muted member stays muted until an admin runs `clear_warnings`,
-  // even if their strikes age out of the window.
+  // even if their strikes age out of the window. The leave/rejoin re-mute
+  // check deliberately IGNORES this window (anti-evasion — otherwise leaving
+  // and waiting out the window would bypass clear_warnings; docs/SECURITY.md).
   MODERATION_STRIKE_WINDOW_DAYS: z.coerce.number().int().positive().optional(),
   // Discord role the bot creates (if missing) and assigns to block posting;
   // per-channel overwrites deny it Send Messages. Removed when an admin clears.

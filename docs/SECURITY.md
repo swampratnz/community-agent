@@ -515,7 +515,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     no longer counts the same as one from an hour ago. It never deletes or
     mutates `member_warnings` rows (the audit trail is untouched) and never
     auto-unmutes an already-muted member — lifting a mute still requires an
-    explicit `clear_warnings` (pinned by a `SECURITY:` test).
+    explicit `clear_warnings` (pinned by a `SECURITY:` test). The leave/rejoin
+    re-mute check deliberately **ignores** the window: on rejoin, every
+    uncleared strike counts regardless of age, so leaving the server and
+    waiting out the window is not an unmute path and the rejoin bypass this
+    section documents as closed stays closed (pinned by a `SECURITY:` test).
 - Provide a deletion path: delete rows from `interactions` (and `knowledge`)
   by `user_id` on request (`forget_me` / `purge_user_data`). If the requester's
   identity has been linked (`link_member`) to another platform identity as the
