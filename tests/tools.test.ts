@@ -40,6 +40,7 @@ const {
   CATCH_UP_DEFAULT_HOURS,
   CATCH_UP_MAX_HOURS,
   CATCH_UP_MAX_MESSAGES,
+  COMMUNITY_GUIDELINES_MAX_CHARS,
 } = await import('../src/agent/tools.js');
 const {
   MODERATION_ACTION_KINDS,
@@ -64,6 +65,7 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
+const { getCommunityGuidelines, resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -552,6 +554,11 @@ test('community_info names every member capability for a member caller (issue #9
   assert.match(replyText, /knowledge/i, 'must mention knowledge_search');
   assert.match(replyText, /past messages|remember/i, 'must mention remember_search');
   assert.match(replyText, /simply/i, 'must mention set_response_style (issue #126) so it is discoverable');
+  assert.match(
+    replyText,
+    /guideline|rule/i,
+    'must point at community_guidelines so members can discover it (issue #212)',
+  );
 });
 
 test('community_info reply stays concise, not a wall of text (issue #92)', async () => {
@@ -633,6 +640,133 @@ test('SECURITY: redeploy_bot handler refuses a direct call from an admin caller 
     'a refused call must never register a pending action either',
   );
 });
+
+test('SECURITY: set_community_guidelines rejects a non-admin caller (assertAtLeast re-check, issue #212)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-guidelines-member',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+    }
+  )._registeredTools['set_community_guidelines'];
+
+  await assert.rejects(() => registeredTool.handler({ text: 'Be nice.' }), /Permission denied/);
+});
+
+test('SECURITY: set_community_guidelines rejects text over the max length at the zod schema boundary (issue #212)', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['set_community_guidelines'];
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'x'.repeat(COMMUNITY_GUIDELINES_MAX_CHARS) }).success,
+    true,
+    'exactly the max length is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'x'.repeat(COMMUNITY_GUIDELINES_MAX_CHARS + 1) }).success,
+    false,
+    'one character over the max must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: '' }).success,
+    true,
+    'an empty string (clear) must stay allowed',
+  );
+});
+
+test(
+  'set_community_guidelines lets an admin set and clear guidelines; community_guidelines reflects the change verbatim, not paraphrased or truncated (issue #212)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const adminServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'admin-guidelines',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: 'convo-guidelines',
+      },
+      stubAdapter(async () => {}),
+    );
+    const setTool = (
+      adminServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['set_community_guidelines'];
+
+    const memberServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'member-guidelines',
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: 'convo-guidelines',
+      },
+      stubAdapter(async () => {}),
+    );
+    const readTool = (
+      memberServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['community_guidelines'];
+
+    try {
+      const before = await readTool.handler();
+      assert.match(before.content[0].text, /have been set yet/i, 'precondition: guidelines start unset');
+
+      const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+      const setResult = await setTool.handler({ text: guidelines });
+      assert.match(setResult.content[0].text, /updated/i);
+
+      const readResult = await readTool.handler();
+      assert.equal(
+        readResult.content[0].text,
+        guidelines,
+        'must return the full text verbatim, never a truncation or paraphrase',
+      );
+      assert.equal(await getCommunityGuidelines(), guidelines);
+
+      const clearResult = await setTool.handler({ text: '' });
+      assert.match(clearResult.content[0].text, /cleared/i);
+
+      const afterClear = await readTool.handler();
+      assert.match(
+        afterClear.content[0].text,
+        /have been set yet/i,
+        'clearing must revert to the not-set message',
+      );
+      assert.equal(await getCommunityGuidelines(), null);
+    } finally {
+      resetPolicyCacheForTests();
+    }
+  },
+);
 
 // grant_admin's CONFIRM-gated wiring (issue #201): notifyAdminApproved itself
 // is unit-tested above; this exercises the handler's computation of

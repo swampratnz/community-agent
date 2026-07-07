@@ -18,9 +18,10 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 
-const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
+const { DiscordAdapter, WELCOME_MESSAGE } = await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
+const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -70,7 +71,7 @@ function fakeGuildMember(opts: {
   guildId: string;
   displayName?: string;
   bot?: boolean;
-  send?: () => Promise<void>;
+  send?: (payload: { content: string }) => Promise<void>;
 }) {
   return {
     id: opts.id,
@@ -491,5 +492,95 @@ test('onGuildMemberAdd: the rejoin re-mute runs before any welcome-message logic
     assert.deepEqual(order, ['mute', 'welcome-dm']);
   } finally {
     config.discord.welcome.enabled = wasWelcome;
+  }
+});
+
+// --- onGuildMemberAdd: community guidelines appended to the welcome (issue #212) --------------------
+
+/** Mocks pool.query so a `community_guidelines` policy read returns `value` (or nothing, if omitted). */
+function stubPoliciesQuery(value?: string) {
+  return async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM policies') && params?.[0] === 'community_guidelines') {
+      return value === undefined ? { rows: [], rowCount: 0 } : { rows: [{ value }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+}
+
+test('onGuildMemberAdd: welcome DM stays byte-identical to today when no guidelines are set (issue #212)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-no-guidelines',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [WELCOME_MESSAGE]);
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: welcome DM appends community guidelines verbatim when set (issue #212)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-with-guidelines',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [`${WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`]);
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: the channel fallback also appends community guidelines verbatim when the DM fails (issue #212)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasChannelId = config.discord.welcome.channelId;
+  config.discord.welcome.enabled = true;
+  config.discord.welcome.channelId = 'chan-welcome';
+  const guidelines = 'Be respectful. No spam.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent = stubClient(adapter);
+    const member = fakeGuildMember({
+      id: 'user-dm-closed',
+      guildId: config.discord.guildId,
+      send: async () => {
+        throw new Error('Cannot send messages to this user');
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.equal(sent.length, 1);
+    assert.ok(
+      sent[0].includes(`Community guidelines:\n${guidelines}`),
+      'the channel-fallback welcome must include the guidelines text verbatim too',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.discord.welcome.channelId = wasChannelId;
+    resetPolicyCacheForTests();
   }
 });

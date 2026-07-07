@@ -42,6 +42,9 @@ export function assertAtLeast(role: Tier, min: Tier, action: string): void {
 /** Tools (mcp__community__*) available to members (and guests in open mode). */
 export const MEMBER_TOOLS = [
   'mcp__community__community_info',
+  // Read-only, no arguments; returns the admin-set guidelines text verbatim,
+  // or a clear not-set-yet message (issue #212).
+  'mcp__community__community_guidelines',
   // Read-only, no arguments, reveals nothing about this community — only
   // Anthropic's own public status page (issue #206) — so it's reachable by
   // guests in open mode too, same tier as community_info/knowledge_search.
@@ -95,6 +98,9 @@ export const ADMIN_TOOLS = [
   'mcp__community__moderate',
   'mcp__community__clear_warnings',
   'mcp__community__announce',
+  // Content curation, same tier as save_knowledge — not super-admin like
+  // set_policy, which is runtime bot control (issue #212).
+  'mcp__community__set_community_guidelines',
   'mcp__community__save_knowledge',
   'mcp__community__list_knowledge',
   'mcp__community__update_knowledge',
