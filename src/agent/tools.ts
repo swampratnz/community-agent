@@ -223,6 +223,37 @@ export async function notifyMemberApproved(
     .catch((err) => logger.warn({ err, userId }, 'Approval DM failed'));
 }
 
+/**
+ * Static and templated deliberately (issue #201): `displayName` reaches
+ * `grant_admin` as an untrusted tool argument, so it must never be
+ * interpolated here — same no-interpolation shape as MEMBER_APPROVED_MESSAGE.
+ * Points at community_info's existing admin-aware branch rather than
+ * enumerating ADMIN_TOOLS inline, so there's one place to keep in sync.
+ */
+const ADMIN_APPROVED_MESSAGE =
+  "Kia ora! 👋 You've been promoted to admin on NZ Claude Community. " +
+  'Ask me "what can you do?" any time for a rundown, including your new admin tools.';
+
+/**
+ * Best-effort orientation DM for an admin grant, mirroring notifyMemberApproved's
+ * shape exactly: fires only on an actual transition into admin
+ * (`wasAlreadyAdmin` false) so re-running `grant_admin` on an existing admin
+ * doesn't re-send it, and a failed DM (closed DMs, WhatsApp 24h window, etc.)
+ * is logged and swallowed — the grant itself is the source of truth, never
+ * blocked on this. Exported separately from the `grant_admin` tool so it's
+ * unit-testable without the MCP tool-call transport.
+ */
+export async function notifyAdminApproved(
+  adapter: PlatformAdapter,
+  userId: string,
+  wasAlreadyAdmin: boolean,
+): Promise<void> {
+  if (wasAlreadyAdmin) return;
+  await adapter
+    .sendDirectMessage(userId, ADMIN_APPROVED_MESSAGE)
+    .catch((err) => logger.warn({ err, userId }, 'Admin promotion DM failed'));
+}
+
 /** Truncation length for the suggestion text echoed back in a resolution DM. */
 const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
 
@@ -1932,6 +1963,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       // system — CONFIRM-gated like kick/purge so an injected turn can
       // request but never complete it.
       return requireConfirm(`GRANT ADMIN to ${label} on ${platform}`, 'super_admin', async () => {
+        const wasAlreadyAdmin = (await getMemberRole(platform, userId)) === 'admin';
         const { success, result } = await audited({
           actionKind: 'grant_admin',
           targetUserId: userId,
@@ -1947,7 +1979,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
             return 'granted';
           },
         });
-        if (success) await resetSessionsForRoleChange(platform, userId, 'grant_admin');
+        if (success) {
+          await resetSessionsForRoleChange(platform, userId, 'grant_admin');
+          await notifyAdminApproved(adapter, userId, wasAlreadyAdmin);
+        }
         return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
       });
     },
