@@ -9,6 +9,7 @@ import {
   cancelPendingAction,
   classifyConfirmReply,
   hasPendingAction,
+  peekPendingAction,
   sweepExpiredPendingActions,
   takePendingAction,
 } from './agent/pendingActions.js';
@@ -563,6 +564,10 @@ export class Router {
       // still logged at error level, and a *persistent* DB outage still
       // trips /healthz + the startup healthcheck — this degradation is
       // per-request only.
+      // Snapshot any pre-existing pending action so we can tell a freshly
+      // registered one (this turn) from one already waiting.
+      const priorPending = peekPendingAction(msg.platform, msg.conversationId, msg.userId);
+
       let reply: AgentReply;
       try {
         // Backs cross-platform resolution DMs (issue #157): a per-turn tool
@@ -578,6 +583,22 @@ export class Router {
       }
 
       await this.send(adapter, msg.conversationId, reply.text);
+
+      // If the turn registered a NEW pending destructive action, the model
+      // composed the reply above and could have hidden or misrepresented the
+      // action behind an innocuous "reply CONFIRM" (an injection lever). Emit
+      // the authoritative pending description ourselves, deterministically, so
+      // the human always sees the true action before they can confirm it
+      // (issue: CONFIRM gate was request-side model-mediated).
+      const pending = peekPendingAction(msg.platform, msg.conversationId, msg.userId);
+      if (pending && pending !== priorPending) {
+        await this.send(
+          adapter,
+          msg.conversationId,
+          `⚠️ Pending: ${pending.description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
+            `(This confirmation is handled outside the AI and must come from you in this conversation.)`,
+        ).catch((err) => logger.warn({ err }, 'Failed to send deterministic pending notice'));
+      }
 
       await recordInteraction({
         platform: msg.platform,

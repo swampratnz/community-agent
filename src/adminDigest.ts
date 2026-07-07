@@ -8,6 +8,7 @@ import {
   listAdmins,
   recentQuestionClusters,
   recordAdminDigestSent,
+  resolveLinkedIdentities,
   wasAdminDigestSentRecently,
   type QuestionCluster,
 } from './storage/repository.js';
@@ -131,12 +132,17 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
       if (alreadySent) continue;
 
       const scope = await adapter.conversationsForUser(admin.platformUserId);
+      // Exclude reports filed against ANY of this admin's linked identities
+      // from their own open-report count, matching list_reports (issue #197).
+      const viewerIds = (await resolveLinkedIdentities(admin.platform, admin.platformUserId)).map(
+        (i) => i.userId,
+      );
       const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
       const [clusters, pendingAccessRequests, openReports, pendingSuggestions, staleKnowledgeCount] =
         await Promise.all([
           recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
           countAccessRequests(),
-          countOpenReports(scope, admin.platformUserId),
+          countOpenReports(scope, viewerIds),
           countPendingSuggestions(),
           knowledgeStaleDays > 0 ? countStaleKnowledge(knowledgeStaleDays) : Promise.resolve(0),
         ]);
