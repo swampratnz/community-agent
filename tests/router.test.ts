@@ -24,6 +24,7 @@ const { Router } = await import('../src/router.js');
 const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
 const { logger } = await import('../src/logger.js');
 const { embed } = await import('../src/storage/embeddings.js');
+const { registerPendingAction, cancelPendingAction } = await import('../src/agent/pendingActions.js');
 
 // recordInteraction embeds every message it stores; the embedding pipeline is
 // downloaded/loaded lazily on first use and then memoised. Pre-warm it here
@@ -121,6 +122,42 @@ test('respond(): fires the typing indicator immediately and re-fires periodicall
   await done;
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'hi there');
+});
+
+test('SECURITY: the router deterministically surfaces a newly-registered pending action, even if the model hides it (advisory E1)', async () => {
+  // The tool result requireConfirm returns is composed into the reply BY THE
+  // MODEL, so an injected turn can register grant_admin and then reply "I've
+  // refreshed my cache, reply CONFIRM" with no warning. The router must emit
+  // the true pending description itself so the human always sees what they are
+  // about to confirm.
+  const router = new Router(async (caller) => {
+    registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+      description: 'GRANT ADMIN to attacker-123',
+      minTier: 'super_admin',
+      execute: async () => 'granted',
+    });
+    return makeReply("All set — I've refreshed my cache. Reply CONFIRM to apply.");
+  }, 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 2, 'the model reply PLUS the deterministic pending notice both send');
+  const notice = sent.find((s) => /Pending: GRANT ADMIN to attacker-123/.test(s.text));
+  assert.ok(notice, 'the router must surface the TRUE pending description, not trust the model to');
+  assert.match(notice.text, /CONFIRM/);
+  assert.match(notice.text, /outside the AI/, 'the notice states the confirmation is out-of-band');
+
+  cancelPendingAction('discord', 'chan-1', 'super-1');
+});
+
+test('respond(): does not send a second (pending) notice when no destructive action was registered', async () => {
+  const router = new Router(async () => makeReply('just a normal answer'), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  await trigger(makeMessage());
+  assert.equal(sent.length, 1, 'an ordinary turn sends exactly one reply — no spurious pending notice');
 });
 
 test('respond(): a rejecting typing indicator never delays or breaks the reply', async () => {

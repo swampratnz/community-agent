@@ -187,8 +187,22 @@ export class Moderator {
  * Bounded to one turn, no tools, and treats the message as untrusted data.
  * Any failure degrades to "clean" so moderation never blocks on a model error.
  */
+/**
+ * Bound the classifier's input without letting abuse hide behind filler: a
+ * message can run to ~2000 chars, so a flat `slice(0, 500)` never sees a slur
+ * placed after 500 chars of padding. Keep the head AND the tail (with an
+ * elision marker between) so both ends are classified.
+ */
+export function boundForClassifier(text: string, max = 500): string {
+  const clean = text.replace(/[<>]/g, ' ');
+  if (clean.length <= max) return clean;
+  const head = Math.ceil(max * 0.6);
+  const tail = max - head;
+  return `${clean.slice(0, head)} […] ${clean.slice(-tail)}`;
+}
+
 export async function classifyAbuseWithLlm(text: string): Promise<Detection | null> {
-  const clean = text.replace(/[<>]/g, ' ').slice(0, 500);
+  const clean = boundForClassifier(text);
   const prompt = [
     'A community member sent the message below. Decide if it is ABUSIVE: targeted harassment,',
     'threats, hate speech, or a personal attack on another person. Ordinary disagreement,',

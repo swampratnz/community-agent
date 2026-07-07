@@ -674,6 +674,99 @@ test('SECURITY: redeploy_bot handler refuses a direct call from an admin caller 
   );
 });
 
+test('SECURITY: update_knowledge registers a pending CONFIRM action instead of overwriting the KB in place (advisory E2)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-update-knowledge',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['update_knowledge'];
+
+  const result = await registeredTool.handler({ id: 5, content: 'attacker-substituted content' });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for out-of-band confirmation');
+  assert.ok(
+    hasPendingAction('discord', 'convo-update-knowledge', 'admin-1'),
+    'an in-place overwrite of trusted, member-facing knowledge must be CONFIRM-gated like delete_knowledge',
+  );
+  cancelPendingAction('discord', 'convo-update-knowledge', 'admin-1');
+});
+
+test('SECURITY: purge_user_data rejects a malformed/wrong-platform id instead of a false-success 0-row purge (advisory B4)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'super-1',
+    userName: 'SuperAdmin',
+    role: 'super_admin' as const,
+    conversationId: 'convo-purge-badid',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: object,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['purge_user_data'];
+
+  // A WhatsApp-style number passed on the Discord platform: previously matched
+  // nothing and reported a reassuring "deleted 0 record(s)".
+  const result = await registeredTool.handler({ userId: '6421234567' });
+  assert.equal(result.isError, true, 'a malformed id is rejected, not silently accepted');
+  assert.match(result.content[0].text, /Discord/i, 'the error names the id/platform mismatch');
+  assert.equal(
+    hasPendingAction('discord', 'convo-purge-badid', 'super-1'),
+    false,
+    'a rejected id must never register a pending purge',
+  );
+});
+
+test("SECURITY: forget_me confirms at 'guest' tier so an open-mode guest's own CONFIRM isn't falsely rejected (advisory B3)", async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'guest-1',
+    userName: 'OpenModeGuest',
+    role: 'guest' as const,
+    conversationId: 'convo-forget-guest',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['forget_me'];
+
+  const result = await registeredTool.handler({});
+  assert.match(result.content[0].text, /CONFIRM/);
+  const pending = takePendingAction('discord', 'convo-forget-guest', 'guest-1');
+  assert.ok(pending, 'forget_me must register a pending action even for an open-mode guest');
+  assert.equal(
+    pending.minTier,
+    'guest',
+    "a self-scoped purge must confirm at 'guest' tier — gating at 'member' made the guest's CONFIRM fail the re-check",
+  );
+});
+
 test('SECURITY: set_community_guidelines rejects a non-admin caller (assertAtLeast re-check, issue #212)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -2135,7 +2228,7 @@ test(
       [`${REPORT_CONTENT_HANDLER_USER}-unrelated-convo`],
       undefined,
       50,
-      spoofedTarget,
+      [spoofedTarget],
     );
     assert.ok(
       spoofedViewerScoped.some((r) => r.id === spoofedId),
