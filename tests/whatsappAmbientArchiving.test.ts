@@ -213,14 +213,26 @@ test(
       kind: 'ambient',
     });
 
-    const updated = await updateInteractionByMessageId('whatsapp', `${RUN}-m4`, 'edited text');
+    const updated = await updateInteractionByMessageId(
+      'whatsapp',
+      conversationId,
+      `${RUN}-m4`,
+      'edited text',
+    );
     assert.equal(updated, true);
     const afterEdit = await pool.query(`SELECT content FROM interactions WHERE message_id = $1`, [
       `${RUN}-m4`,
     ]);
     assert.equal(afterEdit.rows[0].content, 'edited text', 'a WhatsApp edit updates the stored copy');
 
-    const deleted = await deleteInteractionByMessageId('whatsapp', `${RUN}-m4`);
+    // A same-id delete scoped to a DIFFERENT conversation must not touch this row.
+    assert.equal(
+      await deleteInteractionByMessageId('whatsapp', `${RUN}-other-chan`, `${RUN}-m4`),
+      0,
+      'a wrong-conversation delete is a no-op',
+    );
+
+    const deleted = await deleteInteractionByMessageId('whatsapp', conversationId, `${RUN}-m4`);
     assert.equal(deleted, 1);
     const afterDelete = await pool.query(`SELECT 1 FROM interactions WHERE message_id = $1`, [`${RUN}-m4`]);
     assert.equal(afterDelete.rows.length, 0, 'a WhatsApp delete hard-deletes the stored copy');

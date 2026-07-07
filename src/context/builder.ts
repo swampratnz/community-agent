@@ -41,8 +41,6 @@ import {
 
 /** Same greedy-clustering similarity bar as recentQuestionClusters. */
 const CLUSTER_SIMILARITY_THRESHOLD = 0.85;
-/** How many interaction ids a digest keeps as provenance refs. */
-const MAX_EXAMPLE_REFS = 10;
 /** How many (truncated) samples each summarisation call sees. */
 const MAX_SAMPLES_PER_SUMMARY = 12;
 
@@ -249,7 +247,12 @@ export async function runContextBuilder(
         periodEnd,
         topic,
         summary,
-        exampleRefs: cluster.ids.slice(0, MAX_EXAMPLE_REFS),
+        // Store EVERY clustered interaction id, not a truncated slice: these
+        // refs are what forget_me/purge_user_data match against to invalidate
+        // a digest built over a purged message (they aren't shown to admins).
+        // A cap here silently left digests alive whose summary quoted the
+        // user's message at a cluster position past the cap.
+        exampleRefs: cluster.ids,
         distinctUsers: cluster.users.size,
         questionCount: cluster.ids.length,
       });
