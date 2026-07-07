@@ -326,6 +326,11 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // How long shutdown() waits for in-flight per-conversation turns to settle
+  // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
+  // inside systemd's default 90s TimeoutStopSec for community-agent.service
+  // (see docs/DEPLOYMENT.md), so a normal restart never needs tuning this.
+  SHUTDOWN_DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   // /healthz endpoint (native http, no auth). Unset = disabled; bind to
   // localhost via reverse proxy if you expose it, like the Cloud webhook.
   HEALTH_PORT: z.coerce.number().int().positive().optional(),
@@ -516,6 +521,7 @@ export const config = {
     knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
+    shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {
     level: env.LOG_LEVEL,

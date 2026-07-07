@@ -150,6 +150,16 @@ restart` → health poll (`HEALTH_URL` if set, else `systemctl is-active`).
 If nothing was merged since the last run it exits 0 at the fetch step
 ("up to date") — the nightly tick is effectively free.
 
+`systemctl restart` sends `SIGTERM` first; on receipt the process waits up to
+`SHUTDOWN_DRAIN_TIMEOUT_MS` (default 20s) for any in-flight per-conversation
+turn to finish and send its reply before closing adapter connections and the
+DB (issue #210) — this covers exactly the "a member is mid-turn at 1am"
+window. `deploy/community-agent.service` sets no `TimeoutStopSec`, so
+systemd's default (90s) governs how long the graceful stop has before
+`SIGKILL`; if you ever override it, keep it comfortably above
+`SHUTDOWN_DRAIN_TIMEOUT_MS` or systemd will `SIGKILL` the process before the
+drain finishes.
+
 Note: any in-process job that writes files inside `APP_DIR` (e.g. the
 community-context exporter, issue #53) must write to an **untracked**
 path — `CONTEXT_EXPORT_PATH` defaults to a git-ignored `var/` file for

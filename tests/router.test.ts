@@ -319,3 +319,125 @@ test('router: KNOWLEDGE_SHORTCUT_ENABLED default (off) — a near-exact knowledg
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'real answer', 'with the flag off, the shortcut lookup must not even run');
 });
+
+test('config: SHUTDOWN_DRAIN_TIMEOUT_MS defaults to 20000ms when unset', () => {
+  assert.equal(config.behaviour.shutdownDrainTimeoutMs, 20_000);
+});
+
+test('drain(): resolves immediately when there are no in-flight chains — no regression to the fast shutdown path (issue #210)', async () => {
+  const router = new Router();
+  const start = Date.now();
+  await router.drain(20_000);
+  assert.ok(
+    Date.now() - start < 50,
+    'drain() must return near-instantly with nothing in flight, nowhere close to the timeout',
+  );
+});
+
+test('drain(): waits for an in-flight turn to settle — including its send — before resolving (issue #210)', async (t) => {
+  const infoLog = t.mock.method(logger, 'info');
+  let resolveTurn!: (r: AgentReply) => void;
+  const turnPromise = new Promise<AgentReply>((resolve) => {
+    resolveTurn = resolve;
+  });
+  const router = new Router(async () => turnPromise, 1_000_000);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  void trigger(makeMessage());
+  await sleep(50); // let handle() run through to enqueue() registering the chain
+
+  const drainPromise = router.drain(5_000);
+  assert.equal(
+    sent.length,
+    0,
+    'the reply must not have sent yet — drain() must not resolve before the turn does',
+  );
+
+  resolveTurn(makeReply('drained reply'));
+  await drainPromise;
+
+  assert.equal(sent.length, 1, 'drain() resolving means the reply already sent on the live connection');
+  assert.equal(sent[0].text, 'drained reply');
+  assert.ok(
+    infoLog.mock.calls.some((c) => String(c.arguments[1]).includes('settled')),
+    'drain() should log that all in-flight turns settled, not that the timeout won',
+  );
+});
+
+test('drain(): resolves at the timeout boundary if a chain never settles — never hangs forever (issue #210)', async (t) => {
+  const infoLog = t.mock.method(logger, 'info');
+  const router = new Router(async () => new Promise<AgentReply>(() => {}), 1_000_000); // turn hangs forever
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  void trigger(makeMessage());
+  await sleep(50); // let the chain register
+
+  const start = Date.now();
+  await router.drain(150);
+  const elapsed = Date.now() - start;
+
+  assert.ok(
+    elapsed >= 140,
+    `drain() must wait out the full timeout when a chain never settles, took ${elapsed}ms`,
+  );
+  assert.ok(elapsed < 1_000, `drain() must not wait meaningfully past the timeout, took ${elapsed}ms`);
+  assert.ok(
+    infoLog.mock.calls.some((c) => String(c.arguments[1]).includes('timed out')),
+    'drain() should log that the timeout won, not that everything settled',
+  );
+});
+
+test('drain(): a settled chain is cleared from the map — a later drain() call does not wait on it again (issue #210)', async () => {
+  const router = new Router(async () => makeReply('quick'), 1_000_000);
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage()); // full turn completes; enqueue()'s .finally already cleared the chain
+
+  const start = Date.now();
+  await router.drain(20_000);
+  assert.ok(
+    Date.now() - start < 50,
+    'a settled, already-cleared chain must not be waited on again by a later drain() call',
+  );
+});
+
+test('drain(): a message arriving mid-drain starts a new chain that drain() does not wait on (issue #210)', async () => {
+  let turnCalls = 0;
+  let resolveTurn1!: (r: AgentReply) => void;
+  const turn1 = new Promise<AgentReply>((resolve) => {
+    resolveTurn1 = resolve;
+  });
+  const router = new Router(async () => {
+    turnCalls += 1;
+    if (turnCalls === 1) return turn1;
+    return new Promise<AgentReply>(() => {}); // message 2's turn hangs forever
+  }, 1_000_000);
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  void trigger(makeMessage({ messageId: 'm1' }));
+  await sleep(50); // let message 1 register its chain
+
+  const drainPromise = router.drain(2_000);
+
+  // Adapters are still connected during the drain window, so a fresh inbound
+  // message can start a new chain for the same conversation. drain() must
+  // not be extended to cover it.
+  void trigger(makeMessage({ messageId: 'm2', text: 'second message while draining' }));
+  await sleep(50); // let message 2 chain behind message 1 in the map
+
+  resolveTurn1(makeReply('answer to message 1'));
+
+  const result = await Promise.race([
+    drainPromise.then(() => 'drained'),
+    sleep(300).then(() => 'still-draining'),
+  ]);
+  assert.equal(
+    result,
+    'drained',
+    'drain() must resolve once its original snapshot settles, not wait for a chain started after drain() was called',
+  );
+});
