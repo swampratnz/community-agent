@@ -485,3 +485,31 @@ CREATE INDEX IF NOT EXISTS answer_feedback_conversation_idx
 -- Backs the per-rater rolling-24h rate cap (see repository.ts createAnswerFeedback).
 CREATE INDEX IF NOT EXISTS answer_feedback_user_rate_idx
   ON answer_feedback (platform, user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Knowledge-search misses (issue #208): a `knowledge_search` call that
+-- returned hits but none cleared KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+-- persisted so admins can see what real questions have no confident answer
+-- yet — the complement `question_digest`/`knowledge_candidates`/
+-- `countStaleKnowledge` don't capture (see repository.ts's
+-- `recordKnowledgeGap` for why this is gated on "hits existed but none
+-- cleared the floor", not merely "zero hits", so an embed() outage can't
+-- masquerade as a wave of genuine misses). Purge-coherent: forget_me/
+-- purge_user_data delete the caller's own rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_gaps (
+  id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform        TEXT        NOT NULL,
+  conversation_id TEXT        NOT NULL,
+  user_id         TEXT        NOT NULL,
+  query_text      TEXT        NOT NULL,
+  embedding       VECTOR(:EMBEDDING_DIM),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_gaps_conversation_idx
+  ON knowledge_gaps (platform, conversation_id, created_at DESC);
+
+-- Backs the per-user rolling-24h insert cap (see repository.ts recordKnowledgeGap).
+CREATE INDEX IF NOT EXISTS knowledge_gaps_user_rate_idx
+  ON knowledge_gaps (platform, user_id, created_at DESC);

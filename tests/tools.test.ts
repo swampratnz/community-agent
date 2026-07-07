@@ -70,6 +70,7 @@ const { config } = await import('../src/config.js');
 // tests/repository.test.ts and tests/knowledgeEval.test.ts.
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
+const KNOWLEDGE_GAP_HANDLER_SCOPE = `${RUN}-knowledge-gap-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
@@ -852,6 +853,78 @@ test(
       0,
       'an entry that exists but falls below the relevance floor for this query must NOT be counted as a use',
     );
+  },
+);
+
+async function waitForGapCount(
+  platform: string,
+  userId: string,
+  predicate: (count: number) => boolean,
+  timeoutMs = 10_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT count(*) AS n FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
+    const count = Number(rows[0]?.n ?? 0);
+    if (predicate(count) || Date.now() > deadline) return count;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+test(
+  'knowledge_search tool handler records a knowledge_gaps row only on a below-floor miss (hits existed but none cleared the floor), never on a confident hit (issue #208)',
+  { skip },
+  async () => {
+    await saveKnowledge({
+      title: `Quazzledorf account activation ${RUN}`,
+      content: 'Quazzledorf accounts are activated by emailing the treasurer with your membership number.',
+      scope: KNOWLEDGE_GAP_HANDLER_SCOPE,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-gap-handler-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: KNOWLEDGE_GAP_HANDLER_SCOPE,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    // Confident hit: the only entry in scope is a clear paraphrase match —
+    // must never record a gap.
+    await registeredTool.handler({ query: 'how do I activate my Quazzledorf account' });
+    const noGapAfterHit = await waitForGapCount(caller.platform, caller.userId, (c) => c >= 1, 1_000);
+    assert.equal(noGapAfterHit, 0, 'a confident hit must never record a knowledge gap');
+
+    // Below-floor miss: searchKnowledge still returns the Quazzledorf entry
+    // (it's the only row in scope, and the query has no similarity filter),
+    // so hits.length > 0, but this deliberately unrelated query must not
+    // clear the relevance floor — exercising the "hits existed but none
+    // cleared the floor" gap condition, not a plain empty result.
+    await registeredTool.handler({ query: 'what time does the ferry to Waiheke leave on Saturdays' });
+    const gapAfterMiss = await waitForGapCount(caller.platform, caller.userId, (c) => c >= 1);
+    assert.equal(gapAfterMiss, 1, 'a below-floor miss must record exactly one knowledge gap');
+
+    const { rows } = await pool.query(
+      `SELECT query_text FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
+      [caller.platform, caller.userId],
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].query_text, 'what time does the ferry to Waiheke leave on Saturdays');
   },
 );
 

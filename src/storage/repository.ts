@@ -1275,6 +1275,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     `DELETE FROM answer_feedback WHERE platform = $1 AND user_id = $2`,
     [platform, userId],
   );
+  // knowledge_gaps (issue #208) is keyed the same way — purge coherence for
+  // anyone whose below-floor searches were logged.
+  const { rowCount: knowledgeGaps } = await pool.query(
+    `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
   return (
     (messages ?? 0) +
     (knowledge ?? 0) +
@@ -1287,7 +1293,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
     (languagePreference ?? 0) +
     (warnings ?? 0) +
     candidates +
-    (answerFeedback ?? 0)
+    (answerFeedback ?? 0) +
+    (knowledgeGaps ?? 0)
   );
 }
 
@@ -2363,6 +2370,120 @@ export async function recentQuestionClusters(
       match.count += 1;
     } else {
       clusters.push({ representative: row.content, embedding: vec, count: 1 });
+    }
+  }
+
+  return clusters
+    .filter((c) => c.count >= 2)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, clampedLimit)
+    .map((c) => ({ representative: c.representative, count: c.count }));
+}
+
+// --- Knowledge gaps (below-floor knowledge_search misses, issue #208) -------
+
+/** Per-user cap on new gap rows within a rolling 24h window — same anti-flood shape as RATE_ANSWER_DAILY_LIMIT. */
+export const KNOWLEDGE_GAP_DAILY_LIMIT = 20;
+export const KNOWLEDGE_GAP_QUERY_MAX_CHARS = 500;
+
+/**
+ * Record one `knowledge_search` call that came back with hits but none
+ * cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — the caller (the
+ * `knowledge_search` tool handler) must only invoke this when
+ * `hits.length > 0 && relevantIds.length === 0`, never on a plain empty
+ * result set, so a `searchKnowledge` embed() failure (which also returns
+ * `[]`) can't masquerade as a genuine miss. `query` is the model's
+ * reformulated search string, not necessarily the member's verbatim
+ * message — callers/docs must describe entries as "searches with no
+ * confident answer", not "member questions".
+ *
+ * Enforces the same DB-backed rolling-24h cap per `(platform, user_id)` as
+ * `createAnswerFeedback`/`createSuggestion` (COUNT(*) inside the insert,
+ * never an in-memory counter) so a chatty or adversarial member can't flood
+ * `list_knowledge_gaps` with junk. Fire-and-forget from the tool handler —
+ * callers must swallow failures themselves (never block or delay the reply).
+ */
+export async function recordKnowledgeGap(
+  platform: Platform,
+  conversationId: string,
+  userId: string,
+  query: string,
+): Promise<{ id: number } | 'rate_limited'> {
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(query);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for knowledge gap');
+  }
+
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM knowledge_gaps
+        WHERE platform = $1 AND user_id = $2
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+     SELECT $1, $3, $2, $4, $5
+      WHERE (SELECT n FROM recent) < $6
+     RETURNING id`,
+    [
+      platform,
+      userId,
+      conversationId,
+      query.slice(0, KNOWLEDGE_GAP_QUERY_MAX_CHARS),
+      embedding ? pgvector.toSql(embedding) : null,
+      KNOWLEDGE_GAP_DAILY_LIMIT,
+    ],
+  );
+  return rows[0] ? { id: Number(rows[0].id) } : 'rate_limited';
+}
+
+export interface KnowledgeGapCluster {
+  representative: string;
+  count: number;
+}
+
+/**
+ * Greedily cluster recent knowledge-search misses by embedding similarity —
+ * the `list_knowledge_gaps` signal, mirroring `recentQuestionClusters` exactly
+ * (same clustering code, same `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`,
+ * same conversation-scoping convention) but sourced from `knowledge_gaps`
+ * instead of `interactions`.
+ */
+export async function recentKnowledgeGapClusters(
+  conversationIds: readonly string[] | null,
+  days = 7,
+  limit = 10,
+): Promise<KnowledgeGapCluster[]> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 30);
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+
+  const params: unknown[] = [`${clampedDays} days`];
+  let scope = '';
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    scope = `AND conversation_id = ANY($${params.length})`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT query_text, embedding
+       FROM knowledge_gaps
+      WHERE embedding IS NOT NULL
+        AND created_at > now() - $1::interval
+        ${scope}
+      ORDER BY created_at ASC`,
+    params,
+  );
+
+  const clusters: Array<{ representative: string; embedding: number[]; count: number }> = [];
+  for (const row of rows) {
+    const vec = row.embedding as number[] | null;
+    if (!vec) continue;
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.count += 1;
+    } else {
+      clusters.push({ representative: row.query_text, embedding: vec, count: 1 });
     }
   }
 

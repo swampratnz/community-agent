@@ -177,6 +177,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest into knowledge; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
@@ -312,6 +313,45 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   accepted/declined candidates survive (their digest FK is `ON DELETE SET
   NULL`) with the same accountability treatment as `knowledge`/`admin_audit`
   generally.
+
+### Knowledge gaps (issue #208)
+
+`question_digest`, `countStaleKnowledge`, and `knowledge_candidates` each
+surface a different curation signal, but none of them looks at
+`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — the mechanism that decides, on
+every member turn, whether a `knowledge_search` hit was confident enough to
+serve. That decision used to be made and thrown away in the same request;
+`knowledge_gaps` persists it as the miss-specific complement to
+`question_digest`:
+
+- **Hook point**: inside the existing `knowledge_search` handler, after
+  `hits` is filtered by the relevance floor. If `hits.length > 0 &&
+  relevantIds.length === 0` — hits existed but none cleared the floor — the
+  handler fire-and-forgets `recordKnowledgeGap(caller.platform,
+  caller.conversationId, caller.userId, args.query)`. The `hits.length > 0`
+  guard matters: `searchKnowledge` also returns `[]` on an `embed()` failure,
+  and gating on "zero hits" alone would silently log every query during an
+  embedding outage as a genuine knowledge gap.
+- **Storage**: a dedicated `knowledge_gaps` table (query text, capped at 500
+  chars, plus the same local `embed()` vector every other memory/knowledge
+  feature uses — no paid model call). Same rolling-24h per-`(platform,
+  user_id)` insert cap as `answer_feedback`/`suggestions` (`
+  KNOWLEDGE_GAP_DAILY_LIMIT`, 20/day) so a chatty or adversarial member can't
+  flood the signal with junk queries.
+- **Read side**: `list_knowledge_gaps` (admin-tier, conversation-scoped via
+  `callerScope()`) clusters recent gap rows by embedding similarity — the
+  exact same greedy cosine-similarity clustering `recentQuestionClusters`
+  uses, just sourced from `knowledge_gaps` instead of `interactions` — and
+  returns "asked N times, never confidently answered" topics, `untrusted()`-
+  wrapped like `list_suggestions`/`list_reports`/`list_knowledge_candidates`
+  since it's member-authored text an admin reads. `args.query` is the
+  model's reformulated search string, not necessarily a member's verbatim
+  message, so both the tool description and this doc frame entries as
+  "searches with no confident answer," not "member questions."
+- **Purge coherence**: `forget_me`/`purge_user_data` delete the caller's own
+  `knowledge_gaps` rows, same treatment as `suggestions`/`content_reports`/
+  `answer_feedback`. No dedicated age-based retention timer — purge-on-request
+  only, same precedent as those three tables.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
