@@ -2,7 +2,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
-import { resolveRole } from './auth/roles.js';
+import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
 import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
 import {
@@ -22,6 +22,7 @@ import {
 } from './storage/repository.js';
 import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from './rateLimitNotice.js';
 import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from './pauseNotice.js';
+import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 
 const GATED_NOTICE =
   'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
@@ -75,8 +76,11 @@ export class Router {
   private readonly rateLimitNotified = new Map<string, number>();
   /** userKey -> when they were last told the bot is paused (debounced to PAUSE_NOTIFY_WINDOW_MS). */
   private readonly pauseNotified = new Map<string, number>();
+  /** Process-wide (not per-user) debounce for the daily-budget check-failure super-admin alert. */
+  private budgetCheckFailureNotifiedAt: number | undefined;
 
   private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
+  private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
 
   /**
    * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
@@ -84,9 +88,10 @@ export class Router {
    * ~10s, so re-firing every 8s keeps it continuously visible). `checkPaused`
    * defaults to the real policy read. `searchKnowledgeForShortcut` and
    * `recordShortcutRetrieval` default to the real DB-backed implementations.
-   * All are overridable in tests so the typing-indicator, pause, and
-   * knowledge-shortcut behaviour can be exercised without spawning a real
-   * Claude Code subprocess, waiting 8 real seconds, or a live DB.
+   * `countReplies` defaults to the real daily-budget read. All are
+   * overridable in tests so the typing-indicator, pause, knowledge-shortcut,
+   * and budget-check-failure behaviour can be exercised without spawning a
+   * real Claude Code subprocess, waiting 8 real seconds, or a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -94,6 +99,7 @@ export class Router {
     private readonly checkPaused: typeof isPaused = isPaused,
     private readonly searchKnowledgeForShortcut: typeof searchKnowledge = searchKnowledge,
     private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval = recordKnowledgeRetrieval,
+    private readonly countReplies: typeof countRepliesToUser = countRepliesToUser,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -135,6 +141,29 @@ export class Router {
   /** Outbound filtering (secrets + code policy) lives in the adapters' send paths. */
   private async send(adapter: PlatformAdapter, conversationId: string, text: string): Promise<void> {
     await adapter.sendMessage({ conversationId, text });
+  }
+
+  /**
+   * Best-effort super-admin DM when countRepliesToUser itself fails (not
+   * when it succeeds and finds the user over budget) — the daily reply
+   * budget, the main per-user cost/abuse guardrail, is silently unenforced
+   * for as long as the failure persists (issue #203). Static text only: no
+   * message content, no per-user identifiers. Mirrors usageAlert.ts's
+   * alertSuperAdmins loop shape.
+   */
+  private async alertSuperAdminsBudgetCheckFailed(): Promise<void> {
+    const message =
+      '⚠️ Daily reply-budget check failed (DB error) — the per-user daily limit is not being enforced until this clears. Check logs / DB health.';
+    for (const adapter of this.adapters.values()) {
+      if (!adapter.isConnected()) continue; // can't send through a dead connection
+      for (const id of superAdminIds(adapter.platform)) {
+        adapter
+          .sendDirectMessage(id, message)
+          .catch((err) =>
+            logger.warn({ err, platform: adapter.platform, id }, 'Budget check failure alert DM failed'),
+          );
+      }
+    }
   }
 
   /**
@@ -308,7 +337,20 @@ export class Router {
     // Daily reply budget (super admins exempt).
     const limit = config.behaviour.dailyReplyLimitPerUser;
     if (limit > 0 && role !== 'super_admin') {
-      const used = await countRepliesToUser(msg.platform, msg.userId).catch(() => 0);
+      const used = await this.countReplies(msg.platform, msg.userId).catch((err) => {
+        logger.error({ err, platform: msg.platform }, 'daily_reply_budget_check_failed');
+        if (
+          shouldNotifyBudgetCheckFailed(
+            this.budgetCheckFailureNotifiedAt,
+            Date.now(),
+            this.BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS,
+          )
+        ) {
+          this.budgetCheckFailureNotifiedAt = Date.now();
+          void this.alertSuperAdminsBudgetCheckFailed();
+        }
+        return 0;
+      });
       if (used >= limit) {
         // Notify at most once per rolling 24h — same window as the budget itself.
         const lastNotified = this.budgetNotified.get(userKey) ?? 0;
