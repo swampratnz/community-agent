@@ -14,6 +14,7 @@ import {
 } from './context/knowledgeRefresh.js';
 import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './context/docsIngest.js';
 import { writeCommunityContextExport } from './context/export.js';
+import { pollAnthropicStatus } from './status/anthropicStatus.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
 import { startAdminDigest } from './adminDigest.js';
@@ -121,6 +122,23 @@ function startDocsIngest(): ReturnType<typeof setInterval> | null {
   return timer;
 }
 
+/**
+ * Anthropic status check (off unless STATUS_CHECK_ENABLED). Polls Anthropic's
+ * own public status page on a fixed interval and caches the result in memory
+ * for check_status to read — a member's turn never triggers a live fetch.
+ * See src/status/anthropicStatus.ts.
+ */
+function startStatusCheck(): ReturnType<typeof setInterval> | null {
+  if (!config.statusCheck.enabled) return null;
+  const run = () => {
+    pollAnthropicStatus().catch((err) => logger.error({ err }, 'Anthropic status check run failed'));
+  };
+  run();
+  const timer = setInterval(run, config.statusCheck.pollMinutes * 60_000);
+  timer.unref();
+  return timer;
+}
+
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
 
@@ -182,6 +200,9 @@ async function main(): Promise<void> {
   // 4e-ter. Optional weekly docs ingest (disabled unless configured).
   const docsIngestTimer = startDocsIngest();
 
+  // 4e-quater. Optional Anthropic status check poll (disabled unless configured).
+  const statusCheckTimer = startStatusCheck();
+
   // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
   const adminDigestTimer = startAdminDigest(adapters);
 
@@ -195,6 +216,7 @@ async function main(): Promise<void> {
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
     if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
     if (docsIngestTimer) clearInterval(docsIngestTimer);
+    if (statusCheckTimer) clearInterval(statusCheckTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
     if (healthServer) await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await Promise.allSettled(adapters.map((a) => a.stop()));

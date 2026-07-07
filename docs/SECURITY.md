@@ -356,6 +356,24 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   tests. If you'd rather be strict, treat `'docs'` like `'auto'` by
   quarantining it in `formatKnowledgeSearchResults` — the flag already flows
   through `searchKnowledge`.
+- **Anthropic status check** (`STATUS_CHECK_ENABLED`, off by default —
+  src/status/anthropicStatus.ts, issue #206): answers "is this me, or is
+  Anthropic having an incident?" from **one fixed, official, first-party
+  HTTPS source** — Anthropic's own public Statuspage summary endpoint
+  (`STATUS_CHECK_API_URL`, `https://`-enforced at config validation, override-
+  only default, never user/chat-supplied). No model is in the fetch/parse
+  loop: a background timer polls the endpoint and deterministically parses
+  it into a small in-memory cache; the member-tier `check_status` tool
+  (`mcp__community__check_status`, no arguments) only ever reads that cache
+  — a member's turn never triggers a live fetch, so there is nothing for a
+  prompt-injected turn to steer. No new data about members is collected —
+  the cache holds only Anthropic's own already-public incident data, with no
+  per-user association, so `forget_me`/`purge_user_data` have nothing to
+  touch. A fetch failure or a malformed 200 response both degrade to the
+  last-known-good cached value (with its age) rather than throwing into a
+  member's turn or silently reporting a stale "operational" — pinned by
+  `SECURITY:` tests. No new DB table, no migration — the data is already
+  public, ephemeral, and re-fetchable.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The
