@@ -48,6 +48,7 @@ const {
   resolveSuggestion,
   resolveContentReport,
   getResponseStyle,
+  getLanguagePreference,
   setResponseStyle,
   REPORT_RATE_LIMIT_PER_DAY,
   RATE_ANSWER_DAILY_LIMIT,
@@ -432,6 +433,39 @@ test('SECURITY: moderation_history rejects an actionKind outside the allow-list 
     );
   }
   assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'actionKind stays optional');
+});
+
+test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['set_language_preference'];
+
+  for (const language of ['auto', 'en', 'mi']) {
+    assert.equal(
+      registeredTool.inputSchema.safeParse({ language }).success,
+      true,
+      `${language} is allow-listed`,
+    );
+  }
+  for (const bad of ['fr', 'samoan', 'Māori', '', 'EN']) {
+    assert.equal(
+      registeredTool.inputSchema.safeParse({ language: bad }).success,
+      false,
+      `"${bad}" must be rejected — no free text can ever reach the system prompt`,
+    );
+  }
+  assert.equal(registeredTool.inputSchema.safeParse({}).success, false, 'language is required, not optional');
 });
 
 // community_info (issue #92): the reply is fully determined by caller.role
@@ -1406,6 +1440,63 @@ test(
     await pool.query(`DELETE FROM response_style_prefs WHERE platform = 'discord' AND user_id = $1`, [
       userId,
     ]);
+  },
+);
+
+// set_language_preference (issue #189): same shape as set_response_style
+// above, a closed three-value enum, no CONFIRM gate — the handler just
+// upserts via repository.setLanguagePreference.
+function setLanguagePreferenceHandler(caller: { platform: 'discord' | 'whatsapp'; userId: string }) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            language: 'auto' | 'en' | 'mi';
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['set_language_preference'];
+}
+
+test(
+  "set_language_preference upserts the caller's preference, readable back via getLanguagePreference (issue #189)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-set-language-preference-user`;
+
+    const miResult = await setLanguagePreferenceHandler({ platform: 'discord', userId }).handler({
+      language: 'mi',
+    });
+    assert.match(miResult.content[0]?.text ?? '', /te reo Māori/i);
+    assert.equal(await getLanguagePreference('discord', userId), 'mi');
+
+    const enResult = await setLanguagePreferenceHandler({ platform: 'discord', userId }).handler({
+      language: 'en',
+    });
+    assert.match(enResult.content[0]?.text ?? '', /NZ English/i);
+    assert.equal(await getLanguagePreference('discord', userId), 'en');
+
+    const autoResult = await setLanguagePreferenceHandler({ platform: 'discord', userId }).handler({
+      language: 'auto',
+    });
+    assert.match(autoResult.content[0]?.text ?? '', /mirroring whichever language/i);
+    assert.equal(await getLanguagePreference('discord', userId), 'auto');
+
+    await pool.query(`DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = $1`, [userId]);
   },
 );
 

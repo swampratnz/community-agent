@@ -161,6 +161,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
+| `set_language_preference` (standing reply-language preference: auto/en/mi; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `list_suggestions` / `resolve_suggestion` (triage the idea queue) | ❌ | ❌ | ✅ | ✅ |
 | Memory/history across conversations | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
@@ -187,7 +188,17 @@ member/guest may also set their own standing `response_style`
 (`standard`/`plain`, via `set_response_style`) — a per-caller preference
 (`response_style_prefs`, keyed like `admin_digest_sends`) read alongside
 `code_answers` on every turn; `plain` appends a short jargon-avoidance
-instruction block to the system prompt. None of the router's silent-drop
+instruction block to the system prompt. The same caller may also set a
+standing `language_preference` (`auto`/`en`/`mi`, via
+`set_language_preference`, issue #189) — a per-caller preference
+(`language_prefs`, keyed the same way) read alongside `response_style`;
+`en`/`mi` append a fixed instruction block telling the model to always reply
+in that language regardless of the member's own message language, while `mi`
+explicitly preserves the charter's existing te reo Māori caution (simple,
+short, macrons preserved, Claude/API terms and code left in English) and
+allows falling back to English for content it can't render accurately.
+`auto` (the default) leaves today's per-message language-mirroring (issue
+#68) completely unchanged. None of the router's silent-drop
 conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the

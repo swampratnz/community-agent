@@ -36,29 +36,43 @@ function hit(content: string, overrides: Partial<MemoryHit> = {}): MemoryHit {
 }
 
 test('system prompt states the requester tier and untrusted-content rule', () => {
-  const memberPrompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const memberPrompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
   assert.match(memberPrompt, /MEMBER/);
   assert.match(memberPrompt, /UNTRUSTED DATA/);
 
   assert.match(
-    buildSystemPrompt({ ...caller, role: 'admin' }, { codeAnswers: 'snippets', responseStyle: 'standard' }),
+    buildSystemPrompt(
+      { ...caller, role: 'admin' },
+      { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
+    ),
     /an ADMIN/,
   );
   assert.match(
     buildSystemPrompt(
       { ...caller, role: 'super_admin' },
-      { codeAnswers: 'snippets', responseStyle: 'standard' },
+      { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
     ),
     /SUPER ADMIN/,
   );
   assert.match(
-    buildSystemPrompt({ ...caller, role: 'guest' }, { codeAnswers: 'snippets', responseStyle: 'standard' }),
+    buildSystemPrompt(
+      { ...caller, role: 'guest' },
+      { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
+    ),
     /GUEST/,
   );
 });
 
 test('system prompt instructs mirroring the member language, defaulting to NZ English', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
   assert.match(prompt, /NZ English by default/);
   assert.match(prompt, /reply in that\s+language instead/);
   assert.match(prompt, /mixes languages/);
@@ -67,22 +81,34 @@ test('system prompt instructs mirroring the member language, defaulting to NZ En
 
 test('code policy note follows the policy value', () => {
   assert.match(
-    buildSystemPrompt(caller, { codeAnswers: 'off', responseStyle: 'standard' }),
+    buildSystemPrompt(caller, { codeAnswers: 'off', responseStyle: 'standard', languagePreference: 'auto' }),
     /do NOT write code/,
   );
   assert.match(
-    buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' }),
+    buildSystemPrompt(caller, {
+      codeAnswers: 'snippets',
+      responseStyle: 'standard',
+      languagePreference: 'auto',
+    }),
     /short illustrative snippets/,
   );
   assert.match(
-    buildSystemPrompt(caller, { codeAnswers: 'full', responseStyle: 'standard' }),
+    buildSystemPrompt(caller, { codeAnswers: 'full', responseStyle: 'standard', languagePreference: 'auto' }),
     /code answers are allowed/i,
   );
 });
 
 test('plain-language block appears only when responseStyle is plain', () => {
-  const standard = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
-  const plain = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'plain' });
+  const standard = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  const plain = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'plain',
+    languagePreference: 'auto',
+  });
   assert.ok(
     !standard.includes('plain-language replies'),
     'standard style must not include the plain-language instruction block',
@@ -92,9 +118,84 @@ test('plain-language block appears only when responseStyle is plain', () => {
 });
 
 test('guidelines teach the model when to call set_response_style', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
   assert.match(prompt, /set_response_style\('plain'\)/);
   assert.match(prompt, /one-off "explain that\s+again more simply" should just be honoured/);
+});
+
+// set_language_preference (issue #189)
+
+test("languagePreference: 'auto' is byte-for-byte identical whether it's set explicitly or defaulted", () => {
+  const explicitAuto = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  const secondCall = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  assert.equal(explicitAuto, secondCall, "'auto' must be deterministic — zero surprise per-call variance");
+  assert.ok(
+    !explicitAuto.includes('always receive replies in') && !secondCall.includes('always receive replies in'),
+    "'auto' must not append either language-preference instruction block",
+  );
+});
+
+test("languagePreference: 'en' appends the standing-English instruction block; 'auto' does not", () => {
+  const auto = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  const en = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'en',
+  });
+  assert.ok(
+    !auto.includes('always receive replies in'),
+    "'auto' must not append either language-preference instruction block",
+  );
+  assert.match(en, /always receive replies in NZ English/);
+  assert.match(en, /set_language_preference/);
+});
+
+test("languagePreference: 'mi' appends the standing-te-reo-Māori instruction block, preserving the charter's caution and allowing graceful fallback", () => {
+  const mi = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'mi',
+  });
+  assert.match(mi, /always receive replies in te reo Māori/);
+  // Tightened acceptance criteria from the adversarial review: the block must
+  // reference the charter's existing caution (simple/short, don't overreach,
+  // preserve macrons/diacritics, keep Claude/API terms and code in English)
+  // rather than overriding it.
+  assert.match(mi, /simple and short rather than overreaching/);
+  assert.match(mi, /preserve\s+macrons and other diacritics exactly/);
+  assert.match(mi, /Claude\/API-specific terms, product names, and code untouched/);
+  // ...and must explicitly allow falling back to NZ English for content it
+  // can't render accurately, so the preference can never force a
+  // low-quality translation of technical content.
+  assert.match(mi, /fall back to NZ\s+English/);
+  assert.match(mi, /cannot render some content.*confidently and accurately/s);
+});
+
+test('guidelines teach the model when to call set_language_preference (standing request only, not a one-off)', () => {
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  assert.match(prompt, /set_language_preference\('en' or 'mi'\)/);
+  assert.match(prompt, /ALWAYS reply in a specific language from now on/);
+  assert.match(prompt, /one-off "reply in Māori just now" should just be honoured/);
 });
 
 test('SECURITY: recalled content cannot fake tags to escape its block', () => {
@@ -116,7 +217,11 @@ test('SECURITY: recalled content cannot fake tags to escape its block', () => {
 });
 
 test('guidelines cover knowledge provenance: attribution and scoped general-knowledge flag', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
   assert.match(prompt, /briefly attribute it in passing/);
   assert.match(prompt, /community-specific facts/);
   assert.match(prompt, /Do NOT do this\s+for general Claude\/API\/product questions/);
@@ -137,14 +242,22 @@ test('SECURITY: ambient-archived channel text is quarantined in recall exactly l
 });
 
 test('guidelines offer suggest_improvement for feature ideas without promising delivery (issue #46)', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
   assert.match(prompt, /suggest_improvement/);
   assert.match(prompt, /never\s+promise or imply the change will be built/);
   assert.match(prompt, /no repo or issue-tracker access/);
 });
 
 test('guidelines pin a conservative rate_answer trigger: clear explicit cues only, never general positivity or ambiguous chatter (issue #118)', () => {
-  const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' });
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
   assert.match(prompt, /rate_answer ONLY when a member gives a CLEAR, EXPLICIT cue/);
   assert.match(prompt, /YOUR OWN LAST answer/);
   assert.match(prompt, /Do NOT call it on general positivity/);
@@ -154,7 +267,7 @@ test('guidelines pin a conservative rate_answer trigger: clear explicit cues onl
 test('system prompt includes the current NZ date and weekday, day-granularity only (issue #169)', () => {
   const winter = buildSystemPrompt(
     caller,
-    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
     undefined,
     new Date('2026-07-06T02:00:00Z'),
   );
@@ -171,13 +284,13 @@ test('the NZST/NZDT transition is handled by Intl, not a hard-coded offset (issu
   // fixed offset could not produce this divergence from the same wall time.
   const winter = buildSystemPrompt(
     caller,
-    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
     undefined,
     new Date('2026-07-05T11:30:00Z'),
   );
   const summer = buildSystemPrompt(
     caller,
-    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
     undefined,
     new Date('2026-01-05T11:30:00Z'),
   );

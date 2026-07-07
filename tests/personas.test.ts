@@ -32,7 +32,11 @@ test('selectPersona falls back to the default when no alias matches', () => {
 
 test('SECURITY: every persona keeps the security guidelines and human-style rules', () => {
   for (const persona of Object.values(PERSONAS)) {
-    const prompt = buildSystemPrompt(caller, { codeAnswers: 'snippets', responseStyle: 'standard' }, persona);
+    const prompt = buildSystemPrompt(
+      caller,
+      { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
+      persona,
+    );
     // The persona voice is present...
     assert.ok(prompt.includes(persona.name), `prompt should include ${persona.name}`);
     // ...but the security invariants are NOT dropped by swapping voices.
@@ -46,12 +50,12 @@ test('SECURITY: every persona keeps the security guidelines and human-style rule
 test('persona changes voice, not the role note (permissions come from tier)', () => {
   const asMember = buildSystemPrompt(
     caller,
-    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
     getPersona('dave'),
   );
   const asAdmin = buildSystemPrompt(
     { ...caller, role: 'admin' },
-    { codeAnswers: 'snippets', responseStyle: 'standard' },
+    { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
     getPersona('dave'),
   );
   // Same persona, but the tier-derived role note differs — persona never sets permissions.
