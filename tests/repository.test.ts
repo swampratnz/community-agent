@@ -67,6 +67,7 @@ const {
   listSuggestions,
   listOwnSuggestions,
   resolveSuggestion,
+  countPendingSuggestions,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   SUGGESTION_MAX_CHARS,
   upsertMember,
@@ -1549,6 +1550,62 @@ test(
     assert.equal(afterPurge.rows.length, 0, "the user's suggestions are gone after purge");
 
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [`${RUN}-suggester-other`]);
+  },
+);
+
+test(
+  'repository: countPendingSuggestions is exact past the 50-row listSuggestions default limit, and counts only status = new (issue #193)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-countsuggestions-many`;
+    const before = await countPendingSuggestions();
+    const TOTAL_NEW = 55; // exceeds listSuggestions's default limit of 50
+
+    const values: string[] = [];
+    const params: unknown[] = [];
+    for (let i = 0; i < TOTAL_NEW; i++) {
+      params.push('discord', userId, `bulk pending suggestion ${i}`);
+      values.push(`($${params.length - 2}, $${params.length - 1}, $${params.length})`);
+    }
+    await pool.query(
+      `INSERT INTO suggestions (platform, user_id, content) VALUES ${values.join(', ')}`,
+      params,
+    );
+
+    const listed = await listSuggestions('new', 50);
+    assert.equal(
+      listed.length,
+      50,
+      'listSuggestions is clamped at its default limit, understating the true backlog',
+    );
+    assert.equal(
+      await countPendingSuggestions(),
+      before + TOTAL_NEW,
+      'countPendingSuggestions reports the exact backlog, not the limited list length',
+    );
+
+    // A mix of non-'new' statuses must be excluded from the count, not just
+    // ones past the row limit.
+    for (const status of ['reviewed', 'declined', 'done']) {
+      await pool.query(`INSERT INTO suggestions (platform, user_id, content, status) VALUES ($1,$2,$3,$4)`, [
+        'discord',
+        userId,
+        `a ${status} suggestion`,
+        status,
+      ]);
+    }
+    assert.equal(
+      await countPendingSuggestions(),
+      before + TOTAL_NEW,
+      "countPendingSuggestions excludes 'reviewed'/'declined'/'done' rows — only 'new' is pending",
+    );
+
+    await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [userId]);
+    assert.equal(
+      await countPendingSuggestions(),
+      before,
+      'deleting every inserted row restores the prior count',
+    );
   },
 );
 

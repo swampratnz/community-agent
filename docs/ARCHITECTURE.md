@@ -114,15 +114,18 @@ memory**:
    `community_users` admin at most once a week — restart-safe via the
    `admin_digest_sends` freshness table — with their own scoped
    `recentQuestionClusters` result, plus (issue #133) a guild-wide pending
-   access-request count and their own scoped open-report count, sourced from
-   dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`) so a
-   backlog past `list_access_requests`/`list_reports`'s own list `limit` is
-   never understated. The DM sends when *any* of the three signals is
-   non-zero, and sends nothing on a quiet week (all zero, no DM, no noise);
-   a persistently untriaged queue re-appears every subsequent weekly tick
-   until it's cleared. Super admins are not enrolled; they keep the
-   on-demand, all-conversation-scoped `question_digest`/`list_access_requests`/
-   `list_reports` tools instead.
+   access-request count and their own scoped open-report count, plus (issue
+   #193) a guild-wide pending-suggestion count, all sourced from dedicated
+   `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
+   `countPendingSuggestions`) so a backlog past
+   `list_access_requests`/`list_reports`/`list_suggestions`'s own list
+   `limit` is never understated. The DM sends when *any* of the four signals
+   is non-zero, and sends nothing on a quiet week (all zero, no DM, no
+   noise); a persistently untriaged queue re-appears every subsequent weekly
+   tick until it's cleared. Super admins are not enrolled; they keep the
+   on-demand, all-conversation-scoped
+   `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`
+   tools instead.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and

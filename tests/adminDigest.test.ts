@@ -30,7 +30,9 @@ const {
   recordAccessRequest,
   clearAccessRequest,
   countAccessRequests,
+  countPendingSuggestions,
   createContentReport,
+  createSuggestion,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -48,8 +50,8 @@ test('startAdminDigest: ADMIN_DIGEST_ENABLED unset (default) creates no timer', 
   assert.equal(timer, null, 'disabled by default — no timer, no extra queries');
 });
 
-test('buildAdminDigestMessage: all three signals zero -> null (no send, no noise on a quiet week)', () => {
-  assert.equal(buildAdminDigestMessage([], 0, 0), null);
+test('buildAdminDigestMessage: all four signals zero -> null (no send, no noise on a quiet week)', () => {
+  assert.equal(buildAdminDigestMessage([], 0, 0, 0), null);
 });
 
 test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each length-bounded', () => {
@@ -59,7 +61,7 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
     count: i + 2,
   }));
 
-  const message = buildAdminDigestMessage(clusters, 0, 0);
+  const message = buildAdminDigestMessage(clusters, 0, 0, 0);
   assert.ok(message, 'non-empty clusters produce a message');
   assert.match(message, /^🔔 7 recurring question\(s\)/);
   assert.ok(message.includes('question_digest'), 'points the admin at the on-demand tool for full detail');
@@ -75,32 +77,59 @@ test('buildAdminDigestMessage: clusters -> a message capped at 5 snippets, each 
 
 test('buildAdminDigestMessage: pending-access-request line appears only when count > 0 (issue #133)', () => {
   assert.equal(
-    buildAdminDigestMessage([], 0, 0),
+    buildAdminDigestMessage([], 0, 0, 0),
     null,
-    'zero pending requests alongside zero clusters/reports is still a quiet week',
+    'zero pending requests alongside zero clusters/reports/suggestions is still a quiet week',
   );
 
-  const message = buildAdminDigestMessage([], 3, 0);
+  const message = buildAdminDigestMessage([], 3, 0, 0);
   assert.ok(message, 'a non-zero pending-request count alone still produces a DM');
   assert.match(message, /⏳ 3 pending access request\(s\) — run `list_access_requests`\./);
   assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
   assert.ok(!message.includes('🚩'), 'no report line when there are no open reports');
+  assert.ok(!message.includes('💡'), 'no suggestion line when the count is zero');
 });
 
 test('buildAdminDigestMessage: open-report line appears only when count > 0 (issue #133)', () => {
-  const message = buildAdminDigestMessage([], 0, 2);
+  const message = buildAdminDigestMessage([], 0, 2, 0);
   assert.ok(message, 'a non-zero open-report count alone still produces a DM');
   assert.match(message, /🚩 2 open report\(s\) in your conversations — run `list_reports`\./);
   assert.ok(!message.includes('⏳'), 'no pending-request line when the count is zero');
+  assert.ok(!message.includes('💡'), 'no suggestion line when the count is zero');
 });
 
-test('buildAdminDigestMessage: all three signals non-zero -> all three lines present', () => {
+test('buildAdminDigestMessage: pending-suggestion line appears only when count > 0, independent of the other three signals (issue #193)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 4);
+  assert.ok(message, 'a non-zero pending-suggestion count alone still produces a DM');
+  assert.match(message, /^💡 4 pending suggestion\(s\) — run `list_suggestions`\.$/);
+  assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
+  assert.ok(!message.includes('⏳'), 'no pending-request line when the count is zero');
+  assert.ok(!message.includes('🚩'), 'no report line when there are no open reports');
+
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0),
+    null,
+    'zero pending suggestions alongside zero clusters/requests/reports is still a quiet week',
+  );
+});
+
+test('buildAdminDigestMessage: the DM never contains suggestion content, display name, or user id — only the bare count (issue #193 privacy pin)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 4);
+  assert.ok(message);
+  assert.ok(
+    !/suggest_improvement|display_name|reviewed_by/i.test(message),
+    'no suggestion field name or content ever leaks into the digest text',
+  );
+});
+
+test('buildAdminDigestMessage: all four signals non-zero -> all four lines present', () => {
   const clusters = [{ representative: 'a repeated question', count: 4 }];
-  const message = buildAdminDigestMessage(clusters, 1, 1);
+  const message = buildAdminDigestMessage(clusters, 1, 1, 1);
   assert.ok(message);
   assert.ok(message.includes('🔔'), 'cluster line present');
   assert.ok(message.includes('⏳'), 'pending-request line present');
   assert.ok(message.includes('🚩'), 'open-report line present');
+  assert.ok(message.includes('💡'), 'pending-suggestion line present');
 });
 
 function fakeAdapter(opts: {
@@ -240,7 +269,7 @@ test(
 );
 
 test(
-  'runAdminDigestOnce: an admin past the window with all three signals at zero sends nothing and does not update the freshness row (issue #133)',
+  'runAdminDigestOnce: an admin past the window with all four signals at zero sends nothing and does not update the freshness row (issue #133, extended #193)',
   { skip },
   async () => {
     const adminId = `${RUN}-run-quiet-admin`;
@@ -248,30 +277,37 @@ test(
 
     const sent: Array<{ userId: string; text: string }> = [];
     // A conversation id unique to this test guarantees zero clusters and zero
-    // open reports in scope. countAccessRequests is guild-wide by design
-    // (issue #133) and so is NOT test-isolated by a unique id — snapshot it
-    // immediately beforehand so this assertion holds even if another test
-    // file concurrently has a pending access request in flight.
+    // open reports in scope. countAccessRequests/countPendingSuggestions are
+    // guild-wide by design (issue #133, #193) and so are NOT test-isolated by
+    // a unique id — snapshot them immediately beforehand so this assertion
+    // holds even if another test file concurrently has a pending access
+    // request or suggestion in flight.
     const adapter = fakeAdapter({ platform: 'discord', conversationIds: [`${RUN}-c-empty`], sent });
     const pendingAccessRequestsBefore = await countAccessRequests();
+    const pendingSuggestionsBefore = await countPendingSuggestions();
 
     await runAdminDigestOnce([adapter]);
 
-    if (pendingAccessRequestsBefore === 0) {
-      assert.equal(sent.length, 0, 'zero clusters, zero pending requests, zero open reports — no DM sent');
+    if (pendingAccessRequestsBefore === 0 && pendingSuggestionsBefore === 0) {
+      assert.equal(
+        sent.length,
+        0,
+        'zero clusters, zero pending requests, zero open reports, zero pending suggestions — no DM sent',
+      );
       assert.equal(
         await wasAdminDigestSentRecently('discord', adminId, 7),
         false,
         'a quiet run must not touch the freshness row (so a later clustered week is not skipped)',
       );
     } else {
-      // Extremely rare in practice, but countAccessRequests is intentionally
-      // unscoped — a concurrently-running test file's pending access request
-      // legitimately makes this a non-quiet week, so the digest correctly sends.
+      // Extremely rare in practice, but countAccessRequests/countPendingSuggestions
+      // are intentionally unscoped — a concurrently-running test file's pending
+      // access request or suggestion legitimately makes this a non-quiet week,
+      // so the digest correctly sends.
       assert.equal(
         sent.length,
         1,
-        'a pre-existing pending access request still legitimately triggers a digest',
+        'a pre-existing pending access request or suggestion still legitimately triggers a digest',
       );
       assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
       assert.ok(!sent[0].text.includes('🚩'), 'no report line — this admin has zero open reports in scope');
@@ -389,6 +425,78 @@ test(
 
     await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
     await clearAccessRequest('discord', requesterId);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: an admin with zero clusters/requests/reports but ≥1 pending suggestion still receives a digest containing only the bare count (issue #193 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-suggestions-admin`;
+    const suggesterId = `${RUN}-run-suggestions-suggester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: suggesterId,
+      displayName: 'a very identifiable display name',
+      content: 'private suggestion content that must never leak into the digest',
+    });
+    assert.ok(created);
+
+    // countAccessRequests is guild-wide by design (issue #133) and so is NOT
+    // test-isolated by a unique id — snapshot it beforehand, same pattern as
+    // the "all four signals at zero" test above, so this assertion holds
+    // even if another test file concurrently has a pending access request.
+    const pendingAccessRequestsBefore = await countAccessRequests();
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-suggestions-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(
+      sent.length,
+      1,
+      'zero clusters/requests/reports today would previously mean no DM — a pending suggestion now still triggers one',
+    );
+    assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
+    if (pendingAccessRequestsBefore === 0) {
+      assert.ok(!sent[0].text.includes('⏳'), 'no pending-request line — zero pending access requests');
+    }
+    assert.match(
+      sent[0].text,
+      /💡 \d+ pending suggestion\(s\) — run `list_suggestions`\./,
+      'the pending-suggestion line is present',
+    );
+    assert.ok(
+      !sent[0].text.includes('private suggestion content'),
+      'SECURITY: the raw suggestion content must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes('a very identifiable display name'),
+      'SECURITY: the submitter display name must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(suggesterId),
+      'SECURITY: the submitter user id must never appear in the digest DM',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM suggestions WHERE id = $1`, [created.id]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
