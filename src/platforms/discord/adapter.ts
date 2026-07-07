@@ -60,6 +60,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'delete_message',
     'warn_user',
     'unmute_user',
+    'assign_community_role',
+    'remove_community_role',
+    'list_assignable_roles',
   ]);
 
   private readonly client: Client;
@@ -481,9 +484,73 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         await this.removeMutedRole(action.targetUserId!);
         return `Unmuted ${action.targetUserId}.`;
       }
+      case 'assign_community_role': {
+        const roleId = paramString(action.params?.roleId);
+        if (!roleId) throw new Error('assign_community_role requires params.roleId');
+        const role = await this.resolveAssignableRole(guild, roleId);
+        // The load-bearing check (issue #232): DISCORD_ASSIGNABLE_ROLES is a
+        // curation-time allowlist, but a role's permission bitfield is
+        // mutable afterwards — someone with Manage Roles could grant an
+        // already-allowlisted "cosmetic" role real Discord permissions later.
+        // Re-validate live, at the moment of assignment, that the role still
+        // carries ZERO permissions; refuse otherwise even though its id is
+        // allowlisted. See docs/SECURITY.md.
+        if (role.permissions.bitfield !== 0n) {
+          throw new Error(
+            `Refusing: role "${role.name}" currently carries Discord permissions, so it can no longer be ` +
+              'treated as cosmetic. Strip its permissions before assigning it again.',
+          );
+        }
+        const member = await guild.members.fetch(action.targetUserId!);
+        await member.roles.add(role, 'Cosmetic community role assigned via bot');
+        return `Assigned "${role.name}" to ${member.user.tag}.`;
+      }
+      case 'remove_community_role': {
+        const roleId = paramString(action.params?.roleId);
+        if (!roleId) throw new Error('remove_community_role requires params.roleId');
+        const role = await this.resolveAssignableRole(guild, roleId);
+        const member = await guild.members.fetch(action.targetUserId!);
+        await member.roles.remove(role, 'Cosmetic community role removed via bot');
+        return `Removed "${role.name}" from ${member.user.tag}.`;
+      }
+      case 'list_assignable_roles': {
+        if (config.discord.assignableRoleIds.length === 0) {
+          return 'No assignable roles configured (DISCORD_ASSIGNABLE_ROLES is unset).';
+        }
+        const lines: string[] = [];
+        for (const roleId of config.discord.assignableRoleIds) {
+          const role = await guild.roles.fetch(roleId, { force: true }).catch(() => null);
+          if (!role) {
+            lines.push(`- ${roleId}: not found in this guild`);
+            continue;
+          }
+          const flag =
+            role.permissions.bitfield !== 0n
+              ? ' ⚠️ currently carries permissions — would be refused if assigned'
+              : '';
+          lines.push(`- ${role.name} (${role.id})${flag}`);
+        }
+        return lines.join('\n');
+      }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);
     }
+  }
+
+  /**
+   * Resolve a role for assign/remove_community_role: must be on the
+   * human-curated `DISCORD_ASSIGNABLE_ROLES` allowlist, and is always fetched
+   * live (`force: true`, bypassing the gateway cache) since the permission
+   * bitfield check that follows must see the role's current state, not a
+   * possibly-stale cached one (see SECURITY.md).
+   */
+  private async resolveAssignableRole(guild: Guild, roleId: string): Promise<Role> {
+    if (!config.discord.assignableRoleIds.includes(roleId)) {
+      throw new Error(`Role ${roleId} is not on the assignable-role allowlist (DISCORD_ASSIGNABLE_ROLES).`);
+    }
+    const role = await guild.roles.fetch(roleId, { force: true });
+    if (!role) throw new Error(`Role ${roleId} was not found in this guild.`);
+    return role;
   }
 
   // --- Moderation enforcement (ModerationEnforcer) ---------------------------
