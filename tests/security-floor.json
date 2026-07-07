@@ -22,7 +22,7 @@
   "outbound.test.ts": 3,
   "pendingActions.test.ts": 2,
   "personas.test.ts": 1,
-  "rbac.test.ts": 23,
+  "rbac.test.ts": 24,
   "redeploy.test.ts": 2,
   "repository.test.ts": 32,
   "secrets.test.ts": 2,
