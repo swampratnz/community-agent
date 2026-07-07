@@ -493,6 +493,21 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     await this.sendDirectMessage(userId, text);
   }
 
+  /**
+   * React to an existing message with an emoji (issue #231). `emoji` is
+   * already validated against a closed allowlist by the caller
+   * (`react_to_message`) — this method trusts it and just forwards to
+   * discord.js, same division of responsibility as `performAdminAction`.
+   */
+  async reactToMessage(conversationId: string, messageId: string, emoji: string): Promise<void> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel || !channel.isTextBased()) {
+      throw new Error(`Discord channel ${conversationId} is not accessible`);
+    }
+    const msg = await channel.messages.fetch(messageId);
+    await msg.react(emoji);
+  }
+
   /** Post an image attachment (with an optional caption) to a channel. */
   async sendImage(
     conversationId: string,

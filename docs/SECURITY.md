@@ -673,6 +673,35 @@ SuperGrok subscription — treat `~/.grok/auth.json` as a credential (it's outsi
 the repo, on the host). Generated images are unfiltered model output posted into
 the community under an admin's name; the admin who invokes it owns that.
 
+### 9. Emoji reactions (`react_to_message`, issue #231)
+Member-tier, but low-consequence and tightly bounded — the tool can only ever
+put one of a fixed set of emoji onto a message using the bot's own identity,
+never send text or take a moderation action:
+
+- **Closed positive/neutral allowlist.** Exactly `✅ 👍 👀 🎉`
+  (`ALLOWED_REACTION_EMOJI` in `src/agent/tools.ts`) enforced by the zod
+  schema — no other value, including a custom/Nitro emoji string, ever reaches
+  the Discord API. Deliberately excludes anything that could read as the bot
+  editorialising against a member (no 👎). Pinned by a `SECURITY:` test.
+- **Target validation**, same "the bot must have actually seen it" discipline
+  as `moderate`/`announce`: the message id must exist in `interactions` for
+  the caller's own `(platform, conversationId)` (`isKnownMessage`). A member
+  can only react within their own current conversation — there is no separate
+  `conversationId` argument to redirect the reaction elsewhere.
+- **In-memory per-user daily cap** (`REACTION_RATE_LIMIT_PER_DAY`, 20),
+  same shape as `generate_image`'s `imageGenDaily` map — acceptable here
+  (unlike `report_content`'s DB-backed, restart-proof cap) because a reaction
+  is far lower-consequence than either a report row or a `grok` subprocess
+  spawn, and it needs no migration.
+- **Discord-only.** `PlatformAdapter.reactToMessage` is optional, mirroring
+  `sendImage`; WhatsApp adapters simply don't implement it, so the tool
+  degrades to a plain "not available on whatsapp" reply rather than throwing.
+- **Wired to a concrete use, not just free-floating.** A successful
+  `report_content` filing best-effort-reacts 👀 on the reported message
+  (`ackReportedMessage`) when the platform supports it and the message is
+  known — deterministic, not model-invoked, and never surfaces an error to
+  the reporter (the report itself already succeeded either way).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

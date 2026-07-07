@@ -427,6 +427,24 @@ export async function isKnownUser(platform: Platform, userId: string): Promise<b
   return rows.length > 0;
 }
 
+/**
+ * True if the bot has stored this exact message id within this conversation
+ * (issue #231: `react_to_message`'s target validation — same "the bot must
+ * have actually seen it" discipline as `isKnownUser`/`isKnownConversation`,
+ * scoped to one conversation since a member may only react within their own).
+ */
+export async function isKnownMessage(
+  platform: Platform,
+  conversationId: string,
+  messageId: string,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM interactions WHERE platform = $1 AND conversation_id = $2 AND message_id = $3 LIMIT 1`,
+    [platform, conversationId, messageId],
+  );
+  return rows.length > 0;
+}
+
 // --- Knowledge -------------------------------------------------------------
 
 /**

@@ -41,6 +41,8 @@ const {
   CATCH_UP_MAX_HOURS,
   CATCH_UP_MAX_MESSAGES,
   COMMUNITY_GUIDELINES_MAX_CHARS,
+  ALLOWED_REACTION_EMOJI,
+  REACTION_RATE_LIMIT_PER_DAY,
 } = await import('../src/agent/tools.js');
 const {
   MODERATION_ACTION_KINDS,
@@ -84,9 +86,20 @@ const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
 const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
+const REACT_TO_MESSAGE_HANDLER_CONVO = `${RUN}-react-to-message-handler`;
+const REPORT_CONTENT_ACK_HANDLER_CONVO = `${RUN}-report-content-ack-handler`;
 
 after(async () => {
   if (hasDb) {
+    await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [
+      `${REACT_TO_MESSAGE_HANDLER_CONVO}%`,
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [
+      `${REPORT_CONTENT_ACK_HANDLER_CONVO}%`,
+    ]);
+    await pool.query(`DELETE FROM content_reports WHERE conversation_id LIKE $1`, [
+      `${REPORT_CONTENT_ACK_HANDLER_CONVO}%`,
+    ]);
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_SEARCH_HANDLER_SCOPE]);
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = $1`, [
@@ -143,6 +156,20 @@ function stubAdapter(sendDirectMessage: PlatformAdapter['sendDirectMessage']): P
     adminCapabilities: new Set(),
     performAdminAction: async () => {
       throw new Error('not implemented in stub');
+    },
+  };
+}
+
+/** stubAdapter() plus reactToMessage — react_to_message/report_content ack tests need the optional capability present. */
+function stubReactAdapter(): PlatformAdapter & {
+  reactCalls: Array<{ conversationId: string; messageId: string; emoji: string }>;
+} {
+  const reactCalls: Array<{ conversationId: string; messageId: string; emoji: string }> = [];
+  return {
+    ...stubAdapter(async () => {}),
+    reactCalls,
+    reactToMessage: async (conversationId: string, messageId: string, emoji: string) => {
+      reactCalls.push({ conversationId, messageId, emoji });
     },
   };
 }
@@ -2113,6 +2140,293 @@ test(
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [knownAdmin]);
   },
 );
+
+/** Poll for ackReportedMessage's fire-and-forget reaction call to land, same shape as waitForRetrievalCount above. */
+async function waitForReactCallCount(
+  adapter: { reactCalls: unknown[] },
+  count: number,
+  timeoutMs = 5_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (adapter.reactCalls.length >= count || Date.now() > deadline) return adapter.reactCalls.length;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+test(
+  'SECURITY: report_content acknowledges a known message with a 👀 reaction, and skips silently for an unknown one (issue #231)',
+  { skip },
+  async () => {
+    const conv = `${REPORT_CONTENT_ACK_HANDLER_CONVO}-1`;
+    const seenMessageId = `${conv}-seen`;
+    const unseenMessageId = `${conv}-unseen`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'the message being reported',
+      messageId: seenMessageId,
+    });
+
+    const adapter = stubReactAdapter();
+    const server = buildToolServer(
+      {
+        platform: 'whatsapp' as const,
+        userId: `${conv}-reporter`,
+        userName: 'Reporter',
+        role: 'member' as const,
+        conversationId: conv,
+        isDirect: false,
+      },
+      adapter,
+    );
+    const reportContent = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              reason: string;
+              messageId?: string;
+            }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['report_content'];
+
+    await reportContent.handler({ reason: 'seen message', messageId: seenMessageId });
+    await waitForReactCallCount(adapter, 1);
+    assert.deepEqual(
+      adapter.reactCalls,
+      [{ conversationId: conv, messageId: seenMessageId, emoji: '👀' }],
+      'a report naming a message the bot has actually seen gets acknowledged with 👀',
+    );
+
+    await reportContent.handler({ reason: 'unseen message', messageId: unseenMessageId });
+    // Nothing to poll toward for the negative case — the async check inside
+    // ackReportedMessage still needs time to run and find no match.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(
+      adapter.reactCalls.length,
+      1,
+      'SECURITY: a report naming a message the bot never saw must not trigger a reaction call',
+    );
+  },
+);
+
+// react_to_message tool handler (issue #231): closed emoji allowlist,
+// target validation (the bot must have actually seen the message in this
+// conversation), and an in-memory per-day rate cap.
+function reactToMessageHandler(
+  adapter: PlatformAdapter,
+  opts: { userId?: string; conversationId?: string; messageId?: string } = {},
+) {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: opts.userId ?? `${REACT_TO_MESSAGE_HANDLER_CONVO}-user`,
+      userName: 'Reacting Member',
+      role: 'member' as const,
+      conversationId: opts.conversationId ?? REACT_TO_MESSAGE_HANDLER_CONVO,
+      isDirect: false,
+      messageId: opts.messageId,
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            emoji: string;
+            messageId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['react_to_message'];
+}
+
+test('SECURITY: react_to_message rejects any emoji outside the closed allowlist at the zod schema boundary (issue #231)', () => {
+  const adapter = stubReactAdapter();
+  const registeredTool = reactToMessageHandler(adapter);
+
+  for (const emoji of ALLOWED_REACTION_EMOJI) {
+    assert.equal(registeredTool.inputSchema.safeParse({ emoji }).success, true, `${emoji} is allow-listed`);
+  }
+  for (const bad of ['👎', '🖕', '😀', '<:custom:123456789012345678>', '']) {
+    assert.equal(
+      registeredTool.inputSchema.safeParse({ emoji: bad }).success,
+      false,
+      `"${bad}" must be rejected — no off-list, custom, or Nitro emoji can ever reach the Discord API`,
+    );
+  }
+  assert.equal(registeredTool.inputSchema.safeParse({}).success, false, 'emoji is required, not optional');
+});
+
+test(
+  'react_to_message reacts on a message id the bot has actually seen in the current conversation (issue #231)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-known`;
+    const messageId = `${conv}-msg`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId,
+    });
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /reacted/i);
+    assert.deepEqual(adapter.reactCalls, [{ conversationId: conv, messageId, emoji: '👍' }]);
+  },
+);
+
+test(
+  'react_to_message defaults to the triggering message (caller.messageId) when no messageId argument is given (issue #231)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-default`;
+    const messageId = `${conv}-msg`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId,
+    });
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      userId: `${conv}-caller`,
+      conversationId: conv,
+      messageId,
+    }).handler({ emoji: '✅' });
+
+    assert.equal(result.isError, false);
+    assert.deepEqual(adapter.reactCalls, [{ conversationId: conv, messageId, emoji: '✅' }]);
+  },
+);
+
+test(
+  'SECURITY: react_to_message refuses a message id the bot has never seen in this conversation (issue #231)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-unseen`;
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: `${conv}-never-seen` });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /never been seen/);
+    assert.equal(adapter.reactCalls.length, 0, 'no reaction call for an unvalidated target');
+  },
+);
+
+test(
+  "SECURITY: react_to_message refuses a message id seen only in a DIFFERENT conversation — a member can't react cross-conversation (issue #231)",
+  { skip },
+  async () => {
+    const seenConv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-cross-seen`;
+    const callerConv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-cross-caller`;
+    const messageId = `${seenConv}-msg`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: seenConv,
+      userId: `${seenConv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId,
+    });
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      userId: `${callerConv}-caller`,
+      conversationId: callerConv,
+    }).handler({ emoji: '👍', messageId });
+
+    assert.equal(result.isError, true);
+    assert.equal(adapter.reactCalls.length, 0);
+  },
+);
+
+test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const result = await reactToMessageHandler(adapter, { messageId: 'msg-1' }).handler({ emoji: '👍' });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
+});
+
+test('react_to_message refuses when no messageId is given and the caller turn has none either', async () => {
+  const adapter = stubReactAdapter();
+  const result = await reactToMessageHandler(adapter).handler({ emoji: '👍' });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]?.text ?? '', /no message to react to/i);
+  assert.equal(adapter.reactCalls.length, 0);
+});
+
+test('SECURITY: react_to_message enforces a per-user daily reaction cap (issue #231)', { skip }, async () => {
+  const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-ratelimit`;
+  const rateLimitUser = `${conv}-user`;
+  const messageIds: string[] = [];
+  for (let i = 0; i < REACTION_RATE_LIMIT_PER_DAY + 1; i++) {
+    const messageId = `${conv}-msg-${i}`;
+    messageIds.push(messageId);
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: `message ${i}`,
+      messageId,
+    });
+  }
+  const adapter = stubReactAdapter();
+
+  for (let i = 0; i < REACTION_RATE_LIMIT_PER_DAY; i++) {
+    const result = await reactToMessageHandler(adapter, {
+      userId: rateLimitUser,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: messageIds[i] });
+    assert.equal(result.isError, false, `reaction ${i} should succeed`);
+  }
+  assert.equal(adapter.reactCalls.length, REACTION_RATE_LIMIT_PER_DAY);
+
+  const overCap = await reactToMessageHandler(adapter, {
+    userId: rateLimitUser,
+    conversationId: conv,
+  }).handler({ emoji: '👍', messageId: messageIds[REACTION_RATE_LIMIT_PER_DAY] });
+
+  assert.equal(overCap.isError, true);
+  assert.match(overCap.content[0]?.text ?? '', /reaction limit/);
+  assert.equal(
+    adapter.reactCalls.length,
+    REACTION_RATE_LIMIT_PER_DAY,
+    'a rate-limited attempt must not reach the adapter',
+  );
+});
 
 // rate_answer tool handler (issue #118): exercises the handler's three
 // outcomes (recorded / no_recent_answer / rate_limited) against a real

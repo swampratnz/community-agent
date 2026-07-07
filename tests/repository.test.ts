@@ -93,6 +93,7 @@ const {
   addWarning,
   countActiveWarnings,
   countStaleKnowledge,
+  isKnownMessage,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -230,6 +231,49 @@ test(
 
     await pool.query(`DELETE FROM sessions WHERE conversation_id = ANY($1)`, [[convA1, convA2, convB]]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convA1, convA2, convB]]);
+  },
+);
+
+test(
+  'SECURITY: repository: isKnownMessage is true only for a message id the bot actually stored, scoped to platform + conversation (issue #231)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-ikm-conv`;
+    const otherConv = `${RUN}-ikm-other-conv`;
+    const messageId = `${RUN}-ikm-msg`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: conv,
+      userId: `${RUN}-ikm-user`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello',
+      messageId,
+    });
+
+    assert.equal(
+      await isKnownMessage('discord', conv, messageId),
+      true,
+      'a stored message id in its own conversation is known',
+    );
+    assert.equal(
+      await isKnownMessage('discord', otherConv, messageId),
+      false,
+      'SECURITY: the same message id must not be known in a different conversation',
+    );
+    assert.equal(
+      await isKnownMessage('whatsapp', conv, messageId),
+      false,
+      'SECURITY: the same message id must not be known on a different platform',
+    );
+    assert.equal(
+      await isKnownMessage('discord', conv, `${messageId}-never-seen`),
+      false,
+      'an id the bot never stored is never known',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conv]);
   },
 );
 
