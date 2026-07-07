@@ -45,6 +45,9 @@ const {
   POLL_MAX_OPTIONS,
   POLL_QUESTION_MAX_CHARS,
   POLL_OPTION_MAX_CHARS,
+  POLL_MIN_DURATION_HOURS,
+  POLL_MAX_DURATION_HOURS,
+  POLL_DEFAULT_DURATION_HOURS,
   POLL_RATE_LIMIT_PER_HOUR,
 } = await import('../src/agent/tools.js');
 const {
@@ -830,6 +833,75 @@ test('SECURITY: create_poll enforces the Discord Poll API bounds at the zod sche
       .success,
     false,
     'one character over the option max must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MIN_DURATION_HOURS,
+    }).success,
+    true,
+    `exactly the minimum duration (${POLL_MIN_DURATION_HOURS}h) is allowed`,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MIN_DURATION_HOURS - 1,
+    }).success,
+    false,
+    'one hour under the minimum duration must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MAX_DURATION_HOURS,
+    }).success,
+    true,
+    `exactly the maximum duration (${POLL_MAX_DURATION_HOURS}h) is allowed`,
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({
+      question: 'Q',
+      options: ['a', 'b'],
+      durationHours: POLL_MAX_DURATION_HOURS + 1,
+    }).success,
+    false,
+    'one hour over the maximum duration must be rejected',
+  );
+  assert.equal(
+    handler.inputSchema.safeParse({ question: 'Q', options: ['a', 'b'] }).success,
+    true,
+    'an omitted durationHours (default applied downstream) must stay allowed',
+  );
+});
+
+test('create_poll defaults an omitted durationHours and truncates an in-range fractional value (issue #228)', async () => {
+  const convo = `${RUN}-create-poll-duration`;
+  const captured: Array<{ durationHours?: unknown }> = [];
+  const adapter = pollAdapter({
+    performAdminAction: async (action) => {
+      captured.push(action.params ?? {});
+      return 'Poll posted with 2 option(s), open 24h.';
+    },
+  });
+  const handler = createPollHandler({ conversationId: convo, adapter });
+
+  const omitted = await handler.handler({ question: 'Q1', options: ['a', 'b'] });
+  assert.equal(omitted.isError, false);
+  assert.equal(
+    captured[0]?.durationHours,
+    POLL_DEFAULT_DURATION_HOURS,
+    'an omitted durationHours must default to POLL_DEFAULT_DURATION_HOURS',
+  );
+
+  const fractional = await handler.handler({ question: 'Q2', options: ['a', 'b'], durationHours: 5.9 });
+  assert.equal(fractional.isError, false);
+  assert.equal(
+    captured[1]?.durationHours,
+    5,
+    'an in-range fractional durationHours must be truncated to whole hours',
   );
 });
 

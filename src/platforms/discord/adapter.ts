@@ -504,6 +504,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
             duration: durationHours,
             allowMultiselect: false,
           },
+          // Poll question/answer text is a distinct media field (not
+          // `content`) and isn't mention-parsed, but every other outbound
+          // path here sets this — keep the invariant textually true rather
+          // than relying on that Discord behavior being unstated.
+          allowedMentions: { parse: [] },
         });
         return `Poll posted with ${answers.length} option(s), open ${durationHours}h.`;
       }

@@ -1303,6 +1303,8 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         ),
       durationHours: z
         .number()
+        .min(POLL_MIN_DURATION_HOURS)
+        .max(POLL_MAX_DURATION_HOURS)
         .optional()
         .describe(
           `Poll duration in hours (${POLL_MIN_DURATION_HOURS}-${POLL_MAX_DURATION_HOURS}, default ${POLL_DEFAULT_DURATION_HOURS})`,
@@ -1331,10 +1333,9 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           true,
         );
       }
-      const duration = Math.min(
-        Math.max(Math.trunc(args.durationHours ?? POLL_DEFAULT_DURATION_HOURS), POLL_MIN_DURATION_HOURS),
-        POLL_MAX_DURATION_HOURS,
-      );
+      // Range is enforced at the zod schema boundary above; only truncate to
+      // whole hours here (the schema permits fractional values in-range).
+      const duration = Math.trunc(args.durationHours ?? POLL_DEFAULT_DURATION_HOURS);
       const params = { question: args.question, options: args.options, durationHours: duration };
       const { success, result } = await audited({
         actionKind: 'create_poll',
