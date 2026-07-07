@@ -53,6 +53,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Cosmetic/community Discord roles (issue #232) — e.g. "verified builder",
+  // regional tags — the bot may assign/remove via assign_community_role /
+  // remove_community_role. Comma-separated Discord role ids, curated by a
+  // human; strictly orthogonal to the bot's own RBAC tiers (see
+  // docs/SECURITY.md). Unset/empty = feature fully off (both tools refuse
+  // every roleId). This allowlist is necessary but NOT sufficient on its
+  // own: a role's permission bitfield is re-checked live at assign time
+  // (src/platforms/discord/adapter.ts), since it can change after curation.
+  DISCORD_ASSIGNABLE_ROLES: z.string().optional(),
   // Auto-moderation (Discord): scan every message for bad language / abuse,
   // warn the member, and after MODERATION_STRIKE_LIMIT active strikes assign a
   // muted role that blocks posting until an admin clears their warnings. Off by
@@ -424,6 +433,7 @@ export const config = {
       channelId: env.DISCORD_WELCOME_CHANNEL_ID,
     },
     archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
+    assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
   },
   moderation: {
     enabled: env.DISCORD_MODERATION_ENABLED ?? false,

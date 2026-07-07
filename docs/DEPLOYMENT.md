@@ -263,6 +263,33 @@ Security posture (scoped subprocess env, single-tool lockdown so
 docs/SECURITY.md §8. The CLI runs under the same sandboxed unit as the bot
 (`ProtectHome`, `ProtectSystem=strict`, `PrivateTmp`), which bounds it further.
 
+## Cosmetic community roles (opt-in, off by default, issue #232)
+The admin `assign_community_role`/`remove_community_role` tools let an admin
+grant/revoke purely cosmetic Discord roles (regional tags, "verified
+builder", interest groups) — strictly separate from the bot's own RBAC. Off
+unless `DISCORD_ASSIGNABLE_ROLES` is set. To enable it:
+
+1. **Pre-create each role in Discord** with **no permissions** (leave every
+   permission toggle off — `@everyone`-level). The bot's assign-time check
+   (docs/SECURITY.md §10) will refuse to grant any role that carries a
+   permission, even one listed below, so a permission-bearing role just
+   fails loudly rather than being silently handed out.
+2. **Position the bot's own role above** every role you list, in the
+   server's Role list (drag it higher). Discord refuses a role
+   grant/removal from any actor — including a bot — positioned at or below
+   the target role, so this is required for the tools to work at all, not
+   just a hardening step.
+3. **Set the env** in `/opt/community-agent/.env` with the roles' ids
+   (right-click a role → Copy Role ID, with Developer Mode on):
+   ```
+   DISCORD_ASSIGNABLE_ROLES=1111111111111111,2222222222222222
+   ```
+4. **Restart**: `sudo systemctl restart community-agent`.
+
+Use the read-only `list_assignable_roles` tool afterwards to confirm each
+configured role resolved correctly and none is flagged as carrying
+permissions.
+
 ## Backups
 Back up the database (memory + audit) and the WhatsApp auth dir:
 ```bash

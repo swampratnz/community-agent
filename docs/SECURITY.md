@@ -703,6 +703,56 @@ never send text or take a moderation action:
   known — deterministic, not model-invoked, and never surfaces an error to
   the reporter (the report itself already succeeded either way).
 
+### 10. Cosmetic community roles (`assign_community_role` / `remove_community_role`, issue #232)
+Assignable, purely cosmetic Discord roles ("verified builder", regional tags,
+interest groups) — deliberately **orthogonal** to the bot's own RBAC tiers
+(super_admin/admin/member/guest), which come from env + `community_users`
+only and never consult Discord roles at all (`resolveRole`,
+`src/auth/roles.ts`). Off by default: `DISCORD_ASSIGNABLE_ROLES` unset means
+both tools refuse every `roleId`.
+
+**The real threat here is Discord's own permission model, not the bot's
+RBAC** — a role handed out by the bot could carry a Discord permission bit
+(Administrator, Manage Roles, Manage Channels, …) and grant real server
+power, independent of anything `resolveRole` does. Controls:
+- **Human-curated allowlist**: `DISCORD_ASSIGNABLE_ROLES` (comma-separated
+  Discord role ids) is the only set of roles either tool will ever touch.
+- **Assign-time zero-permission re-validation — the load-bearing control,
+  not the allowlist alone.** A role's permission bitfield is mutable *after*
+  it's added to the allowlist (TOCTOU), so `DiscordAdapter.performAdminAction`
+  fetches the role **live** (`force: true`, bypassing the gateway cache) and
+  refuses to assign it if its permission bitfield is non-zero, even though
+  its id is on the allowlist (pinned by a `SECURITY:` test). Removal doesn't
+  need this check (it can't escalate anything) but still enforces the same
+  allowlist, so the tool stays scoped to cosmetic roles only.
+- **RBAC-orthogonality (secondary guard, pinned by test)**: granting or
+  removing a cosmetic role never touches `community_users.role` — these
+  tools never call `upsertMember`/`demoteAdmin` or anything else that feeds
+  `resolveRole`. The primary guarantee is the assign-time check above, not
+  this one — a role that never gained a permission bit was never a `resolveRole`
+  threat in the first place.
+- **Admin-tier + CONFIRM + audited + super-admin-alerted**, same treatment as
+  `link_member`/`grant_admin`; target must already be a known community
+  member (`getMemberRole` non-null) — an unknown id is refused.
+- `list_assignable_roles` (read-only, admin-tier) shows each allowlisted
+  role's current name and flags one that currently carries permissions, so
+  an admin can see (and fix) drift before it ever blocks an assignment.
+- **Discord-only**: WhatsApp has no roles; the WhatsApp adapters simply don't
+  advertise `assign_community_role`/`remove_community_role` in
+  `adminCapabilities`, so the tools reply with an unsupported-platform
+  message rather than erroring.
+
+**Role-hierarchy requirement (operational, fail-safe)**: the bot's own
+managed Discord role must sit **above** every role listed in
+`DISCORD_ASSIGNABLE_ROLES` in the guild's role list, or Discord itself will
+reject the assignment (a bot can never grant/remove a role positioned above
+its own highest role) — see docs/DEPLOYMENT.md. This is fail-safe (the
+assignment just fails, loudly), not a silent gap. Every role you list in
+`DISCORD_ASSIGNABLE_ROLES` must be **pre-created and permission-less**
+(`@everyone`-level permissions) — the allowlist assumes this at curation
+time; the assign-time check above is what catches it if that ever stops
+being true.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

@@ -129,6 +129,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__remove_member',
   'mcp__community__link_member',
   'mcp__community__unlink_member',
+  // Cosmetic Discord roles (issue #232) — strictly orthogonal to these
+  // tiers; see docs/SECURITY.md for the assign-time permission re-check.
+  'mcp__community__assign_community_role',
+  'mcp__community__remove_community_role',
+  'mcp__community__list_assignable_roles',
   'mcp__community__list_reports',
   'mcp__community__resolve_report',
   'mcp__community__list_answer_feedback',

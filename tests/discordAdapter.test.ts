@@ -17,6 +17,8 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.DISCORD_MODERATION_ENABLED ??= 'true';
+// Fixed allowlist for the assign/remove_community_role tests below (issue #232).
+process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
 
 const { DiscordAdapter, WELCOME_MESSAGE } = await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
@@ -690,3 +692,201 @@ test('onGuildMemberAdd: the channel fallback also appends community guidelines v
     resetPolicyCacheForTests();
   }
 });
+
+// --- Cosmetic community roles (issue #232) ----------------------------------
+
+/** A minimal discord.js Role stand-in — only what resolveAssignableRole/the tools read. */
+function fakeRole(opts: { id: string; name: string; bitfield?: bigint }) {
+  return { id: opts.id, name: opts.name, permissions: { bitfield: opts.bitfield ?? 0n } };
+}
+
+/**
+ * Stubs client.guilds.fetch for performAdminAction's role-management cases:
+ * `roles` is a fetch-by-id registry (missing id resolves to null, matching
+ * discord.js), and member.roles.add/remove record what would have been
+ * granted/revoked without ever calling a real Discord API.
+ */
+function stubRoleGuild(adapter: Adapter, roles: Record<string, ReturnType<typeof fakeRole>>) {
+  const recorded = {
+    added: [] as Array<{ userId: string; roleId: string }>,
+    removed: [] as Array<{ userId: string; roleId: string }>,
+  };
+  const fakeGuild = {
+    id: config.discord.guildId,
+    roles: {
+      fetch: async (id: string) => roles[id] ?? null,
+    },
+    members: {
+      fetch: async (userId: string) => ({
+        user: { tag: `${userId}#0000` },
+        roles: {
+          add: async (role: ReturnType<typeof fakeRole>) => {
+            recorded.added.push({ userId, roleId: role.id });
+          },
+          remove: async (role: ReturnType<typeof fakeRole>) => {
+            recorded.removed.push({ userId, roleId: role.id });
+          },
+        },
+      }),
+    },
+  };
+  const client = (
+    adapter as unknown as { client: { guilds: { fetch: (id: string) => Promise<typeof fakeGuild> } } }
+  ).client;
+  client.guilds.fetch = async () => fakeGuild;
+  return recorded;
+}
+
+test(
+  'SECURITY: assign_community_role refuses an allowlisted role that currently carries a Discord ' +
+    'permission — the assign-time re-check is the load-bearing control, not the curation-time ' +
+    'allowlist alone (issue #232)',
+  async () => {
+    const adapter = new DiscordAdapter();
+    // Bit 3 (0x8) is Administrator — any nonzero bitfield must be refused, not just this one.
+    const role = fakeRole({ id: 'role-cosmetic-1', name: 'Verified Builder', bitfield: 8n });
+    const recorded = stubRoleGuild(adapter, { 'role-cosmetic-1': role });
+
+    await assert.rejects(
+      () =>
+        adapter.performAdminAction({
+          kind: 'assign_community_role',
+          targetUserId: 'user-1',
+          params: { roleId: 'role-cosmetic-1' },
+        }),
+      /carries Discord permissions/,
+    );
+    assert.equal(recorded.added.length, 0, 'must never call roles.add when the live permission check fails');
+  },
+);
+
+test('SECURITY: assign_community_role refuses a role id not on DISCORD_ASSIGNABLE_ROLES, even with zero permissions (issue #232)', async () => {
+  const adapter = new DiscordAdapter();
+  const role = fakeRole({ id: 'role-not-allowed', name: 'Random Role', bitfield: 0n });
+  const recorded = stubRoleGuild(adapter, { 'role-not-allowed': role });
+
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'assign_community_role',
+        targetUserId: 'user-1',
+        params: { roleId: 'role-not-allowed' },
+      }),
+    /not on the assignable-role allowlist/,
+  );
+  assert.equal(recorded.added.length, 0);
+});
+
+test('assign_community_role assigns an allowlisted, currently permission-less role (issue #232)', async () => {
+  const adapter = new DiscordAdapter();
+  const role = fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n });
+  const recorded = stubRoleGuild(adapter, { 'role-cosmetic-1': role });
+
+  const result = await adapter.performAdminAction({
+    kind: 'assign_community_role',
+    targetUserId: 'user-1',
+    params: { roleId: 'role-cosmetic-1' },
+  });
+
+  assert.match(result, /Assigned "Auckland"/);
+  assert.deepEqual(recorded.added, [{ userId: 'user-1', roleId: 'role-cosmetic-1' }]);
+});
+
+test('remove_community_role removes an allowlisted role regardless of its current permissions (removal cannot escalate) (issue #232)', async () => {
+  const adapter = new DiscordAdapter();
+  const role = fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n });
+  const recorded = stubRoleGuild(adapter, { 'role-cosmetic-1': role });
+
+  const result = await adapter.performAdminAction({
+    kind: 'remove_community_role',
+    targetUserId: 'user-1',
+    params: { roleId: 'role-cosmetic-1' },
+  });
+
+  assert.match(result, /Removed "Auckland"/);
+  assert.deepEqual(recorded.removed, [{ userId: 'user-1', roleId: 'role-cosmetic-1' }]);
+});
+
+test('SECURITY: remove_community_role refuses a role id not on DISCORD_ASSIGNABLE_ROLES (issue #232)', async () => {
+  const adapter = new DiscordAdapter();
+  const role = fakeRole({ id: 'role-not-allowed', name: 'Random Role', bitfield: 0n });
+  const recorded = stubRoleGuild(adapter, { 'role-not-allowed': role });
+
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'remove_community_role',
+        targetUserId: 'user-1',
+        params: { roleId: 'role-not-allowed' },
+      }),
+    /not on the assignable-role allowlist/,
+  );
+  assert.equal(recorded.removed.length, 0);
+});
+
+test('assign_community_role throws when an allowlisted role id no longer resolves in the guild (issue #232)', async () => {
+  const adapter = new DiscordAdapter();
+  stubRoleGuild(adapter, {});
+
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'assign_community_role',
+        targetUserId: 'user-1',
+        params: { roleId: 'role-cosmetic-1' },
+      }),
+    /was not found in this guild/,
+  );
+});
+
+test('list_assignable_roles flags a configured role that currently carries permissions, and reports one missing from the guild (issue #232)', async () => {
+  const adapter = new DiscordAdapter();
+  stubRoleGuild(adapter, {
+    'role-cosmetic-1': fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n }),
+    // role-cosmetic-2 is on the allowlist (see the env setup above) but deliberately absent here.
+  });
+  // Re-point roles.fetch to also carry a permission-bearing second entry.
+  const client = (adapter as unknown as { client: { guilds: { fetch: () => Promise<unknown> } } }).client;
+  const guild = await client.guilds.fetch();
+  (guild as { roles: { fetch: (id: string) => Promise<unknown> } }).roles.fetch = async (id: string) =>
+    id === 'role-cosmetic-1'
+      ? fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n })
+      : id === 'role-cosmetic-2'
+        ? fakeRole({ id: 'role-cosmetic-2', name: 'Verified Builder', bitfield: 8n })
+        : null;
+
+  const result = await adapter.performAdminAction({ kind: 'list_assignable_roles' });
+  const lines = result.split('\n');
+
+  assert.ok(lines.some((l) => l.includes('Auckland (role-cosmetic-1)') && !l.includes('⚠️')));
+  assert.ok(
+    lines.some((l) => l.includes('Verified Builder (role-cosmetic-2)') && l.includes('⚠️')),
+    'a role that currently carries permissions must be flagged',
+  );
+});
+
+test(
+  'SECURITY: assign_community_role never touches the database — a cosmetic role grant leaves ' +
+    'community_users/resolveRole untouched (secondary guard; the primary guard is the assign-time ' +
+    'permission re-check above) (issue #232)',
+  async (t) => {
+    const adapter = new DiscordAdapter();
+    const role = fakeRole({ id: 'role-cosmetic-1', name: 'Auckland', bitfield: 0n });
+    stubRoleGuild(adapter, { 'role-cosmetic-1': role });
+    const querySpy = t.mock.method(pool, 'query', async () => {
+      throw new Error('must not query the database');
+    });
+
+    await adapter.performAdminAction({
+      kind: 'assign_community_role',
+      targetUserId: 'user-1',
+      params: { roleId: 'role-cosmetic-1' },
+    });
+
+    assert.equal(
+      querySpy.mock.calls.length,
+      0,
+      'assigning/removing a cosmetic role must never touch any DB table, including community_users',
+    );
+  },
+);

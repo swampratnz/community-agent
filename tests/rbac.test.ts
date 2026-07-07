@@ -422,6 +422,29 @@ test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachabl
   assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach redeploy_bot');
 });
 
+test('SECURITY: assign_community_role / remove_community_role / list_assignable_roles are admin-only, never members or guests (issue #232)', () => {
+  const tools = [
+    'mcp__community__assign_community_role',
+    'mcp__community__remove_community_role',
+    'mcp__community__list_assignable_roles',
+  ];
+  for (const t of tools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!(SUPER_ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be super-admin-only`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    for (const t of tools) {
+      assert.ok(!toolsForRole(role).includes(t), `${role} must not reach ${t}`);
+    }
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    for (const t of tools) {
+      assert.ok(toolsForRole(role).includes(t), `${role} must reach ${t}`);
+    }
+  }
+});
+
 test('SECURITY: admins never get super-admin tools', () => {
   const tools = toolsForRole('admin');
   for (const t of SUPER_ADMIN_TOOLS) {

@@ -17,6 +17,8 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 // many discord-caller admin-action tests, which assert exact DM counts
 // assuming zero configured discord super admins.
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1,super-2';
+// Fixed allowlist for the assign/remove_community_role tests below (issue #232).
+process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1';
 
 const skip = hasDb
   ? false
@@ -72,6 +74,8 @@ const {
   insertKnowledgeCandidate,
   addWarning,
   addMemberNote,
+  upsertMember,
+  getMemberRole,
   recordAccessRequest,
   clearAccessRequest,
 } = await import('../src/storage/repository.js');
@@ -99,6 +103,7 @@ const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
 const POLL_HANDLER_ADMIN = `${RUN}-poll-handler-admin`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
 const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
+const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
 const REACT_TO_MESSAGE_HANDLER_CONVO = `${RUN}-react-to-message-handler`;
 const REPORT_CONTENT_ACK_HANDLER_CONVO = `${RUN}-report-content-ack-handler`;
 
@@ -155,6 +160,12 @@ after(async () => {
       `${POLL_HANDLER_ADMIN}%`,
     ]);
     await pool.query(`DELETE FROM member_notes WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id LIKE $1`, [
+      `${COMMUNITY_ROLE_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [
+      `${COMMUNITY_ROLE_HANDLER_USER}%`,
+    ]);
   }
   await closeDb();
 });
@@ -173,6 +184,28 @@ function stubAdapter(sendDirectMessage: PlatformAdapter['sendDirectMessage']): P
     performAdminAction: async () => {
       throw new Error('not implemented in stub');
     },
+  };
+}
+
+/**
+ * A Discord adapter stand-in that advertises the cosmetic-role capabilities
+ * (issue #232) — the assign-time permission re-check itself lives in
+ * DiscordAdapter and is covered by tests/discordAdapter.test.ts; this stub
+ * lets the tools.ts layer (RBAC, allowlist gate, target validation, CONFIRM,
+ * audit) be exercised independently of the real Discord client.
+ */
+function stubDiscordRoleAdapter(performAdminAction: PlatformAdapter['performAdminAction']): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => {},
+    sendDirectMessage: async () => {},
+    conversationsForUser: async () => [],
+    adminCapabilities: new Set(['assign_community_role', 'remove_community_role', 'list_assignable_roles']),
+    performAdminAction,
   };
 }
 
@@ -3959,3 +3992,245 @@ test(
     assert.match(result.content[0]?.text ?? '', /Messages you've sent: 0/);
   },
 );
+
+// --- Cosmetic community roles (issue #232) ----------------------------------
+//
+// The load-bearing security control (assign-time live permission re-check on
+// an allowlisted role) lives in DiscordAdapter.performAdminAction and is
+// covered by tests/discordAdapter.test.ts. This block covers the tools.ts
+// layer: RBAC placement/re-check, the allowlist gate, target validation
+// ("known member"), Discord-only support, CONFIRM-gating, and that the audit
+// trail never touches community_users/resolveRole (RBAC-orthogonality).
+
+type ToolHandlerServer = {
+  _registeredTools: Record<
+    string,
+    {
+      handler: (
+        args: object,
+      ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    }
+  >;
+};
+
+function toolFrom(server: { instance: unknown }, name: string) {
+  return (server.instance as ToolHandlerServer)._registeredTools[name];
+}
+
+test('SECURITY: assign_community_role / remove_community_role / list_assignable_roles reject a non-admin caller (assertAtLeast re-check, issue #232)', async () => {
+  const adapter = stubDiscordRoleAdapter(async () => 'unused');
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-role-member',
+  };
+  const server = buildToolServer(caller, adapter);
+
+  await assert.rejects(
+    () =>
+      toolFrom(server, 'assign_community_role').handler({ userId: 'target-1', roleId: 'role-cosmetic-1' }),
+    /Permission denied/,
+  );
+  await assert.rejects(
+    () =>
+      toolFrom(server, 'remove_community_role').handler({ userId: 'target-1', roleId: 'role-cosmetic-1' }),
+    /Permission denied/,
+  );
+  await assert.rejects(() => toolFrom(server, 'list_assignable_roles').handler({}), /Permission denied/);
+});
+
+test('SECURITY: assign_community_role refuses cleanly (no pending action) on a platform that does not support community roles — Discord-only (issue #232)', async () => {
+  const adapter = stubAdapter(async () => {}); // default adminCapabilities: empty Set — mirrors WhatsApp
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-role-unsupported',
+  };
+  const server = buildToolServer(caller, adapter);
+
+  const result = await toolFrom(server, 'assign_community_role').handler({
+    userId: 'target-1',
+    roleId: 'role-cosmetic-1',
+  });
+
+  assert.match(result.content[0].text, /does not support/i);
+  assert.equal(
+    hasPendingAction('discord', 'convo-role-unsupported', 'admin-1'),
+    false,
+    'an unsupported platform must never register a pending action',
+  );
+});
+
+test('SECURITY: assign_community_role refuses a role id not on DISCORD_ASSIGNABLE_ROLES before ever registering a pending action (issue #232)', async () => {
+  const adapter = stubDiscordRoleAdapter(async () => {
+    throw new Error('performAdminAction must never be reached for an off-allowlist role');
+  });
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-role-offlist',
+  };
+  const server = buildToolServer(caller, adapter);
+
+  const result = await toolFrom(server, 'assign_community_role').handler({
+    userId: 'target-1',
+    roleId: 'role-not-on-list',
+  });
+
+  assert.match(result.content[0].text, /not on the assignable-role allowlist/);
+  assert.equal(hasPendingAction('discord', 'convo-role-offlist', 'admin-1'), false);
+});
+
+test(
+  'SECURITY: assign_community_role refuses an unknown target — the target must already be a known community member (issue #232)',
+  { skip },
+  async () => {
+    const adapter = stubDiscordRoleAdapter(async () => {
+      throw new Error('performAdminAction must never be reached for an unknown target');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-role-unknown-target',
+    };
+    const server = buildToolServer(caller, adapter);
+
+    const result = await toolFrom(server, 'assign_community_role').handler({
+      userId: `${COMMUNITY_ROLE_HANDLER_USER}-unknown`,
+      roleId: 'role-cosmetic-1',
+    });
+
+    assert.match(result.content[0].text, /not a known community member/);
+    assert.equal(hasPendingAction('discord', 'convo-role-unknown-target', 'admin-1'), false);
+  },
+);
+
+test(
+  'assign_community_role registers a CONFIRM-gated pending action for a known member and an allowlisted role; executing it calls performAdminAction, audits, and never touches community_users/resolveRole (issue #232)',
+  { skip },
+  async () => {
+    const targetUserId = `${COMMUNITY_ROLE_HANDLER_USER}-assign-target`;
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: 'admin-1' });
+
+    const calls: Array<{ kind: string; targetUserId?: string; params?: Record<string, unknown> }> = [];
+    const adapter = stubDiscordRoleAdapter(async (action) => {
+      calls.push({ kind: action.kind, targetUserId: action.targetUserId, params: action.params });
+      return `Assigned "Auckland" to ${action.targetUserId}#0000.`;
+    });
+    const conversationId = 'convo-role-assign';
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+
+    const result = await toolFrom(server, 'assign_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.match(result.content[0].text, /CONFIRM/, 'must ask for confirmation, not run immediately');
+    assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
+
+    const roleBefore = await getMemberRole('discord', targetUserId);
+
+    const pending = takePendingAction('discord', conversationId, 'admin-1');
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, 'assign_community_role');
+    assert.equal(calls[0].targetUserId, targetUserId);
+    assert.deepEqual(calls[0].params, { roleId: 'role-cosmetic-1' });
+
+    // Secondary RBAC-orthogonality guard: granting a cosmetic role must never
+    // change the target's stored tier (the primary guard — the assign-time
+    // permission re-check — lives in discordAdapter.test.ts).
+    const roleAfter = await getMemberRole('discord', targetUserId);
+    assert.equal(roleAfter, roleBefore, "assigning a cosmetic role must never change the target's RBAC tier");
+    assert.equal(roleAfter, 'member');
+
+    const { rows } = await pool.query(
+      `SELECT action_kind, success FROM admin_audit WHERE target_user_id = $1 AND action_kind = 'assign_community_role'`,
+      [targetUserId],
+    );
+    assert.equal(rows.length, 1, 'exactly one audit row for the assign');
+    assert.equal(rows[0].success, true);
+  },
+);
+
+test(
+  'remove_community_role mirrors assign_community_role: CONFIRM-gated, target-validated, audited (issue #232)',
+  { skip },
+  async () => {
+    const targetUserId = `${COMMUNITY_ROLE_HANDLER_USER}-remove-target`;
+    await upsertMember({ platform: 'discord', userId: targetUserId, role: 'member', addedBy: 'admin-1' });
+
+    const calls: Array<{ kind: string }> = [];
+    const adapter = stubDiscordRoleAdapter(async (action) => {
+      calls.push({ kind: action.kind });
+      return `Removed "Auckland" from ${action.targetUserId}#0000.`;
+    });
+    const conversationId = 'convo-role-remove';
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+
+    const result = await toolFrom(server, 'remove_community_role').handler({
+      userId: targetUserId,
+      roleId: 'role-cosmetic-1',
+    });
+    assert.match(result.content[0].text, /CONFIRM/);
+
+    const pending = takePendingAction('discord', conversationId, 'admin-1');
+    assert.ok(pending);
+    await pending?.execute();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, 'remove_community_role');
+
+    const { rows } = await pool.query(
+      `SELECT action_kind, success FROM admin_audit WHERE target_user_id = $1 AND action_kind = 'remove_community_role'`,
+      [targetUserId],
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].success, true);
+  },
+);
+
+test('list_assignable_roles is read-only and returns the adapter-reported listing verbatim (issue #232)', async () => {
+  const adapter = stubDiscordRoleAdapter(async (action) => {
+    assert.equal(action.kind, 'list_assignable_roles');
+    return '- Auckland (role-cosmetic-1)';
+  });
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-role-list',
+  };
+  const server = buildToolServer(caller, adapter);
+
+  const result = await toolFrom(server, 'list_assignable_roles').handler({});
+  assert.equal(result.content[0].text, '- Auckland (role-cosmetic-1)');
+  assert.equal(
+    hasPendingAction('discord', 'convo-role-list', 'admin-1'),
+    false,
+    'a read-only tool must never register a pending action',
+  );
+});
