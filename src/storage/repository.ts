@@ -2020,6 +2020,17 @@ export async function listSuggestions(status?: SuggestionStatus, limit = 50): Pr
 }
 
 /**
+ * Exact pending-suggestion count — a dedicated `COUNT(*)` rather than
+ * `(await listSuggestions('new')).length`, which would silently understate a
+ * backlog past that function's `limit` (default 50) cap, same reasoning as
+ * `countAccessRequests`/`countOpenReports` (issue #133).
+ */
+export async function countPendingSuggestions(): Promise<number> {
+  const { rows } = await pool.query(`SELECT count(*) AS n FROM suggestions WHERE status = 'new'`);
+  return Number(rows[0].n);
+}
+
+/**
  * Self-scoped read of a member's OWN suggestions — the only member-reachable
  * read of this table (the shared queue itself stays admin-only; see the doc
  * comment on listSuggestions above). Same query shape as listSuggestions with
