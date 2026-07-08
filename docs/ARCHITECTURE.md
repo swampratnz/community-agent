@@ -236,8 +236,7 @@ weakening it:
      `DiscordAdapter` sends a static, non-agent DM (no LLM call, no cost)
      pointing the new member at an admin; if their DMs are closed, it falls
      back to posting in `DISCORD_WELCOME_CHANNEL_ID` if configured.
-   - **WhatsApp** (Baileys only — the Cloud API is 1:1-only, no group-join
-     event to hook): off unless `WHATSAPP_WELCOME_ENABLED=true`.
+   - **WhatsApp (Baileys)**: off unless `WHATSAPP_WELCOME_ENABLED=true`.
      `BaileysAdapter` subscribes to Baileys' `group-participants.update` and,
      on `action: 'add'`, posts ONE static, non-agent message **to the group
      itself** — never a 1:1 DM to the new participant, since an unsolicited
@@ -248,6 +247,22 @@ weakening it:
      simultaneous bulk add and a burst of sequential joins into a single
      message per window, so the bot can't turn into a per-join spammer in an
      active group.
+   - **WhatsApp (Cloud API)** (issue #255): the Cloud API is 1:1-only with no
+     group/membership concept, so there's no join event to hook — instead,
+     off unless `WHATSAPP_CLOUD_WELCOME_ENABLED=true`, `WhatsAppCloudAdapter`
+     treats a sender's own first-ever inbound message as the "join" moment.
+     `onCloudMessage` checks `isKnownConversation('whatsapp', from)`
+     (`src/storage/repository.ts`) after the sender-allowlist gate and before
+     the message reaches the agent handler; if the sender has never been seen
+     before, it sends ONE static, non-agent welcome (with guidelines appended
+     if set) through the same filtered `sendText` path as every other reply,
+     then processing continues to the sender's actual message as normal. An
+     in-memory per-process `Set` closes the race where a burst of messages
+     from the same brand-new number could otherwise both see
+     `isKnownConversation` return `false` before the first is recorded. Unlike
+     Discord/Baileys, this still sends the hardcoded `WHATSAPP_CLOUD_WELCOME_MESSAGE`
+     rather than reading `set_welcome_message` (issue #253) — a deliberately
+     deferred follow-up, not required for v1.
    - Either platform's welcome text is followed by the admin-configured
      community guidelines, if set (see below) — the two are independent
      `policies` keys, concatenated at send time, never through the model.
