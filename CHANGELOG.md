@@ -15,6 +15,7 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 
 ### Changed
 - `list_answer_feedback` (#269) now shows the rated answer's actual text (wrapped untrusted, same convention as `list_suggestions`/`list_reports`) instead of just an opaque interaction id, and names the served knowledge entry (e.g. "served from knowledge #57") when the answer came from the deterministic knowledge shortcut — an admin acting on an unhelpful rating no longer has to dig through scrollback to see what the bot actually said. Read-only enrichment of an existing admin-gated, conversation-scoped tool; no new tool, RBAC tier, or migration.
+- The two age-based retention purges (`INTERACTION_RETENTION_DAYS`, `ROSTER_DEPARTED_RETENTION_DAYS`) now get the same consecutive-failure super-admin DM alerting the context builder / knowledge refresh / docs ingest jobs already had (#291) — if either purge silently starts failing, the operator's documented deletion promise no longer goes quietly unmet with nothing but a `journalctl` line to notice. The alert names only the job and a failure count/timestamp, never the caught error or any row content. No behaviour change for a deployment that hasn't set the corresponding retention var.
 
 ## 2026-07-07
 
