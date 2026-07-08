@@ -2622,12 +2622,16 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (rows.length === 0) return text('No answer feedback found (within your conversations).');
       return text(
         rows
-          .map(
-            (r) =>
+          .map((r) => {
+            const knowledgeNote =
+              r.knowledgeEntryId != null ? `, served from knowledge #${r.knowledgeEntryId}` : '';
+            const answerText = r.content != null ? `\n  ${untrusted('answer', r.content)}` : '';
+            return (
               `#${r.id} [${r.helpful ? 'helpful' : 'unhelpful'}] ${r.platform} ${r.conversationId} — ` +
               `from ${r.userId}${r.interactionId ? `, answer #${r.interactionId}` : ' (rated answer since purged)'}` +
-              ` (${r.createdAt.toISOString()})`,
-          )
+              `${knowledgeNote} (${r.createdAt.toISOString()})${answerText}`
+            );
+          })
           .join('\n'),
       );
     },

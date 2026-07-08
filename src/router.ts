@@ -587,7 +587,7 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, knowledgeShortcut: true },
+      meta: { replyToUserId: msg.userId, knowledgeShortcut: true, knowledgeEntryId: hit.id },
     }).catch((err) => logger.error({ err }, 'Failed to record knowledge-shortcut outbound interaction'));
   }
 

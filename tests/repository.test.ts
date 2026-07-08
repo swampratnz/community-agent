@@ -3249,6 +3249,8 @@ test(
     assert.equal(row.helpful, true);
     assert.equal(row.userId, userId);
     assert.ok(row.interactionId !== null, 'bound to the resolved outbound interaction');
+    assert.equal(row.content, 'here is the answer', 'the rated answer text is joined in (issue #269)');
+    assert.equal(row.knowledgeEntryId, null, 'not shortcut-served, so no knowledge entry linkage');
 
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
