@@ -199,6 +199,13 @@ jobs:
             5. Do NOT merge — a human merges. If the proposal turns out infeasible or
                unsafe as specified, add the `needs-human` label and explain instead of
                forcing it.
+            EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
+            batch run. There is NO wakeup, NO resume, and NO background
+            continuation — when your turn ends, this job ends. Run every command
+            (the gate, tests, git) synchronously to completion in THIS turn and
+            act on its result; NEVER end your turn to "wait" for a test/command
+            to finish or in the expectation of being resumed later. Running out
+            of turns without an open PR is a failure, not a pause.
             NEVER end without opening a PR AND leaving a trace: if for ANY reason you
             finish without a PR (a gate you can't make green, a genuine blocker, a
             refusal), you MUST first `gh issue comment` this issue explaining exactly

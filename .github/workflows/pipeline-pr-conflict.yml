@@ -379,6 +379,17 @@ jobs:
             `.github/workflows/` (you cannot push those — the token lacks the
             `workflows` scope), then just STOP without committing/pushing: a
             later step detects "no new commit" and escalates `needs-human`.
+
+            EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
+            batch run. There is NO wakeup, NO resume, and NO background
+            continuation — when your turn ends, this job ends. Run every command
+            (the gate, tests, git) synchronously to completion in THIS turn and
+            act on its result; NEVER end your turn to "wait" for a test/command
+            to finish or in the expectation of being resumed later. Either push
+            the resolved branch with `git push origin HEAD` in THIS turn, or (if
+            the conflict isn't safely resolvable here) stop deliberately so the
+            no-new-commit escalation hands it to a human. Running out of turns
+            mid-resolution is a failure, not a pause.
           # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml):
           #   * `gh` is READ-only (understand the PR) — no merge/close/create.
           #   * `git fetch`/`git merge` are pinned to the EXACT forms the prompt
