@@ -29,22 +29,21 @@ test('sniffImageType returns null for non-image or empty bytes (never mislabels)
   assert.equal(sniffImageType(Buffer.from([0xff, 0xd8, 0x00])), null);
 });
 
-test('SECURITY: buildGrokArgs never passes --always-approve and denies the exec/write/subagent/MCP tools', () => {
+test('SECURITY: buildGrokArgs runs grok kernel-sandboxed (strict) with no --always-approve and no --tools', () => {
   const args = buildGrokArgs('/imagine draw a cat');
-  // NO --always-approve: in headless mode that is exactly what forces grok to
-  // CANCEL (not run) every approval-gated tool — bash, file writes, subagents,
-  // MCP. Re-adding it would let an admin or injected prompt drive host code
-  // execution, so its absence is the core control.
+  // KERNEL sandbox is the real containment: it blocks the agent from reading the
+  // bot's secrets (`.env`, `~/.grok/auth.json`) or exfiltrating, regardless of
+  // which tools are auto-approved. `--sandbox` must be immediately followed by
+  // exactly `strict` (workspace/read-only would let it read the whole FS).
+  const s = args.indexOf('--sandbox');
+  assert.ok(s >= 0, '--sandbox must be present');
+  assert.equal(args[s + 1], 'strict', 'the sandbox profile must be strict');
+  // NO --always-approve: headless grok then cancels approval-gated tools (shell,
+  // file write) instead of running them. Re-adding it would reopen that surface.
   assert.ok(!args.includes('--always-approve'), '--always-approve must never be passed');
-  // No --tools allowlist: the image tool is not --tools-selectable, and an
-  // allowlist that references a non-existent tool breaks grok's agent build.
+  // No --tools allowlist (the image tool is not --tools-selectable; an allowlist
+  // referencing a non-existent tool breaks grok's agent build).
   assert.ok(!args.includes('--tools'), 'a --tools allowlist must not be used');
-  // Defence-in-depth: the shell / file-write / subagent / MCP tools are denied
-  // by name (each --deny is immediately followed by the tool it forbids).
-  const denied = args.filter((_, i) => args[i - 1] === '--deny');
-  for (const t of ['bash', 'search_replace', 'task', 'use_tool']) {
-    assert.ok(denied.includes(t), `--deny ${t} must be present`);
-  }
   assert.ok(args.includes('--disable-web-search'), 'web tools must be disabled');
   // The free-text prompt is the value of -p, an argv element (never a shell string).
   const p = args.indexOf('-p');

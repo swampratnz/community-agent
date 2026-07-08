@@ -75,17 +75,22 @@ function grokSessionsRoot(): string {
  * run_terminal_cmd"). `/imagine` needs the full default toolset, so the
  * lockdown is re-expressed WITHOUT an allowlist:
  *
- * SECURITY POSTURE (see docs/SECURITY.md):
- *  - We do NOT pass `--always-approve`. In headless mode every approval-gated
- *    tool call (bash, file writes, subagents, MCP) is therefore CANCELLED,
- *    never executed — verified on the host: a prompt explicitly ordering `bash`
- *    to write a file returned stopReason "Cancelled" and wrote nothing. Only
- *    auto-approved tools run, and the sole auto-approved tool with an effect is
- *    image generation (which writes only into grok's own session images dir).
- *  - Defence-in-depth: `--deny bash/search_replace/task/use_tool` explicitly
- *    forbids the shell / file-write / subagent / MCP tools, and
- *    `--disable-web-search` removes the web tools — so exec/write/exfil stay
- *    blocked even if grok ever flipped one of those to auto-approved.
+ * SECURITY POSTURE (see docs/SECURITY.md) — two independent, host-verified controls:
+ *  - `--sandbox strict`: KERNEL-enforced (landlock + seccomp on Linux) file and
+ *    network confinement. The agent can read only the throwaway CWD, `~/.grok/`,
+ *    and essential system paths (NOT the bot's home/config), can write only to
+ *    CWD / `~/.grok/` / temp, and child-process network is blocked. This is the
+ *    control that actually contains a prompt-injected `/imagine` description:
+ *    verified on the host that a read of `/opt/community-agent/.env` is
+ *    Cancelled and no secret escapes, while a legitimate generation still
+ *    works (grok reads its own auth, calls the image API, writes the image).
+ *  - NO `--always-approve`: headless grok then CANCELS approval-gated tool
+ *    calls (shell / file write) instead of running them — verified: a prompt
+ *    ordering the shell to write a file returned stopReason "Cancelled".
+ *    (Read tools ARE auto-approved, which is exactly why the sandbox — not the
+ *    absence of --always-approve alone — is the real containment. A `--tools`
+ *    allowlist can't be used: the image tool isn't `--tools`-selectable, and a
+ *    `--deny` name that doesn't match grok's internal tool id fails OPEN.)
  *  - The subprocess gets a minimal env (grokEnv()), never the bot's secrets.
  *  - The prompt is an argv element, never a shell string (no shell injection),
  *    passed as `/imagine <prompt>` — i.e. strictly as an image description.
@@ -158,32 +163,24 @@ async function locateSessionImage(
 
 /**
  * The argv for the grok subprocess. Exported and kept pure so a test can assert
- * the security-critical flags never silently drift:
- *  - There is deliberately NO `--always-approve`: without it, headless grok
- *    CANCELS every approval-gated tool (bash / file write / subagent / MCP)
- *    rather than running it, so an admin or injected prompt cannot drive host
- *    code execution. Re-adding `--always-approve` would reopen that surface.
- *  - `--deny` blocks the shell / file-write / subagent / MCP tools explicitly
- *    (defence-in-depth), and `--disable-web-search` removes the web tools.
- *  - `--output-format json` is how we read the session id back to locate the image.
- *  - the prompt is passed as `/imagine <description>` — grok's image skill.
+ * the security-critical flags never silently drift. Two independent controls,
+ * both verified on the host (see the SECURITY POSTURE block above):
+ *  - NO `--always-approve`. Without it, headless grok CANCELS approval-gated
+ *    tool calls (e.g. shell / file write) instead of running them.
+ *  - `--sandbox strict`: KERNEL-enforced (landlock + seccomp on Linux) FS +
+ *    network confinement — reads limited to the throwaway CWD, `~/.grok/`, and
+ *    essential system paths; writes to CWD/`~/.grok/`/temp; child-process
+ *    network blocked. This is what actually stops an injected `/imagine`
+ *    description from reading the bot's secrets (`.env`, `~/.grok/auth.json`)
+ *    or exfiltrating — verified: a read of `/opt/community-agent/.env` is
+ *    Cancelled. We rely on the sandbox rather than a `--tools`/`--deny` tool
+ *    filter because the image tool is not `--tools`-selectable and a `--deny`
+ *    tool name that doesn't match is a silent no-op (fails OPEN).
+ *  - `--disable-web-search` removes the web tools; `--output-format json` gives
+ *    us the session id; the prompt is `/imagine <description>` — grok's image skill.
  */
 export function buildGrokArgs(instruction: string): string[] {
-  return [
-    '--deny',
-    'bash',
-    '--deny',
-    'search_replace',
-    '--deny',
-    'task',
-    '--deny',
-    'use_tool',
-    '--output-format',
-    'json',
-    '--disable-web-search',
-    '-p',
-    instruction,
-  ];
+  return ['--sandbox', 'strict', '--output-format', 'json', '--disable-web-search', '-p', instruction];
 }
 
 /** Spawn grok headlessly, locked to the image tool, and resolve its stdout. */

@@ -642,20 +642,29 @@ signed in with a SuperGrok subscription (device-code login, no API key). Unlike
 every other tool, this one spawns a **third-party agentic CLI** as the service
 user, so it gets its own controls:
 
-- **No auto-approval + a deny-list, so it can only produce an image.** Image
-  generation is grok's `/imagine` skill (built-in `image_gen` tool); the tool is
-  not `--tools`-selectable, so the old `--tools GenerateImage` allowlist can't be
+- **Kernel-sandboxed, so it can only produce an image.** Image generation is
+  grok's `/imagine` skill (built-in `image_gen` tool); the tool is not
+  `--tools`-selectable, so the old `--tools GenerateImage` allowlist can't be
   used (it referenced a since-removed tool and broke agent build). The lockdown
-  is instead: **no `--always-approve`** — in headless mode grok then *cancels*
-  every approval-gated tool call (Bash, file writes, subagents, MCP) rather than
-  running it, so the worst an admin — or a prompt-injected — turn can drive is
-  "produce an image". Verified on the host: a prompt explicitly ordering `bash`
-  to write a file returned stopReason *"Cancelled"* and wrote nothing. As
-  defence-in-depth the subprocess also passes `--deny bash`, `--deny
-  search_replace`, `--deny task`, `--deny use_tool`, and `--disable-web-search`,
-  so the shell / file-write / subagent / MCP / web tools are blocked by name
-  even if grok ever flipped one to auto-approved. (`image_gen` itself is
-  auto-approved and needs no approval, which is why generation still works.)
+  is now **two host-verified controls**:
+  - **`--sandbox strict`** — kernel-enforced (landlock + seccomp on Linux) FS
+    and network confinement. The agent can read only the throwaway CWD,
+    `~/.grok/`, and essential system paths (**not** the bot's home/config),
+    write only to CWD/`~/.grok/`/temp, and its child-process network is blocked.
+    This is what actually contains a prompt-injected `/imagine` description:
+    verified on the host that a read of `/opt/community-agent/.env` is
+    *Cancelled* with no secret escaping, while a real generation still works
+    (grok reads its own auth, calls the image API, and writes the image).
+  - **No `--always-approve`** — headless grok then *cancels* approval-gated
+    tool calls (shell, file write) instead of running them (verified: a prompt
+    ordering the shell to write a file returned stopReason *"Cancelled"*).
+  Note the sandbox, not the absence of `--always-approve` alone, is the real
+  containment: **read tools are auto-approved**, so without the sandbox an
+  injected description could read arbitrary service-user files. A `--tools`
+  allowlist can't help (image tool not selectable) and a `--deny <name>` fails
+  *open* if the name doesn't match grok's internal tool id — which is why the
+  control is the kernel sandbox, not a tool filter. `--disable-web-search`
+  additionally removes the web tools.
 - **No secret inheritance.** The `grok` subprocess is spawned with a **minimal,
   explicit `env`** (`grokEnv()` in `src/media/grokImage.ts`): `PATH`, `HOME`,
   `TERM`, `LANG`/`LC_ALL`, `USER`, and any `GROK_*`/`XDG_*` knobs — **never** the
