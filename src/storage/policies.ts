@@ -9,13 +9,20 @@ import { getPolicyValue, setPolicyValue } from './repository.js';
 
 export type CodeAnswersPolicy = 'off' | 'snippets' | 'full';
 
-export const POLICY_KEYS = ['code_answers', 'paused', 'community_guidelines', 'welcome_message'] as const;
+export const POLICY_KEYS = [
+  'code_answers',
+  'paused',
+  'community_guidelines',
+  'community_guidelines_mi',
+  'welcome_message',
+] as const;
 export type PolicyKey = (typeof POLICY_KEYS)[number];
 
 const DEFAULTS: Record<PolicyKey, unknown> = {
   code_answers: 'snippets',
   paused: false,
   community_guidelines: null,
+  community_guidelines_mi: null,
   welcome_message: null,
 };
 
@@ -53,6 +60,18 @@ export async function isPaused(): Promise<boolean> {
  */
 export async function getCommunityGuidelines(): Promise<string | null> {
   const v = await readPolicy('community_guidelines');
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * The te reo Māori variant of the community guidelines, or null if never set
+ * (or cleared via an empty string). Served to callers with a standing
+ * `set_language_preference('mi')` in place of the default-language text —
+ * see the `community_guidelines` tool (issue #266). Same
+ * never-set-vs-cleared null contract as getCommunityGuidelines.
+ */
+export async function getCommunityGuidelinesMi(): Promise<string | null> {
+  const v = await readPolicy('community_guidelines_mi');
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 

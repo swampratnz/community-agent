@@ -86,7 +86,7 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
-const { getCommunityGuidelines, getWelcomeMessage, resetPolicyCacheForTests } =
+const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, resetPolicyCacheForTests } =
   await import('../src/storage/policies.js');
 const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
@@ -870,7 +870,53 @@ test('SECURITY: set_community_guidelines rejects text over the max length at the
     true,
     'an empty string (clear) must stay allowed',
   );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Kia ora', language: 'mi' }).success,
+    true,
+    "language: 'mi' must be accepted",
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Hi', language: 'en' }).success,
+    true,
+    "language: 'en' must be accepted",
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Hi' }).success,
+    true,
+    'omitting language must stay allowed (defaults to en)',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Hi', language: 'auto' }).success,
+    false,
+    "language must be restricted to {en, mi} — 'auto' is a set_language_preference-only value, not a guidelines variant",
+  );
 });
+
+test(
+  "SECURITY: set_community_guidelines rejects a non-admin caller when language: 'mi' is passed — the new " +
+    'argument opens no lower-privilege path to community_guidelines_mi (assertAtLeast re-check, issue #266)',
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: 'convo-guidelines-mi-member',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['set_community_guidelines'];
+
+    await assert.rejects(
+      () => registeredTool.handler({ text: 'Kia ora', language: 'mi' }),
+      /Permission denied/,
+    );
+  },
+);
 
 test("WELCOME_MESSAGE_MAX_CHARS + COMMUNITY_GUIDELINES_MAX_CHARS + 24 never exceeds Discord's 2000-char limit (issue #253)", () => {
   assert.ok(
@@ -1533,6 +1579,142 @@ test(
       );
       assert.equal(await getCommunityGuidelines(), null);
     } finally {
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+test(
+  "set_community_guidelines(language: 'mi') writes only community_guidelines_mi, leaving the default " +
+    'untouched (and vice versa); community_guidelines serves the mi variant to a caller with a standing ' +
+    "'mi' preference, falls back to the default when no mi variant is set, and never serves mi to an " +
+    "'auto'/'en' preference (issue #266)",
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const conversationId = 'convo-guidelines-mi';
+    const adminServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'admin-guidelines-mi',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId,
+      },
+      stubAdapter(async () => {}),
+    );
+    const setTool = (
+      adminServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              text: string;
+              language?: 'en' | 'mi';
+            }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['set_community_guidelines'];
+
+    function readToolFor(userId: string) {
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId,
+          userName: 'Member',
+          role: 'member' as const,
+          conversationId,
+        },
+        stubAdapter(async () => {}),
+      );
+      return (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['community_guidelines'];
+    }
+
+    const miPreferenceUser = `${RUN}-guidelines-mi-preference`;
+    const enPreferenceUser = `${RUN}-guidelines-en-preference`;
+
+    try {
+      const defaultText = 'Be respectful. No spam.';
+      const miText = 'Kia ngākau pai. Kaua e tāwai.';
+
+      const setDefault = await setTool.handler({ text: defaultText });
+      assert.match(setDefault.content[0].text, /updated/i);
+      assert.equal(await getCommunityGuidelines(), defaultText);
+      assert.equal(
+        await getCommunityGuidelinesMi(),
+        null,
+        'writing the default (language omitted) must leave community_guidelines_mi untouched',
+      );
+
+      await setLanguagePreferenceHandler({ platform: 'discord', userId: miPreferenceUser }).handler({
+        language: 'mi',
+      });
+      await setLanguagePreferenceHandler({ platform: 'discord', userId: enPreferenceUser }).handler({
+        language: 'en',
+      });
+
+      const fallbackBeforeMiSet = await readToolFor(miPreferenceUser).handler();
+      assert.equal(
+        fallbackBeforeMiSet.content[0].text,
+        defaultText,
+        "a 'mi'-preference caller must see the default text when no mi variant is set yet (graceful fallback)",
+      );
+
+      const setMi = await setTool.handler({ text: miText, language: 'mi' });
+      assert.match(setMi.content[0].text, /updated/i);
+      assert.equal(
+        await getCommunityGuidelinesMi(),
+        miText,
+        "language: 'mi' must write community_guidelines_mi",
+      );
+      assert.equal(
+        await getCommunityGuidelines(),
+        defaultText,
+        'writing the mi variant must leave the default community_guidelines untouched',
+      );
+
+      const miReader = await readToolFor(miPreferenceUser).handler();
+      assert.equal(
+        miReader.content[0].text,
+        miText,
+        "a 'mi'-preference caller must get the mi variant verbatim once one is set",
+      );
+
+      const enReader = await readToolFor(enPreferenceUser).handler();
+      assert.equal(
+        enReader.content[0].text,
+        defaultText,
+        "an 'en'-preference caller must always get the default text, even though a mi variant exists",
+      );
+
+      const clearMi = await setTool.handler({ text: '', language: 'mi' });
+      assert.match(clearMi.content[0].text, /cleared/i);
+      assert.equal(await getCommunityGuidelinesMi(), null);
+      assert.equal(
+        await getCommunityGuidelines(),
+        defaultText,
+        'clearing the mi variant must leave the default untouched',
+      );
+
+      const fallbackAfterMiCleared = await readToolFor(miPreferenceUser).handler();
+      assert.equal(
+        fallbackAfterMiCleared.content[0].text,
+        defaultText,
+        "a 'mi'-preference caller must fall back to the default text once the mi variant is cleared again",
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = ANY($1::text[])`,
+        [[miPreferenceUser, enPreferenceUser]],
+      );
       resetPolicyCacheForTests();
     }
   },
