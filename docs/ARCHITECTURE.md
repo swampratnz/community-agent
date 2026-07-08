@@ -117,7 +117,10 @@ memory**:
    access-request count and their own scoped open-report count, plus (issue
    #193) a guild-wide pending-suggestion count, plus (issue #199, off unless
    `KNOWLEDGE_STALE_DAYS` is set) a guild-wide count of knowledge entries
-   neither edited nor retrieved in that many days, plus (issue #246) their own
+   neither edited nor retrieved in that many days — the digest's "run
+   `list_knowledge` to review" pointer resolves to `list_knowledge`'s
+   `staleOnly` filter (issue #280), which reuses that exact same predicate
+   to return just that stale subset, most-overdue first — plus (issue #246) their own
    scoped count of `knowledge_gaps` (below-floor `knowledge_search` misses, the
    pull-only complement to `list_knowledge_gaps`) — conversation-scoped like the
    open-report count because that table has a `conversation_id` — all sourced
@@ -264,10 +267,10 @@ weakening it:
      then processing continues to the sender's actual message as normal. An
      in-memory per-process `Set` closes the race where a burst of messages
      from the same brand-new number could otherwise both see
-     `isKnownConversation` return `false` before the first is recorded. Unlike
-     Discord/Baileys, this still sends the hardcoded `WHATSAPP_CLOUD_WELCOME_MESSAGE`
-     rather than reading `set_welcome_message` (issue #253) — a deliberately
-     deferred follow-up, not required for v1.
+     `isKnownConversation` return `false` before the first is recorded. Like
+     Discord/Baileys, it reads `set_welcome_message` (issue #253) via
+     `getWelcomeMessage()`, falling back to the hardcoded
+     `WHATSAPP_CLOUD_WELCOME_MESSAGE` when unset.
    - Either platform's welcome text is followed by the admin-configured
      community guidelines, if set (see below) — the two are independent
      `policies` keys, concatenated at send time, never through the model.

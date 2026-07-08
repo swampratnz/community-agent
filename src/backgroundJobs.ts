@@ -39,8 +39,12 @@ const BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD = 3;
  * counts as a failure and steps it, DMing super admins via the same
  * `sendDirectMessage` + `superAdminIds` path `usageAlert.ts`/`health.ts`
  * already use once the threshold is reached.
+ *
+ * Exported (issue #291) so the two retention purges (src/interactionRetention.ts,
+ * src/rosterRetention.ts) can wire through the same tracker/alert plumbing
+ * from their own files, instead of duplicating it.
  */
-function startTrackedJob(
+export function startTrackedJob(
   jobName: BackgroundJobName,
   adapters: readonly PlatformAdapter[],
   enabled: boolean,

@@ -93,6 +93,23 @@ function text(t: string, isError = false) {
 }
 
 /**
+ * Refusal copy for the `isKnownConversation` reachability gate (moderate,
+ * announce, create_poll, create_thread, archive_thread). Deliberately no more
+ * specific than "unreachable" about *why* — it must read identically for a
+ * nonexistent target and a real-but-out-of-scope one, so the wording can't
+ * become an enumeration oracle (issue #274). Framed as an intentional
+ * boundary rather than a bug/config gap: issue #268 showed the old
+ * "is unknown" wording led an admin to believe this was a backend defect.
+ */
+function unreachableConversationRefusal(target: string): string {
+  return (
+    `Refusing: I don't act on conversation "${target}" — I only act on ones I've verified ` +
+    `(seen activity in, or, on Discord, confirmed I can reach). This is a deliberate safety ` +
+    `boundary, not a bug or a missing config; it's not something a retry fixes.`
+  );
+}
+
+/**
  * Recalled chat content is untrusted. Strip angle brackets and newlines so it
  * can't fake tags or a fresh instruction line (the same quarantine-escape
  * class fixed in buildSystemPrompt/renderMemoryContext, issue #227 review),
@@ -235,17 +252,35 @@ export function formatKnowledgeSearchResults(
     .join('\n');
 }
 
+/**
+ * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
+ * two today; a future third adapter only needs adding here.
+ */
+const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+
+/**
+ * Alerts every super admin on every platform, not just the one the triggering
+ * event happened on (issue #288) — mirrors the loop-every-connected-adapter
+ * pattern already used by `usageAlert.ts`'s `alertSuperAdmins` and
+ * `router.ts`'s budget-check alert. `adapterFor` is the same per-platform
+ * lookup `buildToolServer` already threads through for #157; a platform with
+ * no registered or connected adapter is silently skipped, matching that
+ * lookup's existing fallback behaviour.
+ */
 async function notifySuperAdmins(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
 ): Promise<void> {
-  for (const id of superAdminIds(platform)) {
-    if (id === excludeUserId) continue;
-    adapter
-      .sendDirectMessage(id, `🔔 ${message}`)
-      .catch((err) => logger.warn({ err, id }, 'Super-admin alert failed'));
+  for (const platform of ALL_PLATFORMS) {
+    const target = adapterFor(platform);
+    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    for (const id of superAdminIds(platform)) {
+      if (id === excludeUserId) continue;
+      target
+        .sendDirectMessage(id, `🔔 ${message}`)
+        .catch((err) => logger.warn({ err, id, platform }, 'Super-admin alert failed'));
+    }
   }
 }
 
@@ -500,8 +535,7 @@ export async function notifyReportResolved(
  * tool-call transport, same convention as notifyReportResolved.
  */
 export async function notifyReportFiled(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   report: {
     id: number;
     reporterUserId: string;
@@ -518,7 +552,7 @@ export async function notifyReportFiled(
   ];
   if (report.targetUserId) lines.push(`Target user: ${report.targetUserId}`);
   if (report.messageId) lines.push(`Message id: ${report.messageId}`);
-  await notifySuperAdmins(adapter, platform, lines.join('\n'), report.reporterUserId);
+  await notifySuperAdmins(adapterFor, lines.join('\n'), report.reporterUserId);
 }
 
 /**
@@ -532,15 +566,13 @@ export async function notifyReportFiled(
  * convention as `notifyReportFiled`.
  */
 export async function notifyReportWithdrawn(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   info: { ids: number[]; reporterUserId: string; reporterName: string | null },
 ): Promise<void> {
   const list = info.ids.map((id) => `#${id}`).join(', ');
   const plural = info.ids.length > 1;
   await notifySuperAdmins(
-    adapter,
-    platform,
+    adapterFor,
     `Report${plural ? 's' : ''} ${list} withdrawn by the reporter ${info.reporterName ?? info.reporterUserId}. ` +
       `Marked 'withdrawn' and kept on record — no action needed unless you want to check in.`,
     info.reporterUserId,
@@ -778,8 +810,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     }).catch((err) => logger.error({ err }, 'Audit write failed'));
     if (success) {
       void notifySuperAdmins(
-        adapter,
-        caller.platform,
+        adapterFor,
         `${caller.userName} (${caller.role}) ran ${input.actionKind}${input.targetUserId ? ` on ${input.targetUserId}` : ''}: ${result}`,
         caller.userId,
       );
@@ -1032,7 +1063,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           true,
         );
       }
-      void notifyReportFiled(adapter, caller.platform, {
+      void notifyReportFiled(adapterFor, {
         id: created.id,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
@@ -1057,7 +1088,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (ids.length === 0) {
         return text('You have no open reports to withdraw.', true);
       }
-      void notifyReportWithdrawn(adapter, caller.platform, {
+      void notifyReportWithdrawn(adapterFor, {
         ids,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
@@ -1481,7 +1512,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         targetConversation !== caller.conversationId &&
         !(await isKnownConversation(caller.platform, targetConversation))
       ) {
-        return text(`Refusing: conversation "${targetConversation}" is unknown.`, true);
+        return text(unreachableConversationRefusal(targetConversation), true);
       }
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
@@ -1584,7 +1615,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       const { success, result } = await audited({
         actionKind: 'announce',
@@ -1641,7 +1672,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       if (!reservePollSlot(target, POLL_RATE_LIMIT_PER_HOUR)) {
         return text(
@@ -1702,7 +1733,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       // Defensive guard (adversarial review, issue #229): thread messages are
       // moderation-scanned under their PARENT channel's allowlist membership
@@ -1770,7 +1801,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         args.threadId !== caller.conversationId &&
         !(await isKnownConversation(caller.platform, args.threadId))
       ) {
-        return text(`Refusing: conversation "${args.threadId}" is unknown.`, true);
+        return text(unreachableConversationRefusal(args.threadId), true);
       }
       const params = { reason: args.reason };
       const run = async () => {
@@ -1995,10 +2026,26 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
       limit: z.number().optional().describe('Max entries (default 20)'),
       offset: z.number().optional().describe('Pagination offset (default 0)'),
+      staleOnly: z
+        .boolean()
+        .optional()
+        .describe(
+          'Only show entries untouched for KNOWLEDGE_STALE_DAYS+ days (the same entries counted in the ' +
+            'weekly digest); ordered oldest-touched first.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge');
-      const entries = await listKnowledge({ scope: args.scope, limit: args.limit, offset: args.offset });
+      const staleDays = config.adminDigest.knowledgeStaleDays;
+      if (args.staleOnly && staleDays <= 0) {
+        return text('Staleness tracking is disabled (KNOWLEDGE_STALE_DAYS is not set).');
+      }
+      const entries = await listKnowledge({
+        scope: args.scope,
+        limit: args.limit,
+        offset: args.offset,
+        ...(args.staleOnly ? { staleOnly: true, staleDays } : {}),
+      });
       if (entries.length === 0) return text('No knowledge entries found.');
       return text(
         untrusted(
