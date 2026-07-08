@@ -89,6 +89,27 @@ test('SECURITY: community_guidelines is member+ (read-only rules text); set_comm
   }
 });
 
+test('SECURITY: set_welcome_message is admin+ only, never members or guests (issue #253)', () => {
+  const tool = 'mcp__community__set_welcome_message';
+
+  assert.ok(ADMIN_TOOLS.includes(tool), 'set_welcome_message must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'set_welcome_message must not be in MEMBER_TOOLS',
+  );
+  assert.ok(
+    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    'set_welcome_message is content curation (like set_community_guidelines), not super-admin runtime control like set_policy',
+  );
+
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach set_welcome_message`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach set_welcome_message`);
+  }
+});
+
 test('SECURITY: withdraw_report is member+ (retract your own report; scoping to own reports is enforced in SQL)', () => {
   const tool = 'mcp__community__withdraw_report';
   assert.ok(MEMBER_TOOLS.includes(tool), 'withdraw_report must be in MEMBER_TOOLS');

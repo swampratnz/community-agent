@@ -180,6 +180,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `create_thread` (open a Discord thread; additive, rate-capped, self-refuses under an unscanned moderation allowlist — Discord only) / `archive_thread` (confirm-gated) | ❌ | ❌ | ✅ *their conversations* | ✅ anywhere |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `set_community_guidelines` (set/clear the rules text shown to members; content curation, not runtime control — same tier as `save_knowledge`) | ❌ | ❌ | ✅ | ✅ |
+| `set_welcome_message` (set/clear the new-member welcome text, in place of the hardcoded default; same shape as `set_community_guidelines`) | ❌ | ❌ | ✅ | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
@@ -226,7 +227,11 @@ of them read as the bot being broken.
 Two pieces make the default gated experience less friction-y without
 weakening it:
 
-1. **Welcome message.**
+1. **Welcome message.** The text itself is admin-configurable via
+   `set_welcome_message` (issue #253, mirroring `set_community_guidelines`'s
+   #212 pattern — a single free-text `policies` row, a 30s-cached getter with
+   a documented default fallback, admin-tier + audited, no CONFIRM gate),
+   falling back to a hardcoded per-platform default when unset.
    - **Discord**: off unless `DISCORD_WELCOME_ENABLED=true`. On join,
      `DiscordAdapter` sends a static, non-agent DM (no LLM call, no cost)
      pointing the new member at an admin; if their DMs are closed, it falls
@@ -254,7 +259,13 @@ weakening it:
      then processing continues to the sender's actual message as normal. An
      in-memory per-process `Set` closes the race where a burst of messages
      from the same brand-new number could otherwise both see
-     `isKnownConversation` return `false` before the first is recorded.
+     `isKnownConversation` return `false` before the first is recorded. Unlike
+     Discord/Baileys, this still sends the hardcoded `WHATSAPP_CLOUD_WELCOME_MESSAGE`
+     rather than reading `set_welcome_message` (issue #253) — a deliberately
+     deferred follow-up, not required for v1.
+   - Either platform's welcome text is followed by the admin-configured
+     community guidelines, if set (see below) — the two are independent
+     `policies` keys, concatenated at send time, never through the model.
 2. **Pending-access queue**. When a gated guest addresses the bot,
    `router.ts` upserts a row into `access_requests` (platform, user id/name,
    first/last-requested timestamps, request count) — deliberately *never*

@@ -316,11 +316,27 @@ test('WhatsApp group welcome: respects WHATSAPP_ALLOWED_JIDS — a group outside
   assert.equal(sent.length, 0);
 });
 
-/** Mocks pool.query so a `community_guidelines` policy read returns `value` (or nothing, if omitted). */
-function stubPoliciesQuery(value?: string) {
+/**
+ * Mocks pool.query so a `community_guidelines` policy read returns `value`
+ * (or nothing, if omitted). `opts.welcomeMessage` similarly stubs the
+ * `welcome_message` key (issue #253); `opts.throwFor` simulates a policy
+ * read failure for the named key.
+ */
+function stubPoliciesQuery(
+  value?: string,
+  opts?: { welcomeMessage?: string; throwFor?: 'community_guidelines' | 'welcome_message' },
+) {
   return async (sql: string, params?: unknown[]) => {
-    if (sql.includes('FROM policies') && params?.[0] === 'community_guidelines') {
+    if (!sql.includes('FROM policies')) return { rows: [], rowCount: 0 };
+    const key = params?.[0];
+    if (opts?.throwFor === key) throw new Error('simulated policy read failure');
+    if (key === 'community_guidelines') {
       return value === undefined ? { rows: [], rowCount: 0 } : { rows: [{ value }], rowCount: 1 };
+    }
+    if (key === 'welcome_message') {
+      return opts?.welcomeMessage === undefined
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ value: opts.welcomeMessage }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   };
@@ -362,6 +378,54 @@ test('WhatsApp group welcome: appends community guidelines verbatim when set (is
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, `${WHATSAPP_GROUP_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`);
+  resetPolicyCacheForTests();
+});
+
+test('WhatsApp group welcome: uses the configured welcome message in place of the hardcoded default, guidelines still appended (issue #253)', async (t) => {
+  resetPolicyCacheForTests();
+  const welcomeMessage = 'Welcome to our community!';
+  const guidelines = 'Be respectful. No spam.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessage }));
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withWelcomeConfig({ enabled: true }, () =>
+    fireGroupJoin(adapter, {
+      id: 'group-configured-welcome@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'add',
+    }),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`);
+  assert.ok(
+    !sent[0].text.includes(WHATSAPP_GROUP_WELCOME_MESSAGE),
+    'the hardcoded default must not appear once a value is configured',
+  );
+  resetPolicyCacheForTests();
+});
+
+test('SECURITY: WhatsApp group welcome falls back to the hardcoded default when the welcome_message policy read fails (issue #253)', async (t) => {
+  resetPolicyCacheForTests();
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { throwFor: 'welcome_message' }));
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withWelcomeConfig({ enabled: true }, () =>
+    fireGroupJoin(adapter, {
+      id: 'group-welcome-read-failure@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'add',
+    }),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    WHATSAPP_GROUP_WELCOME_MESSAGE,
+    'a policy-read failure must fall back to the hardcoded default, never an empty or broken welcome',
+  );
   resetPolicyCacheForTests();
 });
 

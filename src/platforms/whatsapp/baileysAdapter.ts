@@ -13,7 +13,7 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { getCodeAnswersPolicy, getCommunityGuidelines } from '../../storage/policies.js';
+import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
@@ -364,8 +364,10 @@ export class BaileysAdapter implements PlatformAdapter {
    * exactly the Baileys ban-risk pattern this avoids. Baileys batches
    * simultaneous joins into one event already; the cooldown additionally
    * collapses sequential joins across time into a single message per window.
-   * When community guidelines are set (issue #212), they're appended
-   * verbatim to the static message — never run through the model.
+   * The welcome text itself is admin-configurable (set_welcome_message,
+   * issue #253), falling back to the hardcoded WHATSAPP_GROUP_WELCOME_MESSAGE
+   * default when unset. When community guidelines are set (issue #212),
+   * they're appended verbatim to it — never run through the model.
    */
   private async onGroupParticipantsUpdate(
     update: BaileysEventMap['group-participants.update'],
@@ -380,10 +382,11 @@ export class BaileysAdapter implements PlatformAdapter {
     this.welcomeCooldown = step.state;
     if (!step.shouldSend) return;
 
+    const welcomeMessage = (await getWelcomeMessage()) ?? WHATSAPP_GROUP_WELCOME_MESSAGE;
     const guidelines = await getCommunityGuidelines();
     const welcomeText = guidelines
-      ? `${WHATSAPP_GROUP_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
-      : WHATSAPP_GROUP_WELCOME_MESSAGE;
+      ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
+      : welcomeMessage;
     await this.sock.sendMessage(update.id, { text: welcomeText });
   }
 

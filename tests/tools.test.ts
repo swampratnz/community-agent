@@ -45,6 +45,7 @@ const {
   CATCH_UP_MAX_HOURS,
   CATCH_UP_MAX_MESSAGES,
   COMMUNITY_GUIDELINES_MAX_CHARS,
+  WELCOME_MESSAGE_MAX_CHARS,
   POLL_MIN_OPTIONS,
   POLL_MAX_OPTIONS,
   POLL_QUESTION_MAX_CHARS,
@@ -85,7 +86,8 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
-const { getCommunityGuidelines, resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { getCommunityGuidelines, getWelcomeMessage, resetPolicyCacheForTests } =
+  await import('../src/storage/policies.js');
 const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
@@ -869,6 +871,118 @@ test('SECURITY: set_community_guidelines rejects text over the max length at the
     'an empty string (clear) must stay allowed',
   );
 });
+
+test("WELCOME_MESSAGE_MAX_CHARS + COMMUNITY_GUIDELINES_MAX_CHARS + 24 never exceeds Discord's 2000-char limit (issue #253)", () => {
+  assert.ok(
+    WELCOME_MESSAGE_MAX_CHARS + COMMUNITY_GUIDELINES_MAX_CHARS + 24 <= 2000,
+    'a maxed-out configured welcome plus a maxed-out configured guidelines plus the ' +
+      '"\\n\\nCommunity guidelines:\\n" preamble (24 chars) must fit Discord\'s hard message limit',
+  );
+});
+
+test('SECURITY: set_welcome_message rejects a non-admin caller (assertAtLeast re-check, issue #253)', async () => {
+  resetPolicyCacheForTests();
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-welcome-member',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+    }
+  )._registeredTools['set_welcome_message'];
+
+  await assert.rejects(() => registeredTool.handler({ text: 'Hi there!' }), /Permission denied/);
+  assert.equal(
+    await getWelcomeMessage(),
+    null,
+    'a rejected non-admin call must never reach updatePolicy — the welcome message must stay unset',
+  );
+  resetPolicyCacheForTests();
+});
+
+test('SECURITY: set_welcome_message rejects text over the max length at the zod schema boundary (issue #253)', () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }>;
+    }
+  )._registeredTools['set_welcome_message'];
+
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'x'.repeat(WELCOME_MESSAGE_MAX_CHARS) }).success,
+    true,
+    'exactly the max length is allowed',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'x'.repeat(WELCOME_MESSAGE_MAX_CHARS + 1) }).success,
+    false,
+    'one character over the max must be rejected',
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: '' }).success,
+    true,
+    'an empty string (clear) must stay allowed',
+  );
+});
+
+test(
+  'set_welcome_message lets an admin set and clear the welcome message; getWelcomeMessage reflects the change verbatim (issue #253)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const adminServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'admin-welcome',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: 'convo-welcome',
+      },
+      stubAdapter(async () => {}),
+    );
+    const setTool = (
+      adminServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['set_welcome_message'];
+
+    try {
+      assert.equal(await getWelcomeMessage(), null, 'precondition: welcome message starts unset');
+
+      const welcome = 'Kia ora and welcome to our little corner of the internet!';
+      const setResult = await setTool.handler({ text: welcome });
+      assert.match(setResult.content[0].text, /updated/i);
+      assert.equal(
+        await getWelcomeMessage(),
+        welcome,
+        'must return the full text verbatim, never a truncation or paraphrase',
+      );
+
+      const clearResult = await setTool.handler({ text: '' });
+      assert.match(clearResult.content[0].text, /cleared/i);
+      assert.equal(await getWelcomeMessage(), null, 'clearing must revert to null (the hardcoded default)');
+    } finally {
+      resetPolicyCacheForTests();
+    }
+  },
+);
 
 // create_poll (issue #228): a Discord-only, announce-class outward-posting
 // tool. This adapter stub advertises the capability (mirroring the real

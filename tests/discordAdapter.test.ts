@@ -802,11 +802,27 @@ test('onGuildMemberAdd: the rejoin re-mute runs before any welcome-message logic
 
 // --- onGuildMemberAdd: community guidelines appended to the welcome (issue #212) --------------------
 
-/** Mocks pool.query so a `community_guidelines` policy read returns `value` (or nothing, if omitted). */
-function stubPoliciesQuery(value?: string) {
+/**
+ * Mocks pool.query so a `community_guidelines` policy read returns `value`
+ * (or nothing, if omitted). `opts.welcomeMessage` similarly stubs the
+ * `welcome_message` key (issue #253); `opts.throwFor` simulates a policy
+ * read failure for the named key.
+ */
+function stubPoliciesQuery(
+  value?: string,
+  opts?: { welcomeMessage?: string; throwFor?: 'community_guidelines' | 'welcome_message' },
+) {
   return async (sql: string, params?: unknown[]) => {
-    if (sql.includes('FROM policies') && params?.[0] === 'community_guidelines') {
+    if (!sql.includes('FROM policies')) return { rows: [], rowCount: 0 };
+    const key = params?.[0];
+    if (opts?.throwFor === key) throw new Error('simulated policy read failure');
+    if (key === 'community_guidelines') {
       return value === undefined ? { rows: [], rowCount: 0 } : { rows: [{ value }], rowCount: 1 };
+    }
+    if (key === 'welcome_message') {
+      return opts?.welcomeMessage === undefined
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ value: opts.welcomeMessage }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   };
@@ -886,6 +902,64 @@ test('onGuildMemberAdd: the channel fallback also appends community guidelines v
   } finally {
     config.discord.welcome.enabled = wasWelcome;
     config.discord.welcome.channelId = wasChannelId;
+    resetPolicyCacheForTests();
+  }
+});
+
+// --- onGuildMemberAdd: admin-configurable welcome message (issue #253) -----
+
+test('onGuildMemberAdd: uses the configured welcome message in place of the hardcoded default, guidelines still appended (issue #253)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const welcomeMessage = 'Welcome to our community!';
+  const guidelines = 'Be respectful. No spam.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessage }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-configured-welcome',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [`${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`]);
+    assert.ok(
+      !sent[0].includes(WELCOME_MESSAGE),
+      'the hardcoded default must not appear once a value is configured',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('SECURITY: onGuildMemberAdd falls back to the hardcoded default welcome when the welcome_message policy read fails (issue #253)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { throwFor: 'welcome_message' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-welcome-read-failure',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(
+      sent,
+      [WELCOME_MESSAGE],
+      'a policy-read failure must fall back to the hardcoded default, never an empty or broken welcome',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
     resetPolicyCacheForTests();
   }
 });
