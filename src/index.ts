@@ -4,16 +4,9 @@ import { installCrashHandlers } from './crashHandlers.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
-import { latestContextDigestAt, purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
+import { purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
 import { startRosterRetentionPurge } from './rosterRetention.js';
-import { runContextBuilder, shouldRunContextBuilder } from './context/builder.js';
-import {
-  latestRefreshAt,
-  runKnowledgeRefresh,
-  shouldRunKnowledgeRefresh,
-} from './context/knowledgeRefresh.js';
-import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './context/docsIngest.js';
-import { writeCommunityContextExport } from './context/export.js';
+import { startContextBuilder, startKnowledgeRefresh, startDocsIngest } from './backgroundJobs.js';
 import { pollAnthropicStatus } from './status/anthropicStatus.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
@@ -40,84 +33,6 @@ function startRetentionPurge(): ReturnType<typeof setInterval> | null {
   };
   run();
   const timer = setInterval(run, DAY_MS);
-  timer.unref();
-  return timer;
-}
-
-/**
- * Offline context builder (issue #51). Off unless CONTEXT_BUILDER_ENABLED.
- * Ticks every 6h but the ~daily freshness guard (based on the last digest's
- * created_at) makes it effectively one run per day — restart-safe, so the
- * nightly redeploy can't double-run it.
- */
-function startContextBuilder(): ReturnType<typeof setInterval> | null {
-  if (!config.contextBuilder.enabled) return null;
-  const run = async () => {
-    try {
-      const latest = await latestContextDigestAt();
-      if (!shouldRunContextBuilder(latest, Date.now())) return;
-      const result = await runContextBuilder();
-      logger.info(result, 'Context builder run complete');
-      // Regenerate the anonymised export after a producing run (issue #53).
-      // Writing the file is automatic; COMMITTING it stays a human step.
-      if (config.contextExport.enabled && result.digests > 0) {
-        await writeCommunityContextExport();
-      }
-    } catch (err) {
-      logger.error({ err }, 'Context builder run failed');
-    }
-  };
-  void run();
-  const timer = setInterval(() => void run(), 6 * 3_600_000);
-  timer.unref();
-  return timer;
-}
-
-/**
- * Daily knowledge refresh (off unless KNOWLEDGE_REFRESH_ENABLED). Ticks every
- * 6h but a ~daily freshness guard (last auto-entry's updated_at) makes it
- * effectively one run per day and restart-safe, so frequent redeploys can't
- * re-trigger the web research. Unlike the review-gated context builder, this
- * writes straight to the knowledge base — see src/context/knowledgeRefresh.ts.
- */
-function startKnowledgeRefresh(): ReturnType<typeof setInterval> | null {
-  if (!config.knowledgeRefresh.enabled) return null;
-  const run = async () => {
-    try {
-      const latest = await latestRefreshAt();
-      if (!shouldRunKnowledgeRefresh(latest, Date.now())) return;
-      const result = await runKnowledgeRefresh();
-      logger.info(result, 'Knowledge refresh run complete');
-    } catch (err) {
-      logger.error({ err }, 'Knowledge refresh run failed');
-    }
-  };
-  void run();
-  const timer = setInterval(() => void run(), 6 * 3_600_000);
-  timer.unref();
-  return timer;
-}
-
-/**
- * Docs ingest (off unless DOCS_INGEST_ENABLED). Ticks every 6h but a ~weekly
- * freshness guard makes it effectively one run per week and redeploy-safe. It
- * fetches Anthropic's official docs and diff-upserts them into knowledge — see
- * src/context/docsIngest.ts.
- */
-function startDocsIngest(): ReturnType<typeof setInterval> | null {
-  if (!config.docsIngest.enabled) return null;
-  const run = async () => {
-    try {
-      const latest = await latestDocsIngestAt();
-      if (!shouldRunDocsIngest(latest, Date.now())) return;
-      const result = await runDocsIngest();
-      logger.info(result, 'Docs ingest run complete');
-    } catch (err) {
-      logger.error({ err }, 'Docs ingest run failed');
-    }
-  };
-  void run();
-  const timer = setInterval(() => void run(), 6 * 3_600_000);
   timer.unref();
   return timer;
 }
@@ -192,13 +107,13 @@ async function main(): Promise<void> {
   const usageAlertTimer = startUsageAlert(adapters);
 
   // 4e. Optional offline context builder (disabled unless configured).
-  const contextBuilderTimer = startContextBuilder();
+  const contextBuilderTimer = startContextBuilder(adapters);
 
   // 4e-bis. Optional daily knowledge refresh (disabled unless configured).
-  const knowledgeRefreshTimer = startKnowledgeRefresh();
+  const knowledgeRefreshTimer = startKnowledgeRefresh(adapters);
 
   // 4e-ter. Optional weekly docs ingest (disabled unless configured).
-  const docsIngestTimer = startDocsIngest();
+  const docsIngestTimer = startDocsIngest(adapters);
 
   // 4e-quater. Optional Anthropic status check poll (disabled unless configured).
   const statusCheckTimer = startStatusCheck();
