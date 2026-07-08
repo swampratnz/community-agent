@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { Classifier } from '../src/moderation/moderator.js';
 
 // config.ts validates env at import time — provide a dummy environment before
 // importing anything that (transitively) loads it. These unit tests never
@@ -87,7 +88,7 @@ function makeModerator(opts: {
   strikeLimit?: number;
   strikeWindowDays?: number;
   isExempt?: (p: string, u: string) => Promise<boolean>;
-  classify?: (text: string) => Promise<{ reason: string; excerpt: string } | null>;
+  classify?: Classifier;
   store?: ReturnType<typeof makeStore>;
   enforcer?: ReturnType<typeof makeEnforcer>;
 }): {
@@ -231,6 +232,11 @@ test('Moderator: a failing enforcement step is swallowed and does not abort the 
 
 // --- two-stage classifier gating --------------------------------------------
 
+const scope = (channelId = 'chan1', platform: 'discord' | 'whatsapp' = 'discord') => ({
+  platform,
+  channelId,
+});
+
 test('makeClassifier never calls the LLM when llmAbuseEnabled is off', async () => {
   let llmCalls = 0;
   const classify = makeClassifier({
@@ -243,7 +249,7 @@ test('makeClassifier never calls the LLM when llmAbuseEnabled is off', async () 
   });
   // A message the wordlist won't catch — the only path to a flag is the LLM,
   // which must stay off.
-  assert.equal(await classify('you are being unkind and I disagree'), null);
+  assert.equal(await classify('you are being unkind and I disagree', scope()), null);
   assert.equal(llmCalls, 0, 'the LLM classifier must not run when disabled');
 });
 
@@ -257,7 +263,7 @@ test('makeClassifier escalates a wordlist-clean message to the LLM only when ena
       return { reason: 'abuse (targeted harassment)', excerpt: 'x' };
     },
   });
-  const hit = await classify('some subtle harassment the wordlist misses');
+  const hit = await classify('some subtle harassment the wordlist misses', scope());
   assert.equal(llmCalls, 1);
   assert.ok(hit && /abuse/.test(hit.reason));
 });
@@ -272,9 +278,113 @@ test('makeClassifier short-circuits on a wordlist hit without calling the LLM', 
       return null;
     },
   });
-  const hit = await classify('you asshole');
+  const hit = await classify('you asshole', scope());
   assert.ok(hit, 'wordlist catches it');
   assert.equal(llmCalls, 0, 'no LLM call when the wordlist already flagged it');
+});
+
+// --- LLM classifier cache (issue #256) ---------------------------------------
+// Dedupes identical-text Stage-2 LLM calls within a short per-scope window, so
+// a copy-pasted spam/phishing burst pays for one classification instead of N.
+
+function makeCountingLlm(behavior: (text: string) => Promise<{ reason: string; excerpt: string } | null>) {
+  const calls: string[] = [];
+  const llm: Classifier = async (text) => {
+    calls.push(text);
+    return behavior(text);
+  };
+  return { calls, llm };
+}
+
+test('makeClassifier: identical text in the same scope within the TTL is served from cache (one LLM call)', async () => {
+  const { calls, llm } = makeCountingLlm(async () => ({ reason: 'abuse (x)', excerpt: 'x' }));
+  let now = 0;
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm, now: () => now });
+  await classify('some subtle harassment the wordlist misses', scope());
+  now += 1_000; // well within the 5-minute TTL
+  const second = await classify('some subtle harassment the wordlist misses', scope());
+  assert.equal(calls.length, 1, 'the second identical call must hit the cache, not the LLM');
+  assert.ok(second && /abuse/.test(second.reason), 'the cached verdict is still returned');
+});
+
+test('makeClassifier: identical text in a different channelId is a cache miss (no cross-scope hit)', async () => {
+  const { calls, llm } = makeCountingLlm(async () => null);
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm });
+  await classify('some subtle harassment the wordlist misses', scope('chan1'));
+  await classify('some subtle harassment the wordlist misses', scope('chan2'));
+  assert.equal(calls.length, 2, "a different channelId must not reuse another scope's cached verdict");
+});
+
+test('SECURITY: identical text on a different platform is a cache miss (scope key includes platform)', async () => {
+  const { calls, llm } = makeCountingLlm(async () => null);
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm });
+  await classify('some subtle harassment the wordlist misses', scope('chan1', 'discord'));
+  await classify('some subtle harassment the wordlist misses', scope('chan1', 'whatsapp'));
+  assert.equal(calls.length, 2, 'platform must be part of the cache key, not just channelId');
+});
+
+test('makeClassifier: identical text after the TTL elapses triggers a fresh classifier call', async () => {
+  const { calls, llm } = makeCountingLlm(async () => null);
+  let now = 0;
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm, now: () => now });
+  await classify('some subtle harassment the wordlist misses', scope());
+  now += 300_001; // just past the 5-minute TTL
+  await classify('some subtle harassment the wordlist misses', scope());
+  assert.equal(calls.length, 2, 'an expired cache entry must not be reused');
+});
+
+test('SECURITY: a classifier error is never cached — the next identical message still attempts a fresh classification', async () => {
+  let attempt = 0;
+  const llm: Classifier = async () => {
+    attempt += 1;
+    if (attempt === 1) throw new Error('transient LLM failure');
+    return { reason: 'abuse (x)', excerpt: 'x' };
+  };
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm });
+  await assert.rejects(classify('some subtle harassment the wordlist misses', scope()));
+  const second = await classify('some subtle harassment the wordlist misses', scope());
+  assert.equal(attempt, 2, 'a failed call must not be cached, so an identical retry hits the LLM again');
+  assert.ok(second && /abuse/.test(second.reason));
+});
+
+test('makeClassifier: a cache hit drives the same downstream moderation action as a fresh classification', async () => {
+  const { llm } = makeCountingLlm(async () => ({ reason: 'abuse (targeted harassment)', excerpt: 'x' }));
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm });
+  const { moderator, enforcer } = makeModerator({ strikeLimit: 5, classify });
+  await moderator.scan(msg('some subtle harassment the wordlist misses'));
+  await moderator.scan(msg('some subtle harassment the wordlist misses')); // served from cache
+  assert.equal(
+    enforcer.calls.warnUser.length,
+    2,
+    'the cache hit must warn the member just like a fresh call',
+  );
+  assert.equal(enforcer.calls.postAdminAlert.length, 2);
+});
+
+test('makeClassifier: the cache never grows past its bound — inserting past it evicts the oldest entry', async () => {
+  const { calls, llm } = makeCountingLlm(async () => null);
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: true, llm });
+  const s = scope();
+  // Fill the cache with 200 distinct texts, then a 201st distinct text.
+  for (let i = 0; i < 201; i += 1) {
+    await classify(`distinct message number ${i}`, s);
+  }
+  assert.equal(calls.length, 201, 'every distinct text is a fresh miss while filling the cache');
+  // The very first entry must have been evicted (LRU) to make room for the 201st.
+  await classify('distinct message number 0', s);
+  assert.equal(calls.length, 202, 'the oldest entry was evicted, so its text is a fresh miss again');
+  // A recently-inserted entry must still be cached.
+  await classify('distinct message number 200', s);
+  assert.equal(calls.length, 202, 'a recently-inserted entry must still be served from cache');
+});
+
+test('SECURITY: with llmAbuseEnabled off, the classifier never touches the LLM/cache path at all', async () => {
+  const { calls, llm } = makeCountingLlm(async () => ({ reason: 'abuse', excerpt: 'x' }));
+  const classify = makeClassifier({ badWords: [], llmAbuseEnabled: false, llm });
+  const s = scope();
+  await classify('some subtle harassment the wordlist misses', s);
+  await classify('some subtle harassment the wordlist misses', s);
+  assert.equal(calls.length, 0, 'disabled means the LLM (and therefore its cache) is never reached');
 });
 
 // --- RBAC surface ------------------------------------------------------------
