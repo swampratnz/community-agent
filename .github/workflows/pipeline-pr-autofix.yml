@@ -218,6 +218,17 @@ jobs:
                failure is not something you can safely fix, then just STOP
                without committing/pushing: a later step detects "no new commit"
                and escalates `needs-human` for you.
+
+            EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
+            batch run. There is NO wakeup, NO resume, and NO background
+            continuation — when your turn ends, this job ends. Run every command
+            (the gate, tests, git) synchronously to completion in THIS turn and
+            act on its result; NEVER end your turn to "wait" for a test/command
+            to finish or in the expectation of being resumed later. Either push
+            your fix with `git push origin HEAD` in THIS turn, or (if it isn't
+            safely fixable here) stop deliberately so the no-new-commit
+            escalation hands it to a human. Running out of turns mid-fix is a
+            failure, not a pause.
           # Tool surface is least-privilege — defence in depth, NOT a hard
           # guarantee (the agent also has Edit/Write + node/npm code execution,
           # so it could rewrite .git/HEAD on disk; see the main-push note below):

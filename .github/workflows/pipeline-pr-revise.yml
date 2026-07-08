@@ -245,6 +245,17 @@ jobs:
                post a short `gh pr comment` explaining exactly why, and STOP
                without committing/pushing. A later step detects "no new
                commit" and escalates `needs-human` so a maintainer decides.
+
+            EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
+            batch run. There is NO wakeup, NO resume, and NO background
+            continuation — when your turn ends, this job ends. Run every command
+            (the gate, tests, git) synchronously to completion in THIS turn and
+            act on its result; NEVER end your turn to "wait" for a test/command
+            to finish or in the expectation of being resumed later. Before you
+            stop for ANY reason you must have EITHER pushed a revision with
+            `git push origin HEAD`, OR left the `gh pr comment` above explaining
+            why — ending with neither is exactly the opaque failure this loop
+            exists to avoid.
           # Least-privilege tool surface (mirrors pipeline-pr-autofix.yml).
           # Differences from autofix, both deliberate: `gh pr comment` is
           # allowed so a principled refusal is explained on the PR rather
@@ -274,6 +285,28 @@ jobs:
           fi
           echo "::error::Revise worker produced no new commit on PR #${PR_NUMBER}."
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label needs-human || true
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${ESCALATE_MARKER}
-          🤖 Revise attempt ${{ steps.precheck.outputs.attempt }} pushed no revision — either it disagreed with the review (see its comment above), the change needs a \`.github/workflows/\` edit it can't push, or it wasn't safely fixable. Labelled \`needs-human\` for a maintainer. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Surface WHY (mirrors pipeline-build.yml's #251 escalation): pull the
+          # revise agent's own final summary from its execution log, so the
+          # escalation says what actually stopped it — a principled refusal, a
+          # `.github/workflows/` change it can't push, a gate it couldn't make
+          # green, or a run that flaked — instead of the three-way guess this
+          # comment used to make (which a maintainer then had to reverse-engineer
+          # from the run log). Best-effort: a silent no-op leaves no summary,
+          # which is itself the tell.
+          summary=""
+          exec_file="${{ steps.fix.outputs.execution_file }}"
+          if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
+            summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
+          fi
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            printf '%s\n🤖 Revise attempt %s pushed no revision — labelled `needs-human` for a maintainer. Run: %s\n' \
+              "${ESCALATE_MARKER}" "${{ steps.precheck.outputs.attempt }}" "${run_url}"
+            if [ -n "${summary}" ]; then
+              printf '\n<details><summary>Revise worker'\''s final summary (what it says stopped it)</summary>\n\n%s\n\n</details>\n' "${summary}"
+            else
+              printf '\n_No agent summary was captured — it ended without pushing **and** without a `gh pr comment`. That usually means a gate it could not make green, a `.github/workflows/` change it cannot push, or a disagreement with the review it did not voice. Check the run log above._\n'
+            fi
+          } | gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file - || true
           exit 1
