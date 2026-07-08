@@ -683,6 +683,75 @@ test('first-contact welcome: enabled + never-before-seen sender sends exactly on
   resetPolicyCacheForTests();
 });
 
+test("first-contact welcome: a DB error in the known-check never drops the sender's real message — it still reaches the handler, welcome is skipped", async (t) => {
+  resetPolicyCacheForTests();
+  // isKnownConversation is a bare pool.query with no internal fallback; a
+  // transient pool blip must degrade to "skip the welcome," not propagate out
+  // of onCloudMessage and swallow the sender's message before the agent sees it.
+  t.mock.method(pool, 'query', async (sql: string) => {
+    if (sql.includes('FROM interactions')) throw new Error('pool timeout');
+    return { rows: [], rowCount: 0 };
+  });
+
+  const adapter = new WhatsAppCloudAdapter();
+  let handlerCalls = 0;
+  adapter.onMessage(async () => {
+    handlerCalls++;
+  });
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await withCloudWelcomeConfig(true, () =>
+      dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64299990009', id: 'wamid.DBERR' })),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(
+    handlerCalls,
+    1,
+    "the sender's real message must still reach the agent despite the welcome-path DB error",
+  );
+  assert.equal(
+    calls.length,
+    0,
+    'no welcome send when the known-check fails — it degrades to skip, not crash',
+  );
+  resetPolicyCacheForTests();
+});
+
+test('first-contact welcome: welcomedThisRun is swept so it cannot grow unbounded over a long-running process', async (t) => {
+  resetPolicyCacheForTests();
+  t.mock.method(pool, 'query', stubWelcomeQuery({ known: false }));
+
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.onMessage(async () => {});
+  const { fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  const internal = adapter as unknown as {
+    onCloudMessage: (m: CloudInboundMessage) => Promise<void>;
+    welcomedThisRun: Map<string, number>;
+    sweepLastInboundAt: () => void;
+  };
+  try {
+    await withCloudWelcomeConfig(true, () =>
+      internal.onCloudMessage(cloudMessage({ from: '64299990010', id: 'wamid.SWEEP' })),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(internal.welcomedThisRun.size, 1, 'the just-welcomed sender is tracked');
+  // Backdate the entry past the sweep cutoff, then sweep.
+  internal.welcomedThisRun.set('64299990010', 0);
+  internal.sweepLastInboundAt();
+  assert.equal(internal.welcomedThisRun.size, 0, 'an aged-out entry is pruned — the map is bounded');
+  resetPolicyCacheForTests();
+});
+
 test('first-contact welcome: community guidelines are appended when set (parity with Discord/Baileys)', async (t) => {
   resetPolicyCacheForTests();
   const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';

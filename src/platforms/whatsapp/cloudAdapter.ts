@@ -96,16 +96,19 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   private readonly seenMessageIds = new Map<string, number>();
 
   /**
-   * Senders already welcomed this process lifetime (issue #255) — checked
-   * and populated synchronously BEFORE the `isKnownConversation` await,
-   * mirroring `seenMessageIds`' check-and-insert pattern, so two messages
-   * from the same brand-new sender arriving milliseconds apart (both seeing
-   * `isKnownConversation` return `false`) still only trigger one welcome
-   * send. In-memory only, never persisted — the DB-backed
-   * `isKnownConversation` check is the durable backstop that stops a
-   * restart from re-welcoming an already-known contact.
+   * Senders already welcomed this process (issue #255), keyed to first-seen
+   * timestamp — checked and populated synchronously BEFORE the
+   * `isKnownConversation` await, mirroring `seenMessageIds`' check-and-insert
+   * pattern, so two messages from the same brand-new sender arriving
+   * milliseconds apart (both seeing `isKnownConversation` return `false`)
+   * still only trigger one welcome send. In-memory only, never persisted —
+   * the DB-backed `isKnownConversation` check is the durable backstop that
+   * stops a restart from re-welcoming an already-known contact. Swept
+   * alongside `lastInboundAt`/`seenMessageIds` so a long-running process
+   * doesn't grow it forever (a sender aged out here is, by then, a known
+   * conversation in the DB, so the backstop still prevents a re-welcome).
    */
-  private readonly welcomedThisRun = new Set<string>();
+  private readonly welcomedThisRun = new Map<string, number>();
 
   /**
    * Consecutive `sendChunk` (real message send) failures, process-wide. Only
@@ -191,6 +194,13 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     const dedupCutoff = now - MESSAGE_ID_DEDUP_WINDOW_MS;
     for (const [id, firstSeen] of this.seenMessageIds) {
       if (firstSeen < dedupCutoff) this.seenMessageIds.delete(id);
+    }
+    // Same cutoff as lastInboundAt: a sender welcomed longer ago than the
+    // customer-service window is, by now, a known conversation in the DB, so
+    // the `isKnownConversation` backstop prevents a re-welcome even after the
+    // in-memory guard is evicted.
+    for (const [from, welcomedAt] of this.welcomedThisRun) {
+      if (welcomedAt < inboundCutoff) this.welcomedThisRun.delete(from);
     }
   }
 
@@ -302,20 +312,26 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     if (!config.whatsapp.cloud.welcomeEnabled) return;
     // Check-and-insert BEFORE any await — see welcomedThisRun's doc comment.
     if (this.welcomedThisRun.has(from)) return;
-    this.welcomedThisRun.add(from);
+    this.welcomedThisRun.set(from, Date.now());
 
-    if (await isKnownConversation('whatsapp', from)) return;
-
-    const guidelines = await getCommunityGuidelines();
-    const welcomeText = guidelines
-      ? `${WHATSAPP_CLOUD_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
-      : WHATSAPP_CLOUD_WELCOME_MESSAGE;
-    // Best-effort: a Graph API hiccup on the welcome send must never drop
-    // the sender's real message, since (unlike Discord/Baileys' distinct
-    // join event) this runs inline on the message-processing path itself.
-    await this.sendText(from, welcomeText).catch((err) =>
-      logger.warn({ err, from }, 'WhatsApp Cloud: first-contact welcome send failed'),
-    );
+    // Best-effort, and it MUST NOT throw out of here. This runs inline
+    // (awaited) in onCloudMessage BEFORE this.handler, so any error escaping
+    // this method propagates up and drops the sender's real message before it
+    // reaches the agent. `isKnownConversation` is a bare pool.query with no
+    // internal fallback (unlike the policy reads, which swallow DB errors), so
+    // a transient pool blip here would otherwise swallow the message. Wrap the
+    // whole DB+send body: a DB or Graph hiccup degrades to "skip the welcome,"
+    // never "drop the user's message."
+    try {
+      if (await isKnownConversation('whatsapp', from)) return;
+      const guidelines = await getCommunityGuidelines();
+      const welcomeText = guidelines
+        ? `${WHATSAPP_CLOUD_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
+        : WHATSAPP_CLOUD_WELCOME_MESSAGE;
+      await this.sendText(from, welcomeText);
+    } catch (err) {
+      logger.warn({ err, from }, 'WhatsApp Cloud: first-contact welcome skipped (non-fatal)');
+    }
   }
 
   /**
