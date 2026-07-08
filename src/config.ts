@@ -168,6 +168,15 @@ const EnvSchema = z.object({
   WHATSAPP_CLOUD_VERIFY_TOKEN: z.string().optional(),
   WHATSAPP_CLOUD_APP_SECRET: z.string().optional(),
   WHATSAPP_CLOUD_WEBHOOK_PORT: z.coerce.number().int().positive().default(8080),
+  // First-contact welcome for the Cloud API (issue #255): the Cloud API has
+  // no group-join event to hook (WHATSAPP_WELCOME_ENABLED is Baileys-only),
+  // so this fires off a sender's own first-ever inbound message instead
+  // (detected via isKnownConversation). Off by default, matching every other
+  // opt-in welcome surface in this repo.
+  WHATSAPP_CLOUD_WELCOME_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
 
   // Database
   DATABASE_URL: z.string().min(1),
@@ -503,6 +512,7 @@ export const config = {
       verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN,
       appSecret: env.WHATSAPP_CLOUD_APP_SECRET,
       webhookPort: env.WHATSAPP_CLOUD_WEBHOOK_PORT,
+      welcomeEnabled: env.WHATSAPP_CLOUD_WELCOME_ENABLED ?? false,
     },
   },
   db: {

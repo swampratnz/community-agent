@@ -8,7 +8,8 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { getCodeAnswersPolicy } from '../../storage/policies.js';
+import { getCodeAnswersPolicy, getCommunityGuidelines } from '../../storage/policies.js';
+import { isKnownConversation } from '../../storage/repository.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -54,6 +55,13 @@ const MESSAGE_ID_DEDUP_WINDOW_MS = 5 * 60_000;
  */
 const SEND_FAILURE_THRESHOLD = 3;
 
+// Generic and static — no @-mention or echo of the sender, so nothing
+// user-supplied (msg.name/msg.from) ever reaches the text. Mirrors
+// WHATSAPP_GROUP_WELCOME_MESSAGE's shape, adapted for a 1:1 first contact.
+export const WHATSAPP_CLOUD_WELCOME_MESSAGE =
+  'Kia ora! 👋 Thanks for messaging the NZ Claude Community bot. I can help answer Claude/Anthropic ' +
+  "questions here in our 1:1 chat. If you're new, an admin may need to register you as a member first.";
+
 /**
  * WhatsApp via the official Meta Business Cloud API. ToS-compliant
  * alternative to {@link BaileysAdapter}: no linked-device session to ban,
@@ -86,6 +94,18 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * never message content, never persisted. Swept alongside `lastInboundAt`.
    */
   private readonly seenMessageIds = new Map<string, number>();
+
+  /**
+   * Senders already welcomed this process lifetime (issue #255) — checked
+   * and populated synchronously BEFORE the `isKnownConversation` await,
+   * mirroring `seenMessageIds`' check-and-insert pattern, so two messages
+   * from the same brand-new sender arriving milliseconds apart (both seeing
+   * `isKnownConversation` return `false`) still only trigger one welcome
+   * send. In-memory only, never persisted — the DB-backed
+   * `isKnownConversation` check is the durable backstop that stops a
+   * restart from re-welcoming an already-known contact.
+   */
+  private readonly welcomedThisRun = new Set<string>();
 
   /**
    * Consecutive `sendChunk` (real message send) failures, process-wide. Only
@@ -251,6 +271,8 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     if (!this.handler) return;
     if (!isAllowedSender(msg.from, config.whatsapp.allowedJids)) return;
 
+    await this.maybeSendFirstContactWelcome(msg.from);
+
     const normalised: IncomingMessage = {
       platform: 'whatsapp',
       conversationId: msg.from,
@@ -264,6 +286,36 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       raw: msg,
     };
     await this.handler(normalised);
+  }
+
+  /**
+   * First-contact welcome for the Cloud API (issue #255) — the equivalent of
+   * Discord's `onGuildMemberAdd` / Baileys' `group-participants.update`
+   * welcome, but the Cloud API has no join/membership event to hook, so a
+   * sender's own first-ever inbound message is treated as the "join" moment
+   * instead. Off unless `WHATSAPP_CLOUD_WELCOME_ENABLED=true`. Runs after the
+   * `isAllowedSender` gate and before `this.handler` — the handler is what
+   * records this message as an interaction, so the check must run first or
+   * every sender would look "known" by the time it ran.
+   */
+  private async maybeSendFirstContactWelcome(from: string): Promise<void> {
+    if (!config.whatsapp.cloud.welcomeEnabled) return;
+    // Check-and-insert BEFORE any await — see welcomedThisRun's doc comment.
+    if (this.welcomedThisRun.has(from)) return;
+    this.welcomedThisRun.add(from);
+
+    if (await isKnownConversation('whatsapp', from)) return;
+
+    const guidelines = await getCommunityGuidelines();
+    const welcomeText = guidelines
+      ? `${WHATSAPP_CLOUD_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
+      : WHATSAPP_CLOUD_WELCOME_MESSAGE;
+    // Best-effort: a Graph API hiccup on the welcome send must never drop
+    // the sender's real message, since (unlike Discord/Baileys' distinct
+    // join event) this runs inline on the message-processing path itself.
+    await this.sendText(from, welcomeText).catch((err) =>
+      logger.warn({ err, from }, 'WhatsApp Cloud: first-contact welcome send failed'),
+    );
   }
 
   /**
