@@ -22,6 +22,7 @@ label "status:rejected" "E11D21" "Failed adversarial review"
 label "status:building" "5319E7" "Claimed by the build loop (WIP=1)"
 label "status:built"    "0052CC" "PR open, awaiting review/merge"
 label "needs-human"     "D93F0B" "Escalated: a human must decide"
+label "no-auto-resolve" "FBCA04" "Pin a PR out of the hourly conflict resolver (e.g. while editing it)"
 label "community-feedback" "0E8A16" "A real member/admin request; input for research proposals"
 
 # Theme areas (VISION.md) — one per proposal, so the memoryless research loop can

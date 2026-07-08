@@ -27,11 +27,16 @@ name: Pipeline PR conflict resolver
 #
 # Guardrails (mirrors pipeline-pr-autofix.yml — this spends the shared Max pool
 # and pushes code, so they matter):
-#   * Same-repo, bot-authored PRs only. workflow-triggered secrets + a push
-#     tool must never run against human- or fork-controlled branches, so the
-#     discover filter hard-requires author.is_bot && !isCrossRepository.
-#   * PRs already labelled `needs-human` are SKIPPED — that label is the stop.
-#     A failed resolution labels `needs-human`, so each conflict gets exactly
+#   * Same-repo PRs only (never a fork — workflow-triggered secrets + a push
+#     tool must never run against fork-controlled branches; the discover filter
+#     hard-requires !isCrossRepository). Author must be EITHER the build-worker
+#     bot (with a `Closes #` body) OR a trusted maintainer in MAINTAINER_LOGINS
+#     (the repo owner's own human PRs — main churn otherwise leaves them stuck
+#     CONFLICTING with no responder). Fork/external-human PRs stay excluded.
+#   * PRs labelled `needs-human` OR `no-auto-resolve` are SKIPPED — the former
+#     is the failed-attempt stop; the latter lets anyone pin a PR out (e.g.
+#     while actively editing it).
+#   * A failed resolution labels `needs-human`, so each conflict gets exactly
 #     ONE attempt and the loop will not thrash on every subsequent push to main
 #     (which would otherwise drain the weekly token pool re-fighting the same
 #     unresolvable conflict).
@@ -66,7 +71,7 @@ on:
   # Backstop sweep for anything the event triggers missed (e.g. a discover run
   # superseded by concurrency, or a fork-PR trigger that couldn't dispatch).
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
       resolve_matrix:
@@ -94,6 +99,15 @@ permissions:
   issues: write
   pull-requests: write
   id-token: write # claude-code-action mints its GitHub App token via OIDC
+
+env:
+  # Human maintainers whose OWN same-repo PRs this resolver may also un-stick
+  # (space-separated GitHub logins). Bot build-worker PRs are covered by the
+  # is_bot + `Closes #` path; these are the trusted humans (the repo owner)
+  # who have opted their branches into auto-resolution. Fork PRs are NEVER
+  # eligible regardless (isCrossRepository guard). Any PR — bot or human — can
+  # be pinned OUT with the `no-auto-resolve` label (e.g. while you're mid-edit).
+  MAINTAINER_LOGINS: 'swampratnz'
 
 jobs:
   # Find open same-repo bot PRs that are CONFLICTING against main, and
@@ -140,19 +154,28 @@ jobs:
             exit 0
           fi
 
-          # Eligible = open, same-repo (not a fork), bot-authored, a BUILD-WORKER
-          # PR (its body references `Closes #<issue>` — the build worker's
-          # contract, the same signal pipeline-build.yml's own verify step keys
-          # on), and NOT already escalated to needs-human (that label is the
-          # one-attempt stop). The `Closes #` test scopes this to pipeline output
-          # so an unrelated same-repo bot PR (e.g. a Dependabot bump) is not
-          # given an automated main-merge + full-gate push.
+          # Eligible = open, same-repo (never a fork), NOT labelled needs-human
+          # or no-auto-resolve, AND either:
+          #   (a) a BUILD-WORKER PR — bot-authored with a `Closes #<issue>` body
+          #       (the build worker's contract; the `Closes #` test keeps an
+          #       unrelated bot PR like a Dependabot bump out), OR
+          #   (b) a MAINTAINER PR — authored by a login in MAINTAINER_LOGINS
+          #       (the repo owner's own human PRs, which main churn otherwise
+          #       leaves stuck CONFLICTING with no responder).
+          maint="$(jq -cn --arg s "$MAINTAINER_LOGINS" '$s | split(" ") | map(select(length > 0))')"
           candidates="$(gh pr list --repo "${{ github.repository }}" --state open --limit 100 \
             --json number,headRefName,author,isCrossRepository,labels,body \
-            --jq '[.[] | select((.isCrossRepository | not) and (.author.is_bot == true) and (((.body // "") | test("[Cc]loses #[0-9]+")) and ([.labels[].name] | index("needs-human") | not)))]')"
+            | jq -c --argjson maint "$maint" '[.[] | select(
+                (.isCrossRepository | not)
+                and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-resolve") | not))
+                and (
+                  ((.author.is_bot == true) and ((.body // "") | test("[Cc]loses #[0-9]+")))
+                  or (.author.login as $l | ($maint | index($l)) != null)
+                )
+              )]')"
 
           count="$(jq 'length' <<<"$candidates")"
-          echo "Found ${count} candidate bot PR(s); checking mergeability…"
+          echo "Found ${count} candidate PR(s) (bot + maintainer); checking mergeability…"
 
           include='[]'
           for i in $(seq 0 $(( count - 1 )) ); do
@@ -184,7 +207,7 @@ jobs:
           echo "Conflicting PRs to resolve: ${matrix}"
 
           if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
-            echo "No conflicting bot PRs — done."
+            echo "No conflicting eligible PRs — done."
             exit 0
           fi
 
@@ -270,13 +293,16 @@ jobs:
             [ "$mergeable" != 'UNKNOWN' ] && break
             sleep 3
           done
-          eligible="$(jq -r '
+          maint="$(jq -cn --arg s "$MAINTAINER_LOGINS" '$s | split(" ") | map(select(length > 0))')"
+          eligible="$(jq -r --argjson maint "$maint" '
             (.state == "OPEN")
             and (.mergeable == "CONFLICTING")
             and (.isCrossRepository | not)
-            and (.author.is_bot == true)
-            and ((.body // "") | test("[Cc]loses #[0-9]+"))
-            and ([.labels[].name] | index("needs-human") | not)
+            and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-resolve") | not))
+            and (
+              ((.author.is_bot == true) and ((.body // "") | test("[Cc]loses #[0-9]+")))
+              or (.author.login as $l | ($maint | index($l)) != null)
+            )
           ' <<<"$info")"
           branch="$(jq -r '.headRefName' <<<"$info")"
           if [ "$eligible" = 'true' ]; then
@@ -364,7 +390,12 @@ jobs:
                truly overlap, integrate them. Edit the conflicted files
                directly (or use `git restore --ours`/`--theirs <path>` to take
                one whole side); `git checkout` is intentionally NOT available.
-               Then `git add` the resolved files and complete the merge commit.
+               For an ADDITIVE count manifest like tests/security-floor.json,
+               neither side's number is correct — set each conflicting per-file
+               entry to the TRUE count in the merged test file (re-count that
+               file's `SECURITY:` test declarations), because both sides added
+               tests. Then `git add` the resolved files and complete the merge
+               commit.
             3. A pgvector Postgres is available at DATABASE_URL, so run the FULL
                gate and make EVERY check green before pushing:
                npm run typecheck && npm run lint && npm run format:check &&

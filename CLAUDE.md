@@ -69,17 +69,19 @@ ownership rules:
   first, so agents never chase one-off flakes), then it escalates
   `needs-human`. It never opens or merges PRs.
 - The **conflict-resolver loop** (`pipeline-pr-conflict.yml`) may push a
-  `main`-merge to an existing build-worker PR branch when that PR is
+  `main`-merge to an existing PR branch when that PR is
   CONFLICTING. It is two-hop: a `discover` job (triggered on every push to
   `main`, on PR opened/ready-for-review — a PR can be *born* conflicted — and
-  on a 6-hourly backstop sweep) finds conflicting same-repo bot PRs and
+  on an **hourly** backstop sweep) finds conflicting same-repo PRs and
   self-dispatches the `resolve` job via `workflow_dispatch`, because
   claude-code-action won't run under a `push` event. The dispatch payload
   carries PR **numbers only**; resolve re-derives the branch from the API and
-  re-verifies the full eligibility contract (same-repo, bot-authored,
-  `Closes #`, no `needs-human`, still CONFLICTING) before checkout, so a
-  hand-crafted dispatch can't aim it at an arbitrary branch, and a superseded
-  duplicate run no-ops instead of mislabelling. One attempt per conflict: a
+  re-verifies the full eligibility contract before checkout: same-repo (never a
+  fork), not `needs-human`/`no-auto-resolve`, still CONFLICTING, and **either** a
+  bot PR with `Closes #` **or** a maintainer PR whose author is in the
+  `MAINTAINER_LOGINS` allowlist. So a hand-crafted dispatch can't aim it at an
+  arbitrary branch, and a superseded duplicate run no-ops instead of
+  mislabelling. One attempt per conflict: a
   failed resolution escalates `needs-human`, and the eligibility filter skips
   `needs-human` PRs so it never thrashes. Same push guardrails as autofix
   (read-only `gh`, exact `git push origin HEAD`). It never opens or merges
