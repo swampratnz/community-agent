@@ -64,6 +64,7 @@ import {
   rosterCounts,
   resolveLinkedIdentities,
   saveKnowledge,
+  getLanguagePreference,
   setLanguagePreference,
   setResponseStyle,
   withdrawOwnReports,
@@ -77,7 +78,7 @@ import {
   usageStats,
   userMessages,
 } from '../storage/repository.js';
-import { getCommunityGuidelines, updatePolicy } from '../storage/policies.js';
+import { getCommunityGuidelines, getCommunityGuidelinesMi, updatePolicy } from '../storage/policies.js';
 import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
@@ -860,7 +861,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       'or muted. Relay the returned text to the caller verbatim — do not summarise, paraphrase, or add to it.',
     {},
     async () => {
-      const guidelines = await getCommunityGuidelines();
+      const languagePreference = await getLanguagePreference(caller.platform, caller.userId);
+      const guidelines =
+        languagePreference === 'mi'
+          ? ((await getCommunityGuidelinesMi()) ?? (await getCommunityGuidelines()))
+          : await getCommunityGuidelines();
       return text(guidelines ?? 'No community guidelines have been set yet — ask an admin.');
     },
     { annotations: { readOnlyHint: true } },
@@ -1865,25 +1870,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     'set_community_guidelines',
     'Set the community guidelines/rules text shown to members (appended verbatim to new-member welcome ' +
       `messages and returned verbatim by community_guidelines). Max ${COMMUNITY_GUIDELINES_MAX_CHARS} ` +
-      'characters. Pass an empty string to clear. Admin only.',
+      "characters. Pass an empty string to clear. Pass language: 'mi' to set/clear the te reo Māori " +
+      "variant served to members with a standing set_language_preference('mi') instead of the default " +
+      "(en) text — omit or pass 'en' for the default-language text. Admin only.",
     {
       text: z
         .string()
         .max(COMMUNITY_GUIDELINES_MAX_CHARS)
         .describe(`The guidelines text, or "" to clear (max ${COMMUNITY_GUIDELINES_MAX_CHARS} characters)`),
+      language: z
+        .enum(['en', 'mi'])
+        .optional()
+        .describe("Which variant to set: 'en' (default) or 'mi' (te reo Māori). Defaults to 'en'."),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'set_community_guidelines');
+      const language = args.language ?? 'en';
+      const policyKey = language === 'mi' ? 'community_guidelines_mi' : 'community_guidelines';
       const { success, result } = await audited({
         actionKind: 'set_community_guidelines',
-        params: { text: args.text },
+        params: { text: args.text, language },
         run: async () => {
-          await updatePolicy('community_guidelines', args.text, caller.userId);
+          await updatePolicy(policyKey, args.text, caller.userId);
           return args.text ? 'updated' : 'cleared';
         },
       });
       if (!success) return text(`Failed: ${result}`, true);
-      return text(args.text ? 'Community guidelines updated.' : 'Community guidelines cleared.');
+      const label = language === 'mi' ? 'Community guidelines (mi)' : 'Community guidelines';
+      return text(args.text ? `${label} updated.` : `${label} cleared.`);
     },
   );
 
