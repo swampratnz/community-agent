@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-08
+
+### Added
+- `suggest_issue` (opt-in, `GITHUB_ISSUE_ENABLED`, off by default): a **super-admin** tool to file a GitHub issue on the repo straight from a Discord or WhatsApp message — an idea, bug, or feature request becomes tracked work without leaving chat. Requires confirmation (it creates a public artifact), is rate-capped per day, scrubs secrets out of the body before sending, and is audited like every privileged action. Filed issues default to the `community-feedback` label, so they feed the research pipeline as evidence rather than skipping review. It's the bot's only outward write capability, so it holds a **fine-grained token scoped to `Issues: write` on one repo** and nothing more (see docs/SECURITY.md + docs/DEPLOYMENT.md).
+
 ## 2026-07-07
 
 ### Added

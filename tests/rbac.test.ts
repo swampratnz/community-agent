@@ -455,6 +455,17 @@ test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachabl
   assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach redeploy_bot');
 });
 
+test("SECURITY: suggest_issue is super-admin only (issue-filing = the bot's only repo write credential) — never admin/member/guest", () => {
+  const tool = 'mcp__community__suggest_issue';
+  assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'suggest_issue must be in SUPER_ADMIN_TOOLS');
+  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'suggest_issue must not be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'suggest_issue must not be in MEMBER_TOOLS');
+  for (const role of ['guest', 'member', 'admin'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach suggest_issue`);
+  }
+  assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach suggest_issue');
+});
+
 test('SECURITY: assign_community_role / remove_community_role / list_assignable_roles are admin-only, never members or guests (issue #232)', () => {
   const tools = [
     'mcp__community__assign_community_role',
