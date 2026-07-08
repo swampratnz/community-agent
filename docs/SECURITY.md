@@ -860,6 +860,38 @@ deliberately narrow:
   first non-Anthropic/Discord/WhatsApp destination; noted with the residual-risk
   egress item below. Off by default (`GITHUB_ISSUE_ENABLED`).
 
+### 13. WhatsApp voice-note transcription (super-admin only, opt-in)
+
+When `WHATSAPP_VOICE_ENABLED=true`, a **super admin's** WhatsApp voice note is
+transcribed to text locally and then flows through the *identical* pipeline as a
+typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
+
+- **Super-admin gate before any download.** The gate
+  (`maybeTranscribeVoiceNote`) checks `isSuperAdmin('whatsapp', senderId)` — a
+  pure env check against `SUPER_ADMIN_WHATSAPP_NUMBERS`, never the DB — *before*
+  fetching the media. A non-super-admin's audio is never downloaded, never
+  transcribed, and dropped exactly like any unhandled message type. Identity is
+  the platform envelope (phone JID / resolved LID), never the audio content, so
+  it can't be spoofed by what's said. Pinned by three `SECURITY:` tests.
+- **Off by default.** With the flag unset, even a super admin's voice note is
+  dropped (pinned) — enabling is a deliberate operator action.
+- **Local transcription, no new egress or key.** Uses transformers.js Whisper —
+  the same "download the model once, run locally, no external API, no extra key"
+  pattern as text embeddings. Audio never leaves the host; the
+  subscription-only auth posture and egress surface are unchanged. (Requires
+  `ffmpeg` on the host to decode Opus → PCM.)
+- **Bounded cost.** Notes longer than `WHATSAPP_VOICE_MAX_SECONDS` (default 120)
+  are ignored without downloading. Any decode/model failure is swallowed and the
+  note dropped — never surfaced or crash-inducing.
+- **No new authority.** Transcription only *populates the message text*; it
+  grants nothing. A mis-heard destructive command still can't fire without the
+  (spoken or typed) CONFIRM the tool layer already demands, and the transcript
+  is subject to the same super-admin tool set it always was.
+- **Group scope.** Voice notes can't carry an @-mention, so in groups only a
+  voice note that *replies to the bot* is addressed (its `contextInfo` is read
+  from the audio payload); DMs to the bot are always addressed. This does not
+  widen who can trigger the bot — the super-admin gate still applies.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

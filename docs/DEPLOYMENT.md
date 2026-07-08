@@ -8,6 +8,9 @@ End-to-end setup on a fresh Ubuntu host.
   `GuildMembers` privileged intents enabled** in the Developer Portal.
 - A dedicated phone number with WhatsApp installed (for Baileys linking).
 - A machine where you're logged into Claude Code to mint the OAuth token.
+- **Only if** you plan to enable super-admin WhatsApp voice notes (§10):
+  `ffmpeg` on the host (`sudo apt install -y ffmpeg`) — decodes voice-note
+  Opus to PCM for local transcription.
 
 ## 1. Provision the host
 ```bash
@@ -142,6 +145,25 @@ GITHUB_ISSUE_TOKEN=github_pat_...        # the fine-grained PAT above — NOT th
 Restart the service. Verify by DMing the bot as a super admin ("file an issue:
 …") and confirming with CONFIRM. Revoke the PAT to disable instantly. See
 docs/SECURITY.md §12 for why the token is scoped this narrowly.
+
+## 10. (Optional) Enable super-admin WhatsApp voice notes
+Lets a **super admin** send the bot a WhatsApp voice message; it's transcribed
+locally and actioned as if typed. Off by default, Baileys only, and never
+reachable by non-super-admins (the gate runs before any download — see
+docs/SECURITY.md §13). Prerequisite: `ffmpeg` on the host.
+```bash
+sudo apt install -y ffmpeg                 # one-time, decodes voice-note Opus
+# in .env:
+WHATSAPP_VOICE_ENABLED=true
+# WHATSAPP_VOICE_MODEL=Xenova/whisper-base.en   # default; whisper-small.en is more accurate/slower
+# WHATSAPP_VOICE_MAX_SECONDS=120                # longer notes are ignored without downloading
+```
+Restart the service. The Whisper model downloads once on first use to the
+transformers cache (same as the embedding model) — the **first** voice note
+after enabling is slow while it downloads; subsequent ones are a few seconds on
+CPU. Verify by sending the bot a short voice note from a super-admin number and
+watching for `Transcribed super-admin voice note` in the logs. Set
+`WHATSAPP_VOICE_ENABLED=false` (or remove it) and restart to disable.
 
 ## Upgrades
 ```bash
