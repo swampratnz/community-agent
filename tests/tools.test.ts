@@ -54,6 +54,7 @@ const {
   POLL_MAX_DURATION_HOURS,
   POLL_DEFAULT_DURATION_HOURS,
   POLL_RATE_LIMIT_PER_HOUR,
+  POLL_END_RATE_LIMIT_PER_HOUR,
   ALLOWED_REACTION_EMOJI,
   REACTION_RATE_LIMIT_PER_DAY,
   THREAD_NAME_MAX_CHARS,
@@ -1858,6 +1859,7 @@ function createPollHandler(caller: {
           handler: (args: {
             question: string;
             options: string[];
+            multiChoice?: boolean;
             durationHours?: number;
             conversationId?: string;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
@@ -1866,6 +1868,38 @@ function createPollHandler(caller: {
       >;
     }
   )._registeredTools['create_poll'];
+}
+
+/** Like createPollHandler, but returns the `end_poll` tool handler. */
+function endPollHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            messageId: string;
+            conversationId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['end_poll'];
 }
 
 test('SECURITY: create_poll rejects a non-admin caller (assertAtLeast re-check, issue #228)', async () => {
@@ -2115,6 +2149,88 @@ test('SECURITY: create_poll enforces a per-conversation rate cap instead of CONF
   }
   const overLimit = await handler.handler({ question: 'one too many', options: ['a', 'b'] });
   assert.match(overLimit.content[0]?.text ?? '', /poll limit/);
+  assert.equal(overLimit.isError, true);
+});
+
+test('create_poll threads multiChoice through to the adapter (defaults false; explicit true is honoured)', async () => {
+  const captured: Array<{ multiChoice?: unknown }> = [];
+  const adapter = pollAdapter({
+    performAdminAction: async (action) => {
+      captured.push(action.params ?? {});
+      return 'Poll posted with 2 option(s) (single choice), open 24h.';
+    },
+  });
+  const handler = createPollHandler({ conversationId: `${RUN}-poll-multi`, adapter });
+
+  await handler.handler({ question: 'Q', options: ['a', 'b'] });
+  assert.equal(
+    captured[0]?.multiChoice,
+    false,
+    'an omitted multiChoice must default to single choice (false)',
+  );
+
+  await handler.handler({ question: 'Q', options: ['a', 'b'], multiChoice: true });
+  assert.equal(captured[1]?.multiChoice, true, 'an explicit multiChoice:true must reach the adapter');
+});
+
+// end_poll: Discord's only supported poll mutation (expire early). Same
+// admin-tier / conversation-scope / capability / audit guards as create_poll.
+test('SECURITY: end_poll rejects a non-admin caller (assertAtLeast re-check)', async () => {
+  const adapter = pollAdapter({ capabilities: ['end_poll'] });
+  const handler = endPollHandler({ role: 'member', adapter });
+  await assert.rejects(() => handler.handler({ messageId: 'msg-1' }), /Permission denied/);
+});
+
+test('SECURITY: end_poll refuses on a platform whose adapter does not advertise the capability', async () => {
+  const adapter = pollAdapter({ capabilities: [] });
+  const handler = endPollHandler({ adapter });
+  const result = await handler.handler({ messageId: 'msg-1' });
+  assert.match(result.content[0]?.text ?? '', /does not support polls/);
+  assert.equal(result.isError, true);
+});
+
+test('SECURITY: end_poll refuses a conversation the caller is not scoped to', async () => {
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    conversationsForUser: async () => ['convo-other'],
+  });
+  const handler = endPollHandler({ conversationId: 'convo-mine', adapter });
+  const result = await handler.handler({ messageId: 'msg-1', conversationId: 'convo-unscoped' });
+  assert.match(result.content[0]?.text ?? '', /not a participant/);
+  assert.equal(result.isError, true);
+});
+
+test('end_poll threads the message id to the adapter and returns its result', async () => {
+  const captured: Array<{ kind: string; messageId?: unknown }> = [];
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    performAdminAction: async (action) => {
+      captured.push({ kind: action.kind, messageId: action.params?.messageId });
+      return 'Ended poll msg-42; its results are now final.';
+    },
+  });
+  const handler = endPollHandler({ conversationId: `${RUN}-end-poll`, adapter });
+  const result = await handler.handler({ messageId: 'msg-42' });
+  assert.equal(result.isError, false);
+  assert.equal(captured[0]?.kind, 'end_poll');
+  assert.equal(captured[0]?.messageId, 'msg-42', 'the message id must reach the adapter');
+  assert.match(result.content[0]?.text ?? '', /results are now final/);
+});
+
+test('SECURITY: end_poll enforces a per-conversation rate cap (bounds a hijacked admin turn ending every live poll, PR #272)', async () => {
+  const convo = `${RUN}-end-poll-rate-cap`;
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    performAdminAction: async () => 'Ended poll; its results are now final.',
+  });
+  const handler = endPollHandler({ conversationId: convo, userId: POLL_HANDLER_ADMIN, adapter });
+
+  for (let i = 0; i < POLL_END_RATE_LIMIT_PER_HOUR; i++) {
+    const ok = await handler.handler({ messageId: `msg-${i}` });
+    assert.equal(ok.isError, false, `end ${i} within the cap must succeed`);
+  }
+  const overLimit = await handler.handler({ messageId: 'one-too-many' });
+  assert.match(overLimit.content[0]?.text ?? '', /end-poll limit/);
   assert.equal(overLimit.isError, true);
 });
 
