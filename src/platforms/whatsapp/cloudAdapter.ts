@@ -8,7 +8,7 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { getCodeAnswersPolicy, getCommunityGuidelines } from '../../storage/policies.js';
+import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import { isKnownConversation } from '../../storage/repository.js';
 import {
   extractMessages,
@@ -324,10 +324,11 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     // never "drop the user's message."
     try {
       if (await isKnownConversation('whatsapp', from)) return;
+      const welcomeMessage = (await getWelcomeMessage()) ?? WHATSAPP_CLOUD_WELCOME_MESSAGE;
       const guidelines = await getCommunityGuidelines();
       const welcomeText = guidelines
-        ? `${WHATSAPP_CLOUD_WELCOME_MESSAGE}\n\nCommunity guidelines:\n${guidelines}`
-        : WHATSAPP_CLOUD_WELCOME_MESSAGE;
+        ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
+        : welcomeMessage;
       await this.sendText(from, welcomeText);
     } catch (err) {
       logger.warn({ err, from }, 'WhatsApp Cloud: first-contact welcome skipped (non-fatal)');
