@@ -2105,6 +2105,22 @@ export async function listKnowledgeCandidates(
 }
 
 /**
+ * Exact pending-candidate count — a dedicated `COUNT(*)` rather than
+ * `(await listKnowledgeCandidates('pending')).length`, which would silently
+ * understate a backlog past that function's `limit` (default 50) cap, same
+ * reasoning as `countPendingSuggestions`/`countAccessRequests` (issue #133,
+ * #284). Guild-wide by design — `knowledge_candidates` has no
+ * conversation/channel column, matching `list_knowledge_candidates`'s own
+ * unscoped behaviour.
+ */
+export async function countPendingKnowledgeCandidates(): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM knowledge_candidates WHERE status = 'pending'`,
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Accept a pending candidate: writes exactly one `knowledge` entry via the
  * existing `saveKnowledge` (so the #93 near-duplicate nudge and embedding
  * path apply unchanged) and marks the candidate accepted. Optional
