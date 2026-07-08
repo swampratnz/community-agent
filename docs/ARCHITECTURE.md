@@ -117,11 +117,15 @@ memory**:
    access-request count and their own scoped open-report count, plus (issue
    #193) a guild-wide pending-suggestion count, plus (issue #199, off unless
    `KNOWLEDGE_STALE_DAYS` is set) a guild-wide count of knowledge entries
-   neither edited nor retrieved in that many days, all sourced from dedicated
-   `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
-   `countPendingSuggestions`/`countStaleKnowledge`) so a backlog past
-   `list_access_requests`/`list_reports`/`list_suggestions`'s own list
-   `limit` is never understated. The DM sends when *any* of the five signals
+   neither edited nor retrieved in that many days, plus (issue #246) their own
+   scoped count of `knowledge_gaps` (below-floor `knowledge_search` misses, the
+   pull-only complement to `list_knowledge_gaps`) — conversation-scoped like the
+   open-report count because that table has a `conversation_id` — all sourced
+   from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
+   `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`) so a
+   backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
+   `list_knowledge_gaps`'s own list `limit` is never understated. The DM sends
+   when *any* of the six signals
    is non-zero, and sends nothing on a quiet week (all zero, no DM, no
    noise); a persistently untriaged queue re-appears every subsequent weekly
    tick until it's cleared. Super admins are not enrolled; they keep the

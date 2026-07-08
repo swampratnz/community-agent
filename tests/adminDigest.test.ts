@@ -30,6 +30,7 @@ const {
   recordAccessRequest,
   clearAccessRequest,
   countAccessRequests,
+  countKnowledgeGaps,
   countPendingSuggestions,
   countStaleKnowledge,
   createContentReport,
@@ -167,6 +168,27 @@ test('buildAdminDigestMessage: all five signals non-zero -> all five lines prese
   assert.ok(message.includes('🚩'), 'open-report line present');
   assert.ok(message.includes('💡'), 'pending-suggestion line present');
   assert.ok(message.includes('📚'), 'stale-knowledge line present');
+});
+
+test('buildAdminDigestMessage: knowledge-gaps line appears only when count > 0, and all SIX signals zero -> null (issue #246)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0),
+    null,
+    'all six signals zero — including knowledge gaps — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 2);
+  assert.ok(message, 'a non-zero knowledge-gaps count alone still produces a DM');
+  const gapLines = message.split('\n').filter((l) => l.includes('🕳️'));
+  assert.equal(gapLines.length, 1, 'exactly one knowledge-gaps line');
+  assert.match(gapLines[0], /🕳️ 2 unanswered question\(s\).*`list_knowledge_gaps`/);
+  assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
+  assert.ok(!message.includes('📚'), 'no stale-knowledge line when that count is zero');
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0)!.includes('🕳️'),
+    'no knowledge-gaps line when the gap count is zero',
+  );
 });
 
 function fakeAdapter(opts: {
@@ -632,6 +654,84 @@ test(
     );
 
     await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: countKnowledgeGaps is conversation-scoped, a true COUNT(*) (not LIMIT-bounded), and windowed (issue #246)',
+  { skip },
+  async () => {
+    const inScope = `${RUN}-c-gaps-in`;
+    const outOfScope = `${RUN}-c-gaps-out`;
+    const userId = `${RUN}-gaps-user`;
+    const insertGap = (conversationId: string, query: string, ageDays = 0) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, created_at)
+         VALUES ('discord', $1, $2, $3, now() - ($4 || ' days')::interval)`,
+        [conversationId, userId, query, String(ageDays)],
+      );
+    // 12 recent in-scope (more than any list_knowledge_gaps limit), 3 recent
+    // out-of-scope, and 1 in-scope but older than the 7-day window.
+    for (let i = 0; i < 12; i++) await insertGap(inScope, `in-scope gap ${i}`);
+    for (let i = 0; i < 3; i++) await insertGap(outOfScope, `out-of-scope gap ${i}`);
+    await insertGap(inScope, 'stale in-scope gap', 30);
+
+    assert.equal(
+      await countKnowledgeGaps([inScope], 7),
+      12,
+      'SECURITY: a true COUNT(*) of the 12 recent in-scope rows — excludes the 3 out-of-scope rows and the 30-day-old one, and is not a LIMIT-bounded length',
+    );
+    assert.equal(
+      await countKnowledgeGaps([inScope, outOfScope], 7),
+      15,
+      'counting across both scopes returns the full 15 recent rows (the count is not capped)',
+    );
+    assert.equal(await countKnowledgeGaps([], 7), 0, 'an empty scope counts nothing');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
+  },
+);
+
+test(
+  'SECURITY: the digest knowledge-gaps line carries only the count — never a gap query_text or user id (issue #246)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-gaps-admin`;
+    const conversationId = `${RUN}-c-run-gaps`;
+    const gapUserId = `${RUN}-run-gaps-asker`;
+    const secretQuery = 'a very identifiable unanswered question that must never leak';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await pool.query(
+      `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text)
+       VALUES ('discord', $1, $2, $3)`,
+      [conversationId, gapUserId, secretQuery],
+    );
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the in-scope knowledge gap triggers a digest');
+    assert.match(
+      sent[0].text,
+      /🕳️ \d+ unanswered question\(s\).*`list_knowledge_gaps`/,
+      'the knowledge-gaps line is present',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretQuery),
+      'SECURITY: the raw query_text must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(gapUserId),
+      'SECURITY: the asker user id must never appear in the digest DM',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);

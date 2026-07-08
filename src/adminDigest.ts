@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import {
   countAccessRequests,
+  countKnowledgeGaps,
   countOpenReports,
   countPendingSuggestions,
   countStaleKnowledge,
@@ -43,13 +44,15 @@ export function buildAdminDigestMessage(
   pendingSuggestions: number,
   staleKnowledgeCount: number,
   knowledgeStaleDays: number,
+  knowledgeGapsCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
     pendingAccessRequests === 0 &&
     openReports === 0 &&
     pendingSuggestions === 0 &&
-    staleKnowledgeCount === 0
+    staleKnowledgeCount === 0 &&
+    knowledgeGapsCount === 0
   )
     return null;
 
@@ -77,6 +80,13 @@ export function buildAdminDigestMessage(
     sections.push(
       `📚 ${staleKnowledgeCount} knowledge entr${staleKnowledgeCount === 1 ? 'y' : 'ies'} untouched for ` +
         `${knowledgeStaleDays}d+ — run \`list_knowledge\` to review.`,
+    );
+  }
+  if (knowledgeGapsCount > 0) {
+    // Bare integer only — no query_text / user_id ever reaches the DM (#246).
+    sections.push(
+      `🕳️ ${knowledgeGapsCount} unanswered question(s) in your conversations this week hit no ` +
+        'knowledge — run `list_knowledge_gaps` to see what to document.',
     );
   }
   return sections.join('\n');
@@ -138,14 +148,23 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         (i) => i.userId,
       );
       const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
-      const [clusters, pendingAccessRequests, openReports, pendingSuggestions, staleKnowledgeCount] =
-        await Promise.all([
-          recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
-          countAccessRequests(),
-          countOpenReports(scope, viewerIds),
-          countPendingSuggestions(),
-          knowledgeStaleDays > 0 ? countStaleKnowledge(knowledgeStaleDays) : Promise.resolve(0),
-        ]);
+      const [
+        clusters,
+        pendingAccessRequests,
+        openReports,
+        pendingSuggestions,
+        staleKnowledgeCount,
+        knowledgeGapsCount,
+      ] = await Promise.all([
+        recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
+        countAccessRequests(),
+        countOpenReports(scope, viewerIds),
+        countPendingSuggestions(),
+        knowledgeStaleDays > 0 ? countStaleKnowledge(knowledgeStaleDays) : Promise.resolve(0),
+        // Conversation-scoped like openReports (knowledge_gaps has a
+        // conversation_id), over the same freshness window (#246).
+        countKnowledgeGaps(scope, FRESHNESS_DAYS),
+      ]);
       const message = buildAdminDigestMessage(
         clusters,
         pendingAccessRequests,
@@ -153,6 +172,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         pendingSuggestions,
         staleKnowledgeCount,
         knowledgeStaleDays,
+        knowledgeGapsCount,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 
