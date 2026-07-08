@@ -1030,6 +1030,82 @@ test(
   },
 );
 
+// moderate: the reachability gate here has no canPostTo fallback (unlike
+// announce/create_poll/create_thread below) — #270 deliberately left it on
+// the strict isKnownConversation-only check.
+function moderateAdapter(opts: {
+  capabilities?: string[];
+  conversationsForUser?: PlatformAdapter['conversationsForUser'];
+  performAdminAction?: PlatformAdapter['performAdminAction'];
+}): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => {},
+    sendDirectMessage: async () => {},
+    conversationsForUser: opts.conversationsForUser ?? (async () => []),
+    adminCapabilities: new Set(opts.capabilities ?? ['warn_user']),
+    performAdminAction: opts.performAdminAction ?? (async () => 'warned'),
+  };
+}
+
+function moderateHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            action: 'timeout_user' | 'kick_user' | 'delete_message' | 'warn_user';
+            targetUserId: string;
+            reason: string;
+            durationMinutes?: number;
+            messageId?: string;
+            conversationId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['moderate'];
+}
+
+test(
+  "SECURITY: moderate refuses a conversation the bot has never seen, even when the caller's own scope " +
+    'claims it (issue #274)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-moderate-unknown`;
+    const adapter = moderateAdapter({ conversationsForUser: async () => [targetConvo] });
+    const handler = moderateHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({
+      action: 'warn_user',
+      targetUserId: 'target-1',
+      reason: 'test',
+      conversationId: targetConvo,
+    });
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
+    assert.equal(result.isError, true);
+  },
+);
+
 // announce (issue #270's canPostTo fallback applies here too, alongside
 // create_poll/create_thread below): a cross-platform outward-posting tool,
 // unlike the Discord-only create_poll/create_thread. This adapter stub lets
@@ -1134,7 +1210,7 @@ test(
     const adapter = announceAdapter({ conversationsForUser: async () => [targetConvo] });
     const handler = announceHandler({ conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );
@@ -1168,8 +1244,41 @@ test(
     });
     const handler = announceHandler({ conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'SECURITY: the reachability refusal text is byte-identical for a genuinely-nonexistent target and a ' +
+    "real-but-out-of-scope one (a different guild's channel) — the wording change must not introduce a " +
+    'new distinguishing detail an attacker could use to enumerate targets (issue #274)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-announce-oracle-check`;
+    const nonexistent = announceAdapter({ conversationsForUser: async () => [targetConvo] });
+    const realButOutOfScope = announceAdapter({
+      conversationsForUser: async () => [targetConvo],
+      canPostTo: async () => false,
+    });
+    const nonexistentResult = await announceHandler({
+      conversationId: 'convo-mine',
+      adapter: nonexistent,
+    }).handler({
+      message: 'Meetup tonight!',
+      conversationId: targetConvo,
+    });
+    const outOfScopeResult = await announceHandler({
+      conversationId: 'convo-mine',
+      adapter: realButOutOfScope,
+    }).handler({ message: 'Meetup tonight!', conversationId: targetConvo });
+    assert.equal(nonexistentResult.isError, true);
+    assert.equal(outOfScopeResult.isError, true);
+    assert.equal(
+      nonexistentResult.content[0]?.text,
+      outOfScopeResult.content[0]?.text,
+      'refusal copy must not vary by the underlying reason a target is unreachable',
+    );
   },
 );
 
@@ -1185,7 +1294,7 @@ test(
     });
     const handler = announceHandler({ platform: 'whatsapp', conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );
@@ -1416,7 +1525,7 @@ test(
       options: ['Tue', 'Thu'],
       conversationId: targetConvo,
     });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );
@@ -1458,7 +1567,7 @@ test(
       options: ['Tue', 'Thu'],
       conversationId: targetConvo,
     });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );
@@ -5337,7 +5446,7 @@ test(
     const adapter = threadAdapter({ conversationsForUser: async () => [targetChannel] });
     const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );
@@ -5374,7 +5483,7 @@ test(
     });
     const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );
@@ -5455,7 +5564,7 @@ test(
     const adapter = threadAdapter({ conversationsForUser: async () => [targetThread] });
     const handler = threadToolHandler('archive_thread', { conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ threadId: targetThread });
-    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
   },
 );

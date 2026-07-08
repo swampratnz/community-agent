@@ -93,6 +93,23 @@ function text(t: string, isError = false) {
 }
 
 /**
+ * Refusal copy for the `isKnownConversation` reachability gate (moderate,
+ * announce, create_poll, create_thread, archive_thread). Deliberately no more
+ * specific than "unreachable" about *why* — it must read identically for a
+ * nonexistent target and a real-but-out-of-scope one, so the wording can't
+ * become an enumeration oracle (issue #274). Framed as an intentional
+ * boundary rather than a bug/config gap: issue #268 showed the old
+ * "is unknown" wording led an admin to believe this was a backend defect.
+ */
+function unreachableConversationRefusal(target: string): string {
+  return (
+    `Refusing: I don't act on conversation "${target}" — I only act on ones I've verified ` +
+    `(seen activity in, or, on Discord, confirmed I can reach). This is a deliberate safety ` +
+    `boundary, not a bug or a missing config; it's not something a retry fixes.`
+  );
+}
+
+/**
  * Recalled chat content is untrusted. Strip angle brackets and newlines so it
  * can't fake tags or a fresh instruction line (the same quarantine-escape
  * class fixed in buildSystemPrompt/renderMemoryContext, issue #227 review),
@@ -1481,7 +1498,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         targetConversation !== caller.conversationId &&
         !(await isKnownConversation(caller.platform, targetConversation))
       ) {
-        return text(`Refusing: conversation "${targetConversation}" is unknown.`, true);
+        return text(unreachableConversationRefusal(targetConversation), true);
       }
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
@@ -1584,7 +1601,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       const { success, result } = await audited({
         actionKind: 'announce',
@@ -1641,7 +1658,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       if (!reservePollSlot(target, POLL_RATE_LIMIT_PER_HOUR)) {
         return text(
@@ -1702,7 +1719,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       // Defensive guard (adversarial review, issue #229): thread messages are
       // moderation-scanned under their PARENT channel's allowlist membership
@@ -1770,7 +1787,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         args.threadId !== caller.conversationId &&
         !(await isKnownConversation(caller.platform, args.threadId))
       ) {
-        return text(`Refusing: conversation "${args.threadId}" is unknown.`, true);
+        return text(unreachableConversationRefusal(args.threadId), true);
       }
       const params = { reason: args.reason };
       const run = async () => {
