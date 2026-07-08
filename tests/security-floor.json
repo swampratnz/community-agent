@@ -27,6 +27,7 @@
   "personas.test.ts": 1,
   "rbac.test.ts": 32,
   "redeploy.test.ts": 2,
+  "repeatQuestionShortcutRouter.test.ts": 2,
   "repository.test.ts": 36,
   "router.test.ts": 1,
   "secrets.test.ts": 2,

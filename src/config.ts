@@ -370,6 +370,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Skip the agent turn entirely when the SAME caller (platform + conversation
+  // + user) sends the exact same whitespace-normalized text twice within a
+  // short window (double-tap/impatient-resend/client retry) — replies with
+  // the cached answer from the first turn instead of spawning a second
+  // query() turn. Off by default; see src/router.ts (issue #259).
+  REPEAT_QUESTION_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -588,6 +597,7 @@ export const config = {
     knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
+    repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {

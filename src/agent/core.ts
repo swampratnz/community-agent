@@ -28,6 +28,15 @@ export interface AgentReply {
   text: string;
   costUsd?: number;
   sessionId?: string;
+  /**
+   * Whether this reply is a genuine answer (`TurnOutcome.ok`), as opposed to
+   * a fallback/error string (internal error, upstream usage-limit, max-turns,
+   * ...). Optional so existing test doubles that construct an `AgentReply`
+   * literal without it keep compiling; a caller that cares (e.g. the
+   * repeat-question shortcut, issue #259) must check `=== true`, never treat
+   * a missing value as truthy.
+   */
+  ok?: boolean;
 }
 
 /**
@@ -155,6 +164,7 @@ export async function runAgentTurn(
     text: outcome.text,
     costUsd: outcome.costUsd,
     sessionId: outcome.sessionId,
+    ok: outcome.ok,
   };
 }
 
