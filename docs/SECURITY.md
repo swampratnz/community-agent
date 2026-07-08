@@ -543,16 +543,24 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     creates/assigns the one configured muted role and the one alerts channel,
     but a compromised bot token with these permissions can do more than one
     without them; grant them deliberately.
-  - **Enforcement narrows two former gaps, but stays best-effort, not
+  - **Enforcement narrows three former gaps, but stays best-effort, not
     airtight**: a new text/forum channel or category now gets the
     deny-SendMessages overwrite the moment it's created (a `ChannelCreate`
-    listener), and a member who leaves and rejoins while still at/above the
+    listener), a member who leaves and rejoins while still at/above the
     strike limit is automatically re-muted (with an admin alert) before any
-    welcome-message logic runs — both closing bypasses this document used to
-    call out by name (pinned by `SECURITY:` tests). What's still best-effort:
-    a permission-overwrite call that fails (e.g. a transient Discord API
-    error) is logged, not retried until the next mute; treat the muted role as
-    a strong deterrent, not a hard containment boundary.
+    welcome-message logic runs, and a permission-overwrite call that fails
+    (e.g. a transient Discord API error) is now retried up to 3 attempts
+    total with a short fixed delay before being given up on — all three
+    closing bypasses/gaps this document used to call out by name (pinned by
+    `SECURITY:` tests). If a channel still exhausts every retry, super admins
+    get a single debounced DM (15-minute window, mirroring the daily-budget
+    check-failure alert) naming the affected channel(s), so the residual
+    window is visible rather than silent-logged-only; a scan/handling with no
+    failures sends nothing. This is no longer silent, but it's still not a
+    hard guarantee: retries are bounded, not indefinite, so a sustained
+    Discord API outage can still leave a channel unprotected until the next
+    mute or restart re-scans it — treat the muted role as a strong deterrent,
+    not a hard containment boundary.
   - **Stage 2 (LLM abuse) is opt-in** (`MODERATION_LLM_ABUSE_ENABLED`, off):
     only wordlist-clean messages escalate, one Claude call each on the shared
     Max pool — deliberately gated so it can't silently run up cost/scan volume.

@@ -31,7 +31,7 @@ import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import { atLeast } from '../../auth/rbac.js';
-import { resolveRole } from '../../auth/roles.js';
+import { resolveRole, superAdminIds } from '../../auth/roles.js';
 import {
   countActiveWarnings,
   deleteInteractionByMessageId,
@@ -39,6 +39,7 @@ import {
   updateInteractionByMessageId,
   upsertRosterMember,
 } from '../../storage/repository.js';
+import { shouldNotifyMutedRoleOverwriteFailed } from '../../mutedRoleAlertNotice.js';
 import { chunkText } from '../textChunk.js';
 import {
   paramString,
@@ -51,6 +52,16 @@ import {
 
 const MAX_DISCORD_LEN = 2000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
+// Bounded retry for a transient permission-overwrite failure (issue #276):
+// initial attempt + 2 retries, short fixed delay — enough to ride out a
+// blip without meaningfully slowing a mute/channel-create handler. Small
+// hardcoded constants, not operator-tunable, matching this repo's existing
+// convention for this class of constant (e.g. THREAD_CREATE_RATE_LIMIT_PER_HOUR).
+const MUTED_ROLE_OVERWRITE_MAX_ATTEMPTS = 3;
+const MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS = 500;
+// 15 minutes — mirrors #203's BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS shape; a
+// permission-overwrite failure is a systemic condition, not a per-channel one.
+const MUTED_ROLE_ALERT_WINDOW_MS = 900_000;
 
 export const WELCOME_MESSAGE =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
@@ -83,8 +94,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   // alerts channel are created on demand (needs Manage Roles / Manage Channels).
   private mutedRoleId: string | null = null;
   private adminChannelId: string | null = null;
+  // Process-wide debounce latch for the muted-role overwrite retry-exhaustion
+  // alert (issue #276) — a systemic condition, not a per-channel one, so a
+  // burst of failing channels/scans collapses into a single DM.
+  private mutedRoleAlertNotifiedAt: number | undefined;
 
-  constructor() {
+  constructor(private readonly mutedRoleOverwriteRetryDelayMs = MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS) {
     this.moderator = createModerator(this);
     this.client = new Client({
       intents: [
@@ -852,10 +867,13 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     this.mutedRoleId = role.id;
 
     const channels = await guild.channels.fetch();
+    const failed: { id: string; name: string }[] = [];
     for (const channel of channels.values()) {
       if (!channel || !this.isMutableOverwriteChannel(channel)) continue;
-      await this.applyMutedRoleOverwrite(channel, role);
+      if (!(await this.applyMutedRoleOverwrite(channel, role)))
+        failed.push({ id: channel.id, name: channel.name });
     }
+    if (failed.length > 0) await this.alertMutedRoleOverwriteFailures(failed);
     return role;
   }
 
@@ -875,7 +893,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     if (!this.isMutableOverwriteChannel(channel)) return;
     const role = this.findMutedRole(channel.guild);
     if (!role) return;
-    await this.applyMutedRoleOverwrite(channel, role);
+    if (!(await this.applyMutedRoleOverwrite(channel, role))) {
+      await this.alertMutedRoleOverwriteFailures([{ id: channel.id, name: channel.name }]);
+    }
   }
 
   /**
@@ -894,10 +914,13 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       if (!role) return;
       this.mutedRoleId = role.id;
       const channels = await guild.channels.fetch();
+      const failed: { id: string; name: string }[] = [];
       for (const channel of channels.values()) {
         if (!channel || !this.isMutableOverwriteChannel(channel)) continue;
-        await this.applyMutedRoleOverwrite(channel, role);
+        if (!(await this.applyMutedRoleOverwrite(channel, role)))
+          failed.push({ id: channel.id, name: channel.name });
       }
+      if (failed.length > 0) await this.alertMutedRoleOverwriteFailures(failed);
     } catch (err) {
       logger.warn({ err }, 'Muted-role startup reconcile failed');
     }
@@ -921,21 +944,71 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     );
   }
 
+  /**
+   * Applies the deny-post overwrite, retrying a failure up to
+   * `MUTED_ROLE_OVERWRITE_MAX_ATTEMPTS` times total (a transient Discord API
+   * error self-heals within a second or two) before giving up on this
+   * channel. Returns whether the overwrite ultimately landed — the caller
+   * aggregates any `false` results into a single debounced alert rather than
+   * this method silently bare-logging one, which is the residual gap issue
+   * #276 closes (see SECURITY.md §6).
+   */
   private async applyMutedRoleOverwrite(
     channel:
       TextChannel | NewsChannel | ForumChannel | CategoryChannel | VoiceChannel | StageChannel | MediaChannel,
     role: Role,
-  ): Promise<void> {
-    try {
-      await channel.permissionOverwrites.edit(role, {
-        SendMessages: false,
-        SendMessagesInThreads: false,
-        CreatePublicThreads: false,
-        CreatePrivateThreads: false,
-        AddReactions: false,
-      });
-    } catch (err) {
-      logger.warn({ err, channelId: channel.id }, 'Failed to apply muted-role overwrite');
+  ): Promise<boolean> {
+    for (let attempt = 1; attempt <= MUTED_ROLE_OVERWRITE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await channel.permissionOverwrites.edit(role, {
+          SendMessages: false,
+          SendMessagesInThreads: false,
+          CreatePublicThreads: false,
+          CreatePrivateThreads: false,
+          AddReactions: false,
+        });
+        return true;
+      } catch (err) {
+        if (attempt === MUTED_ROLE_OVERWRITE_MAX_ATTEMPTS) {
+          logger.warn({ err, channelId: channel.id }, 'Failed to apply muted-role overwrite after retries');
+          return false;
+        }
+        logger.warn({ err, channelId: channel.id, attempt }, 'Muted-role overwrite attempt failed, retrying');
+        await new Promise((resolve) => setTimeout(resolve, this.mutedRoleOverwriteRetryDelayMs));
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Debounced super-admin DM when one or more channels exhaust their retries
+   * during a mute-overwrite scan (`ensureMutedRole`/`reconcileMutedRole`) or a
+   * single `onChannelCreate` handling — mirrors router.ts's
+   * `alertSuperAdminsBudgetCheckFailed` shape (issue #203) for the same
+   * "systemic background-op failure, debounced, not per-occurrence" posture.
+   * A quiet scan (no failures) never calls this, so success sends nothing.
+   * Payload is channel id/name only (server metadata, not message content or
+   * a member identifier).
+   */
+  private async alertMutedRoleOverwriteFailures(failed: { id: string; name: string }[]): Promise<void> {
+    if (
+      !shouldNotifyMutedRoleOverwriteFailed(
+        this.mutedRoleAlertNotifiedAt,
+        Date.now(),
+        MUTED_ROLE_ALERT_WINDOW_MS,
+      )
+    ) {
+      return;
+    }
+    this.mutedRoleAlertNotifiedAt = Date.now();
+    const list = failed.map((c) => `#${c.name} (${c.id})`).join(', ');
+    const message =
+      `⚠️ Muted-role overwrite failed after retries for ${failed.length} channel(s): ${list}. ` +
+      'A muted member may be able to post there until the next mute or restart re-scans it. Check logs / Discord API health.';
+    for (const id of superAdminIds('discord')) {
+      await this.sendDirectMessage(id, message).catch((err) =>
+        logger.warn({ err, id }, 'Muted-role overwrite failure alert DM failed'),
+      );
     }
   }
 

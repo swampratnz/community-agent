@@ -12,7 +12,7 @@
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,
   "createThreadModerationGuard.test.ts": 2,
-  "discordAdapter.test.ts": 23,
+  "discordAdapter.test.ts": 25,
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
   "grokImage.test.ts": 2,
@@ -36,9 +36,9 @@
   "securityGateCanary.test.ts": 1,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 4,
-  "tools.test.ts": 87,
+  "tools.test.ts": 89,
   "whatsappAmbientArchiving.test.ts": 3,
-  "whatsappCloudAdapter.test.ts": 6,
+  "whatsappCloudAdapter.test.ts": 7,
   "whatsappCloudWire.test.ts": 5,
   "whatsappWire.test.ts": 1
 }
