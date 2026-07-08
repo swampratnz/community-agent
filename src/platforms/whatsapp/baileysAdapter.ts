@@ -1,6 +1,7 @@
 import { Boom } from '@hapi/boom';
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   proto,
   useMultiFileAuthState,
@@ -19,7 +20,10 @@ import {
   getInteractionAuthorByMessageId,
   updateInteractionByMessageId,
 } from '../../storage/repository.js';
+import { isSuperAdmin } from '../../auth/roles.js';
+import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
 import {
+  extractAudio,
   extractText,
   isLidJid,
   isPhoneUserId,
@@ -209,7 +213,11 @@ export class BaileysAdapter implements PlatformAdapter {
     // dropped by the `!text` check further down.
     if (await this.handleProtocolMessage(msg, remoteJid, isGroup)) return;
 
-    const { text: rawText, contextInfo } = extractText(msg);
+    const { text: rawText, contextInfo: textContextInfo } = extractText(msg);
+    const { audio, contextInfo: audioContextInfo } = extractAudio(msg);
+    // A voice note carries its OWN contextInfo (not the extendedText one), so
+    // reply-to-bot detection keeps working when the message is audio.
+    const contextInfo = textContextInfo ?? audioContextInfo;
 
     // In groups, only respond if the bot is mentioned OR the message quotes
     // (replies to) one of the bot's messages. mentionedJid entries may be
@@ -228,13 +236,23 @@ export class BaileysAdapter implements PlatformAdapter {
       if (id) text = text.split(`@${id}`).join(' ');
     }
     text = text.replace(/\s+/g, ' ').trim();
-    if (!text) return;
 
     // Identity must be a real phone number for tier resolution to work. A
     // LID sender without a resolvable number gets a `lid:`-prefixed id: it
     // can never match a member/admin grant AND can never be mis-routed as a
     // phone JID by warn/kick (see performAdminAction's isPhoneUserId guard).
     const senderId = this.resolveSenderId(msg, isGroup, remoteJid);
+
+    // Voice notes (super-admin only, issue: WA voice): a message with no text
+    // but a voice note is transcribed locally and the transcript becomes the
+    // message text — the rest of the pipeline (RBAC, tools, CONFIRM) is
+    // untouched. The super-admin + feature-flag gate lives inside
+    // maybeTranscribeVoiceNote and runs BEFORE any media download, so a
+    // non-super-admin voice note is dropped exactly like an unhandled type.
+    if (!text && audio) {
+      text = await this.maybeTranscribeVoiceNote(msg, audio, senderId);
+    }
+    if (!text) return;
 
     const normalised: IncomingMessage = {
       platform: 'whatsapp',
@@ -250,6 +268,66 @@ export class BaileysAdapter implements PlatformAdapter {
     };
 
     await this.handler(normalised);
+  }
+
+  /**
+   * Transcribe a super admin's WhatsApp voice note to text, or return '' to
+   * drop it. This is the SINGLE gate for the voice feature:
+   *   1. WHATSAPP_VOICE_ENABLED must be on (off by default);
+   *   2. the sender must be a configured super admin — `isSuperAdmin` is a pure
+   *      env check (SUPER_ADMIN_WHATSAPP_NUMBERS), never the DB — enforced
+   *      BEFORE any media is downloaded, so a non-super-admin's audio is never
+   *      fetched or transcribed;
+   *   3. notes longer than WHATSAPP_VOICE_MAX_SECONDS are ignored WITHOUT
+   *      downloading, bounding per-note transcription cost.
+   * Any download/decode/model failure is logged and swallowed (returns '') so a
+   * bad note is dropped rather than crashing the loop or leaking internals. The
+   * transcript is returned verbatim; every downstream gate still applies — a
+   * mis-heard destructive command cannot fire without the (spoken or typed)
+   * CONFIRM the tool layer already demands.
+   */
+  private async maybeTranscribeVoiceNote(
+    msg: WAMessage,
+    audio: proto.Message.IAudioMessage,
+    senderId: string,
+  ): Promise<string> {
+    if (!config.whatsapp.voice.enabled) return '';
+    if (!isSuperAdmin('whatsapp', senderId)) return '';
+    const seconds = Number(audio.seconds ?? 0);
+    if (seconds > config.whatsapp.voice.maxSeconds) {
+      logger.info(
+        { seconds, cap: config.whatsapp.voice.maxSeconds },
+        'Voice note over the length cap — ignored without downloading',
+      );
+      return '';
+    }
+    try {
+      return await this.transcribeAudioMessage(msg, seconds);
+    } catch (err) {
+      logger.warn({ err }, 'Voice-note transcription failed — dropping the note');
+      return '';
+    }
+  }
+
+  /**
+   * Download the voice note's bytes from WhatsApp and transcribe them locally.
+   * Split out from the gate above as the single seam that touches the network
+   * and the Whisper model — overridden in tests so the gate logic can be
+   * exercised without a real media fetch or model download. Never called for a
+   * non-super-admin, a disabled feature, or an over-length note (the gate
+   * returns first).
+   */
+  private async transcribeAudioMessage(msg: WAMessage, seconds: number): Promise<string> {
+    if (!this.sock) return '';
+    const buffer = await downloadMediaMessage(
+      msg,
+      'buffer',
+      {},
+      { logger, reuploadRequest: this.sock.updateMediaMessage },
+    );
+    const transcript = await transcribeVoiceNote(buffer);
+    logger.info({ chars: transcript.length, seconds }, 'Transcribed super-admin voice note');
+    return transcript;
   }
 
   /** True for a group JID that's opted into ambient archiving (`WHATSAPP_ARCHIVE_GROUP_JIDS`, issue #103). */
