@@ -3081,6 +3081,26 @@ export async function countOpenReports(
 }
 
 /**
+ * Count knowledge-search gaps (#208) recorded in the given conversations within
+ * the last `days`, for the weekly admin digest (#246). **Conversation-scoped**
+ * — unlike the guild-wide stale/access/suggestion counts — because
+ * `knowledge_gaps` has a `conversation_id`, so an admin never sees gap volume
+ * from a conversation they don't participate in (mirrors `countOpenReports`'s
+ * scoping). A true `COUNT(*)`, never `.length` of a `LIMIT`-bounded list, so a
+ * backlog larger than `list_knowledge_gaps`' own limit is not understated.
+ */
+export async function countKnowledgeGaps(conversationIds: readonly string[], days: number): Promise<number> {
+  if (conversationIds.length === 0) return 0;
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM knowledge_gaps
+      WHERE conversation_id = ANY($1)
+        AND created_at >= now() - ($2 || ' days')::interval`,
+    [[...conversationIds], String(days)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Flip a report's status (resolve/dismiss) — non-destructive, no CONFIRM
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
  * to `conversationIds` so an admin can only resolve reports from
