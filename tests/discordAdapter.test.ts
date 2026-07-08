@@ -51,20 +51,75 @@ function fakeGuildRef(opts: { id: string; mutedRole?: { id: string; name: string
   };
 }
 
-/** A minimal NonThreadGuildBasedChannel stand-in for onChannelCreate. */
-function fakeChannel(opts: { id: string; type: ChannelType; guild: ReturnType<typeof fakeGuildRef> }) {
+/**
+ * A minimal NonThreadGuildBasedChannel stand-in for onChannelCreate /
+ * ensureMutedRole. `editImpl`, if given, runs (and may throw) on every
+ * `permissionOverwrites.edit` call, after it's recorded in `overwriteCalls`
+ * — lets tests simulate a transient failure that self-heals on retry
+ * (issue #276) while still counting every attempt.
+ */
+function fakeChannel(opts: {
+  id: string;
+  type: ChannelType;
+  guild: ReturnType<typeof fakeGuildRef>;
+  name?: string;
+  editImpl?: () => Promise<void>;
+}) {
   const overwriteCalls: Array<{ role: unknown; payload: Record<string, unknown> }> = [];
   const channel = {
     id: opts.id,
     type: opts.type,
+    name: opts.name ?? opts.id,
     guild: opts.guild,
     permissionOverwrites: {
       edit: async (role: unknown, payload: Record<string, unknown>) => {
         overwriteCalls.push({ role, payload });
+        if (opts.editImpl) await opts.editImpl();
       },
     },
   };
   return { channel, overwriteCalls };
+}
+
+/** Throws a fake transient Discord API error on the first `n` calls, then succeeds. */
+function failNTimesThenSucceed(n: number): () => Promise<void> {
+  let calls = 0;
+  return async () => {
+    calls += 1;
+    if (calls <= n) throw new Error('transient Discord API error');
+  };
+}
+
+/**
+ * Stubs client.guilds.fetch for muteUser's ensureMutedRole scan (issue #276):
+ * an existing muted role plus a caller-supplied channel list, so tests can
+ * control which channels' permissionOverwrites.edit fail/succeed across a
+ * full scan (as opposed to stubMuteGuild's single fixed mod-alerts channel).
+ */
+function stubMuteGuildWithChannels(
+  adapter: Adapter,
+  channels: Array<ReturnType<typeof fakeChannel>['channel']>,
+) {
+  const mutedRole = { id: 'role-muted', name: config.moderation.mutedRoleName };
+  const fakeGuild = {
+    id: config.discord.guildId,
+    roles: {
+      cache: {
+        get: (id: string) => (id === mutedRole.id ? mutedRole : undefined),
+        find: (pred: (r: typeof mutedRole) => boolean) => [mutedRole].find(pred),
+      },
+    },
+    channels: {
+      fetch: async () => ({ values: () => channels[Symbol.iterator]() }),
+    },
+    members: {
+      fetch: async () => ({ roles: { add: async () => {} } }),
+    },
+  };
+  const client = (
+    adapter as unknown as { client: { guilds: { fetch: (id: string) => Promise<typeof fakeGuild> } } }
+  ).client;
+  client.guilds.fetch = async () => fakeGuild;
 }
 
 /** A minimal GuildMember stand-in for onGuildMemberAdd. */
@@ -760,6 +815,153 @@ test('onChannelCreate: does nothing when moderation is disabled', async () => {
   }
 });
 
+// --- applyMutedRoleOverwrite: bounded retry + debounced alert on retry exhaustion (issue #276) ------
+
+test('onChannelCreate: a transient overwrite failure is retried and succeeds — no alert sent', async () => {
+  const adapter = new DiscordAdapter(0); // no retry delay — this test asserts on retry behaviour, not timing
+  const wasSupers = config.rbac.superAdminDiscordIds;
+  config.rbac.superAdminDiscordIds = ['admin-1'];
+  try {
+    const guild = fakeGuildRef({
+      id: config.discord.guildId,
+      mutedRole: { id: 'role-muted', name: config.moderation.mutedRoleName },
+    });
+    const { channel, overwriteCalls } = fakeChannel({
+      id: 'chan-new',
+      type: ChannelType.GuildText,
+      guild,
+      editImpl: failNTimesThenSucceed(1),
+    });
+    const sent = stubClient(adapter);
+    await fireChannelCreate(adapter, channel);
+    assert.equal(overwriteCalls.length, 2, 'first attempt fails, second (retry) succeeds');
+    assert.equal(sent.length, 0, 'a self-healing retry must never alert');
+  } finally {
+    config.rbac.superAdminDiscordIds = wasSupers;
+  }
+});
+
+test('muteUser -> ensureMutedRole: 3 channels that exhaust all retries produce exactly one summary DM per super admin', async () => {
+  const adapter = new DiscordAdapter(0);
+  const wasSupers = config.rbac.superAdminDiscordIds;
+  config.rbac.superAdminDiscordIds = ['admin-1', 'admin-2'];
+  try {
+    const guild = fakeGuildRef({ id: config.discord.guildId });
+    const channels = [
+      fakeChannel({
+        id: 'chan-a',
+        type: ChannelType.GuildText,
+        guild,
+        name: 'general',
+        editImpl: failNTimesThenSucceed(99),
+      }),
+      fakeChannel({
+        id: 'chan-b',
+        type: ChannelType.GuildText,
+        guild,
+        name: 'random',
+        editImpl: failNTimesThenSucceed(99),
+      }),
+      fakeChannel({
+        id: 'chan-c',
+        type: ChannelType.GuildText,
+        guild,
+        name: 'events',
+        editImpl: failNTimesThenSucceed(99),
+      }),
+    ];
+    stubMuteGuildWithChannels(
+      adapter,
+      channels.map((c) => c.channel),
+    );
+    const sent = stubClient(adapter);
+    await adapter.muteUser('user-1');
+
+    for (const { overwriteCalls } of channels) {
+      assert.equal(overwriteCalls.length, 3, 'each failing channel gets the initial attempt plus 2 retries');
+    }
+    assert.equal(sent.length, 2, 'exactly one DM per configured super admin, not one per failed channel');
+    for (const content of sent) {
+      assert.match(content, /chan-a|general/);
+      assert.match(content, /chan-b|random/);
+      assert.match(content, /chan-c|events/);
+    }
+  } finally {
+    config.rbac.superAdminDiscordIds = wasSupers;
+  }
+});
+
+test('muteUser -> ensureMutedRole: a scan with zero failures sends no alert', async () => {
+  const adapter = new DiscordAdapter(0);
+  const wasSupers = config.rbac.superAdminDiscordIds;
+  config.rbac.superAdminDiscordIds = ['admin-1'];
+  try {
+    const guild = fakeGuildRef({ id: config.discord.guildId });
+    const channels = [
+      fakeChannel({ id: 'chan-a', type: ChannelType.GuildText, guild }),
+      fakeChannel({ id: 'chan-b', type: ChannelType.GuildText, guild }),
+    ];
+    stubMuteGuildWithChannels(
+      adapter,
+      channels.map((c) => c.channel),
+    );
+    const sent = stubClient(adapter);
+    await adapter.muteUser('user-1');
+    assert.equal(sent.length, 0, 'an all-success scan must never alert');
+  } finally {
+    config.rbac.superAdminDiscordIds = wasSupers;
+  }
+});
+
+test('SECURITY: a self-healing blip (fails once, succeeds on retry) during a scan never triggers the muted-role alert', async () => {
+  const adapter = new DiscordAdapter(0);
+  const wasSupers = config.rbac.superAdminDiscordIds;
+  config.rbac.superAdminDiscordIds = ['admin-1'];
+  try {
+    const guild = fakeGuildRef({ id: config.discord.guildId });
+    const channels = [
+      fakeChannel({ id: 'chan-a', type: ChannelType.GuildText, guild, editImpl: failNTimesThenSucceed(1) }),
+      fakeChannel({ id: 'chan-b', type: ChannelType.GuildText, guild }),
+    ];
+    stubMuteGuildWithChannels(
+      adapter,
+      channels.map((c) => c.channel),
+    );
+    const sent = stubClient(adapter);
+    await adapter.muteUser('user-1');
+    assert.equal(
+      sent.length,
+      0,
+      'a blip that self-heals within the retry budget must produce zero alert DMs',
+    );
+  } finally {
+    config.rbac.superAdminDiscordIds = wasSupers;
+  }
+});
+
+test('SECURITY: two consecutive failing scans within the debounce window collapse into a single muted-role alert DM', async () => {
+  const adapter = new DiscordAdapter(0);
+  const wasSupers = config.rbac.superAdminDiscordIds;
+  config.rbac.superAdminDiscordIds = ['admin-1'];
+  try {
+    const guild = fakeGuildRef({ id: config.discord.guildId });
+    const alwaysFails = failNTimesThenSucceed(Number.MAX_SAFE_INTEGER);
+    const channels = [
+      fakeChannel({ id: 'chan-a', type: ChannelType.GuildText, guild, editImpl: alwaysFails }),
+    ];
+    stubMuteGuildWithChannels(
+      adapter,
+      channels.map((c) => c.channel),
+    );
+    const sent = stubClient(adapter);
+    await adapter.muteUser('user-1'); // first scan: exhausts retries, alerts
+    await adapter.muteUser('user-2'); // second scan inside the 15-minute window: exhausts retries again, must NOT alert again
+    assert.equal(sent.length, 1, 'exactly one DM across both failing scans inside the debounce window');
+  } finally {
+    config.rbac.superAdminDiscordIds = wasSupers;
+  }
+});
+
 // --- onGuildMemberAdd: rejoin re-mute closes the leave/rejoin bypass (issue #171) -------------------
 
 /** Mocks pool.query for the three queries the rejoin path can issue. */
@@ -1360,4 +1562,80 @@ test('performAdminAction("archive_thread") throws when the target channel is not
     () => adapter.performAdminAction({ kind: 'archive_thread', conversationId: 'chan-1', params: {} }),
     /is not a thread/,
   );
+});
+
+// canPostTo (issue #270): a fallback reachability check used by announce/
+// create_poll/create_thread only when isKnownConversation already said no
+// (a brand-new or quiet channel with no recorded interactions). Unlike those
+// tools' existing "has the bot seen it" gate, this checks real, current
+// reachability — text-based, sendable, non-DM, and in the one configured
+// guild — so it must never widen reachability to another guild or a DM.
+interface FakeReachableChannel {
+  isTextBased: () => boolean;
+  isDMBased: () => boolean;
+  guildId?: string;
+  send?: (opts: { content: string }) => Promise<void>;
+}
+
+/** A minimal channel stand-in for canPostTo's reachability check. */
+function fakeReachableChannel(opts: {
+  guildId?: string;
+  isTextBased?: boolean;
+  isDMBased?: boolean;
+  sendable?: boolean;
+}): FakeReachableChannel {
+  const channel: FakeReachableChannel = {
+    isTextBased: () => opts.isTextBased ?? true,
+    isDMBased: () => opts.isDMBased ?? false,
+    guildId: opts.guildId ?? config.discord.guildId,
+  };
+  if (opts.sendable ?? true) channel.send = async () => {};
+  return channel;
+}
+
+function stubClientForCanPostTo(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  channelFetch: (id: string) => Promise<unknown>,
+) {
+  const client = (adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<unknown> } } })
+    .client;
+  client.channels.fetch = channelFetch;
+}
+
+test('canPostTo returns true for a real, sendable, in-guild text channel (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({}));
+  assert.equal(await adapter.canPostTo('chan-new'), true);
+});
+
+test('SECURITY: canPostTo returns false for a channel in a different guild — must not widen reachability past the configured guild (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ guildId: 'some-other-guild' }));
+  assert.equal(await adapter.canPostTo('chan-other-guild'), false);
+});
+
+test('SECURITY: canPostTo returns false, never throws, for a nonexistent channel id (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => {
+    throw new Error('Unknown Channel');
+  });
+  assert.equal(await adapter.canPostTo('chan-missing'), false);
+});
+
+test('SECURITY: canPostTo returns false for a DM channel (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ isDMBased: true, guildId: undefined }));
+  assert.equal(await adapter.canPostTo('dm-1'), false);
+});
+
+test('SECURITY: canPostTo returns false for a non-text-based channel, e.g. a voice channel (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ isTextBased: false }));
+  assert.equal(await adapter.canPostTo('chan-voice'), false);
+});
+
+test('SECURITY: canPostTo returns false for a channel with no send method (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ sendable: false }));
+  assert.equal(await adapter.canPostTo('chan-nosend'), false);
 });

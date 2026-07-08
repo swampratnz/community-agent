@@ -577,3 +577,12 @@ test('WhatsApp voice: an enabled super-admin voice note is transcribed and actio
   assert.equal(msg.platform, 'whatsapp');
   assert.equal(msg.isDirect, true);
 });
+
+test(
+  'SECURITY: BaileysAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as its ' +
+    'sole reachability gate, since any phone number is dialable (issue #270)',
+  () => {
+    const adapter = new BaileysAdapter();
+    assert.equal(adapter.canPostTo, undefined);
+  },
+);

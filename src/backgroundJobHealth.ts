@@ -40,7 +40,12 @@ export function stepJobFailureTracker(
   };
 }
 
-export type BackgroundJobName = 'context-builder' | 'knowledge-refresh' | 'docs-ingest';
+export type BackgroundJobName =
+  | 'context-builder'
+  | 'knowledge-refresh'
+  | 'docs-ingest'
+  | 'interaction-retention-purge'
+  | 'roster-retention-purge';
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught

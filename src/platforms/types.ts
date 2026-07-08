@@ -139,6 +139,22 @@ export interface PlatformAdapter {
   reactToMessage?(conversationId: string, messageId: string, emoji: string): Promise<void>;
 
   /**
+   * True if the platform adapter can actually post into this conversation
+   * right now, independent of whether the bot has recorded any prior chatter
+   * there (issue #270). Optional — a fallback used only when the caller's
+   * primary "has the bot seen this" check (`isKnownConversation`) already
+   * said no, so an admin isn't wrongly refused on a real, reachable channel
+   * (e.g. brand-new or quiet). Implement this ONLY where "reachable" can be
+   * verified independently of recorded chatter and where doing so can't
+   * widen reachability beyond the platform's natural boundary — Discord can
+   * reach only channels in its configured guild, so a per-channel fetch plus
+   * guild check is safe; WhatsApp has no such boundary (any phone number is
+   * dialable), so neither WhatsApp adapter implements this and
+   * `isKnownConversation` alone continues to gate it there.
+   */
+  canPostTo?(conversationId: string): Promise<boolean>;
+
+  /**
    * Conversation ids the given user actually participates in right now
    * (Discord: channels their permissions let them view; WhatsApp: groups
    * they are a member of plus their own DM). Backs admin data scoping.

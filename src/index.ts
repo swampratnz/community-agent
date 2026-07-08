@@ -4,7 +4,8 @@ import { installCrashHandlers } from './crashHandlers.js';
 import { configureSubscriptionAuth } from './agent/auth.js';
 import { Router } from './router.js';
 import { closeDb, healthcheck } from './storage/db.js';
-import { purgeOldInteractions, verifyEmbeddingDim } from './storage/repository.js';
+import { verifyEmbeddingDim } from './storage/repository.js';
+import { startRetentionPurge } from './interactionRetention.js';
 import { startRosterRetentionPurge } from './rosterRetention.js';
 import { startContextBuilder, startKnowledgeRefresh, startDocsIngest } from './backgroundJobs.js';
 import { pollAnthropicStatus } from './status/anthropicStatus.js';
@@ -15,27 +16,6 @@ import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
 import { WhatsAppCloudAdapter } from './platforms/whatsapp/cloudAdapter.js';
-
-const DAY_MS = 24 * 60 * 60_000;
-
-/**
- * Age-based purge of raw `interactions` (SECURITY.md retention policy). Off
- * unless INTERACTION_RETENTION_DAYS is set. Runs once immediately (so
- * operators see it working without waiting a day) and then daily.
- */
-function startRetentionPurge(): ReturnType<typeof setInterval> | null {
-  const days = config.behaviour.interactionRetentionDays;
-  if (days <= 0) return null;
-  const run = () => {
-    purgeOldInteractions(days)
-      .then((count) => logger.info({ days, count }, 'Purged old interactions (retention policy)'))
-      .catch((err) => logger.error({ err }, 'Interaction retention purge failed'));
-  };
-  run();
-  const timer = setInterval(run, DAY_MS);
-  timer.unref();
-  return timer;
-}
 
 /**
  * Anthropic status check (off unless STATUS_CHECK_ENABLED). Polls Anthropic's
@@ -95,8 +75,10 @@ async function main(): Promise<void> {
 
   // 4b. Optional age-based retention purges (each independently disabled
   //     unless configured — neither's disabled state suppresses the other).
-  const retentionTimer = startRetentionPurge();
-  const rosterRetentionTimer = startRosterRetentionPurge();
+  //     Routed through startTrackedJob for consecutive-failure alerting
+  //     (issue #291), hence the `adapters` argument.
+  const retentionTimer = startRetentionPurge(adapters);
+  const rosterRetentionTimer = startRosterRetentionPurge(adapters);
 
   // 4c. Sustained-disconnect super-admin alerting (always on; no user-facing
   //     surface to disable) and the optional /healthz endpoint.

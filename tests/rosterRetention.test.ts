@@ -14,6 +14,6 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 
 test('startRosterRetentionPurge: ROSTER_DEPARTED_RETENTION_DAYS unset (default) creates no timer', () => {
-  const timer = startRosterRetentionPurge();
+  const timer = startRosterRetentionPurge([]);
   assert.equal(timer, null, 'disabled by default — no timer, no extra queries');
 });

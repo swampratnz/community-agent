@@ -81,20 +81,41 @@ async function withCloudWelcomeConfig<T>(enabled: boolean, fn: () => Promise<T>)
 }
 
 /**
- * Mocks `pool.query` for the two DB reads the first-contact welcome path
- * makes: `isKnownConversation` (`FROM interactions`) and `getCommunityGuidelines`
- * (`FROM policies`, key `community_guidelines`). Mirrors `stubPoliciesQuery`
- * in `tests/baileysAdapter.test.ts`.
+ * Mocks `pool.query` for the three DB reads the first-contact welcome path
+ * makes: `isKnownConversation` (`FROM interactions`), `getCommunityGuidelines`
+ * and `getWelcomeMessage` (`FROM policies`, keys `community_guidelines` and
+ * `welcome_message`, issue #278). `opts.throwFor` simulates a policy read
+ * failure for the named key. Mirrors `stubPoliciesQuery` in
+ * `tests/discordAdapter.test.ts`.
  */
-function stubWelcomeQuery({ known, guidelines }: { known: boolean; guidelines?: string }) {
+function stubWelcomeQuery({
+  known,
+  guidelines,
+  welcomeMessage,
+  throwFor,
+}: {
+  known: boolean;
+  guidelines?: string;
+  welcomeMessage?: string;
+  throwFor?: 'community_guidelines' | 'welcome_message';
+}) {
   return async (sql: string, params?: unknown[]) => {
     if (sql.includes('FROM interactions')) {
       return known ? { rows: [{ '?column?': 1 }], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
-    if (sql.includes('FROM policies') && params?.[0] === 'community_guidelines') {
-      return guidelines === undefined
-        ? { rows: [], rowCount: 0 }
-        : { rows: [{ value: guidelines }], rowCount: 1 };
+    if (sql.includes('FROM policies')) {
+      const key = params?.[0];
+      if (throwFor === key) throw new Error('simulated policy read failure');
+      if (key === 'community_guidelines') {
+        return guidelines === undefined
+          ? { rows: [], rowCount: 0 }
+          : { rows: [{ value: guidelines }], rowCount: 1 };
+      }
+      if (key === 'welcome_message') {
+        return welcomeMessage === undefined
+          ? { rows: [], rowCount: 0 }
+          : { rows: [{ value: welcomeMessage }], rowCount: 1 };
+      }
     }
     return { rows: [], rowCount: 0 };
   };
@@ -778,9 +799,97 @@ test('first-contact welcome: community guidelines are appended when set (parity 
   resetPolicyCacheForTests();
 });
 
-test('first-contact welcome: enabled + a known sender (isKnownConversation true) sends no welcome, only normal handling', async (t) => {
+// --- first-contact welcome: admin-configurable welcome message (issue #278) -----
+
+test('first-contact welcome: uses the configured welcome message in place of the hardcoded default, guidelines still appended (issue #278)', async (t) => {
   resetPolicyCacheForTests();
-  t.mock.method(pool, 'query', stubWelcomeQuery({ known: true }));
+  const welcomeMessage = 'Welcome to our community!';
+  const guidelines = 'Be respectful. No spam.';
+  t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, guidelines, welcomeMessage }));
+
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.onMessage(async () => {});
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await withCloudWelcomeConfig(true, () =>
+      dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64299990011', id: 'wamid.CONFIGURED' })),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  const body = JSON.parse(calls[0].body).text.body as string;
+  assert.equal(body, `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`);
+  assert.ok(
+    !body.includes(WHATSAPP_CLOUD_WELCOME_MESSAGE),
+    'the hardcoded default must not appear once a value is configured',
+  );
+  resetPolicyCacheForTests();
+});
+
+test('first-contact welcome: uses the configured welcome message with no guidelines appended when none are set (issue #278)', async (t) => {
+  resetPolicyCacheForTests();
+  const welcomeMessage = 'Welcome to our community!';
+  t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, welcomeMessage }));
+
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.onMessage(async () => {});
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await withCloudWelcomeConfig(true, () =>
+      dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64299990012', id: 'wamid.CONFIGURED2' })),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(calls[0].body).text.body, welcomeMessage);
+  resetPolicyCacheForTests();
+});
+
+test('SECURITY: falls back to the hardcoded default welcome when the welcome_message policy read fails, and still reaches the handler (issue #278)', async (t) => {
+  resetPolicyCacheForTests();
+  t.mock.method(pool, 'query', stubWelcomeQuery({ known: false, throwFor: 'welcome_message' }));
+
+  const adapter = new WhatsAppCloudAdapter();
+  let handlerCalls = 0;
+  adapter.onMessage(async () => {
+    handlerCalls++;
+  });
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await withCloudWelcomeConfig(true, () =>
+      dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64299990013', id: 'wamid.POLICYERR' })),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1, 'a policy-read failure must still send a welcome, not skip it entirely');
+  assert.equal(
+    JSON.parse(calls[0].body).text.body,
+    WHATSAPP_CLOUD_WELCOME_MESSAGE,
+    'a welcome_message policy-read failure must fall back to the hardcoded default, never an empty or broken welcome',
+  );
+  assert.equal(
+    handlerCalls,
+    1,
+    "the sender's real message must still reach the agent despite the welcome-path policy-read failure",
+  );
+  resetPolicyCacheForTests();
+});
+
+test('first-contact welcome: enabled + a known sender (isKnownConversation true) sends no welcome, only normal handling, even with a configured welcome message (issue #278)', async (t) => {
+  resetPolicyCacheForTests();
+  t.mock.method(pool, 'query', stubWelcomeQuery({ known: true, welcomeMessage: 'Should never be sent' }));
 
   const adapter = new WhatsAppCloudAdapter();
   let handlerCalls = 0;
@@ -899,3 +1008,12 @@ test('first-contact welcome: Discord and Baileys welcome constants are unaffecte
   assert.notEqual(WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
   assert.notEqual(WHATSAPP_GROUP_WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
 });
+
+test(
+  'SECURITY: WhatsAppCloudAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as ' +
+    'its sole reachability gate, since any phone number is dialable (issue #270)',
+  () => {
+    const adapter = new WhatsAppCloudAdapter();
+    assert.equal(adapter.canPostTo, undefined);
+  },
+);
