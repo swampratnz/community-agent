@@ -13,8 +13,14 @@ export interface ScanContext {
   channelId: string;
 }
 
+/** The guild/channel scope a classification was made in — see `makeClassifier`'s cache. */
+export interface ClassifierScope {
+  platform: Platform;
+  channelId: string;
+}
+
 /** Returns a Detection when the text is flagged, or null when clean. */
-export type Classifier = (text: string) => Promise<Detection | null>;
+export type Classifier = (text: string, scope: ClassifierScope) => Promise<Detection | null>;
 
 /** The DB operations the moderator needs (injected so it's unit-testable). */
 export interface ModerationStore {
@@ -115,7 +121,7 @@ export class Moderator {
 
     let hit: Detection | null;
     try {
-      hit = await this.deps.classify(ctx.text);
+      hit = await this.deps.classify(ctx.text, { platform: ctx.platform, channelId: ctx.channelId });
     } catch (err) {
       logger.warn({ err }, 'Moderation classify failed; treating message as clean');
       return;
@@ -182,12 +188,6 @@ export class Moderator {
 }
 
 /**
- * Stage 2 (opt-in) abuse classification: a single tool-less model call that
- * decides whether a message is targeted harassment / threats / hate speech.
- * Bounded to one turn, no tools, and treats the message as untrusted data.
- * Any failure degrades to "clean" so moderation never blocks on a model error.
- */
-/**
  * Bound the classifier's input without letting abuse hide behind filler: a
  * message can run to ~2000 chars, so a flat `slice(0, 500)` never sees a slur
  * placed after 500 chars of padding. Keep the head AND the tail (with an
@@ -201,6 +201,14 @@ export function boundForClassifier(text: string, max = 500): string {
   return `${clean.slice(0, head)} […] ${clean.slice(-tail)}`;
 }
 
+/**
+ * Throws on any failure (network, API, malformed stream) instead of degrading
+ * to "clean" itself — `Moderator.scan()`'s own catch-all already treats a
+ * thrown classify error as clean, and letting the error propagate here (rather
+ * than swallowing it to a `null`) is what lets `makeClassifier`'s cache tell a
+ * decisive "the model said CLEAN" apart from "the call failed", so a transient
+ * failure can never get cached and suppress reclassification of a whole burst.
+ */
 export async function classifyAbuseWithLlm(text: string): Promise<Detection | null> {
   const clean = boundForClassifier(text);
   const prompt = [
@@ -213,51 +221,91 @@ export async function classifyAbuseWithLlm(text: string): Promise<Detection | nu
     clean,
   ].join('\n');
 
-  try {
-    let resultText = '';
-    for await (const message of query({
-      prompt,
-      options: {
-        model: config.llm.model,
-        systemPrompt:
-          'You are a strict but fair content-moderation classifier. Output only the one requested line.',
-        tools: [],
-        allowedTools: [],
-        disallowedTools: ['Task', 'WebFetch', 'WebSearch'],
-        permissionMode: 'default',
-        maxTurns: 1,
-        settingSources: [],
-      },
-    })) {
-      if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
-        resultText = message.result;
-      }
+  let resultText = '';
+  for await (const message of query({
+    prompt,
+    options: {
+      model: config.llm.model,
+      systemPrompt:
+        'You are a strict but fair content-moderation classifier. Output only the one requested line.',
+      tools: [],
+      allowedTools: [],
+      disallowedTools: ['Task', 'WebFetch', 'WebSearch'],
+      permissionMode: 'default',
+      maxTurns: 1,
+      settingSources: [],
+    },
+  })) {
+    if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
+      resultText = message.result;
     }
-    const match = /^\s*ABUSE:\s*(.+)$/im.exec(resultText);
-    if (!match) return null;
-    return { reason: `abuse (${match[1].trim().slice(0, 60)})`, excerpt: excerptOf(text) };
-  } catch (err) {
-    logger.warn({ err }, 'LLM abuse classification failed; treating message as clean');
-    return null;
   }
+  const match = /^\s*ABUSE:\s*(.+)$/im.exec(resultText);
+  if (!match) return null;
+  return { reason: `abuse (${match[1].trim().slice(0, 60)})`, excerpt: excerptOf(text) };
+}
+
+/** 5 minutes — long enough to catch a realistic copy-paste burst, short enough that a stale verdict can't linger. Internal constant, not env-configurable, matching router.ts's debounce-window precedent. */
+const MODERATION_CLASSIFY_CACHE_TTL_MS = 300_000;
+/** Bounded so a determined attacker sending many distinct strings can't grow the cache unboundedly; oldest entry is evicted on overflow. */
+const MODERATION_CLASSIFY_CACHE_MAX_SIZE = 200;
+
+interface ClassifyCacheEntry {
+  verdict: Detection | null;
+  at: number;
+}
+
+/** `platform:channelId:normalizedText` — scope is part of the key so a verdict from one guild/channel can never suppress classification of identical text in another. */
+function classifyCacheKey(scope: ClassifierScope, text: string): string {
+  return `${scope.platform}:${scope.channelId}:${text.trim().replace(/\s+/g, ' ')}`;
 }
 
 /**
  * Compose the two-stage classifier: the free wordlist first, then (only when
  * enabled and the wordlist is clean) the LLM abuse check. Keeping the wordlist
  * first means most messages never incur a model call.
+ *
+ * The LLM stage is additionally guarded by a bounded, short-TTL, per-scope
+ * cache (issue #256): an identical-text repeat within the same
+ * `(platform, channelId)` inside the TTL reuses the prior verdict instead of
+ * paying for another paid call — the common case being a copy-pasted
+ * spam/phishing burst. Only a *decisive* verdict (CLEAN or ABUSE) is ever
+ * cached; a thrown classifier error is never cached (see
+ * `classifyAbuseWithLlm`'s docstring) so one transient failure can't suppress
+ * reclassification of the rest of a burst. `now` is injectable for tests.
  */
 export function makeClassifier(opts: {
   badWords: string[];
   llmAbuseEnabled: boolean;
   llm?: Classifier;
+  now?: () => number;
 }): Classifier {
   const wordlist = makeWordlistDetector(opts.badWords);
   const llm = opts.llm ?? classifyAbuseWithLlm;
-  return async (text: string) => {
+  const now = opts.now ?? Date.now;
+  const cache = new Map<string, ClassifyCacheEntry>();
+
+  return async (text: string, scope: ClassifierScope) => {
     const hit = wordlist(text);
     if (hit) return hit;
     if (!opts.llmAbuseEnabled) return null;
-    return llm(text);
+
+    const key = classifyCacheKey(scope, text);
+    const cached = cache.get(key);
+    if (cached) {
+      if (now() - cached.at <= MODERATION_CLASSIFY_CACHE_TTL_MS) return cached.verdict;
+      cache.delete(key); // expired
+    }
+
+    const verdict = await llm(text, scope); // a thrown error propagates uncached to the caller
+
+    cache.delete(key); // re-insert at the end so recency drives LRU eviction below
+    if (cache.size >= MODERATION_CLASSIFY_CACHE_MAX_SIZE) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, { verdict, at: now() });
+
+    return verdict;
   };
 }
