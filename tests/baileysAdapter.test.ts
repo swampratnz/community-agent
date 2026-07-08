@@ -586,3 +586,136 @@ test(
     assert.equal(adapter.canPostTo, undefined);
   },
 );
+
+// --- group-participants.update 'remove': membership-scope cache invalidation (issue #286) ---
+
+/**
+ * Stubs the socket's groupFetchAllParticipating for conversationsForUser's
+ * cache-miss path, counting how many times it actually runs so tests can
+ * assert a cache hit vs. a live re-fetch. Every configured member is placed
+ * in the same single group.
+ */
+function stubConversationsSocket(adapter: InstanceType<typeof BaileysAdapter>, memberIds: string[]) {
+  const calls = { groupFetch: 0 };
+  const participants = memberIds.map((id) => ({ id: `${id}@s.whatsapp.net` }));
+  (
+    adapter as unknown as {
+      sock: { groupFetchAllParticipating: () => Promise<Record<string, { participants: unknown[] }>> };
+    }
+  ).sock = {
+    groupFetchAllParticipating: async () => {
+      calls.groupFetch += 1;
+      return { 'group-286@g.us': { participants } };
+    },
+  };
+  return calls;
+}
+
+test(
+  "group-participants.update 'remove' invalidates the removed participant's membershipCache entry — " +
+    'the next conversationsForUser call re-fetches instead of returning the stale cached list',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111']);
+
+    const first = await adapter.conversationsForUser('64211111111');
+    assert.deepEqual(first, ['64211111111@s.whatsapp.net', 'group-286@g.us']);
+    assert.equal(calls.groupFetch, 1, 'first call is a cache miss and must hit groupFetchAllParticipating');
+
+    const cached = await adapter.conversationsForUser('64211111111');
+    assert.deepEqual(cached, first);
+    assert.equal(calls.groupFetch, 1, 'second call within the TTL must be served from cache, not re-fetched');
+
+    await fireGroupJoin(adapter, {
+      id: 'group-286@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(
+      calls.groupFetch,
+      2,
+      "a 'remove' event for this participant must invalidate the cache so the next lookup re-fetches live",
+    );
+  },
+);
+
+test(
+  "SECURITY: group-participants.update 'remove' cache invalidation is targeted — a different, still-cached " +
+    "participant's membershipCache entry survives untouched (issue #286)",
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111', '64222222222']);
+
+    await adapter.conversationsForUser('64211111111');
+    await adapter.conversationsForUser('64222222222');
+    assert.equal(calls.groupFetch, 2, 'two distinct users each cause one cache-miss fetch');
+
+    await fireGroupJoin(adapter, {
+      id: 'group-286@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('64222222222');
+    assert.equal(
+      calls.groupFetch,
+      2,
+      "the other participant's still-live cache entry must be untouched — zero additional fetches",
+    );
+  },
+);
+
+test(
+  'SECURITY: the WhatsApp JID normalization never false-positive-deletes a similarly-shaped-but-different ' +
+    'cached id (issue #286)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    // '6421111111' (cached) vs '64211111111' (removed) differ only by one
+    // digit — an exact-match normalization must not conflate them.
+    const calls = stubConversationsSocket(adapter, ['6421111111']);
+
+    await adapter.conversationsForUser('6421111111');
+    assert.equal(calls.groupFetch, 1);
+
+    await fireGroupJoin(adapter, {
+      id: 'group-286@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('6421111111');
+    assert.equal(
+      calls.groupFetch,
+      1,
+      'a removal for a different, similarly-shaped id must not evict an unrelated cache entry',
+    );
+  },
+);
+
+test(
+  "group-participants.update 'remove' does not send a welcome message, and 'add' welcome behavior is " +
+    'unchanged by the new invalidation logic (regression, issue #286)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForGroupWelcome(adapter);
+
+    await withWelcomeConfig({ enabled: true }, async () => {
+      await fireGroupJoin(adapter, {
+        id: 'group-286-welcome@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+      assert.equal(sent.length, 0, "a 'remove' event must never trigger the welcome message");
+
+      await fireGroupJoin(adapter, {
+        id: 'group-286-welcome@g.us',
+        participants: ['64222222222@s.whatsapp.net'],
+        action: 'add',
+      });
+    });
+
+    assert.equal(sent.length, 1, "the 'add' welcome path still fires exactly as before");
+  },
+);

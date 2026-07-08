@@ -976,9 +976,16 @@ the supported path.
   rate cap (`POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`,
   in-memory) rather than CONFIRM, since each is lower-consequence than
   `announce` and gating them harder would be inconsistent (issues #228, #229).
-- **Membership-scope staleness**: adapters cache an admin's conversation list
-  for ~60s, so an admin removed from a channel/group can retain data scope for
-  up to that window.
+- **Membership-scope staleness (narrowed, issue #286)**: adapters cache an
+  admin's conversation list for ~60s, but an *observed* removal invalidates
+  the affected cache entry immediately — Discord's `GuildMemberRemove` (full
+  guild exit) and WhatsApp's `group-participants.update` with `action:
+  'remove'` both clear the removed user's entry the instant the adapter's
+  own already-subscribed listener fires, so a scope refusal lands on the
+  next lookup rather than up to 60s later. The residual ~60s window now
+  applies only to membership changes the adapter does not directly observe
+  — e.g. a Discord channel-specific permission-overwrite change with no
+  guild exit, which has no listener wired up today.
 - **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
   (issue #48, an owner-approved posture change; extended to WhatsApp groups
   by issue #103). The precise guarantee is: **guest 1:1 DMs to the bot
