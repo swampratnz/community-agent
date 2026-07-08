@@ -24,4 +24,15 @@ label "status:built"    "0052CC" "PR open, awaiting review/merge"
 label "needs-human"     "D93F0B" "Escalated: a human must decide"
 label "community-feedback" "0E8A16" "A real member/admin request; input for research proposals"
 
+# Theme areas (VISION.md) — one per proposal, so the memoryless research loop can
+# rotate for diversity by reading the themes on recent proposals.
+label "theme:onboarding"    "C5DEF5" "Theme: onboarding & welcome"
+label "theme:knowledge"     "C5DEF5" "Theme: knowledge quality & recall"
+label "theme:answer-quality" "C5DEF5" "Theme: answer quality (accuracy, citations, NZ context)"
+label "theme:moderation"    "C5DEF5" "Theme: moderation & safety"
+label "theme:admin-insight" "C5DEF5" "Theme: admin insight (analytics, digests)"
+label "theme:reliability"   "C5DEF5" "Theme: reliability & ops"
+label "theme:cost"          "C5DEF5" "Theme: cost efficiency"
+label "theme:accessibility" "C5DEF5" "Theme: accessibility & inclusion"
+
 echo "Labels created/updated."
