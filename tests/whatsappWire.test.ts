@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  extractAudio,
   extractText,
   isLidJid,
   isPhoneUserId,
@@ -78,4 +79,39 @@ test('extractText reads text from wrapped messages (disappearing-messages groups
     message: { ephemeralMessage: { message: { extendedTextMessage: { text: 'hi team' } } } },
   } as unknown as WAMessage;
   assert.equal(extractText(msg).text, 'hi team');
+});
+
+test('extractText returns empty for a voice note — the text path never actions raw audio', () => {
+  const msg = {
+    key: { remoteJid: '64211234567@s.whatsapp.net' },
+    message: { audioMessage: { seconds: 5, ptt: true } },
+  } as unknown as WAMessage;
+  assert.equal(extractText(msg).text, '', 'audio carries no text — only the voice path may action it');
+});
+
+test('extractAudio returns the audio payload + its own contextInfo for a voice note', () => {
+  const ctx = { participant: '64299999999@s.whatsapp.net' };
+  const msg = {
+    key: { remoteJid: 'g@g.us' },
+    message: { audioMessage: { seconds: 7, ptt: true, contextInfo: ctx } },
+  } as unknown as WAMessage;
+  const { audio, contextInfo } = extractAudio(msg);
+  assert.equal(audio?.seconds, 7);
+  assert.equal(
+    contextInfo?.participant,
+    '64299999999@s.whatsapp.net',
+    'reply-to-bot still detectable on audio',
+  );
+});
+
+test('extractAudio reaches through wrappers and returns null for a text message', () => {
+  const wrapped = {
+    message: { ephemeralMessage: { message: { audioMessage: { seconds: 3 } } } },
+  } as unknown as WAMessage;
+  assert.equal(extractAudio(wrapped).audio?.seconds, 3, 'unwraps ephemeral like extractText does');
+
+  const textMsg = {
+    message: { conversation: 'hello' },
+  } as unknown as WAMessage;
+  assert.equal(extractAudio(textMsg).audio, null, 'a text message has no audio payload');
 });

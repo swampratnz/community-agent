@@ -467,3 +467,113 @@ test('stepWelcomeCooldown: different groups have independent cooldowns', () => {
   const other = stepWelcomeCooldown(state, 'g2@g.us', 1_000, 60_000);
   assert.equal(other.shouldSend, true, "a fresh group is unaffected by another group's cooldown");
 });
+
+// --------------------------------------------------------------------------
+// Voice notes (super-admin only). The security-critical invariant is that a
+// non-super-admin, a disabled feature, or an over-length note is dropped
+// BEFORE any media is fetched or transcribed. The download+Whisper step is
+// isolated behind the private `transcribeAudioMessage` seam, overridden here
+// so the gate runs for real without a WhatsApp fetch or a model download.
+// --------------------------------------------------------------------------
+
+type VoiceAdapter = InstanceType<typeof BaileysAdapter> & {
+  onWhatsappMessage: (m: unknown) => Promise<void>;
+  transcribeAudioMessage: (m: unknown, seconds: number) => Promise<string>;
+};
+
+/** A DM voice note (audioMessage, ptt) from `fromNumber`. isDirect => addressed. */
+function voiceDm(fromNumber: string, seconds = 5): unknown {
+  return {
+    key: { remoteJid: `${fromNumber}@s.whatsapp.net`, fromMe: false, id: 'VOICEMSG1' },
+    pushName: 'Tester',
+    messageTimestamp: 1_700_000_000,
+    message: { audioMessage: { seconds, ptt: true, mimetype: 'audio/ogg; codecs=opus' } },
+  };
+}
+
+/** Overrides config.whatsapp.voice + the super-admin allowlist for `fn`, then restores. */
+async function withVoice(
+  opts: { enabled?: boolean; maxSeconds?: number; superAdmins?: string[] },
+  fn: () => Promise<void>,
+): Promise<void> {
+  const voice = config.whatsapp.voice as { enabled: boolean; model: string; maxSeconds: number };
+  const rbac = config.rbac as { superAdminWhatsappNumbers: readonly string[] };
+  const prevVoice = { ...voice };
+  const prevAdmins = rbac.superAdminWhatsappNumbers;
+  if (opts.enabled !== undefined) voice.enabled = opts.enabled;
+  if (opts.maxSeconds !== undefined) voice.maxSeconds = opts.maxSeconds;
+  if (opts.superAdmins) rbac.superAdminWhatsappNumbers = opts.superAdmins;
+  try {
+    await fn();
+  } finally {
+    Object.assign(voice, prevVoice);
+    rbac.superAdminWhatsappNumbers = prevAdmins;
+  }
+}
+
+test('SECURITY: a voice note from a non-super-admin is dropped — never downloaded, transcribed, or actioned', async () => {
+  const adapter = new BaileysAdapter() as VoiceAdapter;
+  let handlerCalls = 0;
+  adapter.onMessage(async () => {
+    handlerCalls += 1;
+  });
+  // The seam must never be reached for a non-super-admin — make it explode if it is.
+  adapter.transcribeAudioMessage = async () => {
+    throw new Error('non-super-admin voice note must never be downloaded/transcribed');
+  };
+  await withVoice({ enabled: true, superAdmins: ['64990000000'] }, () =>
+    adapter.onWhatsappMessage(voiceDm('64211234567')),
+  );
+  assert.equal(handlerCalls, 0, 'a non-super-admin voice note must not reach the agent');
+});
+
+test('SECURITY: voice transcription is off by default — a super-admin voice note is dropped when WHATSAPP_VOICE_ENABLED is unset', async () => {
+  assert.equal(config.whatsapp.voice.enabled, false, 'precondition: default env has voice off');
+  const adapter = new BaileysAdapter() as VoiceAdapter;
+  let handlerCalls = 0;
+  adapter.onMessage(async () => {
+    handlerCalls += 1;
+  });
+  adapter.transcribeAudioMessage = async () => {
+    throw new Error('voice must not be transcribed while the feature flag is off');
+  };
+  // Sender IS a super admin — proving it is the flag, not the tier, that blocks.
+  await withVoice({ superAdmins: ['64211234567'] }, () => adapter.onWhatsappMessage(voiceDm('64211234567')));
+  assert.equal(handlerCalls, 0);
+});
+
+test('SECURITY: a voice note longer than WHATSAPP_VOICE_MAX_SECONDS is ignored without downloading or transcribing', async () => {
+  const adapter = new BaileysAdapter() as VoiceAdapter;
+  let handlerCalls = 0;
+  adapter.onMessage(async () => {
+    handlerCalls += 1;
+  });
+  let seamCalls = 0;
+  adapter.transcribeAudioMessage = async () => {
+    seamCalls += 1;
+    return 'should never run';
+  };
+  await withVoice({ enabled: true, maxSeconds: 60, superAdmins: ['64211234567'] }, () =>
+    adapter.onWhatsappMessage(voiceDm('64211234567', 120)),
+  );
+  assert.equal(seamCalls, 0, 'an over-cap note must be rejected before any download/transcribe');
+  assert.equal(handlerCalls, 0);
+});
+
+test('WhatsApp voice: an enabled super-admin voice note is transcribed and actioned as if typed', async () => {
+  const adapter = new BaileysAdapter() as VoiceAdapter;
+  let seen: IncomingMessage | null = null;
+  adapter.onMessage(async (m) => {
+    seen = m;
+  });
+  adapter.transcribeAudioMessage = async () => 'what is the member count';
+  await withVoice({ enabled: true, maxSeconds: 120, superAdmins: ['64211234567'] }, () =>
+    adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+  );
+  assert.ok(seen, 'the transcript must reach the handler');
+  const msg = seen as unknown as IncomingMessage;
+  assert.equal(msg.text, 'what is the member count', 'the transcript becomes the message text');
+  assert.equal(msg.userId, '64211234567', 'identity stays the platform-envelope sender');
+  assert.equal(msg.platform, 'whatsapp');
+  assert.equal(msg.isDirect, true);
+});

@@ -156,6 +156,19 @@ const EnvSchema = z.object({
   // added here (see SECURITY.md). Unset/empty = feature fully off, zero
   // behaviour change. 1:1 DMs are never archived for gated guests regardless.
   WHATSAPP_ARCHIVE_GROUP_JIDS: z.string().optional(),
+  // Voice-note transcription (Baileys only). A super admin's voice message is
+  // transcribed locally (transformers.js Whisper, no external API/key — same
+  // model-download pattern as embeddings) and the transcript is actioned as if
+  // typed. OFF by default; SUPER-ADMIN ONLY is enforced in the adapter before
+  // any media download (see docs/SECURITY.md). Requires ffmpeg on the host.
+  WHATSAPP_VOICE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  WHATSAPP_VOICE_MODEL: z.string().default('Xenova/whisper-base.en'),
+  // Voice notes longer than this are ignored WITHOUT downloading — bounds the
+  // per-note CPU/latency of local transcription.
+  WHATSAPP_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
 
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
@@ -366,6 +379,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Skip the agent turn entirely when the SAME caller (platform + conversation
+  // + user) sends the exact same whitespace-normalized text twice within a
+  // short window (double-tap/impatient-resend/client retry) — replies with
+  // the cached answer from the first turn instead of spawning a second
+  // query() turn. Off by default; see src/router.ts (issue #259).
+  REPEAT_QUESTION_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -506,6 +528,11 @@ export const config = {
       cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,
     },
     archiveGroupJids: csv(env.WHATSAPP_ARCHIVE_GROUP_JIDS),
+    voice: {
+      enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
+      model: env.WHATSAPP_VOICE_MODEL,
+      maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
+    },
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
       accessToken: env.WHATSAPP_CLOUD_ACCESS_TOKEN,
@@ -580,6 +607,7 @@ export const config = {
     knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
+    repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {

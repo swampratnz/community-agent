@@ -69,3 +69,20 @@ export function extractText(msg: WAMessage): { text: string; contextInfo: proto.
   const contextInfo = m.extendedTextMessage?.contextInfo ?? null;
   return { text, contextInfo };
 }
+
+/**
+ * The voice-note / audio payload of a message, if any, after unwrapping the
+ * same protocol containers as `extractText`. `contextInfo` is returned
+ * separately (audio carries its own, not the extendedText one) so the adapter
+ * can still detect a reply-to-bot when the message is a voice note rather than
+ * text. Returns `{ audio: null }` for every non-audio message — the normal
+ * text path is untouched.
+ */
+export function extractAudio(msg: WAMessage): {
+  audio: proto.Message.IAudioMessage | null;
+  contextInfo: proto.IContextInfo | null;
+} {
+  const m = unwrapMessage(msg.message);
+  const audio = m?.audioMessage ?? null;
+  return { audio, contextInfo: audio?.contextInfo ?? null };
+}
