@@ -1275,3 +1275,79 @@ test('performAdminAction("archive_thread") throws when the target channel is not
     /is not a thread/,
   );
 });
+
+// canPostTo (issue #270): a fallback reachability check used by announce/
+// create_poll/create_thread only when isKnownConversation already said no
+// (a brand-new or quiet channel with no recorded interactions). Unlike those
+// tools' existing "has the bot seen it" gate, this checks real, current
+// reachability — text-based, sendable, non-DM, and in the one configured
+// guild — so it must never widen reachability to another guild or a DM.
+interface FakeReachableChannel {
+  isTextBased: () => boolean;
+  isDMBased: () => boolean;
+  guildId?: string;
+  send?: (opts: { content: string }) => Promise<void>;
+}
+
+/** A minimal channel stand-in for canPostTo's reachability check. */
+function fakeReachableChannel(opts: {
+  guildId?: string;
+  isTextBased?: boolean;
+  isDMBased?: boolean;
+  sendable?: boolean;
+}): FakeReachableChannel {
+  const channel: FakeReachableChannel = {
+    isTextBased: () => opts.isTextBased ?? true,
+    isDMBased: () => opts.isDMBased ?? false,
+    guildId: opts.guildId ?? config.discord.guildId,
+  };
+  if (opts.sendable ?? true) channel.send = async () => {};
+  return channel;
+}
+
+function stubClientForCanPostTo(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  channelFetch: (id: string) => Promise<unknown>,
+) {
+  const client = (adapter as unknown as { client: { channels: { fetch: (id: string) => Promise<unknown> } } })
+    .client;
+  client.channels.fetch = channelFetch;
+}
+
+test('canPostTo returns true for a real, sendable, in-guild text channel (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({}));
+  assert.equal(await adapter.canPostTo('chan-new'), true);
+});
+
+test('SECURITY: canPostTo returns false for a channel in a different guild — must not widen reachability past the configured guild (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ guildId: 'some-other-guild' }));
+  assert.equal(await adapter.canPostTo('chan-other-guild'), false);
+});
+
+test('SECURITY: canPostTo returns false, never throws, for a nonexistent channel id (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => {
+    throw new Error('Unknown Channel');
+  });
+  assert.equal(await adapter.canPostTo('chan-missing'), false);
+});
+
+test('SECURITY: canPostTo returns false for a DM channel (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ isDMBased: true, guildId: undefined }));
+  assert.equal(await adapter.canPostTo('dm-1'), false);
+});
+
+test('SECURITY: canPostTo returns false for a non-text-based channel, e.g. a voice channel (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ isTextBased: false }));
+  assert.equal(await adapter.canPostTo('chan-voice'), false);
+});
+
+test('SECURITY: canPostTo returns false for a channel with no send method (issue #270)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ sendable: false }));
+  assert.equal(await adapter.canPostTo('chan-nosend'), false);
+});

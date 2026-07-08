@@ -496,6 +496,26 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     return ids;
   }
 
+  /**
+   * Fallback reachability check for `announce`/`create_poll`/`create_thread`
+   * (issue #270) when `isKnownConversation` says no because the bot has never
+   * recorded chatter there — e.g. a brand-new or quiet channel. Unlike
+   * WhatsApp (where any phone number is dialable and "seen before" is the
+   * real abuse boundary), Discord can only ever reach channels inside the one
+   * configured guild, so a real, sendable, in-guild channel is a legitimate
+   * target even with zero recorded interactions. Requires the guild match
+   * explicitly rather than relying on `isKnownConversation`'s implicit one,
+   * so this stays at least as strict as today for cross-guild targets.
+   */
+  async canPostTo(conversationId: string): Promise<boolean> {
+    const channel = await this.client.channels.fetch(conversationId).catch(() => null);
+    if (!channel || !channel.isTextBased() || !('send' in channel) || channel.isDMBased()) {
+      return false;
+    }
+    const guildId = 'guildId' in channel ? channel.guildId : undefined;
+    return guildId === config.discord.guildId;
+  }
+
   async performAdminAction(action: AdminAction): Promise<string> {
     switch (action.kind) {
       case 'timeout_user': {
