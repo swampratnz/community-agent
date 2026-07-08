@@ -36,6 +36,15 @@ const WHATSAPP_CLOUD_MAX_LEN = 4096;
 /** How often to prune `lastInboundAt` entries older than the window, so long-running processes don't grow it forever. */
 const LAST_INBOUND_SWEEP_MS = 60 * 60_000;
 /**
+ * How long a Meta message id is remembered for webhook-retry dedup. Short —
+ * Meta's documented redelivery window is minutes, not hours — deliberately
+ * separate from `CUSTOMER_SERVICE_WINDOW_MS`, which governs something else
+ * entirely (whether a free-form reply is still allowed). Pruned on the same
+ * `sweepTimer` as `lastInboundAt` (see `sweepLastInboundAt`) rather than a
+ * new timer.
+ */
+const MESSAGE_ID_DEDUP_WINDOW_MS = 5 * 60_000;
+/**
  * Consecutive real-message send failures (across all recipients) before
  * `isConnected()` flips `false`. A single recipient-specific failure (bad
  * number, template requirement, a transient Meta 5xx) doesn't trip this,
@@ -68,6 +77,15 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * doesn't grow this map forever.
    */
   private readonly lastInboundAt = new Map<string, number>();
+
+  /**
+   * Meta `wamid`s already processed (or currently mid-processing), keyed to
+   * first-seen timestamp — closes the race where a slow agent turn overlaps
+   * a Meta webhook retry for the same message (see `onCloudMessage`). Holds
+   * only the opaque id + a timestamp, same data class as `lastInboundAt`,
+   * never message content, never persisted. Swept alongside `lastInboundAt`.
+   */
+  private readonly seenMessageIds = new Map<string, number>();
 
   /**
    * Consecutive `sendChunk` (real message send) failures, process-wide. Only
@@ -137,11 +155,22 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     return this.server !== null && this.consecutiveSendFailures < SEND_FAILURE_THRESHOLD;
   }
 
-  /** Drop tracked senders whose last inbound message has aged out of the 24h window. */
+  /**
+   * Drop tracked senders whose last inbound message has aged out of the 24h
+   * window, and Meta message ids that have aged out of the (much shorter)
+   * webhook-retry dedup window. Same timer (`sweepTimer`), two independent
+   * cutoffs — an evicted message id is treated as new if Meta ever redelivers
+   * it after the dedup window closes, an accepted trade-off (see #249).
+   */
   private sweepLastInboundAt(): void {
-    const cutoff = Date.now() - CUSTOMER_SERVICE_WINDOW_MS;
+    const now = Date.now();
+    const inboundCutoff = now - CUSTOMER_SERVICE_WINDOW_MS;
     for (const [from, lastInbound] of this.lastInboundAt) {
-      if (lastInbound < cutoff) this.lastInboundAt.delete(from);
+      if (lastInbound < inboundCutoff) this.lastInboundAt.delete(from);
+    }
+    const dedupCutoff = now - MESSAGE_ID_DEDUP_WINDOW_MS;
+    for (const [id, firstSeen] of this.seenMessageIds) {
+      if (firstSeen < dedupCutoff) this.seenMessageIds.delete(id);
     }
   }
 
@@ -207,6 +236,17 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   }
 
   private async onCloudMessage(msg: CloudInboundMessage): Promise<void> {
+    // Check-and-insert BEFORE any await: this is what makes it race-safe
+    // against a Meta webhook retry landing while the first delivery's turn
+    // is still mid-flight, not just against two deliveries that never
+    // overlap. Whichever call reaches this line first wins atomically —
+    // Node never interleaves synchronous code between two calls.
+    if (this.seenMessageIds.has(msg.id)) {
+      logger.debug({ id: msg.id, from: msg.from }, 'WhatsApp Cloud: duplicate webhook delivery, skipping');
+      return;
+    }
+    this.seenMessageIds.set(msg.id, Date.now());
+
     this.lastInboundAt.set(msg.from, Date.now());
     if (!this.handler) return;
     if (!isAllowedSender(msg.from, config.whatsapp.allowedJids)) return;
@@ -220,6 +260,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       isDirect: true,
       addressedToBot: true,
       timestamp: msg.timestampMs,
+      messageId: msg.id,
       raw: msg,
     };
     await this.handler(normalised);
