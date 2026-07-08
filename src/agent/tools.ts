@@ -1986,10 +1986,26 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
       limit: z.number().optional().describe('Max entries (default 20)'),
       offset: z.number().optional().describe('Pagination offset (default 0)'),
+      staleOnly: z
+        .boolean()
+        .optional()
+        .describe(
+          'Only show entries untouched for KNOWLEDGE_STALE_DAYS+ days (the same entries counted in the ' +
+            'weekly digest); ordered oldest-touched first.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge');
-      const entries = await listKnowledge({ scope: args.scope, limit: args.limit, offset: args.offset });
+      const staleDays = config.adminDigest.knowledgeStaleDays;
+      if (args.staleOnly && staleDays <= 0) {
+        return text('Staleness tracking is disabled (KNOWLEDGE_STALE_DAYS is not set).');
+      }
+      const entries = await listKnowledge({
+        scope: args.scope,
+        limit: args.limit,
+        offset: args.offset,
+        ...(args.staleOnly ? { staleOnly: true, staleDays } : {}),
+      });
       if (entries.length === 0) return text('No knowledge entries found.');
       return text(
         untrusted(
