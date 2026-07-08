@@ -97,9 +97,9 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
 - **Privileged targets are validated**: `moderate`/`announce`/`create_poll`/
-  `create_thread`/`archive_thread` refuse targets (conversations/users) the
-  bot has never seen, so a manipulated admin turn cannot message arbitrary
-  phone numbers or unknown channels. `link_member`
+  `end_poll`/`create_thread`/`archive_thread` refuse targets
+  (conversations/users) the bot has never seen, so a manipulated admin turn
+  cannot message arbitrary phone numbers or unknown channels. `link_member`
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.

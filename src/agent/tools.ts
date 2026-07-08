@@ -1599,7 +1599,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     'create_poll',
     'Post a native Discord poll to gauge interest (e.g. meetup dates, topic preferences) — a structured ' +
       'vote with a visible tally and duration, unlike a reaction straw poll. Discord only. Admins can only ' +
-      'post in conversations they are in.',
+      'post in conversations they are in. Set multiChoice to let voters pick more than one option. NOTE: ' +
+      'Discord polls cannot be edited after posting — the question, options, duration, and single-vs-multi ' +
+      'choice setting are fixed at creation. To change a poll, end it (end_poll) and post a new one; the new ' +
+      "poll starts with zero votes (the old poll's votes cannot be carried over).",
     {
       question: z.string().max(POLL_QUESTION_MAX_CHARS).describe('The poll question'),
       options: z
@@ -1608,6 +1611,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .max(POLL_MAX_OPTIONS)
         .describe(
           `${POLL_MIN_OPTIONS}-${POLL_MAX_OPTIONS} answer options, each up to ${POLL_OPTION_MAX_CHARS} characters`,
+        ),
+      multiChoice: z
+        .boolean()
+        .optional()
+        .describe(
+          'Allow selecting more than one option (default: single choice). Fixed at creation — cannot be changed later.',
         ),
       durationHours: z
         .number()
@@ -1644,7 +1653,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       // Range is enforced at the zod schema boundary above; only truncate to
       // whole hours here (the schema permits fractional values in-range).
       const duration = Math.trunc(args.durationHours ?? POLL_DEFAULT_DURATION_HOURS);
-      const params = { question: args.question, options: args.options, durationHours: duration };
+      const params = {
+        question: args.question,
+        options: args.options,
+        durationHours: duration,
+        multiChoice: args.multiChoice ?? false,
+      };
       const { success, result } = await audited({
         actionKind: 'create_poll',
         conversationId: target,
@@ -1657,6 +1671,51 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           }),
       });
       return text(success ? `Poll posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const endPoll = tool(
+    'end_poll',
+    'End (finalize) a running Discord poll early: freezes its current results and stops further voting. ' +
+      'Discord only; admins can only act in conversations they are in. This is IRREVERSIBLE, but it does NOT ' +
+      'delete the poll or its votes — the final tally stays visible. Discord polls cannot be edited or ' +
+      'converted (e.g. to multi-choice) after posting; to change one, end it here and post a fresh poll with ' +
+      'create_poll.',
+    {
+      messageId: z
+        .string()
+        .describe("The poll message's id (in Discord: right-click the poll → Copy Message ID)"),
+      conversationId: z
+        .string()
+        .optional()
+        .describe('Channel/conversation id the poll is in; defaults to the current one'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'end_poll');
+      if (!adapter.adminCapabilities.has('end_poll')) {
+        return text(`This platform (${adapter.platform}) does not support polls.`, true);
+      }
+      const target = args.conversationId ?? caller.conversationId;
+      const allowed = await callerScope();
+      if (allowed && !allowed.includes(target)) {
+        return text(`Refusing: you are not a participant of conversation "${target}".`, true);
+      }
+      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+        return text(`Refusing: conversation "${target}" is unknown.`, true);
+      }
+      const params = { messageId: args.messageId };
+      const { success, result } = await audited({
+        actionKind: 'end_poll',
+        conversationId: target,
+        params,
+        run: () =>
+          adapter.performAdminAction({
+            kind: 'end_poll',
+            conversationId: target,
+            params,
+          }),
+      });
+      return text(success ? result : `Failed: ${result}`, !success);
     },
   );
 
@@ -3250,6 +3309,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       clearWarningsTool,
       announce,
       createPoll,
+      endPoll,
       createThread,
       archiveThread,
       createEvent,

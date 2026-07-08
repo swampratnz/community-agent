@@ -69,6 +69,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'remove_community_role',
     'list_assignable_roles',
     'create_poll',
+    'end_poll',
     'create_thread',
     'archive_thread',
     'create_event',
@@ -605,7 +606,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
             question: { text: question },
             answers,
             duration: durationHours,
-            allowMultiselect: false,
+            allowMultiselect: Boolean(action.params?.multiChoice),
           },
           // Poll question/answer text is a distinct media field (not
           // `content`) and isn't mention-parsed, but every other outbound
@@ -613,7 +614,23 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
           // than relying on that Discord behavior being unstated.
           allowedMentions: { parse: [] },
         });
-        return `Poll posted with ${answers.length} option(s), open ${durationHours}h.`;
+        const mode = action.params?.multiChoice ? 'multiple choice' : 'single choice';
+        return `Poll posted with ${answers.length} option(s) (${mode}), open ${durationHours}h.`;
+      }
+      case 'end_poll': {
+        // Discord's ONLY poll mutation: expire a running poll (POST
+        // /channels/{id}/polls/{msg}/expire via Poll#end). Finalizes the tally
+        // and stops voting — it does NOT delete the poll or its votes, and a
+        // poll cannot be edited/converted (allow_multiselect is creation-only).
+        const channel = await this.client.channels.fetch(action.conversationId!);
+        if (!channel || !channel.isTextBased()) throw new Error('Channel not found or not text-based');
+        const messageId = paramString(action.params?.messageId);
+        if (!messageId) throw new Error('end_poll requires params.messageId');
+        const msg = await channel.messages.fetch(messageId);
+        if (!msg.poll) throw new Error(`Message ${messageId} does not contain a poll.`);
+        if (msg.poll.resultsFinalized) return `Poll ${messageId} has already ended.`;
+        await msg.poll.end();
+        return `Ended poll ${messageId}; its results are now final.`;
       }
       case 'create_thread': {
         // Only text/announcement channels expose GuildTextThreadManager

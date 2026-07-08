@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-09
+
+### Added
+- **Multi-choice polls + `end_poll`**: `create_poll` gained a `multiChoice` option so an admin can post a poll where voters pick more than one option (defaults to single choice, so nothing changes unless asked). A new admin `end_poll` tool closes a running poll early — it freezes the tally and stops further voting without deleting the poll or its votes. Both are Discord-only, conversation-scoped, and audited like `create_poll`. Note (a Discord limit, not ours): **polls can't be edited or converted after posting** — the question, options, duration, and single-vs-multi setting are fixed at creation, so switching an existing poll to multi-choice means ending it and posting a new one, which starts with zero votes.
+
 ## 2026-07-08
 
 ### Added
