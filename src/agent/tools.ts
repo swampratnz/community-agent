@@ -252,17 +252,35 @@ export function formatKnowledgeSearchResults(
     .join('\n');
 }
 
+/**
+ * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
+ * two today; a future third adapter only needs adding here.
+ */
+const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+
+/**
+ * Alerts every super admin on every platform, not just the one the triggering
+ * event happened on (issue #288) — mirrors the loop-every-connected-adapter
+ * pattern already used by `usageAlert.ts`'s `alertSuperAdmins` and
+ * `router.ts`'s budget-check alert. `adapterFor` is the same per-platform
+ * lookup `buildToolServer` already threads through for #157; a platform with
+ * no registered or connected adapter is silently skipped, matching that
+ * lookup's existing fallback behaviour.
+ */
 async function notifySuperAdmins(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
 ): Promise<void> {
-  for (const id of superAdminIds(platform)) {
-    if (id === excludeUserId) continue;
-    adapter
-      .sendDirectMessage(id, `🔔 ${message}`)
-      .catch((err) => logger.warn({ err, id }, 'Super-admin alert failed'));
+  for (const platform of ALL_PLATFORMS) {
+    const target = adapterFor(platform);
+    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    for (const id of superAdminIds(platform)) {
+      if (id === excludeUserId) continue;
+      target
+        .sendDirectMessage(id, `🔔 ${message}`)
+        .catch((err) => logger.warn({ err, id, platform }, 'Super-admin alert failed'));
+    }
   }
 }
 
@@ -517,8 +535,7 @@ export async function notifyReportResolved(
  * tool-call transport, same convention as notifyReportResolved.
  */
 export async function notifyReportFiled(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   report: {
     id: number;
     reporterUserId: string;
@@ -535,7 +552,7 @@ export async function notifyReportFiled(
   ];
   if (report.targetUserId) lines.push(`Target user: ${report.targetUserId}`);
   if (report.messageId) lines.push(`Message id: ${report.messageId}`);
-  await notifySuperAdmins(adapter, platform, lines.join('\n'), report.reporterUserId);
+  await notifySuperAdmins(adapterFor, lines.join('\n'), report.reporterUserId);
 }
 
 /**
@@ -549,15 +566,13 @@ export async function notifyReportFiled(
  * convention as `notifyReportFiled`.
  */
 export async function notifyReportWithdrawn(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   info: { ids: number[]; reporterUserId: string; reporterName: string | null },
 ): Promise<void> {
   const list = info.ids.map((id) => `#${id}`).join(', ');
   const plural = info.ids.length > 1;
   await notifySuperAdmins(
-    adapter,
-    platform,
+    adapterFor,
     `Report${plural ? 's' : ''} ${list} withdrawn by the reporter ${info.reporterName ?? info.reporterUserId}. ` +
       `Marked 'withdrawn' and kept on record — no action needed unless you want to check in.`,
     info.reporterUserId,
@@ -795,8 +810,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     }).catch((err) => logger.error({ err }, 'Audit write failed'));
     if (success) {
       void notifySuperAdmins(
-        adapter,
-        caller.platform,
+        adapterFor,
         `${caller.userName} (${caller.role}) ran ${input.actionKind}${input.targetUserId ? ` on ${input.targetUserId}` : ''}: ${result}`,
         caller.userId,
       );
@@ -1049,7 +1063,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           true,
         );
       }
-      void notifyReportFiled(adapter, caller.platform, {
+      void notifyReportFiled(adapterFor, {
         id: created.id,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
@@ -1074,7 +1088,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (ids.length === 0) {
         return text('You have no open reports to withdraw.', true);
       }
-      void notifyReportWithdrawn(adapter, caller.platform, {
+      void notifyReportWithdrawn(adapterFor, {
         ids,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
