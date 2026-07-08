@@ -3211,6 +3211,10 @@ export interface AnswerFeedback {
   interactionId: number | null;
   helpful: boolean;
   createdAt: Date;
+  /** The rated answer's text, or `null` when the interaction was since purged. */
+  content: string | null;
+  /** Knowledge entry id the answer was served from, when sent via the deterministic knowledge shortcut. */
+  knowledgeEntryId: number | null;
 }
 
 function mapAnswerFeedback(r: {
@@ -3221,6 +3225,8 @@ function mapAnswerFeedback(r: {
   interaction_id: number | string | null;
   helpful: boolean;
   created_at: Date;
+  content: string | null;
+  knowledge_entry_id: number | string | null;
 }): AnswerFeedback {
   return {
     id: Number(r.id),
@@ -3230,6 +3236,8 @@ function mapAnswerFeedback(r: {
     interactionId: r.interaction_id != null ? Number(r.interaction_id) : null,
     helpful: r.helpful,
     createdAt: r.created_at,
+    content: r.content,
+    knowledgeEntryId: r.knowledge_entry_id != null ? Number(r.knowledge_entry_id) : null,
   };
 }
 
@@ -3320,20 +3328,29 @@ export async function listAnswerFeedback(
   const filters: string[] = [];
   if (conversationIds) {
     params.push([...conversationIds]);
-    filters.push(`conversation_id = ANY($${params.length})`);
+    filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);
   }
   if (unhelpfulOnly) {
-    filters.push(`helpful = false`);
+    filters.push(`answer_feedback.helpful = false`);
   }
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
   params.push(clampedLimit);
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
+  // LEFT JOIN interactions to surface the rated answer's text and (when
+  // served via the deterministic knowledge shortcut) which knowledge entry
+  // produced it (issue #269) — both read through the SAME conversation_id
+  // scope filter above, so an admin outside the rated conversation never
+  // sees the enrichment either.
   const { rows } = await pool.query(
-    `SELECT id, platform, conversation_id, user_id, interaction_id, helpful, created_at
+    `SELECT answer_feedback.id, answer_feedback.platform, answer_feedback.conversation_id,
+            answer_feedback.user_id, answer_feedback.interaction_id, answer_feedback.helpful,
+            answer_feedback.created_at, interactions.content,
+            (interactions.meta->>'knowledgeEntryId')::bigint AS knowledge_entry_id
        FROM answer_feedback
+       LEFT JOIN interactions ON interactions.id = answer_feedback.interaction_id
        ${where}
-      ORDER BY created_at DESC
+      ORDER BY answer_feedback.created_at DESC
       LIMIT $${params.length}`,
     params,
   );
