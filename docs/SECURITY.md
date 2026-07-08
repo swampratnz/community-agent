@@ -435,7 +435,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `interactions` is `ON DELETE SET NULL`, so purging the *rated* interaction
   (the recipient's own purge, a different identity than the rater) clears the
   reference rather than deleting the feedback row or leaving a dangling FK —
-  the aggregate helpful/unhelpful trend survives.
+  the aggregate helpful/unhelpful trend survives. `list_low_rated_knowledge`
+  (issue #287) is the grouped, admin-only complement — same admin gate and
+  conversation-scope filter, no new stored data, no CONFIRM (read-only). It
+  aggregates ratings by `knowledgeEntryId`, so a rating outside the caller's
+  scope is excluded from the count entirely, not merely hidden from a
+  per-row view (pinned by a `SECURITY:` test); an entry only surfaces once
+  its `unhelpfulCount` clears `minUnhelpful` (default 2).
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard

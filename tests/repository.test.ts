@@ -88,6 +88,7 @@ const {
   setLanguagePreference,
   createAnswerFeedback,
   listAnswerFeedback,
+  listKnowledgeFeedbackSummary,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
   getMyDataSummary,
@@ -3515,6 +3516,159 @@ test(
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
       [inScopeConvo, outOfScopeConvo],
     ]);
+  },
+);
+
+// listKnowledgeFeedbackSummary (issue #287): the grouped complement to
+// listAnswerFeedback, aggregating answer_feedback per knowledgeEntryId.
+test(
+  'repository: listKnowledgeFeedbackSummary aggregates per knowledge entry, applies the minUnhelpful threshold, sorts by unhelpfulCount descending, and never counts ratings on non-shortcut-served answers',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-knowledge-feedback-summary`;
+    const { id: hotEntryId } = await saveKnowledge({
+      content: `${RUN} hot entry content`,
+      title: `${RUN} hot entry`,
+    });
+    const { id: mediumEntryId } = await saveKnowledge({
+      content: `${RUN} medium entry content`,
+      title: `${RUN} medium entry`,
+    });
+    const { id: warmEntryId } = await saveKnowledge({
+      content: `${RUN} warm entry content`,
+      title: `${RUN} warm entry`,
+    });
+
+    async function rateShortcut(entryId: number, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-summary-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    // hotEntry: 3 unhelpful, 1 helpful — clears the default threshold with the highest unhelpfulCount.
+    users.push(await rateShortcut(hotEntryId, 'hot-u1', false));
+    users.push(await rateShortcut(hotEntryId, 'hot-u2', false));
+    users.push(await rateShortcut(hotEntryId, 'hot-u3', false));
+    users.push(await rateShortcut(hotEntryId, 'hot-u4', true));
+    // mediumEntry: exactly 2 unhelpful — clears the default threshold, fewer than hotEntry.
+    users.push(await rateShortcut(mediumEntryId, 'medium-u1', false));
+    users.push(await rateShortcut(mediumEntryId, 'medium-u2', false));
+    // warmEntry: exactly 1 unhelpful — below the default threshold of 2.
+    users.push(await rateShortcut(warmEntryId, 'warm-u1', false));
+
+    // Non-shortcut-served rating: must never be counted toward any entry.
+    const plainUser = `${RUN}-summary-plain`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a plain non-shortcut answer',
+      meta: { replyToUserId: plainUser },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: plainUser, helpful: false }),
+    );
+    users.push(plainUser);
+
+    const defaultSummary = await listKnowledgeFeedbackSummary([conversationId]);
+    const hotRow = defaultSummary.find((s) => s.knowledgeEntryId === hotEntryId);
+    assert.ok(hotRow, 'hotEntry clears the default threshold and is aggregated');
+    assert.equal(hotRow?.unhelpfulCount, 3, 'hotEntry unhelpfulCount is correct');
+    assert.equal(hotRow?.helpfulCount, 1, 'hotEntry helpfulCount is correct');
+    assert.ok(
+      defaultSummary.some((s) => s.knowledgeEntryId === mediumEntryId && s.unhelpfulCount === 2),
+      'mediumEntry (exactly 2 unhelpful) clears the default threshold',
+    );
+    assert.ok(
+      !defaultSummary.some((s) => s.knowledgeEntryId === warmEntryId),
+      'warmEntry (1 unhelpful) is excluded at the default minUnhelpful threshold of 2',
+    );
+    const hotIndex = defaultSummary.findIndex((s) => s.knowledgeEntryId === hotEntryId);
+    const mediumIndex = defaultSummary.findIndex((s) => s.knowledgeEntryId === mediumEntryId);
+    assert.ok(
+      hotIndex >= 0 && mediumIndex >= 0 && hotIndex < mediumIndex,
+      'entries are sorted by unhelpfulCount descending (hotEntry before mediumEntry)',
+    );
+
+    const lowerThreshold = await listKnowledgeFeedbackSummary([conversationId], 1);
+    assert.ok(
+      lowerThreshold.some((s) => s.knowledgeEntryId === warmEntryId && s.unhelpfulCount === 1),
+      'warmEntry is included once minUnhelpful is lowered to 1',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[hotEntryId, mediumEntryId, warmEntryId]]);
+  },
+);
+
+test(
+  'SECURITY: repository: listKnowledgeFeedbackSummary scopes by conversation — a rating recorded outside the calling admin scope is excluded from the aggregate entirely, while a null (super admin) scope sees it',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-knowledge-feedback-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-knowledge-feedback-scope-out`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} scope-test entry content` });
+
+    async function rateShortcut(conversationId: string, userSuffix: string) {
+      const userId = `${RUN}-summary-scope-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      );
+      return userId;
+    }
+
+    const inScopeUsers = [await rateShortcut(inScopeConvo, 'in-1'), await rateShortcut(inScopeConvo, 'in-2')];
+    const outOfScopeUsers = [
+      await rateShortcut(outOfScopeConvo, 'out-1'),
+      await rateShortcut(outOfScopeConvo, 'out-2'),
+    ];
+
+    const scoped = await listKnowledgeFeedbackSummary([inScopeConvo], 1);
+    const scopedRow = scoped.find((s) => s.knowledgeEntryId === entryId);
+    assert.ok(scopedRow, 'the in-scope ratings are aggregated');
+    assert.equal(
+      scopedRow?.unhelpfulCount,
+      2,
+      'SECURITY: only the 2 in-scope ratings are counted, never the 2 out-of-scope ratings',
+    );
+
+    const unscoped = await listKnowledgeFeedbackSummary(null, 1);
+    const unscopedRow = unscoped.find((s) => s.knowledgeEntryId === entryId);
+    assert.equal(
+      unscopedRow?.unhelpfulCount,
+      4,
+      'null scope (super admin) sees ratings from every conversation, including out-of-scope ones',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [...inScopeUsers, ...outOfScopeUsers],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
   },
 );
 

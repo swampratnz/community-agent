@@ -149,6 +149,7 @@ export const ADMIN_TOOLS = [
   'mcp__community__list_reports',
   'mcp__community__resolve_report',
   'mcp__community__list_answer_feedback',
+  'mcp__community__list_low_rated_knowledge',
   'mcp__community__list_suggestions',
   'mcp__community__resolve_suggestion',
 ] as const;

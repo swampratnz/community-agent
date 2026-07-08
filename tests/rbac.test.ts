@@ -256,6 +256,21 @@ test('SECURITY: list_answer_feedback is admin-only — a member can never read t
   }
 });
 
+test('SECURITY: list_low_rated_knowledge is admin-only — a member can never read the per-entry aggregate (issue #287)', () => {
+  const tool = 'mcp__community__list_low_rated_knowledge';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'list_low_rated_knowledge must be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'list_low_rated_knowledge must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_low_rated_knowledge`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_low_rated_knowledge`);
+  }
+});
+
 test('SECURITY: list_reports and resolve_report are admin-only (member/guest must never reach them)', () => {
   const tools = ['mcp__community__list_reports', 'mcp__community__resolve_report'];
   for (const t of tools) {

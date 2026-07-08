@@ -40,6 +40,7 @@ import {
   listAnswerFeedback,
   listContextDigests,
   listKnowledge,
+  listKnowledgeFeedbackSummary,
   listOwnReports,
   listOwnSuggestions,
   listReports,
@@ -2650,6 +2651,42 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { annotations: { readOnlyHint: true } },
   );
 
+  const listLowRatedKnowledgeTool = tool(
+    'list_low_rated_knowledge',
+    'Show knowledge entries with accumulated unhelpful ratings (>= minUnhelpful) on answers served via the ' +
+      'deterministic knowledge shortcut — grouped by entry so you can spot a bad or stale FAQ answer without ' +
+      "scanning list_answer_feedback's raw per-rating list. Excludes answers served via model-mediated " +
+      'knowledge_search (not linked to a specific entry). A rating from a conversation you do not participate ' +
+      'in is not counted here even for admins — only for a super admin. Admin only.',
+    {
+      minUnhelpful: z
+        .number()
+        .optional()
+        .describe('Minimum unhelpful ratings for an entry to be shown (default 2)'),
+      limit: z.number().optional().describe('Max entries (default 20)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_low_rated_knowledge');
+      const allowed = await callerScope();
+      const rows = await listKnowledgeFeedbackSummary(allowed, args.minUnhelpful ?? 2, args.limit ?? 20);
+      if (rows.length === 0)
+        return text('No knowledge entries meet that unhelpful-rating threshold (within your conversations).');
+      return text(
+        untrusted(
+          'Low-rated knowledge entries',
+          rows
+            .map(
+              (r) =>
+                `#${r.knowledgeEntryId}${r.title ? ` "${r.title}"` : ''} — ${r.helpfulCount} helpful, ` +
+                `${r.unhelpfulCount} unhelpful (updated ${r.updatedAt.toISOString()})`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -3286,6 +3323,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       listReportsTool,
       resolveReportTool,
       listAnswerFeedbackTool,
+      listLowRatedKnowledgeTool,
       listSuggestionsTool,
       resolveSuggestionTool,
       addMember,
