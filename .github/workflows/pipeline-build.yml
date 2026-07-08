@@ -25,6 +25,17 @@ name: Pipeline build worker
 # tools a build needs so there is zero denial thrash, and (b) verify the
 # outcome deterministically: if no open PR closing this issue exists, relabel
 # `needs-human`, comment, and fail the job loudly.
+#
+# WHY the prompt forbids ending the turn to "wait": issue #256 (run
+# 28917783004) finished conclusion=success (60 turns) but produced no PR — its
+# captured final summary was "I'll end this turn and resume once the test run
+# completes or the wakeup fires." The agent ran the gate in the background and
+# yielded, expecting an interactive-style async resume. In a one-shot CI job
+# there is none — ending the turn exits the process, so it terminated mid-gate
+# with nothing committed. This is deterministic, not a flake, so all 3 blind
+# retries reproduced it. The prompt now states plainly that this is a single,
+# non-resumable execution and the agent must run every gate synchronously to
+# completion in the same turn.
 
 on:
   issues:
@@ -199,6 +210,16 @@ jobs:
             5. Do NOT merge — a human merges. If the proposal turns out infeasible or
                unsafe as specified, add the `needs-human` label and explain instead of
                forcing it.
+            This is a SINGLE, NON-RESUMABLE execution — a one-shot CI job, not an
+            interactive session. There is NO wakeup, scheduled resume, or "continue
+            later": the instant you end your turn, this process exits and everything
+            still in flight is lost. So NEVER end your turn to "wait" for anything —
+            do not kick off `npm test` (or any gate) in the background and yield
+            expecting to be re-invoked when it finishes. Run every command to
+            completion synchronously and read its result within this same turn. You
+            are only finished once the PR is open (or you have posted a blocker
+            comment per below) — not when work is "in progress" or a run is "still
+            going".
             NEVER end without opening a PR AND leaving a trace: if for ANY reason you
             finish without a PR (a gate you can't make green, a genuine blocker, a
             refusal), you MUST first `gh issue comment` this issue explaining exactly
