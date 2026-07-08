@@ -261,6 +261,15 @@ async function notifySuperAdmins(
 export const COMMUNITY_GUIDELINES_MAX_CHARS = 1500;
 
 /**
+ * Cap on the admin-configured welcome message (issue #253). Sized so a
+ * maxed-out configured welcome PLUS a maxed-out configured
+ * COMMUNITY_GUIDELINES_MAX_CHARS PLUS the `"\n\nCommunity guidelines:\n"`
+ * preamble (24 chars) can never exceed Discord's 2000-character message
+ * limit: 2000 - 1500 - 24 = 476 headroom; 400 leaves comfortable margin.
+ */
+export const WELCOME_MESSAGE_MAX_CHARS = 400;
+
+/**
  * create_poll (issue #228) bounds — the Discord Poll API's own hard limits
  * (question/answer length, answer count, duration), enforced here so a
  * malformed request fails at our zod schema boundary instead of a late
@@ -1878,6 +1887,32 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     },
   );
 
+  const setWelcomeMessage = tool(
+    'set_welcome_message',
+    'Set the welcome message sent to new members on join (Discord DM/channel fallback, WhatsApp group ' +
+      `post), in place of the hardcoded default. Max ${WELCOME_MESSAGE_MAX_CHARS} characters. Pass an ` +
+      'empty string to clear and revert to the default. Admin only.',
+    {
+      text: z
+        .string()
+        .max(WELCOME_MESSAGE_MAX_CHARS)
+        .describe(`The welcome text, or "" to clear (max ${WELCOME_MESSAGE_MAX_CHARS} characters)`),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'set_welcome_message');
+      const { success, result } = await audited({
+        actionKind: 'set_welcome_message',
+        params: { text: args.text },
+        run: async () => {
+          await updatePolicy('welcome_message', args.text, caller.userId);
+          return args.text ? 'updated' : 'cleared';
+        },
+      });
+      if (!success) return text(`Failed: ${result}`, true);
+      return text(args.text ? 'Welcome message updated.' : 'Welcome message cleared.');
+    },
+  );
+
   const saveKnowledgeTool = tool(
     'save_knowledge',
     'Save a durable fact/FAQ/resource to community knowledge for future recall. Admin only.',
@@ -3201,6 +3236,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       archiveThread,
       createEvent,
       setCommunityGuidelines,
+      setWelcomeMessage,
       saveKnowledgeTool,
       listKnowledgeTool,
       updateKnowledgeTool,

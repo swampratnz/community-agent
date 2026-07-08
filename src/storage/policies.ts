@@ -9,13 +9,14 @@ import { getPolicyValue, setPolicyValue } from './repository.js';
 
 export type CodeAnswersPolicy = 'off' | 'snippets' | 'full';
 
-export const POLICY_KEYS = ['code_answers', 'paused', 'community_guidelines'] as const;
+export const POLICY_KEYS = ['code_answers', 'paused', 'community_guidelines', 'welcome_message'] as const;
 export type PolicyKey = (typeof POLICY_KEYS)[number];
 
 const DEFAULTS: Record<PolicyKey, unknown> = {
   code_answers: 'snippets',
   paused: false,
   community_guidelines: null,
+  welcome_message: null,
 };
 
 const CACHE_TTL_MS = 30_000;
@@ -52,6 +53,17 @@ export async function isPaused(): Promise<boolean> {
  */
 export async function getCommunityGuidelines(): Promise<string | null> {
   const v = await readPolicy('community_guidelines');
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * The current admin-configured welcome message, or null if never set (or
+ * cleared via an empty string — see set_welcome_message, issue #253). Null
+ * means "use the platform's hardcoded default", same null-means-default-or-
+ * cleared contract as getCommunityGuidelines.
+ */
+export async function getWelcomeMessage(): Promise<string | null> {
+  const v = await readPolicy('welcome_message');
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
