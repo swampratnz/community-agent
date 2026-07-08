@@ -805,14 +805,26 @@ test('onGuildMemberAdd: the rejoin re-mute runs before any welcome-message logic
 /**
  * Mocks pool.query so a `community_guidelines` policy read returns `value`
  * (or nothing, if omitted). `opts.welcomeMessage` similarly stubs the
- * `welcome_message` key (issue #253); `opts.throwFor` simulates a policy
+ * `welcome_message` key (issue #253); `opts.welcomeMessageMi` stubs the
+ * `welcome_message_mi` key and `opts.languagePreference` stubs the
+ * `language_prefs` lookup (issue #282); `opts.throwFor` simulates a policy
  * read failure for the named key.
  */
 function stubPoliciesQuery(
   value?: string,
-  opts?: { welcomeMessage?: string; throwFor?: 'community_guidelines' | 'welcome_message' },
+  opts?: {
+    welcomeMessage?: string;
+    welcomeMessageMi?: string;
+    languagePreference?: 'en' | 'mi';
+    throwFor?: 'community_guidelines' | 'welcome_message' | 'welcome_message_mi';
+  },
 ) {
   return async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM language_prefs')) {
+      return opts?.languagePreference === undefined
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ language: opts.languagePreference }], rowCount: 1 };
+    }
     if (!sql.includes('FROM policies')) return { rows: [], rowCount: 0 };
     const key = params?.[0];
     if (opts?.throwFor === key) throw new Error('simulated policy read failure');
@@ -823,6 +835,11 @@ function stubPoliciesQuery(
       return opts?.welcomeMessage === undefined
         ? { rows: [], rowCount: 0 }
         : { rows: [{ value: opts.welcomeMessage }], rowCount: 1 };
+    }
+    if (key === 'welcome_message_mi') {
+      return opts?.welcomeMessageMi === undefined
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ value: opts.welcomeMessageMi }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   };
@@ -960,6 +977,124 @@ test('SECURITY: onGuildMemberAdd falls back to the hardcoded default welcome whe
     );
   } finally {
     config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+// --- onGuildMemberAdd: rejoin honours a standing mi language preference (issue #282) -----------------
+
+test('onGuildMemberAdd: a rejoining member with a standing mi preference and a welcome_message_mi variant gets the mi welcome (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const guidelines = 'Be respectful. No spam.';
+  const welcomeMessageMi = 'Kia ora and welcome back to our community!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessageMi, languagePreference: 'mi' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-mi-rejoin',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [`${welcomeMessageMi}\n\nCommunity guidelines:\n${guidelines}`]);
+    assert.ok(
+      !sent[0].includes(WELCOME_MESSAGE),
+      'the default-language welcome must not appear once an mi variant is configured for an mi member',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: a member with a standing mi preference but no welcome_message_mi variant gets the existing default-language welcome (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const welcomeMessage = 'Welcome to our community!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage, languagePreference: 'mi' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-mi-no-variant',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(
+      sent,
+      [welcomeMessage],
+      'an mi member with no mi variant set must fall back to the default-language welcome, never blank or an error',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: a member with no standing language preference gets the default-language welcome even when a welcome_message_mi variant exists (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const welcomeMessageMi = 'Kia ora and welcome back!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessageMi }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-no-preference',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(
+      sent,
+      [WELCOME_MESSAGE],
+      'a member with no stored language preference must see byte-identical behaviour to today regardless of an mi variant existing',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: the channel fallback also uses the mi welcome variant identically to the DM (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasChannelId = config.discord.welcome.channelId;
+  config.discord.welcome.enabled = true;
+  config.discord.welcome.channelId = 'chan-welcome';
+  const welcomeMessageMi = 'Kia ora and welcome back!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessageMi, languagePreference: 'mi' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent = stubClient(adapter);
+    const member = fakeGuildMember({
+      id: 'user-mi-dm-closed',
+      guildId: config.discord.guildId,
+      send: async () => {
+        throw new Error('Cannot send messages to this user');
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.equal(sent.length, 1);
+    assert.ok(
+      sent[0].includes(welcomeMessageMi),
+      'the channel-fallback welcome must use the same resolved mi variant as the DM path',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.discord.welcome.channelId = wasChannelId;
     resetPolicyCacheForTests();
   }
 });

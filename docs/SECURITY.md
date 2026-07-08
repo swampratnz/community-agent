@@ -518,6 +518,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   render confidently and accurately in te reo Māori — preventing a standing
   preference from forcing a low-quality translation of technical content.
   Purge-coherent: `forget_me`/`purge_user_data` delete the caller's row.
+  Welcome-message bilingual support was originally scoped **out** of #266
+  (no stored preference is knowable at genuinely first contact) — that
+  premise is false for a *rejoining* Discord member, since leaving only
+  clears `server_roster`, never `language_prefs`, so a standing `mi`
+  preference survives a leave/rejoin cycle. Issue #282 closes that one case:
+  `DiscordAdapter.onGuildMemberAdd` looks up the rejoining member's standing
+  preference and serves the admin-configured `welcome_message_mi` variant
+  (same `_mi`-key pattern as `community_guidelines_mi`) if one is set,
+  falling back to the default-language welcome unchanged otherwise. WhatsApp
+  Cloud's first-contact welcome and Baileys' group welcome remain out of
+  scope: Cloud's welcome fires on a number's genuinely first-ever message
+  (no prior interaction, so no preference row can exist), and Baileys posts
+  one welcome per join batch to the whole group, not per individual member,
+  so there is no single caller to key a lookup off.
 - **Auto-moderation** (`DISCORD_MODERATION_ENABLED`, `member_warnings`, off by
   default): when enabled, the Discord adapter scans **every** in-scope guild
   message for bad language / abuse — a privacy-posture change of the same class

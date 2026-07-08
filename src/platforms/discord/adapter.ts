@@ -28,13 +28,19 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
+import {
+  getCodeAnswersPolicy,
+  getCommunityGuidelines,
+  getWelcomeMessage,
+  getWelcomeMessageMi,
+} from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import { atLeast } from '../../auth/rbac.js';
 import { resolveRole } from '../../auth/roles.js';
 import {
   countActiveWarnings,
   deleteInteractionByMessageId,
+  getLanguagePreference,
   markRosterLeave,
   updateInteractionByMessageId,
   upsertRosterMember,
@@ -310,9 +316,14 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * unaffected. DM-first; falls back to the configured channel if the
    * member has DMs closed. The welcome text itself is admin-configurable
    * (set_welcome_message, issue #253), falling back to the hardcoded
-   * WELCOME_MESSAGE default when unset. When community guidelines are set
-   * (issue #212), they're appended verbatim to it — never run through the
-   * model, so there's no paraphrase risk on this path.
+   * WELCOME_MESSAGE default when unset. A rejoining member with a standing
+   * set_language_preference('mi') gets the admin-configured welcome_message_mi
+   * variant instead, if one is set (issue #282) — falling back to the
+   * default-language welcome unchanged when it isn't. Guidelines (below) stay
+   * default-language regardless; only the welcome text itself is mi-aware.
+   * When community guidelines are set (issue #212), they're appended verbatim
+   * to it — never run through the model, so there's no paraphrase risk on
+   * this path.
    */
   private async onGuildMemberAdd(member: GuildMember): Promise<void> {
     if (member.guild.id !== config.discord.guildId) return;
@@ -336,7 +347,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
     if (!config.discord.welcome.enabled) return;
 
-    const welcomeMessage = (await getWelcomeMessage()) ?? WELCOME_MESSAGE;
+    const languagePreference = await getLanguagePreference('discord', member.id);
+    const welcomeMessageMi = languagePreference === 'mi' ? await getWelcomeMessageMi() : null;
+    const welcomeMessage = welcomeMessageMi ?? (await getWelcomeMessage()) ?? WELCOME_MESSAGE;
     const guidelines = await getCommunityGuidelines();
     const welcomeText = guidelines
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
