@@ -259,10 +259,10 @@ weakening it:
      then processing continues to the sender's actual message as normal. An
      in-memory per-process `Set` closes the race where a burst of messages
      from the same brand-new number could otherwise both see
-     `isKnownConversation` return `false` before the first is recorded. Unlike
-     Discord/Baileys, this still sends the hardcoded `WHATSAPP_CLOUD_WELCOME_MESSAGE`
-     rather than reading `set_welcome_message` (issue #253) — a deliberately
-     deferred follow-up, not required for v1.
+     `isKnownConversation` return `false` before the first is recorded. Like
+     Discord/Baileys, it reads `set_welcome_message` (issue #253) via
+     `getWelcomeMessage()`, falling back to the hardcoded
+     `WHATSAPP_CLOUD_WELCOME_MESSAGE` when unset.
    - Either platform's welcome text is followed by the admin-configured
      community guidelines, if set (see below) — the two are independent
      `policies` keys, concatenated at send time, never through the model.
