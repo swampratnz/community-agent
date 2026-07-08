@@ -68,28 +68,38 @@ function grokSessionsRoot(): string {
 /**
  * Generate an image with the Grok Build CLI.
  *
- * SECURITY POSTURE (see docs/SECURITY.md):
- *  - The CLI is locked to a single built-in tool, `GenerateImage`, via
- *    `--tools GenerateImage`. It has NO shell/file-write/exec tools, so
- *    `--always-approve` cannot approve host code execution — the worst an
- *    admin (or a prompt) can drive is "produce an image". Verified on the host:
- *    with only GenerateImage allowed, the model's attempts to reach Bash/Write
- *    are rejected as "Tool not found".
- *  - The subprocess gets a minimal env (grokEnv()), never the bot's secrets.
- *  - The prompt is an argv element, never a shell string (no shell injection).
+ * Image generation is grok's `/imagine` skill (which drives the built-in
+ * `image_gen` tool). The old `--tools GenerateImage` allowlist no longer works:
+ * that tool name was removed, and a `--tools` allowlist that references a
+ * non-existent tool makes grok's agent build fail ("Requirements unsatisfied:
+ * run_terminal_cmd"). `/imagine` needs the full default toolset, so the
+ * lockdown is re-expressed WITHOUT an allowlist:
  *
- * Because we deny the file tools, grok can't copy the image to a path we name;
- * instead GenerateImage saves it under its own session storage
- * (`$HOME/.grok/sessions/<enc-cwd>/<sessionId>/images/N.*`). We run it in a
- * throwaway cwd, read the session id back from `--output-format json`, load the
- * image, and delete the session directory. Throws on timeout, non-zero exit, or
- * if no recognisable image is produced.
+ * SECURITY POSTURE (see docs/SECURITY.md):
+ *  - We do NOT pass `--always-approve`. In headless mode every approval-gated
+ *    tool call (bash, file writes, subagents, MCP) is therefore CANCELLED,
+ *    never executed — verified on the host: a prompt explicitly ordering `bash`
+ *    to write a file returned stopReason "Cancelled" and wrote nothing. Only
+ *    auto-approved tools run, and the sole auto-approved tool with an effect is
+ *    image generation (which writes only into grok's own session images dir).
+ *  - Defence-in-depth: `--deny bash/search_replace/task/use_tool` explicitly
+ *    forbids the shell / file-write / subagent / MCP tools, and
+ *    `--disable-web-search` removes the web tools — so exec/write/exfil stay
+ *    blocked even if grok ever flipped one of those to auto-approved.
+ *  - The subprocess gets a minimal env (grokEnv()), never the bot's secrets.
+ *  - The prompt is an argv element, never a shell string (no shell injection),
+ *    passed as `/imagine <prompt>` — i.e. strictly as an image description.
+ *
+ * `image_gen` saves the result under grok's own session storage
+ * (`$HOME/.grok/sessions/<enc-cwd>/<sessionId>/images/N.*`) — we can't name the
+ * path. We run it in a throwaway cwd, read the session id back from
+ * `--output-format json`, load the image, and delete the session directory.
+ * Throws on timeout, non-zero exit, or if no recognisable image is produced.
  */
 export async function generateImage(prompt: string): Promise<GeneratedImage> {
   const cwd = await mkdtemp(join(tmpdir(), 'grokimg-'));
-  const instruction =
-    'Generate an image using your built-in image generation tool based on the description ' +
-    `below. Do not write or run any code.\n\nDescription: ${prompt}`;
+  // `/imagine` is grok's image-generation skill; the prompt is its description.
+  const instruction = `/imagine ${prompt}`;
   let sessionDir: string | undefined;
   try {
     const stdout = await runGrok(instruction, cwd);
@@ -149,18 +159,27 @@ async function locateSessionImage(
 /**
  * The argv for the grok subprocess. Exported and kept pure so a test can assert
  * the security-critical flags never silently drift:
- *  - `--tools GenerateImage` is the allowlist that makes unattended
- *    `--always-approve` safe (no Bash/file/exec tool for it to approve). If a
- *    refactor drops it, `--always-approve` becomes a host-code-execution surface.
+ *  - There is deliberately NO `--always-approve`: without it, headless grok
+ *    CANCELS every approval-gated tool (bash / file write / subagent / MCP)
+ *    rather than running it, so an admin or injected prompt cannot drive host
+ *    code execution. Re-adding `--always-approve` would reopen that surface.
+ *  - `--deny` blocks the shell / file-write / subagent / MCP tools explicitly
+ *    (defence-in-depth), and `--disable-web-search` removes the web tools.
  *  - `--output-format json` is how we read the session id back to locate the image.
+ *  - the prompt is passed as `/imagine <description>` — grok's image skill.
  */
 export function buildGrokArgs(instruction: string): string[] {
   return [
-    '--tools',
-    'GenerateImage',
+    '--deny',
+    'bash',
+    '--deny',
+    'search_replace',
+    '--deny',
+    'task',
+    '--deny',
+    'use_tool',
     '--output-format',
     'json',
-    '--always-approve',
     '--disable-web-search',
     '-p',
     instruction,

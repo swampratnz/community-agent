@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-09
+
+### Fixed
+- **Image generation works again** (`generate_image`). Grok removed the `GenerateImage` tool the bot was invoking, so every generation had been failing with an agent-build error; image generation is now grok's `/imagine` skill. Reworked the integration to call it and re-established the security lockdown without the old `--tools` allowlist (which is no longer possible): the subprocess runs with **no `--always-approve`** — so headless grok cancels any shell/file/subagent/MCP tool call instead of running it — plus explicit `--deny` rules for those tools and `--disable-web-search`. Verified end-to-end on the host (a real image is produced; a prompt ordering a shell command is cancelled and writes nothing). No behaviour change unless `IMAGE_GEN_ENABLED=true`. See docs/SECURITY.md §8.
+
 ## 2026-07-08
 
 ### Added

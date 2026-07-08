@@ -642,15 +642,20 @@ signed in with a SuperGrok subscription (device-code login, no API key). Unlike
 every other tool, this one spawns a **third-party agentic CLI** as the service
 user, so it gets its own controls:
 
-- **Locked to one built-in tool.** The subprocess runs
-  `grok --tools GenerateImage …` — an *allowlist* that removes every other
-  built-in tool, including Bash, file-write, and exec. So even though the CLI is
-  driven with `--always-approve` (unattended, no interactive prompt), there is
-  no shell/file/exec tool for it to approve: the worst an admin turn — or a
-  prompt-injected one — can drive is "produce an image". Verified on the host:
-  with only `GenerateImage` allowed, the model's attempts to reach `Bash`/`Write`
-  are rejected as *"Tool not found"*. This is the deliberate difference from a
-  bare agentic CLI, and why `--always-approve` is acceptable here.
+- **No auto-approval + a deny-list, so it can only produce an image.** Image
+  generation is grok's `/imagine` skill (built-in `image_gen` tool); the tool is
+  not `--tools`-selectable, so the old `--tools GenerateImage` allowlist can't be
+  used (it referenced a since-removed tool and broke agent build). The lockdown
+  is instead: **no `--always-approve`** — in headless mode grok then *cancels*
+  every approval-gated tool call (Bash, file writes, subagents, MCP) rather than
+  running it, so the worst an admin — or a prompt-injected — turn can drive is
+  "produce an image". Verified on the host: a prompt explicitly ordering `bash`
+  to write a file returned stopReason *"Cancelled"* and wrote nothing. As
+  defence-in-depth the subprocess also passes `--deny bash`, `--deny
+  search_replace`, `--deny task`, `--deny use_tool`, and `--disable-web-search`,
+  so the shell / file-write / subagent / MCP / web tools are blocked by name
+  even if grok ever flipped one to auto-approved. (`image_gen` itself is
+  auto-approved and needs no approval, which is why generation still works.)
 - **No secret inheritance.** The `grok` subprocess is spawned with a **minimal,
   explicit `env`** (`grokEnv()` in `src/media/grokImage.ts`): `PATH`, `HOME`,
   `TERM`, `LANG`/`LC_ALL`, `USER`, and any `GROK_*`/`XDG_*` knobs — **never** the
@@ -664,7 +669,7 @@ user, so it gets its own controls:
   (never interpolated into a shell command), so there is no shell-injection
   surface even though the tool takes admin free text.
 - **Output is read back, not written to a path we name.** Because the file
-  tools are denied, grok can't copy the image anywhere we choose; `GenerateImage`
+  tools are denied, grok can't copy the image anywhere we choose; `image_gen`
   saves it under its own session storage and we read it back by the session id
   from `--output-format json`, then delete the session directory. The bytes are
   **magic-byte sniffed** (`sniffImageType`) — the real format is trusted from

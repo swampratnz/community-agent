@@ -29,20 +29,27 @@ test('sniffImageType returns null for non-image or empty bytes (never mislabels)
   assert.equal(sniffImageType(Buffer.from([0xff, 0xd8, 0x00])), null);
 });
 
-test('SECURITY: buildGrokArgs locks the CLI to the image tool so --always-approve is safe', () => {
-  const args = buildGrokArgs('draw a cat');
-  // The allowlist that removes Bash/file/exec — without it, --always-approve
-  // becomes a host-code-execution surface. --tools must be immediately followed
-  // by exactly GenerateImage.
-  const i = args.indexOf('--tools');
-  assert.ok(i >= 0, '--tools must be present');
-  assert.equal(args[i + 1], 'GenerateImage');
-  assert.ok(args.includes('--always-approve'));
-  assert.ok(args.includes('--disable-web-search'));
+test('SECURITY: buildGrokArgs never passes --always-approve and denies the exec/write/subagent/MCP tools', () => {
+  const args = buildGrokArgs('/imagine draw a cat');
+  // NO --always-approve: in headless mode that is exactly what forces grok to
+  // CANCEL (not run) every approval-gated tool — bash, file writes, subagents,
+  // MCP. Re-adding it would let an admin or injected prompt drive host code
+  // execution, so its absence is the core control.
+  assert.ok(!args.includes('--always-approve'), '--always-approve must never be passed');
+  // No --tools allowlist: the image tool is not --tools-selectable, and an
+  // allowlist that references a non-existent tool breaks grok's agent build.
+  assert.ok(!args.includes('--tools'), 'a --tools allowlist must not be used');
+  // Defence-in-depth: the shell / file-write / subagent / MCP tools are denied
+  // by name (each --deny is immediately followed by the tool it forbids).
+  const denied = args.filter((_, i) => args[i - 1] === '--deny');
+  for (const t of ['bash', 'search_replace', 'task', 'use_tool']) {
+    assert.ok(denied.includes(t), `--deny ${t} must be present`);
+  }
+  assert.ok(args.includes('--disable-web-search'), 'web tools must be disabled');
   // The free-text prompt is the value of -p, an argv element (never a shell string).
   const p = args.indexOf('-p');
   assert.ok(p >= 0);
-  assert.equal(args[p + 1], 'draw a cat');
+  assert.equal(args[p + 1], '/imagine draw a cat');
 });
 
 test('SECURITY: grokEnv hands the subprocess a secret-free allowlist, never the bot env', () => {
