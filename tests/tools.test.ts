@@ -1030,6 +1030,166 @@ test(
   },
 );
 
+// announce (issue #270's canPostTo fallback applies here too, alongside
+// create_poll/create_thread below): a cross-platform outward-posting tool,
+// unlike the Discord-only create_poll/create_thread. This adapter stub lets
+// each test control conversationsForUser/sendMessage/canPostTo independently
+// — canPostTo defaults to unset (mirroring WhatsApp adapters, which never
+// implement it) so existing behaviour is the default.
+function announceAdapter(opts: {
+  platform?: 'discord' | 'whatsapp';
+  conversationsForUser?: PlatformAdapter['conversationsForUser'];
+  sendMessage?: PlatformAdapter['sendMessage'];
+  canPostTo?: PlatformAdapter['canPostTo'];
+}): PlatformAdapter {
+  return {
+    platform: opts.platform ?? 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: opts.sendMessage ?? (async () => {}),
+    sendDirectMessage: async () => {},
+    conversationsForUser: opts.conversationsForUser ?? (async () => []),
+    adminCapabilities: new Set(),
+    performAdminAction: async () => {
+      throw new Error('announce does not call performAdminAction');
+    },
+    ...(opts.canPostTo ? { canPostTo: opts.canPostTo } : {}),
+  };
+}
+
+function announceHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  platform?: 'discord' | 'whatsapp';
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform ?? 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            message: string;
+            conversationId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['announce'];
+}
+
+test('SECURITY: announce rejects a non-admin caller (assertAtLeast re-check, issue #46)', async () => {
+  const adapter = announceAdapter({});
+  const handler = announceHandler({ role: 'member', adapter });
+  await assert.rejects(() => handler.handler({ message: 'Meetup tonight!' }), /Permission denied/);
+});
+
+test('SECURITY: announce refuses a conversation the caller is not scoped to (issue #46)', async () => {
+  const adapter = announceAdapter({ conversationsForUser: async () => ['convo-other'] });
+  const handler = announceHandler({ conversationId: 'convo-mine', adapter });
+  const result = await handler.handler({ message: 'Meetup tonight!', conversationId: 'convo-unscoped' });
+  assert.match(result.content[0]?.text ?? '', /not a participant/);
+  assert.equal(result.isError, true);
+});
+
+test(
+  'SECURITY: announce refusing an unscoped conversation is decided by callerScope BEFORE canPostTo — ' +
+    "a real, sendable, in-guild channel canPostTo would allow still can't be routed around scoping " +
+    '(issue #270)',
+  async () => {
+    const adapter = announceAdapter({
+      conversationsForUser: async () => ['convo-other'],
+      canPostTo: async () => true,
+    });
+    const handler = announceHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ message: 'Meetup tonight!', conversationId: 'convo-unscoped' });
+    assert.match(
+      result.content[0]?.text ?? '',
+      /not a participant/,
+      'must refuse with the scoping message, not fall through to the "unknown" refusal or succeed',
+    );
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  "SECURITY: announce refuses a conversation the bot has never seen, even when the caller's own scope " +
+    'claims it and the adapter has no canPostTo fallback (issue #46)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-announce-unknown`;
+    const adapter = announceAdapter({ conversationsForUser: async () => [targetConvo] });
+    const handler = announceHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'announce succeeds on Discord against a real, sendable, in-guild channel with zero recorded ' +
+    'interactions, via the canPostTo fallback (issue #270)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-announce-canposto-true`;
+    const adapter = announceAdapter({
+      conversationsForUser: async () => [targetConvo],
+      canPostTo: async () => true,
+    });
+    const handler = announceHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /Announcement posted/);
+  },
+);
+
+test(
+  'SECURITY: announce still refuses when canPostTo resolves false — e.g. a different guild or a ' +
+    'nonexistent channel (issue #270)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-announce-canposto-false`;
+    const adapter = announceAdapter({
+      conversationsForUser: async () => [targetConvo],
+      canPostTo: async () => false,
+    });
+    const handler = announceHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'SECURITY: on WhatsApp, announce refuses an unknown conversation exactly as before — no canPostTo ' +
+    'fallback exists on WhatsApp adapters (issue #270)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-announce-whatsapp-unknown`;
+    const adapter = announceAdapter({
+      platform: 'whatsapp',
+      conversationsForUser: async () => [targetConvo],
+    });
+    const handler = announceHandler({ platform: 'whatsapp', conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
 // create_poll (issue #228): a Discord-only, announce-class outward-posting
 // tool. This adapter stub advertises the capability (mirroring the real
 // DiscordAdapter) with controllable conversationsForUser/performAdminAction,
@@ -1039,6 +1199,7 @@ function pollAdapter(opts: {
   capabilities?: string[];
   conversationsForUser?: PlatformAdapter['conversationsForUser'];
   performAdminAction?: PlatformAdapter['performAdminAction'];
+  canPostTo?: PlatformAdapter['canPostTo'];
 }): PlatformAdapter {
   return {
     platform: 'discord',
@@ -1051,6 +1212,7 @@ function pollAdapter(opts: {
     conversationsForUser: opts.conversationsForUser ?? (async () => []),
     adminCapabilities: new Set(opts.capabilities ?? ['create_poll']),
     performAdminAction: opts.performAdminAction ?? (async () => 'Poll posted with 2 option(s), open 24h.'),
+    ...(opts.canPostTo ? { canPostTo: opts.canPostTo } : {}),
   };
 }
 
@@ -1255,6 +1417,71 @@ test(
       conversationId: targetConvo,
     });
     assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'create_poll succeeds against a real, sendable, in-guild channel with zero recorded interactions, ' +
+    'via the canPostTo fallback (issue #270)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-create-poll-canposto-true`;
+    const adapter = pollAdapter({
+      conversationsForUser: async () => [targetConvo],
+      canPostTo: async () => true,
+    });
+    const handler = createPollHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({
+      question: 'Meetup night?',
+      options: ['Tue', 'Thu'],
+      conversationId: targetConvo,
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /Poll posted/);
+  },
+);
+
+test(
+  'SECURITY: create_poll still refuses when canPostTo resolves false — e.g. a different guild or a ' +
+    'nonexistent channel (issue #270)',
+  { skip },
+  async () => {
+    const targetConvo = `${RUN}-create-poll-canposto-false`;
+    const adapter = pollAdapter({
+      conversationsForUser: async () => [targetConvo],
+      canPostTo: async () => false,
+    });
+    const handler = createPollHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({
+      question: 'Meetup night?',
+      options: ['Tue', 'Thu'],
+      conversationId: targetConvo,
+    });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'SECURITY: create_poll refusing an unscoped conversation is decided by callerScope BEFORE canPostTo ' +
+    "— a channel canPostTo would allow still can't be routed around scoping (issue #270)",
+  async () => {
+    const adapter = pollAdapter({
+      conversationsForUser: async () => ['convo-other'],
+      canPostTo: async () => true,
+    });
+    const handler = createPollHandler({ conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({
+      question: 'Meetup night?',
+      options: ['Tue', 'Thu'],
+      conversationId: 'convo-unscoped',
+    });
+    assert.match(
+      result.content[0]?.text ?? '',
+      /not a participant/,
+      'must refuse with the scoping message, not fall through to the "unknown" refusal or succeed',
+    );
     assert.equal(result.isError, true);
   },
 );
@@ -5009,6 +5236,7 @@ function threadAdapter(opts: {
   capabilities?: string[];
   conversationsForUser?: PlatformAdapter['conversationsForUser'];
   performAdminAction?: PlatformAdapter['performAdminAction'];
+  canPostTo?: PlatformAdapter['canPostTo'];
 }): PlatformAdapter {
   return {
     platform: 'discord',
@@ -5021,6 +5249,7 @@ function threadAdapter(opts: {
     conversationsForUser: opts.conversationsForUser ?? (async () => []),
     adminCapabilities: new Set(opts.capabilities ?? ['create_thread', 'archive_thread']),
     performAdminAction: opts.performAdminAction ?? (async () => 'Created thread "General chat" (thread-99).'),
+    ...(opts.canPostTo ? { canPostTo: opts.canPostTo } : {}),
   };
 }
 
@@ -5109,6 +5338,62 @@ test(
     const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
     const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
     assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'create_thread succeeds against a real, sendable, in-guild parent channel with zero recorded ' +
+    'interactions, via the canPostTo fallback (issue #270)',
+  { skip },
+  async () => {
+    const targetChannel = `${RUN}-create-thread-canposto-true`;
+    const adapter = threadAdapter({
+      conversationsForUser: async () => [targetChannel],
+      canPostTo: async () => true,
+    });
+    const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
+    assert.equal(
+      result.isError,
+      false,
+      'moderation is disabled by default in this test file, so the allowlist guard must not interfere',
+    );
+  },
+);
+
+test(
+  'SECURITY: create_thread still refuses when canPostTo resolves false — e.g. a different guild or a ' +
+    'nonexistent channel (issue #270)',
+  { skip },
+  async () => {
+    const targetChannel = `${RUN}-create-thread-canposto-false`;
+    const adapter = threadAdapter({
+      conversationsForUser: async () => [targetChannel],
+      canPostTo: async () => false,
+    });
+    const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ name: 'Off-topic chat', channelId: targetChannel });
+    assert.match(result.content[0]?.text ?? '', /is unknown/);
+    assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'SECURITY: create_thread refusing an unscoped conversation is decided by callerScope BEFORE canPostTo ' +
+    "— a channel canPostTo would allow still can't be routed around scoping (issue #270)",
+  async () => {
+    const adapter = threadAdapter({
+      conversationsForUser: async () => ['convo-other'],
+      canPostTo: async () => true,
+    });
+    const handler = threadToolHandler('create_thread', { conversationId: 'convo-mine', adapter });
+    const result = await handler.handler({ name: 'Off-topic chat', channelId: 'convo-unscoped' });
+    assert.match(
+      result.content[0]?.text ?? '',
+      /not a participant/,
+      'must refuse with the scoping message, not fall through to the "unknown" refusal or succeed',
+    );
     assert.equal(result.isError, true);
   },
 );

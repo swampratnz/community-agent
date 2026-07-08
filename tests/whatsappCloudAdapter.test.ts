@@ -899,3 +899,12 @@ test('first-contact welcome: Discord and Baileys welcome constants are unaffecte
   assert.notEqual(WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
   assert.notEqual(WHATSAPP_GROUP_WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE);
 });
+
+test(
+  'SECURITY: WhatsAppCloudAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as ' +
+    'its sole reachability gate, since any phone number is dialable (issue #270)',
+  () => {
+    const adapter = new WhatsAppCloudAdapter();
+    assert.equal(adapter.canPostTo, undefined);
+  },
+);

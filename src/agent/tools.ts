@@ -1579,7 +1579,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (allowed && !allowed.includes(target)) {
         return text(`Refusing: you are not a participant of conversation "${target}".`, true);
       }
-      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+      if (
+        target !== caller.conversationId &&
+        !(await isKnownConversation(caller.platform, target)) &&
+        !(await adapter.canPostTo?.(target))
+      ) {
         return text(`Refusing: conversation "${target}" is unknown.`, true);
       }
       const { success, result } = await audited({
@@ -1632,7 +1636,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (allowed && !allowed.includes(target)) {
         return text(`Refusing: you are not a participant of conversation "${target}".`, true);
       }
-      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+      if (
+        target !== caller.conversationId &&
+        !(await isKnownConversation(caller.platform, target)) &&
+        !(await adapter.canPostTo?.(target))
+      ) {
         return text(`Refusing: conversation "${target}" is unknown.`, true);
       }
       if (!reservePollSlot(target, POLL_RATE_LIMIT_PER_HOUR)) {
@@ -1689,7 +1697,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (allowed && !allowed.includes(target)) {
         return text(`Refusing: you are not a participant of conversation "${target}".`, true);
       }
-      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+      if (
+        target !== caller.conversationId &&
+        !(await isKnownConversation(caller.platform, target)) &&
+        !(await adapter.canPostTo?.(target))
+      ) {
         return text(`Refusing: conversation "${target}" is unknown.`, true);
       }
       // Defensive guard (adversarial review, issue #229): thread messages are
