@@ -942,6 +942,145 @@ test(
   },
 );
 
+test(
+  'list_knowledge always renders a bracketed provenance tag per entry, right after the scope tag, without disturbing any existing field (issue #294)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-provenance-render-scope`;
+    const seeded = await Promise.all([
+      saveKnowledge({
+        title: 'provenance-render-auto',
+        content: 'auto-researched content',
+        scope,
+        createdByRole: 'auto',
+      }),
+      saveKnowledge({
+        title: 'provenance-render-docs',
+        content: 'docs-ingested content',
+        scope,
+        createdByRole: 'docs',
+      }),
+      saveKnowledge({
+        title: 'provenance-render-admin',
+        content: 'admin-authored content',
+        scope,
+        createdByRole: 'admin',
+      }),
+      saveKnowledge({
+        title: 'provenance-render-super-admin',
+        content: 'super-admin-authored content',
+        scope,
+        createdByRole: 'super_admin',
+      }),
+    ]);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-provenance-render',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ scope, limit: 10 });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /#\d+ \[.+?\] \[auto\] provenance-render-auto: auto-researched content/);
+    assert.match(output, /#\d+ \[.+?\] \[docs\] provenance-render-docs: docs-ingested content/);
+    assert.match(output, /#\d+ \[.+?\] \[admin\] provenance-render-admin: admin-authored content/);
+    assert.match(
+      output,
+      /#\d+ \[.+?\] \[super_admin\] provenance-render-super-admin: super-admin-authored content/,
+    );
+    assert.match(output, /\(updated .+, retrieved \d+x\)/, 'pre-existing fields still render unchanged');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [seeded.map((s) => s.id)]);
+  },
+);
+
+test(
+  'list_knowledge provenance filter returns only entries matching the requested provenance (issue #294)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-provenance-filter-scope`;
+    const { id: autoId } = await saveKnowledge({
+      title: 'provenance-filter-auto',
+      content: 'auto-researched content to filter for',
+      scope,
+      createdByRole: 'auto',
+    });
+    const { id: adminId } = await saveKnowledge({
+      title: 'provenance-filter-admin',
+      content: 'admin-authored content, must not appear',
+      scope,
+      createdByRole: 'admin',
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-provenance-filter',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ scope, provenance: 'auto' });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /provenance-filter-auto/, 'the auto entry must appear');
+    assert.doesNotMatch(output, /provenance-filter-admin/, 'the admin entry must not appear');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, adminId]]);
+  },
+);
+
+test('SECURITY: list_knowledge rejects a non-admin caller even when the new provenance param is supplied (assertAtLeast re-check, issue #294)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['list_knowledge'];
+
+  await assert.rejects(
+    () => registeredTool.handler({ provenance: 'auto' }),
+    /admin/i,
+    'a member caller must be rejected by the assertAtLeast re-check even with provenance set — the new ' +
+      'param opens no lower-privilege path',
+  );
+});
+
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
   const adapter = stubAdapter(async () => {});
   const caller = {

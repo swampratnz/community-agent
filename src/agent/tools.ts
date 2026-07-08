@@ -2024,6 +2024,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           'Only show entries untouched for KNOWLEDGE_STALE_DAYS+ days (the same entries counted in the ' +
             'weekly digest); ordered oldest-touched first.',
         ),
+      provenance: z
+        .enum(['admin', 'super_admin', 'auto', 'docs'])
+        .optional()
+        .describe(
+          'Filter to entries created by this role/provenance (e.g. "auto" to review unreviewed ' +
+            'web-researched entries)',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge');
@@ -2036,6 +2043,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         limit: args.limit,
         offset: args.offset,
         ...(args.staleOnly ? { staleOnly: true, staleDays } : {}),
+        ...(args.provenance ? { provenance: args.provenance } : {}),
       });
       if (entries.length === 0) return text('No knowledge entries found.');
       return text(
@@ -2044,7 +2052,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           entries
             .map(
               (e) =>
-                `#${e.id} [${e.scope}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
+                `#${e.id} [${e.scope}] [${e.createdByRole}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
                 `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
                 `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''}` +
                 `${e.sourceUrl ? `, source: ${e.sourceTitle ?? e.sourceUrl} (${e.sourceUrl})` : ''}` +
