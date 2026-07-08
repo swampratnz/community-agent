@@ -117,7 +117,10 @@ memory**:
    access-request count and their own scoped open-report count, plus (issue
    #193) a guild-wide pending-suggestion count, plus (issue #199, off unless
    `KNOWLEDGE_STALE_DAYS` is set) a guild-wide count of knowledge entries
-   neither edited nor retrieved in that many days, plus (issue #246) their own
+   neither edited nor retrieved in that many days — the digest's "run
+   `list_knowledge` to review" pointer resolves to `list_knowledge`'s
+   `staleOnly` filter (issue #280), which reuses that exact same predicate
+   to return just that stale subset, most-overdue first — plus (issue #246) their own
    scoped count of `knowledge_gaps` (below-floor `knowledge_search` misses, the
    pull-only complement to `list_knowledge_gaps`) — conversation-scoped like the
    open-report count because that table has a `conversation_id` — all sourced

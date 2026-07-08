@@ -572,6 +572,53 @@ test('SECURITY: moderation_history rejects an actionKind outside the allow-list 
   assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'actionKind stays optional');
 });
 
+test(
+  'list_knowledge staleOnly returns the disabled message (not an empty list) when KNOWLEDGE_STALE_DAYS is 0, and never issues the filtered query (issue #280)',
+  { skip },
+  async () => {
+    assert.equal(
+      config.adminDigest.knowledgeStaleDays,
+      0,
+      'this file never sets KNOWLEDGE_STALE_DAYS, so staleness tracking is off by default',
+    );
+
+    const { id } = await saveKnowledge({
+      title: `${RUN} stale-disabled fixture`,
+      content: 'An entry that would look stale by any reasonable threshold.',
+      scope: `${RUN}-stale-disabled-scope`,
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-stale-disabled',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ staleOnly: true });
+    assert.equal(
+      result.content[0]?.text,
+      'Staleness tracking is disabled (KNOWLEDGE_STALE_DAYS is not set).',
+      'must return the explicit disabled message, not an empty/no-entries list, and must not run the ' +
+        'filtered query at all (the fixture entry above would otherwise prove it by appearing in results)',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
   const adapter = stubAdapter(async () => {});
   const caller = {

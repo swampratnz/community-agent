@@ -30,7 +30,7 @@
   "rbac.test.ts": 32,
   "redeploy.test.ts": 2,
   "repeatQuestionShortcutRouter.test.ts": 2,
-  "repository.test.ts": 36,
+  "repository.test.ts": 37,
   "router.test.ts": 1,
   "secrets.test.ts": 2,
   "securityGateCanary.test.ts": 1,

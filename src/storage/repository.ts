@@ -777,16 +777,43 @@ export interface KnowledgeEntry {
   verifiedAt: Date | null;
 }
 
-/** Browse knowledge entries directly (as opposed to semantic search), optionally filtered by scope. */
+/**
+ * Browse knowledge entries directly (as opposed to semantic search),
+ * optionally filtered by scope. `staleOnly` (issue #280) reuses
+ * `countStaleKnowledge`'s exact `GREATEST(updated_at,
+ * COALESCE(last_retrieved_at, updated_at))` predicate against `staleDays`
+ * (the caller passes `config.adminDigest.knowledgeStaleDays` — 0 means the
+ * feature is off, and callers are expected to short-circuit before reaching
+ * here in that case, same as `countStaleKnowledge`'s callers do), composed
+ * with `scope` via AND, and orders by that same expression ASC (most-overdue
+ * first) instead of the default `updated_at DESC` — the point of the filter
+ * is triaging a backlog, so the worst offender comes first.
+ */
 export async function listKnowledge(
-  input: { scope?: string; limit?: number; offset?: number } = {},
+  input: {
+    scope?: string;
+    limit?: number;
+    offset?: number;
+    staleOnly?: boolean;
+    staleDays?: number;
+  } = {},
 ): Promise<KnowledgeEntry[]> {
   const params: unknown[] = [];
-  let scopeClause = '';
+  const clauses: string[] = [];
   if (input.scope) {
     params.push(input.scope);
-    scopeClause = `WHERE scope = $${params.length}`;
+    clauses.push(`scope = $${params.length}`);
   }
+  if (input.staleOnly) {
+    params.push(input.staleDays ?? 0);
+    clauses.push(
+      `GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($${params.length} || ' days')::interval`,
+    );
+  }
+  const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+  const orderClause = input.staleOnly
+    ? `ORDER BY GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) ASC`
+    : `ORDER BY updated_at DESC`;
   params.push(input.limit ?? 20);
   const limitParam = params.length;
   params.push(input.offset ?? 0);
@@ -794,8 +821,8 @@ export async function listKnowledge(
     `SELECT id, scope, title, content, created_by_role, updated_at, retrieval_count, last_retrieved_at,
             source_url, source_title, verified_at
        FROM knowledge
-       ${scopeClause}
-      ORDER BY updated_at DESC
+       ${whereClause}
+      ${orderClause}
       LIMIT $${limitParam} OFFSET $${params.length}`,
     params,
   );
