@@ -478,3 +478,33 @@ test('drain(): a message arriving mid-drain starts a new chain that drain() does
     'drain() must resolve once its original snapshot settles, not wait for a chain started after drain() was called',
   );
 });
+
+test('router (repeat-question shortcut default off): REPEAT_QUESTION_SHORTCUT_ENABLED unset means zero behaviour change — the exact same text from the same caller always runs a fresh turn', async () => {
+  assert.equal(
+    config.behaviour.repeatQuestionShortcutEnabled,
+    false,
+    'this file leaves REPEAT_QUESTION_SHORTCUT_ENABLED unset — see tests/repeatQuestionShortcutRouter.test.ts for the flag-on path',
+  );
+  let calls = 0;
+  const router = new Router(async () => {
+    calls++;
+    return makeReply(`answer #${calls}`);
+  }, 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'what is the wifi password' }));
+  await trigger(makeMessage({ text: 'what is the wifi password' }));
+
+  assert.equal(
+    calls,
+    2,
+    'with the flag off, the cache must never be read — every message runs a normal turn',
+  );
+  assert.equal(sent[0].text, 'answer #1');
+  assert.equal(
+    sent[1].text,
+    'answer #2',
+    'the second reply must be a fresh answer, never a cached/prefixed repeat reply',
+  );
+});

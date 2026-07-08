@@ -100,6 +100,7 @@ test('runAgentTurn: a usage-limit/overload error gets the honest reply, without 
     'must not claim an admin was notified when the DM feature is disabled',
   );
   assert.equal(dms.length, 0, 'no DM is sent when UPSTREAM_LIMIT_ALERT_ENABLED is unset');
+  assert.equal(reply.ok, false, 'ok must be threaded from TurnOutcome.ok — false on a usage-limit failure');
 });
 
 test('runAgentTurn: an unrelated thrown error still returns the exact existing INTERNAL_ERROR_REPLY (no regression)', async (t) => {
@@ -110,6 +111,11 @@ test('runAgentTurn: an unrelated thrown error still returns the exact existing I
   const reply = await runAgentTurn(makeCaller(), 'hello', adapter);
 
   assert.equal(reply.text, INTERNAL_ERROR_REPLY);
+  assert.equal(
+    reply.ok,
+    false,
+    'ok must be threaded from TurnOutcome.ok — false on an internal-error failure',
+  );
 });
 
 test('runAgentTurn: a successful turn is unaffected by the classifier', async (t) => {
@@ -120,4 +126,5 @@ test('runAgentTurn: a successful turn is unaffected by the classifier', async (t
   const reply = await runAgentTurn(makeCaller(), 'hello', adapter);
 
   assert.equal(reply.text, 'all good');
+  assert.equal(reply.ok, true, 'ok must be threaded from TurnOutcome.ok — true on a genuine answer');
 });

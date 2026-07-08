@@ -49,6 +49,12 @@ const KNOWLEDGE_SHORTCUT_SUFFIX =
 // nudge points at the actual unblock: getting added as a member.
 const GUEST_KNOWLEDGE_SHORTCUT_NUDGE = '\n\nAsk a community admin to add you as a member to keep chatting.';
 
+// Prefix for a REPEAT_QUESTION_SHORTCUT_ENABLED replay (issue #259) — the
+// cached text is a real (already-served) answer, not the ack shortcut's
+// no-content courtesy reply, so it must be clearly labelled as a repeat
+// rather than look like a fresh turn.
+const REPEAT_SHORTCUT_NOTICE = "↩️ You asked this a moment ago — here's my answer again:\n\n";
+
 /** The subset of a KnowledgeSearchHit the shortcut path carries through — just enough to render `formatKnowledgeCitationNote` (issue #214). */
 interface KnowledgeShortcutHit {
   id: number;
@@ -91,9 +97,19 @@ export class Router {
   private readonly pauseNotified = new Map<string, number>();
   /** Process-wide (not per-user) debounce for the daily-budget check-failure super-admin alert. */
   private budgetCheckFailureNotifiedAt: number | undefined;
+  /**
+   * `platform:conversationId:userId` -> the last successful reply served to
+   * that exact caller (issue #259) — scoped to the caller, never just the
+   * conversation, so a repeat can never replay one caller's answer to
+   * another. Only populated with a genuine answer (`AgentReply.ok === true`)
+   * that did not just register a new pending CONFIRM action; consumed by the
+   * REPEAT_QUESTION_SHORTCUT_ENABLED short-circuit in `handle()`.
+   */
+  private readonly lastReply = new Map<string, { normalizedText: string; replyText: string; at: number }>();
 
   private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
+  private readonly REPEAT_SHORTCUT_WINDOW_MS = 120_000; // 2 minutes — long enough for a double-tap/impatient-resend, short enough that a genuinely new question with identical text is unlikely
 
   /**
    * `runTurn` defaults to the real agent core; `typingRefireMs` defaults to a
@@ -130,6 +146,9 @@ export class Router {
     }
     for (const [key, at] of this.pauseNotified) {
       if (now - at > this.PAUSE_NOTIFY_WINDOW_MS) this.pauseNotified.delete(key);
+    }
+    for (const [key, entry] of this.lastReply) {
+      if (now - entry.at > this.REPEAT_SHORTCUT_WINDOW_MS) this.lastReply.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -172,6 +191,16 @@ export class Router {
 
   private convoKey(msg: IncomingMessage): string {
     return `${msg.platform}:${msg.conversationId}`;
+  }
+
+  /** Scoped to the individual caller (issue #259), unlike `convoKey` — so the repeat-question cache can never replay across users sharing a conversation. */
+  private callerKey(msg: IncomingMessage): string {
+    return `${msg.platform}:${msg.conversationId}:${msg.userId}`;
+  }
+
+  /** Whitespace-only normalization for the repeat-question shortcut (issue #259) — deliberately no case-folding or fuzzy matching, so it only ever catches a byte-for-byte resend. */
+  private normalize(text: string): string {
+    return text.trim().replace(/\s+/g, ' ');
   }
 
   private rateLimited(userKey: string): boolean {
@@ -450,6 +479,33 @@ export class Router {
       }
     }
 
+    // Deterministic repeat-question short-circuit (issue #259): the same
+    // caller (platform + conversation + user) sending the exact
+    // whitespace-normalized text again inside REPEAT_SHORTCUT_WINDOW_MS gets
+    // the cached reply from their own last successful turn instead of a
+    // second full query() turn. Evaluated after both the ack and knowledge
+    // shortcuts above. `lastReply` is only ever populated in `respond()` with
+    // a genuine answer (`AgentReply.ok === true`) that did not just register
+    // a new pending CONFIRM action, so there is never a stale confirm/error
+    // reply to replay. Off by default.
+    if (config.behaviour.repeatQuestionShortcutEnabled) {
+      const cached = this.lastReply.get(this.callerKey(msg));
+      if (
+        cached &&
+        cached.normalizedText === this.normalize(msg.text) &&
+        Date.now() - cached.at < this.REPEAT_SHORTCUT_WINDOW_MS
+      ) {
+        logger.debug(
+          { platform: msg.platform, conversationId: msg.conversationId },
+          'repeat_question_shortcut_hit',
+        );
+        await this.enqueue(key, 'repeat-question shortcut reply', () =>
+          this.sendRepeatShortcut(msg, adapter, cached.replyText),
+        );
+        return;
+      }
+    }
+
     // Serialise per conversation so session resume stays consistent.
     await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter));
   }
@@ -559,6 +615,31 @@ export class Router {
     );
   }
 
+  /**
+   * Sends a cached reply for a repeat-question shortcut hit (issue #259) and
+   * records it exactly like a normal agent reply — counted toward
+   * `dailyReplyLimitPerUser`, visible to admin history/digest views — mirroring
+   * `sendKnowledgeShortcut`'s precedent (#162, point 4).
+   */
+  private async sendRepeatShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    cachedReplyText: string,
+  ): Promise<void> {
+    const replyText = `${REPEAT_SHORTCUT_NOTICE}${cachedReplyText}`;
+    await this.send(adapter, msg.conversationId, replyText);
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: msg.conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: { replyToUserId: msg.userId, repeatShortcut: true },
+    }).catch((err) => logger.error({ err }, 'Failed to record repeat-shortcut outbound interaction'));
+  }
+
   private async respond(msg: IncomingMessage, role: Tier, adapter: PlatformAdapter): Promise<void> {
     const caller: CallerContext = {
       platform: msg.platform,
@@ -605,7 +686,9 @@ export class Router {
           { err, conversationId: msg.conversationId },
           'Turn failed before send; sending fallback reply',
         );
-        reply = { text: INTERNAL_ERROR_REPLY };
+        // Explicit `ok: false` (never rely on the field being absent/falsy —
+        // issue #259's repeat-question shortcut reads `reply.ok` directly).
+        reply = { text: INTERNAL_ERROR_REPLY, ok: false };
       }
 
       await this.send(adapter, msg.conversationId, reply.text);
@@ -617,13 +700,27 @@ export class Router {
       // the human always sees the true action before they can confirm it
       // (issue: CONFIRM gate was request-side model-mediated).
       const pending = peekPendingAction(msg.platform, msg.conversationId, msg.userId);
-      if (pending && pending !== priorPending) {
+      const registeredNewPending = Boolean(pending && pending !== priorPending);
+      if (pending && registeredNewPending) {
         await this.send(
           adapter,
           msg.conversationId,
           `⚠️ Pending: ${pending.description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
             `(This confirmation is handled outside the AI and must come from you in this conversation.)`,
         ).catch((err) => logger.warn({ err }, 'Failed to send deterministic pending notice'));
+      }
+
+      // Cache this reply for the repeat-question shortcut (issue #259):
+      // only ever a genuine answer (never a fallback/error — reply.ok must
+      // be exactly true) that did NOT just register a new pending CONFIRM
+      // action, so a repeat can never replay stale "reply CONFIRM" text with
+      // no live pending action behind it.
+      if (config.behaviour.repeatQuestionShortcutEnabled && reply.ok === true && !registeredNewPending) {
+        this.lastReply.set(this.callerKey(msg), {
+          normalizedText: this.normalize(msg.text),
+          replyText: reply.text,
+          at: Date.now(),
+        });
       }
 
       await recordInteraction({
