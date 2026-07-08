@@ -54,6 +54,7 @@ const {
   POLL_MAX_DURATION_HOURS,
   POLL_DEFAULT_DURATION_HOURS,
   POLL_RATE_LIMIT_PER_HOUR,
+  POLL_END_RATE_LIMIT_PER_HOUR,
   ALLOWED_REACTION_EMOJI,
   REACTION_RATE_LIMIT_PER_DAY,
   THREAD_NAME_MAX_CHARS,
@@ -1369,6 +1370,23 @@ test('end_poll threads the message id to the adapter and returns its result', as
   assert.equal(captured[0]?.kind, 'end_poll');
   assert.equal(captured[0]?.messageId, 'msg-42', 'the message id must reach the adapter');
   assert.match(result.content[0]?.text ?? '', /results are now final/);
+});
+
+test('SECURITY: end_poll enforces a per-conversation rate cap (bounds a hijacked admin turn ending every live poll, PR #272)', async () => {
+  const convo = `${RUN}-end-poll-rate-cap`;
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    performAdminAction: async () => 'Ended poll; its results are now final.',
+  });
+  const handler = endPollHandler({ conversationId: convo, userId: POLL_HANDLER_ADMIN, adapter });
+
+  for (let i = 0; i < POLL_END_RATE_LIMIT_PER_HOUR; i++) {
+    const ok = await handler.handler({ messageId: `msg-${i}` });
+    assert.equal(ok.isError, false, `end ${i} within the cap must succeed`);
+  }
+  const overLimit = await handler.handler({ messageId: 'one-too-many' });
+  assert.match(overLimit.content[0]?.text ?? '', /end-poll limit/);
+  assert.equal(overLimit.isError, true);
 });
 
 // create_event (issue #230): a Discord-only, admin-tier + CONFIRM-gated tool

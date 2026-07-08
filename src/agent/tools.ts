@@ -293,6 +293,16 @@ export const POLL_DEFAULT_DURATION_HOURS = 24;
  */
 export const POLL_RATE_LIMIT_PER_HOUR = 5;
 
+/**
+ * Per-conversation cap on `end_poll` within a rolling hour (PR #272 review).
+ * `end_poll` has the same admin-tier/scope/capability guards as `create_poll`
+ * but ends (rather than posts) a poll, so it needs its own cap for the same
+ * threat: an injected/hijacked admin turn should not be able to end every live
+ * poll in scope unthrottled. Kept slightly higher than the create cap because a
+ * legitimate admin more plausibly closes several polls than posts several.
+ */
+export const POLL_END_RATE_LIMIT_PER_HOUR = 10;
+
 /** create_thread (issue #229) bound — Discord's own hard limit on a thread's name. */
 export const THREAD_NAME_MAX_CHARS = 100;
 
@@ -643,6 +653,29 @@ function reservePollSlot(conversationId: string, limit: number): boolean {
   }
   recent.push(now);
   pollTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/** end_poll timestamps per conversation, for its own rolling-hour cap (POLL_END_RATE_LIMIT_PER_HOUR). */
+const pollEndTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one `end_poll` slot for `conversationId` — same sliding-hour shape as
+ * `reservePollSlot`, but a SEPARATE bucket so ending polls neither consumes nor
+ * is blocked by the create_poll budget (PR #272 review).
+ */
+function reservePollEndSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (pollEndTimestampsByConversation.get(conversationId) ?? []).filter(
+    (t) => now - t < windowMs,
+  );
+  if (recent.length >= limit) {
+    pollEndTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  pollEndTimestampsByConversation.set(conversationId, recent);
   return true;
 }
 
@@ -1702,6 +1735,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       }
       if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
         return text(`Refusing: conversation "${target}" is unknown.`, true);
+      }
+      if (!reservePollEndSlot(target, POLL_END_RATE_LIMIT_PER_HOUR)) {
+        return text(
+          `Refusing: conversation "${target}" already hit the end-poll limit (${POLL_END_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+          true,
+        );
       }
       const params = { messageId: args.messageId };
       const { success, result } = await audited({

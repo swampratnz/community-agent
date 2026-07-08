@@ -36,7 +36,7 @@
   "securityGateCanary.test.ts": 1,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 4,
-  "tools.test.ts": 79,
+  "tools.test.ts": 80,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 5,
   "whatsappCloudWire.test.ts": 5,
