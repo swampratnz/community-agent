@@ -6,7 +6,7 @@
   "anthropicStatus.test.ts": 4,
   "baileysAdapter.test.ts": 8,
   "baileysArchiving.test.ts": 2,
-  "backgroundJobs.test.ts": 1,
+  "backgroundJobs.test.ts": 3,
   "backgroundJobsDisabled.test.ts": 1,
   "config.test.ts": 2,
   "contextBuilder.test.ts": 2,
