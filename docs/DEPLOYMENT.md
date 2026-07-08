@@ -128,6 +128,21 @@ sudo systemctl enable --now community-agent
 sudo journalctl -u community-agent -f
 ```
 
+## 9. (Optional) Enable chat-to-GitHub issue filing (`suggest_issue`)
+Lets a super admin file a repo issue straight from Discord/WhatsApp. Off unless
+configured. Mint a **fine-grained PAT** (GitHub → Settings → Developer settings →
+Fine-grained tokens): **Resource owner** = the repo owner, **Repository access** =
+only `GITHUB_ISSUE_REPO`, **Permissions → Repository → Issues: Read and write**
+(nothing else). Then in `.env`:
+```bash
+GITHUB_ISSUE_ENABLED=true
+GITHUB_ISSUE_TOKEN=github_pat_...        # the fine-grained PAT above — NOT the OAuth token
+# GITHUB_ISSUE_REPO defaults to swampratnz/community-agent
+```
+Restart the service. Verify by DMing the bot as a super admin ("file an issue:
+…") and confirming with CONFIRM. Revoke the PAT to disable instantly. See
+docs/SECURITY.md §12 for why the token is scoped this narrowly.
+
 ## Upgrades
 ```bash
 cd /opt/community-agent

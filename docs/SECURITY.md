@@ -836,6 +836,30 @@ so it is:
   part of the base bot invite — see the Discord platform notes below and
   docs/DEPLOYMENT.md step 7 ("Invite the Discord bot").
 
+### 12. GitHub issue filing (`suggest_issue`, opt-in)
+
+`suggest_issue` lets a **super admin** file an issue on the repo from chat. It is
+the bot's **only outward write capability and only GitHub credential**, so it is
+deliberately narrow:
+
+- **Least-privilege token.** `GITHUB_ISSUE_TOKEN` must be a **fine-grained PAT
+  scoped to `Issues: write` on `GITHUB_ISSUE_REPO` only** (or a GitHub App with
+  the same single permission) — never the `CLAUDE_CODE_OAUTH_TOKEN`. A bot
+  compromise is then bounded to filing/creating issues on one repo; it cannot
+  push code, merge, or read anything else. Startup fails fast if the feature is
+  enabled without a token.
+- **Super-admin only, CONFIRM-gated.** Members/admins can't reach it (`rbac.ts`
+  + an in-handler `assertAtLeast` re-check), and it creates nothing until an
+  out-of-band CONFIRM — so an injected turn can't silently file issues.
+- **Secret scrub.** The title and body are run through the same
+  `redactSecrets` filter as outbound messages before the API call, so a key
+  pasted into chat can't be laundered into a (world-readable) issue.
+- **Rate-capped + audited.** A per-super-admin daily cap bounds runaway/spam;
+  every filing writes an `admin_audit` row and alerts the other super admins.
+- **New egress.** Adds `api.github.com` to the bot's outbound surface — the
+  first non-Anthropic/Discord/WhatsApp destination; noted with the residual-risk
+  egress item below. Off by default (`GITHUB_ISSUE_ENABLED`).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

@@ -161,6 +161,9 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__resume_bot',
   'mcp__community__set_policy',
   'mcp__community__redeploy_bot',
+  // Files a GitHub issue via the bot's fine-grained repo token — super-admin
+  // only because it is the bot's one outward write credential (docs/SECURITY.md).
+  'mcp__community__suggest_issue',
 ] as const;
 
 export function toolsForRole(role: Tier): string[] {

@@ -81,6 +81,8 @@ import { getCommunityGuidelines, updatePolicy } from '../storage/policies.js';
 import { registerPendingAction } from './pendingActions.js';
 import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
+import { redactSecrets } from './outbound.js';
+import { createIssue } from '../github/issues.js';
 import { triggerRedeploy } from './redeploy.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
@@ -590,6 +592,21 @@ function reserveImageGenDaily(key: string, limit: number): boolean {
   const entry = imageGenDaily.get(key);
   if (!entry || entry.day !== today) {
     imageGenDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
+/** suggest_issue filings per super admin, for the rolling calendar-day cap. */
+const issueFileDaily = new Map<string, { day: string; count: number }>();
+function reserveIssueDaily(key: string, limit: number): boolean {
+  if (limit <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = issueFileDaily.get(key);
+  if (!entry || entry.day !== today) {
+    issueFileDaily.set(key, { day: today, count: 1 });
     return true;
   }
   if (entry.count >= limit) return false;
@@ -3052,6 +3069,57 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
 
   // Attach everything; the per-turn allowedTools list (rbac.toolsForRole) is
   // what actually restricts which of these the model can call.
+  const suggestIssueTool = tool(
+    'suggest_issue',
+    'File a GitHub issue on the community-agent repo straight from chat, turning an idea, bug, or ' +
+      'feature request into tracked work. Super admin only; requires confirmation (it creates a public ' +
+      "artifact on the repo via the bot's own token). Labels default to community-feedback so it enters " +
+      'the research pipeline as evidence.',
+    {
+      title: z.string().min(1).max(200).describe('Short, specific issue title'),
+      body: z
+        .string()
+        .min(1)
+        .max(4000)
+        .describe('The detail: what, who it helps, and why it matters — written verbatim into the issue.'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'suggest_issue');
+      if (!config.github.enabled) {
+        return text('Filing GitHub issues is not enabled on this server.', true);
+      }
+      // Scrub any secret the message text might contain before it reaches a repo
+      // issue (defence in depth — the bot's own token is never in user input, but
+      // redact it too). Pattern redaction catches known key formats; the body is
+      // otherwise written verbatim, so this is the one sanitisation on the path.
+      const knownSecrets = [config.github.token].filter((s): s is string => Boolean(s));
+      const title = redactSecrets(args.title, knownSecrets);
+      const body =
+        redactSecrets(args.body, knownSecrets) +
+        `\n\n---\n_Filed from ${caller.platform} chat by a super admin via the community agent._`;
+      const labels = config.github.labels;
+      const key = `${caller.platform}:${caller.userId}`;
+
+      const run = async () => {
+        if (!reserveIssueDaily(key, config.github.dailyLimit)) {
+          return `Refused: today's issue-filing limit (${config.github.dailyLimit}) is reached — try again tomorrow.`;
+        }
+        const { success, result } = await audited({
+          actionKind: 'suggest_issue',
+          params: { title, labels },
+          run: async () => {
+            const issue = await createIssue({ title, body, labels });
+            return `Filed ${config.github.repo}#${issue.number}: ${issue.url}`;
+          },
+        });
+        return success ? result : `Failed: ${result}`;
+      };
+
+      return requireConfirm(`file a GitHub issue on ${config.github.repo}: "${title}"`, 'super_admin', run);
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
   const generateImageTool = tool(
     'generate_image',
     'Generate an image from a text description and post it into the current conversation. Admin only. ' +
@@ -3170,6 +3238,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       resumeBot,
       setPolicy,
       redeployBot,
+      suggestIssueTool,
       generateImageTool,
     ],
   });

@@ -114,6 +114,28 @@ const EnvSchema = z.object({
   // top of the per-user in-flight guard). 0 = unlimited.
   IMAGE_GEN_DAILY_LIMIT: z.coerce.number().int().min(0).default(25),
 
+  // --- GitHub issue filing (suggest_issue) ---------------------------------
+  // Lets a SUPER ADMIN file an issue on the repo straight from chat. OFF by
+  // default. GITHUB_ISSUE_TOKEN must be a FINE-GRAINED PAT scoped to
+  // `Issues: write` on GITHUB_ISSUE_REPO ONLY (never the
+  // CLAUDE_CODE_OAUTH_TOKEN) — see docs/SECURITY.md + docs/DEPLOYMENT.md. This
+  // is the bot's only GitHub egress / write credential.
+  GITHUB_ISSUE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  GITHUB_ISSUE_REPO: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'GITHUB_ISSUE_REPO must be "owner/repo"')
+    .default('swampratnz/community-agent'),
+  GITHUB_ISSUE_TOKEN: z.string().optional(),
+  // Labels applied to every filed issue (comma-separated). Default
+  // `community-feedback` so it enters the research pipeline as evidence rather
+  // than a proposal that skips adversarial review (see docs/PIPELINE.md).
+  GITHUB_ISSUE_LABELS: z.string().default('community-feedback'),
+  // Max issues one super admin can file per rolling calendar day. 0 = unlimited.
+  GITHUB_ISSUE_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
+
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
   WHATSAPP_AUTH_DIR: z.string().default('./whatsapp-auth'),
@@ -407,6 +429,12 @@ const EnvSchemaChecked = EnvSchema.refine(
     // fast when the feature is on rather than trusting the deploy to get it right.
     message: 'GROK_BIN must be an absolute path when IMAGE_GEN_ENABLED=true (avoids PATH hijack)',
     path: ['GROK_BIN'],
+  })
+  .refine((e) => !e.GITHUB_ISSUE_ENABLED || Boolean(e.GITHUB_ISSUE_TOKEN), {
+    // No point enabling the tool without a credential — fail fast at startup
+    // rather than at the first super-admin who tries to file an issue.
+    message: 'GITHUB_ISSUE_TOKEN is required when GITHUB_ISSUE_ENABLED=true',
+    path: ['GITHUB_ISSUE_TOKEN'],
   });
 
 const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
@@ -446,6 +474,13 @@ export const config = {
     mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
+  },
+  github: {
+    enabled: env.GITHUB_ISSUE_ENABLED ?? false,
+    repo: env.GITHUB_ISSUE_REPO,
+    token: env.GITHUB_ISSUE_TOKEN,
+    labels: csv(env.GITHUB_ISSUE_LABELS),
+    dailyLimit: env.GITHUB_ISSUE_DAILY_LIMIT,
   },
   imageGen: {
     enabled: env.IMAGE_GEN_ENABLED ?? false,
