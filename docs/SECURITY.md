@@ -664,7 +664,13 @@ user, so it gets its own controls:
   allowlist can't help (image tool not selectable) and a `--deny <name>` fails
   *open* if the name doesn't match grok's internal tool id — which is why the
   control is the kernel sandbox, not a tool filter. `--disable-web-search`
-  additionally removes the web tools.
+  additionally removes the web tools. Because that containment rests entirely on
+  a third-party flag (grok silently dropped `--tools GenerateImage` once
+  already), a **per-process self-check** (`assertSandboxContains()`) runs before
+  the first generation: it plants a sentinel outside the sandbox and confirms a
+  sandboxed grok cannot read it, **failing closed** (image gen disabled for the
+  process) if the sandbox ever stops containing — so a silent regression can't
+  quietly reopen arbitrary-file-read.
 - **No secret inheritance.** The `grok` subprocess is spawned with a **minimal,
   explicit `env`** (`grokEnv()` in `src/media/grokImage.ts`): `PATH`, `HOME`,
   `TERM`, `LANG`/`LC_ALL`, `USER`, and any `GROK_*`/`XDG_*` knobs — **never** the

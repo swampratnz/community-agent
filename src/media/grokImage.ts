@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config } from '../config.js';
@@ -66,6 +67,63 @@ function grokSessionsRoot(): string {
 }
 
 /**
+ * Pure: did the sandbox FAIL to contain a probe read? True only if grok's
+ * output actually contains the sentinel token — i.e. a read that `--sandbox
+ * strict` should have blocked succeeded. Exported for a unit test (CI has no
+ * grok binary to exercise the real sandbox).
+ */
+export function sandboxBreached(stdout: string, token: string): boolean {
+  return stdout.includes(token);
+}
+
+/**
+ * Verify ONCE per process that `--sandbox strict` actually contains grok. The
+ * whole read/exfiltration defence rests on this third-party flag, and grok has
+ * silently dropped a flag before (`--tools GenerateImage`), so a string-only
+ * test isn't enough. Before the first generation we plant a random sentinel in
+ * a file OUTSIDE the sandbox read set (HOME root, NOT `~/.grok/`) and ask a
+ * sandboxed grok to read it back:
+ *   - token returned  → the sandbox is NOT containing → refuse to generate
+ *     (fail CLOSED; the rejected promise is cached, so image gen stays disabled
+ *     for this process until it's fixed and the service restarts).
+ *   - cancelled / errored / absent → contained or inconclusive → proceed. A
+ *     flaky probe must never disable a working sandbox, so ONLY a positive leak
+ *     fails. Cached, so only the first generation pays the extra grok call.
+ */
+let sandboxAssertion: Promise<void> | null = null;
+function assertSandboxContains(): Promise<void> {
+  if (!sandboxAssertion) {
+    sandboxAssertion = (async () => {
+      const home = process.env.HOME;
+      if (!home) return; // runGrok surfaces the missing-HOME error itself
+      const token = `GROK_SANDBOX_PROBE_${randomUUID()}`;
+      const sentinel = join(home, `.grok-sandbox-probe-${randomUUID()}`);
+      const cwd = await mkdtemp(join(tmpdir(), 'grokprobe-'));
+      try {
+        await writeFile(sentinel, token, 'utf8');
+        const stdout = await runGrok(
+          `Read the file ${sentinel} and reply with its exact contents.`,
+          cwd,
+        ).catch(() => '');
+        if (sandboxBreached(stdout, token)) {
+          logger.error(
+            'grok --sandbox strict failed to contain a disallowed read — disabling image generation',
+          );
+          throw new Error(
+            'grok sandbox self-check failed: a read outside the sandbox was NOT blocked. Image ' +
+              'generation is disabled until this is fixed (see docs/SECURITY.md §8).',
+          );
+        }
+      } finally {
+        await rm(sentinel, { force: true }).catch(() => {});
+        await rm(cwd, { recursive: true, force: true }).catch(() => {});
+      }
+    })();
+  }
+  return sandboxAssertion;
+}
+
+/**
  * Generate an image with the Grok Build CLI.
  *
  * Image generation is grok's `/imagine` skill (which drives the built-in
@@ -91,6 +149,11 @@ function grokSessionsRoot(): string {
  *    absence of --always-approve alone — is the real containment. A `--tools`
  *    allowlist can't be used: the image tool isn't `--tools`-selectable, and a
  *    `--deny` name that doesn't match grok's internal tool id fails OPEN.)
+ *  - Because that containment rests entirely on a third-party flag (grok has
+ *    silently dropped a flag before), `assertSandboxContains()` self-checks it
+ *    ONCE per process before the first generation — planting a sentinel outside
+ *    the sandbox and confirming a sandboxed grok can't read it — and fails
+ *    CLOSED (image gen disabled) if the sandbox ever stops containing.
  *  - The subprocess gets a minimal env (grokEnv()), never the bot's secrets.
  *  - The prompt is an argv element, never a shell string (no shell injection),
  *    passed as `/imagine <prompt>` — i.e. strictly as an image description.
@@ -107,6 +170,8 @@ export async function generateImage(prompt: string): Promise<GeneratedImage> {
   const instruction = `/imagine ${prompt}`;
   let sessionDir: string | undefined;
   try {
+    // Fail closed if grok's kernel sandbox isn't actually containing it.
+    await assertSandboxContains();
     const stdout = await runGrok(instruction, cwd);
     const sessionId = parseSessionId(stdout);
     if (!sessionId) throw new Error('Grok returned no session id; cannot locate the image.');

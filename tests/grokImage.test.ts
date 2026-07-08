@@ -7,7 +7,8 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { sniffImageType, parseSessionId, buildGrokArgs, grokEnv } = await import('../src/media/grokImage.js');
+const { sniffImageType, parseSessionId, buildGrokArgs, grokEnv, sandboxBreached } =
+  await import('../src/media/grokImage.js');
 
 test('sniffImageType detects JPEG / PNG / WebP from magic bytes', () => {
   assert.deepEqual(sniffImageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), {
@@ -99,6 +100,15 @@ test('SECURITY: grokEnv hands the subprocess a secret-free allowlist, never the 
     if (savedFoo === undefined) delete process.env.SHOULD_NOT_PASS_THROUGH;
     else process.env.SHOULD_NOT_PASS_THROUGH = savedFoo;
   }
+});
+
+test('sandboxBreached only flags a breach when the sentinel token actually comes back', () => {
+  const token = 'GROK_SANDBOX_PROBE_abc-123';
+  // Sandbox held: the read was cancelled, token never appears -> not breached.
+  assert.equal(sandboxBreached('{"text":"","stopReason":"Cancelled"}', token), false);
+  assert.equal(sandboxBreached('', token), false); // inconclusive / grok errored
+  // Sandbox failed: the sentinel content leaked into grok's output -> breached.
+  assert.equal(sandboxBreached(`{"text":"${token}","stopReason":"EndTurn"}`, token), true);
 });
 
 test('parseSessionId reads the session id from grok JSON stdout', () => {
