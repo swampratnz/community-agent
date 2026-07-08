@@ -484,6 +484,13 @@ export class BaileysAdapter implements PlatformAdapter {
    * one via `jidLocalPart` and check both the phone-number and LID-fallback
    * forms a cache key may have been stored under — an exact match on each
    * form only, so a similarly-shaped but different id is never deleted.
+   *
+   * Known gap (documented in SECURITY.md "Membership-scope staleness"): a
+   * removal carrying only an `@lid` JID clears that LID-keyed entry, but
+   * cannot clear a *phone-number*-keyed entry for the same person — the
+   * event has no phone number to resolve it by, and the group's own
+   * metadata has already dropped the participant by the time this fires, so
+   * there's no live lookup to recover the mapping either.
    */
   private invalidateMembershipCacheFor(raw: string[]): void {
     for (const jid of raw) {

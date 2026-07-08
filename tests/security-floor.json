@@ -4,7 +4,7 @@
   "ambientArchiving.test.ts": 5,
   "ambientArchivingOff.test.ts": 2,
   "anthropicStatus.test.ts": 4,
-  "baileysAdapter.test.ts": 10,
+  "baileysAdapter.test.ts": 11,
   "baileysArchiving.test.ts": 2,
   "backgroundJobs.test.ts": 1,
   "backgroundJobsDisabled.test.ts": 1,

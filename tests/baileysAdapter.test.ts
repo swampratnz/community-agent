@@ -719,3 +719,62 @@ test(
     assert.equal(sent.length, 1, "the 'add' welcome path still fires exactly as before");
   },
 );
+
+test(
+  "group-participants.update 'remove' carrying an @lid JID invalidates the lid-keyed membershipCache entry " +
+    'for the same person (issue #286)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111']);
+
+    await adapter.conversationsForUser('lid:9999');
+    assert.equal(calls.groupFetch, 1, 'first call is a cache miss and must hit groupFetchAllParticipating');
+
+    await fireGroupJoin(adapter, {
+      id: 'group-286@g.us',
+      participants: ['9999@lid'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('lid:9999');
+    assert.equal(
+      calls.groupFetch,
+      2,
+      "a 'remove' event carrying this participant's @lid JID must invalidate the lid-keyed cache entry",
+    );
+  },
+);
+
+test(
+  "SECURITY: a 'remove' event carrying only an @lid JID cannot invalidate a phone-number-keyed " +
+    'membershipCache entry for the same real person — the event has no phone number to resolve it by, so ' +
+    'that entry survives the full TTL exactly as before this fix (documented residual-window gap, ' +
+    'SECURITY.md "Membership-scope staleness", issue #286)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111']);
+
+    // Two entries for the SAME real person: one resolved (elsewhere) to
+    // their real phone number, one to their otherwise-unresolvable LID.
+    await adapter.conversationsForUser('64211111111');
+    await adapter.conversationsForUser('lid:9999');
+    assert.equal(calls.groupFetch, 2, 'two distinct cache keys each cause one cache-miss fetch');
+
+    await fireGroupJoin(adapter, {
+      id: 'group-286@g.us',
+      participants: ['9999@lid'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('lid:9999');
+    assert.equal(calls.groupFetch, 3, 'the lid-keyed entry is invalidated as expected');
+
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(
+      calls.groupFetch,
+      3,
+      'the phone-number-keyed entry for the same person must NOT be invalidated by an @lid-only removal ' +
+        'event — this is the documented gap, not a regression introduced by this fix',
+    );
+  },
+);
