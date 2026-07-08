@@ -118,6 +118,9 @@ export const ADMIN_TOOLS = [
   // Content curation, same tier as save_knowledge — not super-admin like
   // set_policy, which is runtime bot control (issue #212).
   'mcp__community__set_community_guidelines',
+  // Sibling of set_community_guidelines (issue #253): same admin/audited/no-
+  // CONFIRM shape, configures the other half of the new-member welcome text.
+  'mcp__community__set_welcome_message',
   'mcp__community__save_knowledge',
   'mcp__community__list_knowledge',
   'mcp__community__update_knowledge',
