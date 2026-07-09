@@ -96,6 +96,11 @@ memory**:
    (never the system prompt — see SECURITY.md on prompt injection).
 3. The `remember_search` / `knowledge_search` tools let the model query memory
    on demand mid-turn. Cross-conversation search is admin-only.
+   `knowledge_search`'s result ordering is similarity-descending except for a
+   narrow tie-break (issue #308): when two relevant hits land within
+   `KNOWLEDGE_TIE_MARGIN` of each other and exactly one is stale (per
+   `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), the fresher one is listed
+   first — a real relevance gap always wins regardless of staleness.
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`, and
    curate existing entries with `list_knowledge` (browse by scope),
    `update_knowledge` (correct + re-embed), and `delete_knowledge` (retire,
