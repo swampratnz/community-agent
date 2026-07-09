@@ -94,7 +94,7 @@ const {
   getWelcomeMessageMi,
   resetPolicyCacheForTests,
 } = await import('../src/storage/policies.js');
-const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
+const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { superAdminIds } = await import('../src/auth/roles.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
@@ -1160,13 +1160,28 @@ test('community_info names every member capability for a member caller (issue #9
     /guideline|rule/i,
     'must point at community_guidelines so members can discover it (issue #212)',
   );
+  // The 7 tools issue #311 found had no line at all despite being live,
+  // unconditionally-available MEMBER_TOOLS entries.
+  assert.match(replyText, /known Anthropic outage/i, 'must mention check_status (issue #206)');
+  assert.match(replyText, /rate my last answer/i, 'must mention rate_answer (issue #118)');
+  assert.match(replyText, /withdraw/i, 'must mention withdraw_report');
+  assert.match(replyText, /what I've stored about you/i, 'must mention my_data');
+  assert.match(replyText, /active warnings/i, 'must mention my_warnings');
+  assert.match(replyText, /filed suggestions\/reports/i, 'must mention my_submissions');
+  assert.match(replyText, /te reo Māori/i, 'must mention set_language_preference (issue #189)');
 });
 
 test('community_info reply stays concise, not a wall of text (issue #92)', async () => {
   const result = await communityInfoHandler('member');
   const replyText = result.content[0]?.text ?? '';
 
-  assert.ok(replyText.length < 700, `reply should stay short; was ${replyText.length} chars`);
+  // Cap recalibrated for issue #311: MEMBER_TOOLS grew to 17 entries and
+  // MEMBER_CAPABILITIES_TEXT now names all of them (consolidated into
+  // behaviourally-related lines, not one bullet each), so the ~700-char cap
+  // sized for #92's original 9-entry text no longer fits. Still a hard cap,
+  // not a soft heuristic — a future addition that isn't consolidated should
+  // fail this rather than silently growing into a wall of text.
+  assert.ok(replyText.length < 1100, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends an admin-extras line for admin/super_admin callers, on top of the member content (issue #92)', async () => {
@@ -1178,6 +1193,97 @@ test('community_info appends an admin-extras line for admin/super_admin callers,
   assert.match(adminReply, /moderat/i, 'admin reply must note extra moderation/management capabilities');
   assert.equal(superAdminReply, adminReply, 'super_admin sees the same extras line as admin');
   assert.notEqual(adminReply, memberReply, 'admin reply must differ from the member-only reply');
+});
+
+// Anti-drift pin (issue #311): the docstring above MEMBER_CAPABILITIES_TEXT
+// states "every entry in MEMBER_TOOLS gets a line" as an invariant, but
+// nothing enforced it — 7 tools shipped after #92 with no line at all. This
+// coverage map ties every MEMBER_TOOLS id to the substring its capabilities-
+// text line must contain, so a future member tool with no line fails loudly
+// here instead of drifting silently again.
+const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__community_guidelines', /guideline|rule/i],
+  ['mcp__community__check_status', /known Anthropic outage/i],
+  ['mcp__community__knowledge_search', /knowledge/i],
+  ['mcp__community__remember_search', /past messages|remember/i],
+  ['mcp__community__forget_me', /forget/i],
+  ['mcp__community__report_content', /report/i],
+  ['mcp__community__withdraw_report', /withdraw/i],
+  ['mcp__community__my_submissions', /filed suggestions\/reports/i],
+  ['mcp__community__my_warnings', /active warnings/i],
+  ['mcp__community__my_data', /what I've stored about you/i],
+  ['mcp__community__suggest_improvement', /suggest/i],
+  ['mcp__community__rate_answer', /rate my last answer/i],
+  ['mcp__community__set_response_style', /simply/i],
+  ['mcp__community__set_language_preference', /te reo Māori/i],
+  ['mcp__community__catch_up', /catch you up|what did I miss/i],
+  ['mcp__community__react_to_message', /react to a message/i],
+]);
+// community_info is self-referential — it describes every OTHER member
+// tool, so it needs no line about itself.
+const MEMBER_CAPABILITY_EXEMPT = new Set(['mcp__community__community_info']);
+
+function assertMemberToolsCovered(
+  tools: readonly string[],
+  coverage: Map<string, RegExp>,
+  exempt: Set<string>,
+  renderedText: string,
+): void {
+  for (const toolId of tools) {
+    if (exempt.has(toolId)) continue;
+    const pattern = coverage.get(toolId);
+    assert.ok(
+      pattern,
+      `${toolId} has no MEMBER_CAPABILITY_COVERAGE entry — add a capabilities-text line and a coverage-map entry`,
+    );
+    assert.match(renderedText, pattern, `${toolId}'s capabilities-text line is missing or changed`);
+  }
+}
+
+test('community_info: every MEMBER_TOOLS entry has a capabilities-text line (issue #311 anti-drift pin)', async () => {
+  const replyText = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  assertMemberToolsCovered(MEMBER_TOOLS, MEMBER_CAPABILITY_COVERAGE, MEMBER_CAPABILITY_EXEMPT, replyText);
+});
+
+test('community_info anti-drift pin fails loudly for an uncovered member tool (issue #311)', async () => {
+  const replyText = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  // Synthetic fixture standing in for a future member tool — MEMBER_TOOLS
+  // itself is `as const` and must not be mutated by a test. Demonstrates
+  // that the coverage check above would actually catch the exact drift
+  // #311 found (a new member tool shipping with no capabilities-text line).
+  const syntheticToolsWithGap = [...MEMBER_TOOLS, 'mcp__community__a_brand_new_member_tool'];
+  assert.throws(
+    () =>
+      assertMemberToolsCovered(
+        syntheticToolsWithGap,
+        MEMBER_CAPABILITY_COVERAGE,
+        MEMBER_CAPABILITY_EXEMPT,
+        replyText,
+      ),
+    /a_brand_new_member_tool/,
+  );
+});
+
+test('SECURITY: community_info member-tier reply never names an admin/super_admin-only tool, and the privileged-tools pointer line is unchanged (issue #311)', async () => {
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+
+  assert.match(
+    adminReply,
+    /You also have moderation, announcement, and membership-management tools — ask "what's new" for a fuller rundown\./,
+    'this text-only PR must not change the existing admin/super_admin pointer line',
+  );
+
+  const privilegedToolIds = [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS].map((id) =>
+    id.replace('mcp__community__', ''),
+  );
+  for (const id of privilegedToolIds) {
+    assert.doesNotMatch(
+      memberReply,
+      new RegExp(id, 'i'),
+      `member-tier reply must never name the privileged tool "${id}"`,
+    );
+  }
 });
 
 test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
