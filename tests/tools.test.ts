@@ -1184,6 +1184,84 @@ test('SECURITY: list_knowledge rejects a non-admin caller even when the new prov
   );
 });
 
+test(
+  'list_duplicate_knowledge renders a near-duplicate pair with both ids/titles/similarity, and returns a clear message (not an error, not empty success) when nothing meets the threshold (issue #316)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-dup-tool-scope`;
+    const { id: aId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: bId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-duplicate-knowledge',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_duplicate_knowledge'];
+
+    const withPair = await registeredTool.handler({ scope });
+    const output = withPair.content[0]?.text ?? '';
+    assert.match(output, new RegExp(`#${aId} \\(.*WhatsApp linking steps.*\\)`));
+    assert.match(output, new RegExp(`#${bId} \\(.*How to link WhatsApp.*\\)`));
+    assert.match(output, /\d+% similar/, 'similarity is rendered as a percentage');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId]]);
+
+    const emptyScope = `${RUN}-list-dup-tool-empty-scope`;
+    const empty = await registeredTool.handler({ scope: emptyScope });
+    assert.equal(
+      empty.content[0]?.text,
+      'No near-duplicate knowledge pairs found.',
+      'empty state returns a clear human-readable message, not an error and not an empty success with no text',
+    );
+  },
+);
+
+test('SECURITY: list_duplicate_knowledge rejects a non-admin caller (assertAtLeast re-check, issue #316)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['list_duplicate_knowledge'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'a member caller must be rejected by the assertAtLeast re-check',
+  );
+});
+
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
