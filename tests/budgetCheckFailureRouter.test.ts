@@ -21,6 +21,7 @@ process.env.ACCESS_MODE_DISCORD = 'open';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
+const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI } = await import('../src/dailyBudgetNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -197,4 +198,93 @@ test('router (budget check failure): does not cross-talk with the unrelated budg
 
   await trigger(makeMessage({ userId: 'member-2' }));
   assert.equal(dms.length, 1, 'the unrelated failure for a different user still produces its own alert');
+});
+
+// --- Standing 'mi' language preference on the daily-budget notice (issue #300) ---
+
+test("router (budget exceeded): a caller with a standing 'mi' language preference gets DAILY_BUDGET_NOTICE_TEXT_MI, not the English default", async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999, // over the daily limit
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT_MI);
+});
+
+test("router (budget exceeded): a caller with 'auto' (the default) still gets the English DAILY_BUDGET_NOTICE_TEXT", async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT);
+});
+
+test('SECURITY: a getLanguagePreference failure on the daily-budget notice still sends the English default, never throws or drops the notice', async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT);
+});
+
+test('router (budget exceeded): the language-preference lookup runs at most once per debounce window, never once per shed message', async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999,
+    async () => {
+      calls += 1;
+      return 'auto';
+    },
+  );
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+  await trigger(makeMessage());
+  await trigger(makeMessage());
+
+  assert.equal(
+    calls,
+    1,
+    'only the first (notifying) message in the window should read the language preference',
+  );
 });
