@@ -2046,25 +2046,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     'set_welcome_message',
     'Set the welcome message sent to new members on join (Discord DM/channel fallback, WhatsApp group ' +
       `post), in place of the hardcoded default. Max ${WELCOME_MESSAGE_MAX_CHARS} characters. Pass an ` +
-      'empty string to clear and revert to the default. Admin only.',
+      "empty string to clear and revert to the default. Pass language: 'mi' to set/clear the te reo " +
+      "Māori variant served to a rejoining Discord member with a standing set_language_preference('mi') " +
+      "instead of the default (en) text — omit or pass 'en' for the default-language text. Admin only.",
     {
       text: z
         .string()
         .max(WELCOME_MESSAGE_MAX_CHARS)
         .describe(`The welcome text, or "" to clear (max ${WELCOME_MESSAGE_MAX_CHARS} characters)`),
+      language: z
+        .enum(['en', 'mi'])
+        .optional()
+        .describe("Which variant to set: 'en' (default) or 'mi' (te reo Māori). Defaults to 'en'."),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'set_welcome_message');
+      const language = args.language ?? 'en';
+      const policyKey = language === 'mi' ? 'welcome_message_mi' : 'welcome_message';
       const { success, result } = await audited({
         actionKind: 'set_welcome_message',
-        params: { text: args.text },
+        params: { text: args.text, language },
         run: async () => {
-          await updatePolicy('welcome_message', args.text, caller.userId);
+          await updatePolicy(policyKey, args.text, caller.userId);
           return args.text ? 'updated' : 'cleared';
         },
       });
       if (!success) return text(`Failed: ${result}`, true);
-      return text(args.text ? 'Welcome message updated.' : 'Welcome message cleared.');
+      const label = language === 'mi' ? 'Welcome message (mi)' : 'Welcome message';
+      return text(args.text ? `${label} updated.` : `${label} cleared.`);
     },
   );
 
