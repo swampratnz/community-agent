@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AdapterLookup, PlatformAdapter } from '../src/platforms/types.js';
+import type { AdapterLookup, Platform, PlatformAdapter } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -54,6 +54,7 @@ const {
   POLL_MAX_DURATION_HOURS,
   POLL_DEFAULT_DURATION_HOURS,
   POLL_RATE_LIMIT_PER_HOUR,
+  POLL_END_RATE_LIMIT_PER_HOUR,
   ALLOWED_REACTION_EMOJI,
   REACTION_RATE_LIMIT_PER_DAY,
   THREAD_NAME_MAX_CHARS,
@@ -89,6 +90,7 @@ const { config } = await import('../src/config.js');
 const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, resetPolicyCacheForTests } =
   await import('../src/storage/policies.js');
 const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
+const { superAdminIds } = await import('../src/auth/roles.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -112,6 +114,7 @@ const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
 const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
 const REACT_TO_MESSAGE_HANDLER_CONVO = `${RUN}-react-to-message-handler`;
 const REPORT_CONTENT_ACK_HANDLER_CONVO = `${RUN}-report-content-ack-handler`;
+const NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER = `${RUN}-notify-super-admins-cross-platform`;
 
 after(async () => {
   if (hasDb) {
@@ -176,6 +179,16 @@ after(async () => {
     await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [
       `${COMMUNITY_ROLE_HANDLER_USER}%`,
     ]);
+    await pool.query(`DELETE FROM interactions WHERE user_id LIKE $1`, [
+      `${NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM admin_audit WHERE target_user_id LIKE $1`, [
+      `${NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER}%`,
+    ]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'clear_warnings' AND actor_user_id LIKE $1`,
+      [`${RUN}-bystander-admin%`],
+    );
   }
   await closeDb();
 });
@@ -423,16 +436,24 @@ test('notifyReportResolved swallows a DM failure rather than throwing (resolutio
 
 // notifyReportFiled (issue #90): a report proactively alerts every configured
 // super admin the moment it's filed, instead of relying on someone
-// remembering to poll list_reports. process.env.SUPER_ADMIN_DISCORD_IDS is
-// set to 'super-1,super-2' above so superAdminIds('discord') resolves to a
-// real, non-empty list for these tests.
+// remembering to poll list_reports. process.env.SUPER_ADMIN_WHATSAPP_NUMBERS
+// is set to 'super-1,super-2' above so superAdminIds('whatsapp') resolves to
+// a real, non-empty list for these tests. Since issue #288, both functions
+// take an `adapterFor` lookup (mirroring buildToolServer's own) instead of a
+// single adapter+platform pair, so every test below resolves 'whatsapp' to
+// the stub adapter and leaves 'discord' unregistered (undefined) — exactly
+// today's single-platform-deployment shape, since SUPER_ADMIN_DISCORD_IDS is
+// never set in this file.
+const whatsappOnlyAdapterFor = (adapter: PlatformAdapter) => (platform: Platform) =>
+  platform === 'whatsapp' ? adapter : undefined;
+
 test('notifyReportFiled DMs every configured super admin with the report details', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, message) => {
     calls.push([userId, message]);
   });
 
-  await notifyReportFiled(adapter, 'whatsapp', {
+  await notifyReportFiled(whatsappOnlyAdapterFor(adapter), {
     id: 42,
     reporterUserId: 'reporter-1',
     reporterName: 'Reporter One',
@@ -460,7 +481,7 @@ test('notifyReportWithdrawn DMs every super admin so a reporter retraction is ne
     calls.push([userId, message]);
   });
 
-  await notifyReportWithdrawn(adapter, 'whatsapp', {
+  await notifyReportWithdrawn(whatsappOnlyAdapterFor(adapter), {
     ids: [42, 43],
     reporterUserId: 'reporter-1',
     reporterName: 'Reporter One',
@@ -481,7 +502,7 @@ test('notifyReportFiled includes target user and message id only when known', as
   const adapterWithout = stubAdapter(async (_userId, message) => {
     withoutContext.push(message);
   });
-  await notifyReportFiled(adapterWithout, 'whatsapp', {
+  await notifyReportFiled(whatsappOnlyAdapterFor(adapterWithout), {
     id: 1,
     reporterUserId: 'reporter-1',
     reporterName: 'Reporter One',
@@ -495,7 +516,7 @@ test('notifyReportFiled includes target user and message id only when known', as
   const adapterWith = stubAdapter(async (_userId, message) => {
     withContext.push(message);
   });
-  await notifyReportFiled(adapterWith, 'whatsapp', {
+  await notifyReportFiled(whatsappOnlyAdapterFor(adapterWith), {
     id: 2,
     reporterUserId: 'reporter-1',
     reporterName: 'Reporter One',
@@ -514,7 +535,7 @@ test('notifyReportFiled excludes the reporter from the alert (matches notifySupe
     calls.push(userId);
   });
 
-  await notifyReportFiled(adapter, 'whatsapp', {
+  await notifyReportFiled(whatsappOnlyAdapterFor(adapter), {
     id: 1,
     reporterUserId: 'super-1',
     reporterName: 'Super One',
@@ -531,7 +552,7 @@ test('notifyReportFiled swallows a DM failure rather than throwing (filing stays
   });
 
   await assert.doesNotReject(
-    notifyReportFiled(adapter, 'whatsapp', {
+    notifyReportFiled(whatsappOnlyAdapterFor(adapter), {
       id: 1,
       reporterUserId: 'reporter-1',
       reporterName: 'Reporter One',
@@ -540,6 +561,309 @@ test('notifyReportFiled swallows a DM failure rather than throwing (filing stays
     }),
   );
 });
+
+test('SECURITY: notifyReportFiled reaches every configured super admin across ALL registered platforms, not just the report origin — the discord adapter stays silent only because no discord super admin is configured, never because it was skipped outright (issue #288)', async () => {
+  const whatsappCalls: Array<[string, string]> = [];
+  const whatsappAdapter = stubAdapter(async (userId, message) => {
+    whatsappCalls.push([userId, message]);
+  });
+  const discordCalls: string[] = [];
+  const discordAdapter = stubAdapter(async (userId) => {
+    discordCalls.push(userId);
+  });
+
+  await notifyReportFiled((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+    id: 90,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    reason: 'cross-platform alert reach',
+  });
+
+  assert.equal(whatsappCalls.length, 2, 'both whatsapp-configured super admins are alerted');
+  assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  assert.equal(
+    discordCalls.length,
+    0,
+    'no discord super admins are configured, so the registered-and-connected discord adapter is never used',
+  );
+});
+
+test('notifyReportWithdrawn reaches every configured super admin across ALL registered platforms, not just the report origin (issue #288)', async () => {
+  const whatsappCalls: Array<[string, string]> = [];
+  const whatsappAdapter = stubAdapter(async (userId, message) => {
+    whatsappCalls.push([userId, message]);
+  });
+  const discordCalls: string[] = [];
+  const discordAdapter = stubAdapter(async (userId) => {
+    discordCalls.push(userId);
+  });
+
+  await notifyReportWithdrawn((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+    ids: [90],
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+  });
+
+  assert.equal(whatsappCalls.length, 2, 'both whatsapp-configured super admins are alerted');
+  assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  assert.equal(discordCalls.length, 0, 'no discord super admins are configured');
+});
+
+/**
+ * clear_warnings is the shared fixture for the notifySuperAdmins
+ * cross-platform tests below (issue #288): an audited(), non-CONFIRM admin
+ * action, so it exercises the real audited() → notifySuperAdmins call site
+ * (unlike the direct notifyReportFiled/notifyReportWithdrawn calls above)
+ * without the extra CONFIRM/performAdminAction machinery grant_admin or
+ * moderate would need.
+ */
+function clearWarningsHandler(caller: {
+  platform: 'discord' | 'whatsapp';
+  userId?: string;
+  adapter: PlatformAdapter;
+  getAdapter?: AdapterLookup;
+}) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-1',
+    },
+    caller.adapter,
+    caller.getAdapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            targetUserId: string;
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['clear_warnings'];
+}
+
+test(
+  "an audited admin action (clear_warnings) alerts a super admin configured only on a platform other than the acting admin's, via the same adapterFor lookup buildToolServer already threads through for #157 (issue #288)",
+  { skip },
+  async () => {
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: 'convo-1',
+      userId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hi',
+    });
+
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const whatsappCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+
+    const registeredTool = clearWarningsHandler({
+      platform: 'discord',
+      adapter: discordAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? whatsappAdapter : undefined),
+    });
+
+    const result = await registeredTool.handler({
+      targetUserId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+    });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^Failed/);
+    assert.equal(
+      discordCalls.length,
+      0,
+      "no discord super admins are configured, so the acting admin's own adapter never receives the alert",
+    );
+    assert.equal(
+      whatsappCalls.length,
+      2,
+      'the alert reaches every whatsapp-configured super admin even though the action happened on discord',
+    );
+    assert.deepEqual(whatsappCalls.sort(), ['super-1', 'super-2']);
+  },
+);
+
+test(
+  'an audited admin action sends nothing through an unregistered platform and never throws (single-platform deployment sees zero behavioural change, issue #288)',
+  { skip },
+  async () => {
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: 'convo-1',
+      userId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hi',
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // No getAdapter passed at all — whatsapp is simply not registered in this
+    // deployment, mirroring today's single-platform-deployment shape.
+    const registeredTool = clearWarningsHandler({ platform: 'discord', adapter });
+    const result = await registeredTool.handler({
+      targetUserId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+    });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^Failed/);
+    assert.equal(
+      calls.length,
+      0,
+      'whatsapp is unregistered so it is silently skipped, and no discord super admin is configured either',
+    );
+  },
+);
+
+test(
+  "an audited admin action skips a registered but disconnected adapter rather than attempting a doomed send, mirroring usageAlert.ts's guard (issue #288)",
+  { skip },
+  async () => {
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: 'convo-1',
+      userId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hi',
+    });
+
+    const discordAdapter = stubAdapter(async () => {});
+    const whatsappCalls: string[] = [];
+    const disconnectedWhatsapp: PlatformAdapter = {
+      ...stubAdapter(async (userId) => {
+        whatsappCalls.push(userId);
+      }),
+      isConnected: () => false,
+    };
+
+    const registeredTool = clearWarningsHandler({
+      platform: 'discord',
+      adapter: discordAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? disconnectedWhatsapp : undefined),
+    });
+    const result = await registeredTool.handler({
+      targetUserId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+    });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^Failed/);
+    assert.equal(
+      whatsappCalls.length,
+      0,
+      'a disconnected adapter must never receive a doomed send attempt, even though whatsapp super admins are configured',
+    );
+  },
+);
+
+test(
+  'an audited admin action never self-notifies the excluded actor, even when they are configured as a super admin on a platform other than the one they acted on (issue #288)',
+  { skip },
+  async () => {
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: 'convo-1',
+      userId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hi',
+    });
+
+    const discordAdapter = stubAdapter(async () => {});
+    const whatsappCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+
+    // The acting admin's id ('super-1') happens to also be a whatsapp-
+    // configured super admin, even though they are acting from discord.
+    const registeredTool = clearWarningsHandler({
+      platform: 'discord',
+      userId: 'super-1',
+      adapter: discordAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? whatsappAdapter : undefined),
+    });
+    const result = await registeredTool.handler({
+      targetUserId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+    });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^Failed/);
+    assert.deepEqual(
+      whatsappCalls,
+      ['super-2'],
+      "the acting super admin ('super-1') is excluded regardless of which platform they acted on; the other whatsapp super admin ('super-2') still gets the alert",
+    );
+  },
+);
+
+test(
+  'SECURITY: the audited alert recipient set is always exactly the configured super admins across both platforms minus the acting admin — never a bystander admin/conversation-participant id (issue #288)',
+  { skip },
+  async () => {
+    const bystanderAdminId = `${RUN}-bystander-admin`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: 'convo-1',
+      userId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hi',
+    });
+
+    const allCalls: Array<{ id: string; platform: 'discord' | 'whatsapp' }> = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      allCalls.push({ id: userId, platform: 'discord' });
+    });
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      allCalls.push({ id: userId, platform: 'whatsapp' });
+    });
+
+    const expected = new Set([...superAdminIds('discord'), ...superAdminIds('whatsapp')]);
+    assert.ok(
+      !expected.has(bystanderAdminId),
+      'sanity: the acting admin must not itself be a configured super admin for this assertion to be meaningful',
+    );
+
+    const registeredTool = clearWarningsHandler({
+      platform: 'discord',
+      userId: bystanderAdminId,
+      adapter: discordAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? whatsappAdapter : undefined),
+    });
+    const result = await registeredTool.handler({
+      targetUserId: NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER,
+    });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^Failed/);
+    assert.deepEqual(
+      new Set(allCalls.map((c) => c.id)),
+      expected,
+      'recipients are exactly the union of configured super admins on both platforms',
+    );
+    for (const call of allCalls) {
+      assert.ok(expected.has(call.id), `recipient ${call.id} must be a currently-configured super admin`);
+    }
+    assert.ok(
+      !allCalls.some((c) => c.id === bystanderAdminId),
+      'the acting admin (a bystander, non-super-admin id present in this conversation) is never a recipient',
+    );
+  },
+);
 
 test('SECURITY: moderation_history rejects an actionKind outside the allow-list at the zod schema boundary', () => {
   const adapter = stubAdapter(async () => {});
@@ -570,6 +894,192 @@ test('SECURITY: moderation_history rejects an actionKind outside the allow-list 
     );
   }
   assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'actionKind stays optional');
+});
+
+test(
+  'list_knowledge staleOnly returns the disabled message (not an empty list) when KNOWLEDGE_STALE_DAYS is 0, and never issues the filtered query (issue #280)',
+  { skip },
+  async () => {
+    assert.equal(
+      config.adminDigest.knowledgeStaleDays,
+      0,
+      'this file never sets KNOWLEDGE_STALE_DAYS, so staleness tracking is off by default',
+    );
+
+    const { id } = await saveKnowledge({
+      title: `${RUN} stale-disabled fixture`,
+      content: 'An entry that would look stale by any reasonable threshold.',
+      scope: `${RUN}-stale-disabled-scope`,
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-stale-disabled',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ staleOnly: true });
+    assert.equal(
+      result.content[0]?.text,
+      'Staleness tracking is disabled (KNOWLEDGE_STALE_DAYS is not set).',
+      'must return the explicit disabled message, not an empty/no-entries list, and must not run the ' +
+        'filtered query at all (the fixture entry above would otherwise prove it by appearing in results)',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'list_knowledge always renders a bracketed provenance tag per entry, right after the scope tag, without disturbing any existing field (issue #294)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-provenance-render-scope`;
+    const seeded = await Promise.all([
+      saveKnowledge({
+        title: 'provenance-render-auto',
+        content: 'auto-researched content',
+        scope,
+        createdByRole: 'auto',
+      }),
+      saveKnowledge({
+        title: 'provenance-render-docs',
+        content: 'docs-ingested content',
+        scope,
+        createdByRole: 'docs',
+      }),
+      saveKnowledge({
+        title: 'provenance-render-admin',
+        content: 'admin-authored content',
+        scope,
+        createdByRole: 'admin',
+      }),
+      saveKnowledge({
+        title: 'provenance-render-super-admin',
+        content: 'super-admin-authored content',
+        scope,
+        createdByRole: 'super_admin',
+      }),
+    ]);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-provenance-render',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ scope, limit: 10 });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /#\d+ \[.+?\] \[auto\] provenance-render-auto: auto-researched content/);
+    assert.match(output, /#\d+ \[.+?\] \[docs\] provenance-render-docs: docs-ingested content/);
+    assert.match(output, /#\d+ \[.+?\] \[admin\] provenance-render-admin: admin-authored content/);
+    assert.match(
+      output,
+      /#\d+ \[.+?\] \[super_admin\] provenance-render-super-admin: super-admin-authored content/,
+    );
+    assert.match(output, /\(updated .+, retrieved \d+x\)/, 'pre-existing fields still render unchanged');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [seeded.map((s) => s.id)]);
+  },
+);
+
+test(
+  'list_knowledge provenance filter returns only entries matching the requested provenance (issue #294)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-provenance-filter-scope`;
+    const { id: autoId } = await saveKnowledge({
+      title: 'provenance-filter-auto',
+      content: 'auto-researched content to filter for',
+      scope,
+      createdByRole: 'auto',
+    });
+    const { id: adminId } = await saveKnowledge({
+      title: 'provenance-filter-admin',
+      content: 'admin-authored content, must not appear',
+      scope,
+      createdByRole: 'admin',
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-provenance-filter',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ scope, provenance: 'auto' });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /provenance-filter-auto/, 'the auto entry must appear');
+    assert.doesNotMatch(output, /provenance-filter-admin/, 'the admin entry must not appear');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, adminId]]);
+  },
+);
+
+test('SECURITY: list_knowledge rejects a non-admin caller even when the new provenance param is supplied (assertAtLeast re-check, issue #294)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['list_knowledge'];
+
+  await assert.rejects(
+    () => registeredTool.handler({ provenance: 'auto' }),
+    /admin/i,
+    'a member caller must be rejected by the assertAtLeast re-check even with provenance set — the new ' +
+      'param opens no lower-privilege path',
+  );
 });
 
 test('SECURITY: set_language_preference rejects any language outside {auto,en,mi} at the zod schema boundary (issue #189)', () => {
@@ -1349,6 +1859,7 @@ function createPollHandler(caller: {
           handler: (args: {
             question: string;
             options: string[];
+            multiChoice?: boolean;
             durationHours?: number;
             conversationId?: string;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
@@ -1357,6 +1868,38 @@ function createPollHandler(caller: {
       >;
     }
   )._registeredTools['create_poll'];
+}
+
+/** Like createPollHandler, but returns the `end_poll` tool handler. */
+function endPollHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            messageId: string;
+            conversationId?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['end_poll'];
 }
 
 test('SECURITY: create_poll rejects a non-admin caller (assertAtLeast re-check, issue #228)', async () => {
@@ -1606,6 +2149,88 @@ test('SECURITY: create_poll enforces a per-conversation rate cap instead of CONF
   }
   const overLimit = await handler.handler({ question: 'one too many', options: ['a', 'b'] });
   assert.match(overLimit.content[0]?.text ?? '', /poll limit/);
+  assert.equal(overLimit.isError, true);
+});
+
+test('create_poll threads multiChoice through to the adapter (defaults false; explicit true is honoured)', async () => {
+  const captured: Array<{ multiChoice?: unknown }> = [];
+  const adapter = pollAdapter({
+    performAdminAction: async (action) => {
+      captured.push(action.params ?? {});
+      return 'Poll posted with 2 option(s) (single choice), open 24h.';
+    },
+  });
+  const handler = createPollHandler({ conversationId: `${RUN}-poll-multi`, adapter });
+
+  await handler.handler({ question: 'Q', options: ['a', 'b'] });
+  assert.equal(
+    captured[0]?.multiChoice,
+    false,
+    'an omitted multiChoice must default to single choice (false)',
+  );
+
+  await handler.handler({ question: 'Q', options: ['a', 'b'], multiChoice: true });
+  assert.equal(captured[1]?.multiChoice, true, 'an explicit multiChoice:true must reach the adapter');
+});
+
+// end_poll: Discord's only supported poll mutation (expire early). Same
+// admin-tier / conversation-scope / capability / audit guards as create_poll.
+test('SECURITY: end_poll rejects a non-admin caller (assertAtLeast re-check)', async () => {
+  const adapter = pollAdapter({ capabilities: ['end_poll'] });
+  const handler = endPollHandler({ role: 'member', adapter });
+  await assert.rejects(() => handler.handler({ messageId: 'msg-1' }), /Permission denied/);
+});
+
+test('SECURITY: end_poll refuses on a platform whose adapter does not advertise the capability', async () => {
+  const adapter = pollAdapter({ capabilities: [] });
+  const handler = endPollHandler({ adapter });
+  const result = await handler.handler({ messageId: 'msg-1' });
+  assert.match(result.content[0]?.text ?? '', /does not support polls/);
+  assert.equal(result.isError, true);
+});
+
+test('SECURITY: end_poll refuses a conversation the caller is not scoped to', async () => {
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    conversationsForUser: async () => ['convo-other'],
+  });
+  const handler = endPollHandler({ conversationId: 'convo-mine', adapter });
+  const result = await handler.handler({ messageId: 'msg-1', conversationId: 'convo-unscoped' });
+  assert.match(result.content[0]?.text ?? '', /not a participant/);
+  assert.equal(result.isError, true);
+});
+
+test('end_poll threads the message id to the adapter and returns its result', async () => {
+  const captured: Array<{ kind: string; messageId?: unknown }> = [];
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    performAdminAction: async (action) => {
+      captured.push({ kind: action.kind, messageId: action.params?.messageId });
+      return 'Ended poll msg-42; its results are now final.';
+    },
+  });
+  const handler = endPollHandler({ conversationId: `${RUN}-end-poll`, adapter });
+  const result = await handler.handler({ messageId: 'msg-42' });
+  assert.equal(result.isError, false);
+  assert.equal(captured[0]?.kind, 'end_poll');
+  assert.equal(captured[0]?.messageId, 'msg-42', 'the message id must reach the adapter');
+  assert.match(result.content[0]?.text ?? '', /results are now final/);
+});
+
+test('SECURITY: end_poll enforces a per-conversation rate cap (bounds a hijacked admin turn ending every live poll, PR #272)', async () => {
+  const convo = `${RUN}-end-poll-rate-cap`;
+  const adapter = pollAdapter({
+    capabilities: ['end_poll'],
+    performAdminAction: async () => 'Ended poll; its results are now final.',
+  });
+  const handler = endPollHandler({ conversationId: convo, userId: POLL_HANDLER_ADMIN, adapter });
+
+  for (let i = 0; i < POLL_END_RATE_LIMIT_PER_HOUR; i++) {
+    const ok = await handler.handler({ messageId: `msg-${i}` });
+    assert.equal(ok.isError, false, `end ${i} within the cap must succeed`);
+  }
+  const overLimit = await handler.handler({ messageId: 'one-too-many' });
+  assert.match(overLimit.content[0]?.text ?? '', /end-poll limit/);
   assert.equal(overLimit.isError, true);
 });
 
@@ -2901,9 +3526,17 @@ test(
 
     assert.match(result.content[0]?.text ?? '', /marked done/, 'resolution itself still succeeds');
     assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
-    assert.equal(originCalls.length, 1, "the submitter is notified via the suggestion's origin platform");
-    assert.equal(originCalls[0][0], RESOLVE_SUGGESTION_HANDLER_USER);
-    assert.match(originCalls[0][1], /done/i);
+
+    const submitterCalls = originCalls.filter(([userId]) => userId === RESOLVE_SUGGESTION_HANDLER_USER);
+    assert.equal(submitterCalls.length, 1, "the submitter is notified via the suggestion's origin platform");
+    assert.match(submitterCalls[0][1], /done/i);
+
+    // issue #288: resolve_suggestion is audited(), whose super-admin alert
+    // now also reaches every configured whatsapp super admin through this
+    // same origin adapter — one whatsapp adapter serves every whatsapp-bound
+    // send in a real deployment, so this is expected, not a misroute.
+    const superAdminCalls = originCalls.filter(([userId]) => userId !== RESOLVE_SUGGESTION_HANDLER_USER);
+    assert.deepEqual(superAdminCalls.map(([id]) => id).sort(), ['super-1', 'super-2']);
   },
 );
 
@@ -3078,9 +3711,17 @@ test(
 
     assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolution itself still succeeds');
     assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
-    assert.equal(originCalls.length, 1, "the reporter is notified via the report's origin platform");
-    assert.equal(originCalls[0][0], RESOLVE_REPORT_HANDLER_USER);
-    assert.match(originCalls[0][1], /resolved/i);
+
+    const reporterCalls = originCalls.filter(([userId]) => userId === RESOLVE_REPORT_HANDLER_USER);
+    assert.equal(reporterCalls.length, 1, "the reporter is notified via the report's origin platform");
+    assert.match(reporterCalls[0][1], /resolved/i);
+
+    // issue #288: resolve_report is audited(), whose super-admin alert now
+    // also reaches every configured whatsapp super admin through this same
+    // origin adapter — one whatsapp adapter serves every whatsapp-bound send
+    // in a real deployment, so this is expected, not a misroute.
+    const superAdminCalls = originCalls.filter(([userId]) => userId !== RESOLVE_REPORT_HANDLER_USER);
+    assert.deepEqual(superAdminCalls.map(([id]) => id).sort(), ['super-1', 'super-2']);
   },
 );
 

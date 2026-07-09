@@ -104,7 +104,13 @@ memory**:
    `'global'` entries plus entries scoped to the caller's own platform or
    conversation (see docs/SECURITY.md, issue #106). `list_knowledge` is the
    deliberate exception — an admin curating browses by explicit scope,
-   unrestricted by their own conversation. `question_digest` closes the
+   unrestricted by their own conversation. Every `list_knowledge` result line
+   also carries a bracketed `created_by_role` provenance tag (`[auto]`
+   unreviewed web-research, `[docs]` trusted backfill, or the human tier
+   verbatim), and an optional `provenance` filter narrows the browse to just
+   one of those (issue #294) — the same trust signal `knowledge_search`
+   already uses to decide quarantine, now visible to the one tool built for
+   browsing it. `question_digest` closes the
    discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
@@ -117,7 +123,10 @@ memory**:
    access-request count and their own scoped open-report count, plus (issue
    #193) a guild-wide pending-suggestion count, plus (issue #199, off unless
    `KNOWLEDGE_STALE_DAYS` is set) a guild-wide count of knowledge entries
-   neither edited nor retrieved in that many days, plus (issue #246) their own
+   neither edited nor retrieved in that many days — the digest's "run
+   `list_knowledge` to review" pointer resolves to `list_knowledge`'s
+   `staleOnly` filter (issue #280), which reuses that exact same predicate
+   to return just that stale subset, most-overdue first — plus (issue #246) their own
    scoped count of `knowledge_gaps` (below-floor `knowledge_search` misses, the
    pull-only complement to `list_knowledge_gaps`) — conversation-scoped like the
    open-report count because that table has a `conversation_id` — all sourced
@@ -220,7 +229,11 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken.
+of them read as the bot being broken. These three deterministic, non-agent
+notices (issue #300) also honour a standing `'mi'` `language_preference`,
+same as `community_guidelines` (#266): the debounced send reads
+`getLanguagePreference` once per notified window and picks each notice's
+fixed `_MI` constant instead of the English default.
 
 ## Onboarding (gated mode)
 

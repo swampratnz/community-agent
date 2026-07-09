@@ -7,7 +7,16 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { sniffImageType, parseSessionId, buildGrokArgs, grokEnv } = await import('../src/media/grokImage.js');
+const {
+  sniffImageType,
+  parseSessionId,
+  buildGrokArgs,
+  grokEnv,
+  sandboxBreached,
+  SANDBOX_PROFILE,
+  sandboxDenyPaths,
+  buildSandboxToml,
+} = await import('../src/media/grokImage.js');
 
 test('sniffImageType detects JPEG / PNG / WebP from magic bytes', () => {
   assert.deepEqual(sniffImageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), {
@@ -29,20 +38,50 @@ test('sniffImageType returns null for non-image or empty bytes (never mislabels)
   assert.equal(sniffImageType(Buffer.from([0xff, 0xd8, 0x00])), null);
 });
 
-test('SECURITY: buildGrokArgs locks the CLI to the image tool so --always-approve is safe', () => {
-  const args = buildGrokArgs('draw a cat');
-  // The allowlist that removes Bash/file/exec — without it, --always-approve
-  // becomes a host-code-execution surface. --tools must be immediately followed
-  // by exactly GenerateImage.
-  const i = args.indexOf('--tools');
-  assert.ok(i >= 0, '--tools must be present');
-  assert.equal(args[i + 1], 'GenerateImage');
-  assert.ok(args.includes('--always-approve'));
-  assert.ok(args.includes('--disable-web-search'));
+test('SECURITY: buildGrokArgs runs grok under the custom deny sandbox, no --always-approve, no --tools', () => {
+  const args = buildGrokArgs('/imagine draw a cat');
+  // The kernel deny-list sandbox is the real containment (blocks reads of the
+  // bot's secrets). `--sandbox` must be immediately followed by our profile.
+  const s = args.indexOf('--sandbox');
+  assert.ok(s >= 0, '--sandbox must be present');
+  assert.equal(args[s + 1], SANDBOX_PROFILE, 'the custom deny profile must be used');
+  assert.equal(SANDBOX_PROFILE, 'imagegen');
+  // NO --always-approve: headless grok then cancels approval-gated tools (shell,
+  // file write) instead of running them. Re-adding it would reopen that surface.
+  assert.ok(!args.includes('--always-approve'), '--always-approve must never be passed');
+  // No --tools allowlist (the image tool is not --tools-selectable; an allowlist
+  // referencing a non-existent tool breaks grok's agent build).
+  assert.ok(!args.includes('--tools'), 'a --tools allowlist must not be used');
+  assert.ok(args.includes('--disable-web-search'), 'web tools must be disabled');
   // The free-text prompt is the value of -p, an argv element (never a shell string).
   const p = args.indexOf('-p');
   assert.ok(p >= 0);
-  assert.equal(args[p + 1], 'draw a cat');
+  assert.equal(args[p + 1], '/imagine draw a cat');
+});
+
+test('SECURITY: the sandbox deny profile kernel-denies the bot secrets + resolves a relative auth dir', () => {
+  // Platform-agnostic (prod is Linux; `join`/`isAbsolute` differ on Windows).
+  const cwd = process.platform === 'win32' ? 'C:\\app' : '/opt/community-agent';
+  const { envPath, authPath, probePath } = sandboxDenyPaths(cwd, './whatsapp-auth');
+  // The bot's .env and a dedicated probe path, both under the bot's cwd.
+  assert.ok(envPath.startsWith(cwd) && envPath.endsWith('.env'), "the bot's .env must be a deny target");
+  assert.ok(probePath.startsWith(cwd) && probePath.endsWith('.grok-image-sandbox-probe'));
+  // A relative auth dir resolves against cwd; an absolute one is used as-is.
+  assert.ok(
+    authPath.startsWith(cwd) && authPath.endsWith('whatsapp-auth'),
+    'a relative auth dir resolves against cwd',
+  );
+  const abs = process.platform === 'win32' ? 'C:\\wa' : '/var/wa';
+  assert.equal(sandboxDenyPaths(cwd, abs).authPath, abs, 'an absolute auth dir is used as-is');
+
+  const toml = buildSandboxToml([envPath, authPath, probePath]);
+  assert.match(toml, /\[profiles\.imagegen\]/);
+  assert.match(toml, /restrict_network = true/);
+  assert.match(toml, /deny = \[/);
+  for (const p of [envPath, authPath, probePath]) {
+    // The TOML quotes each path via JSON.stringify — match that exactly.
+    assert.ok(toml.includes(JSON.stringify(p)), `deny list must contain ${p}`);
+  }
 });
 
 test('SECURITY: grokEnv hands the subprocess a secret-free allowlist, never the bot env', () => {
@@ -93,6 +132,15 @@ test('SECURITY: grokEnv hands the subprocess a secret-free allowlist, never the 
     if (savedFoo === undefined) delete process.env.SHOULD_NOT_PASS_THROUGH;
     else process.env.SHOULD_NOT_PASS_THROUGH = savedFoo;
   }
+});
+
+test('sandboxBreached only flags a breach when the sentinel token actually comes back', () => {
+  const token = 'GROK_SANDBOX_PROBE_abc-123';
+  // Sandbox held: the read was cancelled, token never appears -> not breached.
+  assert.equal(sandboxBreached('{"text":"","stopReason":"Cancelled"}', token), false);
+  assert.equal(sandboxBreached('', token), false); // inconclusive / grok errored
+  // Sandbox failed: the sentinel content leaked into grok's output -> breached.
+  assert.equal(sandboxBreached(`{"text":"${token}","stopReason":"EndTurn"}`, token), true);
 });
 
 test('parseSessionId reads the session id from grok JSON stdout', () => {

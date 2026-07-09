@@ -32,7 +32,7 @@
 // proof of total security coverage.
 // ---------------------------------------------------------------------------
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -57,6 +57,62 @@ for (const f of testFileNames) {
   if (n > 0) staticCounts[f] = n;
 }
 
+// ---- Optional: regenerate the manifest from the true static counts ---------
+// `--write` turns a per-file floor mismatch into a mechanical, one-command fix
+// (`npm run test:security:fix`). The pipeline's autofix and conflict-resolver
+// loops use it after a merge brings in another in-flight PR's SECURITY: tests
+// on the SAME file — the #1 source of "counts lag reality" escalations, which
+// are not a real defect and should never reach a human.
+//
+// Least-diff + least-surprise by construction: it PRESERVES the manifest's
+// existing key order (a re-sort would produce a noisy diff and *more* merge
+// conflicts, the opposite of the goal), updates each value to the real count,
+// and appends any newly-covered files at the end.
+//
+// Safety rail: it RAISES or ADDS entries freely, but REFUSES to lower or drop
+// one (which would silently paper over a deleted/renamed-away security test —
+// the exact regression this gate exists to catch) unless `--allow-lower` is
+// also passed, which a PR must then explain. So the loops can heal the common
+// "tests added, manifest lagging" case autonomously, but a genuine removal
+// still stops for a human.
+if (process.argv.includes('--write')) {
+  const allowLower = process.argv.includes('--allow-lower');
+  const lowered = [];
+  const next = {};
+  for (const [file, expected] of Object.entries(manifest)) {
+    const actual = staticCounts[file] ?? 0;
+    if (actual === 0) {
+      lowered.push(`${file}: ${expected} → 0 (entry would be removed)`);
+      continue; // file deleted or all its SECURITY: tests gone — drop the entry
+    }
+    if (actual < expected) lowered.push(`${file}: ${expected} → ${actual}`);
+    next[file] = actual;
+  }
+  // Newly-covered files (present in code, absent from the manifest): append in
+  // sorted order for determinism, after the existing hand-maintained entries.
+  for (const file of Object.keys(staticCounts).sort()) {
+    if (!(file in next)) next[file] = staticCounts[file];
+  }
+  if (lowered.length > 0 && !allowLower) {
+    console.error(
+      'check-security-test-count --write: refusing to LOWER or remove a per-file count — a SECURITY: ' +
+        'test was deleted or renamed out of the namespace:',
+    );
+    for (const l of lowered) console.error(`  ${l}`);
+    console.error('If this is intentional, re-run with --allow-lower and explain the removal in the PR.');
+    process.exit(1);
+  }
+  const changed = JSON.stringify(manifest) !== JSON.stringify(next);
+  if (changed) writeFileSync(manifestPath, JSON.stringify(next, null, 2) + '\n');
+  const total = Object.values(next).reduce((a, b) => a + b, 0);
+  console.log(
+    changed
+      ? `check-security-test-count --write: regenerated tests/security-floor.json (${Object.keys(next).length} files, ${total} SECURITY: tests).`
+      : 'check-security-test-count --write: manifest already matches the code — no change.',
+  );
+  process.exit(0);
+}
+
 const problems = [];
 for (const [file, expected] of Object.entries(manifest)) {
   const actual = staticCounts[file] ?? 0;
@@ -69,7 +125,8 @@ for (const [file, expected] of Object.entries(manifest)) {
   } else if (actual > expected) {
     problems.push(
       `${file}: ${actual} SECURITY: test(s) declared, manifest expects ${expected}. You added a SECURITY: ` +
-        `test — bump this file's entry in tests/security-floor.json in the same diff.`,
+        `test — bump this file's entry in tests/security-floor.json in the same diff ` +
+        `(or run \`npm run test:security:fix\` to regenerate the manifest).`,
     );
   }
 }

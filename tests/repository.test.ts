@@ -1928,6 +1928,255 @@ test(
   },
 );
 
+test(
+  "repository: listKnowledge staleOnly reuses countStaleKnowledge's exact GREATEST predicate and orders most-overdue first (issue #280)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-stale-only-scope`;
+
+    const { id: retrievedRecently } = await saveKnowledge({
+      content: `${RUN} retrieved recently but edited long ago`,
+      title: 'stale-only-retrieved-recently',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '400 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [retrievedRecently],
+    );
+
+    const { id: mostOverdue } = await saveKnowledge({
+      content: `${RUN} edited long ago and never retrieved (most overdue)`,
+      title: 'stale-only-most-overdue',
+      scope,
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '500 days' WHERE id = $1`, [
+      mostOverdue,
+    ]);
+
+    const { id: lessOverdue } = await saveKnowledge({
+      content: `${RUN} edited long ago and retrieved a while back (less overdue)`,
+      title: 'stale-only-less-overdue',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '400 days', last_retrieved_at = now() - interval '350 days'
+        WHERE id = $1`,
+      [lessOverdue],
+    );
+
+    const { id: freshlyEdited } = await saveKnowledge({
+      content: `${RUN} edited yesterday, never retrieved`,
+      title: 'stale-only-fresh',
+      scope,
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '1 day' WHERE id = $1`, [
+      freshlyEdited,
+    ]);
+
+    const stale = await listKnowledge({ scope, staleOnly: true, staleDays: 30 });
+    assert.deepEqual(
+      stale.map((e) => e.id),
+      [mostOverdue, lessOverdue],
+      'only the two BOTH-old entries are returned, most-overdue (smallest GREATEST) first — the ' +
+        'recently-retrieved-but-old-edit entry is excluded, proving GREATEST(updated_at, ' +
+        'last_retrieved_at) reuse rather than a raw updated_at sort',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [retrievedRecently, mostOverdue, lessOverdue, freshlyEdited],
+    ]);
+  },
+);
+
+test('repository: listKnowledge staleOnly composes with scope via AND (issue #280)', { skip }, async () => {
+  const scopeA = `${RUN}-stale-scope-a`;
+  const scopeB = `${RUN}-stale-scope-b`;
+
+  const { id: staleInA } = await saveKnowledge({
+    content: `${RUN} stale entry in scope A`,
+    title: 'stale-scope-a-entry',
+    scope: scopeA,
+  });
+  await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [staleInA]);
+
+  const { id: staleInB } = await saveKnowledge({
+    content: `${RUN} stale entry in scope B`,
+    title: 'stale-scope-b-entry',
+    scope: scopeB,
+  });
+  await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [staleInB]);
+
+  const result = await listKnowledge({ scope: scopeA, staleOnly: true, staleDays: 30 });
+  assert.deepEqual(
+    result.map((e) => e.id),
+    [staleInA],
+    'staleOnly combined with scope only returns entries matching that scope',
+  );
+
+  await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[staleInA, staleInB]]);
+});
+
+test(
+  'SECURITY: repository: listKnowledge staleOnly never widens past a caller-supplied scope — no cross-scope leakage (issue #280)',
+  { skip },
+  async () => {
+    const scopeA = `${RUN}-stale-security-scope-a`;
+    const scopeB = `${RUN}-stale-security-scope-b`;
+
+    const { id: staleInA } = await saveKnowledge({
+      content: `${RUN} stale entry in scope A (security)`,
+      title: 'stale-security-scope-a-entry',
+      scope: scopeA,
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+      staleInA,
+    ]);
+
+    const { id: staleInB } = await saveKnowledge({
+      content: `${RUN} stale entry in scope B (security) — must never leak into an A-scoped query`,
+      title: 'stale-security-scope-b-entry',
+      scope: scopeB,
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+      staleInB,
+    ]);
+
+    const result = await listKnowledge({ scope: scopeA, staleOnly: true, staleDays: 30 });
+    assert.ok(
+      result.every((e) => e.scope === scopeA),
+      'every returned entry must be in the requested scope',
+    );
+    assert.ok(
+      !result.some((e) => e.id === staleInB),
+      'the stale entry in scope B must never leak into a scope-A-filtered staleOnly query — the new ' +
+        'predicate is AND-composed with the existing scope clause, never replacing or bypassing it',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[staleInA, staleInB]]);
+  },
+);
+
+test(
+  'repository: listKnowledge provenance filters to entries by created_by_role (issue #294)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-provenance-scope`;
+
+    const { id: autoId } = await saveKnowledge({
+      content: `${RUN} auto-researched entry`,
+      title: 'provenance-auto-entry',
+      scope,
+      createdByRole: 'auto',
+    });
+    const { id: docsId } = await saveKnowledge({
+      content: `${RUN} docs-ingested entry`,
+      title: 'provenance-docs-entry',
+      scope,
+      createdByRole: 'docs',
+    });
+    const { id: adminId } = await saveKnowledge({
+      content: `${RUN} admin-authored entry`,
+      title: 'provenance-admin-entry',
+      scope,
+      createdByRole: 'admin',
+    });
+
+    const autoOnly = await listKnowledge({ scope, provenance: 'auto' });
+    assert.deepEqual(
+      autoOnly.map((e) => e.id),
+      [autoId],
+      'provenance: "auto" returns only the auto-researched entry',
+    );
+
+    const docsOnly = await listKnowledge({ scope, provenance: 'docs' });
+    assert.deepEqual(
+      docsOnly.map((e) => e.id),
+      [docsId],
+      'provenance: "docs" returns only the docs-ingested entry',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, docsId, adminId]]);
+  },
+);
+
+test('repository: listKnowledge provenance composes with scope via AND (issue #294)', { skip }, async () => {
+  const scopeA = `${RUN}-provenance-scope-a`;
+  const scopeB = `${RUN}-provenance-scope-b`;
+
+  const { id: autoInA } = await saveKnowledge({
+    content: `${RUN} auto entry in scope A`,
+    title: 'provenance-scope-a-auto',
+    scope: scopeA,
+    createdByRole: 'auto',
+  });
+  const { id: adminInA } = await saveKnowledge({
+    content: `${RUN} admin entry in scope A`,
+    title: 'provenance-scope-a-admin',
+    scope: scopeA,
+    createdByRole: 'admin',
+  });
+  const { id: autoInB } = await saveKnowledge({
+    content: `${RUN} auto entry in scope B`,
+    title: 'provenance-scope-b-auto',
+    scope: scopeB,
+    createdByRole: 'auto',
+  });
+
+  const result = await listKnowledge({ scope: scopeA, provenance: 'auto' });
+  assert.deepEqual(
+    result.map((e) => e.id),
+    [autoInA],
+    'provenance combined with scope only returns entries matching both filters (the intersection)',
+  );
+
+  await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoInA, adminInA, autoInB]]);
+});
+
+test(
+  'SECURITY: repository: listKnowledge provenance never widens or bypasses scope — no cross-scope leakage, and the filter is parameterized (issue #294)',
+  { skip },
+  async () => {
+    const scopeA = `${RUN}-provenance-security-scope-a`;
+    const scopeB = `${RUN}-provenance-security-scope-b`;
+
+    const { id: autoInA } = await saveKnowledge({
+      content: `${RUN} auto entry in scope A (security)`,
+      title: 'provenance-security-scope-a-auto',
+      scope: scopeA,
+      createdByRole: 'auto',
+    });
+    const { id: autoInB } = await saveKnowledge({
+      content: `${RUN} auto entry in scope B (security) — must never leak into an A-scoped query`,
+      title: 'provenance-security-scope-b-auto',
+      scope: scopeB,
+      createdByRole: 'auto',
+    });
+
+    const result = await listKnowledge({ scope: scopeA, provenance: 'auto' });
+    assert.ok(
+      result.every((e) => e.scope === scopeA),
+      'every returned entry must be in the requested scope',
+    );
+    assert.ok(
+      !result.some((e) => e.id === autoInB),
+      'the auto entry in scope B must never leak into a scope-A-filtered provenance query — the new ' +
+        'predicate is AND-composed with the existing scope clause, never replacing or bypassing it',
+    );
+
+    const maliciousProvenance = `auto' OR '1'='1`;
+    const injectionResult = await listKnowledge({ scope: scopeA, provenance: maliciousProvenance });
+    assert.deepEqual(
+      injectionResult.map((e) => e.id),
+      [],
+      'a provenance value crafted to look like SQL injection must be treated as a literal bound ' +
+        'parameter (no created_by_role equals that literal string), never interpolated into the query',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoInA, autoInB]]);
+  },
+);
+
 test("isKnowledgeStale (issue #214) mirrors countStaleKnowledge's edit-or-retrieval-whichever-is-newer definition, as a pure function", () => {
   const oldDate = new Date(Date.now() - 400 * 86_400_000);
   const recentDate = new Date(Date.now() - 1 * 86_400_000);

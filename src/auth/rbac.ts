@@ -106,6 +106,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__clear_warnings',
   'mcp__community__announce',
   'mcp__community__create_poll',
+  // End a running poll early — same admin tier / conversation-scope / audit as
+  // create_poll (Discord's only supported poll mutation; polls are otherwise
+  // immutable). Finalizes results, never deletes; not CONFIRM-gated (low
+  // consequence, mirrors create_poll).
+  'mcp__community__end_poll',
   // Discord-only thread management (issue #229) — create_thread additive/
   // rate-capped like create_poll, archive_thread CONFIRM-gated like moderate
   // (it hides an active discussion). See docs/SECURITY.md §11.

@@ -26,7 +26,7 @@ test(
       0,
       'sanity: the interactions purge is disabled in this scenario',
     );
-    const timer = startRosterRetentionPurge();
+    const timer = startRosterRetentionPurge([]);
     assert.notEqual(
       timer,
       null,
