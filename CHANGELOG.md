@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-09
+
+### Changed
+- The system prompt's general-knowledge carve-out (#298) no longer tells the model to answer *every* Claude/API question with no knowledge-base hit "confidently, same as always". Durable/conceptual questions (temperature vs `top_p`, how to structure a system prompt, etc.) are unchanged. But fast-moving Anthropic-specific facts with no KB hit — current model names/versions, pricing, rate limits, feature/endpoint availability — now get a brief, natural caveat that the answer may have changed since training, plus a nudge to check current Anthropic docs or ask an admin. Complements the existing KB-hit recency hedge (#27) and docs-ingest/knowledge-refresh features rather than duplicating them: it only fires on a miss, never double-hedging a hit. Pure prompt-string edit — no new tool, tier, input surface, or stored data.
+
 ## 2026-07-08
 
 ### Added
