@@ -61,11 +61,15 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   ownership violation.
 - A second exception: the **conflict-resolver loop**
   (`pipeline-pr-conflict.yml`) may push a `main`-merge to an existing
-  build-worker PR branch that is CONFLICTING — same-repo bot PRs only,
-  one attempt per conflict, then it escalates `needs-human` (and skips
+  same-repo PR branch that is CONFLICTING — either a **bot** build-worker PR
+  (`Closes #`) or a **maintainer** PR whose author is in the workflow's
+  `MAINTAINER_LOGINS` allowlist (the repo owner's own human PRs, which `main`
+  churn would otherwise leave stuck with no responder). Fork / external-human
+  PRs are never eligible, and any PR can be pinned out with a `no-auto-resolve`
+  label. One attempt per conflict, then it escalates `needs-human` (and skips
   `needs-human` PRs thereafter). It is two-hop: `discover` (on push to `main`,
   on PR opened/ready-for-review — a PR whose build started before an unrelated
-  merge can be *born* conflicted — and on a 6-hourly sweep) self-dispatches
+  merge can be *born* conflicted — and on an **hourly** sweep) self-dispatches
   `resolve` via `workflow_dispatch`, since claude-code-action won't run under a
   `push` event. The dispatch payload carries PR numbers only; `resolve`
   re-derives the branch and re-verifies the whole eligibility contract from the

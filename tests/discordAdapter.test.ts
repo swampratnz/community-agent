@@ -239,18 +239,21 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+interface PollPayload {
+  question: { text: string };
+  answers: Array<{ text: string }>;
+  duration: number;
+  allowMultiselect: boolean;
+}
+
 interface FakePollSendable {
   isTextBased: () => boolean;
-  send: (opts: {
-    poll: { question: { text: string }; answers: Array<{ text: string }>; duration: number };
-  }) => Promise<void>;
+  send: (opts: { poll: PollPayload }) => Promise<void>;
 }
 
 /** Stubs the client's channel fetch to capture the `poll` payload performAdminAction('create_poll') builds. */
 function stubClientForPoll(adapter: InstanceType<typeof DiscordAdapter>) {
-  const sent: Array<{
-    poll: { question: { text: string }; answers: Array<{ text: string }>; duration: number };
-  }> = [];
+  const sent: Array<{ poll: PollPayload }> = [];
   const record = async (opts: (typeof sent)[number]) => {
     sent.push(opts);
   };
@@ -282,6 +285,89 @@ test('SECURITY: performAdminAction("create_poll") routes question/answers throug
   assert.ok(poll.answers[0].text.includes('[redacted]'), 'the answer secret must be redacted, not dropped');
   assert.equal(poll.answers[1].text, 'a clean option', 'an unaffected answer must pass through unchanged');
   assert.equal(poll.duration, 24);
+});
+
+test('performAdminAction("create_poll") sets allowMultiselect from params.multiChoice (single by default, multi when asked)', async () => {
+  const adapter = new DiscordAdapter();
+  const sent = stubClientForPoll(adapter);
+  await adapter.performAdminAction({
+    kind: 'create_poll',
+    conversationId: 'chan-1',
+    params: { question: 'Q', options: ['a', 'b'], durationHours: 24 },
+  });
+  assert.equal(sent[0].poll.allowMultiselect, false, 'no multiChoice → single-choice poll');
+  await adapter.performAdminAction({
+    kind: 'create_poll',
+    conversationId: 'chan-1',
+    params: { question: 'Q', options: ['a', 'b'], durationHours: 24, multiChoice: true },
+  });
+  assert.equal(sent[1].poll.allowMultiselect, true, 'multiChoice:true → multi-select poll');
+});
+
+/** Stubs channel.messages.fetch to return a message whose poll records end() calls. */
+function stubClientForEndPoll(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  poll: { resultsFinalized: boolean } | null,
+) {
+  let ended = 0;
+  const message = {
+    poll: poll && { ...poll, end: async () => void ended++ },
+  };
+  const client = (
+    adapter as unknown as {
+      client: {
+        channels: {
+          fetch: (id: string) => Promise<{
+            isTextBased: () => boolean;
+            messages: { fetch: (id: string) => Promise<typeof message> };
+          }>;
+        };
+      };
+    }
+  ).client;
+  client.channels.fetch = async () => ({
+    isTextBased: () => true,
+    messages: { fetch: async () => message },
+  });
+  return { endedCount: () => ended };
+}
+
+test('performAdminAction("end_poll") ends a running poll and reports it final', async () => {
+  const adapter = new DiscordAdapter();
+  const spy = stubClientForEndPoll(adapter, { resultsFinalized: false });
+  const result = await adapter.performAdminAction({
+    kind: 'end_poll',
+    conversationId: 'chan-1',
+    params: { messageId: 'msg-42' },
+  });
+  assert.equal(spy.endedCount(), 1, 'the poll must be ended exactly once');
+  assert.match(result, /results are now final/);
+});
+
+test('performAdminAction("end_poll") is a no-op on an already-finalized poll (never double-ends)', async () => {
+  const adapter = new DiscordAdapter();
+  const spy = stubClientForEndPoll(adapter, { resultsFinalized: true });
+  const result = await adapter.performAdminAction({
+    kind: 'end_poll',
+    conversationId: 'chan-1',
+    params: { messageId: 'msg-42' },
+  });
+  assert.equal(spy.endedCount(), 0, 'an already-ended poll must not be ended again');
+  assert.match(result, /already ended/);
+});
+
+test('performAdminAction("end_poll") rejects a message that has no poll', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForEndPoll(adapter, null);
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'end_poll',
+        conversationId: 'chan-1',
+        params: { messageId: 'msg-not-a-poll' },
+      }),
+    /does not contain a poll/,
+  );
 });
 
 interface FakeScheduledEventGuild {

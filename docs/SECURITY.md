@@ -97,9 +97,9 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   never instructions. This mitigates stored prompt injection; it does not
   eliminate it — see "Residual risks".
 - **Privileged targets are validated**: `moderate`/`announce`/`create_poll`/
-  `create_thread`/`archive_thread` refuse targets (conversations/users) the
-  bot has never seen, so a manipulated admin turn cannot message arbitrary
-  phone numbers or unknown channels. `link_member`
+  `end_poll`/`create_thread`/`archive_thread` refuse targets
+  (conversations/users) the bot has never seen, so a manipulated admin turn
+  cannot message arbitrary phone numbers or unknown channels. `link_member`
   applies the same pattern: both identities must already be known community
   members (a `community_users` row exists) — it cannot conjure membership,
   only associate two identities that already have it.
@@ -656,15 +656,40 @@ signed in with a SuperGrok subscription (device-code login, no API key). Unlike
 every other tool, this one spawns a **third-party agentic CLI** as the service
 user, so it gets its own controls:
 
-- **Locked to one built-in tool.** The subprocess runs
-  `grok --tools GenerateImage …` — an *allowlist* that removes every other
-  built-in tool, including Bash, file-write, and exec. So even though the CLI is
-  driven with `--always-approve` (unattended, no interactive prompt), there is
-  no shell/file/exec tool for it to approve: the worst an admin turn — or a
-  prompt-injected one — can drive is "produce an image". Verified on the host:
-  with only `GenerateImage` allowed, the model's attempts to reach `Bash`/`Write`
-  are rejected as *"Tool not found"*. This is the deliberate difference from a
-  bare agentic CLI, and why `--always-approve` is acceptable here.
+- **Kernel-sandboxed, so it can only produce an image.** Image generation is
+  grok's `/imagine` skill (built-in `image_gen` tool); the tool is not
+  `--tools`-selectable, so the old `--tools GenerateImage` allowlist can't be
+  used (it referenced a since-removed tool and broke agent build), and grok's
+  **read tools are auto-approved**, so an injected `/imagine` description could
+  otherwise read arbitrary service-user files (`.env`, etc.). The lockdown is a
+  custom **bubblewrap deny sandbox** plus two supporting controls, all
+  host-verified:
+  - **`--sandbox imagegen`** — a custom profile the bot writes to
+    `~/.grok/sandbox.toml` (via `ensureSandboxReady()`), whose **`deny` list is
+    kernel-enforced by bubblewrap** (read *and* write/rename, and it closes the
+    `mv secret x && cat x` bypass). It denies the bot's on-disk secrets — its
+    `.env` and WhatsApp auth dir (paths derived from the bot's own cwd/config) —
+    and sets `restrict_network = true` to block child-process network. Crucially
+    grok **refuses to start** if bubblewrap is missing or a deny path can't be
+    bound, so it **fails closed**. Verified on the host: a read of `.env` under
+    this profile is kernel-denied (a `read_file` tool error) with no secret
+    escaping, while `/imagine` still generates. *(The built-in `strict`
+    profile's own landlock read-restriction does **not** actually block reads on
+    the host — reads succeed everywhere under it — which is why we use the
+    bubblewrap `deny` list, not `strict` alone. **Requires `bubblewrap` on the
+    host** — see docs/DEPLOYMENT.md.)*
+  - **No `--always-approve`** — headless grok then *cancels* approval-gated
+    tool calls (shell, file write) instead of running them (verified: a prompt
+    ordering the shell to write a file returned stopReason *"Cancelled"*). A
+    `--tools` allowlist can't help (image tool not selectable) and a
+    `--deny <name>` fails *open* if the name doesn't match grok's internal tool
+    id — which is why the control is the kernel deny-sandbox, not a tool filter.
+  - **`--disable-web-search`** removes the web tools. And a **per-process
+    self-check** (`ensureSandboxReady()`) runs before the first generation: it
+    plants a token in a **deny-listed** path and confirms a sandboxed grok
+    cannot read it back, **failing closed** (image gen disabled for the process)
+    if the kernel deny ever stops enforcing — so a silent grok regression can't
+    quietly reopen arbitrary-file-read.
 - **No secret inheritance.** The `grok` subprocess is spawned with a **minimal,
   explicit `env`** (`grokEnv()` in `src/media/grokImage.ts`): `PATH`, `HOME`,
   `TERM`, `LANG`/`LC_ALL`, `USER`, and any `GROK_*`/`XDG_*` knobs — **never** the
@@ -678,7 +703,7 @@ user, so it gets its own controls:
   (never interpolated into a shell command), so there is no shell-injection
   surface even though the tool takes admin free text.
 - **Output is read back, not written to a path we name.** Because the file
-  tools are denied, grok can't copy the image anywhere we choose; `GenerateImage`
+  tools are denied, grok can't copy the image anywhere we choose; `image_gen`
   saves it under its own session storage and we read it back by the session id
   from `--output-format json`, then delete the session directory. The bytes are
   **magic-byte sniffed** (`sniffImageType`) — the real format is trusted from

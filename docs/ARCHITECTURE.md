@@ -104,7 +104,13 @@ memory**:
    `'global'` entries plus entries scoped to the caller's own platform or
    conversation (see docs/SECURITY.md, issue #106). `list_knowledge` is the
    deliberate exception — an admin curating browses by explicit scope,
-   unrestricted by their own conversation. `question_digest` closes the
+   unrestricted by their own conversation. Every `list_knowledge` result line
+   also carries a bracketed `created_by_role` provenance tag (`[auto]`
+   unreviewed web-research, `[docs]` trusted backfill, or the human tier
+   verbatim), and an optional `provenance` filter narrows the browse to just
+   one of those (issue #294) — the same trust signal `knowledge_search`
+   already uses to decide quarantine, now visible to the one tool built for
+   browsing it. `question_digest` closes the
    discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
@@ -223,7 +229,11 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken.
+of them read as the bot being broken. These three deterministic, non-agent
+notices (issue #300) also honour a standing `'mi'` `language_preference`,
+same as `community_guidelines` (#266): the debounced send reads
+`getLanguagePreference` once per notified window and picks each notice's
+fixed `_MI` constant instead of the English default.
 
 ## Onboarding (gated mode)
 

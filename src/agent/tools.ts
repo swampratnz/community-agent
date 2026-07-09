@@ -328,6 +328,16 @@ export const POLL_DEFAULT_DURATION_HOURS = 24;
  */
 export const POLL_RATE_LIMIT_PER_HOUR = 5;
 
+/**
+ * Per-conversation cap on `end_poll` within a rolling hour (PR #272 review).
+ * `end_poll` has the same admin-tier/scope/capability guards as `create_poll`
+ * but ends (rather than posts) a poll, so it needs its own cap for the same
+ * threat: an injected/hijacked admin turn should not be able to end every live
+ * poll in scope unthrottled. Kept slightly higher than the create cap because a
+ * legitimate admin more plausibly closes several polls than posts several.
+ */
+export const POLL_END_RATE_LIMIT_PER_HOUR = 10;
+
 /** create_thread (issue #229) bound — Discord's own hard limit on a thread's name. */
 export const THREAD_NAME_MAX_CHARS = 100;
 
@@ -675,6 +685,29 @@ function reservePollSlot(conversationId: string, limit: number): boolean {
   }
   recent.push(now);
   pollTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/** end_poll timestamps per conversation, for its own rolling-hour cap (POLL_END_RATE_LIMIT_PER_HOUR). */
+const pollEndTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one `end_poll` slot for `conversationId` — same sliding-hour shape as
+ * `reservePollSlot`, but a SEPARATE bucket so ending polls neither consumes nor
+ * is blocked by the create_poll budget (PR #272 review).
+ */
+function reservePollEndSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (pollEndTimestampsByConversation.get(conversationId) ?? []).filter(
+    (t) => now - t < windowMs,
+  );
+  if (recent.length >= limit) {
+    pollEndTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  pollEndTimestampsByConversation.set(conversationId, recent);
   return true;
 }
 
@@ -1634,7 +1667,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     'create_poll',
     'Post a native Discord poll to gauge interest (e.g. meetup dates, topic preferences) — a structured ' +
       'vote with a visible tally and duration, unlike a reaction straw poll. Discord only. Admins can only ' +
-      'post in conversations they are in.',
+      'post in conversations they are in. Set multiChoice to let voters pick more than one option. NOTE: ' +
+      'Discord polls cannot be edited after posting — the question, options, duration, and single-vs-multi ' +
+      'choice setting are fixed at creation. To change a poll, end it (end_poll) and post a new one; the new ' +
+      "poll starts with zero votes (the old poll's votes cannot be carried over).",
     {
       question: z.string().max(POLL_QUESTION_MAX_CHARS).describe('The poll question'),
       options: z
@@ -1643,6 +1679,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .max(POLL_MAX_OPTIONS)
         .describe(
           `${POLL_MIN_OPTIONS}-${POLL_MAX_OPTIONS} answer options, each up to ${POLL_OPTION_MAX_CHARS} characters`,
+        ),
+      multiChoice: z
+        .boolean()
+        .optional()
+        .describe(
+          'Allow selecting more than one option (default: single choice). Fixed at creation — cannot be changed later.',
         ),
       durationHours: z
         .number()
@@ -1683,7 +1725,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       // Range is enforced at the zod schema boundary above; only truncate to
       // whole hours here (the schema permits fractional values in-range).
       const duration = Math.trunc(args.durationHours ?? POLL_DEFAULT_DURATION_HOURS);
-      const params = { question: args.question, options: args.options, durationHours: duration };
+      const params = {
+        question: args.question,
+        options: args.options,
+        durationHours: duration,
+        multiChoice: args.multiChoice ?? false,
+      };
       const { success, result } = await audited({
         actionKind: 'create_poll',
         conversationId: target,
@@ -1696,6 +1743,57 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           }),
       });
       return text(success ? `Poll posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const endPoll = tool(
+    'end_poll',
+    'End (finalize) a running Discord poll early: freezes its current results and stops further voting. ' +
+      'Discord only; admins can only act in conversations they are in. This is IRREVERSIBLE, but it does NOT ' +
+      'delete the poll or its votes — the final tally stays visible. Discord polls cannot be edited or ' +
+      'converted (e.g. to multi-choice) after posting; to change one, end it here and post a fresh poll with ' +
+      'create_poll.',
+    {
+      messageId: z
+        .string()
+        .describe("The poll message's id (in Discord: right-click the poll → Copy Message ID)"),
+      conversationId: z
+        .string()
+        .optional()
+        .describe('Channel/conversation id the poll is in; defaults to the current one'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'end_poll');
+      if (!adapter.adminCapabilities.has('end_poll')) {
+        return text(`This platform (${adapter.platform}) does not support polls.`, true);
+      }
+      const target = args.conversationId ?? caller.conversationId;
+      const allowed = await callerScope();
+      if (allowed && !allowed.includes(target)) {
+        return text(`Refusing: you are not a participant of conversation "${target}".`, true);
+      }
+      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+        return text(`Refusing: conversation "${target}" is unknown.`, true);
+      }
+      if (!reservePollEndSlot(target, POLL_END_RATE_LIMIT_PER_HOUR)) {
+        return text(
+          `Refusing: conversation "${target}" already hit the end-poll limit (${POLL_END_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+          true,
+        );
+      }
+      const params = { messageId: args.messageId };
+      const { success, result } = await audited({
+        actionKind: 'end_poll',
+        conversationId: target,
+        params,
+        run: () =>
+          adapter.performAdminAction({
+            kind: 'end_poll',
+            conversationId: target,
+            params,
+          }),
+      });
+      return text(success ? result : `Failed: ${result}`, !success);
     },
   );
 
@@ -2033,6 +2131,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           'Only show entries untouched for KNOWLEDGE_STALE_DAYS+ days (the same entries counted in the ' +
             'weekly digest); ordered oldest-touched first.',
         ),
+      provenance: z
+        .enum(['admin', 'super_admin', 'auto', 'docs'])
+        .optional()
+        .describe(
+          'Filter to entries created by this role/provenance (e.g. "auto" to review unreviewed ' +
+            'web-researched entries)',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge');
@@ -2045,6 +2150,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         limit: args.limit,
         offset: args.offset,
         ...(args.staleOnly ? { staleOnly: true, staleDays } : {}),
+        ...(args.provenance ? { provenance: args.provenance } : {}),
       });
       if (entries.length === 0) return text('No knowledge entries found.');
       return text(
@@ -2053,7 +2159,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           entries
             .map(
               (e) =>
-                `#${e.id} [${e.scope}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
+                `#${e.id} [${e.scope}] [${e.createdByRole}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
                 `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
                 `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''}` +
                 `${e.sourceUrl ? `, source: ${e.sourceTitle ?? e.sourceUrl} (${e.sourceUrl})` : ''}` +
@@ -3318,6 +3424,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       clearWarningsTool,
       announce,
       createPoll,
+      endPoll,
       createThread,
       archiveThread,
       createEvent,

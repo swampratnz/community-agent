@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --experimental-test-module-mocks --test tests/*.test.ts",
     "test:security": "node scripts/check-security-test-count.mjs",
+    "test:security:fix": "node scripts/check-security-test-count.mjs --write",
     "migrate": "tsx src/storage/migrate.ts",
     "migrate:prod": "node dist/storage/migrate.js",
     "export:context": "tsx src/context/export.ts",
