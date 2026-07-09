@@ -19,9 +19,13 @@ with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
   `tests/security-floor.json`, a per-file map of how many `SECURITY:` tests
   each test file declares (exact match, not a floor). When you add (or
   intentionally remove) a `SECURITY:` test, update that file's entry in the
-  SAME diff — the gate's error message tells you exactly which entry. Per-file
-  entries exist so concurrent PRs don't all conflict on one shared counter
-  line, which is what the old global `MIN_SECURITY_TESTS` constant caused.
+  SAME diff — the gate's error message tells you exactly which entry, or run
+  `npm run test:security:fix` to regenerate the manifest to the true counts.
+  That helper only ever RAISES a count; a genuine removal needs `--allow-lower`
+  plus a PR explanation, so it can't silently paper over a deleted security
+  test. Per-file entries exist so concurrent PRs don't all conflict on one
+  shared counter line, which is what the old global `MIN_SECURITY_TESTS`
+  constant caused.
 - `tests/knowledgeEval.test.ts` + `tests/fixtures/knowledgeEval.json` — a
   golden-query regression eval for `knowledge_search` retrieval quality
   (precision@K against a curated, paraphrased query set with distractors).
@@ -67,7 +71,15 @@ ownership rules:
   already labelled `needs-human` are skipped); and only from CI
   `run_attempt` ≥ 2 (the ci-retry loop below gets one free machine rerun
   first, so agents never chase one-off flakes), then it escalates
-  `needs-human`. It never opens or merges PRs.
+  `needs-human`. It never opens or merges PRs. Before assuming a code defect it
+  checks the two mechanical causes that dominate a concurrent queue and
+  self-heals them rather than escalating: a `security-floor.json` per-file
+  count mismatch (regenerated via `npm run test:security:fix`) and a flaky,
+  unrelated test (re-run in isolation, and if it passes there, CI is
+  re-triggered with an empty commit instead of pushing a bogus "fix"). When it
+  genuinely can't fix something, its escalation comment now carries the agent's
+  own final summary (the same diagnosability the build worker got in #251) so a
+  maintainer isn't reverse-engineering it from run logs.
 - The **conflict-resolver loop** (`pipeline-pr-conflict.yml`) may push a
   `main`-merge to an existing PR branch when that PR is
   CONFLICTING. It is two-hop: a `discover` job (triggered on every push to
@@ -81,7 +93,11 @@ ownership rules:
   bot PR with `Closes #` **or** a maintainer PR whose author is in the
   `MAINTAINER_LOGINS` allowlist. So a hand-crafted dispatch can't aim it at an
   arbitrary branch, and a superseded duplicate run no-ops instead of
-  mislabelling. One attempt per conflict: a
+  mislabelling. It resolves a `security-floor.json` conflict by regenerating the
+  manifest (`npm run test:security:fix`) rather than hand-counting, and its
+  escalation comment carries the agent's final summary so an unresolved conflict
+  says WHICH files couldn't be reconciled instead of the old opaque "incompatible
+  or needs a workflows change". One attempt per conflict: a
   failed resolution escalates `needs-human`, and the eligibility filter skips
   `needs-human` PRs so it never thrashes. Same push guardrails as autofix
   (read-only `gh`, exact `git push origin HEAD`). It never opens or merges

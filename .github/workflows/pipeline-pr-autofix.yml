@@ -204,20 +204,47 @@ jobs:
 
             1. Find what failed: `gh run view ${{ env.RUN_ID }} --log-failed` and
                `gh pr checks ${{ steps.pr.outputs.number }}`.
-            2. Read CLAUDE.md (conventions + security posture you must not regress).
-               Fix the cause on this branch. A pgvector Postgres is available at
-               DATABASE_URL, so run the full gate and make EVERY check green:
+            2. Before assuming a code defect, check for the two MECHANICAL causes
+               that dominate this queue — both are self-fixable and must NOT be
+               escalated to a human:
+               (a) SECURITY-FLOOR DRIFT. If the only failure is `test:security`
+                   reporting a per-file count mismatch in tests/security-floor.json
+                   (e.g. "N declared, manifest expects M" — NOT a failing
+                   assertion), this is another in-flight PR having added a
+                   SECURITY: test to the same file. Regenerate the manifest with
+                   `npm run test:security:fix`, then re-run `npm run test:security`
+                   to confirm green. This only ever RAISES counts; if it refuses
+                   (a count would drop), that IS a real removal — do not force it,
+                   stop and let it escalate.
+               (b) A FLAKY, UNRELATED TEST. If a test fails but the PR's own diff
+                   (`gh pr diff ${{ steps.pr.outputs.number }}`) does NOT touch
+                   that test or the code it exercises, re-run just that test file
+                   in isolation (`npx tsx --test tests/<file>.test.ts`, or the
+                   suite twice). If it PASSES in isolation / on re-run, it is a
+                   pre-existing flake, not your bug: do NOT try to "fix" unrelated
+                   code. Instead re-trigger CI by pushing an EMPTY commit —
+                   `git commit --allow-empty -m "ci: re-run (flaky <test> passed in
+                   isolation, unrelated to this PR)"` then `git push origin HEAD` —
+                   so the branch gets a fresh CI run. (The durable fix for the
+                   flaky test itself is tracked separately; your job is only to
+                   stop it blocking THIS PR.)
+            3. Otherwise read CLAUDE.md (conventions + security posture you must
+               not regress) and fix the actual cause on this branch. A pgvector
+               Postgres is available at DATABASE_URL, so run the full gate and make
+               EVERY check green:
                npm run typecheck && npm run lint && npm run format:check &&
                npm run migrate && npm test && npm run build && npm run test:security
-            3. Stage and commit your fix, then push it to THIS branch with
+            4. Stage and commit your fix, then push it to THIS branch with
                EXACTLY this command (nothing else — no other push form is
                permitted): `git push origin HEAD`. NEVER force-push and NEVER
                push any other ref or branch. Do NOT open a new PR and do NOT
                merge. If the fix needs a change under `.github/workflows/` (you
                cannot push those — the token lacks the `workflows` scope) or the
-               failure is not something you can safely fix, then just STOP
-               without committing/pushing: a later step detects "no new commit"
-               and escalates `needs-human` for you.
+               failure is not something you can safely fix, then STOP without
+               committing/pushing, but FIRST write one line to your final message
+               naming the exact blocker (which check, which file, why) — the
+               escalation step surfaces that summary to the maintainer, so a
+               silent stop wastes their time re-deriving it from logs.
 
             EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
             batch run. There is NO wakeup, NO resume, and NO background
@@ -275,6 +302,21 @@ jobs:
           fi
           echo "::error::Autofix produced no new commit on ${HEAD_BRANCH}."
           gh pr edit "$n" --add-label needs-human || true
-          gh pr comment "$n" --body "${ESCALATE_MARKER}
-          🤖 Autofix attempt ${{ steps.mark.outputs.attempt }} pushed no fix — either the cause needs a workflow-file change I can't push, or it wasn't safely fixable. Labelled \`needs-human\`."
+          # Surface the agent's own final summary (best-effort) so a maintainer
+          # sees the blocker instead of re-deriving it from run logs — same
+          # transparency the build worker got in #251. A silent stop leaves none,
+          # which is itself the tell (usually a gate it couldn't make green).
+          summary=""
+          exec_file="${{ steps.fix.outputs.execution_file }}"
+          if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
+            summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
+          fi
+          {
+            printf '%s\n🤖 Autofix attempt %s pushed no fix — the cause needs a workflow-file change I can'\''t push, or it was not safely fixable. Labelled `needs-human`.\n' "${ESCALATE_MARKER}" "${{ steps.mark.outputs.attempt }}"
+            if [ -n "${summary}" ]; then
+              printf '\n<details><summary>Autofix agent'\''s final summary (what it says blocked it)</summary>\n\n%s\n\n</details>\n' "${summary}"
+            else
+              printf '\n_No agent summary was captured — it stopped without explaining, which usually means a CI gate it could not make green. Check the run log: %s/%s/actions/runs/%s_\n' "${{ github.server_url }}" "${{ github.repository }}" "${RUN_ID}"
+            fi
+          } | gh pr comment "$n" --body-file -
           exit 1

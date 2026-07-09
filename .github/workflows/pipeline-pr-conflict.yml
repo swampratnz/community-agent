@@ -390,12 +390,17 @@ jobs:
                truly overlap, integrate them. Edit the conflicted files
                directly (or use `git restore --ours`/`--theirs <path>` to take
                one whole side); `git checkout` is intentionally NOT available.
-               For an ADDITIVE count manifest like tests/security-floor.json,
-               neither side's number is correct — set each conflicting per-file
-               entry to the TRUE count in the merged test file (re-count that
-               file's `SECURITY:` test declarations), because both sides added
-               tests. Then `git add` the resolved files and complete the merge
-               commit.
+               For the ADDITIVE count manifest tests/security-floor.json,
+               neither side's number is correct (both sides added tests), and
+               hand-counting is error-prone. Resolve its conflict by taking
+               EITHER side to get a syntactically valid file (the values will be
+               wrong), finish resolving every OTHER conflicted file, `git add`
+               them and complete the merge commit — then run
+               `npm run test:security:fix` to regenerate the manifest to the true
+               per-file counts and `git commit` that. (That helper only ever
+               RAISES counts; if it refuses because a count would drop, a
+               SECURITY: test was genuinely removed by the merge — reconcile the
+               test files, don't force it.)
             3. A pgvector Postgres is available at DATABASE_URL, so run the FULL
                gate and make EVERY check green before pushing:
                npm run typecheck && npm run lint && npm run format:check &&
@@ -408,8 +413,11 @@ jobs:
             If the conflict cannot be resolved safely (e.g. the two sides are
             semantically incompatible), or the fix needs a change under
             `.github/workflows/` (you cannot push those — the token lacks the
-            `workflows` scope), then just STOP without committing/pushing: a
-            later step detects "no new commit" and escalates `needs-human`.
+            `workflows` scope), then STOP without committing/pushing, but FIRST
+            write one line to your final message naming the exact blocker (which
+            file(s) conflict and why they can't be reconciled). The escalation
+            step surfaces that summary to the maintainer, so a silent stop just
+            makes them re-derive it from the run logs.
 
             EXECUTION MODEL — READ THIS FIRST: this is a SINGLE, non-interactive
             batch run. There is NO wakeup, NO resume, and NO background
@@ -476,6 +484,20 @@ jobs:
           fi
           echo "::error::Conflict resolver produced no new commit on ${HEAD_BRANCH}."
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label needs-human || true
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${ESCALATE_MARKER}
-          🤖 Could not automatically resolve this PR's conflict with \`main\` — either the two sides are semantically incompatible, or the fix needs a \`.github/workflows/\` change I can't push. Labelled \`needs-human\` for a maintainer. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # Surface the agent's own final summary (best-effort) so a maintainer
+          # can see WHICH files couldn't be reconciled, instead of re-deriving it
+          # from run logs — the escalation was previously opaque ("incompatible
+          # OR needs a workflows change" with no way to tell which). Same
+          # transparency the build worker got in #251.
+          summary=""
+          exec_file="${{ steps.fix.outputs.execution_file }}"
+          if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
+            summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
+          fi
+          {
+            printf '%s\n🤖 Could not automatically resolve this PR'\''s conflict with `main` — the two sides are semantically incompatible, or the fix needs a `.github/workflows/` change I can'\''t push. Labelled `needs-human` for a maintainer. Run: %s/%s/actions/runs/%s\n' "${ESCALATE_MARKER}" "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}"
+            if [ -n "${summary}" ]; then
+              printf '\n<details><summary>Conflict resolver'\''s final summary (what it says blocked it)</summary>\n\n%s\n\n</details>\n' "${summary}"
+            fi
+          } | gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file -
           exit 1
