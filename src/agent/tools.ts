@@ -28,6 +28,7 @@ import {
   getMyDataSummary,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeDuplicateMatch,
+  listDuplicateKnowledge,
   listKnowledgeCandidates,
   listMemberNotes,
   MEMBER_NOTE_MAX_CHARS,
@@ -2172,6 +2173,36 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { annotations: { readOnlyHint: true } },
   );
 
+  const listDuplicateKnowledgeTool = tool(
+    'list_duplicate_knowledge',
+    'Audit the knowledge base for existing near-duplicate entry pairs (same scope, high embedding ' +
+      'similarity) — the retroactive counterpart to the nudge save_knowledge shows at write time. Use ' +
+      'this to find pairs to merge (update_knowledge) or retire (delete_knowledge). Admin only.',
+    {
+      scope: z.string().optional().describe('Restrict the audit to a single scope (e.g. "global")'),
+      limit: z.number().optional().describe('Max pairs to return (default 20)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_duplicate_knowledge');
+      const pairs = await listDuplicateKnowledge(args.scope, args.limit);
+      if (pairs.length === 0) return text('No near-duplicate knowledge pairs found.');
+      return text(
+        untrusted(
+          'Near-duplicate knowledge pairs',
+          pairs
+            .map((p) => {
+              const pct = (p.similarity * 100).toFixed(0);
+              const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
+              const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
+              return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
+            })
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const updateKnowledgeTool = tool(
     'update_knowledge',
     'Correct an existing knowledge entry (title/content/scope/source). Re-embeds the content. Setting ' +
@@ -3432,6 +3463,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       setWelcomeMessage,
       saveKnowledgeTool,
       listKnowledgeTool,
+      listDuplicateKnowledgeTool,
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,

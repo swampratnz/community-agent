@@ -39,6 +39,7 @@ const {
   listKnowledgeCandidates,
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
+  listDuplicateKnowledge,
   countPendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
@@ -628,6 +629,117 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);
     void dupId;
     void distinctId;
+  },
+);
+
+test(
+  'repository: listDuplicateKnowledge finds an existing near-duplicate pair, reports each pair exactly once, and excludes a clearly distinct entry (issue #316)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-dup-scope`;
+    const { id: aId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: bId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    const { id: distinctId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pairs = await listDuplicateKnowledge(scope);
+
+    const matching = pairs.filter(
+      (p) => (p.aId === aId && p.bId === bId) || (p.aId === bId && p.bId === aId),
+    );
+    assert.equal(
+      matching.length,
+      1,
+      'the near-duplicate pair is reported exactly once, never as both A↔B and B↔A',
+    );
+    assert.ok(matching[0].similarity >= 0.92, 'reported similarity clears the duplicate threshold');
+
+    assert.ok(
+      !pairs.some((p) => p.aId === distinctId || p.bId === distinctId),
+      'a clearly distinct entry must not appear in any pair',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId, distinctId]]);
+  },
+);
+
+test(
+  'listDuplicateKnowledge returns an empty array when nothing meets the threshold (issue #316)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-dup-empty-scope`;
+    const { id } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pairs = await listDuplicateKnowledge(scope);
+    assert.deepEqual(pairs, [], 'a single entry with nothing to pair against yields no pairs');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'SECURITY: repository: listDuplicateKnowledge scope filter restricts results to that scope only, and a same-content pair split across different scopes is never returned (issue #316)',
+  { skip },
+  async () => {
+    const scopeX = `${RUN}-list-dup-scope-x`;
+    const scopeY = `${RUN}-list-dup-scope-y`;
+    const { id: xAId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope: scopeX,
+    });
+    const { id: xBId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: scopeX,
+    });
+    // Same content as the scope-X pair, but in a different scope — must never
+    // pair with either scope-X entry (a.scope = b.scope in the join) and must
+    // not appear when querying scope X.
+    const { id: yId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: scopeY,
+    });
+
+    const scopedToX = await listDuplicateKnowledge(scopeX);
+    assert.ok(
+      scopedToX.some((p) => (p.aId === xAId && p.bId === xBId) || (p.aId === xBId && p.bId === xAId)),
+      'the scope-X pair is returned when scoped to X',
+    );
+    assert.ok(
+      !scopedToX.some((p) => p.aId === yId || p.bId === yId),
+      'SECURITY: scope filter must exclude an entry from a different scope, even with near-identical content',
+    );
+
+    const unscoped = await listDuplicateKnowledge();
+    assert.ok(
+      !unscoped.some(
+        (p) =>
+          (p.aId === xAId && p.bId === yId) ||
+          (p.aId === yId && p.bId === xAId) ||
+          (p.aId === xBId && p.bId === yId) ||
+          (p.aId === yId && p.bId === xBId),
+      ),
+      'SECURITY: a same-content pair split across different scopes must never be reported, even with no scope filter applied — the self-join is scoped a.scope = b.scope',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAId, xBId, yId]]);
   },
 );
 

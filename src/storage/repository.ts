@@ -943,6 +943,49 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+export interface KnowledgeDuplicatePair {
+  aId: number;
+  aTitle: string | null;
+  bId: number;
+  bTitle: string | null;
+  similarity: number;
+}
+
+/**
+ * Retroactive audit (issue #316) for near-duplicate knowledge pairs that
+ * `saveKnowledge`'s write-time nudge (KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD
+ * above) never caught: entries that predate that check, or that converged
+ * later via independent `updateKnowledge` edits. Same-scope only, same
+ * threshold, same `<=>` operator — deliberately reuses #93's established
+ * technique rather than inventing a new one. `a.id < b.id` both dedups each
+ * pair to a single row (never A↔B and B↔A) and gives the self-join a stable
+ * ordering to join on.
+ */
+export async function listDuplicateKnowledge(scope?: string, limit = 20): Promise<KnowledgeDuplicatePair[]> {
+  const params: unknown[] = [scope ?? null, KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD];
+  params.push(limit);
+  const { rows } = await pool.query(
+    `SELECT a.id AS a_id, a.title AS a_title,
+            b.id AS b_id, b.title AS b_title,
+            1 - (a.embedding <=> b.embedding) AS similarity
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND ($1::text IS NULL OR a.scope = $1)
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+      ORDER BY similarity DESC
+      LIMIT $3`,
+    params,
+  );
+  return rows.map((r) => ({
+    aId: Number(r.a_id),
+    aTitle: r.a_title,
+    bId: Number(r.b_id),
+    bTitle: r.b_title,
+    similarity: Number(r.similarity),
+  }));
+}
+
 /**
  * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
  * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic

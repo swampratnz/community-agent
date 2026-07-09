@@ -130,6 +130,10 @@ export const ADMIN_TOOLS = [
   'mcp__community__list_knowledge',
   'mcp__community__update_knowledge',
   'mcp__community__delete_knowledge',
+  // Retroactive read-only audit (issue #316) for near-duplicate pairs that
+  // save_knowledge's write-time nudge never caught — same tier as its
+  // siblings, no CONFIRM (read-only, no mutation).
+  'mcp__community__list_duplicate_knowledge',
   'mcp__community__list_access_requests',
   'mcp__community__add_member_note',
   'mcp__community__list_member_notes',
