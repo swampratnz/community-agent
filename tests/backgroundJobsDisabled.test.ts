@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 
 // config.ts validates env at import time. CONTEXT_BUILDER_ENABLED /
-// KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED are deliberately left
-// unset (all default false) so this file exercises the disabled-by-default
-// path in its own process, separate from tests/backgroundJobs.test.ts which
-// pins them all on — config is parsed once per process at import time, so
-// "enabled" and "disabled" behaviour can't be exercised from the same file.
+// KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED / INTERACTION_RETENTION_DAYS /
+// ROSTER_DEPARTED_RETENTION_DAYS are deliberately left unset (all default
+// off/0) so this file exercises the disabled-by-default path in its own
+// process, separate from tests/backgroundJobs.test.ts which pins them all on
+// — config is parsed once per process at import time, so "enabled" and
+// "disabled" behaviour can't be exercised from the same file.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
@@ -16,6 +17,8 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const { startContextBuilder, startKnowledgeRefresh, startDocsIngest } =
   await import('../src/backgroundJobs.js');
+const { startRetentionPurge } = await import('../src/interactionRetention.js');
+const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 
 function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
   const dms: Array<{ userId: string; text: string }> = [];
@@ -44,6 +47,8 @@ const JOBS = [
   ['startContextBuilder', startContextBuilder],
   ['startKnowledgeRefresh', startKnowledgeRefresh],
   ['startDocsIngest', startDocsIngest],
+  ['startRetentionPurge', startRetentionPurge],
+  ['startRosterRetentionPurge', startRosterRetentionPurge],
 ] as const;
 
 test('SECURITY: a job whose own enable flag is off creates no timer, never invokes runOnce, and can never DM — zero behaviour change for a deployment that has not opted in', () => {

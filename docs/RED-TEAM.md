@@ -110,7 +110,7 @@ to neutralise it structurally):
    prevent on its own — see `docs/SECURITY.md`'s "Residual risks"), fix it
    in the same PR as the corpus addition so `test:security` never merges red.
 3. Bump the affected file's entry in `tests/security-floor.json` in the same
-   diff.
+   diff (or run `npm run test:security:fix` to regenerate it).
 
 This keeps the discovery loop (this document) feeding the regression gate
 (`tests/injectionCorpus.test.ts`) without either one paying the other's cost.

@@ -93,6 +93,23 @@ function text(t: string, isError = false) {
 }
 
 /**
+ * Refusal copy for the `isKnownConversation` reachability gate (moderate,
+ * announce, create_poll, create_thread, archive_thread). Deliberately no more
+ * specific than "unreachable" about *why* — it must read identically for a
+ * nonexistent target and a real-but-out-of-scope one, so the wording can't
+ * become an enumeration oracle (issue #274). Framed as an intentional
+ * boundary rather than a bug/config gap: issue #268 showed the old
+ * "is unknown" wording led an admin to believe this was a backend defect.
+ */
+function unreachableConversationRefusal(target: string): string {
+  return (
+    `Refusing: I don't act on conversation "${target}" — I only act on ones I've verified ` +
+    `(seen activity in, or, on Discord, confirmed I can reach). This is a deliberate safety ` +
+    `boundary, not a bug or a missing config; it's not something a retry fixes.`
+  );
+}
+
+/**
  * Recalled chat content is untrusted. Strip angle brackets and newlines so it
  * can't fake tags or a fresh instruction line (the same quarantine-escape
  * class fixed in buildSystemPrompt/renderMemoryContext, issue #227 review),
@@ -235,17 +252,35 @@ export function formatKnowledgeSearchResults(
     .join('\n');
 }
 
+/**
+ * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
+ * two today; a future third adapter only needs adding here.
+ */
+const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+
+/**
+ * Alerts every super admin on every platform, not just the one the triggering
+ * event happened on (issue #288) — mirrors the loop-every-connected-adapter
+ * pattern already used by `usageAlert.ts`'s `alertSuperAdmins` and
+ * `router.ts`'s budget-check alert. `adapterFor` is the same per-platform
+ * lookup `buildToolServer` already threads through for #157; a platform with
+ * no registered or connected adapter is silently skipped, matching that
+ * lookup's existing fallback behaviour.
+ */
 async function notifySuperAdmins(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
 ): Promise<void> {
-  for (const id of superAdminIds(platform)) {
-    if (id === excludeUserId) continue;
-    adapter
-      .sendDirectMessage(id, `🔔 ${message}`)
-      .catch((err) => logger.warn({ err, id }, 'Super-admin alert failed'));
+  for (const platform of ALL_PLATFORMS) {
+    const target = adapterFor(platform);
+    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    for (const id of superAdminIds(platform)) {
+      if (id === excludeUserId) continue;
+      target
+        .sendDirectMessage(id, `🔔 ${message}`)
+        .catch((err) => logger.warn({ err, id, platform }, 'Super-admin alert failed'));
+    }
   }
 }
 
@@ -292,6 +327,16 @@ export const POLL_DEFAULT_DURATION_HOURS = 24;
  * announcement and `announce` itself isn't CONFIRM-gated either.
  */
 export const POLL_RATE_LIMIT_PER_HOUR = 5;
+
+/**
+ * Per-conversation cap on `end_poll` within a rolling hour (PR #272 review).
+ * `end_poll` has the same admin-tier/scope/capability guards as `create_poll`
+ * but ends (rather than posts) a poll, so it needs its own cap for the same
+ * threat: an injected/hijacked admin turn should not be able to end every live
+ * poll in scope unthrottled. Kept slightly higher than the create cap because a
+ * legitimate admin more plausibly closes several polls than posts several.
+ */
+export const POLL_END_RATE_LIMIT_PER_HOUR = 10;
 
 /** create_thread (issue #229) bound — Discord's own hard limit on a thread's name. */
 export const THREAD_NAME_MAX_CHARS = 100;
@@ -500,8 +545,7 @@ export async function notifyReportResolved(
  * tool-call transport, same convention as notifyReportResolved.
  */
 export async function notifyReportFiled(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   report: {
     id: number;
     reporterUserId: string;
@@ -518,7 +562,7 @@ export async function notifyReportFiled(
   ];
   if (report.targetUserId) lines.push(`Target user: ${report.targetUserId}`);
   if (report.messageId) lines.push(`Message id: ${report.messageId}`);
-  await notifySuperAdmins(adapter, platform, lines.join('\n'), report.reporterUserId);
+  await notifySuperAdmins(adapterFor, lines.join('\n'), report.reporterUserId);
 }
 
 /**
@@ -532,15 +576,13 @@ export async function notifyReportFiled(
  * convention as `notifyReportFiled`.
  */
 export async function notifyReportWithdrawn(
-  adapter: PlatformAdapter,
-  platform: Platform,
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   info: { ids: number[]; reporterUserId: string; reporterName: string | null },
 ): Promise<void> {
   const list = info.ids.map((id) => `#${id}`).join(', ');
   const plural = info.ids.length > 1;
   await notifySuperAdmins(
-    adapter,
-    platform,
+    adapterFor,
     `Report${plural ? 's' : ''} ${list} withdrawn by the reporter ${info.reporterName ?? info.reporterUserId}. ` +
       `Marked 'withdrawn' and kept on record — no action needed unless you want to check in.`,
     info.reporterUserId,
@@ -643,6 +685,29 @@ function reservePollSlot(conversationId: string, limit: number): boolean {
   }
   recent.push(now);
   pollTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/** end_poll timestamps per conversation, for its own rolling-hour cap (POLL_END_RATE_LIMIT_PER_HOUR). */
+const pollEndTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one `end_poll` slot for `conversationId` — same sliding-hour shape as
+ * `reservePollSlot`, but a SEPARATE bucket so ending polls neither consumes nor
+ * is blocked by the create_poll budget (PR #272 review).
+ */
+function reservePollEndSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (pollEndTimestampsByConversation.get(conversationId) ?? []).filter(
+    (t) => now - t < windowMs,
+  );
+  if (recent.length >= limit) {
+    pollEndTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  pollEndTimestampsByConversation.set(conversationId, recent);
   return true;
 }
 
@@ -778,8 +843,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     }).catch((err) => logger.error({ err }, 'Audit write failed'));
     if (success) {
       void notifySuperAdmins(
-        adapter,
-        caller.platform,
+        adapterFor,
         `${caller.userName} (${caller.role}) ran ${input.actionKind}${input.targetUserId ? ` on ${input.targetUserId}` : ''}: ${result}`,
         caller.userId,
       );
@@ -1032,7 +1096,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           true,
         );
       }
-      void notifyReportFiled(adapter, caller.platform, {
+      void notifyReportFiled(adapterFor, {
         id: created.id,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
@@ -1057,7 +1121,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (ids.length === 0) {
         return text('You have no open reports to withdraw.', true);
       }
-      void notifyReportWithdrawn(adapter, caller.platform, {
+      void notifyReportWithdrawn(adapterFor, {
         ids,
         reporterUserId: caller.userId,
         reporterName: caller.userName,
@@ -1481,7 +1545,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         targetConversation !== caller.conversationId &&
         !(await isKnownConversation(caller.platform, targetConversation))
       ) {
-        return text(`Refusing: conversation "${targetConversation}" is unknown.`, true);
+        return text(unreachableConversationRefusal(targetConversation), true);
       }
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
@@ -1584,7 +1648,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       const { success, result } = await audited({
         actionKind: 'announce',
@@ -1603,7 +1667,10 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     'create_poll',
     'Post a native Discord poll to gauge interest (e.g. meetup dates, topic preferences) — a structured ' +
       'vote with a visible tally and duration, unlike a reaction straw poll. Discord only. Admins can only ' +
-      'post in conversations they are in.',
+      'post in conversations they are in. Set multiChoice to let voters pick more than one option. NOTE: ' +
+      'Discord polls cannot be edited after posting — the question, options, duration, and single-vs-multi ' +
+      'choice setting are fixed at creation. To change a poll, end it (end_poll) and post a new one; the new ' +
+      "poll starts with zero votes (the old poll's votes cannot be carried over).",
     {
       question: z.string().max(POLL_QUESTION_MAX_CHARS).describe('The poll question'),
       options: z
@@ -1612,6 +1679,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .max(POLL_MAX_OPTIONS)
         .describe(
           `${POLL_MIN_OPTIONS}-${POLL_MAX_OPTIONS} answer options, each up to ${POLL_OPTION_MAX_CHARS} characters`,
+        ),
+      multiChoice: z
+        .boolean()
+        .optional()
+        .describe(
+          'Allow selecting more than one option (default: single choice). Fixed at creation — cannot be changed later.',
         ),
       durationHours: z
         .number()
@@ -1641,7 +1714,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       if (!reservePollSlot(target, POLL_RATE_LIMIT_PER_HOUR)) {
         return text(
@@ -1652,7 +1725,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       // Range is enforced at the zod schema boundary above; only truncate to
       // whole hours here (the schema permits fractional values in-range).
       const duration = Math.trunc(args.durationHours ?? POLL_DEFAULT_DURATION_HOURS);
-      const params = { question: args.question, options: args.options, durationHours: duration };
+      const params = {
+        question: args.question,
+        options: args.options,
+        durationHours: duration,
+        multiChoice: args.multiChoice ?? false,
+      };
       const { success, result } = await audited({
         actionKind: 'create_poll',
         conversationId: target,
@@ -1665,6 +1743,57 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           }),
       });
       return text(success ? `Poll posted to ${target}.` : `Failed: ${result}`, !success);
+    },
+  );
+
+  const endPoll = tool(
+    'end_poll',
+    'End (finalize) a running Discord poll early: freezes its current results and stops further voting. ' +
+      'Discord only; admins can only act in conversations they are in. This is IRREVERSIBLE, but it does NOT ' +
+      'delete the poll or its votes — the final tally stays visible. Discord polls cannot be edited or ' +
+      'converted (e.g. to multi-choice) after posting; to change one, end it here and post a fresh poll with ' +
+      'create_poll.',
+    {
+      messageId: z
+        .string()
+        .describe("The poll message's id (in Discord: right-click the poll → Copy Message ID)"),
+      conversationId: z
+        .string()
+        .optional()
+        .describe('Channel/conversation id the poll is in; defaults to the current one'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'end_poll');
+      if (!adapter.adminCapabilities.has('end_poll')) {
+        return text(`This platform (${adapter.platform}) does not support polls.`, true);
+      }
+      const target = args.conversationId ?? caller.conversationId;
+      const allowed = await callerScope();
+      if (allowed && !allowed.includes(target)) {
+        return text(`Refusing: you are not a participant of conversation "${target}".`, true);
+      }
+      if (target !== caller.conversationId && !(await isKnownConversation(caller.platform, target))) {
+        return text(`Refusing: conversation "${target}" is unknown.`, true);
+      }
+      if (!reservePollEndSlot(target, POLL_END_RATE_LIMIT_PER_HOUR)) {
+        return text(
+          `Refusing: conversation "${target}" already hit the end-poll limit (${POLL_END_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+          true,
+        );
+      }
+      const params = { messageId: args.messageId };
+      const { success, result } = await audited({
+        actionKind: 'end_poll',
+        conversationId: target,
+        params,
+        run: () =>
+          adapter.performAdminAction({
+            kind: 'end_poll',
+            conversationId: target,
+            params,
+          }),
+      });
+      return text(success ? result : `Failed: ${result}`, !success);
     },
   );
 
@@ -1702,7 +1831,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await isKnownConversation(caller.platform, target)) &&
         !(await adapter.canPostTo?.(target))
       ) {
-        return text(`Refusing: conversation "${target}" is unknown.`, true);
+        return text(unreachableConversationRefusal(target), true);
       }
       // Defensive guard (adversarial review, issue #229): thread messages are
       // moderation-scanned under their PARENT channel's allowlist membership
@@ -1770,7 +1899,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         args.threadId !== caller.conversationId &&
         !(await isKnownConversation(caller.platform, args.threadId))
       ) {
-        return text(`Refusing: conversation "${args.threadId}" is unknown.`, true);
+        return text(unreachableConversationRefusal(args.threadId), true);
       }
       const params = { reason: args.reason };
       const run = async () => {
@@ -1986,10 +2115,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .describe('Filter to a scope (e.g. "global", a platform, or a conversation id)'),
       limit: z.number().optional().describe('Max entries (default 20)'),
       offset: z.number().optional().describe('Pagination offset (default 0)'),
+      staleOnly: z
+        .boolean()
+        .optional()
+        .describe(
+          'Only show entries untouched for KNOWLEDGE_STALE_DAYS+ days (the same entries counted in the ' +
+            'weekly digest); ordered oldest-touched first.',
+        ),
+      provenance: z
+        .enum(['admin', 'super_admin', 'auto', 'docs'])
+        .optional()
+        .describe(
+          'Filter to entries created by this role/provenance (e.g. "auto" to review unreviewed ' +
+            'web-researched entries)',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge');
-      const entries = await listKnowledge({ scope: args.scope, limit: args.limit, offset: args.offset });
+      const staleDays = config.adminDigest.knowledgeStaleDays;
+      if (args.staleOnly && staleDays <= 0) {
+        return text('Staleness tracking is disabled (KNOWLEDGE_STALE_DAYS is not set).');
+      }
+      const entries = await listKnowledge({
+        scope: args.scope,
+        limit: args.limit,
+        offset: args.offset,
+        ...(args.staleOnly ? { staleOnly: true, staleDays } : {}),
+        ...(args.provenance ? { provenance: args.provenance } : {}),
+      });
       if (entries.length === 0) return text('No knowledge entries found.');
       return text(
         untrusted(
@@ -1997,7 +2150,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           entries
             .map(
               (e) =>
-                `#${e.id} [${e.scope}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
+                `#${e.id} [${e.scope}] [${e.createdByRole}] ${e.title ? `${e.title}: ` : ''}${e.content.slice(0, 200)} ` +
                 `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
                 `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''}` +
                 `${e.sourceUrl ? `, source: ${e.sourceTitle ?? e.sourceUrl} (${e.sourceUrl})` : ''}` +
@@ -3262,6 +3415,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       clearWarningsTool,
       announce,
       createPoll,
+      endPoll,
       createThread,
       archiveThread,
       createEvent,

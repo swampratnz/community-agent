@@ -29,7 +29,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
-const { PAUSE_NOTICE_TEXT } = await import('../src/pauseNotice.js');
+const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI } = await import('../src/pauseNotice.js');
 const { RATE_LIMIT_NOTICE_TEXT } = await import('../src/rateLimitNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -221,4 +221,101 @@ test('router (not paused): behaviour is unchanged — normal reply, no pause not
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'normal reply');
+});
+
+// --- Standing 'mi' language preference on the pause notice (issue #300) -----
+
+test("router (paused): a caller with a standing 'mi' language preference gets PAUSE_NOTICE_TEXT_MI, not the English default", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT_MI);
+});
+
+test("router (paused): a caller with 'auto' (the default) still gets the English PAUSE_NOTICE_TEXT", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT);
+});
+
+test('SECURITY: a getLanguagePreference failure on the pause notice still sends the English default, never throws or drops the notice', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT);
+});
+
+test('router (paused): the language-preference lookup runs at most once per debounce window, never once per shed message', async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      calls += 1;
+      return 'auto';
+    },
+  );
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+  await trigger(makeMessage());
+  await trigger(makeMessage());
+
+  assert.equal(
+    calls,
+    1,
+    'only the first (notifying) message in the window should read the language preference',
+  );
 });
