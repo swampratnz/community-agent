@@ -4,10 +4,10 @@
   "ambientArchiving.test.ts": 5,
   "ambientArchivingOff.test.ts": 2,
   "anthropicStatus.test.ts": 4,
-  "baileysAdapter.test.ts": 11,
-  "baileysArchiving.test.ts": 2,
   "backgroundJobs.test.ts": 3,
   "backgroundJobsDisabled.test.ts": 1,
+  "baileysAdapter.test.ts": 11,
+  "baileysArchiving.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 1,
   "config.test.ts": 2,
   "contextBuilder.test.ts": 2,
@@ -37,6 +37,7 @@
   "router.test.ts": 1,
   "secrets.test.ts": 2,
   "securityGateCanary.test.ts": 1,
+  "securityGateWrite.test.ts": 5,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 5,
   "tools.test.ts": 101,
@@ -44,6 +45,5 @@
   "whatsappCloudAdapter.test.ts": 7,
   "whatsappCloudWire.test.ts": 5,
   "whatsappWire.test.ts": 1,
-  "securityGateWrite.test.ts": 5,
   "agentCoreUsageLimitAlert.test.ts": 1
 }
