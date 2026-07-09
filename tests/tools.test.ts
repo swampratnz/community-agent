@@ -5034,6 +5034,103 @@ test(
   },
 );
 
+// list_low_rated_knowledge tool (issue #287): the grouped complement to
+// list_answer_feedback, aggregating ratings per knowledge entry. Aggregation
+// correctness (threshold/sort/non-shortcut exclusion) is pinned at the
+// repository layer in repository.test.ts; this pins the tool-layer admin
+// gate + empty-state rendering.
+function listLowRatedKnowledgeHandler(
+  role: 'member' | 'admin',
+  userId: string,
+  conversationId: string,
+  conversationsForUser: PlatformAdapter['conversationsForUser'] = async () => [],
+) {
+  const adapter = stubAdapter(async () => {});
+  adapter.conversationsForUser = conversationsForUser;
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId,
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { minUnhelpful?: number; limit?: number }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_low_rated_knowledge'];
+}
+
+test(
+  'list_low_rated_knowledge renders aggregated entries with a clear empty-state message when nothing meets the threshold (issue #287)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-low-rated-knowledge-admin`;
+    const conversationId = `${RUN}-low-rated-knowledge-convo`;
+
+    const emptyResult = await listLowRatedKnowledgeHandler('admin', admin, conversationId).handler({});
+    assert.notEqual(emptyResult.isError, true);
+    assert.match(
+      emptyResult.content[0]?.text ?? '',
+      /No knowledge entries meet that unhelpful-rating threshold/,
+      'empty state renders a clear message, not an error or a blank success',
+    );
+
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} low-rated entry content`,
+      title: `${RUN} low-rated entry`,
+    });
+    for (const [suffix, helpful] of [
+      ['u1', false],
+      ['u2', false],
+    ] as const) {
+      const userId = `${RUN}-low-rated-${suffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      const result = await rateAnswerHandler(userId, conversationId).handler({ helpful });
+      assert.notEqual(result.isError, true);
+    }
+
+    const listed = await listLowRatedKnowledgeHandler('admin', admin, conversationId).handler({});
+    const text = listed.content[0]?.text ?? '';
+    assert.match(text, new RegExp(`#${entryId} "${RUN} low-rated entry"`), 'entry id and title are rendered');
+    assert.match(text, /2 unhelpful/, 'the aggregated unhelpful count is rendered');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [`${RUN}-low-rated-u1`, `${RUN}-low-rated-u2`],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test('SECURITY: list_low_rated_knowledge rejects a non-admin caller (issue #287)', async () => {
+  const registeredTool = listLowRatedKnowledgeHandler(
+    'member',
+    'member-1',
+    'convo-list-low-rated-knowledge-member',
+  );
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+});
+
 // save_knowledge / update_knowledge source citation fields (issue #214).
 // ADMIN_TOOLS membership (so a member/guest turn never even sees these tools)
 // is already pinned in rbac.test.ts's blanket "members and guests never get

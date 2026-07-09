@@ -43,7 +43,14 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-RestrictNamespaces=true
+# Allow ONLY the namespace types bubblewrap needs (user+mount+pid+net), not
+# `true` (which blocks all). Image generation runs the grok CLI under a
+# bubblewrap kernel-deny sandbox that hides the bot's secrets from it, and
+# bwrap needs those namespaces; with them blocked, grok can't set up the deny
+# and image gen fails. This grants the service the capability to create those
+# namespaces, used solely to MORE-tightly sandbox grok. See docs/SECURITY.md §8.
+# (If image generation is unused, `RestrictNamespaces=true` is safe.)
+RestrictNamespaces=user mnt pid net
 LockPersonality=true
 MemoryDenyWriteExecute=false
 # Resource caps.

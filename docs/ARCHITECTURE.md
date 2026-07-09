@@ -565,6 +565,17 @@ actually helped — only that one was sent.
    `interaction_id` foreign key is `ON DELETE SET NULL`, so the row survives
    with its interaction reference cleared rather than being deleted or left
    dangling — the aggregate helpful/unhelpful trend stays intact.
+5. `list_low_rated_knowledge(minUnhelpful?, limit?)` (issue #287) is the
+   grouped complement to `list_answer_feedback`'s flat per-row view: it
+   `GROUP BY`s `answer_feedback` on `(interactions.meta->>'knowledgeEntryId')`
+   through the SAME join and conversation-scope filter, so an entry's
+   accumulating unhelpful ratings are visible without manually tallying
+   scrollback. Only entries with `unhelpfulCount >= minUnhelpful` (default 2,
+   so a single troll/misclick rating never flags an entry) are returned,
+   sorted worst-first. Ratings on interactions with no `knowledgeEntryId`
+   (i.e. answered via the model-mediated `knowledge_search` path rather than
+   the deterministic shortcut) never join to a `knowledge` row and so are
+   never counted — the same reach boundary #269 already drew for this field.
 
 ## Auto-moderation (Discord)
 

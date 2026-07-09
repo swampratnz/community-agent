@@ -3407,3 +3407,72 @@ export async function listAnswerFeedback(
   );
   return rows.map(mapAnswerFeedback);
 }
+
+export interface KnowledgeFeedbackSummary {
+  knowledgeEntryId: number;
+  title: string | null;
+  helpfulCount: number;
+  unhelpfulCount: number;
+  updatedAt: Date;
+}
+
+function mapKnowledgeFeedbackSummary(r: {
+  id: number | string;
+  title: string | null;
+  updated_at: Date;
+  helpful_count: number | string;
+  unhelpful_count: number | string;
+}): KnowledgeFeedbackSummary {
+  return {
+    knowledgeEntryId: Number(r.id),
+    title: r.title,
+    helpfulCount: Number(r.helpful_count),
+    unhelpfulCount: Number(r.unhelpful_count),
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Admin-tier aggregation of `answer_feedback` per knowledge entry (issue
+ * #287), the grouped complement to `listAnswerFeedback`'s flat per-row view.
+ * Reuses the SAME `answer_feedback` → `interactions` join and
+ * `conversation_id = ANY($1)` scope filter (null = super admin, unrestricted)
+ * `listAnswerFeedback` already uses, so an admin never counts a rating from a
+ * conversation they don't participate in. Ratings on interactions with no
+ * `knowledgeEntryId` (not served via the deterministic knowledge shortcut)
+ * never join to a `knowledge` row and are therefore never counted. Only
+ * entries with `unhelpfulCount >= minUnhelpful` are returned, sorted by
+ * `unhelpfulCount` descending.
+ */
+export async function listKnowledgeFeedbackSummary(
+  conversationIds: readonly string[] | null,
+  minUnhelpful = 2,
+  limit = 20,
+): Promise<KnowledgeFeedbackSummary[]> {
+  const params: unknown[] = [];
+  const filters: string[] = [`(interactions.meta->>'knowledgeEntryId') IS NOT NULL`];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);
+  }
+  params.push(Math.max(Math.trunc(minUnhelpful) || 2, 1));
+  const minUnhelpfulParam = params.length;
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  params.push(clampedLimit);
+
+  const { rows } = await pool.query(
+    `SELECT knowledge.id, knowledge.title, knowledge.updated_at,
+            count(*) FILTER (WHERE answer_feedback.helpful) AS helpful_count,
+            count(*) FILTER (WHERE NOT answer_feedback.helpful) AS unhelpful_count
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+       JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint
+      WHERE ${filters.join(' AND ')}
+      GROUP BY knowledge.id, knowledge.title, knowledge.updated_at
+     HAVING count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $${minUnhelpfulParam}
+      ORDER BY unhelpful_count DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map(mapKnowledgeFeedbackSummary);
+}
