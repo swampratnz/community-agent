@@ -15,7 +15,7 @@
   "discordAdapter.test.ts": 25,
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
-  "grokImage.test.ts": 2,
+  "grokImage.test.ts": 3,
   "guestKnowledgeShortcut.test.ts": 2,
   "guestKnowledgeShortcutRouter.test.ts": 1,
   "injectionCorpus.test.ts": 5,

@@ -289,6 +289,13 @@ and does not wedge the CONFIRM flow.
 The admin/super-admin `generate_image` tool shells out to the **Grok Build CLI**
 on the host. It's off unless `IMAGE_GEN_ENABLED=true`. To enable it:
 
+0. **Install `bubblewrap`** — REQUIRED. The bot runs grok under a custom
+   `--sandbox imagegen` profile whose kernel-deny list (blocking reads of the
+   bot's `.env`/WhatsApp-auth secrets) is enforced by bubblewrap; grok refuses
+   to start without it, so image gen fails closed. See docs/SECURITY.md §8.
+   ```bash
+   sudo apt install -y bubblewrap
+   ```
 1. **Install the CLI** as the service user (or globally) and **log in once**
    with a SuperGrok subscription — device-code flow, no API key:
    ```bash
