@@ -4,6 +4,7 @@ import {
   countAccessRequests,
   countKnowledgeGaps,
   countOpenReports,
+  countPendingKnowledgeCandidates,
   countPendingSuggestions,
   countStaleKnowledge,
   listAdmins,
@@ -28,14 +29,15 @@ const SNIPPET_MAX_CHARS = 300;
  * no message when there's nothing to say" convention shared with the
  * disconnect/usage alerts — a quiet week produces no DM and (by the caller
  * not touching the freshness row) no change to when the admin is next
- * eligible. `pendingAccessRequests`, `openReports`, `pendingSuggestions`, and
- * `staleKnowledgeCount` are exact counts (`countAccessRequests`/
- * `countOpenReports`/`countPendingSuggestions`/`countStaleKnowledge`,
- * dedicated `COUNT(*)` reads), never `.length` of a `LIMIT`-bounded list, so
- * a backlog larger than that limit is never understated. A persistently
- * untriaged queue re-appears on every subsequent weekly tick until it's
- * cleared — that nag is intended, not a bug (issue #133, extended by #193
- * and #199).
+ * eligible. `pendingAccessRequests`, `openReports`, `pendingSuggestions`,
+ * `staleKnowledgeCount`, and `pendingKnowledgeCandidates` are exact counts
+ * (`countAccessRequests`/`countOpenReports`/`countPendingSuggestions`/
+ * `countStaleKnowledge`/`countPendingKnowledgeCandidates`, dedicated
+ * `COUNT(*)` reads), never `.length` of a `LIMIT`-bounded list, so a backlog
+ * larger than that limit is never understated. A persistently untriaged
+ * queue re-appears on every subsequent weekly tick until it's cleared —
+ * that nag is intended, not a bug (issue #133, extended by #193, #199, and
+ * #284).
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -45,6 +47,7 @@ export function buildAdminDigestMessage(
   staleKnowledgeCount: number,
   knowledgeStaleDays: number,
   knowledgeGapsCount: number = 0,
+  pendingKnowledgeCandidates: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -52,7 +55,8 @@ export function buildAdminDigestMessage(
     openReports === 0 &&
     pendingSuggestions === 0 &&
     staleKnowledgeCount === 0 &&
-    knowledgeGapsCount === 0
+    knowledgeGapsCount === 0 &&
+    pendingKnowledgeCandidates === 0
   )
     return null;
 
@@ -89,6 +93,13 @@ export function buildAdminDigestMessage(
         'knowledge — run `list_knowledge_gaps` to see what to document.',
     );
   }
+  if (pendingKnowledgeCandidates > 0) {
+    // Bare integer only — no candidate title/content/topic ever reaches the DM (#284).
+    sections.push(
+      `🧩 ${pendingKnowledgeCandidates} pending knowledge candidate(s) — run ` +
+        '`list_knowledge_candidates`.',
+    );
+  }
   return sections.join('\n');
 }
 
@@ -105,12 +116,13 @@ export function buildAdminDigestMessage(
  * additionally include any DM-originated report (`is_dm`) except one filed
  * against the admin themselves (`countOpenReports`'s `viewerUserId` —
  * `admin.platformUserId` here — drives that exclusion; see issue #197).
- * `countAccessRequests`, `countPendingSuggestions`, and
- * `countStaleKnowledge` are guild-wide by design (matching
- * `list_access_requests`/`list_suggestions`/`list_knowledge`'s own unscoped
- * behaviour — none of those tables have a conversation/channel column), so
- * every enrolled admin sees the same pending-guest, pending-suggestion, and
- * stale-knowledge counts. `countStaleKnowledge` only runs when
+ * `countAccessRequests`, `countPendingSuggestions`,
+ * `countStaleKnowledge`, and `countPendingKnowledgeCandidates` are guild-wide
+ * by design (matching `list_access_requests`/`list_suggestions`/
+ * `list_knowledge`/`list_knowledge_candidates`'s own unscoped behaviour —
+ * none of those tables have a conversation/channel column), so every
+ * enrolled admin sees the same pending-guest, pending-suggestion,
+ * stale-knowledge, and pending-candidate counts. `countStaleKnowledge` only runs when
  * `KNOWLEDGE_STALE_DAYS` is configured (`> 0`) — otherwise the signal stays
  * `0` and the digest is byte-for-byte unchanged from before issue #199. The
  * freshness guard
@@ -155,6 +167,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         pendingSuggestions,
         staleKnowledgeCount,
         knowledgeGapsCount,
+        pendingKnowledgeCandidates,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -164,6 +177,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // Conversation-scoped like openReports (knowledge_gaps has a
         // conversation_id), over the same freshness window (#246).
         countKnowledgeGaps(scope, FRESHNESS_DAYS),
+        countPendingKnowledgeCandidates(),
       ]);
       const message = buildAdminDigestMessage(
         clusters,
@@ -173,6 +187,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         staleKnowledgeCount,
         knowledgeStaleDays,
         knowledgeGapsCount,
+        pendingKnowledgeCandidates,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 
@@ -191,12 +206,13 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * Daily timer (gated behind ADMIN_DIGEST_ENABLED, off by default — no timer
  * created when unset) that pushes each `community_users` admin a weekly DM
  * summarising recurring-question clusters in their own scoped conversations,
- * plus pending access-request, open-report, pending-suggestion, and (when
- * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge counts (issue #21's
- * deferred proactive follow-up, extended by issue #133, issue #193, and
- * issue #199) — the same signals
+ * plus pending access-request, open-report, pending-suggestion, (when
+ * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, and pending
+ * knowledge-candidate counts (issue #21's deferred proactive follow-up,
+ * extended by issue #133, issue #193, issue #199, and issue #284) — the
+ * same signals
  * `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/
- * `list_knowledge` already compute on demand.
+ * `list_knowledge`/`list_knowledge_candidates` already compute on demand.
  */
 export function startAdminDigest(
   adapters: readonly PlatformAdapter[],

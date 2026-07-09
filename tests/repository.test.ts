@@ -39,6 +39,7 @@ const {
   listKnowledgeCandidates,
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
+  countPendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
   recordAdminAction,
@@ -712,6 +713,70 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[acceptId, declineId]]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'repository: countPendingKnowledgeCandidates is exact past the 50-row listKnowledgeCandidates default limit, and counts only status = pending (issue #284)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-countcandidates-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const before = await countPendingKnowledgeCandidates();
+    const TOTAL_PENDING = 55; // exceeds listKnowledgeCandidates's default limit of 50
+
+    const ids: number[] = [];
+    for (let i = 0; i < TOTAL_PENDING; i++) {
+      ids.push(
+        await insertKnowledgeCandidate({
+          digestId,
+          topic: `${RUN}-countcandidates-topic-${i}`,
+          title: `bulk pending candidate ${i}`,
+          content: `content ${i}`,
+        }),
+      );
+    }
+
+    const listed = await listKnowledgeCandidates('pending', 50);
+    assert.equal(
+      listed.length,
+      50,
+      'listKnowledgeCandidates is clamped at its default limit, understating the true backlog',
+    );
+    assert.equal(
+      await countPendingKnowledgeCandidates(),
+      before + TOTAL_PENDING,
+      'countPendingKnowledgeCandidates reports the exact backlog, not the limited list length',
+    );
+
+    // Accepting/declining a couple must drop them out of the pending count —
+    // exercising both non-pending statuses, not just rows past the row limit.
+    const accepted = await acceptKnowledgeCandidate({ id: ids[0], reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const declined = await declineKnowledgeCandidate(ids[1], 'admin-1');
+    assert.ok(declined);
+    assert.equal(
+      await countPendingKnowledgeCandidates(),
+      before + TOTAL_PENDING - 2,
+      "countPendingKnowledgeCandidates excludes 'accepted'/'declined' rows — only 'pending' counts",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [ids]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      await countPendingKnowledgeCandidates(),
+      before,
+      'deleting every inserted row restores the prior count',
+    );
   },
 );
 
