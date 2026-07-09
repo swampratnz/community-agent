@@ -4,18 +4,19 @@ import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js
 
 // config.ts validates env at import time. CONTEXT_BUILDER_ENABLED /
 // KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED / INTERACTION_RETENTION_DAYS /
-// ROSTER_DEPARTED_RETENTION_DAYS are deliberately left unset (all default
-// off/0) so this file exercises the disabled-by-default path in its own
-// process, separate from tests/backgroundJobs.test.ts which pins them all on
-// — config is parsed once per process at import time, so "enabled" and
-// "disabled" behaviour can't be exercised from the same file.
+// ROSTER_DEPARTED_RETENTION_DAYS / STATUS_CHECK_ENABLED are deliberately left
+// unset (all default off/0) so this file exercises the disabled-by-default
+// path in its own process, separate from tests/backgroundJobs.test.ts and
+// tests/statusCheckAlert.test.ts which pin their respective flags on — config
+// is parsed once per process at import time, so "enabled" and "disabled"
+// behaviour can't be exercised from the same file.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { startContextBuilder, startKnowledgeRefresh, startDocsIngest } =
+const { startContextBuilder, startKnowledgeRefresh, startDocsIngest, startStatusCheck } =
   await import('../src/backgroundJobs.js');
 const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
@@ -61,4 +62,14 @@ test('SECURITY: a job whose own enable flag is off creates no timer, never invok
     assert.equal(timer, null, `${name}: disabled by default — no timer created, no extra queries`);
     assert.equal(dms.length, 0, `${name}: no DM ever sent for a job whose enable flag is off`);
   }
+});
+
+test('SECURITY: startStatusCheck creates no timer, never invokes runOnce, and can never DM when STATUS_CHECK_ENABLED is unset — zero behaviour change for a deployment that has not opted in (issue #321)', () => {
+  const { adapter, dms } = makeAdapter();
+  const runOnce = async () => {
+    throw new Error('unreachable: status check is disabled — runOnce must never be invoked');
+  };
+  const timer = startStatusCheck([adapter], runOnce);
+  assert.equal(timer, null, 'disabled by default — no timer created, no extra polling');
+  assert.equal(dms.length, 0, 'no DM ever sent when the status check is disabled');
 });

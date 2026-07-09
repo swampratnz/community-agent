@@ -10,6 +10,7 @@ import {
 } from './context/knowledgeRefresh.js';
 import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './context/docsIngest.js';
 import { writeCommunityContextExport } from './context/export.js';
+import { pollAnthropicStatus } from './status/anthropicStatus.js';
 import {
   buildJobFailureAlert,
   initialJobFailureTracker,
@@ -158,4 +159,62 @@ export function startDocsIngest(
   runOnce: () => Promise<void> = defaultDocsIngestRun,
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('docs-ingest', adapters, config.docsIngest.enabled, runOnce);
+}
+
+/**
+ * Cadence-scaled failure threshold (issue #321): roughly one hour of
+ * consecutive failures before the first alert, regardless of the configured
+ * poll interval — floored at 3 so a very fast interval can't page on a
+ * single blip. Kept separate from `BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD`
+ * because status check's own poll cadence (`STATUS_CHECK_POLL_MINUTES`,
+ * default 5 min) is configurable and much faster than the fixed 6h
+ * `TICK_INTERVAL_MS` the other jobs above share.
+ */
+export function statusCheckAlertThreshold(pollMinutes: number): number {
+  return Math.max(3, Math.ceil(60 / pollMinutes));
+}
+
+/**
+ * Anthropic status check poller (off unless STATUS_CHECK_ENABLED; see
+ * src/status/anthropicStatus.ts). Deliberately NOT routed through
+ * `startTrackedJob`: that helper hardcodes a 6h tick, but this job's own
+ * interval is configurable and defaults to 5 minutes — reusing the wrapper
+ * unmodified would silently slow status polling to 6h (issue #321).
+ * Inlines the same tracker/alert primitives at this job's own cadence and a
+ * cadence-scaled threshold instead. `pollAnthropicStatus` itself never
+ * throws (it degrades to the last-known-good cache on failure) — its
+ * boolean return, not a thrown error, drives the tracker here; the
+ * try/catch below is only a defensive backstop against an unexpected throw.
+ */
+export function startStatusCheck(
+  adapters: readonly PlatformAdapter[],
+  runOnce: () => Promise<boolean> = pollAnthropicStatus,
+): ReturnType<typeof setInterval> | null {
+  if (!config.statusCheck.enabled) return null;
+
+  let tracker: JobFailureTracker = initialJobFailureTracker();
+  let lastSuccessAt: number | null = null;
+  const threshold = statusCheckAlertThreshold(config.statusCheck.pollMinutes);
+
+  const run = async () => {
+    let succeeded = false;
+    try {
+      succeeded = await runOnce();
+    } catch (err) {
+      logger.error({ err }, 'Anthropic status check run failed');
+    }
+    if (succeeded) lastSuccessAt = Date.now();
+    const step = stepJobFailureTracker(tracker, !succeeded, threshold);
+    tracker = step.tracker;
+    if (step.shouldAlert) {
+      void alertSuperAdmins(
+        adapters,
+        buildJobFailureAlert('anthropic-status-check', tracker.consecutiveFailures, lastSuccessAt),
+      );
+    }
+  };
+  void run();
+  const timer = setInterval(() => void run(), config.statusCheck.pollMinutes * 60_000);
+  timer.unref();
+  return timer;
 }
