@@ -447,14 +447,17 @@ const MEMBER_APPROVED_MESSAGE =
 const MEMBER_CAPABILITIES_TEXT =
   'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
   "Here's what you can ask me to do:\n" +
-  '- Flag harassment, spam, or a rule violation to admins ("report this")\n' +
+  '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
   '- Ask me for our community guidelines ("what are the rules here?")\n' +
   '- Answer questions from curated community knowledge — just ask\n' +
   '- Search back through your own past messages for something said earlier\n' +
+  "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
   '- Suggest how the bot or community could be better\n' +
-  '- Ask me to explain things more simply from now on ("keep it simple")\n' +
+  '- Rate my last answer helpful or not\n' +
+  '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
   '- React to a message with an emoji instead of replying\n' +
+  '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
