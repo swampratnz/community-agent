@@ -40,5 +40,6 @@
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 7,
   "whatsappCloudWire.test.ts": 5,
-  "whatsappWire.test.ts": 1
+  "whatsappWire.test.ts": 1,
+  "securityGateWrite.test.ts": 5
 }
