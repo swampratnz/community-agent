@@ -31,11 +31,14 @@ const {
   clearAccessRequest,
   countAccessRequests,
   countKnowledgeGaps,
+  countLowRatedKnowledge,
   countPendingSuggestions,
   countStaleKnowledge,
   countPendingKnowledgeCandidates,
   createContentReport,
   createSuggestion,
+  createAnswerFeedback,
+  recordInteraction,
   saveKnowledge,
   recordKnowledgeRetrieval,
   deleteKnowledge,
@@ -221,6 +224,48 @@ test('buildAdminDigestMessage: the knowledge-candidates line never contains cand
   assert.ok(
     !/title|content|topic/i.test(message),
     'no candidate field name or content ever leaks into the digest text',
+  );
+});
+
+test('buildAdminDigestMessage: low-rated-knowledge line appears only when count > 0, and all EIGHT signals zero -> null (issue #324)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all eight signals zero — including low-rated knowledge — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 2);
+  assert.ok(message, 'a non-zero low-rated-knowledge count alone still produces a DM');
+  const lowRatedLines = message.split('\n').filter((l) => l.includes('👎'));
+  assert.equal(lowRatedLines.length, 1, 'exactly one low-rated-knowledge line');
+  assert.match(
+    lowRatedLines[0],
+    /👎 2 knowledge entries with repeated unhelpful ratings.*`list_low_rated_knowledge`/,
+  );
+  assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
+  assert.ok(!message.includes('🧩'), 'no knowledge-candidates line when that count is zero');
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0)!.includes('👎'),
+    'no low-rated-knowledge line when the count is zero',
+  );
+});
+
+test('buildAdminDigestMessage: low-rated-knowledge singular/plural wording (issue #324)', () => {
+  const singular = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 1);
+  assert.ok(singular);
+  assert.match(
+    singular,
+    /^👎 1 knowledge entry with repeated unhelpful ratings — run `list_low_rated_knowledge` to review\.$/,
+  );
+});
+
+test('buildAdminDigestMessage: the low-rated-knowledge line never contains entry title or rater identity — only the bare count (issue #324 privacy pin)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 3);
+  assert.ok(message);
+  assert.ok(
+    !/title|rater|user_id/i.test(message),
+    'no knowledge-feedback field name or content ever leaks into the digest text',
   );
 });
 
@@ -847,6 +892,172 @@ test(
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+/** Narrows createAnswerFeedback's result, failing the test with a clear message on a refusal. */
+function expectFeedbackId(
+  result: Awaited<ReturnType<typeof createAnswerFeedback>>,
+  message = 'expected the rating to be recorded',
+): number {
+  if (result === 'no_recent_answer' || result === 'rate_limited') {
+    assert.fail(`${message} (got "${result}")`);
+  }
+  return result.id;
+}
+
+test(
+  'SECURITY: runAdminDigestOnce: an admin with all seven other signals at zero but ≥1 low-rated knowledge entry in scope still receives a digest containing only the bare count — never entry title or rater identity (issue #324 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-lowrated-admin`;
+    const conversationId = `${RUN}-c-run-lowrated`;
+    const secretTitle = `${RUN} a very identifiable knowledge entry title that must never leak`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} low-rated entry content`,
+      title: secretTitle,
+    });
+    const raters = [`${RUN}-run-lowrated-rater1`, `${RUN}-run-lowrated-rater2`];
+    for (const raterId of raters) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${raterId}`,
+        meta: { replyToUserId: raterId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId: raterId, helpful: false }),
+      );
+    }
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(
+      sent.length,
+      1,
+      'zero clusters/requests/reports/suggestions/stale-knowledge/knowledge-gaps/candidates today would ' +
+        'previously mean no DM — a low-rated knowledge entry now still triggers one',
+    );
+    assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
+    assert.match(
+      sent[0].text,
+      /👎 \d+ knowledge entr(?:y|ies) with repeated unhelpful ratings — run `list_low_rated_knowledge`/,
+      'the low-rated-knowledge line is present',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretTitle),
+      'SECURITY: the raw knowledge entry title must never appear in the digest DM',
+    );
+    assert.ok(
+      !raters.some((r) => sent[0].text.includes(r)),
+      'SECURITY: a rater user id must never appear in the digest DM',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [raters]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the low-rated-knowledge count is scoped to the conversations the admin participates in, excluding a rating recorded outside that scope (issue #324)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-lowratedscope-admin`;
+    const inScopeConvo = `${RUN}-c-run-lowratedscope-in`;
+    const outOfScopeConvo = `${RUN}-c-run-lowratedscope-out`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const { id: outOfScopeEntryId } = await saveKnowledge({
+      content: `${RUN} out-of-scope low-rated entry content`,
+    });
+    const outOfScopeRaters = [`${RUN}-run-lowratedscope-rater1`, `${RUN}-run-lowratedscope-rater2`];
+    for (const raterId of outOfScopeRaters) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: outOfScopeConvo,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${raterId}`,
+        meta: { replyToUserId: raterId, knowledgeShortcut: true, knowledgeEntryId: outOfScopeEntryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({
+          platform: 'discord',
+          conversationId: outOfScopeConvo,
+          userId: raterId,
+          helpful: false,
+        }),
+      );
+    }
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [inScopeConvo], sent });
+
+    // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates
+    // are guild-wide by design (issues #133, #193, #284) and so are NOT
+    // test-isolated by a unique id — snapshot them immediately beforehand,
+    // same pattern as the "all four signals at zero" test above, so this
+    // assertion holds even if another test file concurrently has one in flight.
+    const pendingAccessRequestsBefore = await countAccessRequests();
+    const pendingSuggestionsBefore = await countPendingSuggestions();
+    const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
+
+    await runAdminDigestOnce([adapter]);
+
+    if (
+      pendingAccessRequestsBefore === 0 &&
+      pendingSuggestionsBefore === 0 &&
+      pendingCandidatesBefore === 0
+    ) {
+      assert.equal(
+        sent.length,
+        0,
+        'SECURITY: a low-rated entry rated only in a conversation outside the admin scope must not trigger a digest',
+      );
+      assert.equal(
+        await wasAdminDigestSentRecently('discord', adminId, 7),
+        false,
+        'a quiet run (out-of-scope-only signal) must not touch the freshness row',
+      );
+    } else {
+      // Extremely rare in practice, but a concurrently-running test file's
+      // pending access request, suggestion, or knowledge candidate legitimately
+      // makes this a non-quiet week — the digest correctly sends, but must
+      // still never carry the low-rated-knowledge line (its only source is the
+      // out-of-scope conversation).
+      assert.ok(
+        !sent[0]?.text.includes('👎'),
+        'SECURITY: still no low-rated-knowledge line — it is out of scope',
+      );
+    }
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [outOfScopeRaters]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [outOfScopeConvo]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [outOfScopeEntryId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);

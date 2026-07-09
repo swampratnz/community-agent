@@ -92,6 +92,7 @@ const {
   createAnswerFeedback,
   listAnswerFeedback,
   listKnowledgeFeedbackSummary,
+  countLowRatedKnowledge,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
   getMyDataSummary,
@@ -4275,6 +4276,148 @@ test(
       [inScopeConvo, outOfScopeConvo],
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+// countLowRatedKnowledge (issue #324): a true COUNT(DISTINCT) complement to
+// listKnowledgeFeedbackSummary, for the weekly admin digest.
+test(
+  "repository: countLowRatedKnowledge returns a true count of distinct low-rated entries beyond list_low_rated_knowledge's own default limit of 20, and never counts ratings on non-shortcut-served answers or below-threshold entries",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-low-rated-count`;
+    const entryIds: number[] = [];
+    const users: string[] = [];
+
+    async function rateShortcut(entryId: number, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-lowrated-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    // 21 distinct entries, each with 2 unhelpful ratings — one past
+    // list_low_rated_knowledge's own default limit of 20, proving the count
+    // is a true SELECT count(DISTINCT ...), not `.length` of that
+    // LIMIT-bounded list.
+    for (let i = 0; i < 21; i++) {
+      const { id } = await saveKnowledge({ content: `${RUN} low-rated entry ${i} content` });
+      entryIds.push(id);
+      users.push(await rateShortcut(id, `e${i}-u1`, false));
+      users.push(await rateShortcut(id, `e${i}-u2`, false));
+    }
+    // One entry with only 1 unhelpful rating — below the default threshold
+    // of 2, must not be counted.
+    const { id: belowThresholdId } = await saveKnowledge({ content: `${RUN} below-threshold entry content` });
+    entryIds.push(belowThresholdId);
+    users.push(await rateShortcut(belowThresholdId, 'below-u1', false));
+
+    // Non-shortcut-served rating: must never be counted toward any entry.
+    const plainUser = `${RUN}-lowrated-plain`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a plain non-shortcut answer',
+      meta: { replyToUserId: plainUser },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: plainUser, helpful: false }),
+    );
+    users.push(plainUser);
+
+    const count = await countLowRatedKnowledge([conversationId]);
+    assert.equal(
+      count,
+      21,
+      "a true COUNT(DISTINCT) of the 21 low-rated entries — past list_low_rated_knowledge's own LIMIT-" +
+        'bounded 20, excluding the below-threshold entry and the non-shortcut rating',
+    );
+
+    const lowerThreshold = await countLowRatedKnowledge([conversationId], 1);
+    assert.equal(lowerThreshold, 22, 'lowering minUnhelpful to 1 includes the below-threshold entry too');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [entryIds]);
+  },
+);
+
+test(
+  'SECURITY: repository: countLowRatedKnowledge scopes by conversation — a rating recorded outside the calling admin scope is excluded from the count entirely, while a null (super admin) scope sees it',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-low-rated-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-low-rated-scope-out`;
+    const { id: inScopeEntryId } = await saveKnowledge({
+      content: `${RUN} scope-test in-scope entry content`,
+    });
+    const { id: outOfScopeEntryId } = await saveKnowledge({
+      content: `${RUN} scope-test out-of-scope entry content`,
+    });
+
+    async function rateShortcut(conversationId: string, entryId: number, userSuffix: string) {
+      const userId = `${RUN}-lowratedscope-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      );
+      return userId;
+    }
+
+    // Snapshot the unscoped (super admin) count BEFORE inserting the fixture
+    // so the assertion below is a delta, not an absolute — a concurrently
+    // running test file may leave its own low-rated entries in the shared DB
+    // (same caution as adminDigest.test.ts's guild-wide-count snapshots).
+    const nullScopeBefore = await countLowRatedKnowledge(null);
+
+    const inScopeUsers = [
+      await rateShortcut(inScopeConvo, inScopeEntryId, 'in-1'),
+      await rateShortcut(inScopeConvo, inScopeEntryId, 'in-2'),
+    ];
+    const outOfScopeUsers = [
+      await rateShortcut(outOfScopeConvo, outOfScopeEntryId, 'out-1'),
+      await rateShortcut(outOfScopeConvo, outOfScopeEntryId, 'out-2'),
+    ];
+
+    assert.equal(
+      await countLowRatedKnowledge([inScopeConvo]),
+      1,
+      'SECURITY: only the in-scope entry is counted, never the out-of-scope one',
+    );
+
+    const nullScopeAfter = await countLowRatedKnowledge(null);
+    assert.equal(
+      nullScopeAfter - nullScopeBefore,
+      2,
+      'null scope (super admin) counts both fixture entries, in-scope and out-of-scope alike',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [...inScopeUsers, ...outOfScopeUsers],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[inScopeEntryId, outOfScopeEntryId]]);
   },
 );
 
