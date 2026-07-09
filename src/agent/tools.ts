@@ -1600,7 +1600,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
             args.messageId!,
           );
           if (content) {
-            messageSuffix += ` ("${content.slice(0, 80)}${content.length > 80 ? '…' : ''}")`;
+            // content is attacker-controlled (the message being moderated,
+            // possibly authored by the very account under review) — strip the
+            // same characters untrusted()/sanitizeName() do before it reaches
+            // this model-visible CONFIRM text, so a planted newline/angle-
+            // bracket/quote can't fake a tag or a second "Reply CONFIRM"
+            // block (the quarantine-escape class from issue #227, flagged in
+            // PR review for #312).
+            const sanitized = content.replace(/[<>"\r\n]/g, ' ');
+            messageSuffix += ` ("${sanitized.slice(0, 80)}${sanitized.length > 80 ? '…' : ''}")`;
           }
         }
       }
