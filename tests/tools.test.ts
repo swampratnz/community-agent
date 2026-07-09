@@ -87,8 +87,13 @@ const { pool, closeDb } = await import('../src/storage/db.js');
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
-const { getCommunityGuidelines, getCommunityGuidelinesMi, getWelcomeMessage, resetPolicyCacheForTests } =
-  await import('../src/storage/policies.js');
+const {
+  getCommunityGuidelines,
+  getCommunityGuidelinesMi,
+  getWelcomeMessage,
+  getWelcomeMessageMi,
+  resetPolicyCacheForTests,
+} = await import('../src/storage/policies.js');
 const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { superAdminIds } = await import('../src/auth/roles.js');
 
@@ -1493,7 +1498,48 @@ test('SECURITY: set_welcome_message rejects text over the max length at the zod 
     true,
     'an empty string (clear) must stay allowed',
   );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Kia ora', language: 'mi' }).success,
+    true,
+    "language: 'mi' must be accepted",
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Hi', language: 'en' }).success,
+    true,
+    "language: 'en' must be accepted",
+  );
+  assert.equal(
+    registeredTool.inputSchema.safeParse({ text: 'Hi' }).success,
+    true,
+    'omitting language must stay allowed (defaults to en)',
+  );
 });
+
+test(
+  "SECURITY: set_welcome_message rejects a non-admin caller when language: 'mi' is passed — the new " +
+    'argument opens no lower-privilege path to welcome_message_mi (assertAtLeast re-check, issue #282)',
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: 'convo-welcome-mi-member',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['set_welcome_message'];
+
+    await assert.rejects(
+      () => registeredTool.handler({ text: 'Kia ora', language: 'mi' }),
+      /Permission denied/,
+    );
+  },
+);
 
 test(
   'set_welcome_message lets an admin set and clear the welcome message; getWelcomeMessage reflects the change verbatim (issue #253)',
@@ -1534,6 +1580,77 @@ test(
       const clearResult = await setTool.handler({ text: '' });
       assert.match(clearResult.content[0].text, /cleared/i);
       assert.equal(await getWelcomeMessage(), null, 'clearing must revert to null (the hardcoded default)');
+    } finally {
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+test(
+  "set_welcome_message(language: 'mi') writes only welcome_message_mi, leaving welcome_message " +
+    'untouched (and vice versa for the default/omitted language), including the empty-string-clears ' +
+    'path in both directions (issue #282)',
+  { skip },
+  async () => {
+    resetPolicyCacheForTests();
+    const adminServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'admin-welcome-mi',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: 'convo-welcome-mi',
+      },
+      stubAdapter(async () => {}),
+    );
+    const setTool = (
+      adminServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              text: string;
+              language?: 'en' | 'mi';
+            }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['set_welcome_message'];
+
+    try {
+      const defaultText = 'Welcome to our community!';
+      const miText = 'Kia ora and welcome back to our community!';
+
+      const setDefault = await setTool.handler({ text: defaultText });
+      assert.match(setDefault.content[0].text, /updated/i);
+      assert.equal(await getWelcomeMessage(), defaultText);
+      assert.equal(
+        await getWelcomeMessageMi(),
+        null,
+        'writing the default (language omitted) must leave welcome_message_mi untouched',
+      );
+
+      const setMi = await setTool.handler({ text: miText, language: 'mi' });
+      assert.match(setMi.content[0].text, /updated/i);
+      assert.equal(await getWelcomeMessageMi(), miText, "language: 'mi' must write welcome_message_mi");
+      assert.equal(
+        await getWelcomeMessage(),
+        defaultText,
+        'writing the mi variant must leave the default welcome_message untouched',
+      );
+
+      const clearDefault = await setTool.handler({ text: '' });
+      assert.match(clearDefault.content[0].text, /cleared/i);
+      assert.equal(await getWelcomeMessage(), null, "clearing the default ('en') must revert it to null");
+      assert.equal(
+        await getWelcomeMessageMi(),
+        miText,
+        'clearing the default must leave the mi variant untouched',
+      );
+
+      const clearMi = await setTool.handler({ text: '', language: 'mi' });
+      assert.match(clearMi.content[0].text, /cleared/i);
+      assert.equal(await getWelcomeMessageMi(), null, 'clearing the mi variant must revert it to null');
     } finally {
       resetPolicyCacheForTests();
     }

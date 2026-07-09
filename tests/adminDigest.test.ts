@@ -33,11 +33,14 @@ const {
   countKnowledgeGaps,
   countPendingSuggestions,
   countStaleKnowledge,
+  countPendingKnowledgeCandidates,
   createContentReport,
   createSuggestion,
   saveKnowledge,
   recordKnowledgeRetrieval,
   deleteKnowledge,
+  insertContextDigest,
+  insertKnowledgeCandidate,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -188,6 +191,36 @@ test('buildAdminDigestMessage: knowledge-gaps line appears only when count > 0, 
   assert.ok(
     !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0)!.includes('🕳️'),
     'no knowledge-gaps line when the gap count is zero',
+  );
+});
+
+test('buildAdminDigestMessage: knowledge-candidates line appears only when count > 0, and all SEVEN signals zero -> null (issue #284)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all seven signals zero — including pending knowledge candidates — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 3);
+  assert.ok(message, 'a non-zero pending-knowledge-candidate count alone still produces a DM');
+  const candidateLines = message.split('\n').filter((l) => l.includes('🧩'));
+  assert.equal(candidateLines.length, 1, 'exactly one knowledge-candidates line');
+  assert.match(candidateLines[0], /🧩 3 pending knowledge candidate\(s\).*`list_knowledge_candidates`/);
+  assert.ok(!message.includes('🔔'), 'no cluster line when there are no clusters');
+  assert.ok(!message.includes('🕳️'), 'no knowledge-gaps line when that count is zero');
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0)!.includes('🧩'),
+    'no knowledge-candidates line when the candidate count is zero',
+  );
+});
+
+test('buildAdminDigestMessage: the knowledge-candidates line never contains candidate title, content, or topic — only the bare count (issue #284 privacy pin)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 5);
+  assert.ok(message);
+  assert.ok(
+    !/title|content|topic/i.test(message),
+    'no candidate field name or content ever leaks into the digest text',
   );
 });
 
@@ -346,22 +379,28 @@ test(
 
     const sent: Array<{ userId: string; text: string }> = [];
     // A conversation id unique to this test guarantees zero clusters and zero
-    // open reports in scope. countAccessRequests/countPendingSuggestions are
-    // guild-wide by design (issue #133, #193) and so are NOT test-isolated by
-    // a unique id — snapshot them immediately beforehand so this assertion
-    // holds even if another test file concurrently has a pending access
-    // request or suggestion in flight.
+    // open reports in scope. countAccessRequests/countPendingSuggestions/
+    // countPendingKnowledgeCandidates are guild-wide by design (issue #133,
+    // #193, #284) and so are NOT test-isolated by a unique id — snapshot them
+    // immediately beforehand so this assertion holds even if another test
+    // file concurrently has a pending access request, suggestion, or
+    // knowledge candidate in flight.
     const adapter = fakeAdapter({ platform: 'discord', conversationIds: [`${RUN}-c-empty`], sent });
     const pendingAccessRequestsBefore = await countAccessRequests();
     const pendingSuggestionsBefore = await countPendingSuggestions();
+    const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
 
     await runAdminDigestOnce([adapter]);
 
-    if (pendingAccessRequestsBefore === 0 && pendingSuggestionsBefore === 0) {
+    if (
+      pendingAccessRequestsBefore === 0 &&
+      pendingSuggestionsBefore === 0 &&
+      pendingCandidatesBefore === 0
+    ) {
       assert.equal(
         sent.length,
         0,
-        'zero clusters, zero pending requests, zero open reports, zero pending suggestions — no DM sent',
+        'zero clusters, zero pending requests, zero open reports, zero pending suggestions, zero pending candidates — no DM sent',
       );
       assert.equal(
         await wasAdminDigestSentRecently('discord', adminId, 7),
@@ -369,14 +408,15 @@ test(
         'a quiet run must not touch the freshness row (so a later clustered week is not skipped)',
       );
     } else {
-      // Extremely rare in practice, but countAccessRequests/countPendingSuggestions
-      // are intentionally unscoped — a concurrently-running test file's pending
-      // access request or suggestion legitimately makes this a non-quiet week,
-      // so the digest correctly sends.
+      // Extremely rare in practice, but countAccessRequests/countPendingSuggestions/
+      // countPendingKnowledgeCandidates are intentionally unscoped — a
+      // concurrently-running test file's pending access request, suggestion,
+      // or knowledge candidate legitimately makes this a non-quiet week, so
+      // the digest correctly sends.
       assert.equal(
         sent.length,
         1,
-        'a pre-existing pending access request or suggestion still legitimately triggers a digest',
+        'a pre-existing pending access request, suggestion, or knowledge candidate still legitimately triggers a digest',
       );
       assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
       assert.ok(!sent[0].text.includes('🚩'), 'no report line — this admin has zero open reports in scope');
@@ -736,5 +776,163 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: an admin with zero clusters/requests/reports/suggestions/stale-knowledge/knowledge-gaps but ≥1 pending knowledge candidate still receives a digest containing only the bare count — never candidate title, content, or topic (issue #284 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-candidates-admin`;
+    const secretTopic = `${RUN} a very identifiable topic that must never leak`;
+    const secretTitle = 'a very identifiable drafted title that must never leak';
+    const secretContent = 'a very identifiable drafted answer that must never leak';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: secretTopic,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: secretTopic,
+      title: secretTitle,
+      content: secretContent,
+    });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-candidates-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(
+      sent.length,
+      1,
+      'zero clusters/requests/reports/suggestions/stale-knowledge/knowledge-gaps today would previously mean ' +
+        'no DM — a pending knowledge candidate now still triggers one',
+    );
+    assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
+    assert.match(
+      sent[0].text,
+      /🧩 \d+ pending knowledge candidate\(s\) — run `list_knowledge_candidates`\./,
+      'the pending-knowledge-candidate line is present',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretTopic),
+      'SECURITY: the raw candidate topic must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretTitle),
+      'SECURITY: the raw candidate title must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretContent),
+      'SECURITY: the raw candidate content must never appear in the digest DM',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the pending-knowledge-candidate count is guild-wide, not conversation/admin-scoped — two admins with disjoint conversation scopes and no other in-scope signals see the identical count (issue #284 acceptance criteria)',
+  { skip },
+  async () => {
+    const admin1Id = `${RUN}-run-candscope-admin1`;
+    const admin2Id = `${RUN}-run-candscope-admin2`;
+    const convo1 = `${RUN}-c-candscope-1`;
+    const convo2 = `${RUN}-c-candscope-2`;
+    await upsertMember({ platform: 'discord', userId: admin1Id, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: admin2Id, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-candscope-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-candscope-topic`,
+      title: 'candscope drafted title',
+      content: 'candscope drafted content',
+    });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    // A scope map so each admin resolves to their OWN disjoint conversation —
+    // proving the candidate count doesn't vary with either admin's scope,
+    // unlike countOpenReports/recentQuestionClusters which deliberately do.
+    const scopeByAdmin: Record<string, string[]> = { [admin1Id]: [convo1], [admin2Id]: [convo2] };
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      adminCapabilities: new Set(),
+      async start() {},
+      async stop() {},
+      isConnected: () => true,
+      onMessage() {},
+      async sendMessage() {},
+      async sendDirectMessage(userId, text) {
+        if (!userId.startsWith(RUN)) return;
+        sent.push({ userId, text });
+      },
+      async conversationsForUser(userId) {
+        return scopeByAdmin[userId] ?? [];
+      },
+      async performAdminAction() {
+        return '';
+      },
+    };
+
+    await runAdminDigestOnce([adapter]);
+
+    const admin1Msg = sent.find((s) => s.userId === admin1Id);
+    const admin2Msg = sent.find((s) => s.userId === admin2Id);
+    assert.ok(admin1Msg, 'admin 1 receives a digest despite zero clusters/reports in their own scope');
+    assert.ok(admin2Msg, 'admin 2 receives a digest despite zero clusters/reports in their own scope');
+
+    const candidateLine = (text: string) => text.split('\n').find((l) => l.includes('🧩'));
+    const line1 = candidateLine(admin1Msg.text);
+    const line2 = candidateLine(admin2Msg.text);
+    assert.ok(line1, 'admin 1 sees the pending-knowledge-candidate line');
+    assert.ok(line2, 'admin 2 sees the pending-knowledge-candidate line');
+    assert.equal(
+      line1,
+      line2,
+      'SECURITY: the pending-knowledge-candidate count must be identical across admins with disjoint ' +
+        'conversation scopes — it is a guild-wide COUNT(*), never conversation-scoped',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[admin1Id, admin2Id]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [admin1Id, admin2Id],
+    ]);
   },
 );

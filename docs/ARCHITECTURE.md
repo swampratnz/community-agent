@@ -248,7 +248,12 @@ weakening it:
    - **Discord**: off unless `DISCORD_WELCOME_ENABLED=true`. On join,
      `DiscordAdapter` sends a static, non-agent DM (no LLM call, no cost)
      pointing the new member at an admin; if their DMs are closed, it falls
-     back to posting in `DISCORD_WELCOME_CHANNEL_ID` if configured.
+     back to posting in `DISCORD_WELCOME_CHANNEL_ID` if configured. A
+     rejoining member with a standing `set_language_preference('mi')`
+     (issue #189) gets the admin-configured `welcome_message_mi` variant
+     instead, if one is set (issue #282, same `_mi`-variant pattern as
+     `set_community_guidelines`'s #266) — the appended guidelines stay
+     default-language regardless.
    - **WhatsApp (Baileys)**: off unless `WHATSAPP_WELCOME_ENABLED=true`.
      `BaileysAdapter` subscribes to Baileys' `group-participants.update` and,
      on `action: 'add'`, posts ONE static, non-agent message **to the group
