@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -67,60 +67,112 @@ function grokSessionsRoot(): string {
 }
 
 /**
- * Pure: did the sandbox FAIL to contain a probe read? True only if grok's
- * output actually contains the sentinel token — i.e. a read that `--sandbox
- * strict` should have blocked succeeded. Exported for a unit test (CI has no
- * grok binary to exercise the real sandbox).
+ * Pure: did the sandbox FAIL to contain the probe read? True only if grok's
+ * output actually contains the sentinel token — i.e. a read of a deny-listed
+ * path succeeded. Exported for a unit test (CI has no grok binary to exercise
+ * the real sandbox).
  */
 export function sandboxBreached(stdout: string, token: string): boolean {
   return stdout.includes(token);
 }
 
+/** The custom grok sandbox profile the bot writes to `~/.grok/sandbox.toml` and passes to `--sandbox`. */
+export const SANDBOX_PROFILE = 'imagegen';
+
 /**
- * Verify ONCE per process that `--sandbox strict` actually contains grok. The
- * whole read/exfiltration defence rests on this third-party flag, and grok has
- * silently dropped a flag before (`--tools GenerateImage`), so a string-only
- * test isn't enough. Before the first generation we plant a random sentinel in
- * a file OUTSIDE the sandbox read set (HOME root, NOT `~/.grok/`) and ask a
- * sandboxed grok to read it back:
- *   - token returned  → the sandbox is NOT containing → refuse to generate
- *     (fail CLOSED; the rejected promise is cached, so image gen stays disabled
- *     for this process until it's fixed and the service restarts).
- *   - cancelled / errored / absent → contained or inconclusive → proceed. A
- *     flaky probe must never disable a working sandbox, so ONLY a positive leak
- *     fails. Cached, so only the first generation pays the extra grok call.
+ * Absolute paths grok must be KERNEL-denied from reading during image gen: the
+ * bot's `.env` and WhatsApp auth dir (its on-disk secrets), plus a dedicated
+ * probe path the self-check uses. Derived from the bot's OWN cwd + config so
+ * the deny policy travels with the deployment. `authDir` may be relative
+ * (config default `./whatsapp-auth`) — resolve it against cwd.
  */
-let sandboxAssertion: Promise<void> | null = null;
-function assertSandboxContains(): Promise<void> {
-  if (!sandboxAssertion) {
-    sandboxAssertion = (async () => {
+export function sandboxDenyPaths(
+  cwd: string,
+  authDir: string,
+): { envPath: string; authPath: string; probePath: string } {
+  return {
+    envPath: join(cwd, '.env'),
+    authPath: isAbsolute(authDir) ? authDir : join(cwd, authDir),
+    probePath: join(cwd, '.grok-image-sandbox-probe'),
+  };
+}
+
+/**
+ * The `~/.grok/sandbox.toml` body defining the `imagegen` deny profile. Pure so
+ * a test can pin that the secrets are in the kernel-deny list.
+ *
+ * The `deny` list is bubblewrap-enforced on Linux (read AND write/rename, and
+ * it closes the `mv secret x && cat x` bypass), and grok REFUSES TO START if
+ * bubblewrap is missing or a deny path can't be bound — i.e. it fails closed
+ * rather than run with the secrets exposed. `restrict_network` blocks
+ * child-process network (no exfil); `extends = "strict"` is the base. NB the
+ * built-in `strict` profile's own landlock read-restriction does NOT actually
+ * block reads on the host (verified) — the bubblewrap `deny` list is what
+ * enforces, which is why we probe a *denied* path below rather than trust
+ * `strict` alone.
+ */
+export function buildSandboxToml(denyPaths: readonly string[]): string {
+  const deny = denyPaths.map((p) => `  ${JSON.stringify(p)},`).join('\n');
+  return `# Managed by community-agent (src/media/grokImage.ts) — do not edit by hand.
+# Kernel-enforced (bubblewrap) deny-list that contains grok during image
+# generation. grok refuses to start if bubblewrap is missing or a deny path
+# can't be bound, so image gen fails closed rather than exposing these paths.
+[profiles.${SANDBOX_PROFILE}]
+extends = "strict"
+restrict_network = true
+deny = [
+${deny}
+]
+`;
+}
+
+/**
+ * Prepare + self-verify the sandbox ONCE per process, before the first
+ * generation. Writes the `imagegen` deny profile, then plants a random token in
+ * a DENY-LISTED path and confirms a sandboxed grok cannot read it back:
+ *   - token returned  → the kernel deny-list is NOT enforcing → refuse to
+ *     generate (fail CLOSED; the cached rejection keeps image gen off until the
+ *     service restarts).
+ *   - cancelled / errored / absent → enforced (or grok refused to start, itself
+ *     fail-closed) → proceed. Only a positive leak disables, so a flaky probe
+ *     never falsely disables a working sandbox. Cached: only the first
+ *     generation pays the extra grok call.
+ */
+let sandboxReady: Promise<void> | null = null;
+function ensureSandboxReady(): Promise<void> {
+  if (!sandboxReady) {
+    sandboxReady = (async () => {
       const home = process.env.HOME;
-      if (!home) return; // runGrok surfaces the missing-HOME error itself
+      if (!home) throw new Error('HOME is not set; cannot configure the grok image sandbox.');
+      const { envPath, authPath, probePath } = sandboxDenyPaths(process.cwd(), config.whatsapp.authDir);
+      await writeFile(
+        join(home, '.grok', 'sandbox.toml'),
+        buildSandboxToml([envPath, authPath, probePath]),
+        'utf8',
+      );
+
       const token = `GROK_SANDBOX_PROBE_${randomUUID()}`;
-      const sentinel = join(home, `.grok-sandbox-probe-${randomUUID()}`);
       const cwd = await mkdtemp(join(tmpdir(), 'grokprobe-'));
       try {
-        await writeFile(sentinel, token, 'utf8');
+        await writeFile(probePath, token, 'utf8');
         const stdout = await runGrok(
-          `Read the file ${sentinel} and reply with its exact contents.`,
+          `Read the file ${probePath} and reply with its exact contents.`,
           cwd,
         ).catch(() => '');
         if (sandboxBreached(stdout, token)) {
-          logger.error(
-            'grok --sandbox strict failed to contain a disallowed read — disabling image generation',
-          );
+          logger.error('grok sandbox deny-list did not block a denied read — disabling image generation');
           throw new Error(
-            'grok sandbox self-check failed: a read outside the sandbox was NOT blocked. Image ' +
-              'generation is disabled until this is fixed (see docs/SECURITY.md §8).',
+            'grok sandbox self-check failed: a deny-listed path was readable (is bubblewrap installed?). ' +
+              'Image generation is disabled until this is fixed (see docs/SECURITY.md §8).',
           );
         }
       } finally {
-        await rm(sentinel, { force: true }).catch(() => {});
+        await rm(probePath, { force: true }).catch(() => {});
         await rm(cwd, { recursive: true, force: true }).catch(() => {});
       }
     })();
   }
-  return sandboxAssertion;
+  return sandboxReady;
 }
 
 /**
@@ -133,27 +185,28 @@ function assertSandboxContains(): Promise<void> {
  * run_terminal_cmd"). `/imagine` needs the full default toolset, so the
  * lockdown is re-expressed WITHOUT an allowlist:
  *
- * SECURITY POSTURE (see docs/SECURITY.md) — two independent, host-verified controls:
- *  - `--sandbox strict`: KERNEL-enforced (landlock + seccomp on Linux) file and
- *    network confinement. The agent can read only the throwaway CWD, `~/.grok/`,
- *    and essential system paths (NOT the bot's home/config), can write only to
- *    CWD / `~/.grok/` / temp, and child-process network is blocked. This is the
- *    control that actually contains a prompt-injected `/imagine` description:
- *    verified on the host that a read of `/opt/community-agent/.env` is
- *    Cancelled and no secret escapes, while a legitimate generation still
- *    works (grok reads its own auth, calls the image API, writes the image).
+ * SECURITY POSTURE (see docs/SECURITY.md) — host-verified controls:
+ *  - `--sandbox imagegen`: a custom profile (written by `ensureSandboxReady`)
+ *    whose bubblewrap-enforced `deny` list KERNEL-blocks reads of the bot's
+ *    secrets (`.env`, WhatsApp auth), and whose `restrict_network` blocks
+ *    child-process network (no exfil). grok REFUSES TO START if bubblewrap is
+ *    missing or a deny path can't be bound, so it fails closed. Verified on the
+ *    host: a read of `.env` under this profile is kernel-denied (`read_file`
+ *    tool error) while `/imagine` still generates. NB the built-in `strict`
+ *    profile's own landlock read-restriction does NOT actually block reads here
+ *    — reads succeed everywhere under it — which is why we use the bubblewrap
+ *    `deny` list, not `strict` alone.
  *  - NO `--always-approve`: headless grok then CANCELS approval-gated tool
  *    calls (shell / file write) instead of running them — verified: a prompt
- *    ordering the shell to write a file returned stopReason "Cancelled".
- *    (Read tools ARE auto-approved, which is exactly why the sandbox — not the
- *    absence of --always-approve alone — is the real containment. A `--tools`
- *    allowlist can't be used: the image tool isn't `--tools`-selectable, and a
- *    `--deny` name that doesn't match grok's internal tool id fails OPEN.)
- *  - Because that containment rests entirely on a third-party flag (grok has
- *    silently dropped a flag before), `assertSandboxContains()` self-checks it
- *    ONCE per process before the first generation — planting a sentinel outside
- *    the sandbox and confirming a sandboxed grok can't read it — and fails
- *    CLOSED (image gen disabled) if the sandbox ever stops containing.
+ *    ordering the shell to write a file returned stopReason "Cancelled". (Read
+ *    tools ARE auto-approved, which is why the kernel deny-list, not the absence
+ *    of --always-approve alone, is the containment. A `--tools` allowlist can't
+ *    be used — the image tool isn't `--tools`-selectable — and a `--deny` tool
+ *    name that doesn't match grok's internal id fails OPEN.)
+ *  - `ensureSandboxReady()` self-checks the deny list ONCE per process before
+ *    the first generation: it plants a token in a DENY-LISTED path and confirms
+ *    a sandboxed grok can't read it, failing CLOSED (image gen disabled) if the
+ *    kernel deny ever stops enforcing.
  *  - The subprocess gets a minimal env (grokEnv()), never the bot's secrets.
  *  - The prompt is an argv element, never a shell string (no shell injection),
  *    passed as `/imagine <prompt>` — i.e. strictly as an image description.
@@ -170,8 +223,8 @@ export async function generateImage(prompt: string): Promise<GeneratedImage> {
   const instruction = `/imagine ${prompt}`;
   let sessionDir: string | undefined;
   try {
-    // Fail closed if grok's kernel sandbox isn't actually containing it.
-    await assertSandboxContains();
+    // Write the deny profile + fail closed if the kernel sandbox isn't containing.
+    await ensureSandboxReady();
     const stdout = await runGrok(instruction, cwd);
     const sessionId = parseSessionId(stdout);
     if (!sessionId) throw new Error('Grok returned no session id; cannot locate the image.');
@@ -232,20 +285,18 @@ async function locateSessionImage(
  * both verified on the host (see the SECURITY POSTURE block above):
  *  - NO `--always-approve`. Without it, headless grok CANCELS approval-gated
  *    tool calls (e.g. shell / file write) instead of running them.
- *  - `--sandbox strict`: KERNEL-enforced (landlock + seccomp on Linux) FS +
- *    network confinement — reads limited to the throwaway CWD, `~/.grok/`, and
- *    essential system paths; writes to CWD/`~/.grok/`/temp; child-process
- *    network blocked. This is what actually stops an injected `/imagine`
- *    description from reading the bot's secrets (`.env`, `~/.grok/auth.json`)
- *    or exfiltrating — verified: a read of `/opt/community-agent/.env` is
- *    Cancelled. We rely on the sandbox rather than a `--tools`/`--deny` tool
- *    filter because the image tool is not `--tools`-selectable and a `--deny`
- *    tool name that doesn't match is a silent no-op (fails OPEN).
+ *  - `--sandbox imagegen`: our custom profile (written by `ensureSandboxReady`),
+ *    whose bubblewrap-enforced `deny` list kernel-blocks reads of the bot's
+ *    secrets (`.env`, WhatsApp auth) and whose `restrict_network` blocks
+ *    child-process network. Verified on the host that a read of `.env` is
+ *    kernel-denied while `/imagine` still generates. (The built-in `strict`
+ *    profile's landlock read-restriction does NOT actually block reads here — so
+ *    we can't rely on it; and a `--tools`/`--deny` tool filter fails OPEN.)
  *  - `--disable-web-search` removes the web tools; `--output-format json` gives
  *    us the session id; the prompt is `/imagine <description>` — grok's image skill.
  */
 export function buildGrokArgs(instruction: string): string[] {
-  return ['--sandbox', 'strict', '--output-format', 'json', '--disable-web-search', '-p', instruction];
+  return ['--sandbox', SANDBOX_PROFILE, '--output-format', 'json', '--disable-web-search', '-p', instruction];
 }
 
 /** Spawn grok headlessly, locked to the image tool, and resolve its stdout. */
