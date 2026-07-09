@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-09
+
+### Fixed
+- **Image generation works again** (`generate_image`). Grok removed the `GenerateImage` tool the bot was invoking, so every generation had been failing with an agent-build error; image generation is now grok's `/imagine` skill. Reworked the integration to call it and re-established the security lockdown without the old `--tools` allowlist (no longer possible), using a **kernel-enforced `--sandbox strict`** (the agent can't read the bot's secrets or reach the network of a child process) plus **no `--always-approve`** and `--disable-web-search`. Verified end-to-end on the host: a real image is produced, while a prompt trying to read `/opt/community-agent/.env` or run a shell command is cancelled with nothing leaked or written. No behaviour change unless `IMAGE_GEN_ENABLED=true`. See docs/SECURITY.md §8.
+
 ## 2026-07-08
 
 ### Added
