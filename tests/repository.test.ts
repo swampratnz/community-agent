@@ -744,6 +744,23 @@ test(
 );
 
 test(
+  'repository: listDuplicateKnowledge clamps limit to a sane maximum and tolerates a negative value, matching the recentModerationEntries convention (issue #316)',
+  { skip },
+  async () => {
+    const hugeLimit = await listDuplicateKnowledge(undefined, 10_000);
+    assert.ok(hugeLimit.length <= 100, 'limit is clamped to a sane maximum for an admin-only audit tool');
+
+    // A negative limit hits Postgres' "LIMIT must not be negative" if passed
+    // through unclamped — must not throw.
+    const negativeLimit = await listDuplicateKnowledge(undefined, -5);
+    assert.ok(
+      Array.isArray(negativeLimit),
+      'a negative limit is clamped rather than passed through to LIMIT',
+    );
+  },
+);
+
+test(
   'repository: knowledge candidate CRUD — insert is pending, list filters by status, accept publishes via saveKnowledge (propagating the #93 duplicate nudge) and marks accepted, decline retains the row as declined and never touches knowledge (issue #102)',
   { skip },
   async () => {

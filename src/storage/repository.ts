@@ -962,8 +962,9 @@ export interface KnowledgeDuplicatePair {
  * ordering to join on.
  */
 export async function listDuplicateKnowledge(scope?: string, limit = 20): Promise<KnowledgeDuplicatePair[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
   const params: unknown[] = [scope ?? null, KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD];
-  params.push(limit);
+  params.push(clampedLimit);
   const { rows } = await pool.query(
     `SELECT a.id AS a_id, a.title AS a_title,
             b.id AS b_id, b.title AS b_title,
