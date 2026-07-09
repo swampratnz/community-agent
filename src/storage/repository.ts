@@ -3027,6 +3027,36 @@ export async function createContentReport(input: {
 }
 
 /**
+ * Count of DM reports the given reporter has filed naming the given target
+ * within the last `windowDays` — narrows the SECURITY.md-documented residual
+ * risk that a member who knows an admin's platform id (e.g. from an
+ * @-mention) can repeatedly name them in unrelated DM reports, quietly
+ * blinding that admin via the accused-admin exclusion in `listReports`/
+ * `countOpenReports`/`resolveContentReport` (issue #197), with nothing
+ * surfacing the pattern (issue #305). Scoped exactly to `(platform,
+ * reporter_user_id, target_user_id, is_dm = true)` — a different platform,
+ * reporter, target, or a non-DM report never contributes. Served by the
+ * existing `content_reports_reporter_rate_idx (platform, reporter_user_id,
+ * created_at DESC)` for its `(platform, reporter_user_id)` prefix; report
+ * volume is already capped at `REPORT_RATE_LIMIT_PER_DAY` per reporter per
+ * rolling 24h, so this stays cheap regardless of call frequency.
+ */
+export async function countRecentDmReportsByReporterAndTarget(
+  platform: Platform,
+  reporterUserId: string,
+  targetUserId: string,
+  windowDays = 30,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM content_reports
+      WHERE platform = $1 AND reporter_user_id = $2 AND target_user_id = $3
+        AND is_dm = true AND created_at > now() - ($4 || ' days')::interval`,
+    [platform, reporterUserId, targetUserId, String(windowDays)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Admin-tier view of reports, scoped to `conversationIds` (null = super
  * admin, unrestricted — same convention as recentModerationEntries). A
  * report filed from a 1:1 DM (`is_dm`) has no conversation any ordinary

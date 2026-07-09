@@ -54,6 +54,7 @@ const {
   resolveContentReport,
   withdrawOwnReports,
   countOpenReports,
+  countRecentDmReportsByReporterAndTarget,
   REPORT_RATE_LIMIT_PER_DAY,
   recordAccessRequest,
   countAccessRequests,
@@ -1718,6 +1719,168 @@ test(
     );
 
     await pool.query(`DELETE FROM content_reports WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: countRecentDmReportsByReporterAndTarget counts matching DM reports within the window, inclusive of the just-filed one (issue #305)',
+  { skip },
+  async () => {
+    const reporter = `${RUN}-repeatreport-reporter`;
+    const target = `${RUN}-repeatreport-target`;
+    const conversationId = `${RUN}-c-repeatreport`;
+
+    const ids: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const created = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId,
+        targetUserId: target,
+        reason: `repeat report ${i}`,
+        isDirect: true,
+      });
+      assert.ok(created);
+      ids.push(created.id);
+      assert.equal(
+        await countRecentDmReportsByReporterAndTarget('discord', reporter, target),
+        i + 1,
+        `count is exactly ${i + 1} after the ${i + 1}th matching DM report, inclusive of the just-inserted row`,
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
+  },
+);
+
+test(
+  'repository: countRecentDmReportsByReporterAndTarget counts each (reporter, target) pair independently (issue #305)',
+  { skip },
+  async () => {
+    const reporter = `${RUN}-repeatreport-multi-target-reporter`;
+    const targetA = `${RUN}-repeatreport-target-a`;
+    const targetB = `${RUN}-repeatreport-target-b`;
+    const conversationId = `${RUN}-c-repeatreport-multi`;
+
+    const first = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: targetA,
+      reason: 'naming target A, first time',
+      isDirect: true,
+    });
+    const second = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: targetA,
+      reason: 'naming target A, second time',
+      isDirect: true,
+    });
+    const third = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: targetB,
+      reason: 'naming target B, first time',
+      isDirect: true,
+    });
+    assert.ok(first && second && third);
+
+    assert.equal(
+      await countRecentDmReportsByReporterAndTarget('discord', reporter, targetA),
+      2,
+      'target A has 2 matching reports',
+    );
+    assert.equal(
+      await countRecentDmReportsByReporterAndTarget('discord', reporter, targetB),
+      1,
+      'target B has only 1, counted independently of target A — never aggregated across targets',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[first.id, second.id, third.id]]);
+  },
+);
+
+test(
+  'repository: countRecentDmReportsByReporterAndTarget does not aggregate across different reporters naming the same target (issue #305)',
+  { skip },
+  async () => {
+    const target = `${RUN}-repeatreport-shared-target`;
+    const conversationId = `${RUN}-c-repeatreport-sharedtarget`;
+    const reporters = [`${RUN}-repeatreport-r1`, `${RUN}-repeatreport-r2`, `${RUN}-repeatreport-r3`];
+    const ids: number[] = [];
+    for (const reporter of reporters) {
+      const created = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId,
+        targetUserId: target,
+        reason: 'each reporter names the same target once',
+        isDirect: true,
+      });
+      assert.ok(created);
+      ids.push(created.id);
+    }
+
+    for (const reporter of reporters) {
+      assert.equal(
+        await countRecentDmReportsByReporterAndTarget('discord', reporter, target),
+        1,
+        'each reporter is counted independently — the count is per-reporter, not per-target-across-reporters',
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
+  },
+);
+
+test(
+  'SECURITY: repository: countRecentDmReportsByReporterAndTarget counts only rows matching (platform, reporter_user_id, target_user_id, is_dm = true) within the window (issue #305)',
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const reporter = `${RUN}-repeatreport-sec-reporter`;
+    const target = `${RUN}-repeatreport-sec-target`;
+    const conversationId = `${RUN}-c-repeatreport-sec`;
+
+    // Inserted directly via SQL (like the 200-row clamp test above) so every
+    // row's platform/reporter/target/is_dm/created_at is controlled exactly,
+    // independent of createContentReport's own per-reporter rate cap.
+    const insert = (p: string, r: string, t: string, isDm: boolean) =>
+      pool.query(
+        `INSERT INTO content_reports (platform, reporter_user_id, conversation_id, target_user_id, reason, is_dm)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [p, r, conversationId, t, 'fixture row', isDm],
+      );
+
+    const ids: number[] = [];
+    const matching = (await insert(platform, reporter, target, true)).rows[0].id;
+    ids.push(matching);
+
+    ids.push((await insert('whatsapp', reporter, target, true)).rows[0].id);
+    ids.push((await insert(platform, `${RUN}-repeatreport-sec-other-reporter`, target, true)).rows[0].id);
+    ids.push((await insert(platform, reporter, `${RUN}-repeatreport-sec-other-target`, true)).rows[0].id);
+
+    for (let i = 0; i < 5; i++) {
+      ids.push((await insert(platform, reporter, target, false)).rows[0].id);
+    }
+
+    const stale = (await insert(platform, reporter, target, true)).rows[0].id;
+    ids.push(stale);
+    await pool.query(`UPDATE content_reports SET created_at = now() - interval '31 days' WHERE id = $1`, [
+      stale,
+    ]);
+
+    assert.equal(
+      await countRecentDmReportsByReporterAndTarget(platform, reporter, target),
+      1,
+      'SECURITY: only the single exactly-matching in-window DM row is counted — a differing platform, ' +
+        'reporter, or target, five non-DM rows past the threshold, and a stale out-of-window row are all excluded',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
   },
 );
 
