@@ -1,5 +1,6 @@
 {
   "adminDigest.test.ts": 8,
+  "agentCoreUsageLimitAlert.test.ts": 1,
   "agentOptions.test.ts": 7,
   "ambientArchiving.test.ts": 5,
   "ambientArchivingOff.test.ts": 2,
@@ -44,6 +45,5 @@
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 7,
   "whatsappCloudWire.test.ts": 5,
-  "whatsappWire.test.ts": 1,
-  "agentCoreUsageLimitAlert.test.ts": 1
+  "whatsappWire.test.ts": 1
 }
