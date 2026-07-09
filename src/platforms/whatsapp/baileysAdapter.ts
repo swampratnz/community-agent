@@ -450,6 +450,15 @@ export class BaileysAdapter implements PlatformAdapter {
   private async onGroupParticipantsUpdate(
     update: BaileysEventMap['group-participants.update'],
   ): Promise<void> {
+    // Cache invalidation must run regardless of the welcome-message feature
+    // flag below — it's a security-relevant scope narrowing, not part of the
+    // welcome feature. A participant leaving one group may remain in others,
+    // so this is a targeted per-key delete (recompute-on-next-call), never a
+    // blanket flush — see docs/SECURITY.md "Membership-scope staleness".
+    if (update.action === 'remove') {
+      this.invalidateMembershipCacheFor(update.participants);
+    }
+
     if (!config.whatsapp.welcome.enabled) return;
     if (update.action !== 'add') return;
     if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(update.id)) return;
@@ -466,6 +475,30 @@ export class BaileysAdapter implements PlatformAdapter {
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
       : welcomeMessage;
     await this.sock.sendMessage(update.id, { text: welcomeText });
+  }
+
+  /**
+   * Delete any `membershipCache` entry for a removed participant. `raw`
+   * entries are bare JIDs (a `string[]`, not the participant-object shape
+   * `isGroupAdmin`/`conversationsForUser` match against), so normalize each
+   * one via `jidLocalPart` and check both the phone-number and LID-fallback
+   * forms a cache key may have been stored under — an exact match on each
+   * form only, so a similarly-shaped but different id is never deleted.
+   *
+   * Known gap (documented in SECURITY.md "Membership-scope staleness"): a
+   * removal carrying only an `@lid` JID clears that LID-keyed entry, but
+   * cannot clear a *phone-number*-keyed entry for the same person — the
+   * event has no phone number to resolve it by, and the group's own
+   * metadata has already dropped the participant by the time this fires, so
+   * there's no live lookup to recover the mapping either.
+   */
+  private invalidateMembershipCacheFor(raw: string[]): void {
+    for (const jid of raw) {
+      const local = jidLocalPart(jid);
+      if (!local) continue;
+      this.membershipCache.delete(local);
+      this.membershipCache.delete(lidFallbackId(local));
+    }
   }
 
   /**
@@ -517,7 +550,10 @@ export class BaileysAdapter implements PlatformAdapter {
   /**
    * WhatsApp groups this user (phone number) is currently a participant of,
    * plus their own 1:1 with the bot. Backs admin conversation scoping;
-   * cached ~60s (see SECURITY.md for the staleness window).
+   * cached ~60s, but a group removal event invalidates the affected entry
+   * immediately via `onGroupParticipantsUpdate`. The TTL only bounds
+   * staleness from membership changes this adapter doesn't directly observe
+   * — see SECURITY.md for the residual window.
    */
   async conversationsForUser(userId: string): Promise<string[]> {
     const cached = this.membershipCache.get(userId);

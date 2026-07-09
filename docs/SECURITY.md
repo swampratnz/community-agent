@@ -1023,9 +1023,26 @@ the supported path.
   rate cap (`POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`,
   in-memory) rather than CONFIRM, since each is lower-consequence than
   `announce` and gating them harder would be inconsistent (issues #228, #229).
-- **Membership-scope staleness**: adapters cache an admin's conversation list
-  for ~60s, so an admin removed from a channel/group can retain data scope for
-  up to that window.
+- **Membership-scope staleness (narrowed, issue #286)**: adapters cache an
+  admin's conversation list for ~60s, but an *observed* removal invalidates
+  the affected cache entry immediately — Discord's `GuildMemberRemove` (full
+  guild exit) and WhatsApp's `group-participants.update` with `action:
+  'remove'` both clear the removed user's entry the instant the adapter's
+  own already-subscribed listener fires, so a scope refusal lands on the
+  next lookup rather than up to 60s later. The residual ~60s window still
+  applies to: membership changes the adapter does not directly observe (e.g.
+  a Discord channel-specific permission-overwrite change with no guild exit,
+  which has no listener wired up today); and one WhatsApp case the removal
+  event itself cannot resolve — a `group-participants.update` carrying only
+  an `@lid` (privacy) JID for a participant whose `membershipCache` entry is
+  keyed by their *real phone number* (resolved elsewhere via
+  `senderPn`/`participantPn` from message traffic). The removal payload is a
+  bare JID list with no phone number attached, and by the time the event
+  fires the group's own metadata has already dropped the departed
+  participant, so there is no live lookup that recovers the mapping — only a
+  previously-cached LID-to-phone association would, and none is kept today.
+  That user's phone-keyed entry survives the full TTL exactly as before this
+  PR; only a cache entry keyed by the LID form itself is cleared.
 - **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
   (issue #48, an owner-approved posture change; extended to WhatsApp groups
   by issue #103). The precise guarantee is: **guest 1:1 DMs to the bot

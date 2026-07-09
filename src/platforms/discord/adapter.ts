@@ -421,6 +421,10 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   private async onGuildMemberRemove(member: GuildMember | PartialGuildMember): Promise<void> {
     if (member.guild.id !== config.discord.guildId) return;
     if (member.user?.bot) return;
+    // A full guild exit invalidates every scope entry for this user, so a
+    // full delete (not a partial recompute) is correct — see docs/SECURITY.md
+    // "Membership-scope staleness".
+    this.membershipCache.delete(member.id);
     await markRosterLeave('discord', member.id).catch((err) =>
       logger.warn({ err, userId: member.id }, 'Roster leave record failed'),
     );
@@ -497,9 +501,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
   /**
    * Channels in the configured guild the user can currently view, plus their
-   * DM with the bot. Backs admin conversation scoping; cached ~60s (a member
-   * removed from a channel may retain scope for up to the TTL — documented in
-   * SECURITY.md).
+   * DM with the bot. Backs admin conversation scoping; cached ~60s, but a
+   * full guild exit invalidates the cache immediately via
+   * `onGuildMemberRemove`. The TTL only bounds staleness from membership
+   * changes this adapter doesn't directly observe (e.g. a channel-specific
+   * permission-overwrite change with no guild exit) — documented in
+   * SECURITY.md.
    */
   async conversationsForUser(userId: string): Promise<string[]> {
     const cached = this.membershipCache.get(userId);

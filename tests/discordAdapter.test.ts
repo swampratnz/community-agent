@@ -37,6 +37,43 @@ function fireGuildMemberAdd(adapter: Adapter, member: unknown): Promise<void> {
   return (adapter as unknown as { onGuildMemberAdd: (m: unknown) => Promise<void> }).onGuildMemberAdd(member);
 }
 
+/** Reaches the private onGuildMemberRemove handler directly. */
+function fireGuildMemberRemove(adapter: Adapter, member: unknown): Promise<void> {
+  return (adapter as unknown as { onGuildMemberRemove: (m: unknown) => Promise<void> }).onGuildMemberRemove(
+    member,
+  );
+}
+
+/**
+ * Stubs client.guilds.fetch for conversationsForUser's cache-miss path,
+ * counting how many times the guild/channel lookup actually runs so tests
+ * can assert a cache hit vs. a live re-fetch.
+ */
+function stubConversationsGuild(adapter: Adapter, opts: { channelIds: string[] }) {
+  const calls = { guildFetch: 0 };
+  const channels = opts.channelIds.map((id) => ({
+    id,
+    isTextBased: () => true,
+    permissionsFor: () => ({ has: () => true }),
+  }));
+  const fakeGuild = {
+    members: {
+      fetch: async () => ({ user: { createDM: async () => ({ id: 'dm-1' }) } }),
+    },
+    channels: {
+      fetch: async () => ({ values: () => channels[Symbol.iterator]() }),
+    },
+  };
+  const client = (
+    adapter as unknown as { client: { guilds: { fetch: (id: string) => Promise<typeof fakeGuild> } } }
+  ).client;
+  client.guilds.fetch = async () => {
+    calls.guildFetch += 1;
+    return fakeGuild;
+  };
+  return calls;
+}
+
 /** A minimal Guild stand-in carrying only what findMutedRole reads. */
 function fakeGuildRef(opts: { id: string; mutedRole?: { id: string; name: string } }) {
   const roles = opts.mutedRole ? [opts.mutedRole] : [];
@@ -1773,4 +1810,73 @@ test('SECURITY: canPostTo returns false for a channel with no send method (issue
   const adapter = new DiscordAdapter();
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ sendable: false }));
   assert.equal(await adapter.canPostTo('chan-nosend'), false);
+});
+
+// --- onGuildMemberRemove: membership-scope cache invalidation (issue #286) ---
+
+test('onGuildMemberRemove invalidates the removed member’s membershipCache entry — the next conversationsForUser call re-fetches instead of returning the stale cached list', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  const first = await adapter.conversationsForUser('user-removed');
+  assert.deepEqual(first, ['chan-1', 'dm-1']);
+  assert.equal(calls.guildFetch, 1, 'first call is a cache miss and must hit the guild');
+
+  const cached = await adapter.conversationsForUser('user-removed');
+  assert.deepEqual(cached, first);
+  assert.equal(calls.guildFetch, 1, 'second call within the TTL must be served from cache, not re-fetched');
+
+  await fireGuildMemberRemove(
+    adapter,
+    fakeGuildMember({ id: 'user-removed', guildId: config.discord.guildId }),
+  );
+
+  await adapter.conversationsForUser('user-removed');
+  assert.equal(
+    calls.guildFetch,
+    2,
+    'a GuildMemberRemove for this user must invalidate the cache so the next lookup re-fetches live',
+  );
+});
+
+test(
+  'SECURITY: onGuildMemberRemove’s cache invalidation is targeted — a different, still-cached user’s ' +
+    'membershipCache entry survives untouched (issue #286)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('user-a');
+    await adapter.conversationsForUser('user-b');
+    assert.equal(calls.guildFetch, 2, 'two distinct users each cause one cache-miss fetch');
+
+    await fireGuildMemberRemove(adapter, fakeGuildMember({ id: 'user-a', guildId: config.discord.guildId }));
+
+    await adapter.conversationsForUser('user-b');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'user B’s still-live cache entry must be untouched by user A’s removal — zero additional fetches',
+    );
+  },
+);
+
+test('onGuildMemberRemove does not touch the cache for a removal event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('user-a');
+  assert.equal(calls.guildFetch, 1);
+
+  await fireGuildMemberRemove(adapter, fakeGuildMember({ id: 'user-a', guildId: 'some-other-guild' }));
+
+  await adapter.conversationsForUser('user-a');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a removal event scoped to a different guild must not invalidate this guild’s cache entry',
+  );
 });
