@@ -3,7 +3,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
-import type { AdapterLookup, PlatformAdapter } from '../platforms/types.js';
+import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
   getClaudeSession,
@@ -175,17 +175,30 @@ export async function runAgentTurn(
 let usageLimitTracker = initialUsageLimitTracker();
 
 /**
+ * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
+ * two today; a future third adapter only needs adding here. Mirrors
+ * `tools.ts`'s `ALL_PLATFORMS` (issue #288); not shared across the two files
+ * since that constant is module-private there.
+ */
+const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
+
+/**
  * Debounced super-admin DM when a turn fails on an upstream usage-limit/
  * overload condition (issue #131) — one per ongoing window, silent re-arm
  * once a turn stops hitting it. No-op unless UPSTREAM_LIMIT_ALERT_ENABLED.
- * DMs go out via the platform that saw the failure, same as this turn's
- * `adapter` — mirroring health.ts/usageAlert.ts's existing super-admin
- * alert path, just scoped to one adapter instead of iterating all of them.
+ * DMs go out via every connected adapter (issue #325), not just the one that
+ * saw the failure — this is a shared-Max-pool condition, so it degrades every
+ * platform at once, mirroring `tools.ts`'s `notifySuperAdmins` (#288) and
+ * every other sibling alert path (health.ts, usageAlert.ts, backgroundJobs.ts,
+ * router.ts). Unlike `notifySuperAdmins`, there is no triggering user to
+ * exclude — this is a system-condition alert, not a member-initiated one — so
+ * every id in each connected platform's `superAdminIds(platform)` is DMed.
  */
 function noteUsageLimitOutcome(
   hitUsageLimit: boolean,
   adapter: PlatformAdapter,
   conversationId: string,
+  getAdapter: AdapterLookup | undefined,
 ): void {
   if (!config.behaviour.upstreamLimitAlertEnabled) return;
   const step = stepUsageLimitTracker(usageLimitTracker, hitUsageLimit);
@@ -195,15 +208,19 @@ function noteUsageLimitOutcome(
     { conversationId, platform: adapter.platform },
     'Upstream Claude usage-limit/overload detected',
   );
-  for (const id of superAdminIds(adapter.platform)) {
-    adapter
-      .sendDirectMessage(
-        id,
-        '⚠️ The bot just hit an upstream Claude usage-limit/overload condition — members are seeing a ' +
-          "degraded reply. This isn't a bug and should clear once the shared quota resets; consider " +
-          'pause_bot if it persists.',
-      )
-      .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Usage-limit alert DM failed'));
+  for (const platform of ALL_PLATFORMS) {
+    const target = platform === adapter.platform ? adapter : getAdapter?.(platform);
+    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    for (const id of superAdminIds(platform)) {
+      target
+        .sendDirectMessage(
+          id,
+          '⚠️ The bot just hit an upstream Claude usage-limit/overload condition — members are seeing a ' +
+            "degraded reply. This isn't a bug and should clear once the shared quota resets; consider " +
+            'pause_bot if it persists.',
+        )
+        .catch((err) => logger.warn({ err, platform, id }, 'Usage-limit alert DM failed'));
+    }
   }
 }
 
@@ -271,7 +288,7 @@ async function execTurn(
     // the SDK/CLI's own error message, never user-supplied text, and always
     // returns a fixed string (the raw error is never echoed).
     const usageLimitHit = isUsageLimitFailure(msg);
-    noteUsageLimitOutcome(usageLimitHit, adapter, caller.conversationId);
+    noteUsageLimitOutcome(usageLimitHit, adapter, caller.conversationId, getAdapter);
     return {
       ok: false,
       // Heuristic: resume failures surface as errors mentioning the session.
@@ -293,7 +310,7 @@ async function execTurn(
     // signal — not the opaque thrown-error path the classifier above targets
     // — but still count as "not a usage-limit failure" for the debounce so a
     // recovering turn re-arms the latch.
-    noteUsageLimitOutcome(false, adapter, caller.conversationId);
+    noteUsageLimitOutcome(false, adapter, caller.conversationId, getAdapter);
     // Never surface the raw internal transcript on failures.
     return {
       ok: false,
@@ -309,7 +326,7 @@ async function execTurn(
     };
   }
 
-  noteUsageLimitOutcome(false, adapter, caller.conversationId);
+  noteUsageLimitOutcome(false, adapter, caller.conversationId, getAdapter);
   const text = resultText.trim() || lastAssistantText.trim() || "I don't have a response for that.";
   return { ok: true, resumeFailed: false, text, costUsd, sessionId };
 }
