@@ -25,7 +25,11 @@ with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
   plus a PR explanation, so it can't silently paper over a deleted security
   test. Per-file entries exist so concurrent PRs don't all conflict on one
   shared counter line, which is what the old global `MIN_SECURITY_TESTS`
-  constant caused.
+  constant caused. The manifest is kept SORTED by file name (the gate enforces
+  it; `test:security:fix` normalises it) so that two PRs adding entries for
+  DIFFERENT new files land in different hunks and merge cleanly instead of
+  colliding at a shared append point — when you add a new file's entry by hand,
+  put it in alphabetical position (or just run the fix command).
 - `tests/knowledgeEval.test.ts` + `tests/fixtures/knowledgeEval.json` — a
   golden-query regression eval for `knowledge_search` retrieval quality
   (precision@K against a curated, paraphrased query set with distractors).
