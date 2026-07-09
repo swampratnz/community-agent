@@ -229,7 +229,11 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken.
+of them read as the bot being broken. These three deterministic, non-agent
+notices (issue #300) also honour a standing `'mi'` `language_preference`,
+same as `community_guidelines` (#266): the debounced send reads
+`getLanguagePreference` once per notified window and picks each notice's
+fixed `_MI` constant instead of the English default.
 
 ## Onboarding (gated mode)
 

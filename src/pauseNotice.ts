@@ -8,6 +8,13 @@
 
 export const PAUSE_NOTICE_TEXT = 'The assistant is temporarily paused — please try again later.';
 
+// Fixed, human-authored te reo Māori variant (issue #300), served instead of
+// PAUSE_NOTICE_TEXT to a caller with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same trust level as the English
+// constant: no model call, no translation, no injection surface.
+export const PAUSE_NOTICE_TEXT_MI =
+  'Kua whakatārewahia te kaiāwhina mō tētahi wā poto — tēnā koa, tukua he wā.';
+
 export function shouldNotifyPaused(
   lastNotifiedAt: number | undefined,
   now: number,

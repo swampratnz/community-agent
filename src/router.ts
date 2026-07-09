@@ -17,13 +17,19 @@ import {
 import { isPaused } from './storage/policies.js';
 import {
   countRepliesToUser,
+  getLanguagePreference,
   recordAccessRequest,
   recordInteraction,
   recordKnowledgeRetrieval,
   searchKnowledge,
 } from './storage/repository.js';
-import { RATE_LIMIT_NOTICE_TEXT, shouldNotifyRateLimited } from './rateLimitNotice.js';
-import { PAUSE_NOTICE_TEXT, shouldNotifyPaused } from './pauseNotice.js';
+import {
+  RATE_LIMIT_NOTICE_TEXT,
+  RATE_LIMIT_NOTICE_TEXT_MI,
+  shouldNotifyRateLimited,
+} from './rateLimitNotice.js';
+import { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, shouldNotifyPaused } from './pauseNotice.js';
+import { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI } from './dailyBudgetNotice.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 
 const GATED_NOTICE =
@@ -117,10 +123,12 @@ export class Router {
    * ~10s, so re-firing every 8s keeps it continuously visible). `checkPaused`
    * defaults to the real policy read. `searchKnowledgeForShortcut` and
    * `recordShortcutRetrieval` default to the real DB-backed implementations.
-   * `countReplies` defaults to the real daily-budget read. All are
-   * overridable in tests so the typing-indicator, pause, knowledge-shortcut,
-   * and budget-check-failure behaviour can be exercised without spawning a
-   * real Claude Code subprocess, waiting 8 real seconds, or a live DB.
+   * `countReplies` defaults to the real daily-budget read. `getLangPref`
+   * defaults to the real standing-language-preference read (issue #300). All
+   * are overridable in tests so the typing-indicator, pause, knowledge-shortcut,
+   * budget-check-failure, and language-notice behaviour can be exercised
+   * without spawning a real Claude Code subprocess, waiting 8 real seconds,
+   * or a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -129,6 +137,7 @@ export class Router {
     private readonly searchKnowledgeForShortcut: typeof searchKnowledge = searchKnowledge,
     private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval = recordKnowledgeRetrieval,
     private readonly countReplies: typeof countRepliesToUser = countRepliesToUser,
+    private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -390,7 +399,15 @@ export class Router {
       const pauseKey = `${msg.platform}:${msg.userId}`;
       if (shouldNotifyPaused(this.pauseNotified.get(pauseKey), Date.now(), this.PAUSE_NOTIFY_WINDOW_MS)) {
         this.pauseNotified.set(pauseKey, Date.now());
-        await this.send(adapter, msg.conversationId, PAUSE_NOTICE_TEXT).catch(() => {});
+        // Lookup sits inside the debounce guard (issue #300) so a paused
+        // channel's shed messages never pay a per-message DB read — at most
+        // once per PAUSE_NOTIFY_WINDOW_MS per user, same as the send itself.
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        await this.send(
+          adapter,
+          msg.conversationId,
+          lang === 'mi' ? PAUSE_NOTICE_TEXT_MI : PAUSE_NOTICE_TEXT,
+        ).catch(() => {});
       }
       return;
     }
@@ -402,7 +419,15 @@ export class Router {
       // messages gets exactly one notice, not silence and not spam.
       if (shouldNotifyRateLimited(this.rateLimitNotified.get(userKey), Date.now(), this.RATE_WINDOW_MS)) {
         this.rateLimitNotified.set(userKey, Date.now());
-        await this.send(adapter, msg.conversationId, RATE_LIMIT_NOTICE_TEXT).catch(() => {});
+        // Lookup sits inside the debounce guard (issue #300) — the
+        // rate-limit path exists to shed load, so it must not add a
+        // per-message DB read to every over-limit message.
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        await this.send(
+          adapter,
+          msg.conversationId,
+          lang === 'mi' ? RATE_LIMIT_NOTICE_TEXT_MI : RATE_LIMIT_NOTICE_TEXT,
+        ).catch(() => {});
       }
       return;
     }
@@ -429,10 +454,14 @@ export class Router {
         const lastNotified = this.budgetNotified.get(userKey) ?? 0;
         if (Date.now() - lastNotified > 24 * 3_600_000) {
           this.budgetNotified.set(userKey, Date.now());
+          // Lookup sits inside the debounce guard (issue #300) — the daily
+          // budget path exists to shed load, so it must not add a
+          // per-message DB read to every over-budget message.
+          const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
           await this.send(
             adapter,
             msg.conversationId,
-            "You've reached today's usage limit for the assistant — try again later.",
+            lang === 'mi' ? DAILY_BUDGET_NOTICE_TEXT_MI : DAILY_BUDGET_NOTICE_TEXT,
           ).catch(() => {});
         }
         return;
