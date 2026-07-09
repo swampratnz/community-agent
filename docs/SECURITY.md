@@ -518,6 +518,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   render confidently and accurately in te reo Māori — preventing a standing
   preference from forcing a low-quality translation of technical content.
   Purge-coherent: `forget_me`/`purge_user_data` delete the caller's row.
+  Welcome-message bilingual support was originally scoped **out** of #266
+  (no stored preference is knowable at genuinely first contact) — that
+  premise is false for a *rejoining* Discord member, since leaving only
+  clears `server_roster`, never `language_prefs`, so a standing `mi`
+  preference survives a leave/rejoin cycle. Issue #282 closes that one case:
+  `DiscordAdapter.onGuildMemberAdd` looks up the rejoining member's standing
+  preference and serves the admin-configured `welcome_message_mi` variant
+  (same `_mi`-key pattern as `community_guidelines_mi`) if one is set,
+  falling back to the default-language welcome unchanged otherwise. WhatsApp
+  Cloud's first-contact welcome and Baileys' group welcome remain out of
+  scope: Cloud's welcome fires on a number's genuinely first-ever message
+  (no prior interaction, so no preference row can exist), and Baileys posts
+  one welcome per join batch to the whole group, not per individual member,
+  so there is no single caller to key a lookup off.
 - **Auto-moderation** (`DISCORD_MODERATION_ENABLED`, `member_warnings`, off by
   default): when enabled, the Discord adapter scans **every** in-scope guild
   message for bad language / abuse — a privacy-posture change of the same class
@@ -1009,9 +1023,26 @@ the supported path.
   rate cap (`POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`,
   in-memory) rather than CONFIRM, since each is lower-consequence than
   `announce` and gating them harder would be inconsistent (issues #228, #229).
-- **Membership-scope staleness**: adapters cache an admin's conversation list
-  for ~60s, so an admin removed from a channel/group can retain data scope for
-  up to that window.
+- **Membership-scope staleness (narrowed, issue #286)**: adapters cache an
+  admin's conversation list for ~60s, but an *observed* removal invalidates
+  the affected cache entry immediately — Discord's `GuildMemberRemove` (full
+  guild exit) and WhatsApp's `group-participants.update` with `action:
+  'remove'` both clear the removed user's entry the instant the adapter's
+  own already-subscribed listener fires, so a scope refusal lands on the
+  next lookup rather than up to 60s later. The residual ~60s window still
+  applies to: membership changes the adapter does not directly observe (e.g.
+  a Discord channel-specific permission-overwrite change with no guild exit,
+  which has no listener wired up today); and one WhatsApp case the removal
+  event itself cannot resolve — a `group-participants.update` carrying only
+  an `@lid` (privacy) JID for a participant whose `membershipCache` entry is
+  keyed by their *real phone number* (resolved elsewhere via
+  `senderPn`/`participantPn` from message traffic). The removal payload is a
+  bare JID list with no phone number attached, and by the time the event
+  fires the group's own metadata has already dropped the departed
+  participant, so there is no live lookup that recovers the mapping — only a
+  previously-cached LID-to-phone association would, and none is kept today.
+  That user's phone-keyed entry survives the full TTL exactly as before this
+  PR; only a cache entry keyed by the LID form itself is cleared.
 - **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
   (issue #48, an owner-approved posture change; extended to WhatsApp groups
   by issue #103). The precise guarantee is: **guest 1:1 DMs to the bot

@@ -15,6 +15,7 @@ export const POLICY_KEYS = [
   'community_guidelines',
   'community_guidelines_mi',
   'welcome_message',
+  'welcome_message_mi',
 ] as const;
 export type PolicyKey = (typeof POLICY_KEYS)[number];
 
@@ -24,6 +25,7 @@ const DEFAULTS: Record<PolicyKey, unknown> = {
   community_guidelines: null,
   community_guidelines_mi: null,
   welcome_message: null,
+  welcome_message_mi: null,
 };
 
 const CACHE_TTL_MS = 30_000;
@@ -83,6 +85,18 @@ export async function getCommunityGuidelinesMi(): Promise<string | null> {
  */
 export async function getWelcomeMessage(): Promise<string | null> {
   const v = await readPolicy('welcome_message');
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * The te reo Māori variant of the welcome message, or null if never set (or
+ * cleared via an empty string). Served to a rejoining Discord member with a
+ * standing `set_language_preference('mi')` in place of the default-language
+ * welcome — see onGuildMemberAdd (issue #282). Same never-set-vs-cleared null
+ * contract as getCommunityGuidelinesMi.
+ */
+export async function getWelcomeMessageMi(): Promise<string | null> {
+  const v = await readPolicy('welcome_message_mi');
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 

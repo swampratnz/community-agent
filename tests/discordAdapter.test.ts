@@ -37,6 +37,43 @@ function fireGuildMemberAdd(adapter: Adapter, member: unknown): Promise<void> {
   return (adapter as unknown as { onGuildMemberAdd: (m: unknown) => Promise<void> }).onGuildMemberAdd(member);
 }
 
+/** Reaches the private onGuildMemberRemove handler directly. */
+function fireGuildMemberRemove(adapter: Adapter, member: unknown): Promise<void> {
+  return (adapter as unknown as { onGuildMemberRemove: (m: unknown) => Promise<void> }).onGuildMemberRemove(
+    member,
+  );
+}
+
+/**
+ * Stubs client.guilds.fetch for conversationsForUser's cache-miss path,
+ * counting how many times the guild/channel lookup actually runs so tests
+ * can assert a cache hit vs. a live re-fetch.
+ */
+function stubConversationsGuild(adapter: Adapter, opts: { channelIds: string[] }) {
+  const calls = { guildFetch: 0 };
+  const channels = opts.channelIds.map((id) => ({
+    id,
+    isTextBased: () => true,
+    permissionsFor: () => ({ has: () => true }),
+  }));
+  const fakeGuild = {
+    members: {
+      fetch: async () => ({ user: { createDM: async () => ({ id: 'dm-1' }) } }),
+    },
+    channels: {
+      fetch: async () => ({ values: () => channels[Symbol.iterator]() }),
+    },
+  };
+  const client = (
+    adapter as unknown as { client: { guilds: { fetch: (id: string) => Promise<typeof fakeGuild> } } }
+  ).client;
+  client.guilds.fetch = async () => {
+    calls.guildFetch += 1;
+    return fakeGuild;
+  };
+  return calls;
+}
+
 /** A minimal Guild stand-in carrying only what findMutedRole reads. */
 function fakeGuildRef(opts: { id: string; mutedRole?: { id: string; name: string } }) {
   const roles = opts.mutedRole ? [opts.mutedRole] : [];
@@ -1093,14 +1130,26 @@ test('onGuildMemberAdd: the rejoin re-mute runs before any welcome-message logic
 /**
  * Mocks pool.query so a `community_guidelines` policy read returns `value`
  * (or nothing, if omitted). `opts.welcomeMessage` similarly stubs the
- * `welcome_message` key (issue #253); `opts.throwFor` simulates a policy
+ * `welcome_message` key (issue #253); `opts.welcomeMessageMi` stubs the
+ * `welcome_message_mi` key and `opts.languagePreference` stubs the
+ * `language_prefs` lookup (issue #282); `opts.throwFor` simulates a policy
  * read failure for the named key.
  */
 function stubPoliciesQuery(
   value?: string,
-  opts?: { welcomeMessage?: string; throwFor?: 'community_guidelines' | 'welcome_message' },
+  opts?: {
+    welcomeMessage?: string;
+    welcomeMessageMi?: string;
+    languagePreference?: 'en' | 'mi';
+    throwFor?: 'community_guidelines' | 'welcome_message' | 'welcome_message_mi';
+  },
 ) {
   return async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM language_prefs')) {
+      return opts?.languagePreference === undefined
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ language: opts.languagePreference }], rowCount: 1 };
+    }
     if (!sql.includes('FROM policies')) return { rows: [], rowCount: 0 };
     const key = params?.[0];
     if (opts?.throwFor === key) throw new Error('simulated policy read failure');
@@ -1111,6 +1160,11 @@ function stubPoliciesQuery(
       return opts?.welcomeMessage === undefined
         ? { rows: [], rowCount: 0 }
         : { rows: [{ value: opts.welcomeMessage }], rowCount: 1 };
+    }
+    if (key === 'welcome_message_mi') {
+      return opts?.welcomeMessageMi === undefined
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ value: opts.welcomeMessageMi }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   };
@@ -1248,6 +1302,124 @@ test('SECURITY: onGuildMemberAdd falls back to the hardcoded default welcome whe
     );
   } finally {
     config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+// --- onGuildMemberAdd: rejoin honours a standing mi language preference (issue #282) -----------------
+
+test('onGuildMemberAdd: a rejoining member with a standing mi preference and a welcome_message_mi variant gets the mi welcome (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const guidelines = 'Be respectful. No spam.';
+  const welcomeMessageMi = 'Kia ora and welcome back to our community!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines, { welcomeMessageMi, languagePreference: 'mi' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-mi-rejoin',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [`${welcomeMessageMi}\n\nCommunity guidelines:\n${guidelines}`]);
+    assert.ok(
+      !sent[0].includes(WELCOME_MESSAGE),
+      'the default-language welcome must not appear once an mi variant is configured for an mi member',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: a member with a standing mi preference but no welcome_message_mi variant gets the existing default-language welcome (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const welcomeMessage = 'Welcome to our community!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage, languagePreference: 'mi' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-mi-no-variant',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(
+      sent,
+      [welcomeMessage],
+      'an mi member with no mi variant set must fall back to the default-language welcome, never blank or an error',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: a member with no standing language preference gets the default-language welcome even when a welcome_message_mi variant exists (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  config.discord.welcome.enabled = true;
+  const welcomeMessageMi = 'Kia ora and welcome back!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessageMi }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-no-preference',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(
+      sent,
+      [WELCOME_MESSAGE],
+      'a member with no stored language preference must see byte-identical behaviour to today regardless of an mi variant existing',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('onGuildMemberAdd: the channel fallback also uses the mi welcome variant identically to the DM (issue #282)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasChannelId = config.discord.welcome.channelId;
+  config.discord.welcome.enabled = true;
+  config.discord.welcome.channelId = 'chan-welcome';
+  const welcomeMessageMi = 'Kia ora and welcome back!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessageMi, languagePreference: 'mi' }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent = stubClient(adapter);
+    const member = fakeGuildMember({
+      id: 'user-mi-dm-closed',
+      guildId: config.discord.guildId,
+      send: async () => {
+        throw new Error('Cannot send messages to this user');
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.equal(sent.length, 1);
+    assert.ok(
+      sent[0].includes(welcomeMessageMi),
+      'the channel-fallback welcome must use the same resolved mi variant as the DM path',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.discord.welcome.channelId = wasChannelId;
     resetPolicyCacheForTests();
   }
 });
@@ -1638,4 +1810,73 @@ test('SECURITY: canPostTo returns false for a channel with no send method (issue
   const adapter = new DiscordAdapter();
   stubClientForCanPostTo(adapter, async () => fakeReachableChannel({ sendable: false }));
   assert.equal(await adapter.canPostTo('chan-nosend'), false);
+});
+
+// --- onGuildMemberRemove: membership-scope cache invalidation (issue #286) ---
+
+test('onGuildMemberRemove invalidates the removed member’s membershipCache entry — the next conversationsForUser call re-fetches instead of returning the stale cached list', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  const first = await adapter.conversationsForUser('user-removed');
+  assert.deepEqual(first, ['chan-1', 'dm-1']);
+  assert.equal(calls.guildFetch, 1, 'first call is a cache miss and must hit the guild');
+
+  const cached = await adapter.conversationsForUser('user-removed');
+  assert.deepEqual(cached, first);
+  assert.equal(calls.guildFetch, 1, 'second call within the TTL must be served from cache, not re-fetched');
+
+  await fireGuildMemberRemove(
+    adapter,
+    fakeGuildMember({ id: 'user-removed', guildId: config.discord.guildId }),
+  );
+
+  await adapter.conversationsForUser('user-removed');
+  assert.equal(
+    calls.guildFetch,
+    2,
+    'a GuildMemberRemove for this user must invalidate the cache so the next lookup re-fetches live',
+  );
+});
+
+test(
+  'SECURITY: onGuildMemberRemove’s cache invalidation is targeted — a different, still-cached user’s ' +
+    'membershipCache entry survives untouched (issue #286)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('user-a');
+    await adapter.conversationsForUser('user-b');
+    assert.equal(calls.guildFetch, 2, 'two distinct users each cause one cache-miss fetch');
+
+    await fireGuildMemberRemove(adapter, fakeGuildMember({ id: 'user-a', guildId: config.discord.guildId }));
+
+    await adapter.conversationsForUser('user-b');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'user B’s still-live cache entry must be untouched by user A’s removal — zero additional fetches',
+    );
+  },
+);
+
+test('onGuildMemberRemove does not touch the cache for a removal event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('user-a');
+  assert.equal(calls.guildFetch, 1);
+
+  await fireGuildMemberRemove(adapter, fakeGuildMember({ id: 'user-a', guildId: 'some-other-guild' }));
+
+  await adapter.conversationsForUser('user-a');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a removal event scoped to a different guild must not invalidate this guild’s cache entry',
+  );
 });

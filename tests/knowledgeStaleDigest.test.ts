@@ -23,8 +23,13 @@ const skip = hasDb
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
-const { upsertMember, saveKnowledge, countAccessRequests, countPendingSuggestions } =
-  await import('../src/storage/repository.js');
+const {
+  upsertMember,
+  saveKnowledge,
+  countAccessRequests,
+  countPendingSuggestions,
+  countPendingKnowledgeCandidates,
+} = await import('../src/storage/repository.js');
 const { runAdminDigestOnce } = await import('../src/adminDigest.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -129,17 +134,23 @@ test(
     const sent: Array<{ userId: string; text: string }> = [];
     const adapter = fakeAdapter({ conversationIds: [`${RUN}-c-notstale-empty`], sent });
 
-    // countAccessRequests/countPendingSuggestions are guild-wide (issue #133,
-    // #193) and so are NOT test-isolated by a unique id — snapshot them
-    // beforehand, same pattern as adminDigest.test.ts's quiet-week test, so
-    // this assertion holds even if another concurrently-running test file has
-    // a pending access request or suggestion in flight.
+    // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates
+    // are guild-wide (issue #133, #193, #284) and so are NOT test-isolated by
+    // a unique id — snapshot them beforehand, same pattern as
+    // adminDigest.test.ts's quiet-week test, so this assertion holds even if
+    // another concurrently-running test file has a pending access request,
+    // suggestion, or knowledge candidate in flight.
     const pendingAccessRequestsBefore = await countAccessRequests();
     const pendingSuggestionsBefore = await countPendingSuggestions();
+    const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
 
     await runAdminDigestOnce([adapter]);
 
-    if (pendingAccessRequestsBefore === 0 && pendingSuggestionsBefore === 0) {
+    if (
+      pendingAccessRequestsBefore === 0 &&
+      pendingSuggestionsBefore === 0 &&
+      pendingCandidatesBefore === 0
+    ) {
       assert.equal(
         sent.length,
         0,
@@ -149,7 +160,7 @@ test(
       assert.equal(
         sent.length,
         1,
-        'a pre-existing pending access request or suggestion still legitimately triggers a digest',
+        'a pre-existing pending access request, suggestion, or knowledge candidate still legitimately triggers a digest',
       );
       assert.ok(
         !sent[0].text.includes('📚'),
