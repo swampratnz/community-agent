@@ -37,6 +37,15 @@ export interface AgentReply {
    * a missing value as truthy.
    */
   ok?: boolean;
+  /**
+   * Set to `true` only when the turn ended with SDK `resultSubtype ===
+   * 'error_max_turns'` — a deterministic, content-independent failure (issue
+   * #306's max-turns repeat shortcut). Every other branch (success, other
+   * non-success subtypes, thrown-error catch) leaves this `undefined`; a
+   * caller that cares must check `=== true`, never treat a missing value as
+   * truthy.
+   */
+  maxTurnsExceeded?: boolean;
 }
 
 /**
@@ -47,12 +56,22 @@ export interface AgentReply {
 export const INTERNAL_ERROR_REPLY =
   'Sorry — I hit an internal error and could not complete that. Please try again.';
 
+/**
+ * User-facing fallback when a turn exhausts `AGENT_MAX_TURNS` without
+ * finishing. Exported so the router's max-turns repeat shortcut (issue #306)
+ * can replay the exact same, fixed, content-independent string on a cached
+ * hit instead of duplicating it.
+ */
+export const MAX_TURNS_REPLY =
+  'Sorry — that took more steps than I allow per message. Try breaking it into smaller questions.';
+
 interface TurnOutcome {
   ok: boolean;
   resumeFailed: boolean;
   text: string;
   costUsd?: number;
   sessionId?: string;
+  maxTurnsExceeded?: boolean;
 }
 
 /**
@@ -165,6 +184,7 @@ export async function runAgentTurn(
     costUsd: outcome.costUsd,
     sessionId: outcome.sessionId,
     ok: outcome.ok,
+    maxTurnsExceeded: outcome.maxTurnsExceeded,
   };
 }
 
@@ -302,10 +322,11 @@ async function execTurn(
       resumeFailed: false,
       text:
         resultSubtype === 'error_max_turns'
-          ? 'Sorry — that took more steps than I allow per message. Try breaking it into smaller questions.'
+          ? MAX_TURNS_REPLY
           : 'Sorry — I could not complete that request. Please try again.',
       costUsd,
       sessionId,
+      maxTurnsExceeded: resultSubtype === 'error_max_turns' ? true : undefined,
     };
   }
 

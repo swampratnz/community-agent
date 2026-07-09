@@ -719,6 +719,21 @@ shortcut, a served guest reply is never recorded via `recordInteraction`: the
 "gated-guest content is never stored" invariant (docs/SECURITY.md) covers the
 bot's reply here too, not just the guest's own message.
 
+**Repeat-max-turns shortcut** (`REPEAT_MAX_TURNS_SHORTCUT_ENABLED`, off by
+default, issue #306): when the SAME caller (platform + conversation + user)
+resends the exact whitespace-normalized text of a message that just exhausted
+`AGENT_MAX_TURNS` (`resultSubtype === 'error_max_turns'`) within the same
+2-minute window the success-only repeat-question shortcut uses, the bot
+replies with the same canned "too many steps" message instead of spending a
+second full, guaranteed-to-repeat `AGENT_MAX_TURNS` budget — that class of
+turn is the single most expensive one this bot runs (a full spent budget with
+no answer). Deliberately a separate map and flag from the repeat-question
+shortcut above (which is scoped to genuine answers only): a max-turns failure
+is cached only when `AgentReply.maxTurnsExceeded === true`, keyed and swept
+identically, and never replayed across a different platform, conversation, or
+user. Off by default; an operator opts in independently of the success-repeat
+shortcut.
+
 ## Health & monitoring
 
 `Restart=always` (`deploy/community-agent.service`) and the startup

@@ -44,5 +44,6 @@
   "budgetCheckFailureRouter.test.ts": 1,
   "pauseNotice.router.test.ts": 1,
   "rateLimitNotice.router.test.ts": 1,
-  "securityGateWrite.test.ts": 5
+  "securityGateWrite.test.ts": 5,
+  "repeatMaxTurnsShortcutRouter.test.ts": 1
 }
