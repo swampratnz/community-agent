@@ -14,6 +14,7 @@ import {
   clearAccessRequest,
   clearWarnings,
   countActiveWarnings,
+  countRecentDmReportsByReporterAndTarget,
   createAnswerFeedback,
   createContentReport,
   createSuggestion,
@@ -545,6 +546,13 @@ export async function notifyReportResolved(
  * human reading it. Exported separately so it's unit-testable without the MCP
  * tool-call transport, same convention as notifyReportResolved.
  */
+/**
+ * Threshold (inclusive count) at which a repeated same-(reporter, target) DM
+ * report pattern gets an extra warning line appended below — see
+ * `recentSameTargetCount` on `notifyReportFiled` (issue #305).
+ */
+const REPEATED_DM_REPORT_TARGET_THRESHOLD = 3;
+
 export async function notifyReportFiled(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   report: {
@@ -555,6 +563,14 @@ export async function notifyReportFiled(
     targetUserId?: string;
     messageId?: string;
     reason: string;
+    /**
+     * Count of DM reports (inclusive of this one) this reporter has filed
+     * naming this same target within the trailing window — see
+     * `countRecentDmReportsByReporterAndTarget` (issue #305). Only ever
+     * computed by the caller for a DM report naming a known target; omitted
+     * otherwise, in which case no extra line is appended.
+     */
+    recentSameTargetCount?: number;
   },
 ): Promise<void> {
   const lines = [
@@ -563,6 +579,16 @@ export async function notifyReportFiled(
   ];
   if (report.targetUserId) lines.push(`Target user: ${report.targetUserId}`);
   if (report.messageId) lines.push(`Message id: ${report.messageId}`);
+  if (
+    report.recentSameTargetCount !== undefined &&
+    report.recentSameTargetCount >= REPEATED_DM_REPORT_TARGET_THRESHOLD
+  ) {
+    lines.push(
+      `⚠️ This reporter has now named this same target in ${report.recentSameTargetCount} DM report(s) within ` +
+        'the past 30 days. The accused-admin exclusion means that target may not have seen any of them — ' +
+        'review with list_reports as super admin.',
+    );
+  }
   await notifySuperAdmins(adapterFor, lines.join('\n'), report.reporterUserId);
 }
 
@@ -1097,6 +1123,14 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
           true,
         );
       }
+      // Only computed for a DM report naming a known target — exactly the
+      // case the accused-admin exclusion applies to (issue #305). Inclusive
+      // of the just-inserted row, so this count reaching the threshold on
+      // the report that crosses it is what triggers the alert line.
+      const recentSameTargetCount =
+        caller.isDirect && targetUserId
+          ? await countRecentDmReportsByReporterAndTarget(caller.platform, caller.userId, targetUserId)
+          : undefined;
       void notifyReportFiled(adapterFor, {
         id: created.id,
         reporterUserId: caller.userId,
@@ -1105,6 +1139,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         targetUserId,
         messageId: args.messageId,
         reason: args.reason,
+        recentSameTargetCount,
       });
       ackReportedMessage(adapter, caller.platform, caller.conversationId, args.messageId);
       return text(`Report #${created.id} recorded for this conversation's admins. Thanks for flagging it.`);

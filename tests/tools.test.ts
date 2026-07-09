@@ -594,6 +594,102 @@ test('SECURITY: notifyReportFiled reaches every configured super admin across AL
   );
 });
 
+// notifyReportFiled's recentSameTargetCount (issue #305): narrows the
+// SECURITY.md-documented residual risk that a member repeatedly naming the
+// same admin across unrelated DM reports goes undetected, by appending one
+// extra warning line to the existing super-admin alert once the count
+// reaches the threshold.
+test('notifyReportFiled appends the repeated-target warning line iff recentSameTargetCount reaches the threshold (issue #305)', async () => {
+  const messagesByCount = new Map<number, string>();
+  for (const count of [1, 2, 3]) {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+    await notifyReportFiled(whatsappOnlyAdapterFor(adapter), {
+      id: 100 + count,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      targetUserId: 'target-1',
+      reason: 'reason',
+      recentSameTargetCount: count,
+    });
+    messagesByCount.set(count, calls[0]);
+  }
+
+  assert.doesNotMatch(messagesByCount.get(1)!, /same target/, 'the 1st matching DM report appends nothing');
+  assert.doesNotMatch(messagesByCount.get(2)!, /same target/, 'the 2nd matching DM report appends nothing');
+  assert.match(
+    messagesByCount.get(3)!,
+    /named this same target in 3 DM report\(s\)/,
+    'the 3rd matching DM report appends exactly the warning line, naming the count',
+  );
+});
+
+test("notifyReportFiled's emitted message is byte-identical to today's output when recentSameTargetCount is omitted (issue #305 regression guard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  await notifyReportFiled(whatsappOnlyAdapterFor(adapter), {
+    id: 200,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    targetUserId: 'target-1',
+    messageId: 'msg-1',
+    reason: 'reason',
+  });
+  assert.equal(
+    calls[0],
+    '🔔 New report #200 filed by Reporter One in conversation convo-1.\n' +
+      'Reporter said: "reason"\n' +
+      'Target user: target-1\n' +
+      'Message id: msg-1',
+  );
+});
+
+test("SECURITY: notifyReportFiled's repeated-target warning line reaches only the existing notifySuperAdmins/superAdminIds recipients — no new recipient list or channel (issue #305)", async () => {
+  const whatsappCalls: Array<[string, string]> = [];
+  const whatsappAdapter = stubAdapter(async (userId, message) => {
+    whatsappCalls.push([userId, message]);
+  });
+  const discordCalls: string[] = [];
+  const discordAdapter = stubAdapter(async (userId) => {
+    discordCalls.push(userId);
+  });
+
+  await notifyReportFiled((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+    id: 300,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    targetUserId: 'target-1',
+    reason: 'reason',
+    recentSameTargetCount: 3,
+  });
+
+  assert.equal(
+    whatsappCalls.length,
+    2,
+    'the same two whatsapp super admins as every other notifyReportFiled alert are DMed — no new recipient',
+  );
+  assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  for (const [, message] of whatsappCalls) {
+    assert.match(
+      message,
+      /named this same target in 3 DM report\(s\)/,
+      'the warning line is in the SAME message, not a separate one',
+    );
+  }
+  assert.equal(
+    discordCalls.length,
+    0,
+    'no discord super admins are configured, so no non-super-admin or unconfigured recipient ever receives it',
+  );
+});
+
 test('notifyReportWithdrawn reaches every configured super admin across ALL registered platforms, not just the report origin (issue #288)', async () => {
   const whatsappCalls: Array<[string, string]> = [];
   const whatsappAdapter = stubAdapter(async (userId, message) => {
@@ -4460,6 +4556,121 @@ test(
 
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[knownId, spoofedId]]);
     await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [knownAdmin]);
+  },
+);
+
+// report_content's recentSameTargetCount wiring (issue #305): the tool only
+// computes and forwards the count for exactly the case the accused-admin
+// exclusion applies to — a DM report naming a known target.
+test(
+  'report_content forwards recentSameTargetCount to notifyReportFiled, inclusive of the just-filed row, only for a DM report naming a known target (issue #305)',
+  { skip },
+  async () => {
+    const reporter = `${REPORT_CONTENT_HANDLER_USER}-repeat-reporter`;
+    const knownTarget = `${REPORT_CONTENT_HANDLER_USER}-repeat-target`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: knownTarget,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello',
+    });
+
+    const messages: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      messages.push(message);
+    });
+
+    const ids: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const result = await reportContentHandler(adapter, reporter, true).handler({
+        reason: `repeat DM report ${i}`,
+        targetUserId: knownTarget,
+      });
+      const id = Number(/#(\d+)/.exec(result.content[0]?.text ?? '')?.[1]);
+      assert.ok(id, 'each filing succeeds (within the rate cap)');
+      ids.push(id);
+    }
+
+    // Two super admins are alerted per filing (SUPER_ADMIN_WHATSAPP_NUMBERS =
+    // 'super-1,super-2') — 6 messages total across the 3 filings, exactly 2
+    // (both from the 3rd filing, whose inclusive count reaches 3) carrying
+    // the warning line.
+    assert.equal(messages.length, 6);
+    const withWarning = messages.filter((m) => /named this same target in 3 DM report\(s\)/.test(m));
+    assert.equal(
+      withWarning.length,
+      2,
+      'exactly the 3rd filing (both its super-admin alerts) carries the warning line — the 1st and 2nd append nothing',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [knownTarget]);
+  },
+);
+
+test(
+  'report_content never computes recentSameTargetCount for a non-DM report or a report with no known target, even past the threshold (issue #305)',
+  { skip },
+  async () => {
+    const knownTarget = `${REPORT_CONTENT_HANDLER_USER}-channel-target`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: knownTarget,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello',
+    });
+
+    const channelReporter = `${REPORT_CONTENT_HANDLER_USER}-channel-reporter`;
+    const channelMessages: string[] = [];
+    const channelAdapter = stubAdapter(async (_userId, message) => {
+      channelMessages.push(message);
+    });
+    const channelIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const result = await reportContentHandler(channelAdapter, channelReporter, false).handler({
+        reason: `channel repeat ${i}`,
+        targetUserId: knownTarget,
+      });
+      const id = Number(/#(\d+)/.exec(result.content[0]?.text ?? '')?.[1]);
+      assert.ok(id);
+      channelIds.push(id);
+    }
+    for (const message of channelMessages) {
+      assert.doesNotMatch(
+        message,
+        /same target/,
+        'a non-DM report never appends the warning line, even naming the same known target 3 times',
+      );
+    }
+
+    const dmReporter = `${REPORT_CONTENT_HANDLER_USER}-no-target-reporter`;
+    const dmMessages: string[] = [];
+    const dmAdapter = stubAdapter(async (_userId, message) => {
+      dmMessages.push(message);
+    });
+    const dmIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const result = await reportContentHandler(dmAdapter, dmReporter, true).handler({
+        reason: `dm repeat with no target ${i}`,
+      });
+      const id = Number(/#(\d+)/.exec(result.content[0]?.text ?? '')?.[1]);
+      assert.ok(id);
+      dmIds.push(id);
+    }
+    for (const message of dmMessages) {
+      assert.doesNotMatch(
+        message,
+        /same target/,
+        'a DM report with no targetUserId never appends the warning line',
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[...channelIds, ...dmIds]]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [knownTarget]);
   },
 );
 
