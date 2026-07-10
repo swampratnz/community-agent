@@ -211,6 +211,17 @@ export interface DocsIngestResult {
   unchanged: number;
   removed: number;
   skipped: number;
+  /**
+   * True only when the llms.txt index itself failed to fetch — a total-run
+   * failure, distinct from a zero-URL parse (a legitimate no-op when the
+   * index is reachable but happens to list nothing). This is only the FIRST
+   * of three total-failure stages defaultDocsIngestRun (src/backgroundJobs.ts)
+   * checks: the index fetching fine says nothing about whether every page
+   * fetch, or every chunk upsert, subsequently failed too — those two stages
+   * are derived directly from pages/fetched/chunks/created/updated/unchanged/
+   * skipped below rather than needing their own boolean.
+   */
+  indexFetchFailed: boolean;
 }
 
 /**
@@ -233,6 +244,7 @@ export async function runDocsIngest(
     unchanged: 0,
     removed: 0,
     skipped: 0,
+    indexFetchFailed: false,
   };
 
   let indexText: string;
@@ -240,6 +252,7 @@ export async function runDocsIngest(
     indexText = await fetchText(config.docsIngest.indexUrl);
   } catch (err) {
     logger.error({ err, url: config.docsIngest.indexUrl }, 'Docs ingest: index fetch failed; skipping run');
+    result.indexFetchFailed = true;
     return result;
   }
 

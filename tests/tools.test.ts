@@ -271,7 +271,7 @@ test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant', 
     calls.push([userId, text]);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', false);
+  await notifyMemberApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
@@ -284,7 +284,7 @@ test('notifyMemberApproved signposts the community_info discovery path (issue #9
     calls.push(message);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', false);
+  await notifyMemberApproved(adapter, 'user-1', false, 'discord');
 
   assert.match(calls[0], /what can you do/i);
 });
@@ -295,7 +295,7 @@ test('notifyMemberApproved sends nothing when the user was already a member (re-
     calls.push(userId);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', true);
+  await notifyMemberApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
 });
@@ -305,7 +305,44 @@ test('notifyMemberApproved swallows a DM failure rather than throwing (grant sta
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false));
+  await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false, 'discord'));
+});
+
+test("notifyMemberApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(adapter, 'user-1', false, 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kua whakaaetia/);
+  assert.doesNotMatch(calls[0], /You've been approved/);
+});
+
+test("notifyMemberApproved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(adapter, 'user-1', false, 'discord', async () => 'auto');
+
+  assert.match(calls[0], /You've been approved/);
+});
+
+test("SECURITY: notifyMemberApproved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(adapter, 'user-1', false, 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /You've been approved/);
 });
 
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
@@ -316,7 +353,7 @@ test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion'
     calls.push([userId, message]);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', false);
+  await notifyAdminApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
@@ -329,7 +366,7 @@ test('notifyAdminApproved signposts the community_info discovery path rather tha
     calls.push(message);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', false);
+  await notifyAdminApproved(adapter, 'user-1', false, 'discord');
 
   assert.match(calls[0], /what can you do/i);
 });
@@ -340,7 +377,7 @@ test('notifyAdminApproved sends nothing when the user was already an admin (re-g
     calls.push(userId);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', true);
+  await notifyAdminApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
 });
@@ -350,7 +387,44 @@ test('notifyAdminApproved swallows a DM failure rather than throwing (grant stay
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyAdminApproved(adapter, 'user-1', false));
+  await assert.doesNotReject(notifyAdminApproved(adapter, 'user-1', false, 'discord'));
+});
+
+test("notifyAdminApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(adapter, 'user-1', false, 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kua whakapikitia/);
+  assert.doesNotMatch(calls[0], /promoted to admin/);
+});
+
+test("notifyAdminApproved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(adapter, 'user-1', false, 'discord', async () => 'auto');
+
+  assert.match(calls[0], /promoted to admin/);
+});
+
+test("SECURITY: notifyAdminApproved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(adapter, 'user-1', false, 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /promoted to admin/);
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -362,9 +436,9 @@ test('notifySuggestionResolved sends a DM naming the outcome, wording differing 
     calls.push([userId, text]);
   });
 
-  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode');
-  await notifySuggestionResolved(adapter, 'user-1', 'reviewed', 'add dark mode');
-  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode');
+  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode', 'discord');
+  await notifySuggestionResolved(adapter, 'user-1', 'reviewed', 'add dark mode', 'discord');
+  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord');
 
   assert.equal(calls.length, 3);
   assert.equal(calls[0][0], 'user-1');
@@ -383,7 +457,7 @@ test('notifySuggestionResolved truncates a long suggestion in the echoed confirm
   });
   const longContent = 'x'.repeat(500);
 
-  await notifySuggestionResolved(adapter, 'user-1', 'done', longContent);
+  await notifySuggestionResolved(adapter, 'user-1', 'done', longContent, 'discord');
 
   assert.ok(!calls[0].includes(longContent), 'the full 500-char suggestion must not appear verbatim');
   assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed content is truncated with an ellipsis');
@@ -394,7 +468,48 @@ test('notifySuggestionResolved swallows a DM failure rather than throwing (resol
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode'));
+  await assert.doesNotReject(notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode', 'discord'));
+});
+
+test("notifySuggestionResolved sends the te reo Māori variant for each status for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(adapter, 'user-1', 'reviewed', 'add dark mode', 'discord', async () => 'mi');
+  await notifySuggestionResolved(adapter, 'user-1', 'declined', 'add dark mode', 'discord', async () => 'mi');
+  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode', 'discord', async () => 'mi');
+
+  assert.match(calls[0], /Kua arotakehia/);
+  assert.match(calls[1], /kāore e hangaia/);
+  assert.match(calls[2], /Kua oti/);
+  calls.forEach((c) => assert.match(c, /add dark mode/, 'the echoed suggestion stays untranslated'));
+});
+
+test("notifySuggestionResolved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /marked \*\*done\*\*/);
+});
+
+test("SECURITY: notifySuggestionResolved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifySuggestionResolved(adapter, 'user-1', 'done', 'add dark mode', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /marked \*\*done\*\*/);
 });
 
 // notifyReportResolved holds all of resolve_report's new (issue #120)
@@ -406,8 +521,20 @@ test('notifyReportResolved sends a DM naming the outcome, wording differing per 
     calls.push([userId, text]);
   });
 
-  await notifyReportResolved(adapter, 'user-1', 'resolved', 'someone was spamming the general channel');
-  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was spamming the general channel');
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'someone was spamming the general channel',
+    'discord',
+  );
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was spamming the general channel',
+    'discord',
+  );
 
   assert.equal(calls.length, 2);
   assert.equal(calls[0][0], 'user-1');
@@ -422,7 +549,13 @@ test('notifyReportResolved keeps the dismissed-path wording neutral-to-supportiv
     calls.push(message);
   });
 
-  await notifyReportResolved(adapter, 'user-1', 'dismissed', 'someone was spamming the general channel');
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was spamming the general channel',
+    'discord',
+  );
 
   assert.match(calls[0], /thanks/i, 'dismissed copy still acknowledges the reporter');
   assert.doesNotMatch(
@@ -439,7 +572,7 @@ test('notifyReportResolved truncates a long report reason in the echoed confirma
   });
   const longReason = 'x'.repeat(500);
 
-  await notifyReportResolved(adapter, 'user-1', 'resolved', longReason);
+  await notifyReportResolved(adapter, 'user-1', 'resolved', longReason, 'discord');
 
   assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
   assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
@@ -450,7 +583,62 @@ test('notifyReportResolved swallows a DM failure rather than throwing (resolutio
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyReportResolved(adapter, 'user-1', 'resolved', 'reason'));
+  await assert.doesNotReject(notifyReportResolved(adapter, 'user-1', 'resolved', 'reason', 'discord'));
+});
+
+test("notifyReportResolved sends the te reo Māori variant for each status for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'someone was spamming the general channel',
+    'discord',
+    async () => 'mi',
+  );
+  await notifyReportResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'someone was spamming the general channel',
+    'discord',
+    async () => 'mi',
+  );
+
+  assert.match(calls[0], /kua whakatauhia/);
+  assert.match(calls[1], /kāore he mahi anō/);
+  calls.forEach((c) =>
+    assert.match(c, /someone was spamming the general channel/, 'the echoed reason stays untranslated'),
+  );
+});
+
+test("notifyReportResolved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(adapter, 'user-1', 'resolved', 'reason', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+test("SECURITY: notifyReportResolved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyReportResolved(adapter, 'user-1', 'resolved', 'reason', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /reviewed and resolved/);
 });
 
 // notifyReportFiled (issue #90): a report proactively alerts every configured

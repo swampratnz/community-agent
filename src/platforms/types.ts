@@ -46,6 +46,14 @@ export interface IncomingMessage {
 export interface OutgoingMessage {
   conversationId: string;
   text: string;
+  /**
+   * Set only on the router's real-agent-turn main reply (issue #339) when the
+   * caller has a standing `language_preference` of `'mi'` — picks the `_MI`
+   * variant of the outbound code-policy note. Every other send path
+   * (`sendDirectMessage`, poll question/answers, thread name/description,
+   * announce, warn) never sets this and stays English-only, by construction.
+   */
+  language?: 'mi';
 }
 
 export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;

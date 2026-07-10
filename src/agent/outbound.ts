@@ -22,6 +22,18 @@ const CODE_OMITTED_NOTE =
 const CODE_TRUNCATED_NOTE = (shown: number) =>
   `\n_[snippet truncated to ${shown} lines — community policy; ask on claude.ai for full programs]_`;
 
+// Fixed, human-authored te reo Māori variants (issue #339), served instead of
+// CODE_OMITTED_NOTE/CODE_TRUNCATED_NOTE to a caller with a standing 'mi'
+// language_prefs row (getLanguagePreference, issue #189) — same trust level
+// as the English constants: no model call, no translation, no injection
+// surface. Mirrors the `_MI`-variant pattern established by #266/#300/#331/#333.
+const CODE_OMITTED_NOTE_MI =
+  '_[i whakakorehia te waehere — kāore tēnei kaiāwhina e tuhi waehere mō te hapori; whakamātauria a claude.ai, ' +
+  'te API rānei]_';
+const CODE_TRUNCATED_NOTE_MI = (shown: number) =>
+  `\n_[i poroa te tauira ki ${shown} rārangi — kaupapahere hapori; pātai atu i runga i a claude.ai mō ngā ` +
+  'papatono katoa]_';
+
 /**
  * Redact secrets. `knownSecrets` are exact runtime values (tokens, DB URLs)
  * that must never appear in output regardless of pattern matching.
@@ -43,8 +55,11 @@ export function redactSecrets(text: string, knownSecrets: readonly string[] = []
  * produced by a sweet-talked model or a cut-off reply — is treated as
  * running to end-of-text instead of bypassing the policy.
  */
-export function applyCodePolicy(text: string, policy: CodeAnswersPolicy): string {
+export function applyCodePolicy(text: string, policy: CodeAnswersPolicy, language?: 'mi'): string {
   if (policy === 'full') return text;
+
+  const omittedNote = language === 'mi' ? CODE_OMITTED_NOTE_MI : CODE_OMITTED_NOTE;
+  const truncatedNote = language === 'mi' ? CODE_TRUNCATED_NOTE_MI : CODE_TRUNCATED_NOTE;
 
   const out: string[] = [];
   let fenceHeader: string | null = null;
@@ -52,14 +67,14 @@ export function applyCodePolicy(text: string, policy: CodeAnswersPolicy): string
 
   const flushBlock = () => {
     if (policy === 'off') {
-      out.push(CODE_OMITTED_NOTE);
+      out.push(omittedNote);
     } else if (body.length <= SNIPPET_MAX_LINES) {
       out.push(fenceHeader as string, ...body, '```');
     } else {
       out.push(
         fenceHeader as string,
         ...body.slice(0, SNIPPET_MAX_LINES),
-        '```' + CODE_TRUNCATED_NOTE(SNIPPET_MAX_LINES),
+        '```' + truncatedNote(SNIPPET_MAX_LINES),
       );
     }
     fenceHeader = null;
@@ -163,7 +178,10 @@ export function filterOutbound(
   policy: CodeAnswersPolicy,
   knownSecrets: readonly string[] = [],
   platform?: OutboundPlatform,
+  language?: 'mi',
 ): string {
-  const filtered = stripEmDashesOutsideCode(applyCodePolicy(redactSecrets(text, knownSecrets), policy));
+  const filtered = stripEmDashesOutsideCode(
+    applyCodePolicy(redactSecrets(text, knownSecrets), policy, language),
+  );
   return platform === 'whatsapp' ? convertMarkdownForWhatsApp(filtered) : filtered;
 }
