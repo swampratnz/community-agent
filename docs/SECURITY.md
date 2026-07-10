@@ -1023,12 +1023,14 @@ the supported path.
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and
-  the audit log. Non-confirm actions (`warn_user`, `announce` within scope,
-  `create_poll`/`create_thread` within scope) remain a lever a successful
-  injection could pull; both are bounded further by their own per-conversation
-  rate cap (`POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`,
-  in-memory) rather than CONFIRM, since each is lower-consequence than
-  `announce` and gating them harder would be inconsistent (issues #228, #229).
+  the audit log. Non-confirm actions (`warn_user`, `announce`, `create_poll`,
+  `create_thread`, each within scope) remain a lever a successful injection
+  could pull; all four are bounded further by their own per-conversation rate
+  cap (`WARN_USER_RATE_LIMIT_PER_HOUR` / `ANNOUNCE_RATE_LIMIT_PER_HOUR` /
+  `POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`, all
+  in-memory) rather than CONFIRM, since each is lower-consequence than a
+  destructive action and gating them harder would be inconsistent (issues
+  #228, #229, #315).
 - **Membership-scope staleness (narrowed, issues #286 + #328)**: adapters
   cache an admin's conversation list for ~60s, but an *observed* change
   invalidates the affected cache entry immediately rather than waiting out

@@ -395,6 +395,25 @@ export const THREAD_NAME_MAX_CHARS = 100;
  * hides an active discussion).
  */
 export const THREAD_CREATE_RATE_LIMIT_PER_HOUR = 5;
+
+/**
+ * Per-conversation cap on `warn_user` within a rolling hour (issue #315).
+ * `warn_user` is the one non-CONFIRM moderation action (`moderate`'s own
+ * comment: "warnings are low-blast-radius; everything else needs CONFIRM"),
+ * but until now carried no throttle of any kind. Mirrors the
+ * `create_poll`/`create_thread` rate-cap-not-CONFIRM treatment.
+ */
+export const WARN_USER_RATE_LIMIT_PER_HOUR = 10;
+
+/**
+ * Per-conversation cap on `announce` within a rolling hour (issue #315).
+ * `announce` was the only one of the four residual-risk levers named in
+ * `docs/SECURITY.md` with zero throttle, despite being the *higher*-
+ * consequence sibling of `create_poll` (the #228 code comment already treats
+ * them as the same abuse surface). Same value as `POLL_RATE_LIMIT_PER_HOUR`.
+ */
+export const ANNOUNCE_RATE_LIMIT_PER_HOUR = 5;
+
 /**
  * create_event (issue #230) Discord Scheduled Event field bounds — Discord's
  * own hard limits (name/description/location length), enforced at the zod
@@ -803,6 +822,50 @@ function reserveThreadSlot(conversationId: string, limit: number): boolean {
   }
   recent.push(now);
   threadTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/** warn_user timestamps per conversation, for the rolling-hour cap (WARN_USER_RATE_LIMIT_PER_HOUR). */
+const warnTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one warn_user slot for `conversationId` against a rolling hourly
+ * cap, same sliding-window shape as `reservePollSlot`. Returns false without
+ * reserving if the conversation already hit `limit` within the last hour.
+ */
+function reserveWarnSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (warnTimestampsByConversation.get(conversationId) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= limit) {
+    warnTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  warnTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/** announce timestamps per conversation, for the rolling-hour cap (ANNOUNCE_RATE_LIMIT_PER_HOUR). */
+const announceTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one announce slot for `conversationId` against a rolling hourly
+ * cap, same sliding-window shape as `reservePollSlot`. Returns false without
+ * reserving if the conversation already hit `limit` within the last hour.
+ */
+function reserveAnnounceSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (announceTimestampsByConversation.get(conversationId) ?? []).filter(
+    (t) => now - t < windowMs,
+  );
+  if (recent.length >= limit) {
+    announceTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  announceTimestampsByConversation.set(conversationId, recent);
   return true;
 }
 
@@ -1656,8 +1719,19 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         return success ? `Done: ${result}` : `Failed: ${result}`;
       };
 
-      // Warnings are low-blast-radius; everything else needs CONFIRM.
-      if (args.action === 'warn_user') return text(await run());
+      // Warnings are low-blast-radius; everything else needs CONFIRM. Still
+      // rate-capped though (issue #315) — the reservation check sits before
+      // `run()`/`audited(...)` so a refused warning is never executed or
+      // written to the audit log as a success.
+      if (args.action === 'warn_user') {
+        if (!reserveWarnSlot(targetConversation, WARN_USER_RATE_LIMIT_PER_HOUR)) {
+          return text(
+            `Refusing: conversation "${targetConversation}" already hit the warn limit (${WARN_USER_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+            true,
+          );
+        }
+        return text(await run());
+      }
       return requireConfirm(
         `${args.action} on ${args.targetUserId} in ${targetConversation} (reason: ${args.reason})`,
         'admin',
@@ -1732,6 +1806,12 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         !(await adapter.canPostTo?.(target))
       ) {
         return text(unreachableConversationRefusal(target), true);
+      }
+      if (!reserveAnnounceSlot(target, ANNOUNCE_RATE_LIMIT_PER_HOUR)) {
+        return text(
+          `Refusing: conversation "${target}" already hit the announce limit (${ANNOUNCE_RATE_LIMIT_PER_HOUR}/hour) — try again later.`,
+          true,
+        );
       }
       const { success, result } = await audited({
         actionKind: 'announce',
