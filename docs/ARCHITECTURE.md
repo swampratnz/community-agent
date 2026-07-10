@@ -262,11 +262,13 @@ notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
 fixed `_MI` constant instead of the English default. The gated-guest
-member-only notice (`GATED_NOTICE`, sent on every addressed message from a
-gated guest) gets the same treatment (issue #363): a former member who set
-`'mi'` before being removed and is now gated still sees `GATED_NOTICE_MI`,
-not the English default, on the rate-limited static-notice branch only. The
-auto-moderation
+member-only notice (sent on every addressed message from a gated guest that
+reaches the static-notice branch, i.e. not rate-limited) gets the same
+treatment (issue #363): a former member who set `'mi'` before being removed
+and is now gated still sees the fixed, human-authored `GATED_NOTICE_MI`
+translation, not the English notice — the mi branch is checked first and, if
+hit, is served as-is instead of the dynamic, admin-naming English builder
+(`buildGatedNotice`/`GATED_NOTICE`, issue #360) below. The auto-moderation
 warn/block DMs (`Moderator.scan()`, `src/moderation/moderator.ts`) also honour
 a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
 is read once per flagged message (defensively, degrading to `'auto'` on
@@ -355,6 +357,28 @@ weakening it:
    gateway intent: the `GuildMembers` intent the bot already holds for role
    resolution streams these events anyway; a `GuildMember` partial is enabled
    so leaves of uncached members still fire.
+4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
+   static "ask a community admin" pointer a gated guest gets on every
+   addressed message named no one to ask. `listAdminDisplayNames(platform)`
+   (`src/storage/repository.ts`) resolves display names for every
+   `community_users` `role = 'admin'` row on that platform — same
+   community_users→server_roster precedence as `resolveDisplayName` — and
+   `buildGatedNotice` renders up to `GATED_NOTICE_MAX_ADMIN_NAMES` (3) of
+   them into the notice (e.g. "Ask a community admin — Alice or Bob — ..."),
+   TTL-cached (30s, mirroring `storage/policies.ts`) so this hot, repeated
+   path never adds a DB round-trip per gated message. Zero resolvable names
+   (fresh deploy, or admins with no stored/rostered display name) renders
+   the unchanged static `GATED_NOTICE`, byte-for-byte — never an empty-list
+   sentence. Env-sourced super admins are excluded, same rationale as
+   `listAdmins()`'s digest recipients: operator-level, not a member's first
+   point of contact. Every name is run through `sanitizeName`
+   (`src/agent/systemPrompt.ts`) inside `renderGatedNotice` before
+   interpolation — same treatment `resolveSanitizedLabel` gives any other
+   platform-supplied display name (issue #227) — because this notice is
+   auto-sent, unsolicited, to every gated guest, and a `display_name` sourced
+   from a Discord nickname has no length or newline limit an admin couldn't
+   abuse to forge Markdown link syntax or a fake system message. A name that
+   sanitizes to empty is omitted, not shown blank.
 
 ## Offline context builder
 
