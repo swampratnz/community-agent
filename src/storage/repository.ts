@@ -3550,3 +3550,28 @@ export async function listKnowledgeFeedbackSummary(
   );
   return rows.map(mapKnowledgeFeedbackSummary);
 }
+
+/**
+ * Entry-scoped low-rated check for the member knowledge-shortcut serve path
+ * (issue #337) — the same `answer_feedback` -> `interactions` join
+ * `listKnowledgeFeedbackSummary` uses, narrowed to one entry id, but
+ * deliberately UNSCOPED by conversation: there is no admin identity to scope
+ * to at serve time (the caller is the member being served, not an admin
+ * viewing their own conversations).
+ *
+ * SECURITY: returns only the threshold decision the SQL itself computes
+ * (`>= $2`), never the raw unhelpful count or any per-rating row — the
+ * caller-side render path must never see a number derived from the
+ * aggregate, since `minUnhelpful` is enforced to be >= 2 specifically so no
+ * single identifiable rater can be inferred from it (config.ts).
+ */
+export async function isKnowledgeLowRated(entryId: number, minUnhelpful: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $2 AS is_low_rated
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+      WHERE (interactions.meta->>'knowledgeEntryId')::bigint = $1`,
+    [entryId, minUnhelpful],
+  );
+  return rows[0]?.is_low_rated === true;
+}

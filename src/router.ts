@@ -18,6 +18,7 @@ import { isPaused } from './storage/policies.js';
 import {
   countRepliesToUser,
   getLanguagePreference,
+  isKnowledgeLowRated,
   recordAccessRequest,
   recordInteraction,
   recordKnowledgeRetrieval,
@@ -141,11 +142,13 @@ export class Router {
    * defaults to the real policy read. `searchKnowledgeForShortcut` and
    * `recordShortcutRetrieval` default to the real DB-backed implementations.
    * `countReplies` defaults to the real daily-budget read. `getLangPref`
-   * defaults to the real standing-language-preference read (issue #300). All
-   * are overridable in tests so the typing-indicator, pause, knowledge-shortcut,
-   * budget-check-failure, and language-notice behaviour can be exercised
-   * without spawning a real Claude Code subprocess, waiting 8 real seconds,
-   * or a live DB.
+   * defaults to the real standing-language-preference read (issue #300).
+   * `checkLowRatedKnowledge` defaults to the real DB-backed low-rated check
+   * (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
+   * path. All are overridable in tests so the typing-indicator, pause,
+   * knowledge-shortcut, budget-check-failure, and language-notice behaviour
+   * can be exercised without spawning a real Claude Code subprocess, waiting
+   * 8 real seconds, or a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -155,6 +158,7 @@ export class Router {
     private readonly recordShortcutRetrieval: typeof recordKnowledgeRetrieval = recordKnowledgeRetrieval,
     private readonly countReplies: typeof countRepliesToUser = countRepliesToUser,
     private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
+    private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated = isKnowledgeLowRated,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -643,10 +647,25 @@ export class Router {
     hit: KnowledgeShortcutHit,
   ): Promise<void> {
     logger.debug({ platform: msg.platform, conversationId: msg.conversationId }, 'knowledge_shortcut_hit');
+    // Member-facing low-rated-answer caveat (issue #337) — opt-in, and
+    // deliberately only ever computed on THIS path (never the guest
+    // shortcut or knowledge_search): the extra count query is skipped
+    // entirely when the feature is disabled (the default), and a lookup
+    // failure falls back to `false` rather than blocking the reply.
+    const lowRatedCaveat =
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful > 0
+        ? await this.checkLowRatedKnowledge(
+            hit.id,
+            config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+          ).catch((err) => {
+            logger.warn({ err }, 'Knowledge low-rated caveat lookup failed; omitting the caveat');
+            return false;
+          })
+        : false;
     // Deterministic, send-path-only citation/freshness note (issue #214) — the
     // shortcut never involves the model, so this is formatted from stored
     // fields exactly like knowledge_search's own note.
-    const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays);
+    const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays, lowRatedCaveat);
     const replyText = `${hit.content}${note}${KNOWLEDGE_SHORTCUT_SUFFIX}`;
     await this.send(adapter, msg.conversationId, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>

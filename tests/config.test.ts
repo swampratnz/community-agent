@@ -100,3 +100,59 @@ test('SECURITY: default CONTEXT_EXPORT_PATH is untracked (issue #108) — the un
     ".gitignore must exclude the export default path's directory",
   );
 });
+
+test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL unset (default) is disabled — zero behaviour change (issue #337)', () => {
+  assert.equal(config.behaviour.knowledgeLowRatedCaveatMinUnhelpful, 0);
+});
+
+test('SECURITY: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=1 fails config validation — a single rater must never trigger the caveat', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: '1',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=1 must fail config validation, not load',
+  );
+  assert.match(
+    result.stderr,
+    /KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL must be 0 \(disabled\) or at least 2/,
+  );
+});
+
+test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=2 (the refined minimum) loads cleanly', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: '2',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=2 must load cleanly');
+});

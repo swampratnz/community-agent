@@ -320,3 +320,42 @@ test('router (knowledge shortcut): the shortcut path still respects the gated-gu
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /member-only/i);
 });
+
+// KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is left unset in this file (see
+// lowRatedCaveatRouter.test.ts, the ONLY file that sets it) — so it must
+// stay at its default-disabled 0, and a hit that would clear a lower
+// threshold must produce byte-identical output to today's shortcut reply
+// (issue #337 acceptance criteria 3 + 4).
+test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is disabled (default 0) in this file', () => {
+  assert.equal(config.behaviour.knowledgeLowRatedCaveatMinUnhelpful, 0);
+});
+
+test('router (knowledge shortcut): with the low-rated caveat left at its default-disabled setting, the extra lookup is never issued and the reply is byte-identical to the pre-#337 shortcut reply', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    undefined,
+    async () => {
+      throw new Error(
+        'the low-rated lookup must never fire when KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is 0',
+      );
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    "Be kind and follow the code of conduct.\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.",
+  );
+  assert.doesNotMatch(sent[0].text, /rate_answer/);
+});

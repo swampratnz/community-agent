@@ -92,6 +92,7 @@ const {
   createAnswerFeedback,
   listAnswerFeedback,
   listKnowledgeFeedbackSummary,
+  isKnowledgeLowRated,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
   getMyDataSummary,
@@ -4275,6 +4276,83 @@ test(
       [inScopeConvo, outOfScopeConvo],
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+// isKnowledgeLowRated (issue #337): the entry-scoped, threshold-decision-only
+// lookup behind the member knowledge-shortcut's low-rated caveat. Deliberately
+// UNSCOPED by conversation (there is no admin identity to scope to at serve
+// time), the opposite of listKnowledgeFeedbackSummary's admin-tier scoping
+// tested just above.
+test(
+  'SECURITY: repository: isKnowledgeLowRated counts feedback for the served entry id only, globally across conversations, and crosses the boundary as a boolean threshold decision — never the raw count',
+  { skip },
+  async () => {
+    const convoA = `${RUN}-c-low-rated-a`;
+    const convoB = `${RUN}-c-low-rated-b`;
+    const { id: lowRatedEntryId } = await saveKnowledge({ content: `${RUN} low-rated entry content` });
+    const { id: otherEntryId } = await saveKnowledge({ content: `${RUN} other entry content` });
+
+    async function rateShortcut(
+      conversationId: string,
+      entryId: number,
+      userSuffix: string,
+      helpful: boolean,
+    ) {
+      const userId = `${RUN}-low-rated-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    // 2 unhelpful spread across two DIFFERENT conversations — must still be
+    // counted globally (unscoped), unlike listKnowledgeFeedbackSummary above.
+    users.push(await rateShortcut(convoA, lowRatedEntryId, 'a1', false));
+    users.push(await rateShortcut(convoB, lowRatedEntryId, 'b1', false));
+    // A helpful rating and a rating on a DIFFERENT entry must never count
+    // toward lowRatedEntryId's threshold.
+    users.push(await rateShortcut(convoA, lowRatedEntryId, 'a2', true));
+    users.push(await rateShortcut(convoA, otherEntryId, 'other', false));
+
+    const belowThreshold = await isKnowledgeLowRated(lowRatedEntryId, 3);
+    assert.equal(
+      typeof belowThreshold,
+      'boolean',
+      'SECURITY: must cross the boundary as a boolean, never a number',
+    );
+    assert.equal(belowThreshold, false, '2 unhelpful ratings does not clear a threshold of 3');
+
+    const atThreshold = await isKnowledgeLowRated(lowRatedEntryId, 2);
+    assert.equal(typeof atThreshold, 'boolean');
+    assert.equal(
+      atThreshold,
+      true,
+      '2 unhelpful ratings clears a threshold of 2, summed across BOTH conversations',
+    );
+
+    const otherEntryLowRated = await isKnowledgeLowRated(otherEntryId, 2);
+    assert.equal(
+      otherEntryLowRated,
+      false,
+      "SECURITY: a different entry with only 1 unhelpful rating of its own must never inherit lowRatedEntryId's count",
+    );
+
+    const neverServedEntryId = otherEntryId + 1_000_000;
+    const neverServed = await isKnowledgeLowRated(neverServedEntryId, 2);
+    assert.equal(neverServed, false, 'an entry id with no feedback rows at all is never low-rated');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRatedEntryId, otherEntryId]]);
   },
 );
 
