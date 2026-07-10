@@ -943,6 +943,50 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+export interface KnowledgeDuplicatePair {
+  aId: number;
+  aTitle: string | null;
+  bId: number;
+  bTitle: string | null;
+  similarity: number;
+}
+
+/**
+ * Retroactive audit (issue #316) for near-duplicate knowledge pairs that
+ * `saveKnowledge`'s write-time nudge (KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD
+ * above) never caught: entries that predate that check, or that converged
+ * later via independent `updateKnowledge` edits. Same-scope only, same
+ * threshold, same `<=>` operator — deliberately reuses #93's established
+ * technique rather than inventing a new one. `a.id < b.id` both dedups each
+ * pair to a single row (never A↔B and B↔A) and gives the self-join a stable
+ * ordering to join on.
+ */
+export async function listDuplicateKnowledge(scope?: string, limit = 20): Promise<KnowledgeDuplicatePair[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const params: unknown[] = [scope ?? null, KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD];
+  params.push(clampedLimit);
+  const { rows } = await pool.query(
+    `SELECT a.id AS a_id, a.title AS a_title,
+            b.id AS b_id, b.title AS b_title,
+            1 - (a.embedding <=> b.embedding) AS similarity
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND ($1::text IS NULL OR a.scope = $1)
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+      ORDER BY similarity DESC
+      LIMIT $3`,
+    params,
+  );
+  return rows.map((r) => ({
+    aId: Number(r.a_id),
+    aTitle: r.a_title,
+    bId: Number(r.b_id),
+    bTitle: r.b_title,
+    similarity: Number(r.similarity),
+  }));
+}
+
 /**
  * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
  * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic
@@ -3040,6 +3084,36 @@ export async function createContentReport(input: {
     ],
   );
   return rows[0] ? { id: Number(rows[0].id) } : null;
+}
+
+/**
+ * Count of DM reports the given reporter has filed naming the given target
+ * within the last `windowDays` — narrows the SECURITY.md-documented residual
+ * risk that a member who knows an admin's platform id (e.g. from an
+ * @-mention) can repeatedly name them in unrelated DM reports, quietly
+ * blinding that admin via the accused-admin exclusion in `listReports`/
+ * `countOpenReports`/`resolveContentReport` (issue #197), with nothing
+ * surfacing the pattern (issue #305). Scoped exactly to `(platform,
+ * reporter_user_id, target_user_id, is_dm = true)` — a different platform,
+ * reporter, target, or a non-DM report never contributes. Served by the
+ * existing `content_reports_reporter_rate_idx (platform, reporter_user_id,
+ * created_at DESC)` for its `(platform, reporter_user_id)` prefix; report
+ * volume is already capped at `REPORT_RATE_LIMIT_PER_DAY` per reporter per
+ * rolling 24h, so this stays cheap regardless of call frequency.
+ */
+export async function countRecentDmReportsByReporterAndTarget(
+  platform: Platform,
+  reporterUserId: string,
+  targetUserId: string,
+  windowDays = 30,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM content_reports
+      WHERE platform = $1 AND reporter_user_id = $2 AND target_user_id = $3
+        AND is_dm = true AND created_at > now() - ($4 || ' days')::interval`,
+    [platform, reporterUserId, targetUserId, String(windowDays)],
+  );
+  return Number(rows[0].n);
 }
 
 /**
