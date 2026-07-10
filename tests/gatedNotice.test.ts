@@ -1,12 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  GATED_NOTICE,
-  GATED_NOTICE_MAX_ADMIN_NAMES,
-  makeGatedNoticeBuilder,
-  renderGatedNotice,
-} from '../src/gatedNotice.js';
+// config.ts validates env at import time — gatedNotice.ts imports
+// storage/repository.js (for the real listAdminDisplayNames default), so it
+// transitively loads config.ts too. Provide a dummy environment before
+// importing it, matching the convention in tests/agentOptions.test.ts.
+process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
+process.env.DISCORD_BOT_TOKEN ??= 'test-token';
+process.env.DISCORD_GUILD_ID ??= '1';
+process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+
+const { GATED_NOTICE, GATED_NOTICE_MAX_ADMIN_NAMES, makeGatedNoticeBuilder, renderGatedNotice } = await import(
+  '../src/gatedNotice.js'
+);
 
 // Pure-renderer tests (acceptance criteria 2/3/4 for issue #360) — no DB, no
 // Router, mirroring rateLimitNotice.test.ts's pure-function unit tests.
