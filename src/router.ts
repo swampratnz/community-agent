@@ -34,6 +34,14 @@ import { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI } from './dailyBu
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 
+// Fixed, human-authored te reo Māori variant (issue #363), served instead of
+// GATED_NOTICE to a gated guest with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — e.g. a former member who set the
+// preference before being removed. Same trust level as the English constant:
+// no model call, no translation, no injection surface.
+export const GATED_NOTICE_MI =
+  'Kia ora! He kaupapa mema anake tēnei kaiāwhina. Tonoa he kaiwhakahaere hapori ki te tāpiri i a koe hei mema, kātahi ka taea e au te āwhina.';
+
 // Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
 // ackClassifier.ts). Sent via send() so outbound filtering still applies;
 // deliberately not counted toward the daily reply budget (no outbound
@@ -360,14 +368,25 @@ export class Router {
               logger.warn({ err }, 'Failed to send guest knowledge-shortcut reply'),
             );
           } else {
-            // The default (real) builder already degrades to GATED_NOTICE
-            // internally on a DB failure (gatedNotice.ts) — this catch is
-            // defense-in-depth so an injected/future builder can never turn
-            // a lookup failure into silence for a gated guest.
-            const notice = await this.getGatedNotice(msg.platform).catch((err) => {
-              logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
-              return GATED_NOTICE;
-            });
+            // Lookup fires only on this static-notice branch — never on the
+            // guest-knowledge-shortcut-hit branch above, and never on the
+            // rate-limited path (the `if (!this.rateLimited(userKey))` guard),
+            // so no extra DB read is paid where no gated notice is sent
+            // (issue #363 adversarial review). A standing 'mi' preference
+            // gets the fixed, human-authored translation as-is (no admin-name
+            // enumeration); everyone else gets the dynamic, admin-naming
+            // English builder (issue #360), which already degrades to the
+            // static GATED_NOTICE internally on a DB failure — the extra
+            // catch here is defense-in-depth so an injected/future builder
+            // can never turn a lookup failure into silence for a gated guest.
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            const notice =
+              lang === 'mi'
+                ? GATED_NOTICE_MI
+                : await this.getGatedNotice(msg.platform).catch((err) => {
+                    logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
+                    return GATED_NOTICE;
+                  });
             await this.send(adapter, msg.conversationId, notice).catch((err) =>
               logger.warn({ err }, 'Failed to send gated notice'),
             );

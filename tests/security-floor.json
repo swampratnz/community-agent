@@ -40,7 +40,7 @@
   "repeatMaxTurnsShortcutRouter.test.ts": 1,
   "repeatQuestionShortcutRouter.test.ts": 2,
   "repository.test.ts": 45,
-  "router.test.ts": 2,
+  "router.test.ts": 4,
   "secrets.test.ts": 2,
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 5,

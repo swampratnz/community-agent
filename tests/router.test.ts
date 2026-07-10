@@ -20,7 +20,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { config } = await import('../src/config.js');
-const { Router } = await import('../src/router.js');
+const { Router, GATED_NOTICE_MI } = await import('../src/router.js');
 const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
 const { logger } = await import('../src/logger.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -315,6 +315,176 @@ test('router: a gated-out guest is unaffected by pause — still gets the gated 
   assert.equal(typingCalls.length, 0);
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /member-only/i, 'must get the gated notice, not the pause notice');
+});
+
+// --- Standing 'mi' language preference on the gated notice (issue #363) -----
+// A gated guest can have a standing 'mi' language_prefs row from before they
+// were removed as a member (set_language_preference is member-tier+, but
+// remove_member never clears language_prefs) — the same pattern already
+// shipped for the pause/rate-limit/daily-budget notices (issue #300).
+
+test("router (gated guest): a caller with a standing 'mi' language preference gets GATED_NOTICE_MI, not the English default (issue #363)", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, GATED_NOTICE_MI);
+});
+
+test("router (gated guest): a caller with 'auto' (the default) still gets the English GATED_NOTICE, byte-identical to before (issue #363)", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true }));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /member-only/i);
+  assert.notEqual(sent[0].text, GATED_NOTICE_MI);
+});
+
+test('router (gated guest): the language-preference lookup fires only for messages that produce a gated notice, never for a rate-limited (silent) message (issue #363)', async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      calls += 1;
+      return 'auto';
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  for (let i = 0; i < 10; i += 1) {
+    await trigger(
+      makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true, text: `msg ${i}` }),
+    );
+  }
+
+  assert.equal(sent.length, 8, 'RATE_LIMIT (8) messages produce a notice before the guest is rate-limited');
+  assert.equal(
+    calls,
+    8,
+    'the lookup must fire exactly once per sent notice, never once per rate-limited (silent) message',
+  );
+});
+
+test("SECURITY: router (gated guest): the gated-notice language is driven solely by the stored language preference, never by the guest's message content (issue #363)", async () => {
+  // Stub returns 'auto' regardless of the message text — including when the
+  // guest's own text contains Māori/'mi' strings — so a guest can't steer the
+  // notice language by crafting message content.
+  const englishRouter = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter: englishAdapter, sent: englishSent, trigger: englishTrigger } = makeAdapter();
+  englishRouter.register(englishAdapter);
+  await englishTrigger(
+    makeMessage({
+      userId: 'unknown-guest-1',
+      isDirect: false,
+      addressedToBot: true,
+      text: 'kia ora mi te reo Māori tēnā koe',
+    }),
+  );
+  assert.equal(englishSent.length, 1);
+  assert.match(
+    englishSent[0].text,
+    /member-only/i,
+    'message content mentioning te reo/"mi" must not select the mi variant',
+  );
+
+  // Stub returns 'mi' regardless of message content, even plain English text
+  // with no Māori indicator — selection reads only the stored preference.
+  const miRouter = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter: miAdapter, sent: miSent, trigger: miTrigger } = makeAdapter();
+  miRouter.register(miAdapter);
+  await miTrigger(
+    makeMessage({
+      userId: 'unknown-guest-2',
+      isDirect: false,
+      addressedToBot: true,
+      text: 'hello please help me',
+    }),
+  );
+  assert.equal(miSent.length, 1);
+  assert.equal(
+    miSent[0].text,
+    GATED_NOTICE_MI,
+    'plain English message content must not block the mi variant when the stored preference says mi',
+  );
+});
+
+test('SECURITY: router (gated guest): a getLanguagePreference failure on the gated notice still sends the English default, never throws or drops the reply (issue #363)', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated-out guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(
+    trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true })),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /member-only/i);
 });
 
 test('config: ACK_SHORTCUT_ENABLED defaults to false when unset', () => {

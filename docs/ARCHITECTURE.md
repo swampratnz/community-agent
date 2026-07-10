@@ -261,7 +261,14 @@ of them read as the bot being broken. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
-fixed `_MI` constant instead of the English default. The auto-moderation
+fixed `_MI` constant instead of the English default. The gated-guest
+member-only notice (sent on every addressed message from a gated guest that
+reaches the static-notice branch, i.e. not rate-limited) gets the same
+treatment (issue #363): a former member who set `'mi'` before being removed
+and is now gated still sees the fixed, human-authored `GATED_NOTICE_MI`
+translation, not the English notice — the mi branch is checked first and, if
+hit, is served as-is instead of the dynamic, admin-naming English builder
+(`buildGatedNotice`/`GATED_NOTICE`, issue #360) below. The auto-moderation
 warn/block DMs (`Moderator.scan()`, `src/moderation/moderator.ts`) also honour
 a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
 is read once per flagged message (defensively, degrading to `'auto'` on
