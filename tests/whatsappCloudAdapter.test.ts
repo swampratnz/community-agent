@@ -25,18 +25,42 @@ const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 
-/** Records every Graph API call this adapter would have made. */
-function mockFetch(responses: Array<{ ok: boolean; status?: number }>) {
-  const calls: Array<{ url: string; body: string }> = [];
+/**
+ * Records every Graph API call this adapter would have made. `responses[i].json`
+ * backs `.json()` (the media-upload response shape, `{ id }`). A `multipart/form-data`
+ * body (the media upload) is captured as its string fields plus the uploaded
+ * file's name/type, rather than as the opaque `body` string JSON calls use.
+ */
+function mockFetch(responses: Array<{ ok: boolean; status?: number; json?: unknown }>) {
+  const calls: Array<{
+    url: string;
+    body: string;
+    formFields?: Record<string, string>;
+    formFile?: { name: string; type: string };
+  }> = [];
   let i = 0;
   const fetchMock = async (url: string | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), body: typeof init?.body === 'string' ? init.body : '' });
+    if (init?.body instanceof FormData) {
+      const formFields: Record<string, string> = {};
+      let formFile: { name: string; type: string } | undefined;
+      for (const [key, value] of init.body.entries()) {
+        if (value instanceof Blob) {
+          formFile = { name: value.name, type: value.type };
+        } else {
+          formFields[key] = value;
+        }
+      }
+      calls.push({ url: String(url), body: '', formFields, formFile });
+    } else {
+      calls.push({ url: String(url), body: typeof init?.body === 'string' ? init.body : '' });
+    }
     const resp = responses[Math.min(i, responses.length - 1)];
     i++;
     return {
       ok: resp.ok,
       status: resp.status ?? (resp.ok ? 200 : 500),
       text: async () => (resp.ok ? '' : 'graph error'),
+      json: async () => resp.json ?? {},
     } as Response;
   };
   return { calls, fetchMock };
@@ -505,6 +529,185 @@ test('outside the 24h customer-service window: throws before any Graph API call,
     globalThis.fetch = originalFetch;
   }
   assert.equal(calls.length, 0);
+});
+
+test('sendImage: posts exactly two Graph API calls in order — a media upload, then a message send referencing the returned media id (issue #356)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-123' } }, { ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendImage(
+      '64211234567',
+      { data: Buffer.from('fake-image-bytes'), filename: 'image.png', mimeType: 'image/png' },
+      'a cat wearing a hat',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2, 'expected exactly one media-upload call and one message-send call');
+
+  assert.ok(calls[0].url.endsWith('/test-phone-id/media'), 'first call must be the media upload');
+  assert.equal(calls[0].formFields?.messaging_product, 'whatsapp');
+  assert.equal(calls[0].formFields?.type, 'image/png');
+  assert.equal(calls[0].formFile?.name, 'image.png');
+  assert.equal(calls[0].formFile?.type, 'image/png');
+
+  assert.ok(calls[1].url.endsWith('/test-phone-id/messages'), 'second call must be the message send');
+  const sendBody = JSON.parse(calls[1].body);
+  assert.equal(sendBody.messaging_product, 'whatsapp');
+  assert.equal(sendBody.to, '64211234567');
+  assert.equal(sendBody.type, 'image');
+  assert.deepEqual(
+    sendBody.image,
+    { id: 'media-123', caption: 'a cat wearing a hat' },
+    'the message send must reference the media id the upload call returned',
+  );
+});
+
+test('sendImage: no caption sends an image message with no caption field, without attempting to filter anything', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-999' } }, { ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendImage('64211234567', {
+      data: Buffer.from('fake-image-bytes'),
+      filename: 'image.jpg',
+      mimeType: 'image/jpeg',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2);
+  const sendBody = JSON.parse(calls[1].body);
+  assert.deepEqual(sendBody.image, { id: 'media-999' });
+});
+
+test('sendImage outside the 24h customer-service window: throws the same descriptive error sendText throws, without attempting the media upload (issue #356)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  // No markInboundNow — this user has no recent inbound message.
+  const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-123' } }, { ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(
+      () =>
+        adapter.sendImage(
+          '64299999999',
+          { data: Buffer.from('fake-image-bytes'), filename: 'image.png', mimeType: 'image/png' },
+          'a cat wearing a hat',
+        ),
+      /outside the 24h customer-service window/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 0, 'no media-upload call may be attempted outside the window');
+});
+
+test('SECURITY: sendImage routes the caption through filterOutbound — a secret is redacted before either Graph API call is made (issue #356)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: true, json: { id: 'media-123' } }, { ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendImage(
+      '64211234567',
+      { data: Buffer.from('fake-image-bytes'), filename: 'image.png', mimeType: 'image/png' },
+      'secret is sk-ant-' + 'y'.repeat(30) + ' end',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2);
+  // The media-upload call carries no caption at all (only file bytes + type), but
+  // check it anyway — a raw secret must not reach EITHER Graph call.
+  assert.ok(
+    !JSON.stringify(calls[0].formFields).includes('sk-ant-'),
+    'no raw secret fragment may reach the media-upload call',
+  );
+  const sendBody = JSON.parse(calls[1].body);
+  assert.ok(!sendBody.image.caption.includes('sk-ant-'), 'no raw secret fragment may reach the caption');
+  assert.ok(
+    sendBody.image.caption.includes('[redacted]'),
+    'the secret must have been redacted, not silently dropped',
+  );
+});
+
+test('sendImage: a failed media-upload call invokes recordSendFailure(), participating in the disconnect-alert threshold (issue #356)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() =>
+        adapter.sendImage('64211234567', {
+          data: Buffer.from('fake-image-bytes'),
+          filename: 'image.png',
+          mimeType: 'image/png',
+        }),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    false,
+    'isConnected() must flip false once consecutive failed media uploads cross the threshold',
+  );
+});
+
+test('sendImage: a failed message-send call (after a successful media upload) also invokes recordSendFailure(), crossing the same threshold (issue #356)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const calls: string[] = [];
+  const fetchMock = async (url: string | URL) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.endsWith('/media')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => ({ id: 'media-x' }),
+      } as Response;
+    }
+    return { ok: false, status: 500, text: async () => 'graph error', json: async () => ({}) } as Response;
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() =>
+        adapter.sendImage('64211234567', {
+          data: Buffer.from('fake-image-bytes'),
+          filename: 'image.png',
+          mimeType: 'image/png',
+        }),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    calls.length,
+    6,
+    'each attempt should make an upload call, succeed, then fail on the message send',
+  );
+  assert.equal(
+    adapter.isConnected(),
+    false,
+    'isConnected() must flip false once 3 consecutive send-message failures cross the threshold',
+  );
 });
 
 test('webhook dedup: two deliveries with the identical message id result in exactly one handler call', async () => {

@@ -10,6 +10,9 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ### Added
 - `list_knowledge_conflicts` (#330): an **admin**, read-only audit tool that surfaces same-scope knowledge entry pairs about the same topic worded differently enough that they might disagree — a mid-range embedding similarity band sitting between `knowledge_search`'s relevance floor and `list_duplicate_knowledge`'s near-duplicate threshold. Sibling of `list_duplicate_knowledge` (#316), same shape and gating, opposite band; each pair is framed as a candidate for admin review (merge via `update_knowledge` or retire via `delete_knowledge`), never a confirmed contradiction. No new table, no member-facing change, no CONFIRM.
 
+### Fixed
+- **`generate_image` now works on the WhatsApp Cloud API adapter** (#356) — the docs' own recommended production WhatsApp path. `WhatsAppCloudAdapter` was the only adapter missing `sendImage`, so the tool silently replied "not available on whatsapp" there while working fine on Discord and Baileys WhatsApp. Implemented as two Graph API calls (media upload, then a message referencing the returned media id) over the same authenticated connection `sendChunk` already uses — no new egress destination, config, or RBAC surface. Same 24h customer-service window check and caption secret-redaction as every other Cloud send.
+
 ## 2026-07-09
 
 ### Changed

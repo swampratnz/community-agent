@@ -402,10 +402,13 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
-  private async sendText(to: string, text: string, language?: 'mi'): Promise<void> {
-    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
-    if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
-
+  /**
+   * Meta only allows free-form messages — text or media — within 24h of the
+   * user's last inbound message; outside that window only pre-approved
+   * templates work, which this adapter doesn't send. Shared by `sendText`
+   * and `sendImage` so both fail identically, before any Graph API call.
+   */
+  private assertWithinCustomerServiceWindow(to: string): void {
     const lastInbound = this.lastInboundAt.get(to);
     const withinWindow = lastInbound !== undefined && Date.now() - lastInbound < CUSTOMER_SERVICE_WINDOW_MS;
     if (!withinWindow) {
@@ -414,6 +417,12 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
           '(no recent inbound message from this user). Only pre-approved message templates can be sent here.',
       );
     }
+  }
+
+  private async sendText(to: string, text: string, language?: 'mi'): Promise<void> {
+    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
+    if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
+    this.assertWithinCustomerServiceWindow(to);
 
     // A single window check and a single filter pass govern the whole reply;
     // it's then split at Meta's 4096-char body limit and sent as sequential
@@ -451,6 +460,101 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
       // much a send failure as a non-OK response — and it's the shape a real
       // Graph API outage takes. Count it too, or isConnected() would never
       // trip and the disconnect alert would never fire (issue #218).
+      this.recordSendFailure();
+      throw err instanceof Error ? err : new Error(`WhatsApp Cloud send failed: ${String(err)}`);
+    }
+    if (!res.ok) {
+      this.recordSendFailure();
+      const detail = await res.text().catch(() => '');
+      throw new Error(`WhatsApp Cloud send failed: ${res.status} ${detail}`);
+    }
+    this.consecutiveSendFailures = 0;
+  }
+
+  /**
+   * Post a generated image (with an optional caption) to a conversation
+   * (issue #356) — Cloud parity with Baileys'/Discord's `sendImage`. Unlike
+   * `sendText`'s single-call shape, Meta's Cloud API requires two Graph
+   * calls: upload the bytes to get a media id, then send a message
+   * referencing that id. The window is checked, and the caption filtered,
+   * before either call — so an out-of-window send or an unredacted secret
+   * never reaches Meta at all, not even via the upload.
+   */
+  async sendImage(
+    conversationId: string,
+    image: { data: Buffer; filename: string; mimeType: string },
+    caption?: string,
+  ): Promise<void> {
+    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
+    if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
+    this.assertWithinCustomerServiceWindow(conversationId);
+
+    const filteredCaption = caption !== undefined ? await this.filtered(caption) : undefined;
+    const mediaId = await this.uploadMedia(phoneNumberId, accessToken, image);
+    await this.sendImageMessage(phoneNumberId, accessToken, conversationId, mediaId, filteredCaption);
+  }
+
+  /** Step 1 of `sendImage`: upload the raw bytes, returning the Graph-assigned media id. */
+  private async uploadMedia(
+    phoneNumberId: string,
+    accessToken: string,
+    image: { data: Buffer; filename: string; mimeType: string },
+  ): Promise<string> {
+    const form = new FormData();
+    form.set('messaging_product', 'whatsapp');
+    form.set('type', image.mimeType);
+    form.set('file', new Blob([new Uint8Array(image.data)], { type: image.mimeType }), image.filename);
+
+    let res: Response;
+    try {
+      res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+      });
+    } catch (err) {
+      // Same rationale as sendChunk: a rejected fetch is as much a send
+      // failure as a non-OK response, and must count toward isConnected().
+      this.recordSendFailure();
+      throw err instanceof Error ? err : new Error(`WhatsApp Cloud media upload failed: ${String(err)}`);
+    }
+    if (!res.ok) {
+      this.recordSendFailure();
+      const detail = await res.text().catch(() => '');
+      throw new Error(`WhatsApp Cloud media upload failed: ${res.status} ${detail}`);
+    }
+    const body = (await res.json().catch(() => ({}))) as { id?: string };
+    if (!body.id) {
+      this.recordSendFailure();
+      throw new Error('WhatsApp Cloud media upload failed: no media id in response');
+    }
+    return body.id;
+  }
+
+  /** Step 2 of `sendImage`: send the message referencing the uploaded media id. */
+  private async sendImageMessage(
+    phoneNumberId: string,
+    accessToken: string,
+    to: string,
+    mediaId: string,
+    caption?: string,
+  ): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to,
+          type: 'image',
+          image: caption !== undefined ? { id: mediaId, caption } : { id: mediaId },
+        }),
+      });
+    } catch (err) {
       this.recordSendFailure();
       throw err instanceof Error ? err : new Error(`WhatsApp Cloud send failed: ${String(err)}`);
     }
