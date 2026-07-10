@@ -116,23 +116,28 @@ export function resetStatusCacheForTests(): void {
  * One poll. Never throws — a fetch failure or a malformed response body both
  * log a warning and leave the existing cache (if any) untouched, so
  * check_status always degrades to the last-known-good value with its age
- * rather than an error or a silently-stale-but-unlabelled answer.
+ * rather than an error or a silently-stale-but-unlabelled answer. Returns
+ * whether the cache was actually updated (issue #321): the caller uses this
+ * boolean to drive consecutive-failure alerting without this function ever
+ * needing to throw or change its degrade-on-failure contract.
  */
 export async function pollAnthropicStatus(
   fetchText: (url: string) => Promise<string> = defaultFetchText,
-): Promise<void> {
+): Promise<boolean> {
   const url = config.statusCheck.apiUrl;
   let body: string;
   try {
     body = await fetchText(url);
   } catch (err) {
     logger.warn({ err, url }, 'Anthropic status check: fetch failed; keeping last-known-good');
-    return;
+    return false;
   }
   try {
     cache = { fetchedAt: new Date(), summary: parseStatusSummary(body) };
+    return true;
   } catch (err) {
     logger.warn({ err, url }, 'Anthropic status check: malformed summary; keeping last-known-good');
+    return false;
   }
 }
 

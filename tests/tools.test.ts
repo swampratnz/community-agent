@@ -60,6 +60,8 @@ const {
   REACTION_RATE_LIMIT_PER_DAY,
   THREAD_NAME_MAX_CHARS,
   THREAD_CREATE_RATE_LIMIT_PER_HOUR,
+  WARN_USER_RATE_LIMIT_PER_HOUR,
+  ANNOUNCE_RATE_LIMIT_PER_HOUR,
 } = await import('../src/agent/tools.js');
 const {
   MODERATION_ACTION_KINDS,
@@ -116,6 +118,9 @@ const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
 const POLL_HANDLER_ADMIN = `${RUN}-poll-handler-admin`;
 const THREAD_HANDLER_ADMIN = `${RUN}-thread-handler-admin`;
+const WARN_RATE_HANDLER_ADMIN = `${RUN}-warn-rate-handler-admin`;
+const WARN_RATE_HANDLER_TARGET = `${RUN}-warn-rate-handler-target`;
+const ANNOUNCE_RATE_HANDLER_ADMIN = `${RUN}-announce-rate-handler-admin`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
 const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
 const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
@@ -196,6 +201,13 @@ after(async () => {
       `DELETE FROM admin_audit WHERE action_kind = 'clear_warnings' AND actor_user_id LIKE $1`,
       [`${RUN}-bystander-admin%`],
     );
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [WARN_RATE_HANDLER_TARGET]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'warn_user' AND actor_user_id LIKE $1`, [
+      `${WARN_RATE_HANDLER_ADMIN}%`,
+    ]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'announce' AND actor_user_id LIKE $1`, [
+      `${ANNOUNCE_RATE_HANDLER_ADMIN}%`,
+    ]);
   }
   await closeDb();
 });
@@ -2107,6 +2119,62 @@ test(
   },
 );
 
+test(
+  'SECURITY: warn_user enforces a per-conversation rate cap instead of running unbounded (issue #315) — ' +
+    'calls at/under the cap execute and are audited; the over-cap call is refused, never reaches ' +
+    'performAdminAction, and writes no audit record',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warn-rate-cap`;
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, created_at)
+       VALUES ('discord',$1,$2,'member','inbound','hi', now())`,
+      [convo, WARN_RATE_HANDLER_TARGET],
+    );
+    let performAdminActionCalls = 0;
+    const adapter = moderateAdapter({
+      performAdminAction: async () => {
+        performAdminActionCalls += 1;
+        return 'warned';
+      },
+    });
+    const handler = moderateHandler({ conversationId: convo, userId: WARN_RATE_HANDLER_ADMIN, adapter });
+
+    for (let i = 0; i < WARN_USER_RATE_LIMIT_PER_HOUR; i++) {
+      const result = await handler.handler({
+        action: 'warn_user',
+        targetUserId: WARN_RATE_HANDLER_TARGET,
+        reason: `warn ${i}`,
+      });
+      assert.equal(result.isError, false, `warning ${i} within the cap must succeed`);
+    }
+    assert.equal(performAdminActionCalls, WARN_USER_RATE_LIMIT_PER_HOUR);
+
+    const overLimit = await handler.handler({
+      action: 'warn_user',
+      targetUserId: WARN_RATE_HANDLER_TARGET,
+      reason: 'one too many',
+    });
+    assert.match(overLimit.content[0]?.text ?? '', /warn limit/);
+    assert.equal(overLimit.isError, true);
+    assert.equal(
+      performAdminActionCalls,
+      WARN_USER_RATE_LIMIT_PER_HOUR,
+      'the refused call must never reach performAdminAction (and so is never audited as a success)',
+    );
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'warn_user' AND actor_user_id = $1`,
+      [WARN_RATE_HANDLER_ADMIN],
+    );
+    assert.equal(
+      rows[0].n,
+      WARN_USER_RATE_LIMIT_PER_HOUR,
+      'exactly the within-cap calls are audited; the refusal writes no admin_audit row',
+    );
+  },
+);
+
 // announce (issue #270's canPostTo fallback applies here too, alongside
 // create_poll/create_thread below): a cross-platform outward-posting tool,
 // unlike the Discord-only create_poll/create_thread. This adapter stub lets
@@ -2297,6 +2365,49 @@ test(
     const result = await handler.handler({ message: 'Meetup tonight!', conversationId: targetConvo });
     assert.match(result.content[0]?.text ?? '', /deliberate safety boundary/);
     assert.equal(result.isError, true);
+  },
+);
+
+test(
+  'SECURITY: announce enforces a per-conversation rate cap instead of running unbounded (issue #315) — ' +
+    'calls at/under the cap execute and are audited; the over-cap call is refused, never reaches ' +
+    'sendMessage, and writes no audit record',
+  async () => {
+    const convo = `${RUN}-announce-rate-cap`;
+    let sendMessageCalls = 0;
+    const adapter = announceAdapter({
+      sendMessage: async () => {
+        sendMessageCalls += 1;
+      },
+    });
+    const handler = announceHandler({ conversationId: convo, userId: ANNOUNCE_RATE_HANDLER_ADMIN, adapter });
+
+    for (let i = 0; i < ANNOUNCE_RATE_LIMIT_PER_HOUR; i++) {
+      const result = await handler.handler({ message: `Announcement ${i}` });
+      assert.equal(result.isError, false, `announcement ${i} within the cap must succeed`);
+    }
+    assert.equal(sendMessageCalls, ANNOUNCE_RATE_LIMIT_PER_HOUR);
+
+    const overLimit = await handler.handler({ message: 'one too many' });
+    assert.match(overLimit.content[0]?.text ?? '', /announce limit/);
+    assert.equal(overLimit.isError, true);
+    assert.equal(
+      sendMessageCalls,
+      ANNOUNCE_RATE_LIMIT_PER_HOUR,
+      'the refused call must never reach sendMessage (and so is never audited as a success)',
+    );
+
+    if (hasDb) {
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'announce' AND actor_user_id = $1`,
+        [ANNOUNCE_RATE_HANDLER_ADMIN],
+      );
+      assert.equal(
+        rows[0].n,
+        ANNOUNCE_RATE_LIMIT_PER_HOUR,
+        'exactly the within-cap calls are audited; the refusal writes no admin_audit row',
+      );
+    }
   },
 );
 
@@ -3163,6 +3274,10 @@ test(
         "a 'mi'-preference caller must fall back to the default text once the mi variant is cleared again",
       );
     } finally {
+      // Reset the default column too (only the mi variant was cleared above)
+      // — otherwise it leaks into any later run and trips the "guidelines
+      // start unset" precondition elsewhere in this file.
+      await setTool.handler({ text: '' });
       await pool.query(
         `DELETE FROM language_prefs WHERE platform = 'discord' AND user_id = ANY($1::text[])`,
         [[miPreferenceUser, enPreferenceUser]],
