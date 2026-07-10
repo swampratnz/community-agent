@@ -395,20 +395,25 @@ jobs:
               git commit --no-edit
             fi
           fi
-          # Claim success only if the tree is fully merged AND a new commit
-          # exists. Any remaining conflict (a non-manifest file, or a refused
-          # lower) aborts cleanly so the full agent below handles it from a
-          # pristine branch tip.
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-            git merge --abort || true
-            echo "resolved=false" >> "$GITHUB_OUTPUT"
-            echo "Fast-path: conflicts beyond ${MANIFEST} remain — deferring to the resolve agent."
-          elif [ "$(git rev-parse HEAD)" != "$before" ]; then
+          # Success requires BOTH a fully-merged tree AND a new commit. This is
+          # deliberately not keyed on "any unmerged paths remain": the
+          # test:security:fix REFUSAL path (a real SECURITY: test was deleted, so
+          # the count would drop) has already `--theirs`-staged the manifest —
+          # so no path is "unmerged" — yet nothing was committed and a merge is
+          # still in progress. Keying on `HEAD unchanged` catches that case and
+          # sends it to the else branch, which aborts the merge and hands the
+          # fallback agent a PRISTINE tip (the invariant this step promises).
+          # `git merge --abort` here also covers a genuine multi-file conflict.
+          if [ -z "$(git diff --name-only --diff-filter=U)" ] && [ "$(git rev-parse HEAD)" != "$before" ]; then
             echo "resolved=true" >> "$GITHUB_OUTPUT"
-            echo "Fast-path: resolved ${MANIFEST} deterministically (no LLM)."
+            echo "Fast-path: resolved deterministically (no LLM) — security-floor.json regenerated (or a clean merge)."
           else
+            # Abort ANY in-progress merge — a genuine non-manifest conflict, OR
+            # the --theirs-staged-but-refused deletion case above — so the
+            # fallback agent starts from a pristine branch tip.
+            git merge --abort 2>/dev/null || git reset --merge 2>/dev/null || true
             echo "resolved=false" >> "$GITHUB_OUTPUT"
-            echo "Fast-path: no new commit produced — deferring to the resolve agent."
+            echo "Fast-path: not a clean security-floor.json-only resolution — deferring to the resolve agent from a pristine tip."
           fi
 
       # The fast-path resolves + commits, but a push that RE-TRIGGERS the PR's
