@@ -118,7 +118,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 ### 3. Abuse / cost runaway
 **Controls**
 - Per-user rate limit (8 msg/min).
-- `AGENT_MAX_TURNS` caps the agentic loop per request.
+- `AGENT_MAX_TURNS` caps the agentic loop per request, **tiered by role**
+  (issue #347): member/guest turns — the highest-volume, lowest-trust
+  segment, restricted to the narrower `MEMBER_TOOLS` surface with no
+  WebSearch — are capped by the lower `AGENT_MAX_TURNS_MEMBER` (default 6)
+  instead of the admin/super_admin ceiling (`AGENT_MAX_TURNS`, default 12),
+  bounding the worst-case cost of a stuck or injected member/guest turn to
+  roughly half of today's uniform value. admin/super_admin behaviour is
+  unchanged. Wired in `buildQueryOptions` (`src/agent/core.ts`), which
+  already branches on role for WebSearch gating.
 - Per-conversation serialisation bounds concurrent `query()` calls.
 - `cost_usd` is recorded per outbound turn for monitoring.
 - The bot only responds when **addressed** (mention/reply) or in a direct
