@@ -1328,6 +1328,34 @@ export async function listAdmins(): Promise<AdminIdentity[]> {
   }));
 }
 
+/**
+ * Resolved display names of every `role = 'admin'` community_users row for a
+ * platform (issue #360) — the same community_users→server_roster
+ * name-resolution precedence as `resolveDisplayName`, applied across every
+ * admin row instead of one caller. An admin with no resolvable name anywhere
+ * (neither table has a non-empty display_name) is omitted entirely, never
+ * rendered as a blank/empty name. Deterministically ordered by
+ * `community_users.id` so repeat calls (and the gated notice built from
+ * them) are stable. Env-sourced super admins are never in `community_users`,
+ * so — like `listAdmins()` above — they are excluded here for the same
+ * reason: they're operator-level, not a member's first point of contact.
+ * Query is parameterised on `platform` alone; nothing here is influenced by
+ * caller-supplied message content.
+ */
+export async function listAdminDisplayNames(platform: Platform): Promise<string[]> {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(NULLIF(cu.display_name, ''), NULLIF(sr.display_name, '')) AS display_name
+       FROM community_users cu
+       LEFT JOIN server_roster sr ON sr.platform = cu.platform AND sr.user_id = cu.platform_user_id
+      WHERE cu.platform = $1 AND cu.role = 'admin'
+      ORDER BY cu.id ASC`,
+    [platform],
+  );
+  return rows
+    .map((r) => r.display_name as string | null)
+    .filter((name): name is string => name != null && name.trim() !== '');
+}
+
 /** Remove a member row entirely. Refuses to remove admins (revoke first). */
 /**
  * If a person group is left with fewer than two members, dissolve it: clear

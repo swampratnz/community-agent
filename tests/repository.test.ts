@@ -81,6 +81,7 @@ const {
   upsertMember,
   getMemberRole,
   resolveDisplayName,
+  listAdminDisplayNames,
   removeMember,
   linkMembers,
   unlinkMember,
@@ -3765,6 +3766,151 @@ test(
       uid,
     ]);
     await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [uid]);
+  },
+);
+
+test(
+  'listAdminDisplayNames: resolves community_users->server_roster names for admins only, excludes members, omits admins with no resolvable name, platform-scoped',
+  { skip },
+  async () => {
+    const adminWithOwnName = `${RUN}-lad-admin-own`;
+    const adminFromRoster = `${RUN}-lad-admin-roster`;
+    const adminNoName = `${RUN}-lad-admin-noname`;
+    const member = `${RUN}-lad-member`;
+    const otherPlatformAdmin = `${RUN}-lad-admin-whatsapp`;
+
+    await upsertMember({
+      platform: 'discord',
+      userId: adminWithOwnName,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: 'Admin Own Name',
+    });
+    // Roster-only display name (issue #360 growth path: same fallback resolveDisplayName uses).
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, 'Admin Roster Name')`,
+      [adminFromRoster],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: adminFromRoster,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    // No display name anywhere — must be OMITTED, never rendered as a blank/empty string.
+    await upsertMember({ platform: 'discord', userId: adminNoName, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({
+      platform: 'discord',
+      userId: member,
+      role: 'member',
+      addedBy: `${RUN}-actor`,
+      displayName: 'Just A Member',
+    });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: otherPlatformAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: 'WhatsApp Admin',
+    });
+
+    const discordNames = await listAdminDisplayNames('discord');
+    assert.ok(discordNames.includes('Admin Own Name'), 'membership display name is resolved');
+    assert.ok(discordNames.includes('Admin Roster Name'), 'falls back to the roster name');
+    assert.ok(!discordNames.includes('Just A Member'), 'a plain member is never listed');
+    assert.ok(
+      !discordNames.some((n) => n.length === 0),
+      'an admin with no resolvable name anywhere is omitted, not rendered blank',
+    );
+    assert.equal(discordNames.length, discordNames.filter((n) => n.trim().length > 0).length);
+    assert.ok(!discordNames.includes('WhatsApp Admin'), 'query is platform-scoped');
+
+    const whatsappNames = await listAdminDisplayNames('whatsapp');
+    assert.ok(whatsappNames.includes('WhatsApp Admin'));
+    assert.ok(!whatsappNames.includes('Admin Own Name'));
+
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+      [adminWithOwnName, adminFromRoster, adminNoName, member, otherPlatformAdmin],
+    ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
+      adminFromRoster,
+    ]);
+  },
+);
+
+test(
+  'listAdminDisplayNames: deterministically ordered (stable across repeat calls), independent of insertion race',
+  { skip },
+  async () => {
+    const first = `${RUN}-lad-order-1`;
+    const second = `${RUN}-lad-order-2`;
+    const third = `${RUN}-lad-order-3`;
+    await upsertMember({
+      platform: 'discord',
+      userId: first,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Ordered One`,
+    });
+    await upsertMember({
+      platform: 'discord',
+      userId: second,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Ordered Two`,
+    });
+    await upsertMember({
+      platform: 'discord',
+      userId: third,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Ordered Three`,
+    });
+
+    const callA = (await listAdminDisplayNames('discord')).filter((n) => n.startsWith(RUN));
+    const callB = (await listAdminDisplayNames('discord')).filter((n) => n.startsWith(RUN));
+    assert.deepEqual(callA, callB, 'repeat calls return the same order — no nondeterministic shuffling');
+    assert.deepEqual(
+      callA,
+      [`${RUN} Ordered One`, `${RUN} Ordered Two`, `${RUN} Ordered Three`],
+      'ordered by insertion (community_users.id), matching creation order',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+      [first, second, third],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: listAdminDisplayNames returns bare display-name strings only — never platform_user_id, added_by, or any other column, and is parameterised on platform alone',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-lad-sec-admin`;
+    await upsertMember({
+      platform: 'discord',
+      userId: adminId,
+      role: 'admin',
+      addedBy: `${RUN}-sec-actor`,
+      displayName: `${RUN} Security Admin`,
+    });
+
+    const names = await listAdminDisplayNames('discord');
+    const mine = names.filter((n) => n.startsWith(RUN));
+    assert.equal(mine.length, 1);
+    assert.equal(typeof mine[0], 'string', 'each entry is a bare string, never an object with extra columns');
+    assert.ok(!mine[0].includes(adminId), 'the raw platform_user_id never leaks into the resolved name');
+    assert.ok(!mine[0].includes(`${RUN}-sec-actor`), 'added_by never leaks into the resolved name');
+
+    // The function signature takes only `platform` — there is no parameter
+    // through which caller-supplied (guest) message content could steer
+    // which names are returned; two calls with the same platform always see
+    // the same server-side-sourced rows.
+    assert.deepEqual(await listAdminDisplayNames('discord'), names);
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
   },
 );
 

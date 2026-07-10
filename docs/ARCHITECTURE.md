@@ -342,6 +342,21 @@ weakening it:
    gateway intent: the `GuildMembers` intent the bot already holds for role
    resolution streams these events anyway; a `GuildMember` partial is enabled
    so leaves of uncached members still fire.
+4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
+   static "ask a community admin" pointer a gated guest gets on every
+   addressed message named no one to ask. `listAdminDisplayNames(platform)`
+   (`src/storage/repository.ts`) resolves display names for every
+   `community_users` `role = 'admin'` row on that platform — same
+   community_users→server_roster precedence as `resolveDisplayName` — and
+   `buildGatedNotice` renders up to `GATED_NOTICE_MAX_ADMIN_NAMES` (3) of
+   them into the notice (e.g. "Ask a community admin — Alice or Bob — ..."),
+   TTL-cached (30s, mirroring `storage/policies.ts`) so this hot, repeated
+   path never adds a DB round-trip per gated message. Zero resolvable names
+   (fresh deploy, or admins with no stored/rostered display name) renders
+   the unchanged static `GATED_NOTICE`, byte-for-byte — never an empty-list
+   sentence. Env-sourced super admins are excluded, same rationale as
+   `listAdmins()`'s digest recipients: operator-level, not a member's first
+   point of contact.
 
 ## Offline context builder
 

@@ -10,6 +10,9 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ### Added
 - `list_knowledge_conflicts` (#330): an **admin**, read-only audit tool that surfaces same-scope knowledge entry pairs about the same topic worded differently enough that they might disagree — a mid-range embedding similarity band sitting between `knowledge_search`'s relevance floor and `list_duplicate_knowledge`'s near-duplicate threshold. Sibling of `list_duplicate_knowledge` (#316), same shape and gating, opposite band; each pair is framed as a candidate for admin review (merge via `update_knowledge` or retire via `delete_knowledge`), never a confirmed contradiction. No new table, no member-facing change, no CONFIRM.
 
+### Changed
+- **The gated-mode "member-only" notice now names an actual admin** (#360): a guest who addresses the bot before being added was told to "ask a community admin" without ever being told who. The notice now names up to 3 known admins by their resolved display name (e.g. "Ask a community admin — Alice or Bob — ..."), TTL-cached so this doesn't add a DB read per message. Falls back to today's exact wording, unchanged, whenever no admin display name is known. Reuses existing `community_users`/`server_roster` data (no new table); never exposes ids, emails, or phone numbers — just names already visible to anyone in the server/group.
+
 ## 2026-07-09
 
 ### Changed
