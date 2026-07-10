@@ -189,6 +189,37 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         logger.error({ err }, 'Channel update handling failed');
       }
     });
+    // Narrows the last documented membership-scope-staleness gap (issue
+    // #350; see `conversationsForUser`'s doc comment / SECURITY.md
+    // "Membership-scope staleness"): a Discord role added to/removed from a
+    // member, a role's own permissions edited, or a role deleted entirely
+    // had no listener, so the more common admin revocation workflow
+    // (pulling someone out of a role, vs. #328's channel-overwrite edit)
+    // still carried the full stale-scope window. Wrapped like every other
+    // listener here: an uncaught throw from a discord.js event handler
+    // propagates out of the client's emit chain and can crash the whole
+    // process (Discord *and* WhatsApp handling).
+    this.client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
+      try {
+        this.onGuildMemberUpdate(oldMember, newMember);
+      } catch (err) {
+        logger.error({ err }, 'Guild member update handling failed');
+      }
+    });
+    this.client.on(Events.GuildRoleUpdate, (oldRole, newRole) => {
+      try {
+        this.onGuildRoleUpdate(oldRole, newRole);
+      } catch (err) {
+        logger.error({ err }, 'Guild role update handling failed');
+      }
+    });
+    this.client.on(Events.GuildRoleDelete, (role) => {
+      try {
+        this.onGuildRoleDelete(role);
+      } catch (err) {
+        logger.error({ err }, 'Guild role delete handling failed');
+      }
+    });
 
     this.client.once(Events.ClientReady, (c) => {
       this.connected = true;
@@ -497,6 +528,63 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   }
 
   /**
+   * Narrows the Discord role-based-access membership-scope-staleness gap
+   * (issue #350): `conversationsForUser` derives per-channel visibility from
+   * `channel.permissionsFor(member)`, which depends on the member's roles,
+   * so a role added to or removed from a member must invalidate the cache
+   * as immediately as a full guild exit (`onGuildMemberRemove`, #286) or a
+   * channel permission-overwrite edit (`onChannelUpdate`, #328) already do.
+   * No-ops on a routine update that leaves the role id set unchanged (e.g.
+   * nickname, avatar, timeout, boost) — mirrors `onChannelUpdate`'s guard
+   * that a routine edit is free. Whole-cache clear on a genuine change,
+   * same correct-by-construction reasoning as the two precedents.
+   *
+   * Fail-safe edge: a partial `oldMember` (e.g. wasn't in the member cache
+   * when the event fired) means its role set at the time of the event is
+   * unknowable — treat that as a change and clear the cache rather than
+   * risk silently treating a real revocation as unchanged.
+   */
+  private onGuildMemberUpdate(oldMember: GuildMember | PartialGuildMember, newMember: GuildMember): void {
+    if (newMember.guild.id !== config.discord.guildId) return;
+    if (oldMember.partial || !this.roleIdSetsEqual(oldMember.roles.cache, newMember.roles.cache)) {
+      this.membershipCache.clear();
+    }
+  }
+
+  /**
+   * Narrows the same gap as `onGuildMemberUpdate` from the other direction:
+   * a role's own permissions can change without any member's role list
+   * changing. No-ops on a color/name/hoist-only edit (routine, must stay
+   * free); clears the whole cache on a genuine `permissions` change.
+   */
+  private onGuildRoleUpdate(oldRole: Role, newRole: Role): void {
+    if (newRole.guild.id !== config.discord.guildId) return;
+    if (oldRole.permissions.bitfield !== newRole.permissions.bitfield) {
+      this.membershipCache.clear();
+    }
+  }
+
+  /**
+   * A deleted role can only ever remove access a live `permissionsFor`
+   * check wouldn't already reflect, so this is unconditional (within the
+   * configured guild) — no permission-diff guard needed, unlike
+   * `onGuildRoleUpdate`.
+   */
+  private onGuildRoleDelete(role: Role): void {
+    if (role.guild.id !== config.discord.guildId) return;
+    this.membershipCache.clear();
+  }
+
+  /** True when two member role-collections carry the same set of role ids. */
+  private roleIdSetsEqual(a: ReadonlyMap<string, unknown>, b: ReadonlyMap<string, unknown>): boolean {
+    if (a.size !== b.size) return false;
+    for (const id of a.keys()) {
+      if (!b.has(id)) return false;
+    }
+    return true;
+  }
+
+  /**
    * Idempotent upsert of every current (non-bot) guild member, so the roster
    * covers lurkers who joined before this feature existed. Uses the member
    * list the GuildMembers intent already streams to the bot — no new intent,
@@ -572,11 +660,14 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * Channels in the configured guild the user can currently view, plus their
    * DM with the bot. Backs admin conversation scoping; cached ~60s, but a
    * full guild exit invalidates the cache immediately via
-   * `onGuildMemberRemove`, and a genuine channel permission-overwrite change
-   * in the configured guild invalidates the whole cache immediately via
-   * `onChannelUpdate` (issue #328). The TTL only bounds staleness from
-   * membership changes this adapter still doesn't observe at all —
-   * documented in SECURITY.md.
+   * `onGuildMemberRemove`, a genuine channel permission-overwrite change in
+   * the configured guild invalidates the whole cache immediately via
+   * `onChannelUpdate` (issue #328), and a genuine role change — a role
+   * added to/removed from a member, a role's own permissions edited, or a
+   * role deleted — invalidates the whole cache immediately via
+   * `onGuildMemberUpdate`/`onGuildRoleUpdate`/`onGuildRoleDelete` (issue
+   * #350). The TTL only bounds staleness from membership changes this
+   * adapter still doesn't observe at all — documented in SECURITY.md.
    */
   async conversationsForUser(userId: string): Promise<string[]> {
     const cached = this.membershipCache.get(userId);
