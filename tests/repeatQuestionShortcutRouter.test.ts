@@ -371,13 +371,24 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
   const secondTurn = new Promise<AgentReply>((resolve) => {
     resolveSecond = resolve;
   });
+  // Resolved the instant the SECOND turn's handler is entered — a deterministic
+  // "this turn now holds the conversation's enqueue chain" signal (its `enqueue`
+  // registered before the task ran), so the repeat fired next is guaranteed to
+  // queue BEHIND it. Previously the test gated on a typing-indicator proxy plus
+  // a fixed `sleep`, which raced on loaded CI runners and flaked the ordering
+  // assertion (the #304/#314 build failures).
+  let secondEntered!: () => void;
+  const secondEnteredP = new Promise<void>((resolve) => {
+    secondEntered = resolve;
+  });
   let calls = 0;
   const router = new Router(async () => {
     calls++;
     if (calls === 1) return { text: `${RUN} first answer`, ok: true };
+    secondEntered();
     return secondTurn;
   }, 20);
-  const { adapter, sent, typingCalls, trigger } = makeAdapter();
+  const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
   // Prime the cache with a first successful turn.
@@ -386,12 +397,9 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
 
   // Fire a second, DIFFERENT question that hangs (in flight)...
   const secondDone = trigger(makeMessage({ text: `${RUN} different slow question`, conversationId }));
-  const deadline = Date.now() + 3000;
-  while (typingCalls.length < 1 && Date.now() < deadline) await sleep(5);
-  assert.ok(
-    typingCalls.length >= 1,
-    'the second real turn must already be in flight before the repeat fires',
-  );
+  // Deterministically wait until that turn is executing and holds the enqueue
+  // chain before firing the repeat — no wall-clock guess.
+  await secondEnteredP;
 
   // ...then, without waiting, resend the FIRST (now-cached) text.
   const repeatDone = trigger(makeMessage({ text: cachedText, conversationId }));

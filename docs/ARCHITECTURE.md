@@ -134,16 +134,23 @@ memory**:
    to return just that stale subset, most-overdue first — plus (issue #246) their own
    scoped count of `knowledge_gaps` (below-floor `knowledge_search` misses, the
    pull-only complement to `list_knowledge_gaps`) — conversation-scoped like the
-   open-report count because that table has a `conversation_id` — all sourced
+   open-report count because that table has a `conversation_id` — plus (issue
+   #284) a guild-wide pending `knowledge_candidates` review-queue count (the
+   pull-only complement to `list_knowledge_candidates`) — plus (issue #324)
+   their own scoped count of knowledge entries with repeated unhelpful
+   ratings (`unhelpfulCount >= 2`, the pull-only complement to
+   `list_low_rated_knowledge`), conversation-scoped like the knowledge-gaps
+   count because `answer_feedback` also has a `conversation_id` — all sourced
    from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
-   `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`) so a
-   backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
-   `list_knowledge_gaps`'s own list `limit` is never understated. The DM sends
-   when *any* of the six signals
-   is non-zero, and sends nothing on a quiet week (all zero, no DM, no
-   noise); a persistently untriaged queue re-appears every subsequent weekly
-   tick until it's cleared. Super admins are not enrolled; they keep the
-   on-demand, all-conversation-scoped
+   `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
+   `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`) so a backlog
+   past `list_access_requests`/`list_reports`/`list_suggestions`/
+   `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
+   own list `limit` is never understated. The DM sends when *any* of the
+   eight signals is non-zero, and sends nothing on a quiet week (all zero, no
+   DM, no noise); a persistently untriaged queue re-appears every subsequent
+   weekly tick until it's cleared. Super admins are not enrolled; they keep
+   the on-demand, all-conversation-scoped
    `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`
    tools instead.
 
@@ -238,13 +245,19 @@ of them read as the bot being broken. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
-fixed `_MI` constant instead of the English default. The same treatment
-extends to the four membership/admin-grant and suggestion/report-resolution
-DMs (`notifyMemberApproved`/`notifyAdminApproved`/`notifySuggestionResolved`/
-`notifyReportResolved` in `src/agent/tools.ts`, issue #331): each now takes
-the target's `platform`, reads their standing preference, and picks the
-matching `_MI` variant (every status branch, for the two resolution DMs),
-while the member's own echoed suggestion/report text stays untranslated.
+fixed `_MI` constant instead of the English default. The auto-moderation
+warn/block DMs (`Moderator.scan()`, `src/moderation/moderator.ts`) also honour
+a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
+is read once per flagged message (defensively, degrading to `'auto'` on
+failure so a lookup error can never skip or delay warning/mute enforcement)
+and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default. The
+same treatment extends to the four membership/admin-grant and
+suggestion/report-resolution DMs (`notifyMemberApproved`/`notifyAdminApproved`/
+`notifySuggestionResolved`/`notifyReportResolved` in `src/agent/tools.ts`,
+issue #331): each now takes the target's `platform`, reads their standing
+preference, and picks the matching `_MI` variant (every status branch, for the
+two resolution DMs), while the member's own echoed suggestion/report text stays
+untranslated.
 
 ## Onboarding (gated mode)
 
