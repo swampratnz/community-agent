@@ -10,9 +10,8 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { GATED_NOTICE, GATED_NOTICE_MAX_ADMIN_NAMES, makeGatedNoticeBuilder, renderGatedNotice } = await import(
-  '../src/gatedNotice.js'
-);
+const { GATED_NOTICE, GATED_NOTICE_MAX_ADMIN_NAMES, makeGatedNoticeBuilder, renderGatedNotice } =
+  await import('../src/gatedNotice.js');
 
 // Pure-renderer tests (acceptance criteria 2/3/4 for issue #360) — no DB, no
 // Router, mirroring rateLimitNotice.test.ts's pure-function unit tests.
