@@ -36,6 +36,14 @@ import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 const GATED_NOTICE =
   'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
 
+// Fixed, human-authored te reo Māori variant (issue #363), served instead of
+// GATED_NOTICE to a gated guest with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — e.g. a former member who set the
+// preference before being removed. Same trust level as the English constant:
+// no model call, no translation, no injection surface.
+export const GATED_NOTICE_MI =
+  'Kia ora! He kaupapa mema anake tēnei kaiāwhina. Tonoa he kaiwhakahaere hapori ki te tāpiri i a koe hei mema, kātahi ka taea e au te āwhina.';
+
 // Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
 // ackClassifier.ts). Sent via send() so outbound filtering still applies;
 // deliberately not counted toward the daily reply budget (no outbound
@@ -359,9 +367,17 @@ export class Router {
               logger.warn({ err }, 'Failed to send guest knowledge-shortcut reply'),
             );
           } else {
-            await this.send(adapter, msg.conversationId, GATED_NOTICE).catch((err) =>
-              logger.warn({ err }, 'Failed to send gated notice'),
-            );
+            // Lookup fires only on this static-notice branch — never on the
+            // guest-knowledge-shortcut-hit branch above, and never on the
+            // rate-limited path (the `if (!this.rateLimited(userKey))` guard),
+            // so no extra DB read is paid where no gated notice is sent
+            // (issue #363 adversarial review).
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            await this.send(
+              adapter,
+              msg.conversationId,
+              lang === 'mi' ? GATED_NOTICE_MI : GATED_NOTICE,
+            ).catch((err) => logger.warn({ err }, 'Failed to send gated notice'));
           }
         }
       }
