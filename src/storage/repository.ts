@@ -361,6 +361,29 @@ export async function getInteractionAuthorByMessageId(
   return rows[0]?.user_id ?? null;
 }
 
+/**
+ * The stored content of an archived message, or null if the bot never stored
+ * it (issue #312). Read-only, `SELECT`-only variant of
+ * `getInteractionAuthorByMessageId`, scoped the same way — lets `moderate`'s
+ * `delete_message` show the admin a truncated preview of what they're
+ * actually confirming, sourced only from a row the bot already archived
+ * (never a live platform fetch, never model-composed text).
+ */
+export async function getInteractionContentByMessageId(
+  platform: Platform,
+  conversationId: string,
+  messageId: string,
+): Promise<string | null> {
+  const { rows } = await pool.query(
+    `SELECT content FROM interactions
+      WHERE platform = $1 AND conversation_id = $2 AND message_id = $3
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [platform, conversationId, messageId],
+  );
+  return rows[0]?.content ?? null;
+}
+
 // --- Sessions --------------------------------------------------------------
 
 export interface StoredSession {
