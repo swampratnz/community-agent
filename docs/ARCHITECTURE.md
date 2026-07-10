@@ -238,7 +238,13 @@ of them read as the bot being broken. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
-fixed `_MI` constant instead of the English default.
+fixed `_MI` constant instead of the English default. The same treatment
+extends to the four membership/admin-grant and suggestion/report-resolution
+DMs (`notifyMemberApproved`/`notifyAdminApproved`/`notifySuggestionResolved`/
+`notifyReportResolved` in `src/agent/tools.ts`, issue #331): each now takes
+the target's `platform`, reads their standing preference, and picks the
+matching `_MI` variant (every status branch, for the two resolution DMs),
+while the member's own echoed suggestion/report text stays untranslated.
 
 ## Onboarding (gated mode)
 
