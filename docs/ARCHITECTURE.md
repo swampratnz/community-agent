@@ -140,18 +140,26 @@ memory**:
    their own scoped count of knowledge entries with repeated unhelpful
    ratings (`unhelpfulCount >= 2`, the pull-only complement to
    `list_low_rated_knowledge`), conversation-scoped like the knowledge-gaps
-   count because `answer_feedback` also has a `conversation_id` — all sourced
-   from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
+   count because `answer_feedback` also has a `conversation_id` — plus (issue
+   #344) a guild-wide, Discord-only joined-this-week/left-this-week roster
+   pulse, sourced from `rosterCounts(admin.platform)` — the same
+   `{ total, joinedThisWeek, leftThisWeek }` aggregate `list_roster` already
+   computes over `server_roster` (issue #47), now pushed instead of pull-only.
+   As bare integers with no member name/id, it's guild-wide like the
+   access-request/suggestion/candidate counts, not conversation-scoped;
+   `server_roster` is Discord-only, so `rosterCounts('whatsapp')` is always
+   zeros, leaving a WhatsApp admin's digest unaffected. All these counts are
+   sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
-   `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`) so a backlog
-   past `list_access_requests`/`list_reports`/`list_suggestions`/
+   `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`)
+   so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. The DM sends when *any* of the
-   eight signals is non-zero, and sends nothing on a quiet week (all zero, no
+   nine signals is non-zero, and sends nothing on a quiet week (all zero, no
    DM, no noise); a persistently untriaged queue re-appears every subsequent
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped
-   `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`
+   `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`/`list_roster`
    tools instead.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude

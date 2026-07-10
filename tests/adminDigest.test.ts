@@ -44,6 +44,9 @@ const {
   deleteKnowledge,
   insertContextDigest,
   insertKnowledgeCandidate,
+  upsertRosterMember,
+  markRosterLeave,
+  rosterCounts,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -266,6 +269,81 @@ test('buildAdminDigestMessage: the low-rated-knowledge line never contains entry
   assert.ok(
     !/title|rater|user_id/i.test(message),
     'no knowledge-feedback field name or content ever leaks into the digest text',
+  );
+});
+
+test('buildAdminDigestMessage: roster-growth line appears only when joined/left are non-zero, and all TEN signals zero -> null (issue #344)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all ten signals zero — including roster joined/left — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  assert.ok(message, 'a non-zero other-signal count alone still produces a DM');
+  assert.ok(
+    !message.includes('📈'),
+    'no roster-growth line when joined/left are both zero, even though the DM is non-empty',
+  );
+});
+
+test('buildAdminDigestMessage: roster-growth line reflects joined-only, left-only, and both (issue #344)', () => {
+  const joinedOnly = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 3, 0);
+  assert.ok(joinedOnly);
+  const joinedLines = joinedOnly.split('\n').filter((l) => l.includes('📈'));
+  assert.equal(joinedLines.length, 1, 'exactly one roster-growth line');
+  assert.match(joinedLines[0], /^📈 3 joined this week — run `list_roster` for detail\.$/);
+
+  const leftOnly = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 2);
+  assert.ok(leftOnly);
+  assert.match(leftOnly, /^📈 2 left this week — run `list_roster` for detail\.$/);
+
+  const both = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 4, 1);
+  assert.ok(both);
+  assert.match(both, /^📈 4 joined, 1 left this week — run `list_roster` for detail\.$/);
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('📈'),
+    'no roster-growth line when both joined and left are zero',
+  );
+});
+
+test('SECURITY: the roster-growth line is a deterministic function of (joinedThisWeek, leftThisWeek) only, and never carries a display name, user id, or platform id (issue #344)', () => {
+  const secretName = 'Very Identifiable Display Name';
+  const secretUserId = 'discord-user-1234567890';
+  const secretPlatformId = 'whatsapp:+64211234567';
+
+  // The digest DM is built from bare integers only — buildAdminDigestMessage
+  // never receives roster row content, so there is nothing to smuggle in via
+  // an unrelated argument either. Assert the two calls (identical counts,
+  // different unrelated arguments) produce byte-identical output.
+  const a = buildAdminDigestMessage([{ representative: secretName, count: 1 }], 0, 0, 0, 0, 0, 0, 0, 0, 5, 3);
+  const b = buildAdminDigestMessage(
+    [{ representative: secretUserId, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    3,
+  );
+  assert.ok(a && b);
+  const rosterLine = (m: string) => m.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    rosterLine(a),
+    rosterLine(b),
+    'the roster-growth line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(rosterLine(a)!, /^📈 5 joined, 3 left this week — run `list_roster` for detail\.$/);
+  assert.ok(
+    !rosterLine(a)!.includes(secretName) &&
+      !rosterLine(a)!.includes(secretUserId) &&
+      !rosterLine(a)!.includes(secretPlatformId),
+    'SECURITY: no display name, user id, or platform id ever appears in the roster-growth line — bare counts only',
   );
 });
 
@@ -1145,5 +1223,125 @@ test(
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
       [admin1Id, admin2Id],
     ]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: rosterCounts(admin.platform) joined/left counts pass through to the digest DM (issue #344)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-roster-admin`;
+    const joinedUser1 = `${RUN}-roster-wire-joined1`;
+    const joinedUser2 = `${RUN}-roster-wire-joined2`;
+    const leftUser1 = `${RUN}-roster-wire-left1`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    // Two fresh joins and one fresh leave, isolated by unique RUN-prefixed
+    // ids. rosterCounts is guild-wide by platform (not admin-scoped, per
+    // list_roster's own unscoped behaviour), so a concurrently-running test
+    // file could add more — assert lower bounds (>=), not exact equality,
+    // the same tolerance repository.test.ts's own rosterCounts test uses.
+    await upsertRosterMember({ platform: 'discord', userId: joinedUser1 });
+    await upsertRosterMember({ platform: 'discord', userId: joinedUser2 });
+    await upsertRosterMember({ platform: 'discord', userId: leftUser1 });
+    await markRosterLeave('discord', leftUser1);
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-roster-wire-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(
+      sent.length,
+      1,
+      'the roster joins/leave alone trigger a digest — previously this would have been a quiet week',
+    );
+    const rosterLine = sent[0].text.split('\n').find((l) => l.includes('📈'));
+    assert.ok(rosterLine, 'the roster-growth line is present');
+    const match = rosterLine.match(
+      /^📈 (\d+) joined(?:, (\d+) left)? this week — run `list_roster` for detail\.$/,
+    );
+    assert.ok(match, `roster line matches the expected format: ${rosterLine}`);
+    assert.ok(
+      Number(match[1]) >= 2,
+      'joinedThisWeek reflects at least the two fixtures just inserted via rosterCounts(admin.platform)',
+    );
+    assert.ok(
+      match[2] !== undefined && Number(match[2]) >= 1,
+      'leftThisWeek reflects at least the one fixture just marked left via rosterCounts(admin.platform)',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [
+      [joinedUser1, joinedUser2, leftUser1],
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "runAdminDigestOnce: a WhatsApp-platform admin's digest is unaffected by roster growth — server_roster is Discord-only (issue #344)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-roster-wa-admin`;
+    const suggesterId = `${RUN}-run-roster-wa-suggester`;
+    await upsertMember({ platform: 'whatsapp', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    // Only src/platforms/discord/adapter.ts ever calls upsertRosterMember/
+    // markRosterLeave — no code path writes a 'whatsapp' row to
+    // server_roster — so rosterCounts('whatsapp') is always zero. Verify
+    // that invariant holds for this run before relying on it, so a future
+    // regression fails loudly here instead of silently in production.
+    assert.deepEqual(
+      await rosterCounts('whatsapp'),
+      { total: 0, joinedThisWeek: 0, leftThisWeek: 0 },
+      "no code path ever writes a whatsapp row to server_roster — rosterCounts('whatsapp') is always zero",
+    );
+
+    // An unrelated pending suggestion (guild-wide signal) so the digest
+    // still sends, proving the rest of this WhatsApp admin's digest is
+    // byte-for-byte unaffected by the new Discord-only roster signal.
+    const created = await createSuggestion({
+      platform: 'whatsapp',
+      userId: suggesterId,
+      displayName: 'wa roster suggester',
+      content: 'unrelated suggestion content',
+    });
+    assert.ok(created);
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'whatsapp',
+      conversationIds: [`${RUN}-c-roster-wa-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the pending suggestion alone triggers a digest');
+    assert.ok(!sent[0].text.includes('📈'), "no roster-growth line — rosterCounts('whatsapp') is all zeros");
+    assert.match(
+      sent[0].text,
+      /💡 \d+ pending suggestion\(s\)/,
+      'the rest of the digest is unaffected by the roster change',
+    );
+
+    await pool.query(`DELETE FROM suggestions WHERE id = $1`, [created.id]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
   },
 );
