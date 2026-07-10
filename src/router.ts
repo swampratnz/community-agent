@@ -906,7 +906,10 @@ export class Router {
         direction: 'outbound',
         content: reply.text,
         costUsd: reply.costUsd,
-        meta: { replyToUserId: msg.userId },
+        meta: {
+          replyToUserId: msg.userId,
+          ...(reply.maxTurnsExceeded === true ? { maxTurnsExceeded: true } : {}),
+        },
       }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
     } finally {
       clearInterval(typingTimer);

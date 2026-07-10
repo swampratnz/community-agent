@@ -3371,6 +3371,30 @@ export async function countKnowledgeGaps(conversationIds: readonly string[], day
 }
 
 /**
+ * Count outbound replies in `conversationIds` over the last `days` that hit
+ * `AGENT_MAX_TURNS`/`AGENT_MAX_TURNS_MEMBER` before finishing, for the weekly
+ * admin digest (#371). Counts both the primary `maxTurnsExceeded: true` stamp
+ * (router.ts's outbound-record call) and the `repeatMaxTurnsShortcut: true`
+ * stamp (#306) — each is a distinct member-facing wall-hit. **Conversation-
+ * scoped** and a true `COUNT(*)`, mirroring `countKnowledgeGaps` exactly.
+ */
+export async function countMaxTurnsFailures(
+  conversationIds: readonly string[],
+  days: number,
+): Promise<number> {
+  if (conversationIds.length === 0) return 0;
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM interactions
+      WHERE direction = 'outbound'
+        AND conversation_id = ANY($1)
+        AND created_at >= now() - ($2 || ' days')::interval
+        AND (meta->>'maxTurnsExceeded' = 'true' OR meta->>'repeatMaxTurnsShortcut' = 'true')`,
+    [[...conversationIds], String(days)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Flip a report's status (resolve/dismiss) — non-destructive, no CONFIRM
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
  * to `conversationIds` so an admin can only resolve reports from
