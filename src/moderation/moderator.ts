@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { Platform } from '../platforms/types.js';
+import type { LanguagePreference } from '../storage/repository.js';
 import { excerptOf, makeWordlistDetector, type Detection } from './wordlist.js';
 
 export interface ScanContext {
@@ -57,11 +58,18 @@ export interface ModeratorDeps {
   classify: Classifier;
   /** True for admins/super admins, who are never warned or muted. */
   isExempt: (platform: Platform, userId: string) => Promise<boolean>;
+  /** Standing language preference (issue #189), read to pick the warn/block DM's language. */
+  getLanguagePreference: (platform: Platform, userId: string) => Promise<LanguagePreference>;
   store: ModerationStore;
   enforcer: ModerationEnforcer;
 }
 
 const MUTED_ROLE_NOTE = 'You can post again once an admin clears your warnings.';
+
+// Fixed, human-authored te reo Māori variant (issue #333), same trust level
+// as MUTED_ROLE_NOTE: no model call, no translation, no injection surface.
+const MUTED_ROLE_NOTE_MI =
+  'Ka taea anō e koe te tuhi i te wā e whakawāteatia ai ō whakatūpato e tētahi kaiwhakahaere.';
 
 export function warnDmText(active: number, limit: number): string {
   return (
@@ -70,8 +78,27 @@ export function warnDmText(active: number, limit: number): string {
   );
 }
 
+// Fixed, human-authored te reo Māori variant (issue #333), served instead of
+// warnDmText to a member with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same trust level as warnDmText: no
+// model call, no translation, no injection surface. Mirrors the
+// pauseNotice.ts/rateLimitNotice.ts/dailyBudgetNotice.ts `_MI` pattern
+// (issue #300).
+export function warnDmTextMi(active: number, limit: number): string {
+  return (
+    `⚠️ Kua tuhia he whakatūpato mō tō karere (${active}/${limit}). ` +
+    `Kia āta kōrero. Ka eke koe ki te ${limit}, ka aukatia koe mō tētahi wā poto.`
+  );
+}
+
 export function blockedDmText(): string {
   return `⛔ You've reached the warning limit and can no longer post in the server. ${MUTED_ROLE_NOTE}`;
+}
+
+// Fixed, human-authored te reo Māori variant (issue #333) of blockedDmText,
+// same pattern/trust level as warnDmTextMi above.
+export function blockedDmTextMi(): string {
+  return `⛔ Kua eke koe ki te tepe whakatūpato, kāore koe e taea te tuhi anō i roto i te hapori. ${MUTED_ROLE_NOTE_MI}`;
 }
 
 /**
@@ -143,6 +170,11 @@ export class Moderator {
       this.deps.strikeWindowDays,
     );
 
+    // Degrades to 'auto' (English) on any lookup failure — same #52 invariant
+    // as getLanguagePreference's own internal catch — so a language-lookup
+    // failure can never skip or delay the enforcement side effects below.
+    const lang = await this.deps.getLanguagePreference(ctx.platform, ctx.userId).catch(() => 'auto' as const);
+
     if (active >= this.deps.strikeLimit) {
       await this.safe(() => this.deps.enforcer.muteUser(ctx.userId), 'mute');
       await this.safe(
@@ -153,7 +185,10 @@ export class Moderator {
           ),
         'block-channel',
       );
-      await this.safe(() => this.deps.enforcer.warnUser(ctx.userId, blockedDmText()), 'block-dm');
+      await this.safe(
+        () => this.deps.enforcer.warnUser(ctx.userId, lang === 'mi' ? blockedDmTextMi() : blockedDmText()),
+        'block-dm',
+      );
       await this.safe(
         () => this.deps.enforcer.postAdminAlert(blockedAlertText(ctx, active, hit)),
         'block-alert',
@@ -168,7 +203,13 @@ export class Moderator {
         'warn-channel',
       );
       await this.safe(
-        () => this.deps.enforcer.warnUser(ctx.userId, warnDmText(active, this.deps.strikeLimit)),
+        () =>
+          this.deps.enforcer.warnUser(
+            ctx.userId,
+            lang === 'mi'
+              ? warnDmTextMi(active, this.deps.strikeLimit)
+              : warnDmText(active, this.deps.strikeLimit),
+          ),
         'warn-dm',
       );
       await this.safe(

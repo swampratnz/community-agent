@@ -21,6 +21,7 @@ import {
   clearUserSessions,
   declineKnowledgeCandidate,
   deleteKnowledge,
+  getInteractionContentByMessageId,
   getKnowledgeContentById,
   deleteMemberNote,
   demoteAdmin,
@@ -1697,6 +1698,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
+      // delete_message's real messageId only reaches the adapter deep inside
+      // CONFIRM/audited; check it upfront so a missing id is refused before
+      // burning the admin's CONFIRM round-trip or writing a failed-but-
+      // recorded audit row (issue #312).
+      if (args.action === 'delete_message' && !args.messageId) {
+        return text('Refusing: delete_message requires messageId.', true);
+      }
 
       const params = {
         reason: args.reason,
@@ -1733,8 +1741,37 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         }
         return text(await run());
       }
+      // delete_message: name the actual message id in the CONFIRM text, plus
+      // a best-effort content preview when the bot has this message stored
+      // (issue #312) — never a hard isKnownMessage gate, since the tool's
+      // most common legitimate target is a message the bot never archived
+      // (ambient archiving is opt-in and off by default). The preview is
+      // sourced only from the stored interaction row, never model-composed
+      // or live-fetched from the platform.
+      let messageSuffix = '';
+      if (args.action === 'delete_message') {
+        messageSuffix = `, message ${args.messageId}`;
+        if (await isKnownMessage(caller.platform, targetConversation, args.messageId!)) {
+          const content = await getInteractionContentByMessageId(
+            caller.platform,
+            targetConversation,
+            args.messageId!,
+          );
+          if (content) {
+            // content is attacker-controlled (the message being moderated,
+            // possibly authored by the very account under review) — strip the
+            // same characters untrusted()/sanitizeName() do before it reaches
+            // this model-visible CONFIRM text, so a planted newline/angle-
+            // bracket/quote can't fake a tag or a second "Reply CONFIRM"
+            // block (the quarantine-escape class from issue #227, flagged in
+            // PR review for #312).
+            const sanitized = content.replace(/[<>"\r\n]/g, ' ');
+            messageSuffix += ` ("${sanitized.slice(0, 80)}${sanitized.length > 80 ? '…' : ''}")`;
+          }
+        }
+      }
       return requireConfirm(
-        `${args.action} on ${args.targetUserId} in ${targetConversation} (reason: ${args.reason})`,
+        `${args.action} on ${args.targetUserId} in ${targetConversation}${messageSuffix} (reason: ${args.reason})`,
         'admin',
         run,
       );

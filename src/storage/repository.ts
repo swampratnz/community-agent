@@ -361,6 +361,29 @@ export async function getInteractionAuthorByMessageId(
   return rows[0]?.user_id ?? null;
 }
 
+/**
+ * The stored content of an archived message, or null if the bot never stored
+ * it (issue #312). Read-only, `SELECT`-only variant of
+ * `getInteractionAuthorByMessageId`, scoped the same way — lets `moderate`'s
+ * `delete_message` show the admin a truncated preview of what they're
+ * actually confirming, sourced only from a row the bot already archived
+ * (never a live platform fetch, never model-composed text).
+ */
+export async function getInteractionContentByMessageId(
+  platform: Platform,
+  conversationId: string,
+  messageId: string,
+): Promise<string | null> {
+  const { rows } = await pool.query(
+    `SELECT content FROM interactions
+      WHERE platform = $1 AND conversation_id = $2 AND message_id = $3
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [platform, conversationId, messageId],
+  );
+  return rows[0]?.content ?? null;
+}
+
 // --- Sessions --------------------------------------------------------------
 
 export interface StoredSession {
@@ -3617,4 +3640,46 @@ export async function listKnowledgeFeedbackSummary(
     params,
   );
   return rows.map(mapKnowledgeFeedbackSummary);
+}
+
+/**
+ * Count distinct knowledge entries with `unhelpfulCount >= minUnhelpful`
+ * (issue #324), for the weekly admin digest — the growth path #287 itself
+ * named. Reuses the SAME `answer_feedback` → `interactions` → `knowledge`
+ * join, scope filter, and `HAVING` clause as `listKnowledgeFeedbackSummary`,
+ * but a true `SELECT count(DISTINCT ...)`, never `.length` of that
+ * function's `LIMIT`-bounded list, so a backlog past its default `limit` of
+ * 20 is not understated. **Conversation-scoped** like `countKnowledgeGaps`/
+ * `countOpenReports` (null = super admin, unrestricted) — an admin never
+ * counts a rating from a conversation they don't participate in. Ratings on
+ * interactions with no `knowledgeEntryId` never join to a `knowledge` row
+ * and are therefore never counted, matching `listKnowledgeFeedbackSummary`'s
+ * existing boundary.
+ */
+export async function countLowRatedKnowledge(
+  conversationIds: readonly string[] | null,
+  minUnhelpful = 2,
+): Promise<number> {
+  const params: unknown[] = [];
+  const filters: string[] = [`(interactions.meta->>'knowledgeEntryId') IS NOT NULL`];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);
+  }
+  params.push(Math.max(Math.trunc(minUnhelpful) || 2, 1));
+  const minUnhelpfulParam = params.length;
+
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM (
+       SELECT knowledge.id
+         FROM answer_feedback
+         JOIN interactions ON interactions.id = answer_feedback.interaction_id
+         JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint
+        WHERE ${filters.join(' AND ')}
+        GROUP BY knowledge.id
+       HAVING count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $${minUnhelpfulParam}
+     ) low_rated`,
+    params,
+  );
+  return Number(rows[0].n);
 }
