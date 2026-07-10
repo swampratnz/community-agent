@@ -11,6 +11,7 @@ import {
   getResponseStyle,
   searchMemory,
   setClaudeSessionId,
+  type LanguagePreference,
 } from '../storage/repository.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
@@ -46,6 +47,16 @@ export interface AgentReply {
    * truthy.
    */
   maxTurnsExceeded?: boolean;
+  /**
+   * The caller's standing language preference for this turn (issue #339),
+   * threaded straight from the same `getLanguagePreference` lookup
+   * `buildSystemPrompt` already uses — no new DB call. Left `undefined` only
+   * when that lookup itself throws (see the try/catch below); a resolved
+   * `'auto'`/`'en'`/`'mi'` is always returned as-is, never coerced. Consumed
+   * downstream by the router's main-reply send to pick the `_MI` outbound
+   * code-policy note.
+   */
+  languagePreference?: LanguagePreference;
 }
 
 /**
@@ -134,9 +145,30 @@ export async function runAgentTurn(
 
   const codeAnswers = await getCodeAnswersPolicy();
   const responseStyle = await getResponseStyle(caller.platform, caller.userId);
-  const languagePreference = await getLanguagePreference(caller.platform, caller.userId);
+  // getLanguagePreference already fails open internally (degrades to 'auto'
+  // on a DB error, see repository.ts) — this try/catch is a second,
+  // independent backstop for the lookup itself throwing/rejecting (e.g. an
+  // injected test double, or a future caller that removes that internal
+  // catch), so a language-preference fault can never take down the whole
+  // turn (issue #52's fail-open invariant). `reply.languagePreference` is
+  // left `undefined` in that case rather than coerced to 'auto', so a caller
+  // can distinguish "resolved to auto" from "lookup failed" if it ever needs
+  // to.
+  let languagePreference: LanguagePreference | undefined;
+  try {
+    languagePreference = await getLanguagePreference(caller.platform, caller.userId);
+  } catch (err) {
+    logger.warn(
+      { err, conversationId: caller.conversationId },
+      'Language-preference lookup failed; degrading the code-policy note to English',
+    );
+  }
   const persona = selectPersona({ text: userText });
-  const systemPrompt = buildSystemPrompt(caller, { codeAnswers, responseStyle, languagePreference }, persona);
+  const systemPrompt = buildSystemPrompt(
+    caller,
+    { codeAnswers, responseStyle, languagePreference: languagePreference ?? 'auto' },
+    persona,
+  );
   // Recalled messages are untrusted user content: they ride in the user turn
   // inside a clearly delimited block, never in the system prompt.
   const prompt = memories.length > 0 ? `${renderMemoryContext(memories)}\n\n${userText}` : userText;
@@ -185,6 +217,7 @@ export async function runAgentTurn(
     sessionId: outcome.sessionId,
     ok: outcome.ok,
     maxTurnsExceeded: outcome.maxTurnsExceeded,
+    languagePreference,
   };
 }
 

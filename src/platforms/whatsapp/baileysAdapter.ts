@@ -504,14 +504,17 @@ export class BaileysAdapter implements PlatformAdapter {
   /**
    * Every outbound path is filtered HERE (secret redaction + code policy) so
    * no caller — router reply, announce, warn, super-admin alert — can forget.
+   * `language` is optional (issue #339): only `sendMessage`'s main-reply path
+   * passes it through; every other call site below omits it, so their output
+   * stays English-only by construction (never `_MI`).
    */
-  private async filtered(text: string): Promise<string> {
-    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp');
+  private async filtered(text: string, language?: 'mi'): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
   }
 
   async sendMessage(out: OutgoingMessage): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text) });
+    await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text, out.language) });
     // Clear the "composing" indicator now that the reply has actually sent.
     // Best-effort: a presence update failing here must not affect the send
     // that already succeeded above.

@@ -38,6 +38,15 @@ test("code policy 'off' removes code blocks entirely", () => {
   assert.match(out, /Enjoy!/);
 });
 
+test("code policy 'off' with language 'mi' returns the te reo Māori note, not the English one (issue #339)", () => {
+  const text = 'Here you go:\n```python\nprint("hi")\n```\nEnjoy!';
+  const out = applyCodePolicy(text, 'off', 'mi');
+  assert.ok(!out.includes('print("hi")'));
+  assert.ok(!out.includes('code omitted'), 'must not fall back to the English note');
+  assert.match(out, /whakakorehia te waehere/);
+  assert.match(out, /Enjoy!/);
+});
+
 test("code policy 'snippets' keeps short blocks, truncates long ones", () => {
   const short = '```js\n' + 'x;\n'.repeat(5) + '```';
   assert.equal(applyCodePolicy(short, 'snippets'), short);
@@ -48,6 +57,27 @@ test("code policy 'snippets' keeps short blocks, truncates long ones", () => {
   assert.ok(out.includes('line14;'));
   assert.ok(!out.includes('line15;'));
   assert.match(out, /snippet truncated/);
+});
+
+test("code policy 'snippets' with language 'mi' truncates and appends the te reo Māori note, not the English one (issue #339)", () => {
+  const long = '```js\n' + Array.from({ length: 40 }, (_, i) => `line${i};`).join('\n') + '\n```';
+  const out = applyCodePolicy(long, 'snippets', 'mi');
+  assert.ok(out.includes('line0;'));
+  assert.ok(out.includes('line14;'));
+  assert.ok(!out.includes('line15;'));
+  assert.ok(!out.includes('snippet truncated'), 'must not fall back to the English note');
+  assert.match(out, /poroa te tauira ki 15 rārangi/);
+});
+
+test('SECURITY: applyCodePolicy/filterOutbound with no language argument (or anything other than "mi") is byte-identical to today (issue #339)', () => {
+  const off = 'Here you go:\n```python\nprint("hi")\n```\nEnjoy!';
+  const long = '```js\n' + Array.from({ length: 40 }, (_, i) => `line${i};`).join('\n') + '\n```';
+
+  assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', undefined));
+  assert.equal(applyCodePolicy(long, 'snippets'), applyCodePolicy(long, 'snippets', undefined));
+  // Any non-'mi' value must never accidentally pick the Māori variant either.
+  assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', 'en' as unknown as 'mi'));
+  assert.equal(filterOutbound(off, 'off'), filterOutbound(off, 'off', [], 'discord', undefined));
 });
 
 test('SECURITY: an UNTERMINATED code fence cannot bypass the policy', () => {
@@ -159,4 +189,10 @@ test('filterOutbound: whatsapp platform applies markdown conversion after redact
   const out = filterOutbound('**bold** — plain\n# Heading', 'full', [], 'whatsapp');
   assert.match(out, /^\*bold\*, plain$/m);
   assert.match(out, /^\*Heading\*$/m);
+});
+
+test("filterOutbound: threads its optional 5th 'language' parameter into applyCodePolicy exactly like the 4th 'platform' parameter threads into convertMarkdownForWhatsApp (issue #339)", () => {
+  const out = filterOutbound('```js\nconsole.log(1)\n```', 'off', [], 'discord', 'mi');
+  assert.match(out, /whakakorehia te waehere/);
+  assert.ok(!out.includes('code omitted'));
 });

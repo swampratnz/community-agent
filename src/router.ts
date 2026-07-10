@@ -244,9 +244,19 @@ export class Router {
     return hits.length > this.RATE_LIMIT;
   }
 
-  /** Outbound filtering (secrets + code policy) lives in the adapters' send paths. */
-  private async send(adapter: PlatformAdapter, conversationId: string, text: string): Promise<void> {
-    await adapter.sendMessage({ conversationId, text });
+  /**
+   * Outbound filtering (secrets + code policy) lives in the adapters' send
+   * paths. `language` is optional and threaded straight into
+   * `adapter.sendMessage` (issue #339) — every call site except the main
+   * reply send below omits it, so they stay byte-identical to before.
+   */
+  private async send(
+    adapter: PlatformAdapter,
+    conversationId: string,
+    text: string,
+    language?: 'mi',
+  ): Promise<void> {
+    await adapter.sendMessage({ conversationId, text, language });
   }
 
   /**
@@ -806,7 +816,16 @@ export class Router {
         reply = { text: INTERNAL_ERROR_REPLY, ok: false };
       }
 
-      await this.send(adapter, msg.conversationId, reply.text);
+      // Only this call site — the real-agent-turn main reply — threads the
+      // caller's language preference into the send (issue #339). Every other
+      // `this.send(...)` in this file (gated notice, cancel, ack shortcuts,
+      // pending notice, ...) intentionally omits it and stays English-only.
+      await this.send(
+        adapter,
+        msg.conversationId,
+        reply.text,
+        reply.languagePreference === 'mi' ? 'mi' : undefined,
+      );
 
       // If the turn registered a NEW pending destructive action, the model
       // composed the reply above and could have hidden or misrepresented the

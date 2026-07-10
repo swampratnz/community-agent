@@ -127,6 +127,75 @@ test(
 );
 
 test(
+  'runContextBuilder: `failed` counts only clusters whose summarize() threw, and `attempted` (not `clustersConsidered`) is the right total-failure denominator when the run is cap-truncated (issue #335)',
+  { skip },
+  async () => {
+    // Two eligible clusters (each >= the 3-distinct-user floor), but
+    // CONTEXT_BUILDER_MAX_SUMMARIES=1 (set at the top of this file) caps the
+    // run to attempting only one of them.
+    await seed(30, `${RUN}-h1`, 'when does the market open');
+    await seed(30, `${RUN}-h2`, 'market opening hours?');
+    await seed(30, `${RUN}-h3`, 'opening time for the market');
+    await seed(31, `${RUN}-i1`, 'where is the venue');
+    await seed(31, `${RUN}-i2`, 'venue location please');
+    await seed(31, `${RUN}-i3`, 'what is the venue address');
+
+    const result = await runContextBuilder(async () => {
+      throw new Error('summarizer unavailable');
+    });
+
+    assert.equal(result.attempted, 1, 'the cap limits this run to attempting exactly one cluster');
+    assert.ok(
+      result.clustersConsidered > result.attempted,
+      'clustersConsidered includes the cap-truncated cluster too — a bigger number than attempted',
+    );
+    assert.equal(result.failed, 1, 'the one attempted cluster failed to summarise');
+    assert.equal(
+      result.failed,
+      result.attempted,
+      'every ATTEMPTED cluster failed — this is what defaultContextBuilderRun must treat as total failure, ' +
+        'even though failed < clustersConsidered (comparing against clustersConsidered would never fire here)',
+    );
+    assert.equal(result.digests, 0, 'no digest was written since the one attempt failed');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+  },
+);
+
+test(
+  'runContextBuilder: a partial failure (one of several attempted clusters fails) never makes failed === attempted',
+  { skip },
+  async () => {
+    const orig = config.contextBuilder.maxSummaries;
+    (config.contextBuilder as { maxSummaries: number }).maxSummaries = 2;
+    try {
+      await seed(32, `${RUN}-j1`, 'how do I reset my password');
+      await seed(32, `${RUN}-j2`, 'password reset help');
+      await seed(32, `${RUN}-j3`, 'forgot password, need reset');
+      await seed(33, `${RUN}-k1`, 'is there a mobile app');
+      await seed(33, `${RUN}-k2`, 'mobile app availability?');
+      await seed(33, `${RUN}-k3`, 'app for phones?');
+
+      let calls = 0;
+      const result = await runContextBuilder(async (samples) => {
+        calls += 1;
+        if (calls === 1) throw new Error('summarizer unavailable');
+        return { topic: `${RUN}-partial-topic`, summary: 'aggregate summary' };
+      });
+
+      assert.equal(result.attempted, 2);
+      assert.equal(result.failed, 1, 'exactly one of the two attempted clusters failed');
+      assert.notEqual(result.failed, result.attempted, 'a partial failure must never equal attempted');
+
+      await pool.query(`DELETE FROM context_digests WHERE topic = $1`, [`${RUN}-partial-topic`]);
+    } finally {
+      (config.contextBuilder as { maxSummaries: number }).maxSummaries = orig;
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+    }
+  },
+);
+
+test(
   'SECURITY: purging a user invalidates every digest built over their content — it cannot resurface (issue #51)',
   { skip },
   async () => {
