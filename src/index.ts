@@ -7,8 +7,12 @@ import { closeDb, healthcheck } from './storage/db.js';
 import { verifyEmbeddingDim } from './storage/repository.js';
 import { startRetentionPurge } from './interactionRetention.js';
 import { startRosterRetentionPurge } from './rosterRetention.js';
-import { startContextBuilder, startKnowledgeRefresh, startDocsIngest } from './backgroundJobs.js';
-import { pollAnthropicStatus } from './status/anthropicStatus.js';
+import {
+  startContextBuilder,
+  startKnowledgeRefresh,
+  startDocsIngest,
+  startStatusCheck,
+} from './backgroundJobs.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
 import { startAdminDigest } from './adminDigest.js';
@@ -16,23 +20,6 @@ import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
 import { WhatsAppCloudAdapter } from './platforms/whatsapp/cloudAdapter.js';
-
-/**
- * Anthropic status check (off unless STATUS_CHECK_ENABLED). Polls Anthropic's
- * own public status page on a fixed interval and caches the result in memory
- * for check_status to read — a member's turn never triggers a live fetch.
- * See src/status/anthropicStatus.ts.
- */
-function startStatusCheck(): ReturnType<typeof setInterval> | null {
-  if (!config.statusCheck.enabled) return null;
-  const run = () => {
-    pollAnthropicStatus().catch((err) => logger.error({ err }, 'Anthropic status check run failed'));
-  };
-  run();
-  const timer = setInterval(run, config.statusCheck.pollMinutes * 60_000);
-  timer.unref();
-  return timer;
-}
 
 async function main(): Promise<void> {
   logger.info('Starting Community Agent');
@@ -97,8 +84,11 @@ async function main(): Promise<void> {
   // 4e-ter. Optional weekly docs ingest (disabled unless configured).
   const docsIngestTimer = startDocsIngest(adapters);
 
-  // 4e-quater. Optional Anthropic status check poll (disabled unless configured).
-  const statusCheckTimer = startStatusCheck();
+  // 4e-quater. Optional Anthropic status check poll (disabled unless
+  //            configured). Routed through backgroundJobs.ts's startStatusCheck
+  //            for consecutive-failure alerting (issue #321), hence the
+  //            `adapters` argument.
+  const statusCheckTimer = startStatusCheck(adapters);
 
   // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
   const adminDigestTimer = startAdminDigest(adapters);
