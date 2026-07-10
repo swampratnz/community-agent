@@ -908,7 +908,11 @@ message); sends outside that window fail with a clear error rather than
 being attempted. Replies over Meta's 4096-char text limit are chunked into
 sequential messages (same `chunkText` helper Discord uses at its own
 2000-char limit), filtered as a whole before splitting so redaction can't be
-defeated by a chunk boundary.
+defeated by a chunk boundary. `sendImage` (issue #356) has full parity with
+Baileys and Discord: it uploads the bytes via Meta's media-upload endpoint,
+then sends a message referencing the returned media id — the same 24h-window
+check and caption filtering as every text send, so `generate_image` works on
+this adapter too.
 
 `WHATSAPP_ALLOWED_JIDS` is shared between both adapters but each entry can be
 either a bare phone-number digit string or a full Baileys-style JID

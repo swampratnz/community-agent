@@ -734,6 +734,13 @@ can't hijack it (see docs/DEPLOYMENT.md). The device-code login is a person's
 SuperGrok subscription — treat `~/.grok/auth.json` as a credential (it's outside
 the repo, on the host). Generated images are unfiltered model output posted into
 the community under an admin's name; the admin who invokes it owns that.
+`generate_image` posts via `PlatformAdapter.sendImage`, which is now
+implemented on all three adapters — Discord, Baileys WhatsApp, and (issue
+#356) the Cloud API WhatsApp adapter. On Cloud, delivery is two Graph API
+calls (media upload, then a message referencing it) over the same
+authenticated `graph.facebook.com` connection `sendChunk` already uses — no
+new egress destination — gated by the same 24h customer-service window, with
+the caption run through `filterOutbound` before either call.
 
 ### 9. Emoji reactions (`react_to_message`, issue #231)
 Member-tier, but low-consequence and tightly bounded — the tool can only ever
