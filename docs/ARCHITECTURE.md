@@ -238,7 +238,16 @@ of them read as the bot being broken. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
-fixed `_MI` constant instead of the English default.
+fixed `_MI` constant instead of the English default. The `code_answers`
+policy's own omitted/truncated note — appended by `applyCodePolicy` to the
+model's own (already language-mirrored) reply — gets the same treatment on
+the router's single main-reply send path (issue #339): `runAgentTurn`
+surfaces the `languagePreference` it already resolves for the system prompt
+on `AgentReply`, and the router threads a `'mi'` value into
+`adapter.sendMessage`'s optional `language` field, picked up by each
+adapter's `filtered()` helper. Every other `filtered()`/`sendMessage` call
+site (DMs, poll question/answers, thread name/description, announce, warn)
+is untouched and stays English-only.
 
 ## Onboarding (gated mode)
 

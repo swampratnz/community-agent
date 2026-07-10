@@ -1666,6 +1666,51 @@ test('SECURITY: performAdminAction("create_thread") routes the thread name throu
   assert.match(result, /Created thread/);
 });
 
+test("SECURITY: the mi language override cannot leak beyond the router main-reply sendMessage path — sendDirectMessage, create_poll, and create_thread stay English-only even when the code_answers policy is 'off' (issue #339)", async (t) => {
+  t.mock.method(pool, 'query', async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM policies') && params?.[0] === 'code_answers') {
+      return { rows: [{ value: 'off' }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  resetPolicyCacheForTests();
+  const fence = '```js\nconsole.log("secret plan")\n```';
+
+  const dmAdapter = new DiscordAdapter();
+  const dmSent = stubClient(dmAdapter);
+  // sendDirectMessage/sendMessage/etc. never accept a `language` argument —
+  // there is no way for a caller to make this leak 'mi', which is the
+  // invariant this test pins.
+  await dmAdapter.sendDirectMessage('user-1', fence);
+  assert.equal(dmSent.length, 1);
+  assert.match(dmSent[0], /code omitted/, 'sendDirectMessage must still emit the English code-omitted note');
+  assert.ok(!dmSent[0].includes('whakakorehia'), 'sendDirectMessage must never emit the Māori variant');
+
+  const pollAdapter = new DiscordAdapter();
+  const pollSent = stubClientForPoll(pollAdapter);
+  await pollAdapter.performAdminAction({
+    kind: 'create_poll',
+    conversationId: 'chan-1',
+    params: { question: fence, options: [fence], durationHours: 24 },
+  });
+  assert.equal(pollSent.length, 1);
+  assert.match(pollSent[0].poll.question.text, /code omitted/, 'poll question must stay English-only');
+  assert.ok(!pollSent[0].poll.question.text.includes('whakakorehia'));
+  assert.match(pollSent[0].poll.answers[0].text, /code omitted/, 'poll answer must stay English-only');
+  assert.ok(!pollSent[0].poll.answers[0].text.includes('whakakorehia'));
+
+  const threadAdapter = new DiscordAdapter();
+  const threadCalls = stubClientForThreadCreate(threadAdapter);
+  await threadAdapter.performAdminAction({
+    kind: 'create_thread',
+    conversationId: 'chan-1',
+    params: { name: fence },
+  });
+  assert.equal(threadCalls.length, 1);
+  assert.match(threadCalls[0].name, /code omitted/, 'thread name must stay English-only');
+  assert.ok(!threadCalls[0].name.includes('whakakorehia'));
+});
+
 test('performAdminAction("create_thread") passes seedMessageId through as the native startMessage option (issue #229)', async () => {
   const adapter = new DiscordAdapter();
   const calls = stubClientForThreadCreate(adapter);

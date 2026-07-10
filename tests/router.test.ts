@@ -509,6 +509,40 @@ test('router (repeat-question shortcut default off): REPEAT_QUESTION_SHORTCUT_EN
   );
 });
 
+test("router: the main reply send threads reply.languagePreference === 'mi' into adapter.sendMessage's language field (issue #339)", async () => {
+  const router = new Router(async () => ({ text: 'kia ora', ok: true, languagePreference: 'mi' }), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'kia ora');
+  assert.equal(sent[0].language, 'mi');
+});
+
+test("SECURITY: router: a turn with no ('auto') language preference sends language: undefined, never 'mi' (issue #339)", async () => {
+  const router = new Router(async () => ({ text: 'hi there', ok: true, languagePreference: 'auto' }), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].language, undefined);
+});
+
+test('router: a turn with languagePreference left entirely unset (existing AgentReply literals) sends language: undefined — no regression (issue #339)', async () => {
+  const router = new Router(async () => makeReply('plain reply'), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].language, undefined);
+});
+
 test('router (repeat-max-turns shortcut default off): REPEAT_MAX_TURNS_SHORTCUT_ENABLED unset means zero behaviour change — a resend after a max-turns failure always runs a fresh turn', async () => {
   assert.equal(
     config.behaviour.repeatMaxTurnsShortcutEnabled,

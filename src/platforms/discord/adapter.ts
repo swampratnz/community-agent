@@ -459,9 +459,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   /**
    * Every outbound path is filtered HERE (secret redaction + code policy) so
    * no caller — router reply, announce, warn, super-admin alert — can forget.
+   * `language` is optional (issue #339): only `sendMessage`'s main-reply path
+   * passes it through; every other call site below omits it, so their output
+   * stays English-only by construction (never `_MI`).
    */
-  private async filtered(text: string): Promise<string> {
-    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets());
+  private async filtered(text: string, language?: 'mi'): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), undefined, language);
   }
 
   async sendMessage(out: OutgoingMessage): Promise<void> {
@@ -472,7 +475,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // Discord caps messages at 2000 chars; chunk longer replies. Mentions are
     // never parsed so an injected "@everyone" can't mass-ping. SuppressEmbeds
     // stops Discord from expanding any links in the reply into preview cards.
-    for (const chunk of chunkText(await this.filtered(out.text), MAX_DISCORD_LEN)) {
+    for (const chunk of chunkText(await this.filtered(out.text, out.language), MAX_DISCORD_LEN)) {
       await channel.send({
         content: chunk,
         allowedMentions: { parse: [] },
