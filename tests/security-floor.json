@@ -1,5 +1,5 @@
 {
-  "adminDigest.test.ts": 8,
+  "adminDigest.test.ts": 10,
   "agentOptions.test.ts": 7,
   "ambientArchiving.test.ts": 5,
   "ambientArchivingOff.test.ts": 2,
@@ -33,7 +33,7 @@
   "rbac.test.ts": 33,
   "redeploy.test.ts": 2,
   "repeatQuestionShortcutRouter.test.ts": 2,
-  "repository.test.ts": 41,
+  "repository.test.ts": 42,
   "router.test.ts": 1,
   "secrets.test.ts": 2,
   "securityGateCanary.test.ts": 1,
