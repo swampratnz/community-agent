@@ -250,7 +250,14 @@ warn/block DMs (`Moderator.scan()`, `src/moderation/moderator.ts`) also honour
 a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
 is read once per flagged message (defensively, degrading to `'auto'` on
 failure so a lookup error can never skip or delay warning/mute enforcement)
-and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default.
+and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default. The
+same treatment extends to the four membership/admin-grant and
+suggestion/report-resolution DMs (`notifyMemberApproved`/`notifyAdminApproved`/
+`notifySuggestionResolved`/`notifyReportResolved` in `src/agent/tools.ts`,
+issue #331): each now takes the target's `platform`, reads their standing
+preference, and picks the matching `_MI` variant (every status branch, for the
+two resolution DMs), while the member's own echoed suggestion/report text stays
+untranslated.
 
 ## Onboarding (gated mode)
 

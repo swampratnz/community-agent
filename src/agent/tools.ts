@@ -31,6 +31,7 @@ import {
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeDuplicateMatch,
   listDuplicateKnowledge,
+  listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
   listMemberNotes,
   MEMBER_NOTE_MAX_CHARS,
@@ -484,6 +485,17 @@ const MEMBER_APPROVED_MESSAGE =
   'Feel free to message the bot here anytime. Ask me "what can you do?" any time for a quick rundown.';
 
 /**
+ * Fixed, human-authored te reo Māori counterpart (issue #331, same `_MI`
+ * pattern as `community_guidelines`/#266, the Discord rejoin welcome/#282,
+ * and the router's pause/rate-limit/budget notices/#300) — never a model
+ * translation, so there's no paraphrase/drift risk on a fixed confirmation
+ * string.
+ */
+const MEMBER_APPROVED_MESSAGE_MI =
+  'Kia ora! 👋 Kua whakaaetia koe — kua noho mema rēhita koe o NZ Claude Community. ' +
+  'Whakapā mai ki ahau i ngā wā katoa. Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga poto.';
+
+/**
  * Plain-language rundown of what a member can ask the bot to do, named by
  * behaviour rather than tool id (issue #92) — every entry in MEMBER_TOOLS
  * gets a line, most safety-relevant (report_content) first. Kept to a few
@@ -513,16 +525,26 @@ const MEMBER_CAPABILITIES_TEXT =
  * (closed DMs, WhatsApp 24h window, etc.) is logged and swallowed — the
  * membership grant itself is the source of truth, never blocked on this.
  * Exported separately from the `add_member` tool so it's unit-testable
- * without the MCP tool-call transport.
+ * without the MCP tool-call transport. Honours the target's standing
+ * `'mi'` language preference (issue #331, same `_MI` + `getLanguagePreference`
+ * pattern as #266/#282/#300): the lookup is wrapped in its own `.catch` so a
+ * DB hiccup degrades to the English default rather than throwing or
+ * dropping the DM (issue #52's invariant, same shape as router.ts's
+ * `getLangPref(...).catch(() => 'auto')`), distinct from the send's own
+ * `.catch(logger.warn)` below.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
   userId: string,
   wasAlreadyMember: boolean,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
 ): Promise<void> {
   if (wasAlreadyMember) return;
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message = lang === 'mi' ? MEMBER_APPROVED_MESSAGE_MI : MEMBER_APPROVED_MESSAGE;
   await adapter
-    .sendDirectMessage(userId, MEMBER_APPROVED_MESSAGE)
+    .sendDirectMessage(userId, message)
     .catch((err) => logger.warn({ err, userId }, 'Approval DM failed'));
 }
 
@@ -537,6 +559,11 @@ const ADMIN_APPROVED_MESSAGE =
   "Kia ora! 👋 You've been promoted to admin on NZ Claude Community. " +
   'Ask me "what can you do?" any time for a rundown, including your new admin tools.';
 
+/** Fixed te reo Māori counterpart of {@link ADMIN_APPROVED_MESSAGE} (issue #331). */
+const ADMIN_APPROVED_MESSAGE_MI =
+  'Kia ora! 👋 Kua whakapikitia koe hei kaiwhakahaere (admin) mō NZ Claude Community. ' +
+  'Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga, tae atu ki ō rākau whakahaere hou.';
+
 /**
  * Best-effort orientation DM for an admin grant, mirroring notifyMemberApproved's
  * shape exactly: fires only on an actual transition into admin
@@ -544,16 +571,22 @@ const ADMIN_APPROVED_MESSAGE =
  * doesn't re-send it, and a failed DM (closed DMs, WhatsApp 24h window, etc.)
  * is logged and swallowed — the grant itself is the source of truth, never
  * blocked on this. Exported separately from the `grant_admin` tool so it's
- * unit-testable without the MCP tool-call transport.
+ * unit-testable without the MCP tool-call transport. Honours the target's
+ * standing `'mi'` language preference identically to `notifyMemberApproved`
+ * above (issue #331).
  */
 export async function notifyAdminApproved(
   adapter: PlatformAdapter,
   userId: string,
   wasAlreadyAdmin: boolean,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
 ): Promise<void> {
   if (wasAlreadyAdmin) return;
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message = lang === 'mi' ? ADMIN_APPROVED_MESSAGE_MI : ADMIN_APPROVED_MESSAGE;
   await adapter
-    .sendDirectMessage(userId, ADMIN_APPROVED_MESSAGE)
+    .sendDirectMessage(userId, message)
     .catch((err) => logger.warn({ err, userId }, 'Admin promotion DM failed'));
 }
 
@@ -573,20 +606,33 @@ function truncateForEcho(content: string): string {
  * forget, .catch(logger.warn), never blocks or changes resolve_suggestion's
  * own reported outcome. Exported separately so it's unit-testable without
  * the MCP tool-call transport, same convention as notifyMemberApproved.
+ * Honours the submitter's standing `'mi'` language preference (issue #331,
+ * same degrade-to-`'auto'`-on-failure shape as notifyMemberApproved above)
+ * — the echoed suggestion text (`truncateForEcho`) stays untranslated user
+ * content either way.
  */
 export async function notifySuggestionResolved(
   adapter: PlatformAdapter,
   userId: string,
   status: 'reviewed' | 'declined' | 'done',
   content: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
 ): Promise<void> {
   const echoed = truncateForEcho(content);
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const message =
-    status === 'declined'
-      ? `Thanks for the suggestion — after review it won't be built for now: "${echoed}"`
-      : status === 'done'
-        ? `Your suggestion has been marked **done** — thanks for the input! ("${echoed}")`
-        : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
+    lang === 'mi'
+      ? status === 'declined'
+        ? `Ngā mihi mō tō whakaaro — i muri i te arotake, kāore e hangaia ā tōna wā: "${echoed}"`
+        : status === 'done'
+          ? `Kua oti tō whakaaro — ngā mihi mō tō koha! ("${echoed}")`
+          : `Kua arotakehia tō whakaaro — ngā mihi mō tō koha! ("${echoed}")`
+      : status === 'declined'
+        ? `Thanks for the suggestion — after review it won't be built for now: "${echoed}"`
+        : status === 'done'
+          ? `Your suggestion has been marked **done** — thanks for the input! ("${echoed}")`
+          : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
   await adapter
     .sendDirectMessage(userId, message)
     .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Suggestion resolution DM failed'));
@@ -605,19 +651,30 @@ export async function notifySuggestionResolved(
  * submitted reason (truncated) plus a status word — never the reported
  * user's identity or any other report's fields. Exported separately so it's
  * unit-testable without the MCP tool-call transport, same convention as
- * notifySuggestionResolved.
+ * notifySuggestionResolved. Honours the reporter's standing `'mi'` language
+ * preference (issue #331, same degrade-to-`'auto'`-on-failure shape as
+ * notifyMemberApproved above) — the echoed reason (`truncateForEcho`) stays
+ * untranslated user content either way, and the `mi` `dismissed` wording
+ * stays just as neutral-to-supportive as the English original.
  */
 export async function notifyReportResolved(
   adapter: PlatformAdapter,
   userId: string,
   status: 'resolved' | 'dismissed',
   reason: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
 ): Promise<void> {
   const echoed = truncateForEcho(reason);
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const message =
-    status === 'dismissed'
-      ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
-      : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
+    lang === 'mi'
+      ? status === 'dismissed'
+        ? `Kua arotakehia tō pūrongo. I muri i te wātea, kāore he mahi anō i mahia — ngā mihi mō te whakamōhio mai: "${echoed}"`
+        : `Kua arotakehia, kua whakatauhia hoki tō pūrongo — ngā mihi mō te whakamōhio mai: "${echoed}"`
+      : status === 'dismissed'
+        ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
+        : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
   await adapter
     .sendDirectMessage(userId, message)
     .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Report resolution DM failed'));
@@ -2427,6 +2484,39 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { annotations: { readOnlyHint: true } },
   );
 
+  const listKnowledgeConflictsTool = tool(
+    'list_knowledge_conflicts',
+    'Audit the knowledge base for pairs of entries that are about the same topic but worded ' +
+      'differently enough that they may disagree (same scope, mid-range embedding similarity — clears ' +
+      "knowledge_search's relevance floor but sits well under the near-duplicate threshold). Sibling of " +
+      'list_duplicate_knowledge, which catches the opposite case (converged wording). Each pair is a ' +
+      'candidate for admin review, not a confirmed contradiction — check both entries and merge ' +
+      '(update_knowledge) or retire (delete_knowledge) as appropriate. Admin only.',
+    {
+      scope: z.string().optional().describe('Restrict the audit to a single scope (e.g. "global")'),
+      limit: z.number().optional().describe('Max pairs to return (default 20)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_knowledge_conflicts');
+      const pairs = await listKnowledgeConflictCandidates(args.scope, args.limit);
+      if (pairs.length === 0) return text('No conflict-candidate knowledge pairs found.');
+      return text(
+        untrusted(
+          'Conflict-candidate knowledge pairs — each is a candidate for admin review, not a confirmed contradiction',
+          pairs
+            .map((p) => {
+              const pct = (p.similarity * 100).toFixed(0);
+              const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
+              const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
+              return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
+            })
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const updateKnowledgeTool = tool(
     'update_knowledge',
     'Correct an existing knowledge entry (title/content/scope/source). Re-embeds the content. Setting ' +
@@ -2592,7 +2682,14 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       // configured).
       if (success && state.row) {
         const target = adapterFor(state.row.platform);
-        if (target) await notifySuggestionResolved(target, state.row.userId, args.status, state.row.content);
+        if (target)
+          await notifySuggestionResolved(
+            target,
+            state.row.userId,
+            args.status,
+            state.row.content,
+            state.row.platform,
+          );
       }
       return text(success ? `Suggestion #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
     },
@@ -3029,7 +3126,13 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       if (success && state.row) {
         const target = adapterFor(state.row.platform);
         if (target)
-          await notifyReportResolved(target, state.row.reporterUserId, args.status, state.row.reason);
+          await notifyReportResolved(
+            target,
+            state.row.reporterUserId,
+            args.status,
+            state.row.reason,
+            state.row.platform,
+          );
       }
       return text(success ? `Report #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
     },
@@ -3131,7 +3234,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       await clearAccessRequest(platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
-      await notifyMemberApproved(adapter, userId, wasAlreadyMember);
+      await notifyMemberApproved(adapter, userId, wasAlreadyMember, platform);
       const label = await resolveSanitizedLabel(platform, userId, args.displayName);
       return text(`Added ${label} as ${finalRole} on ${platform}.`);
     },
@@ -3405,7 +3508,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         });
         if (success) {
           await resetSessionsForRoleChange(platform, userId, 'grant_admin');
-          await notifyAdminApproved(adapter, userId, wasAlreadyAdmin);
+          await notifyAdminApproved(adapter, userId, wasAlreadyAdmin, platform);
         }
         return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
       });
@@ -3724,6 +3827,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       saveKnowledgeTool,
       listKnowledgeTool,
       listDuplicateKnowledgeTool,
+      listKnowledgeConflictsTool,
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,

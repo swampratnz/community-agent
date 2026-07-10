@@ -1011,6 +1011,74 @@ export async function listDuplicateKnowledge(scope?: string, limit = 20): Promis
 }
 
 /**
+ * Half-open "conflict candidate" band (issue #330), sitting between the
+ * retrieval relevance floor (KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, 0.35) and
+ * the near-duplicate threshold (KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD,
+ * 0.92): two entries this similar are about the same topic but worded
+ * differently enough that they might disagree, rather than being the same
+ * fact said twice. MAX is bound to the near-duplicate threshold itself
+ * (half-open, `< MAX`) so the two bands abut without overlap — a pair is
+ * either a near-duplicate (>= MAX) or a conflict candidate ([MIN, MAX)),
+ * never both.
+ */
+export const KNOWLEDGE_CONFLICT_SIMILARITY_MIN = 0.55;
+export const KNOWLEDGE_CONFLICT_SIMILARITY_MAX = KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD;
+
+export interface KnowledgeConflictPair {
+  aId: number;
+  aTitle: string | null;
+  bId: number;
+  bTitle: string | null;
+  similarity: number;
+}
+
+/**
+ * Read-only audit (issue #330) for "conflict candidate" pairs: same-scope
+ * knowledge entries that both clear the relevance floor for some query but
+ * sit well under the near-duplicate threshold — worded differently enough
+ * that they might quietly disagree (e.g. one entry states a fact a newer,
+ * unrelated-looking entry has since corrected). Mirrors listDuplicateKnowledge's
+ * exact shape (same-scope `a.id < b.id` self-join, NULL-embedding rows
+ * excluded, same limit clamp) but bounds similarity to the half-open
+ * conflict band instead of the near-duplicate floor. Output is framed to
+ * admins as *candidates to review*, not confirmed contradictions — the query
+ * itself makes no judgement beyond relatedness.
+ */
+export async function listKnowledgeConflictCandidates(
+  scope?: string,
+  limit = 20,
+): Promise<KnowledgeConflictPair[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const params: unknown[] = [
+    scope ?? null,
+    KNOWLEDGE_CONFLICT_SIMILARITY_MIN,
+    KNOWLEDGE_CONFLICT_SIMILARITY_MAX,
+    clampedLimit,
+  ];
+  const { rows } = await pool.query(
+    `SELECT a.id AS a_id, a.title AS a_title,
+            b.id AS b_id, b.title AS b_title,
+            1 - (a.embedding <=> b.embedding) AS similarity
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND ($1::text IS NULL OR a.scope = $1)
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+        AND 1 - (a.embedding <=> b.embedding) < $3
+      ORDER BY similarity DESC
+      LIMIT $4`,
+    params,
+  );
+  return rows.map((r) => ({
+    aId: Number(r.a_id),
+    aTitle: r.a_title,
+    bId: Number(r.b_id),
+    bTitle: r.b_title,
+    similarity: Number(r.similarity),
+  }));
+}
+
+/**
  * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
  * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic
  * has a stable title, so this refreshes the SAME row every run rather than
