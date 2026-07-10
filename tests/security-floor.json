@@ -32,6 +32,7 @@
   "rateLimitNotice.router.test.ts": 1,
   "rbac.test.ts": 33,
   "redeploy.test.ts": 2,
+  "repeatMaxTurnsShortcutRouter.test.ts": 1,
   "repeatQuestionShortcutRouter.test.ts": 2,
   "repository.test.ts": 41,
   "router.test.ts": 1,
