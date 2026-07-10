@@ -13,7 +13,15 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const { makeWordlistDetector } = await import('../src/moderation/wordlist.js');
-const { Moderator, makeClassifier, boundForClassifier } = await import('../src/moderation/moderator.js');
+const {
+  Moderator,
+  makeClassifier,
+  boundForClassifier,
+  warnDmText,
+  blockedDmText,
+  warnDmTextMi,
+  blockedDmTextMi,
+} = await import('../src/moderation/moderator.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 
 test('SECURITY: boundForClassifier keeps the tail so abuse hidden after filler is still classified', () => {
@@ -88,6 +96,7 @@ function makeModerator(opts: {
   strikeLimit?: number;
   strikeWindowDays?: number;
   isExempt?: (p: string, u: string) => Promise<boolean>;
+  getLanguagePreference?: (p: string, u: string) => Promise<'auto' | 'en' | 'mi'>;
   classify?: Classifier;
   store?: ReturnType<typeof makeStore>;
   enforcer?: ReturnType<typeof makeEnforcer>;
@@ -105,6 +114,7 @@ function makeModerator(opts: {
     strikeWindowDays: opts.strikeWindowDays,
     classify: opts.classify ?? (async (t) => detect(t)),
     isExempt: opts.isExempt ?? (async () => false),
+    getLanguagePreference: opts.getLanguagePreference ?? (async () => 'auto'),
     store,
     enforcer,
   });
@@ -228,6 +238,62 @@ test('Moderator: a failing enforcement step is swallowed and does not abort the 
   await assert.doesNotReject(moderator.scan(msg('you asshole')));
   // The warn DM threw, but the admin alert still fired.
   assert.equal(enforcer.calls.postAdminAlert.length, 1);
+});
+
+// --- 'mi' language preference on the warn/block DMs (issue #333) ------------
+
+test('Moderator: a member with a standing "mi" preference gets the te reo warn DM, not the English default', async () => {
+  const { moderator, enforcer } = makeModerator({
+    strikeLimit: 3,
+    getLanguagePreference: async () => 'mi',
+  });
+  await moderator.scan(msg('you asshole'));
+  assert.equal(enforcer.calls.warnUser.length, 1);
+  assert.equal(enforcer.calls.warnUser[0][1], warnDmTextMi(1, 3));
+});
+
+test('Moderator: a member with a standing "mi" preference gets the te reo block DM at the strike limit', async () => {
+  const { moderator, enforcer } = makeModerator({
+    strikeLimit: 1,
+    getLanguagePreference: async () => 'mi',
+  });
+  await moderator.scan(msg('you asshole'));
+  assert.equal(enforcer.calls.warnUser.length, 1);
+  assert.equal(enforcer.calls.warnUser[0][1], blockedDmTextMi());
+});
+
+test('Moderator: "auto"/"en" preference gets byte-identical English DM text on both warn and block', async () => {
+  for (const pref of ['auto', 'en'] as const) {
+    const warnCase = makeModerator({ strikeLimit: 3, getLanguagePreference: async () => pref });
+    await warnCase.moderator.scan(msg('you asshole'));
+    assert.equal(warnCase.enforcer.calls.warnUser[0][1], warnDmText(1, 3));
+
+    const blockCase = makeModerator({ strikeLimit: 1, getLanguagePreference: async () => pref });
+    await blockCase.moderator.scan(msg('you asshole'));
+    assert.equal(blockCase.enforcer.calls.warnUser[0][1], blockedDmText());
+  }
+});
+
+test('SECURITY: a language-lookup failure degrades to English and never skips warning/mute enforcement', async () => {
+  const failingLangPref = async () => {
+    throw new Error('language_prefs lookup failed');
+  };
+
+  // Below the strike limit: warning still recorded, DM sent in English, admin alerted.
+  const warnCase = makeModerator({ strikeLimit: 3, getLanguagePreference: failingLangPref });
+  await assert.doesNotReject(warnCase.moderator.scan(msg('you asshole')));
+  assert.equal(warnCase.store.added.length, 1, 'the warning is still recorded');
+  assert.equal(warnCase.enforcer.calls.warnUser.length, 1);
+  assert.equal(warnCase.enforcer.calls.warnUser[0][1], warnDmText(1, 3), 'degrades to the English default');
+  assert.equal(warnCase.enforcer.calls.postAdminAlert.length, 1, 'the admin alert still fires');
+
+  // At the strike limit: mute still applied, block DM sent in English, admin alerted.
+  const blockCase = makeModerator({ strikeLimit: 1, getLanguagePreference: failingLangPref });
+  await assert.doesNotReject(blockCase.moderator.scan(msg('you asshole')));
+  assert.equal(blockCase.enforcer.calls.muteUser.length, 1, 'the mute is still applied');
+  assert.equal(blockCase.enforcer.calls.warnUser.length, 1);
+  assert.equal(blockCase.enforcer.calls.warnUser[0][1], blockedDmText(), 'degrades to the English default');
+  assert.equal(blockCase.enforcer.calls.postAdminAlert.length, 1, 'the admin alert still fires');
 });
 
 // --- two-stage classifier gating --------------------------------------------
