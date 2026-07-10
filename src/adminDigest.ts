@@ -12,6 +12,7 @@ import {
   recentQuestionClusters,
   recordAdminDigestSent,
   resolveLinkedIdentities,
+  rosterCounts,
   wasAdminDigestSentRecently,
   type QuestionCluster,
 } from './storage/repository.js';
@@ -39,7 +40,9 @@ const SNIPPET_MAX_CHARS = 300;
  * larger than that limit is never understated. A persistently untriaged
  * queue re-appears on every subsequent weekly tick until it's cleared —
  * that nag is intended, not a bug (issue #133, extended by #193, #199,
- * #284, and #324).
+ * #284, and #324). `joinedThisWeek`/`leftThisWeek` (issue #344) come from
+ * the already-built `rosterCounts` — bare integers only, never a member
+ * name/id, matching the same privacy convention as every other signal here.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -51,6 +54,8 @@ export function buildAdminDigestMessage(
   knowledgeGapsCount: number = 0,
   pendingKnowledgeCandidates: number = 0,
   lowRatedKnowledgeCount: number = 0,
+  joinedThisWeek: number = 0,
+  leftThisWeek: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -60,7 +65,9 @@ export function buildAdminDigestMessage(
     staleKnowledgeCount === 0 &&
     knowledgeGapsCount === 0 &&
     pendingKnowledgeCandidates === 0 &&
-    lowRatedKnowledgeCount === 0
+    lowRatedKnowledgeCount === 0 &&
+    joinedThisWeek === 0 &&
+    leftThisWeek === 0
   )
     return null;
 
@@ -111,6 +118,13 @@ export function buildAdminDigestMessage(
         'repeated unhelpful ratings — run `list_low_rated_knowledge` to review.',
     );
   }
+  if (joinedThisWeek > 0 || leftThisWeek > 0) {
+    // Bare integers only — no display name/user id/platform id ever reaches the DM (#344).
+    const parts: string[] = [];
+    if (joinedThisWeek > 0) parts.push(`${joinedThisWeek} joined`);
+    if (leftThisWeek > 0) parts.push(`${leftThisWeek} left`);
+    sections.push(`📈 ${parts.join(', ')} this week — run \`list_roster\` for detail.`);
+  }
   return sections.join('\n');
 }
 
@@ -138,7 +152,11 @@ export function buildAdminDigestMessage(
  * enrolled admin sees the same pending-guest, pending-suggestion,
  * stale-knowledge, and pending-candidate counts. `countStaleKnowledge` only runs when
  * `KNOWLEDGE_STALE_DAYS` is configured (`> 0`) — otherwise the signal stays
- * `0` and the digest is byte-for-byte unchanged from before issue #199. The
+ * `0` and the digest is byte-for-byte unchanged from before issue #199.
+ * `rosterCounts(admin.platform)` is likewise guild-wide by platform — same
+ * signal every enrolled admin on that platform sees (issue #344); `server_roster`
+ * is Discord-only, so a WhatsApp admin's `rosterCounts('whatsapp')` is always
+ * zeros, leaving the rest of their digest byte-for-byte unchanged. The
  * freshness guard
  * (`admin_digest_sends`) is a durable per-admin timestamp, so a restart
  * mid-week cannot cause a duplicate send within the same window. Super
@@ -183,6 +201,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeGapsCount,
         pendingKnowledgeCandidates,
         lowRatedKnowledgeCount,
+        roster,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -197,6 +216,10 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // conversation_id); cumulative, no freshness window — matches the
         // linked tool's own cumulative unhelpfulCount (#324).
         countLowRatedKnowledge(scope),
+        // Guild-wide by platform, mirroring list_roster's own summary line
+        // (#47, #344). server_roster is Discord-only, so a WhatsApp admin's
+        // rosterCounts('whatsapp') is always zeros — quiet, no error.
+        rosterCounts(admin.platform),
       ]);
       const message = buildAdminDigestMessage(
         clusters,
@@ -208,6 +231,8 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeGapsCount,
         pendingKnowledgeCandidates,
         lowRatedKnowledgeCount,
+        roster.joinedThisWeek,
+        roster.leftThisWeek,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 
@@ -228,12 +253,12 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * summarising recurring-question clusters in their own scoped conversations,
  * plus pending access-request, open-report, pending-suggestion, (when
  * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, pending
- * knowledge-candidate, and low-rated-knowledge counts (issue #21's deferred
- * proactive follow-up, extended by issue #133, issue #193, issue #199,
- * issue #284, and issue #324) — the same signals
- * `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/
- * `list_knowledge`/`list_knowledge_candidates`/`list_low_rated_knowledge`
- * already compute on demand.
+ * knowledge-candidate, low-rated-knowledge, and roster joined/left-this-week
+ * counts (issue #21's deferred proactive follow-up, extended by issue #133,
+ * issue #193, issue #199, issue #284, issue #324, and issue #344) — the same
+ * signals `question_digest`/`list_access_requests`/`list_reports`/
+ * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
+ * `list_low_rated_knowledge`/`list_roster` already compute on demand.
  */
 export function startAdminDigest(
   adapters: readonly PlatformAdapter[],
