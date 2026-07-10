@@ -101,6 +101,7 @@ const {
   isKnownMessage,
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
+  getInteractionContentByMessageId,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -3541,6 +3542,41 @@ test(
       await getInteractionAuthorByMessageId('whatsapp', `${convo}-other`, messageId),
       null,
       'a wrong-conversation lookup finds nothing — the authorship check fails safe',
+    );
+    await pool.query(`DELETE FROM interactions WHERE platform = 'whatsapp' AND message_id = $1`, [messageId]);
+  },
+);
+
+test(
+  'repository: getInteractionContentByMessageId returns the stored content, scoped to its conversation, ' +
+    'null when unmatched (issue #312)',
+  { skip },
+  async () => {
+    const author = `${RUN}-content-author`;
+    const convo = `${RUN}-content-convo`;
+    const messageId = `${RUN}-content-msg`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: convo,
+      userId: author,
+      role: 'member',
+      direction: 'inbound',
+      content: 'the actual stored content',
+      messageId,
+    });
+    assert.equal(
+      await getInteractionContentByMessageId('whatsapp', convo, messageId),
+      'the actual stored content',
+    );
+    assert.equal(
+      await getInteractionContentByMessageId('whatsapp', `${convo}-other`, messageId),
+      null,
+      'a wrong-conversation lookup finds nothing — read-only and scope-safe like getInteractionAuthorByMessageId',
+    );
+    assert.equal(
+      await getInteractionContentByMessageId('whatsapp', convo, `${messageId}-never-seen`),
+      null,
+      'an unstored message id returns null, never a fabricated preview',
     );
     await pool.query(`DELETE FROM interactions WHERE platform = 'whatsapp' AND message_id = $1`, [messageId]);
   },
