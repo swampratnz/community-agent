@@ -500,7 +500,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   usage alerts. `admin_digest_sends` stores only `(platform, platform_user_id,
   sent_at)` — no cluster text — and is purge-coherent:
   `forget_me`/`purge_user_data` remove an offboarded admin's row alongside
-  other admin-identity-keyed data.
+  other admin-identity-keyed data. The digest has since grown further
+  guild-wide, bare-count signals, most recently (issue #357) a
+  currently-muted-member count from `countMutedMembers`, which reuses
+  `countActiveWarnings`'s exact strike-limit/window definition so the
+  digest's "muted" can never disagree with the actual mute trigger in
+  `src/moderation/moderator.ts` — the DM text carries only the integer, never
+  a `member_warnings.reason`, `excerpt`, user id, or member name.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
@@ -734,6 +740,13 @@ can't hijack it (see docs/DEPLOYMENT.md). The device-code login is a person's
 SuperGrok subscription — treat `~/.grok/auth.json` as a credential (it's outside
 the repo, on the host). Generated images are unfiltered model output posted into
 the community under an admin's name; the admin who invokes it owns that.
+`generate_image` posts via `PlatformAdapter.sendImage`, which is now
+implemented on all three adapters — Discord, Baileys WhatsApp, and (issue
+#356) the Cloud API WhatsApp adapter. On Cloud, delivery is two Graph API
+calls (media upload, then a message referencing it) over the same
+authenticated `graph.facebook.com` connection `sendChunk` already uses — no
+new egress destination — gated by the same 24h customer-service window, with
+the caption run through `filterOutbound` before either call.
 
 ### 9. Emoji reactions (`react_to_message`, issue #231)
 Member-tier, but low-consequence and tightly bounded — the tool can only ever
@@ -1039,28 +1052,27 @@ the supported path.
   in-memory) rather than CONFIRM, since each is lower-consequence than a
   destructive action and gating them harder would be inconsistent (issues
   #228, #229, #315).
-- **Membership-scope staleness (narrowed, issues #286 + #328)**: adapters
-  cache an admin's conversation list for ~60s, but an *observed* change
-  invalidates the affected cache entry immediately rather than waiting out
-  the TTL. Discord's `GuildMemberRemove` (full guild exit) clears the removed
-  user's entry the instant it fires; Discord's `ChannelUpdate` clears the
-  *entire* cache the instant a genuine `permissionOverwrites` change lands on
-  an in-guild text channel (a targeted per-user/per-role diff — e.g. an admin
-  losing `ViewChannel` on one channel while remaining in the guild — is a
-  documented growth path, not implemented; the whole-cache clear can only
-  invalidate sooner, never grant scope a live check wouldn't); and WhatsApp's
+- **Membership-scope staleness (narrowed, issues #286 + #328 + #350)**:
+  adapters cache an admin's conversation list for ~60s, but an *observed*
+  change invalidates the affected cache entry immediately rather than
+  waiting out the TTL. Discord's `GuildMemberRemove` (full guild exit)
+  clears the removed user's entry the instant it fires; Discord's
+  `ChannelUpdate` clears the *entire* cache the instant a genuine
+  `permissionOverwrites` change lands on an in-guild text channel; Discord's
+  `GuildMemberUpdate`/`GuildRoleUpdate`/`GuildRoleDelete` likewise clear the
+  *entire* cache the instant a member's role set actually changes, a role's
+  own `permissions` bitfield actually changes, or a role in the configured
+  guild is deleted — this is arguably the *more* common Discord admin
+  revocation workflow (pulling someone out of a role) versus hand-editing a
+  channel's raw permission overwrites (#328), and it now narrows the same
+  way (a targeted per-user/per-role diff is a documented growth path, not
+  implemented; the whole-cache clear can only invalidate sooner, never grant
+  scope a live check wouldn't; a partial `GuildMemberUpdate` old-member whose
+  role set is unknowable fails safe and clears the cache rather than risk
+  treating a real revocation as unchanged); and WhatsApp's
   `group-participants.update` with `action: 'remove'` clears the removed
-  user's entry the same way. The residual ~60s window still applies to:
-  **Discord role-based access changes** — `conversationsForUser` derives
-  per-channel visibility from `channel.permissionsFor(member)`, which also
-  depends on the member's roles and each role's own permissions, but no
-  listener observes `GuildMemberUpdate` (a role added to/removed from a
-  member), `GuildRoleUpdate` (a role's own permissions edited), or
-  `GuildRoleDelete` (a role removed entirely) — this is arguably the *more*
-  common Discord admin workflow for revoking access (pulling someone out of a
-  role) versus hand-editing a channel's raw permission overwrites, and it
-  still carries the full ~60s stale-scope window today; and one WhatsApp case
-  the removal event itself cannot resolve — a
+  user's entry the same way. The residual ~60s window still applies to: one
+  WhatsApp case the removal event itself cannot resolve — a
   `group-participants.update` carrying only an `@lid` (privacy) JID for a
   participant whose `membershipCache` entry is keyed by their *real phone
   number* (resolved elsewhere via `senderPn`/`participantPn` from message

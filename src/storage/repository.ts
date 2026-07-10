@@ -3095,6 +3095,32 @@ export async function countActiveWarnings(
 }
 
 /**
+ * Count of distinct members on `platform` who are CURRENTLY muted — their
+ * active (uncleared) strike count is `>= strikeLimit` — honouring the same
+ * optional rolling `windowDays` bound `countActiveWarnings` uses, so the
+ * digest's definition of "muted" can never drift from the actual mute
+ * trigger in `moderator.ts` (issue #357). Bound parameters only, never
+ * interpolated, same injection posture as `countActiveWarnings`.
+ */
+export async function countMutedMembers(
+  platform: string,
+  strikeLimit: number,
+  windowDays?: number,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM (
+       SELECT user_id FROM member_warnings
+        WHERE platform = $1 AND cleared_at IS NULL
+          AND ($3::int IS NULL OR created_at >= now() - make_interval(days => $3::int))
+        GROUP BY user_id
+       HAVING COUNT(*) >= $2
+     ) t`,
+    [platform, strikeLimit, windowDays ?? null],
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
  * Clear all of a member's active warnings (an admin action), stamping who
  * cleared them and when. Returns the number of strikes cleared, so the caller
  * can tell "actually unblocked them" from "they had nothing to clear".
@@ -3459,6 +3485,8 @@ export interface AnswerFeedback {
   content: string | null;
   /** Knowledge entry id the answer was served from, when sent via the deterministic knowledge shortcut. */
   knowledgeEntryId: number | null;
+  /** Optional free-text reason the rater gave alongside the boolean (issue #354), or `null` if none. */
+  comment: string | null;
 }
 
 function mapAnswerFeedback(r: {
@@ -3471,6 +3499,7 @@ function mapAnswerFeedback(r: {
   created_at: Date;
   content: string | null;
   knowledge_entry_id: number | string | null;
+  comment: string | null;
 }): AnswerFeedback {
   return {
     id: Number(r.id),
@@ -3482,7 +3511,26 @@ function mapAnswerFeedback(r: {
     createdAt: r.created_at,
     content: r.content,
     knowledgeEntryId: r.knowledge_entry_id != null ? Number(r.knowledge_entry_id) : null,
+    comment: r.comment,
   };
+}
+
+/** Max stored length of a `rate_answer` comment (issue #354) — matches the tool's `z.string().max(200)`. */
+export const ANSWER_FEEDBACK_COMMENT_MAX_CHARS = 200;
+
+/**
+ * Normalize a `rate_answer` comment before it reaches storage: strip C0
+ * control characters (including bare `\r`/`\n`, which `untrusted()` also
+ * neutralizes at render time — this is defense in depth, not a substitute)
+ * and DEL, trim, then cap length. An empty/whitespace-only or omitted
+ * comment stores SQL NULL rather than an empty string.
+ */
+function normalizeAnswerFeedbackComment(comment?: string): string | null {
+  if (!comment) return null;
+  // eslint-disable-next-line no-control-regex
+  const stripped = comment.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  if (!stripped) return null;
+  return stripped.slice(0, ANSWER_FEEDBACK_COMMENT_MAX_CHARS);
 }
 
 /**
@@ -3531,6 +3579,8 @@ export async function createAnswerFeedback(input: {
   conversationId: string;
   userId: string;
   helpful: boolean;
+  /** Optional free-text reason (issue #354); normalized (control-char-stripped, ≤200 chars) before storage. */
+  comment?: string;
 }): Promise<{ id: number } | 'no_recent_answer' | 'rate_limited'> {
   const interactionId = await resolveAnswerFeedbackTarget(input.platform, input.conversationId, input.userId);
   if (interactionId === null) return 'no_recent_answer';
@@ -3541,8 +3591,8 @@ export async function createAnswerFeedback(input: {
         WHERE platform = $1 AND user_id = $2
           AND created_at > now() - interval '24 hours'
      )
-     INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful)
-     SELECT $1, $3, $2, $4, $5
+     INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful, comment)
+     SELECT $1, $3, $2, $4, $5, $7
       WHERE (SELECT n FROM recent) < $6
      RETURNING id`,
     [
@@ -3552,6 +3602,7 @@ export async function createAnswerFeedback(input: {
       interactionId,
       input.helpful,
       RATE_ANSWER_DAILY_LIMIT,
+      normalizeAnswerFeedbackComment(input.comment),
     ],
   );
   return rows[0] ? { id: Number(rows[0].id) } : 'rate_limited';
@@ -3589,7 +3640,7 @@ export async function listAnswerFeedback(
   const { rows } = await pool.query(
     `SELECT answer_feedback.id, answer_feedback.platform, answer_feedback.conversation_id,
             answer_feedback.user_id, answer_feedback.interaction_id, answer_feedback.helpful,
-            answer_feedback.created_at, interactions.content,
+            answer_feedback.created_at, answer_feedback.comment, interactions.content,
             (interactions.meta->>'knowledgeEntryId')::bigint AS knowledge_entry_id
        FROM answer_feedback
        LEFT JOIN interactions ON interactions.id = answer_feedback.interaction_id

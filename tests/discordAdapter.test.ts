@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ChannelType, GuildScheduledEventEntityType } from 'discord.js';
+import { ChannelType, Events, GuildScheduledEventEntityType } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -20,10 +20,12 @@ process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
 
-const { DiscordAdapter, WELCOME_MESSAGE } = await import('../src/platforms/discord/adapter.js');
+const { DiscordAdapter, WELCOME_MESSAGE, WELCOME_MESSAGE_OPEN } =
+  await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { logger } = await import('../src/logger.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -115,6 +117,49 @@ function fakeUpdateChannel(
     isTextBased: () => opts.isTextBased ?? true,
     guild: { id: opts.guildId },
     permissionOverwrites: { cache },
+  };
+}
+
+/** Reaches the private onGuildMemberUpdate handler directly. */
+function fireGuildMemberUpdate(adapter: Adapter, oldMember: unknown, newMember: unknown): void {
+  (adapter as unknown as { onGuildMemberUpdate: (o: unknown, n: unknown) => void }).onGuildMemberUpdate(
+    oldMember,
+    newMember,
+  );
+}
+
+/** Reaches the private onGuildRoleUpdate handler directly. */
+function fireGuildRoleUpdate(adapter: Adapter, oldRole: unknown, newRole: unknown): void {
+  (adapter as unknown as { onGuildRoleUpdate: (o: unknown, n: unknown) => void }).onGuildRoleUpdate(
+    oldRole,
+    newRole,
+  );
+}
+
+/** Reaches the private onGuildRoleDelete handler directly. */
+function fireGuildRoleDelete(adapter: Adapter, role: unknown): void {
+  (adapter as unknown as { onGuildRoleDelete: (r: unknown) => void }).onGuildRoleDelete(role);
+}
+
+/**
+ * A minimal GuildMember stand-in for onGuildMemberUpdate: carries a
+ * `roles.cache` map keyed by role id (what the handler diffs). `partial`
+ * exercises the fail-safe edge where the old member's role set at event
+ * time is unknowable.
+ */
+function fakeRoleMember(opts: { guildId: string; roleIds: string[]; partial?: boolean }) {
+  return {
+    guild: { id: opts.guildId },
+    partial: opts.partial ?? false,
+    roles: { cache: new Map(opts.roleIds.map((id) => [id, { id }])) },
+  };
+}
+
+/** A minimal Role stand-in for onGuildRoleUpdate / onGuildRoleDelete. */
+function fakeGuildRole(opts: { guildId: string; permissions?: bigint }) {
+  return {
+    guild: { id: opts.guildId },
+    permissions: { bitfield: opts.permissions ?? 0n },
   };
 }
 
@@ -2146,5 +2191,455 @@ test(
     );
 
     assert.equal(cache.size, 0, 'a genuine overwrite change must clear every cached entry, never add one');
+  },
+);
+
+// --- onGuildMemberAdd: access-mode-aware default welcome text (issue #351) -----
+
+test('onGuildMemberAdd: open access mode uses WELCOME_MESSAGE_OPEN, which states no admin approval is needed and nudges "what can you do?" (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [WELCOME_MESSAGE_OPEN]);
+    assert.ok(
+      /no admin approval needed/i.test(sent[0]),
+      'open-mode default must state plainly that no admin approval is needed',
+    );
+    assert.ok(sent[0].includes('what can you do?'), 'open-mode default must nudge the capability phrase');
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+
+test(
+  'SECURITY: onGuildMemberAdd gated-mode default welcome text is byte-for-byte unchanged from ' +
+    'WELCOME_MESSAGE (issue #351)',
+  async (t) => {
+    resetPolicyCacheForTests();
+    const wasWelcome = config.discord.welcome.enabled;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.discord.welcome.enabled = true;
+    config.rbac.accessMode.discord = 'gated';
+    t.mock.method(pool, 'query', stubPoliciesQuery());
+    try {
+      const adapter = new DiscordAdapter();
+      const sent: string[] = [];
+      const member = fakeGuildMember({
+        id: 'user-gated-mode',
+        guildId: config.discord.guildId,
+        send: async (payload) => {
+          sent.push(payload.content);
+        },
+      });
+      await fireGuildMemberAdd(adapter, member);
+      assert.deepEqual(
+        sent,
+        [WELCOME_MESSAGE],
+        'gated mode must send the existing WELCOME_MESSAGE default, byte-for-byte unchanged',
+      );
+    } finally {
+      config.discord.welcome.enabled = wasWelcome;
+      config.rbac.accessMode.discord = wasAccessMode;
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+test('onGuildMemberAdd: an admin-configured welcome message overrides the open-mode default too (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  const welcomeMessage = 'Custom welcome for our open-mode server!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode-custom',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [welcomeMessage]);
+    assert.ok(
+      !sent[0].includes(WELCOME_MESSAGE_OPEN),
+      'the open-mode hardcoded default must not appear once an admin override is configured',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+
+test(
+  'onGuildMemberAdd: a standing mi welcome_message_mi override still takes precedence over the open-mode ' +
+    'default (issue #351)',
+  async (t) => {
+    resetPolicyCacheForTests();
+    const wasWelcome = config.discord.welcome.enabled;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.discord.welcome.enabled = true;
+    config.rbac.accessMode.discord = 'open';
+    const welcomeMessageMi = 'Kia ora and nau mai to our open-mode community!';
+    t.mock.method(
+      pool,
+      'query',
+      stubPoliciesQuery(undefined, { welcomeMessageMi, languagePreference: 'mi' }),
+    );
+    try {
+      const adapter = new DiscordAdapter();
+      const sent: string[] = [];
+      const member = fakeGuildMember({
+        id: 'user-open-mode-mi',
+        guildId: config.discord.guildId,
+        send: async (payload) => {
+          sent.push(payload.content);
+        },
+      });
+      await fireGuildMemberAdd(adapter, member);
+      assert.deepEqual(sent, [welcomeMessageMi]);
+      assert.ok(
+        !sent[0].includes(WELCOME_MESSAGE_OPEN),
+        'the open-mode default must not appear once a standing mi override is configured',
+      );
+    } finally {
+      config.discord.welcome.enabled = wasWelcome;
+      config.rbac.accessMode.discord = wasAccessMode;
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+test('onGuildMemberAdd: community guidelines are appended identically to the open-mode default (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode-guidelines',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [`${WELCOME_MESSAGE_OPEN}\n\nCommunity guidelines:\n${guidelines}`]);
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('SECURITY: WELCOME_MESSAGE_OPEN carries no sender-supplied data (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode-injection-check',
+      displayName: 'Injected DisplayName Marker',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [WELCOME_MESSAGE_OPEN]);
+    assert.ok(
+      !sent[0].includes(member.id) && !sent[0].includes(member.displayName),
+      'the open-mode default must never interpolate the joining member id or display name',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+// --- onGuildMemberUpdate / onGuildRoleUpdate / onGuildRoleDelete: Discord
+// role-based-access membership-scope cache invalidation (issue #350) ---
+
+test(
+  'SECURITY: a GuildMemberUpdate whose role id-set changed (a role removed from the member) in the ' +
+    'configured guild invalidates the whole membershipCache — the very next conversationsForUser recomputes live',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1, 'first call is a cache miss and must hit the guild');
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(calls.guildFetch, 1, 'second call within the TTL must be served from cache, not re-fetched');
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: [] }),
+    );
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'a GuildMemberUpdate that changes the member’s role id-set must invalidate the cache so the next ' +
+        'lookup re-fetches live',
+    );
+  },
+);
+
+test(
+  'a GuildMemberUpdate whose role id-set is unchanged (nickname/avatar/timeout only) does not clear the ' +
+    'cache — a pre-seeded entry survives the event',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+    );
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(
+      calls.guildFetch,
+      1,
+      'a routine update that leaves the role id-set unchanged must not force a re-fetch',
+    );
+  },
+);
+
+test(
+  'SECURITY: a GuildMemberUpdate whose old member is partial (role set at event time unknowable) fails ' +
+    'safe and clears the cache, even though the new member’s roles look unchanged from what was cached',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'], partial: true }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+    );
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'a partial old member means the prior role set is unknowable — the handler must fail safe toward ' +
+        'invalidation, never treat it as unchanged',
+    );
+  },
+);
+
+test('onGuildMemberUpdate does not touch the cache for an update event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildMemberUpdate(
+    adapter,
+    fakeRoleMember({ guildId: 'some-other-guild', roleIds: ['role-admin'] }),
+    fakeRoleMember({ guildId: 'some-other-guild', roleIds: [] }),
+  );
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a member-update event scoped to a different guild must not invalidate this guild’s cache',
+  );
+});
+
+test(
+  'SECURITY: a GuildRoleUpdate whose permissions bitfield changed in the configured guild invalidates ' +
+    'the whole membershipCache — the very next conversationsForUser recomputes live',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildRoleUpdate(
+      adapter,
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 0n }),
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 1024n }),
+    );
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'a GuildRoleUpdate that changes the role’s permissions bitfield must invalidate the cache',
+    );
+  },
+);
+
+test(
+  'a GuildRoleUpdate that only changes color/name/hoist (permissions bitfield unchanged) does not clear ' +
+    'the cache',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildRoleUpdate(
+      adapter,
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 8n }),
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 8n }),
+    );
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(
+      calls.guildFetch,
+      1,
+      'a color/name/hoist edit that leaves permissions unchanged must not force a re-fetch',
+    );
+  },
+);
+
+test('onGuildRoleUpdate does not touch the cache for a role-update event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildRoleUpdate(
+    adapter,
+    fakeGuildRole({ guildId: 'some-other-guild', permissions: 0n }),
+    fakeGuildRole({ guildId: 'some-other-guild', permissions: 1024n }),
+  );
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a permissions change on a role in a different guild must not invalidate this guild’s cache',
+  );
+});
+
+test('SECURITY: a GuildRoleDelete for a role in the configured guild invalidates the whole membershipCache', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildRoleDelete(adapter, fakeGuildRole({ guildId: config.discord.guildId }));
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    2,
+    'a role deletion in the configured guild must invalidate the cache so the next lookup re-fetches live',
+  );
+});
+
+test('onGuildRoleDelete does not touch the cache for a role-delete event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildRoleDelete(adapter, fakeGuildRole({ guildId: 'some-other-guild' }));
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a role deletion in a different guild must not invalidate this guild’s cache',
+  );
+});
+
+test(
+  'SECURITY: an uncaught throw from the GuildMemberUpdate/GuildRoleUpdate/GuildRoleDelete handlers is ' +
+    'caught and logged, never propagating out of the discord.js emit chain (mirrors the existing ' +
+    'ChannelUpdate try/catch — an uncaught throw here would crash the whole process, Discord and WhatsApp ' +
+    'handling alike)',
+  async (t) => {
+    const errorLog = t.mock.method(logger, 'error', () => {});
+    const adapter = new DiscordAdapter();
+    const client = (
+      adapter as unknown as {
+        client: {
+          emit: (event: string, ...args: unknown[]) => void;
+          login: (token: string) => Promise<void>;
+        };
+      }
+    ).client;
+    // start() wires the listeners under test but also logs in for real —
+    // stub the login call so this stays a local, network-free test.
+    client.login = async () => {};
+    await adapter.start();
+
+    // Malformed args with no `.guild` property make each handler throw
+    // while reading `newMember.guild.id` / `newRole.guild.id` / `role.guild.id`.
+    assert.doesNotThrow(() => client.emit(Events.GuildMemberUpdate, {}, {}));
+    assert.doesNotThrow(() => client.emit(Events.GuildRoleUpdate, {}, {}));
+    assert.doesNotThrow(() => client.emit(Events.GuildRoleDelete, {}));
+
+    assert.equal(
+      errorLog.mock.calls.length,
+      3,
+      'all three malformed events must be caught and logged, once each',
+    );
   },
 );

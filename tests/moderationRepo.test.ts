@@ -16,7 +16,7 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { addWarning, countActiveWarnings, clearWarnings, purgeUserData } =
+const { addWarning, countActiveWarnings, countMutedMembers, clearWarnings, purgeUserData } =
   await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 
@@ -176,6 +176,141 @@ test(
       1,
       'the member_warnings table and row are untouched — no injection occurred',
     );
+  },
+);
+
+test(
+  'countMutedMembers: counts distinct users at or over the strike limit, excludes below-limit users, and never double-counts a single over-limit user (issue #357)',
+  { skip },
+  async () => {
+    const belowLimit = `${RUN}-muted-below`;
+    const atLimit = `${RUN}-muted-at`;
+    const overLimit = `${RUN}-muted-over`;
+    // countMutedMembers is guild-wide by platform (not scoped to these test
+    // users), so a concurrently-running test file's own muted fixtures can
+    // add to the raw count — assert the DELTA against a captured baseline,
+    // same convention as countAccessRequests/countPendingSuggestions's own
+    // guild-wide-count tests in repository.test.ts.
+    const before = await countMutedMembers('discord', 3);
+
+    try {
+      await addWarning({
+        platform: 'discord',
+        userId: belowLimit,
+        reason: 'x',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: atLimit,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+
+      for (let i = 0; i < 5; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: overLimit,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+
+      assert.equal(
+        await countMutedMembers('discord', 3),
+        before + 2,
+        'exactly the at-limit and over-limit users add to the count, once each — the below-limit user is ' +
+          'excluded and the over-limit user is never double-counted per strike',
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = ANY($1)`, [
+        [belowLimit, atLimit, overLimit],
+      ]);
+    }
+  },
+);
+
+test(
+  'countMutedMembers: clearing warnings drops a member back under the limit and out of the count (issue #357)',
+  { skip },
+  async () => {
+    const user = `${RUN}-muted-cleared`;
+    const before = await countMutedMembers('discord', 3);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: user,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+      assert.equal(
+        await countMutedMembers('discord', 3),
+        before + 1,
+        'the at-limit user adds one to the count before clearing',
+      );
+      await clearWarnings('discord', user, 'admin-1');
+      assert.equal(
+        await countMutedMembers('discord', 3),
+        before,
+        'clear_warnings removes the user from the muted count — it is a live, uncleared-only signal',
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [user]);
+    }
+  },
+);
+
+test(
+  'countMutedMembers: with a configured window, a user whose only strikes have aged out is excluded (issue #357)',
+  { skip },
+  async () => {
+    const user = `${RUN}-muted-aged-out`;
+    const beforeWindowed = await countMutedMembers('discord', 3, 30);
+    const beforeUnwindowed = await countMutedMembers('discord', 3);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: user,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+      await pool.query(
+        `UPDATE member_warnings SET created_at = now() - interval '31 days'
+          WHERE platform = 'discord' AND user_id = $1`,
+        [user],
+      );
+      assert.equal(
+        await countMutedMembers('discord', 3, 30),
+        beforeWindowed,
+        'all three strikes aged out of the 30-day window — the user adds nothing to the windowed count',
+      );
+      assert.equal(
+        await countMutedMembers('discord', 3),
+        beforeUnwindowed + 1,
+        "the same user still counts when no window is passed, matching countActiveWarnings' own opt-in window",
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [user]);
+    }
   },
 );
 

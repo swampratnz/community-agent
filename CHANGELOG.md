@@ -13,6 +13,9 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ### Changed
 - **The gated-mode "member-only" notice now names an actual admin** (#360): a guest who addresses the bot before being added was told to "ask a community admin" without ever being told who. The notice now names up to 3 known admins by their resolved display name (e.g. "Ask a community admin — Alice or Bob — ..."), TTL-cached so this doesn't add a DB read per message. Falls back to today's exact wording, unchanged, whenever no admin display name is known. Reuses existing `community_users`/`server_roster` data (no new table); never exposes ids, emails, or phone numbers — just names already visible to anyone in the server/group.
 
+### Fixed
+- **`generate_image` now works on the WhatsApp Cloud API adapter** (#356) — the docs' own recommended production WhatsApp path. `WhatsAppCloudAdapter` was the only adapter missing `sendImage`, so the tool silently replied "not available on whatsapp" there while working fine on Discord and Baileys WhatsApp. Implemented as two Graph API calls (media upload, then a message referencing the returned media id) over the same authenticated connection `sendChunk` already uses — no new egress destination, config, or RBAC surface. Same 24h customer-service window check and caption secret-redaction as every other Cloud send.
+
 ## 2026-07-09
 
 ### Changed

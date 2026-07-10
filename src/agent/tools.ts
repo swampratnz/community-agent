@@ -1512,6 +1512,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       "about something other than the bot's last reply.",
     {
       helpful: z.boolean().describe('true if the answer helped, false if it did not'),
+      comment: z
+        .string()
+        .max(200)
+        .optional()
+        .describe(
+          "Optional short reason the member gave alongside the rating in the SAME message (e.g. 'wrong " +
+            "pricing, it changed last month'). Only pass through what they actually said — never invent one, " +
+            'and never ask a follow-up question just to solicit it.',
+        ),
     },
     async (args) => {
       const created = await createAnswerFeedback({
@@ -1519,6 +1528,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         conversationId: caller.conversationId,
         userId: caller.userId,
         helpful: args.helpful,
+        comment: args.comment,
       });
       if (created === 'no_recent_answer') {
         return text("I don't have a recent answer of mine to rate in this conversation yet.", true);
@@ -3158,10 +3168,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
             const knowledgeNote =
               r.knowledgeEntryId != null ? `, served from knowledge #${r.knowledgeEntryId}` : '';
             const answerText = r.content != null ? `\n  ${untrusted('answer', r.content)}` : '';
+            const commentText = r.comment != null ? `\n  ${untrusted('comment', r.comment)}` : '';
             return (
               `#${r.id} [${r.helpful ? 'helpful' : 'unhelpful'}] ${r.platform} ${r.conversationId} — ` +
               `from ${r.userId}${r.interactionId ? `, answer #${r.interactionId}` : ' (rated answer since purged)'}` +
-              `${knowledgeNote} (${r.createdAt.toISOString()})${answerText}`
+              `${knowledgeNote} (${r.createdAt.toISOString()})${answerText}${commentText}`
             );
           })
           .join('\n'),

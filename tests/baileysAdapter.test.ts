@@ -12,8 +12,13 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { BaileysAdapter, initialWelcomeCooldownState, stepWelcomeCooldown, WHATSAPP_GROUP_WELCOME_MESSAGE } =
-  await import('../src/platforms/whatsapp/baileysAdapter.js');
+const {
+  BaileysAdapter,
+  initialWelcomeCooldownState,
+  stepWelcomeCooldown,
+  WHATSAPP_GROUP_WELCOME_MESSAGE,
+  WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN,
+} = await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
@@ -425,6 +430,157 @@ test('SECURITY: WhatsApp group welcome falls back to the hardcoded default when 
     sent[0].text,
     WHATSAPP_GROUP_WELCOME_MESSAGE,
     'a policy-read failure must fall back to the hardcoded default, never an empty or broken welcome',
+  );
+  resetPolicyCacheForTests();
+});
+
+// --- WhatsApp group-join welcome: access-mode-aware default text (issue #351) ---
+
+/** Temporarily overrides config.rbac.accessMode.whatsapp for the duration of `fn`, then restores it. */
+async function withAccessMode<T>(mode: 'gated' | 'open', fn: () => Promise<T>): Promise<T> {
+  const prev = config.rbac.accessMode.whatsapp;
+  config.rbac.accessMode.whatsapp = mode;
+  try {
+    return await fn();
+  } finally {
+    config.rbac.accessMode.whatsapp = prev;
+  }
+}
+
+test(
+  'WhatsApp group welcome: open access mode uses WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN, which states no ' +
+    'admin approval is needed and nudges "what can you do?" (issue #351)',
+  async (t) => {
+    resetPolicyCacheForTests();
+    t.mock.method(pool, 'query', stubPoliciesQuery());
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForGroupWelcome(adapter);
+
+    await withAccessMode('open', () =>
+      withWelcomeConfig({ enabled: true }, () =>
+        fireGroupJoin(adapter, {
+          id: 'group-open-mode@g.us',
+          participants: ['64211111111@s.whatsapp.net'],
+          action: 'add',
+        }),
+      ),
+    );
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN);
+    assert.ok(
+      /no admin approval needed/i.test(sent[0].text),
+      'open-mode default must state plainly that no admin approval is needed',
+    );
+    assert.ok(
+      sent[0].text.includes('what can you do?'),
+      'open-mode default must nudge the capability phrase',
+    );
+    resetPolicyCacheForTests();
+  },
+);
+
+test(
+  'SECURITY: WhatsApp group welcome gated-mode default text is byte-for-byte unchanged from ' +
+    'WHATSAPP_GROUP_WELCOME_MESSAGE (issue #351)',
+  async (t) => {
+    resetPolicyCacheForTests();
+    t.mock.method(pool, 'query', stubPoliciesQuery());
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForGroupWelcome(adapter);
+
+    await withAccessMode('gated', () =>
+      withWelcomeConfig({ enabled: true }, () =>
+        fireGroupJoin(adapter, {
+          id: 'group-gated-mode@g.us',
+          participants: ['64211111111@s.whatsapp.net'],
+          action: 'add',
+        }),
+      ),
+    );
+
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      WHATSAPP_GROUP_WELCOME_MESSAGE,
+      'gated mode must send the existing default, byte-for-byte unchanged',
+    );
+    resetPolicyCacheForTests();
+  },
+);
+
+test('WhatsApp group welcome: an admin-configured welcome message overrides the open-mode default too (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const welcomeMessage = 'Custom welcome for our open-mode group!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage }));
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withAccessMode('open', () =>
+    withWelcomeConfig({ enabled: true }, () =>
+      fireGroupJoin(adapter, {
+        id: 'group-open-mode-custom@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'add',
+      }),
+    ),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, welcomeMessage);
+  assert.ok(
+    !sent[0].text.includes(WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN),
+    'the open-mode hardcoded default must not appear once an admin override is configured',
+  );
+  resetPolicyCacheForTests();
+});
+
+test('WhatsApp group welcome: community guidelines are appended identically to the open-mode default (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withAccessMode('open', () =>
+    withWelcomeConfig({ enabled: true }, () =>
+      fireGroupJoin(adapter, {
+        id: 'group-open-mode-guidelines@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'add',
+      }),
+    ),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    `${WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN}\n\nCommunity guidelines:\n${guidelines}`,
+  );
+  resetPolicyCacheForTests();
+});
+
+test('SECURITY: WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN carries no participant-supplied data (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForGroupWelcome(adapter);
+
+  await withAccessMode('open', () =>
+    withWelcomeConfig({ enabled: true }, () =>
+      fireGroupJoin(adapter, {
+        id: 'group-open-mode-injection-check@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'add',
+      }),
+    ),
+  );
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN);
+  assert.ok(
+    !sent[0].text.includes('64211111111'),
+    'the open-mode default must never interpolate the joining participant JID',
   );
   resetPolicyCacheForTests();
 });
