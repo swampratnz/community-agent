@@ -47,14 +47,21 @@ function fireGuildMemberRemove(adapter: Adapter, member: unknown): Promise<void>
 /**
  * Stubs client.guilds.fetch for conversationsForUser's cache-miss path,
  * counting how many times the guild/channel lookup actually runs so tests
- * can assert a cache hit vs. a live re-fetch.
+ * can assert a cache hit vs. a live re-fetch. `deniedChannelIds` is a live,
+ * mutable set the test can add to between calls to simulate a permission
+ * revoke landing in Discord's live state (issue #328's ChannelUpdate tests
+ * assert the fresh recompute reflects it).
  */
-function stubConversationsGuild(adapter: Adapter, opts: { channelIds: string[] }) {
+function stubConversationsGuild(
+  adapter: Adapter,
+  opts: { channelIds: string[]; deniedChannelIds?: Set<string> },
+) {
   const calls = { guildFetch: 0 };
+  const denied = opts.deniedChannelIds ?? new Set<string>();
   const channels = opts.channelIds.map((id) => ({
     id,
     isTextBased: () => true,
-    permissionsFor: () => ({ has: () => true }),
+    permissionsFor: () => ({ has: () => !denied.has(id) }),
   }));
   const fakeGuild = {
     members: {
@@ -72,6 +79,43 @@ function stubConversationsGuild(adapter: Adapter, opts: { channelIds: string[] }
     return fakeGuild;
   };
   return calls;
+}
+
+/** Reaches the private onChannelUpdate handler directly. */
+function fireChannelUpdate(adapter: Adapter, oldChannel: unknown, newChannel: unknown): void {
+  (adapter as unknown as { onChannelUpdate: (o: unknown, n: unknown) => void }).onChannelUpdate(
+    oldChannel,
+    newChannel,
+  );
+}
+
+/**
+ * A minimal channel stand-in for onChannelUpdate: either DM-based (so
+ * `isDMBased()` short-circuits the handler) or a guild channel carrying a
+ * `permissionOverwrites.cache` map the handler compares old vs. new.
+ */
+function fakeUpdateChannel(
+  opts:
+    | { isDM: true }
+    | {
+        isDM?: false;
+        guildId: string;
+        overwrites: Array<{ id: string; allow: bigint; deny: bigint }>;
+        isTextBased?: boolean;
+      },
+) {
+  if (opts.isDM) {
+    return { isDMBased: () => true, isTextBased: () => false };
+  }
+  const cache = new Map(
+    opts.overwrites.map((o) => [o.id, { allow: { bitfield: o.allow }, deny: { bitfield: o.deny } }]),
+  );
+  return {
+    isDMBased: () => false,
+    isTextBased: () => opts.isTextBased ?? true,
+    guild: { id: opts.guildId },
+    permissionOverwrites: { cache },
+  };
 }
 
 /** A minimal Guild stand-in carrying only what findMutedRole reads. */
@@ -1925,3 +1969,182 @@ test('onGuildMemberRemove does not touch the cache for a removal event in a diff
     'a removal event scoped to a different guild must not invalidate this guild’s cache entry',
   );
 });
+
+// --- onChannelUpdate: channel-permission-overwrite membership-scope cache invalidation (issue #328) ---
+
+test(
+  'SECURITY: a genuine permissionOverwrites change on an in-guild text channel invalidates the whole ' +
+    'membershipCache — the very next conversationsForUser recomputes live and excludes a channel revoked ' +
+    'in the same live check, without advancing the clock past MEMBERSHIP_CACHE_TTL_MS',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const denied = new Set<string>();
+    const calls = stubConversationsGuild(adapter, {
+      channelIds: ['chan-x', 'chan-2'],
+      deniedChannelIds: denied,
+    });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(first, ['chan-x', 'chan-2', 'dm-1']);
+    assert.equal(calls.guildFetch, 1, 'first call is a cache miss and must hit the guild');
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(calls.guildFetch, 1, 'second call within the TTL must be served from cache, not re-fetched');
+
+    // The revoke has already landed in Discord's live permission state; only
+    // the cache is stale until the ChannelUpdate handler clears it.
+    denied.add('chan-x');
+    fireChannelUpdate(
+      adapter,
+      fakeUpdateChannel({
+        guildId: config.discord.guildId,
+        overwrites: [{ id: 'role-1', allow: 0n, deny: 0n }],
+      }),
+      fakeUpdateChannel({
+        guildId: config.discord.guildId,
+        overwrites: [{ id: 'role-1', allow: 0n, deny: 1024n }],
+      }),
+    );
+
+    const fresh = await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'the ChannelUpdate must force a live recompute, not return the stale cache',
+    );
+    assert.deepEqual(fresh, ['chan-2', 'dm-1']);
+    assert.ok(!fresh.includes('chan-x'), 'the fresh result must exclude the channel revoked live');
+  },
+);
+
+test(
+  'SECURITY: onChannelUpdate does not clear the cache when permissionOverwrites is unchanged (e.g. a name/topic ' +
+    'edit) — a subsequent conversationsForUser within the TTL still returns the cached array unchanged',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireChannelUpdate(
+      adapter,
+      fakeUpdateChannel({
+        guildId: config.discord.guildId,
+        overwrites: [{ id: 'role-1', allow: 0n, deny: 8n }],
+      }),
+      fakeUpdateChannel({
+        guildId: config.discord.guildId,
+        overwrites: [{ id: 'role-1', allow: 0n, deny: 8n }],
+      }),
+    );
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(
+      calls.guildFetch,
+      1,
+      'an edit that leaves permissionOverwrites unchanged must not force a re-fetch',
+    );
+  },
+);
+
+test(
+  'SECURITY: onChannelUpdate does not clear the cache for a channel outside config.discord.guildId — a ' +
+    'subsequent conversationsForUser within the TTL still returns the cached array unchanged',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireChannelUpdate(
+      adapter,
+      fakeUpdateChannel({ guildId: 'some-other-guild', overwrites: [{ id: 'role-1', allow: 0n, deny: 0n }] }),
+      fakeUpdateChannel({ guildId: 'some-other-guild', overwrites: [{ id: 'role-1', allow: 0n, deny: 8n }] }),
+    );
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(
+      calls.guildFetch,
+      1,
+      'a permission-overwrite change in a different guild must not invalidate this guild’s cache',
+    );
+  },
+);
+
+test('onChannelUpdate ignores a non-text channel (e.g. a category) permission-overwrite change, same guard conversationsForUser applies', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireChannelUpdate(
+    adapter,
+    fakeUpdateChannel({
+      guildId: config.discord.guildId,
+      overwrites: [{ id: 'role-1', allow: 0n, deny: 0n }],
+      isTextBased: false,
+    }),
+    fakeUpdateChannel({
+      guildId: config.discord.guildId,
+      overwrites: [{ id: 'role-1', allow: 0n, deny: 8n }],
+      isTextBased: false,
+    }),
+  );
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a non-text channel permission-overwrite change must not invalidate the cache',
+  );
+});
+
+test('onChannelUpdate ignores a DM channel update (channelUpdate can carry a DMChannel, which has no guild/permissionOverwrites)', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireChannelUpdate(adapter, fakeUpdateChannel({ isDM: true }), fakeUpdateChannel({ isDM: true }));
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1, 'a DM-based channelUpdate must not touch the guild membershipCache');
+});
+
+test(
+  'SECURITY: onChannelUpdate is strictly invalidating — it only clears membershipCache entries and never ' +
+    'writes a channel id into it, so the post-event recompute can only equal or narrow the live-permission ' +
+    'result, never exceed it (issue #328)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('user-a');
+    const cache = (adapter as unknown as { membershipCache: Map<string, unknown> }).membershipCache;
+    assert.equal(cache.size, 1, 'sanity: the cache is populated before the update fires');
+
+    fireChannelUpdate(
+      adapter,
+      fakeUpdateChannel({ guildId: config.discord.guildId, overwrites: [] }),
+      fakeUpdateChannel({
+        guildId: config.discord.guildId,
+        overwrites: [{ id: 'role-1', allow: 0n, deny: 1n }],
+      }),
+    );
+
+    assert.equal(cache.size, 0, 'a genuine overwrite change must clear every cached entry, never add one');
+  },
+);

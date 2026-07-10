@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { atLeast } from '../auth/rbac.js';
 import { resolveRole } from '../auth/roles.js';
-import { addWarning, countActiveWarnings } from '../storage/repository.js';
+import { addWarning, countActiveWarnings, getLanguagePreference } from '../storage/repository.js';
 import { makeClassifier, Moderator, type ModerationEnforcer } from './moderator.js';
 
 /**
@@ -19,6 +19,7 @@ export function createModerator(enforcer: ModerationEnforcer): Moderator {
       llmAbuseEnabled: config.moderation.llmAbuseEnabled,
     }),
     isExempt: async (platform, userId) => atLeast(await resolveRole(platform, userId), 'admin'),
+    getLanguagePreference,
     store: { addWarning, countActiveWarnings },
     enforcer,
   });
