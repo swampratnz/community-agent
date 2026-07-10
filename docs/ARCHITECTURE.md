@@ -144,18 +144,26 @@ memory**:
    #344) a guild-wide, Discord-only joined-this-week/left-this-week roster
    pulse, sourced from `rosterCounts(admin.platform)` — the same
    `{ total, joinedThisWeek, leftThisWeek }` aggregate `list_roster` already
-   computes over `server_roster` (issue #47), now pushed instead of pull-only.
+   computes over `server_roster` (issue #47), now pushed instead of pull-only —
+   plus (issue #357) a guild-wide count of members currently muted by
+   auto-moderation, sourced from `countMutedMembers(admin.platform,
+   config.moderation.strikeLimit, config.moderation.strikeWindowDays)`, which
+   reuses `countActiveWarnings`'s exact `platform`/`user_id`/`cleared_at IS
+   NULL`/optional-rolling-window shape so the digest's "muted" definition can
+   never drift from the actual mute trigger in `src/moderation/moderator.ts`
+   — the pull-only complement to `moderation_history`/`clear_warnings`.
    As bare integers with no member name/id, it's guild-wide like the
    access-request/suggestion/candidate counts, not conversation-scoped;
    `server_roster` is Discord-only, so `rosterCounts('whatsapp')` is always
    zeros, leaving a WhatsApp admin's digest unaffected. All these counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
-   `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`)
+   `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
+   `countMutedMembers`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. The DM sends when *any* of the
-   nine signals is non-zero, and sends nothing on a quiet week (all zero, no
+   ten signals is non-zero, and sends nothing on a quiet week (all zero, no
    DM, no noise); a persistently untriaged queue re-appears every subsequent
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped

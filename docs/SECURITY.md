@@ -500,7 +500,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   usage alerts. `admin_digest_sends` stores only `(platform, platform_user_id,
   sent_at)` — no cluster text — and is purge-coherent:
   `forget_me`/`purge_user_data` remove an offboarded admin's row alongside
-  other admin-identity-keyed data.
+  other admin-identity-keyed data. The digest has since grown further
+  guild-wide, bare-count signals, most recently (issue #357) a
+  currently-muted-member count from `countMutedMembers`, which reuses
+  `countActiveWarnings`'s exact strike-limit/window definition so the
+  digest's "muted" can never disagree with the actual mute trigger in
+  `src/moderation/moderator.ts` — the DM text carries only the integer, never
+  a `member_warnings.reason`, `excerpt`, user id, or member name.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
