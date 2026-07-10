@@ -257,7 +257,15 @@ suggestion/report-resolution DMs (`notifyMemberApproved`/`notifyAdminApproved`/
 issue #331): each now takes the target's `platform`, reads their standing
 preference, and picks the matching `_MI` variant (every status branch, for the
 two resolution DMs), while the member's own echoed suggestion/report text stays
-untranslated.
+untranslated. The `code_answers` policy's own omitted/truncated note — appended
+by `applyCodePolicy` to the model's own (already language-mirrored) reply — gets
+the same treatment on the router's single main-reply send path (issue #339):
+`runAgentTurn` surfaces the `languagePreference` it already resolves for the
+system prompt on `AgentReply`, and the router threads a `'mi'` value into
+`adapter.sendMessage`'s optional `language` field, picked up by each adapter's
+`filtered()` helper. Every other `filtered()`/`sendMessage` call site (DMs,
+poll question/answers, thread name/description, announce, warn) is untouched
+and stays English-only.
 
 ## Onboarding (gated mode)
 
