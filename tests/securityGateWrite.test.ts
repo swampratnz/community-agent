@@ -55,11 +55,20 @@ function runWrite(dir: string, extraArgs: string[] = []): ReturnType<typeof spaw
   );
 }
 
+// Check (non-write) mode: static validation only, which exits BEFORE the script
+// spawns the tsx runtime runner (so a fixture tree with no package.json / tsx is
+// fine as long as the assertion is that a static problem fails it).
+function runCheck(dir: string, extraArgs: string[] = []): ReturnType<typeof spawnSync> {
+  return spawnSync('node', [path.join(dir, 'scripts', 'check-security-test-count.mjs'), ...extraArgs], {
+    encoding: 'utf8',
+  });
+}
+
 function readManifest(dir: string): Record<string, number> {
   return JSON.parse(readFileSync(path.join(dir, 'tests', 'security-floor.json'), 'utf8'));
 }
 
-test('SECURITY: test:security:fix raises a lagging per-file count and preserves existing key order', () => {
+test('SECURITY: test:security:fix raises a lagging per-file count and normalises key order to sorted', () => {
   // Deliberately non-alphabetical manifest order; zeta under-counts reality.
   const dir = setup({ 'zeta.test.ts': 3, 'alpha.test.ts': 2 }, { 'zeta.test.ts': 1, 'alpha.test.ts': 2 });
   try {
@@ -68,8 +77,8 @@ test('SECURITY: test:security:fix raises a lagging per-file count and preserves 
     const m = readManifest(dir);
     assert.deepEqual(
       Object.keys(m),
-      ['zeta.test.ts', 'alpha.test.ts'],
-      'existing key order preserved (no re-sort)',
+      ['alpha.test.ts', 'zeta.test.ts'],
+      're-sorted to alphabetical order (sorted order keeps concurrent PRs from conflicting here)',
     );
     assert.equal(m['zeta.test.ts'], 3, 'lagging count raised to the true count');
     assert.equal(m['alpha.test.ts'], 2);
@@ -78,16 +87,33 @@ test('SECURITY: test:security:fix raises a lagging per-file count and preserves 
   }
 });
 
-test('SECURITY: test:security:fix appends a newly-covered file in sorted order after existing entries', () => {
-  const dir = setup({ 'alpha.test.ts': 1, 'gamma.test.ts': 2, 'beta.test.ts': 1 }, { 'alpha.test.ts': 1 });
+test('SECURITY: test:security:fix places every entry (existing + newly-covered) in sorted position', () => {
+  // 'omega' already in the manifest is NOT alphabetically first, so a correct
+  // sort must MOVE it after the newly-covered 'alpha'/'beta' — proving the
+  // output is fully sorted, not merely "new files appended at the end".
+  const dir = setup({ 'omega.test.ts': 1, 'alpha.test.ts': 2, 'beta.test.ts': 1 }, { 'omega.test.ts': 1 });
   try {
     const res = runWrite(dir);
     assert.equal(res.status, 0, res.stderr);
     const m = readManifest(dir);
-    // Existing 'alpha' stays first; the two new files are appended sorted.
-    assert.deepEqual(Object.keys(m), ['alpha.test.ts', 'beta.test.ts', 'gamma.test.ts']);
+    assert.deepEqual(Object.keys(m), ['alpha.test.ts', 'beta.test.ts', 'omega.test.ts']);
+    assert.equal(m['alpha.test.ts'], 2);
     assert.equal(m['beta.test.ts'], 1);
-    assert.equal(m['gamma.test.ts'], 2);
+    assert.equal(m['omega.test.ts'], 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('test:security (check mode) fails on an unsorted manifest and points at the --fix command', () => {
+  // Counts MATCH reality, so the ONLY problem is key order — the check must
+  // still fail (that is what keeps the anti-conflict sorted invariant honest).
+  const dir = setup({ 'alpha.test.ts': 1, 'zeta.test.ts': 1 }, { 'zeta.test.ts': 1, 'alpha.test.ts': 1 });
+  try {
+    const res = runCheck(dir);
+    assert.notEqual(res.status, 0, 'an out-of-order manifest must fail the check');
+    assert.match(res.stderr, /not sorted/i);
+    assert.match(res.stderr, /test:security:fix/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

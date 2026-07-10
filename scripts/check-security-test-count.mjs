@@ -13,7 +13,10 @@
 // line, so any two in-flight PRs conflicted with each other (9 of the 11
 // real PR conflicts in the first week were this one line). Per-file entries
 // mean concurrent PRs only conflict when they touch the SAME test file —
-// which is a conflict worth having.
+// which is a conflict worth having. The manifest is additionally kept SORTED
+// by file name (enforced below, normalised by --write) so that two PRs adding
+// entries for DIFFERENT new files don't collide at a shared append point
+// either — see the --write section for the full rationale.
 //
 // Convention (unchanged in spirit from #42): when you add a SECURITY: test,
 // bump that file's entry in tests/security-floor.json in the SAME diff (add
@@ -64,10 +67,18 @@ for (const f of testFileNames) {
 // on the SAME file — the #1 source of "counts lag reality" escalations, which
 // are not a real defect and should never reach a human.
 //
-// Least-diff + least-surprise by construction: it PRESERVES the manifest's
-// existing key order (a re-sort would produce a noisy diff and *more* merge
-// conflicts, the opposite of the goal), updates each value to the real count,
-// and appends any newly-covered files at the end.
+// Output is fully SORTED by file name, and the non-write check below ENFORCES
+// that order. This is deliberately the opposite of the old "preserve insertion
+// order, append new files at the end" behaviour, and it is the whole reason
+// this manifest stopped being a merge-conflict hotspot: appending each new
+// file's entry at the end made every PR that covered a NEW test file edit the
+// same final lines, so two such PRs conflicted even though their entries are
+// independent. A manifest that is born sorted and kept sorted gives every entry
+// a stable alphabetical home, so two PRs adding DIFFERENT files land in
+// different hunks and git 3-way-merges them with no conflict for a human (or
+// the resolver) to touch. The prior "a re-sort is a noisy diff" objection was a
+// ONE-TIME cost (a single re-sorting commit); steady-state diffs stay minimal
+// because entries no longer migrate.
 //
 // Safety rail: it RAISES or ADDS entries freely, but REFUSES to lower or drop
 // one (which would silently paper over a deleted/renamed-away security test —
@@ -79,19 +90,18 @@ if (process.argv.includes('--write')) {
   const allowLower = process.argv.includes('--allow-lower');
   const lowered = [];
   const next = {};
-  for (const [file, expected] of Object.entries(manifest)) {
+  // Union of files already in the manifest and files with a live static count,
+  // emitted in sorted order (see header): deterministic and conflict-resistant.
+  const allFiles = [...new Set([...Object.keys(manifest), ...Object.keys(staticCounts)])].sort();
+  for (const file of allFiles) {
     const actual = staticCounts[file] ?? 0;
-    if (actual === 0) {
+    const expected = manifest[file]; // undefined for a newly-covered file
+    if (expected !== undefined && actual === 0) {
       lowered.push(`${file}: ${expected} → 0 (entry would be removed)`);
       continue; // file deleted or all its SECURITY: tests gone — drop the entry
     }
-    if (actual < expected) lowered.push(`${file}: ${expected} → ${actual}`);
+    if (expected !== undefined && actual < expected) lowered.push(`${file}: ${expected} → ${actual}`);
     next[file] = actual;
-  }
-  // Newly-covered files (present in code, absent from the manifest): append in
-  // sorted order for determinism, after the existing hand-maintained entries.
-  for (const file of Object.keys(staticCounts).sort()) {
-    if (!(file in next)) next[file] = staticCounts[file];
   }
   if (lowered.length > 0 && !allowLower) {
     console.error(
@@ -134,9 +144,27 @@ for (const [file, actual] of Object.entries(staticCounts)) {
   if (!(file in manifest)) {
     problems.push(
       `${file}: declares ${actual} SECURITY: test(s) but has no entry in tests/security-floor.json — ` +
-        `add one in the same diff.`,
+        `add one in the same diff (in sorted position — see below).`,
     );
   }
+}
+
+// The manifest must stay SORTED by file name. A sorted manifest is exactly what
+// lets two PRs that each add an entry for a DIFFERENT test file merge without
+// conflicting here (their entries live in different hunks); an out-of-order
+// entry silently erodes that property one PR at a time. This is a mechanical,
+// --write-fixable ordering nit rather than a security finding, but it is
+// cheapest to enforce right where the counts are already validated — see the
+// --write header for why sorted order is the anti-conflict invariant.
+const manifestKeys = Object.keys(manifest);
+const sortedKeys = [...manifestKeys].sort();
+if (manifestKeys.some((k, i) => k !== sortedKeys[i])) {
+  const firstOff = manifestKeys.findIndex((k, i) => k !== sortedKeys[i]);
+  problems.push(
+    `tests/security-floor.json is not sorted by file name (first out-of-order entry: ` +
+      `${manifestKeys[firstOff]}). A sorted manifest lets PRs that add different test files merge ` +
+      `without conflicting on this manifest — run \`npm run test:security:fix\` to normalise the order.`,
+  );
 }
 
 // Unconditional skip/todo of a SECURITY test evades the gate (issue #221):
