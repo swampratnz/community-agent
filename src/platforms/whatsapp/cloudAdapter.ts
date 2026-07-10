@@ -338,13 +338,16 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   /**
    * Every outbound path is filtered HERE (secret redaction + code policy) so
    * no caller — router reply, announce, warn, super-admin alert — can forget.
+   * `language` is optional (issue #339): only `sendMessage`'s main-reply path
+   * passes it through; every other call site (via `sendText`'s default)
+   * omits it, so their output stays English-only by construction (never `_MI`).
    */
-  private async filtered(text: string): Promise<string> {
-    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp');
+  private async filtered(text: string, language?: 'mi'): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
   }
 
   async sendMessage(out: OutgoingMessage): Promise<void> {
-    await this.sendText(out.conversationId, out.text);
+    await this.sendText(out.conversationId, out.text, out.language);
   }
 
   async sendDirectMessage(userId: string, text: string): Promise<void> {
@@ -383,7 +386,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
-  private async sendText(to: string, text: string): Promise<void> {
+  private async sendText(to: string, text: string, language?: 'mi'): Promise<void> {
     const { phoneNumberId, accessToken } = config.whatsapp.cloud;
     if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
 
@@ -401,7 +404,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     // messages (mirrors Discord's chunking at its own 2000-char limit). If a
     // chunk in the middle fails, earlier chunks have already been delivered
     // and the throw propagates — same partial-failure semantics as Discord.
-    for (const chunk of chunkText(await this.filtered(text), WHATSAPP_CLOUD_MAX_LEN)) {
+    for (const chunk of chunkText(await this.filtered(text, language), WHATSAPP_CLOUD_MAX_LEN)) {
       await this.sendChunk(to, phoneNumberId, accessToken, chunk);
     }
   }

@@ -122,6 +122,40 @@ test('shouldRunDocsIngest: first run always, then only after ~a week', () => {
   assert.equal(shouldRunDocsIngest(new Date(now - 7 * 24 * 3_600_000), now), true, '7 days ago → run');
 });
 
+// --- total-failure signal (issue #335) — no DB needed: both paths below
+// return before any DB call is made, so they run regardless of DATABASE_URL.
+
+test('runDocsIngest: indexFetchFailed is true when the llms.txt index itself fails to fetch — the total-failure signal defaultDocsIngestRun throws on', async () => {
+  const failingIndex = async (_url: string): Promise<string> => {
+    throw new Error('network down');
+  };
+  const res = await runDocsIngest(failingIndex);
+  assert.equal(res.indexFetchFailed, true);
+  assert.equal(res.pages, 0);
+  assert.equal(res.failed, 0, 'no per-page failures are counted — the run never got to any page');
+});
+
+test('runDocsIngest: a reachable index that parses to zero page URLs is a legitimate no-op — indexFetchFailed stays false', async () => {
+  const emptyIndex = async (_url: string): Promise<string> => '# Index\n\nno links here';
+  const res = await runDocsIngest(emptyIndex);
+  assert.equal(res.indexFetchFailed, false);
+  assert.equal(res.pages, 0);
+});
+
+test('runDocsIngest: index reachable but EVERY page fetch fails — indexFetchFailed stays false (that field is only for the index itself), yet pages > 0 && fetched === 0, the signal defaultDocsIngestRun uses to still detect this as a total failure', async () => {
+  const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+  const u2 = 'https://platform.claude.com/docs/en/api/models.md';
+  const indexOkAllPagesFail = async (url: string): Promise<string> => {
+    if (url === config.docsIngest.indexUrl) return `- [a](${u1})\n- [b](${u2})`;
+    throw new Error('docs host blocked the request');
+  };
+  const res = await runDocsIngest(indexOkAllPagesFail);
+  assert.equal(res.indexFetchFailed, false, 'the index itself fetched fine');
+  assert.equal(res.pages, 2);
+  assert.equal(res.fetched, 0, 'no page fetch succeeded');
+  assert.equal(res.failed, 2, 'both page fetches are counted as failures');
+});
+
 // --- DB-backed, injected fetcher -------------------------------------------
 
 /** Build an injected fetchText from an index page-list + a per-URL body map. */

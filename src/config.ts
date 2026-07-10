@@ -370,6 +370,13 @@ const EnvSchema = z.object({
   // it must only fire on a near-exact match. Tuned against
   // tests/fixtures/knowledgeEval.json's negativeQueries.
   KNOWLEDGE_SHORTCUT_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
+  // Member-facing low-rated-answer caveat (issue #337): when serving a
+  // knowledge entry via the member knowledge shortcut, append a fixed
+  // caveat clause if the entry's global unhelpfulCount is at/above this
+  // threshold. Unset/0 = disabled (no extra query, byte-identical output),
+  // matching the KNOWLEDGE_STALE_DAYS opt-in convention above. When set, it
+  // must be >= 2 — refined below — so a single rater can never trigger it.
+  KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: z.coerce.number().int().nonnegative().default(0),
   // Extend the knowledge shortcut above to gated guests (issue #165),
   // restricted to `scope='global'` entries only, before the static "ask an
   // admin" pointer. Reuses KNOWLEDGE_SHORTCUT_THRESHOLD — no separate knob to
@@ -430,6 +437,11 @@ const MIN_ROSTER_DEPARTED_RETENTION_DAYS = 30;
 // hasn't gotten around to re-checking yet rather than ones that are stale.
 const MIN_KNOWLEDGE_STALE_DAYS = 30;
 
+// A single rater must never be able to trigger the member-facing low-rated
+// caveat (issue #337) — the effective minimum is 2 so the signal always
+// reflects more than one identifiable person's opinion.
+const MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = 2;
+
 const EnvSchemaChecked = EnvSchema.refine(
   (e) =>
     e.WHATSAPP_PROVIDER !== 'cloud' ||
@@ -465,6 +477,15 @@ const EnvSchemaChecked = EnvSchema.refine(
     message: `KNOWLEDGE_STALE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_STALE_DAYS}`,
     path: ['KNOWLEDGE_STALE_DAYS'],
   })
+  .refine(
+    (e) =>
+      e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL === 0 ||
+      e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL >= MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
+    {
+      message: `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL must be 0 (disabled) or at least ${MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL}`,
+      path: ['KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL'],
+    },
+  )
   .refine((e) => !e.IMAGE_GEN_ENABLED || isAbsolute(e.GROK_BIN), {
     // A bare `grok` is PATH-resolved; a writable PATH entry could shadow it with
     // a hostile binary run as the service user (see docs/SECURITY.md §8). Fail
@@ -617,6 +638,7 @@ export const config = {
     ackShortcutEnabled: env.ACK_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
+    knowledgeLowRatedCaveatMinUnhelpful: env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
