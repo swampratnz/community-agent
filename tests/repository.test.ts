@@ -29,6 +29,8 @@ const {
   purgeUserData,
   saveKnowledge,
   searchKnowledge,
+  searchKnowledgeLexical,
+  KNOWLEDGE_TRIGRAM_THRESHOLD,
   updateKnowledge,
   deleteKnowledge,
   listKnowledge,
@@ -490,6 +492,92 @@ test(
 
     const deletedAgain = await deleteKnowledge(id);
     assert.equal(deletedAgain, false, 'deleting a nonexistent id returns false, not an error');
+  },
+);
+
+test(
+  'repository: searchKnowledgeLexical resolves an exact SNAKE_CASE identifier embedded in realistic multi-sentence content (issue #362) — pins word_similarity, not symmetric similarity()',
+  { skip },
+  async () => {
+    const scope = `${RUN}-lexical-scope`;
+    const caller = { platform: 'discord' as const, conversationId: scope };
+    const identifier = `ZYLOFAX_${RUN}_RETRY_LIMIT`;
+    const { id } = await saveKnowledge({
+      title: 'Retry configuration',
+      content:
+        `When a delivery attempt fails, the worker retries with exponential backoff until it hits the ` +
+        `configured ceiling; an admin can raise or lower that ceiling by tuning the ${identifier} setting, ` +
+        `which defaults to a conservative value chosen to avoid hammering a struggling downstream service.`,
+      scope,
+    });
+
+    // A symmetric similarity() over a short query against this realistic,
+    // multi-sentence entry would score far below any sane threshold (tiny
+    // intersection-over-union) — this test only passes because
+    // searchKnowledgeLexical uses word_similarity, which finds the
+    // best-matching extent within the longer text instead.
+    const hits = await searchKnowledgeLexical(identifier, caller, 5);
+    const hit = hits.find((h) => h.id === id);
+    assert.ok(hit, 'the exact identifier embedded in realistic-length content is found');
+    assert.ok(
+      hit.similarity >= KNOWLEDGE_TRIGRAM_THRESHOLD,
+      `matched hit's word_similarity score (${hit.similarity}) must clear KNOWLEDGE_TRIGRAM_THRESHOLD`,
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  "repository: searchKnowledgeLexical matches a null-title entry (issue #362) — COALESCE(title, '') must not silently drop null-titled rows from the lexical path",
+  { skip },
+  async () => {
+    const scope = `${RUN}-lexical-null-title-scope`;
+    const caller = { platform: 'discord' as const, conversationId: scope };
+    const identifier = `QUOKKAWEB_${RUN}_MAX_RETRIES`;
+    const { id } = await saveKnowledge({
+      content:
+        `Requests that time out are automatically retried by the client, up to the ${identifier} cap, before ` +
+        `the failure is finally surfaced back to the caller as an error.`,
+      scope,
+    });
+
+    const titleRow = await pool.query(`SELECT title FROM knowledge WHERE id = $1`, [id]);
+    assert.equal(titleRow.rows[0].title, null, 'fixture entry genuinely has a null title');
+
+    const hits = await searchKnowledgeLexical(identifier, caller, 5);
+    assert.ok(
+      hits.some((h) => h.id === id),
+      'a null-titled entry is still matchable via the lexical fallback',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'repository: searchKnowledgeLexical returns nothing for an unrelated query below KNOWLEDGE_TRIGRAM_THRESHOLD (issue #362)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-lexical-negative-scope`;
+    const caller = { platform: 'discord' as const, conversationId: scope };
+    const { id } = await saveKnowledge({
+      title: `Quazzledorf ${RUN}`,
+      content: 'Quazzledorf accounts are activated by emailing the treasurer with your membership number.',
+      scope,
+    });
+
+    const hits = await searchKnowledgeLexical(
+      'what time does the ferry to Waiheke leave on Saturdays',
+      caller,
+      5,
+    );
+    assert.ok(
+      !hits.some((h) => h.id === id),
+      'an unrelated query with no meaningful trigram overlap must not clear the threshold',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
   },
 );
 

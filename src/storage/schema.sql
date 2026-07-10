@@ -2,6 +2,10 @@
 -- The embedding dimension is templated as :EMBEDDING_DIM by migrate.ts.
 
 CREATE EXTENSION IF NOT EXISTS vector;
+-- Substring-robust trigram matching (issue #362) — the lexical fallback for
+-- knowledge_search's semantic-miss path. Standard Postgres contrib, present
+-- in the pgvector/pgvector:pg16 CI image.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ---------------------------------------------------------------------------
 -- Conversation <-> Claude session mapping (for multi-turn continuity).
@@ -100,6 +104,14 @@ ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
+
+-- Lexical fallback support (issue #362): searchKnowledgeLexical's
+-- word_similarity() query against the same COALESCE(title,'') || ' ' ||
+-- content expression this index is built on. title is nullable, so the
+-- COALESCE must match on both sides or null-titled entries silently never
+-- match.
+CREATE INDEX IF NOT EXISTS knowledge_trgm_idx
+  ON knowledge USING gin ((COALESCE(title, '') || ' ' || content) gin_trgm_ops);
 
 -- Keep updated_at honest on any UPDATE path.
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$

@@ -455,11 +455,17 @@ serve. That decision used to be made and thrown away in the same request;
 - **Hook point**: inside the existing `knowledge_search` handler, after
   `hits` is filtered by the relevance floor. If `hits.length > 0 &&
   relevantIds.length === 0` — hits existed but none cleared the floor — the
-  handler fire-and-forgets `recordKnowledgeGap(caller.platform,
-  caller.conversationId, caller.userId, args.query)`. The `hits.length > 0`
-  guard matters: `searchKnowledge` also returns `[]` on an `embed()` failure,
-  and gating on "zero hits" alone would silently log every query during an
-  embedding outage as a genuine knowledge gap.
+  handler first tries `searchKnowledgeLexical` (issue #362), a substring-robust
+  `pg_trgm` `word_similarity()` fallback for the input class dense sentence
+  embeddings underweight (rare SNAKE_CASE/camelCase identifiers, error codes)
+  that a member may paste verbatim even though a `knowledge` entry contains
+  the literal string. Only if that also comes up empty does the handler
+  fire-and-forget `recordKnowledgeGap(caller.platform, caller.conversationId,
+  caller.userId, args.query)` — a lexical-fallback hit is served (and
+  recorded as a retrieval, same as a semantic hit) instead. The `hits.length >
+  0` guard matters: `searchKnowledge` also returns `[]` on an `embed()`
+  failure, and gating on "zero hits" alone would silently log every query
+  during an embedding outage as a genuine knowledge gap.
 - **Storage**: a dedicated `knowledge_gaps` table (query text, capped at 500
   chars, plus the same local `embed()` vector every other memory/knowledge
   feature uses — no paid model call). Same rolling-24h per-`(platform,

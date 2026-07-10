@@ -76,6 +76,7 @@ import {
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   searchKnowledge,
+  searchKnowledgeLexical,
   searchMemory,
   unlinkMember,
   updateKnowledge,
@@ -284,11 +285,20 @@ export function formatKnowledgeSearchResults(
       title: string | null;
       content: string;
       similarity: number;
+      /**
+       * Set on hits sourced from the lexical fallback (issue #362) — its
+       * `similarity` is a `word_similarity()` trigram score, a different
+       * scale than `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`'s cosine space, so
+       * it always counts as relevant here rather than being compared against
+       * that threshold (it already cleared its own `KNOWLEDGE_TRIGRAM_THRESHOLD`
+       * floor in `searchKnowledgeLexical`).
+       */
+      viaLexical?: boolean;
     } & KnowledgeCitationInfo
   >,
   staleDays = config.adminDigest.knowledgeStaleDays,
 ): string {
-  const relevant = hits.filter((h) => h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD);
+  const relevant = hits.filter((h) => h.viaLexical || h.similarity >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD);
   if (relevant.length === 0) return 'No matching knowledge entries.';
   const ordered = relevant
     .map((h, index) => ({ h, index }))
@@ -1187,17 +1197,41 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       recordKnowledgeRetrieval(relevantIds).catch((err) =>
         logger.warn({ err }, 'Knowledge retrieval count update failed'),
       );
-      // Below-floor miss tracking (issue #208): only when hits existed but
-      // NONE cleared the floor — never on a plain empty result set, which is
-      // indistinguishable from a searchKnowledge embed() failure and would
-      // otherwise log every outage query as a false "gap". Fire-and-forget,
-      // same non-blocking style as the retrieval-count bump above.
+      // Lexical fallback (issue #362): only on the below-floor-miss branch
+      // below — semantic search had candidates but NONE cleared the
+      // relevance floor. Dense sentence embeddings underweight rare,
+      // SNAKE_CASE/camelCase identifiers and error codes, so a query that's
+      // literally a string inside an entry can still miss; try a
+      // substring-robust trigram match before accepting this as a gap. When
+      // semantic search already found a relevant hit, this never runs —
+      // output is byte-identical to before issue #362 for the common case.
+      let lexicalHits: Awaited<ReturnType<typeof searchKnowledgeLexical>> = [];
       if (hits.length > 0 && relevantIds.length === 0) {
+        lexicalHits = await searchKnowledgeLexical(args.query, {
+          platform: caller.platform,
+          conversationId: caller.conversationId,
+        });
+      }
+      if (lexicalHits.length > 0) {
+        recordKnowledgeRetrieval(lexicalHits.map((h) => h.id)).catch((err) =>
+          logger.warn({ err }, 'Knowledge retrieval count update failed'),
+        );
+      } else if (hits.length > 0 && relevantIds.length === 0) {
+        // Below-floor miss tracking (issue #208): only when hits existed but
+        // NONE cleared the floor (semantic or, now, lexical) — never on a
+        // plain empty result set, which is indistinguishable from a
+        // searchKnowledge embed() failure and would otherwise log every
+        // outage query as a false "gap". Fire-and-forget, same
+        // non-blocking style as the retrieval-count bump above.
         recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
           logger.warn({ err }, 'Knowledge gap recording failed'),
         );
       }
-      return text(formatKnowledgeSearchResults(hits));
+      return text(
+        formatKnowledgeSearchResults(
+          lexicalHits.length > 0 ? [...hits, ...lexicalHits.map((h) => ({ ...h, viaLexical: true }))] : hits,
+        ),
+      );
     },
     { annotations: { readOnlyHint: true } },
   );

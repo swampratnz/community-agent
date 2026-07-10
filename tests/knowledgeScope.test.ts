@@ -129,6 +129,50 @@ test(
 );
 
 test(
+  'SECURITY: repository: searchKnowledgeLexical returns a conversation-scoped knowledge entry only in its own conversation (issue #362) — same cross-scope isolation guarantee as searchKnowledge (issue #106)',
+  { skip },
+  async (t) => {
+    const { saveKnowledge, searchKnowledgeLexical } = await repo(t);
+    const identifier = `SCOPETEST_${RUN}_LEXICAL_TOKEN`;
+    const convA = `${RUN}-lexical-conv-a`;
+    const convB = `${RUN}-lexical-conv-b`;
+    const content = `The onboarding script accepts the ${identifier} flag to skip the confirmation prompt.`;
+
+    await saveKnowledge({ content, scope: convA });
+
+    const inScope = await searchKnowledgeLexical(
+      identifier,
+      { platform: 'discord', conversationId: convA },
+      5,
+    );
+    assert.ok(
+      inScope.some((h) => h.content === content),
+      'the saving conversation can retrieve its own conversation-scoped entry via the lexical fallback',
+    );
+
+    const otherConvo = await searchKnowledgeLexical(
+      identifier,
+      { platform: 'discord', conversationId: convB },
+      5,
+    );
+    assert.ok(
+      !otherConvo.some((h) => h.content === content),
+      'SECURITY: a different conversation on the same platform must never see a conversation-scoped entry via the lexical fallback',
+    );
+
+    const otherPlatform = await searchKnowledgeLexical(
+      identifier,
+      { platform: 'whatsapp', conversationId: `${RUN}-lexical-conv-a-whatsapp-view` },
+      5,
+    );
+    assert.ok(
+      !otherPlatform.some((h) => h.content === content),
+      'SECURITY: the other platform must never see a conversation-scoped entry via the lexical fallback',
+    );
+  },
+);
+
+test(
   'SECURITY: repository: searchKnowledge treats a platform-name scope as platform-wide, never cross-platform (issue #106)',
   { skip },
   async (t) => {

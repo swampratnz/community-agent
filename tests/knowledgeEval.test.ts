@@ -19,7 +19,8 @@ const skip = hasDb
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { saveKnowledge, searchKnowledge } = await import('../src/storage/repository.js');
+const { saveKnowledge, searchKnowledge, searchKnowledgeLexical } =
+  await import('../src/storage/repository.js');
 const { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } = await import('../src/agent/tools.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -51,10 +52,16 @@ interface FixtureNegativeQuery {
   label: string;
 }
 
+interface FixtureFallbackQuery {
+  query: string;
+  expectedTitle: string;
+}
+
 interface Fixture {
   entries: FixtureEntry[];
   queries: FixtureQuery[];
   negativeQueries: FixtureNegativeQuery[];
+  fallbackQueries: FixtureFallbackQuery[];
 }
 
 const fixturePath = fileURLToPath(new URL('./fixtures/knowledgeEval.json', import.meta.url));
@@ -173,6 +180,36 @@ test(
       `negative quer${overThreshold.length === 1 ? 'y' : 'ies'} scored at/above KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD ` +
         `(${KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD}) against this fixture's entries — the threshold in src/agent/tools.ts ` +
         `needs re-deriving (embedding model drift?): ${JSON.stringify(overThreshold)}`,
+    );
+  },
+);
+
+test(
+  'knowledgeEval: fallbackQueries (issue #362) — searchKnowledgeLexical resolves an exact-string query to its expectedTitle without a false positive against any other fixture entry (including distractors)',
+  { skip },
+  async () => {
+    // Reseeds the same fixture rows under EVAL_SCOPE; harmless duplicates,
+    // same convention as the negativeQueries test above.
+    for (const entry of fixture.entries) {
+      await saveKnowledge({ title: entry.title, content: entry.content, scope: EVAL_SCOPE });
+    }
+    const titleByContent = new Map(fixture.entries.map((e) => [e.content, e.title]));
+
+    const failures: Array<{ query: string; expectedTitle: string; got: string | null | undefined }> = [];
+    for (const q of fixture.fallbackQueries) {
+      const top = (await searchKnowledgeLexical(q.query, EVAL_CALLER, OVER_FETCH)).filter((r) =>
+        titleByContent.has(r.content),
+      )[0];
+      if (!top || top.title !== q.expectedTitle) {
+        failures.push({ query: q.query, expectedTitle: q.expectedTitle, got: top?.title });
+      }
+    }
+
+    assert.equal(
+      failures.length,
+      0,
+      `fallback quer${failures.length === 1 ? 'y' : 'ies'} did not resolve to its expectedTitle via the lexical ` +
+        `fallback (empty result, or a false-positive match against a different fixture entry): ${JSON.stringify(failures)}`,
     );
   },
 );
