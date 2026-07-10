@@ -32,9 +32,7 @@ import {
 import { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, shouldNotifyPaused } from './pauseNotice.js';
 import { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI } from './dailyBudgetNotice.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
-
-const GATED_NOTICE =
-  'Kia ora! This assistant is member-only. Ask a community admin to add you as a member and I can help.';
+import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 
 // Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
 // ackClassifier.ts). Sent via send() so outbound filtering still applies;
@@ -145,10 +143,12 @@ export class Router {
    * defaults to the real standing-language-preference read (issue #300).
    * `checkLowRatedKnowledge` defaults to the real DB-backed low-rated check
    * (issue #337), consulted ONLY from the member `sendKnowledgeShortcut`
-   * path. All are overridable in tests so the typing-indicator, pause,
-   * knowledge-shortcut, budget-check-failure, and language-notice behaviour
-   * can be exercised without spawning a real Claude Code subprocess, waiting
-   * 8 real seconds, or a live DB.
+   * path. `getGatedNotice` defaults to the real TTL-cached, admin-naming
+   * gated notice builder (issue #360). All are overridable in tests so the
+   * typing-indicator, pause, knowledge-shortcut, budget-check-failure,
+   * language-notice, and gated-notice behaviour can be exercised without
+   * spawning a real Claude Code subprocess, waiting 8 real seconds, or a
+   * live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -159,6 +159,7 @@ export class Router {
     private readonly countReplies: typeof countRepliesToUser = countRepliesToUser,
     private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
     private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated = isKnowledgeLowRated,
+    private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -359,7 +360,15 @@ export class Router {
               logger.warn({ err }, 'Failed to send guest knowledge-shortcut reply'),
             );
           } else {
-            await this.send(adapter, msg.conversationId, GATED_NOTICE).catch((err) =>
+            // The default (real) builder already degrades to GATED_NOTICE
+            // internally on a DB failure (gatedNotice.ts) — this catch is
+            // defense-in-depth so an injected/future builder can never turn
+            // a lookup failure into silence for a gated guest.
+            const notice = await this.getGatedNotice(msg.platform).catch((err) => {
+              logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
+              return GATED_NOTICE;
+            });
+            await this.send(adapter, msg.conversationId, notice).catch((err) =>
               logger.warn({ err }, 'Failed to send gated notice'),
             );
           }
