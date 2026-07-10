@@ -4,6 +4,7 @@ import {
   countAccessRequests,
   countKnowledgeGaps,
   countLowRatedKnowledge,
+  countMaxTurnsFailures,
   countMutedMembers,
   countOpenReports,
   countPendingKnowledgeCandidates,
@@ -49,6 +50,10 @@ const SNIPPET_MAX_CHARS = 300;
  * the digest's "muted" can never drift from the actual mute trigger in
  * `moderator.ts` — bare integer only, never a `member_warnings.reason`/
  * `excerpt`/user id/name.
+ * `maxTurnsFailuresCount` (issue #371) comes from `countMaxTurnsFailures`,
+ * conversation-scoped and windowed identically to `knowledgeGapsCount` —
+ * bare integer only, never message content, question text, user id, or
+ * conversation id.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -63,6 +68,7 @@ export function buildAdminDigestMessage(
   joinedThisWeek: number = 0,
   leftThisWeek: number = 0,
   mutedMembersCount: number = 0,
+  maxTurnsFailuresCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -75,7 +81,8 @@ export function buildAdminDigestMessage(
     lowRatedKnowledgeCount === 0 &&
     joinedThisWeek === 0 &&
     leftThisWeek === 0 &&
-    mutedMembersCount === 0
+    mutedMembersCount === 0 &&
+    maxTurnsFailuresCount === 0
   )
     return null;
 
@@ -140,6 +147,13 @@ export function buildAdminDigestMessage(
         '`clear_warnings` to review.',
     );
   }
+  if (maxTurnsFailuresCount > 0) {
+    // Bare integer only — no message content, question text, user id, or conversation id ever reaches the DM (#371).
+    sections.push(
+      `⏱️ ${maxTurnsFailuresCount} repl${maxTurnsFailuresCount === 1 ? 'y' : 'ies'} in your conversations ` +
+        'this week hit the step limit before finishing.',
+    );
+  }
   return sections.join('\n');
 }
 
@@ -175,8 +189,10 @@ export function buildAdminDigestMessage(
  * `countMutedMembers(admin.platform, ...)` is likewise guild-wide by platform
  * (`member_warnings` has no conversation/channel column either), reusing
  * `config.moderation.strikeLimit`/`strikeWindowDays` verbatim so two admins on
- * the same platform always see the same muted-member count (issue #357). The
- * freshness guard
+ * the same platform always see the same muted-member count (issue #357).
+ * `countMaxTurnsFailures(scope, ...)` is conversation-scoped by `scope`
+ * (`interactions` has a `conversation_id`), same as `countKnowledgeGaps`
+ * (issue #371). The freshness guard
  * (`admin_digest_sends`) is a durable per-admin timestamp, so a restart
  * mid-week cannot cause a duplicate send within the same window. Super
  * admins are not enrolled — `listAdmins` only returns `community_users`
@@ -222,6 +238,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         lowRatedKnowledgeCount,
         roster,
         mutedMembersCount,
+        maxTurnsFailuresCount,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -245,6 +262,9 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // strikeWindowDays verbatim so "muted" here can never disagree with
         // the actual mute trigger in moderator.ts (issue #357).
         countMutedMembers(admin.platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays),
+        // Conversation-scoped like knowledgeGapsCount (interactions.conversation_id),
+        // over the same freshness window (#371).
+        countMaxTurnsFailures(scope, FRESHNESS_DAYS),
       ]);
       const message = buildAdminDigestMessage(
         clusters,
@@ -259,6 +279,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         roster.joinedThisWeek,
         roster.leftThisWeek,
         mutedMembersCount,
+        maxTurnsFailuresCount,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 

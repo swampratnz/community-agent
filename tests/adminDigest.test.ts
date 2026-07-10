@@ -32,6 +32,7 @@ const {
   countAccessRequests,
   countKnowledgeGaps,
   countLowRatedKnowledge,
+  countMaxTurnsFailures,
   countPendingSuggestions,
   countStaleKnowledge,
   countPendingKnowledgeCandidates,
@@ -351,7 +352,7 @@ test('SECURITY: the roster-growth line is a deterministic function of (joinedThi
 
 test('buildAdminDigestMessage: muted-member line appears only when count > 0, and all ELEVEN signals zero -> null (issue #357)', () => {
   assert.equal(
-    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
     null,
     'all eleven signals zero — including muted members — is a quiet week',
   );
@@ -369,6 +370,92 @@ test('buildAdminDigestMessage: muted-member line appears only when count > 0, an
   assert.ok(
     !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('🔇'),
     'no muted-member line when the count is zero',
+  );
+});
+
+test('buildAdminDigestMessage: max-turns-failures line appears only when count > 0, and all TWELVE signals zero -> null (issue #371)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all twelve signals zero — including max-turns failures — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5);
+  assert.ok(message, 'a non-zero max-turns-failures count alone still produces a DM');
+  const wallHitLines = message.split('\n').filter((l) => l.includes('⏱️'));
+  assert.equal(wallHitLines.length, 1, 'exactly one max-turns-failures line');
+  assert.match(
+    wallHitLines[0],
+    /^⏱️ 5 replies in your conversations this week hit the step limit before finishing\.$/,
+  );
+  assert.ok(!message.includes('🔇'), 'no muted-member line when that count is zero');
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('⏱️'),
+    'no max-turns-failures line when the count is zero',
+  );
+
+  const singular = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+  assert.match(
+    singular!,
+    /^⏱️ 1 reply in your conversations this week hit the step limit before finishing\.$/,
+  );
+});
+
+test('SECURITY: the max-turns-failures line is a deterministic function of maxTurnsFailuresCount only, and never carries message content, question text, user id, or conversation id (issue #371)', () => {
+  const secretContent = 'a very identifiable message that must never leak';
+  const secretUserId = 'discord-user-1234567890';
+  const secretConversationId = 'discord-channel-9999999999';
+
+  // buildAdminDigestMessage never receives interaction content/ids — only the
+  // bare count — so there is nothing to smuggle in via an unrelated
+  // parameter either (same shape as the muted-member privacy pin above).
+  const a = buildAdminDigestMessage(
+    [{ representative: secretContent, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    7,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: secretUserId, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    7,
+  );
+  assert.ok(a && b);
+  const wallHitLine = (m: string) => m.split('\n').find((l) => l.includes('⏱️'));
+  assert.equal(
+    wallHitLine(a),
+    wallHitLine(b),
+    'the max-turns-failures line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    wallHitLine(a)!,
+    /^⏱️ 7 replies in your conversations this week hit the step limit before finishing\.$/,
+  );
+  assert.ok(
+    !wallHitLine(a)!.includes(secretContent) &&
+      !wallHitLine(a)!.includes(secretUserId) &&
+      !wallHitLine(a)!.includes(secretConversationId),
+    'SECURITY: no message content, question text, user id, or conversation id ever appears in the max-turns-failures line — bare count only',
   );
 });
 
@@ -1631,6 +1718,109 @@ test(
     );
 
     await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [mutedUser]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: countMaxTurnsFailures is conversation-scoped, a true COUNT(*), and windowed — counts both a primary maxTurnsExceeded stamp and a repeatMaxTurnsShortcut stamp, excludes a success row and an out-of-scope conversation (issue #371)',
+  { skip },
+  async () => {
+    const inScope = `${RUN}-c-maxturns-in`;
+    const outOfScope = `${RUN}-c-maxturns-out`;
+    const recordOutbound = (conversationId: string, meta: Record<string, unknown>) =>
+      recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        userName: 'CommunityAgent',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply text',
+        meta,
+      });
+
+    // In-scope: one primary failure, one repeat-shortcut replay, one success,
+    // and one non-max-turns outbound reply — only the first two must count.
+    await recordOutbound(inScope, { replyToUserId: 'u1', maxTurnsExceeded: true });
+    await recordOutbound(inScope, { replyToUserId: 'u1', repeatMaxTurnsShortcut: true });
+    await recordOutbound(inScope, { replyToUserId: 'u1' });
+    await recordOutbound(inScope, { replyToUserId: 'u1', someOtherFlag: true });
+    // Out-of-scope: a max-turns failure that must never be counted for a
+    // different admin's scope.
+    await recordOutbound(outOfScope, { replyToUserId: 'u2', maxTurnsExceeded: true });
+
+    assert.equal(
+      await countMaxTurnsFailures([inScope], 7),
+      2,
+      'SECURITY: a true COUNT(*) of exactly the primary failure + the repeat-shortcut replay — excludes the success row and the unrelated-meta row, and is not a LIMIT-bounded length',
+    );
+    assert.equal(
+      await countMaxTurnsFailures([outOfScope], 7),
+      1,
+      'the out-of-scope conversation has its own single failure, counted only under its own scope',
+    );
+    assert.equal(
+      await countMaxTurnsFailures([inScope, outOfScope], 7),
+      3,
+      'counting across both scopes returns the full 3 rows (the count is not capped)',
+    );
+    assert.equal(await countMaxTurnsFailures([], 7), 0, 'an empty scope counts nothing');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: an admin with every other signal at zero but ≥1 max-turns failure in scope still receives a digest containing only the bare count — never message content, replyToUserId, or conversation id (issue #371 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-maxturns-admin`;
+    const conversationId = `${RUN}-c-run-maxturns`;
+    const secretUserId = `${RUN}-run-maxturns-asker`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a canned max-turns apology',
+      meta: { replyToUserId: secretUserId, maxTurnsExceeded: true },
+    });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the in-scope max-turns failure alone triggers a digest');
+    assert.ok(!sent[0].text.includes('🕳️'), 'no knowledge-gaps line — this admin has zero gaps in scope');
+    assert.match(
+      sent[0].text,
+      /⏱️ 1 reply in your conversations this week hit the step limit before finishing\./,
+      'the max-turns-failures line is present',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretUserId),
+      'SECURITY: the asker user id (replyToUserId) must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(conversationId),
+      'SECURITY: the conversation id must never appear in the digest DM',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);

@@ -155,15 +155,25 @@ memory**:
    As bare integers with no member name/id, it's guild-wide like the
    access-request/suggestion/candidate counts, not conversation-scoped;
    `server_roster` is Discord-only, so `rosterCounts('whatsapp')` is always
-   zeros, leaving a WhatsApp admin's digest unaffected. All these counts are
+   zeros, leaving a WhatsApp admin's digest unaffected. Plus (issue #371) their
+   own scoped count of outbound replies that hit `AGENT_MAX_TURNS`/
+   `AGENT_MAX_TURNS_MEMBER` before finishing, sourced from
+   `countMaxTurnsFailures(scope, ...)` — conversation-scoped like the
+   knowledge-gaps count because `interactions` also has a `conversation_id`.
+   It counts both the primary `reply.maxTurnsExceeded === true` stamp (the
+   first, non-repeated time a turn hits `error_max_turns`, `src/agent/core.ts`)
+   and the `repeatMaxTurnsShortcut: true` stamp issue #306's shortcut already
+   writes for a replayed wall-hit, since each is a distinct member-facing
+   failure — a bare integer only, no message content, question text, user id,
+   or conversation id. All these counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
-   `countMutedMembers`)
+   `countMutedMembers`/`countMaxTurnsFailures`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. The DM sends when *any* of the
-   ten signals is non-zero, and sends nothing on a quiet week (all zero, no
+   eleven signals is non-zero, and sends nothing on a quiet week (all zero, no
    DM, no noise); a persistently untriaged queue re-appears every subsequent
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped
