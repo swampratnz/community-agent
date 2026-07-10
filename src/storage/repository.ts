@@ -3067,6 +3067,32 @@ export async function countActiveWarnings(
 }
 
 /**
+ * Count of distinct members on `platform` who are CURRENTLY muted — their
+ * active (uncleared) strike count is `>= strikeLimit` — honouring the same
+ * optional rolling `windowDays` bound `countActiveWarnings` uses, so the
+ * digest's definition of "muted" can never drift from the actual mute
+ * trigger in `moderator.ts` (issue #357). Bound parameters only, never
+ * interpolated, same injection posture as `countActiveWarnings`.
+ */
+export async function countMutedMembers(
+  platform: string,
+  strikeLimit: number,
+  windowDays?: number,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM (
+       SELECT user_id FROM member_warnings
+        WHERE platform = $1 AND cleared_at IS NULL
+          AND ($3::int IS NULL OR created_at >= now() - make_interval(days => $3::int))
+        GROUP BY user_id
+       HAVING COUNT(*) >= $2
+     ) t`,
+    [platform, strikeLimit, windowDays ?? null],
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
  * Clear all of a member's active warnings (an admin action), stamping who
  * cleared them and when. Returns the number of strikes cleared, so the caller
  * can tell "actually unblocked them" from "they had nothing to clear".

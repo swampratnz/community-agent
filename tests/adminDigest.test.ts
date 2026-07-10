@@ -47,6 +47,8 @@ const {
   upsertRosterMember,
   markRosterLeave,
   rosterCounts,
+  addWarning,
+  countMutedMembers,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -344,6 +346,86 @@ test('SECURITY: the roster-growth line is a deterministic function of (joinedThi
       !rosterLine(a)!.includes(secretUserId) &&
       !rosterLine(a)!.includes(secretPlatformId),
     'SECURITY: no display name, user id, or platform id ever appears in the roster-growth line — bare counts only',
+  );
+});
+
+test('buildAdminDigestMessage: muted-member line appears only when count > 0, and all ELEVEN signals zero -> null (issue #357)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all eleven signals zero — including muted members — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4);
+  assert.ok(message, 'a non-zero muted-member count alone still produces a DM');
+  const mutedLines = message.split('\n').filter((l) => l.includes('🔇'));
+  assert.equal(mutedLines.length, 1, 'exactly one muted-member line');
+  assert.match(
+    mutedLines[0],
+    /^🔇 4 member\(s\) currently muted — run `moderation_history` or `clear_warnings` to review\.$/,
+  );
+  assert.ok(!message.includes('📈'), 'no roster-growth line when joined/left are both zero');
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('🔇'),
+    'no muted-member line when the count is zero',
+  );
+});
+
+test('SECURITY: the muted-member line is a deterministic function of mutedMembersCount only, and never carries a warning reason, excerpt, user id, or member name (issue #357)', () => {
+  const secretReason = 'bad language ("very identifiable slur")';
+  const secretExcerpt = 'the exact offending message text';
+  const secretUserId = 'discord-user-9876543210';
+  const secretName = 'Very Identifiable Member Name';
+
+  // buildAdminDigestMessage never receives warning row content — only the
+  // bare count — so there is nothing to smuggle in via an unrelated
+  // parameter either (same shape as the roster-growth privacy pin above).
+  const a = buildAdminDigestMessage(
+    [{ representative: secretReason, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    6,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: secretExcerpt, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    6,
+  );
+  assert.ok(a && b);
+  const mutedLine = (m: string) => m.split('\n').find((l) => l.includes('🔇'));
+  assert.equal(
+    mutedLine(a),
+    mutedLine(b),
+    'the muted-member line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    mutedLine(a)!,
+    /^🔇 6 member\(s\) currently muted — run `moderation_history` or `clear_warnings` to review\.$/,
+  );
+  assert.ok(
+    !mutedLine(a)!.includes(secretReason) &&
+      !mutedLine(a)!.includes(secretExcerpt) &&
+      !mutedLine(a)!.includes(secretUserId) &&
+      !mutedLine(a)!.includes(secretName),
+    'SECURITY: no warning reason, excerpt, user id, or member name ever appears in the muted-member line — bare count only',
   );
 });
 
@@ -1340,6 +1422,216 @@ test(
 
     await pool.query(`DELETE FROM suggestions WHERE id = $1`, [created.id]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "runAdminDigestOnce: countMutedMembers(admin.platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays) passes through to the digest DM — the digest's 'muted' count is exactly what moderator.ts's own mute trigger would block (issue #357 acceptance criteria)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-muted-admin`;
+    const mutedUser = `${RUN}-run-muted-user`;
+    const belowLimitUser = `${RUN}-run-muted-below`;
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    config.moderation.strikeWindowDays = undefined;
+
+    try {
+      await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+      // Straddle the configured limit: mutedUser reaches exactly strikeLimit
+      // (the same threshold moderator.ts's `active >= this.deps.strikeLimit`
+      // check would mute on); belowLimitUser stays one strike short.
+      for (let i = 0; i < config.moderation.strikeLimit; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: mutedUser,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+      await addWarning({
+        platform: 'discord',
+        userId: belowLimitUser,
+        reason: 'strike-0',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+
+      const expected = await countMutedMembers(
+        'discord',
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      assert.ok(expected >= 1, 'at least the just-inserted at-limit user is counted as muted');
+
+      const sent: Array<{ userId: string; text: string }> = [];
+      const adapter = fakeAdapter({
+        platform: 'discord',
+        conversationIds: [`${RUN}-c-muted-wire-empty`],
+        sent,
+      });
+
+      await runAdminDigestOnce([adapter]);
+
+      assert.equal(sent.length, 1, 'the muted member alone triggers a digest');
+      const mutedLine = sent[0].text.split('\n').find((l) => l.includes('🔇'));
+      assert.ok(mutedLine, 'the muted-member line is present');
+      const match = mutedLine.match(/^🔇 (\d+) member\(s\) currently muted/);
+      assert.ok(match, `muted line matches the expected format: ${mutedLine}`);
+      assert.equal(
+        Number(match[1]),
+        expected,
+        "the digest's wired count is exactly countMutedMembers(admin.platform, config.moderation.strikeLimit, " +
+          'config.moderation.strikeWindowDays) — the same definition moderator.ts uses to mute',
+      );
+
+      assert.equal(
+        await wasAdminDigestSentRecently('discord', adminId, 7),
+        true,
+        'the freshness row is updated after a successful send',
+      );
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = ANY($1)`, [[mutedUser, belowLimitUser]]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the muted-member count is guild-wide, not conversation/admin-scoped — two admins on the same platform with disjoint conversation scopes see the identical count (issue #357 acceptance criteria)',
+  { skip },
+  async () => {
+    const admin1Id = `${RUN}-run-mutedscope-admin1`;
+    const admin2Id = `${RUN}-run-mutedscope-admin2`;
+    const convo1 = `${RUN}-c-mutedscope-1`;
+    const convo2 = `${RUN}-c-mutedscope-2`;
+    const mutedUser = `${RUN}-run-mutedscope-user`;
+    await upsertMember({ platform: 'discord', userId: admin1Id, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: admin2Id, role: 'admin', addedBy: `${RUN}-actor` });
+
+    for (let i = 0; i < config.moderation.strikeLimit; i++) {
+      await addWarning({
+        platform: 'discord',
+        userId: mutedUser,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const scopeByAdmin: Record<string, string[]> = { [admin1Id]: [convo1], [admin2Id]: [convo2] };
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      adminCapabilities: new Set(),
+      async start() {},
+      async stop() {},
+      isConnected: () => true,
+      onMessage() {},
+      async sendMessage() {},
+      async sendDirectMessage(userId, text) {
+        if (!userId.startsWith(RUN)) return;
+        sent.push({ userId, text });
+      },
+      async conversationsForUser(userId) {
+        return scopeByAdmin[userId] ?? [];
+      },
+      async performAdminAction() {
+        return '';
+      },
+    };
+
+    await runAdminDigestOnce([adapter]);
+
+    const admin1Msg = sent.find((s) => s.userId === admin1Id);
+    const admin2Msg = sent.find((s) => s.userId === admin2Id);
+    assert.ok(admin1Msg, 'admin 1 receives a digest despite zero clusters/reports in their own scope');
+    assert.ok(admin2Msg, 'admin 2 receives a digest despite zero clusters/reports in their own scope');
+
+    const mutedLine = (text: string) => text.split('\n').find((l) => l.includes('🔇'));
+    const line1 = mutedLine(admin1Msg.text);
+    const line2 = mutedLine(admin2Msg.text);
+    assert.ok(line1, 'admin 1 sees the muted-member line');
+    assert.ok(line2, 'admin 2 sees the muted-member line');
+    assert.equal(
+      line1,
+      line2,
+      'SECURITY: the muted-member count must be identical across admins with disjoint conversation scopes — ' +
+        "derived from admin.platform, never from the admin's conversation scope",
+    );
+
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [mutedUser]);
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[admin1Id, admin2Id]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [admin1Id, admin2Id],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the muted-member line carries only the bare count — never a member_warnings.reason, excerpt, user id, or display name (issue #357 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-mutedpriv-admin`;
+    const mutedUser = `${RUN}-run-mutedpriv-user`;
+    const secretReason = 'bad language ("a very identifiable reason string")';
+    const secretExcerpt = 'the exact identifiable offending message excerpt';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    for (let i = 0; i < config.moderation.strikeLimit; i++) {
+      await addWarning({
+        platform: 'discord',
+        userId: mutedUser,
+        reason: secretReason,
+        excerpt: secretExcerpt,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-mutedpriv-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the muted member alone triggers a digest');
+    assert.ok(sent[0].text.includes('🔇'), 'the muted-member line is present');
+    assert.ok(
+      !sent[0].text.includes(secretReason),
+      'SECURITY: the raw warning reason must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretExcerpt),
+      'SECURITY: the raw warning excerpt must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(mutedUser),
+      "SECURITY: the muted member's user id must never appear in the digest DM",
+    );
+
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [mutedUser]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);

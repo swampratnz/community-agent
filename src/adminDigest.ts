@@ -4,6 +4,7 @@ import {
   countAccessRequests,
   countKnowledgeGaps,
   countLowRatedKnowledge,
+  countMutedMembers,
   countOpenReports,
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
@@ -43,6 +44,11 @@ const SNIPPET_MAX_CHARS = 300;
  * #284, and #324). `joinedThisWeek`/`leftThisWeek` (issue #344) come from
  * the already-built `rosterCounts` — bare integers only, never a member
  * name/id, matching the same privacy convention as every other signal here.
+ * `mutedMembersCount` (issue #357) comes from `countMutedMembers`, which
+ * reuses `countActiveWarnings`'s exact strike-limit/window definition, so
+ * the digest's "muted" can never drift from the actual mute trigger in
+ * `moderator.ts` — bare integer only, never a `member_warnings.reason`/
+ * `excerpt`/user id/name.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -56,6 +62,7 @@ export function buildAdminDigestMessage(
   lowRatedKnowledgeCount: number = 0,
   joinedThisWeek: number = 0,
   leftThisWeek: number = 0,
+  mutedMembersCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -67,7 +74,8 @@ export function buildAdminDigestMessage(
     pendingKnowledgeCandidates === 0 &&
     lowRatedKnowledgeCount === 0 &&
     joinedThisWeek === 0 &&
-    leftThisWeek === 0
+    leftThisWeek === 0 &&
+    mutedMembersCount === 0
   )
     return null;
 
@@ -125,6 +133,13 @@ export function buildAdminDigestMessage(
     if (leftThisWeek > 0) parts.push(`${leftThisWeek} left`);
     sections.push(`📈 ${parts.join(', ')} this week — run \`list_roster\` for detail.`);
   }
+  if (mutedMembersCount > 0) {
+    // Bare integer only — no member_warnings.reason/excerpt/user_id/name ever reaches the DM (#357).
+    sections.push(
+      `🔇 ${mutedMembersCount} member(s) currently muted — run \`moderation_history\` or ` +
+        '`clear_warnings` to review.',
+    );
+  }
   return sections.join('\n');
 }
 
@@ -156,7 +171,11 @@ export function buildAdminDigestMessage(
  * `rosterCounts(admin.platform)` is likewise guild-wide by platform — same
  * signal every enrolled admin on that platform sees (issue #344); `server_roster`
  * is Discord-only, so a WhatsApp admin's `rosterCounts('whatsapp')` is always
- * zeros, leaving the rest of their digest byte-for-byte unchanged. The
+ * zeros, leaving the rest of their digest byte-for-byte unchanged.
+ * `countMutedMembers(admin.platform, ...)` is likewise guild-wide by platform
+ * (`member_warnings` has no conversation/channel column either), reusing
+ * `config.moderation.strikeLimit`/`strikeWindowDays` verbatim so two admins on
+ * the same platform always see the same muted-member count (issue #357). The
  * freshness guard
  * (`admin_digest_sends`) is a durable per-admin timestamp, so a restart
  * mid-week cannot cause a duplicate send within the same window. Super
@@ -202,6 +221,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         pendingKnowledgeCandidates,
         lowRatedKnowledgeCount,
         roster,
+        mutedMembersCount,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -220,6 +240,11 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // (#47, #344). server_roster is Discord-only, so a WhatsApp admin's
         // rosterCounts('whatsapp') is always zeros — quiet, no error.
         rosterCounts(admin.platform),
+        // Guild-wide by platform like rosterCounts (member_warnings has no
+        // conversation/channel column); reuses config.moderation.strikeLimit/
+        // strikeWindowDays verbatim so "muted" here can never disagree with
+        // the actual mute trigger in moderator.ts (issue #357).
+        countMutedMembers(admin.platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays),
       ]);
       const message = buildAdminDigestMessage(
         clusters,
@@ -233,6 +258,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         lowRatedKnowledgeCount,
         roster.joinedThisWeek,
         roster.leftThisWeek,
+        mutedMembersCount,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 
@@ -253,12 +279,14 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * summarising recurring-question clusters in their own scoped conversations,
  * plus pending access-request, open-report, pending-suggestion, (when
  * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, pending
- * knowledge-candidate, low-rated-knowledge, and roster joined/left-this-week
- * counts (issue #21's deferred proactive follow-up, extended by issue #133,
- * issue #193, issue #199, issue #284, issue #324, and issue #344) — the same
- * signals `question_digest`/`list_access_requests`/`list_reports`/
+ * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week, and
+ * currently-muted-member counts (issue #21's deferred proactive follow-up,
+ * extended by issue #133, issue #193, issue #199, issue #284, issue #324,
+ * issue #344, and issue #357) — the same signals
+ * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
- * `list_low_rated_knowledge`/`list_roster` already compute on demand.
+ * `list_low_rated_knowledge`/`list_roster`/`moderation_history` already
+ * compute on demand.
  */
 export function startAdminDigest(
   adapters: readonly PlatformAdapter[],
