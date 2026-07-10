@@ -1,0 +1,91 @@
+name: Changelog coverage
+
+# Daily tripwire: CHANGELOG.md is what the bot's `whats_new` tool reads, so a
+# merged user-facing PR that never gets an entry is invisible to the community
+# (which is exactly how the 2026-07-08..10 batch slipped through). Once a day,
+# list recently-merged PRs that aren't reflected in the changelog and keep a
+# single tracking issue in sync — opened/updated when there's a gap, closed when
+# there isn't. Heuristic (see scripts/check-changelog-coverage.mjs): it errs
+# toward flagging, so a genuinely-internal PR is ticked/ignored, not silently
+# dropped. Read-only except for that one issue; never touches code.
+
+on:
+  schedule:
+    - cron: '17 19 * * *' # 19:17 UTC daily (~07:17 NZ next morning)
+  workflow_dispatch:
+
+permissions:
+  contents: read # checkout + read CHANGELOG.md
+  issues: write # open/update/close the single tracking issue
+  pull-requests: read # gh pr list
+
+concurrency:
+  group: changelog-coverage
+  cancel-in-progress: true
+
+env:
+  ISSUE_TITLE: '📝 Changelog coverage: merged PRs missing a CHANGELOG.md entry'
+  WINDOW_DAYS: '14'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false # no git credential needed after checkout
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Compute changelog gaps
+        id: gaps
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged --limit 150 \
+            --json number,title,mergedAt,body > prs.json
+          node scripts/check-changelog-coverage.mjs --window-days "$WINDOW_DAYS" < prs.json > gaps.md || true
+          echo "=== gaps (last ${WINDOW_DAYS}d) ==="; cat gaps.md
+          if [ -s gaps.md ]; then echo "has_gaps=true" >> "$GITHUB_OUTPUT"; else echo "has_gaps=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Open or update the tracking issue
+        if: steps.gaps.outputs.has_gaps == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s merged PR(s) from the last %s days are not reflected in `CHANGELOG.md` (the file the `whats_new` tool reads).\n\n' "$(wc -l < gaps.md)" "$WINDOW_DAYS"
+            printf 'Add a user-legible entry for each — or tick the box if it is genuinely internal (CI / deps / tests / pipeline). This is a heuristic (see `scripts/check-changelog-coverage.mjs`), so an occasional prose-documented PR may appear until it ages out of the window.\n\n'
+            cat gaps.md
+            printf '\n_Refreshed %s by the changelog-coverage workflow; auto-closes when the list is empty._\n' "$(date -u +%Y-%m-%dT%H:%MZ)"
+          } > issue-body.md
+          num="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'Changelog coverage in:title' \
+            --json number,title --jq "[.[] | select(.title==\"$ISSUE_TITLE\")][0].number // empty")"
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+            echo "Updated tracking issue #$num."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file issue-body.md
+            echo "Opened tracking issue."
+          fi
+
+      - name: Close the tracking issue when the changelog is complete
+        if: steps.gaps.outputs.has_gaps == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          num="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'Changelog coverage in:title' \
+            --json number,title --jq "[.[] | select(.title==\"$ISSUE_TITLE\")][0].number // empty")"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --repo "$GITHUB_REPOSITORY" \
+              --body "✅ Every merged PR in the last ${WINDOW_DAYS} days is now reflected in \`CHANGELOG.md\`. Closing — the workflow will reopen a fresh issue if a new gap appears."
+            gh issue close "$num" --repo "$GITHUB_REPOSITORY"
+            echo "Closed tracking issue #$num."
+          else
+            echo "No gaps and no open tracking issue — nothing to do."
+          fi
