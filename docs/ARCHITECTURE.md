@@ -364,7 +364,14 @@ weakening it:
    the unchanged static `GATED_NOTICE`, byte-for-byte — never an empty-list
    sentence. Env-sourced super admins are excluded, same rationale as
    `listAdmins()`'s digest recipients: operator-level, not a member's first
-   point of contact.
+   point of contact. Every name is run through `sanitizeName`
+   (`src/agent/systemPrompt.ts`) inside `renderGatedNotice` before
+   interpolation — same treatment `resolveSanitizedLabel` gives any other
+   platform-supplied display name (issue #227) — because this notice is
+   auto-sent, unsolicited, to every gated guest, and a `display_name` sourced
+   from a Discord nickname has no length or newline limit an admin couldn't
+   abuse to forge Markdown link syntax or a fake system message. A name that
+   sanitizes to empty is omitted, not shown blank.
 
 ## Offline context builder
 

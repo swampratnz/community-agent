@@ -1,3 +1,4 @@
+import { sanitizeName } from './agent/systemPrompt.js';
 import { logger } from './logger.js';
 import type { Platform } from './platforms/types.js';
 import { listAdminDisplayNames as listAdminDisplayNamesReal } from './storage/repository.js';
@@ -32,15 +33,22 @@ function joinNames(names: string[]): string {
 }
 
 /**
- * Pure renderer: names in, notice text out. Empty input renders the
- * unchanged static `GATED_NOTICE` (acceptance criterion 3); a non-empty
- * input is capped at `GATED_NOTICE_MAX_ADMIN_NAMES` and inserted as plain
- * text (no markup/link syntax is ever built from a name, so a display name
- * can't forge formatting in the outbound message).
+ * Pure renderer: names in, notice text out. Every name is run through
+ * `sanitizeName` first (same treatment `resolveSanitizedLabel` gives any
+ * other display name before it reaches outbound/model-visible text, issue
+ * #227) — `display_name` is platform-supplied (e.g. a Discord nickname) with
+ * no length or newline limit, and this notice is auto-sent, unsolicited, to
+ * every gated guest, so a name can't inject Markdown link syntax or embedded
+ * newlines into it. A name that sanitizes to empty (e.g. only angle
+ * brackets/whitespace) is dropped rather than shown blank. Empty input (or
+ * an input that sanitizes to nothing) renders the unchanged static
+ * `GATED_NOTICE` (acceptance criterion 3); otherwise the result is capped at
+ * `GATED_NOTICE_MAX_ADMIN_NAMES`.
  */
 export function renderGatedNotice(names: string[]): string {
-  if (names.length === 0) return GATED_NOTICE;
-  const shown = joinNames(names.slice(0, GATED_NOTICE_MAX_ADMIN_NAMES));
+  const sanitized = names.map((name) => sanitizeName(name)).filter((name) => name.length > 0);
+  if (sanitized.length === 0) return GATED_NOTICE;
+  const shown = joinNames(sanitized.slice(0, GATED_NOTICE_MAX_ADMIN_NAMES));
   return `Kia ora! This assistant is member-only. Ask a community admin — ${shown} — to add you as a member and I can help.`;
 }
 

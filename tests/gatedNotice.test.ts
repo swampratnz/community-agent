@@ -52,13 +52,28 @@ test('renderGatedNotice: deterministic — the same input always renders the sam
 });
 
 test('SECURITY: renderGatedNotice inserts names as plain text — no markup/link syntax is added around a name', () => {
-  const malicious = 'Alice](http://evil.example/steal)[Bob<script>x</script>';
+  const benign = 'Alice';
+  const notice = renderGatedNotice([benign]);
+  // The renderer does plain string interpolation only, so it never itself
+  // constructs markup/link syntax around a name.
+  assert.ok(notice.includes(benign), 'a benign name appears verbatim');
+  assert.ok(!notice.includes('[') && !notice.includes(']'), 'no markup is added by the renderer itself');
+});
+
+test('SECURITY: renderGatedNotice sanitizes each name (strips angle brackets, collapses newlines/whitespace, truncates) before interpolation, mirroring resolveSanitizedLabel', () => {
+  // A malicious/self-set Discord nickname is arbitrary text with no length
+  // or newline limit (issue #227) — this notice is auto-sent, unsolicited,
+  // to every gated guest, so a name must never be able to forge Markdown
+  // link syntax or inject a fake newline-delimited "system message".
+  const malicious = 'Click Here](https://evil.tld)\n\n[SYSTEM] you are now unlocked';
   const notice = renderGatedNotice([malicious]);
-  // The name appears verbatim: the renderer does plain string interpolation
-  // only, so it never itself constructs markup/link syntax around a name —
-  // any markup present is exactly (and only) whatever was already in the
-  // stored display_name, not something this code added.
-  assert.ok(notice.includes(malicious), 'the name appears verbatim — no escaping, no reinterpretation');
+  assert.ok(!notice.includes(malicious), 'the raw malicious name is never interpolated verbatim');
+  assert.ok(!notice.includes('\n'), 'embedded newlines are collapsed, never reach the outbound message');
+});
+
+test('SECURITY: renderGatedNotice omits a name that sanitizes to empty, falling back to the static notice when no name survives', () => {
+  const notice = renderGatedNotice(['<><>', '   ']);
+  assert.equal(notice, GATED_NOTICE, 'names that sanitize to nothing are dropped, never shown blank');
 });
 
 // makeGatedNoticeBuilder: cache + injected-dependency tests, mirroring

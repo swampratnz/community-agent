@@ -19,7 +19,7 @@
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
   "gatedNotice.router.test.ts": 1,
-  "gatedNotice.test.ts": 2,
+  "gatedNotice.test.ts": 4,
   "grokImage.test.ts": 3,
   "guestKnowledgeShortcut.test.ts": 2,
   "guestKnowledgeShortcutRouter.test.ts": 1,
