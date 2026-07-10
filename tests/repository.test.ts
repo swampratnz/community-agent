@@ -4024,6 +4024,74 @@ test(
 );
 
 test(
+  'repository: createAnswerFeedback normalizes an optional comment (control-char-stripped, truncated to 200 ' +
+    'chars) and stores NULL for an omitted or whitespace-only comment (issue #354)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-rate-answer-comment-user`;
+    const conversationId = `${RUN}-c-rate-answer-comment`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer to comment on',
+      meta: { replyToUserId: userId },
+    });
+
+    const overlong = 'x'.repeat(250);
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId,
+        helpful: false,
+        comment: `wrong pricing\r\n${overlong}`,
+      }),
+    );
+
+    const listed = await listAnswerFeedback([conversationId]);
+    const row = listed.find((r) => r.id === feedbackId);
+    assert.ok(row, 'the rating is visible via listAnswerFeedback');
+    assert.equal(row.comment?.length, 200, 'the stored comment is truncated to the 200-char cap');
+    assert.doesNotMatch(row.comment ?? '', /[\r\n]/, 'control characters are stripped before storage');
+    assert.match(row.comment ?? '', /^wrong pricing/, 'the leading, non-truncated text survives verbatim');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+
+    const noCommentUser = `${RUN}-rate-answer-no-comment-user`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'another answer',
+      meta: { replyToUserId: noCommentUser },
+    });
+    const noCommentId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: noCommentUser,
+        helpful: true,
+        comment: '   ',
+      }),
+    );
+    const listedNoComment = await listAnswerFeedback([conversationId]);
+    const noCommentRow = listedNoComment.find((r) => r.id === noCommentId);
+    assert.ok(noCommentRow);
+    assert.equal(noCommentRow.comment, null, 'a whitespace-only comment stores NULL, not an empty string');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [noCommentUser]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   "SECURITY: repository: createAnswerFeedback binds to the caller's OWN outbound reply, never a concurrent reply to a different member in the same busy conversation",
   { skip },
   async () => {
@@ -4674,27 +4742,43 @@ test(
       meta: { replyToUserId: recipient },
     });
     const feedbackId = expectFeedbackId(
-      await createAnswerFeedback({ platform: 'discord', conversationId, userId: rater, helpful: true }),
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: rater,
+        helpful: true,
+        comment: 'this pinned the wrong price',
+      }),
     );
 
     // Purging the RECIPIENT (the person the rated answer was sent to) deletes
     // their outbound interaction, which must SET NULL on the FK rather than
     // deleting or orphaning the rater's feedback row.
     await purgeUserData('discord', recipient);
-    const afterRecipientPurge = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
-      feedbackId,
-    ]);
+    const afterRecipientPurge = await pool.query(
+      `SELECT interaction_id, comment FROM answer_feedback WHERE id = $1`,
+      [feedbackId],
+    );
     assert.equal(afterRecipientPurge.rows.length, 1, "the rater's feedback row itself survives");
     assert.equal(
       afterRecipientPurge.rows[0].interaction_id,
       null,
       'SECURITY: interaction_id is nulled (ON DELETE SET NULL), not left dangling, once the rated reply is purged',
     );
+    assert.equal(
+      afterRecipientPurge.rows[0].comment,
+      'this pinned the wrong price',
+      "the rater's comment is untouched by the RECIPIENT's purge",
+    );
 
     const purgedRater = await purgeUserData('discord', rater);
     assert.ok(purgedRater >= 1, "purge count includes the rater's own feedback rows");
     const afterRaterPurge = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [rater]);
-    assert.equal(afterRaterPurge.rows.length, 0, "the rater's own feedback rows are gone after their purge");
+    assert.equal(
+      afterRaterPurge.rows.length,
+      0,
+      "the rater's own feedback rows — including the stored comment (issue #354) — are gone after their purge",
+    );
   },
 );
 
