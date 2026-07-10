@@ -482,12 +482,12 @@ CREATE INDEX IF NOT EXISTS knowledge_candidates_digest_idx
 -- Member feedback on the bot's own answers (issue #118) — the deferred
 -- feedback-loop half of #60 (which taught the model to attribute
 -- knowledge-base answers and flag general-knowledge ones, but explicitly
--- deferred a rating mechanism). Boolean-only, no free text: a member rates
--- the most recent answer the bot gave *them* in this conversation. Purge
--- coherence: `interaction_id` is `ON DELETE SET NULL` so purging the rated
--- reply (the recipient's own forget_me/purge_user_data, via
--- purgeSingleIdentity's interactions delete) drops the dangling reference
--- without orphaning or cascading into this table, keeping the aggregate
+-- deferred a rating mechanism). A member rates the most recent answer the
+-- bot gave *them* in this conversation. Purge coherence: `interaction_id` is
+-- `ON DELETE SET NULL` so purging the rated reply (the recipient's own
+-- forget_me/purge_user_data, via purgeSingleIdentity's interactions delete)
+-- drops the dangling reference without orphaning or cascading into this
+-- table, keeping the aggregate
 -- helpful/unhelpful trend intact; `forget_me`/`purge_user_data` separately
 -- delete the rater's *own* answer_feedback rows (see repository.ts).
 -- ---------------------------------------------------------------------------
@@ -507,6 +507,13 @@ CREATE INDEX IF NOT EXISTS answer_feedback_conversation_idx
 -- Backs the per-rater rolling-24h rate cap (see repository.ts createAnswerFeedback).
 CREATE INDEX IF NOT EXISTS answer_feedback_user_rate_idx
   ON answer_feedback (platform, user_id, created_at DESC);
+
+-- Optional free-text reason alongside the boolean (issue #354, the follow-up
+-- #118 explicitly deferred). Nullable, no backfill: a rating with no
+-- accompanying reason stores NULL exactly as before. Deleted along with the
+-- rest of the row by the rater's own forget_me/purge_user_data purge — no new
+-- retention or deletion path.
+ALTER TABLE answer_feedback ADD COLUMN IF NOT EXISTS comment TEXT;
 
 -- ---------------------------------------------------------------------------
 -- Knowledge-search misses (issue #208): a `knowledge_search` call that
