@@ -92,7 +92,9 @@ interface TurnOutcome {
  *    admin+ additionally get WebSearch — and ONLY WebSearch);
  *  - WebFetch is disallowed for every tier (URL construction is an
  *    exfiltration channel; fetched pages are a rich injection vector);
- *  - `allowedTools` is derived from the caller's role only.
+ *  - `allowedTools` is derived from the caller's role only;
+ *  - `maxTurns` is tiered by role: member/guest get the lower
+ *    `AGENT_MAX_TURNS_MEMBER` ceiling, admin+ keep `AGENT_MAX_TURNS`.
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
@@ -113,7 +115,11 @@ export function buildQueryOptions(
     allowedTools: [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])],
     disallowedTools: ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
     permissionMode: 'default' as const,
-    maxTurns: config.llm.maxTurns,
+    // Member/guest turns get a tighter loop-depth ceiling than admin+
+    // (issue #347): MEMBER_TOOLS is a much narrower surface, so a
+    // stuck/injected turn on the highest-volume, lowest-trust tier is
+    // bounded to less worst-case cost. admin/super_admin are unchanged.
+    maxTurns: atLeast(role, 'admin') ? config.llm.maxTurns : config.llm.memberMaxTurns,
     ...(resumeSession ? { resume: resumeSession } : {}),
     // Don't load the host machine's ~/.claude config into the agent.
     settingSources: [] as [],

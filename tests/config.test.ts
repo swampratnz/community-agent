@@ -135,6 +135,33 @@ test('SECURITY: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=1 fails config validati
   );
 });
 
+test('config: AGENT_MAX_TURNS_MEMBER defaults to 6 (issue #347)', () => {
+  assert.equal(config.llm.memberMaxTurns, 6);
+});
+
+test('SECURITY: AGENT_MAX_TURNS_MEMBER rejects a non-positive value — validated identically to AGENT_MAX_TURNS, fail-fast rather than a silently unbounded member/guest loop', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        AGENT_MAX_TURNS_MEMBER: '0',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'AGENT_MAX_TURNS_MEMBER=0 must fail config validation, not load');
+  assert.match(result.stderr, /AGENT_MAX_TURNS_MEMBER/);
+});
+
 test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=2 (the refined minimum) loads cleanly', () => {
   const repoRoot = fileURLToPath(new URL('..', import.meta.url));
   const result = spawnSync(

@@ -33,6 +33,13 @@ const EnvSchema = z.object({
     .min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
   AGENT_MODEL: z.string().default('claude-sonnet-5'),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
+  // Lower agentic-loop ceiling for member/guest turns (issue #347):
+  // MEMBER_TOOLS is a much narrower surface than admin+'s (no WebSearch, no
+  // moderation/curation tool chains), so the highest-volume, lowest-trust
+  // tier gets a tighter worst-case cost/blast-radius bound than
+  // AGENT_MAX_TURNS. admin/super_admin are unaffected — they keep
+  // AGENT_MAX_TURNS unchanged.
+  AGENT_MAX_TURNS_MEMBER: z.coerce.number().int().positive().default(6),
 
   // Discord
   DISCORD_BOT_TOKEN: z.string().min(1),
@@ -517,6 +524,7 @@ export const config = {
     oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN,
     model: env.AGENT_MODEL,
     maxTurns: env.AGENT_MAX_TURNS,
+    memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
   },
   discord: {
     botToken: env.DISCORD_BOT_TOKEN,
