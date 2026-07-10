@@ -15,7 +15,7 @@
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,
   "createThreadModerationGuard.test.ts": 2,
-  "discordAdapter.test.ts": 31,
+  "discordAdapter.test.ts": 36,
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
   "grokImage.test.ts": 3,

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ChannelType, GuildScheduledEventEntityType } from 'discord.js';
+import { ChannelType, Events, GuildScheduledEventEntityType } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -24,6 +24,7 @@ const { DiscordAdapter, WELCOME_MESSAGE } = await import('../src/platforms/disco
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { logger } = await import('../src/logger.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -115,6 +116,49 @@ function fakeUpdateChannel(
     isTextBased: () => opts.isTextBased ?? true,
     guild: { id: opts.guildId },
     permissionOverwrites: { cache },
+  };
+}
+
+/** Reaches the private onGuildMemberUpdate handler directly. */
+function fireGuildMemberUpdate(adapter: Adapter, oldMember: unknown, newMember: unknown): void {
+  (adapter as unknown as { onGuildMemberUpdate: (o: unknown, n: unknown) => void }).onGuildMemberUpdate(
+    oldMember,
+    newMember,
+  );
+}
+
+/** Reaches the private onGuildRoleUpdate handler directly. */
+function fireGuildRoleUpdate(adapter: Adapter, oldRole: unknown, newRole: unknown): void {
+  (adapter as unknown as { onGuildRoleUpdate: (o: unknown, n: unknown) => void }).onGuildRoleUpdate(
+    oldRole,
+    newRole,
+  );
+}
+
+/** Reaches the private onGuildRoleDelete handler directly. */
+function fireGuildRoleDelete(adapter: Adapter, role: unknown): void {
+  (adapter as unknown as { onGuildRoleDelete: (r: unknown) => void }).onGuildRoleDelete(role);
+}
+
+/**
+ * A minimal GuildMember stand-in for onGuildMemberUpdate: carries a
+ * `roles.cache` map keyed by role id (what the handler diffs). `partial`
+ * exercises the fail-safe edge where the old member's role set at event
+ * time is unknowable.
+ */
+function fakeRoleMember(opts: { guildId: string; roleIds: string[]; partial?: boolean }) {
+  return {
+    guild: { id: opts.guildId },
+    partial: opts.partial ?? false,
+    roles: { cache: new Map(opts.roleIds.map((id) => [id, { id }])) },
+  };
+}
+
+/** A minimal Role stand-in for onGuildRoleUpdate / onGuildRoleDelete. */
+function fakeGuildRole(opts: { guildId: string; permissions?: bigint }) {
+  return {
+    guild: { id: opts.guildId },
+    permissions: { bitfield: opts.permissions ?? 0n },
   };
 }
 
@@ -2146,5 +2190,261 @@ test(
     );
 
     assert.equal(cache.size, 0, 'a genuine overwrite change must clear every cached entry, never add one');
+  },
+);
+
+// --- onGuildMemberUpdate / onGuildRoleUpdate / onGuildRoleDelete: Discord
+// role-based-access membership-scope cache invalidation (issue #350) ---
+
+test(
+  'SECURITY: a GuildMemberUpdate whose role id-set changed (a role removed from the member) in the ' +
+    'configured guild invalidates the whole membershipCache — the very next conversationsForUser recomputes live',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1, 'first call is a cache miss and must hit the guild');
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(calls.guildFetch, 1, 'second call within the TTL must be served from cache, not re-fetched');
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: [] }),
+    );
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'a GuildMemberUpdate that changes the member’s role id-set must invalidate the cache so the next ' +
+        'lookup re-fetches live',
+    );
+  },
+);
+
+test(
+  'a GuildMemberUpdate whose role id-set is unchanged (nickname/avatar/timeout only) does not clear the ' +
+    'cache — a pre-seeded entry survives the event',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+    );
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(
+      calls.guildFetch,
+      1,
+      'a routine update that leaves the role id-set unchanged must not force a re-fetch',
+    );
+  },
+);
+
+test(
+  'SECURITY: a GuildMemberUpdate whose old member is partial (role set at event time unknowable) fails ' +
+    'safe and clears the cache, even though the new member’s roles look unchanged from what was cached',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'], partial: true }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+    );
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'a partial old member means the prior role set is unknowable — the handler must fail safe toward ' +
+        'invalidation, never treat it as unchanged',
+    );
+  },
+);
+
+test('onGuildMemberUpdate does not touch the cache for an update event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildMemberUpdate(
+    adapter,
+    fakeRoleMember({ guildId: 'some-other-guild', roleIds: ['role-admin'] }),
+    fakeRoleMember({ guildId: 'some-other-guild', roleIds: [] }),
+  );
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a member-update event scoped to a different guild must not invalidate this guild’s cache',
+  );
+});
+
+test(
+  'SECURITY: a GuildRoleUpdate whose permissions bitfield changed in the configured guild invalidates ' +
+    'the whole membershipCache — the very next conversationsForUser recomputes live',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildRoleUpdate(
+      adapter,
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 0n }),
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 1024n }),
+    );
+
+    await adapter.conversationsForUser('admin-1');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'a GuildRoleUpdate that changes the role’s permissions bitfield must invalidate the cache',
+    );
+  },
+);
+
+test(
+  'a GuildRoleUpdate that only changes color/name/hoist (permissions bitfield unchanged) does not clear ' +
+    'the cache',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    const first = await adapter.conversationsForUser('admin-1');
+    assert.equal(calls.guildFetch, 1);
+
+    fireGuildRoleUpdate(
+      adapter,
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 8n }),
+      fakeGuildRole({ guildId: config.discord.guildId, permissions: 8n }),
+    );
+
+    const cached = await adapter.conversationsForUser('admin-1');
+    assert.deepEqual(cached, first);
+    assert.equal(
+      calls.guildFetch,
+      1,
+      'a color/name/hoist edit that leaves permissions unchanged must not force a re-fetch',
+    );
+  },
+);
+
+test('onGuildRoleUpdate does not touch the cache for a role-update event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildRoleUpdate(
+    adapter,
+    fakeGuildRole({ guildId: 'some-other-guild', permissions: 0n }),
+    fakeGuildRole({ guildId: 'some-other-guild', permissions: 1024n }),
+  );
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a permissions change on a role in a different guild must not invalidate this guild’s cache',
+  );
+});
+
+test('SECURITY: a GuildRoleDelete for a role in the configured guild invalidates the whole membershipCache', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildRoleDelete(adapter, fakeGuildRole({ guildId: config.discord.guildId }));
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    2,
+    'a role deletion in the configured guild must invalidate the cache so the next lookup re-fetches live',
+  );
+});
+
+test('onGuildRoleDelete does not touch the cache for a role-delete event in a different guild', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+  const adapter = new DiscordAdapter();
+  const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(calls.guildFetch, 1);
+
+  fireGuildRoleDelete(adapter, fakeGuildRole({ guildId: 'some-other-guild' }));
+
+  await adapter.conversationsForUser('admin-1');
+  assert.equal(
+    calls.guildFetch,
+    1,
+    'a role deletion in a different guild must not invalidate this guild’s cache',
+  );
+});
+
+test(
+  'SECURITY: an uncaught throw from the GuildMemberUpdate/GuildRoleUpdate/GuildRoleDelete handlers is ' +
+    'caught and logged, never propagating out of the discord.js emit chain (mirrors the existing ' +
+    'ChannelUpdate try/catch — an uncaught throw here would crash the whole process, Discord and WhatsApp ' +
+    'handling alike)',
+  async (t) => {
+    const errorLog = t.mock.method(logger, 'error', () => {});
+    const adapter = new DiscordAdapter();
+    const client = (
+      adapter as unknown as {
+        client: {
+          emit: (event: string, ...args: unknown[]) => void;
+          login: (token: string) => Promise<void>;
+        };
+      }
+    ).client;
+    // start() wires the listeners under test but also logs in for real —
+    // stub the login call so this stays a local, network-free test.
+    client.login = async () => {};
+    await adapter.start();
+
+    // Malformed args with no `.guild` property make each handler throw
+    // while reading `newMember.guild.id` / `newRole.guild.id` / `role.guild.id`.
+    assert.doesNotThrow(() => client.emit(Events.GuildMemberUpdate, {}, {}));
+    assert.doesNotThrow(() => client.emit(Events.GuildRoleUpdate, {}, {}));
+    assert.doesNotThrow(() => client.emit(Events.GuildRoleDelete, {}));
+
+    assert.equal(
+      errorLog.mock.calls.length,
+      3,
+      'all three malformed events must be caught and logged, once each',
+    );
   },
 );
