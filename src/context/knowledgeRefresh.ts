@@ -105,6 +105,13 @@ export interface RefreshResult {
   created: number;
   updated: number;
   skipped: number;
+  /**
+   * Topics whose `research()` call itself threw — distinct from `skipped`,
+   * which covers the legitimate NO_UPDATE and title-taken-by-human cases.
+   * The caller (defaultKnowledgeRefreshRun) throws only when every topic
+   * failed this way (failed === topics, topics > 0).
+   */
+  failed: number;
 }
 
 /**
@@ -114,7 +121,13 @@ export interface RefreshResult {
  * injectable so tests never make a real model call.
  */
 export async function runKnowledgeRefresh(research: TopicResearcher = researchTopic): Promise<RefreshResult> {
-  const result: RefreshResult = { topics: REFRESH_TOPICS.length, created: 0, updated: 0, skipped: 0 };
+  const result: RefreshResult = {
+    topics: REFRESH_TOPICS.length,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    failed: 0,
+  };
 
   // A live bot already at its usage-alert threshold outranks background work.
   const alertThreshold = config.behaviour.usageAlertDailyReplies;
@@ -156,7 +169,7 @@ export async function runKnowledgeRefresh(research: TopicResearcher = researchTo
       }
     } catch (err) {
       logger.warn({ err, title: topic.title }, 'Knowledge refresh: topic failed');
-      result.skipped += 1;
+      result.failed += 1;
     }
   }
   return result;

@@ -58,6 +58,16 @@ export interface BuilderResult {
   truncatedByCap: number;
   /** Knowledge candidates actually inserted (0 unless CONTEXT_CANDIDATES_ENABLED). */
   candidates: number;
+  /**
+   * Clusters actually attempted this run — i.e. `selected.length`, AFTER the
+   * distinct-user floor and the `maxSummaries` cap. NOT `clustersConsidered`
+   * (= every cluster found, including below-floor and cap-truncated ones):
+   * comparing `failed` against `clustersConsidered` would make total-failure
+   * detection unreachable whenever the run truncates by the cap.
+   */
+  attempted: number;
+  /** Clusters whose `summarize()` call itself threw. */
+  failed: number;
   skippedReason?: 'usage-threshold' | 'no-data';
 }
 
@@ -176,6 +186,8 @@ export async function runContextBuilder(
         droppedBelowFloor: 0,
         truncatedByCap: 0,
         candidates: 0,
+        attempted: 0,
+        failed: 0,
         skippedReason: 'usage-threshold',
       };
     }
@@ -189,6 +201,8 @@ export async function runContextBuilder(
       droppedBelowFloor: 0,
       truncatedByCap: 0,
       candidates: 0,
+      attempted: 0,
+      failed: 0,
       skippedReason: 'no-data',
     };
   }
@@ -239,6 +253,7 @@ export async function runContextBuilder(
   const periodStart = new Date(periodEnd.getTime() - windowDays * 24 * 3_600_000);
   let digests = 0;
   let candidates = 0;
+  let failed = 0;
   for (const cluster of selected) {
     try {
       const { topic, summary, candidate } = await summarize(cluster.samples);
@@ -277,8 +292,17 @@ export async function runContextBuilder(
       }
     } catch (err) {
       logger.warn({ err }, 'Context builder failed to summarise a cluster; continuing');
+      failed += 1;
     }
   }
 
-  return { digests, clustersConsidered: clusters.length, droppedBelowFloor, truncatedByCap, candidates };
+  return {
+    digests,
+    clustersConsidered: clusters.length,
+    droppedBelowFloor,
+    truncatedByCap,
+    candidates,
+    attempted: selected.length,
+    failed,
+  };
 }

@@ -42,6 +42,21 @@ test('shouldRunKnowledgeRefresh: runs when never run, and only again after the i
   );
 });
 
+// --- total-failure signal (issue #335) — no DB needed: a throwing
+// researcher never reaches upsertGlobalKnowledgeByTitle, so this runs
+// regardless of DATABASE_URL.
+
+test('runKnowledgeRefresh: a researcher that throws for every topic increments `failed`, distinct from `skipped` (which stays reserved for NO_UPDATE/title-taken)', async () => {
+  const alwaysThrows = async (_q: string): Promise<string | null> => {
+    throw new Error('web search unavailable');
+  };
+  const res = await runKnowledgeRefresh(alwaysThrows);
+  assert.equal(res.failed, REFRESH_TOPICS.length, 'every topic failed');
+  assert.equal(res.skipped, 0, 'failed topics are not double-counted as skipped');
+  assert.equal(res.created, 0);
+  assert.equal(res.updated, 0);
+});
+
 test(
   'SECURITY: refresh writes only global, auto-provenance entries under the fixed titles — the marker knowledge_search keys its untrusted quarantine on',
   { skip },
