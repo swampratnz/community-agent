@@ -48,6 +48,14 @@ const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 export const WHATSAPP_GROUP_WELCOME_MESSAGE =
   "Kia ora! 👋 This bot only replies to registered members. If you're new here, ask an admin in this group to add you as a member.";
 
+// Selected instead of WHATSAPP_GROUP_WELCOME_MESSAGE when
+// config.rbac.accessMode.whatsapp is 'open' (issue #351) — same
+// generic/static, no-@-mention shape, adapted to state that no admin
+// approval is needed in that mode.
+export const WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN =
+  'Kia ora! 👋 This bot answers Claude/Anthropic questions and remembers context — go ahead and message ' +
+  'me any time, no admin approval needed. Ask me "what can you do?" any time for a quick rundown.';
+
 export interface WelcomeCooldownState {
   readonly lastSentAt: Readonly<Record<string, number>>;
 }
@@ -444,7 +452,8 @@ export class BaileysAdapter implements PlatformAdapter {
    * collapses sequential joins across time into a single message per window.
    * The welcome text itself is admin-configurable (set_welcome_message,
    * issue #253), falling back to the hardcoded WHATSAPP_GROUP_WELCOME_MESSAGE
-   * default when unset. When community guidelines are set (issue #212),
+   * default when unset — WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN instead when
+   * config.rbac.accessMode.whatsapp is 'open' (issue #351). When community guidelines are set (issue #212),
    * they're appended verbatim to it — never run through the model.
    */
   private async onGroupParticipantsUpdate(
@@ -469,7 +478,11 @@ export class BaileysAdapter implements PlatformAdapter {
     this.welcomeCooldown = step.state;
     if (!step.shouldSend) return;
 
-    const welcomeMessage = (await getWelcomeMessage()) ?? WHATSAPP_GROUP_WELCOME_MESSAGE;
+    const defaultWelcomeMessage =
+      config.rbac.accessMode.whatsapp === 'open'
+        ? WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN
+        : WHATSAPP_GROUP_WELCOME_MESSAGE;
+    const welcomeMessage = (await getWelcomeMessage()) ?? defaultWelcomeMessage;
     const guidelines = await getCommunityGuidelines();
     const welcomeText = guidelines
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
