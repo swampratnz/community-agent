@@ -214,8 +214,12 @@ export interface DocsIngestResult {
   /**
    * True only when the llms.txt index itself failed to fetch — a total-run
    * failure, distinct from a zero-URL parse (a legitimate no-op when the
-   * index is reachable but happens to list nothing). The caller
-   * (defaultDocsIngestRun) throws on this, never on a zero-URL parse.
+   * index is reachable but happens to list nothing). This is only the FIRST
+   * of three total-failure stages defaultDocsIngestRun (src/backgroundJobs.ts)
+   * checks: the index fetching fine says nothing about whether every page
+   * fetch, or every chunk upsert, subsequently failed too — those two stages
+   * are derived directly from pages/fetched/chunks/created/updated/unchanged/
+   * skipped below rather than needing their own boolean.
    */
   indexFetchFailed: boolean;
 }

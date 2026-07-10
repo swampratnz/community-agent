@@ -106,10 +106,14 @@ export interface RefreshResult {
   updated: number;
   skipped: number;
   /**
-   * Topics whose `research()` call itself threw — distinct from `skipped`,
-   * which covers the legitimate NO_UPDATE and title-taken-by-human cases.
-   * The caller (defaultKnowledgeRefreshRun) throws only when every topic
-   * failed this way (failed === topics, topics > 0).
+   * Topics whose `research()` call OR the subsequent `upsertGlobalKnowledgeByTitle`
+   * persistence threw — the try block below wraps both, so a DB-side failure
+   * after a successful research also counts here (deliberate: total-failure
+   * detection cares whether the topic ended up persisted, not just whether
+   * research() itself succeeded). Distinct from `skipped`, which covers the
+   * legitimate NO_UPDATE and title-taken-by-human cases. The caller
+   * (defaultKnowledgeRefreshRun) throws only when every topic failed this way
+   * (failed === topics, topics > 0).
    */
   failed: number;
 }

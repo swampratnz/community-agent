@@ -66,7 +66,13 @@ export interface BuilderResult {
    * detection unreachable whenever the run truncates by the cap.
    */
   attempted: number;
-  /** Clusters whose `summarize()` call itself threw. */
+  /**
+   * Clusters whose `summarize()` call OR the subsequent `insertContextDigest`
+   * persistence threw — the try block below wraps both, so a DB-side failure
+   * after a successful summarise also counts here (deliberate: total-failure
+   * detection cares whether the cluster ended up digested, not just whether
+   * summarise() itself succeeded).
+   */
   failed: number;
   skippedReason?: 'usage-threshold' | 'no-data';
 }

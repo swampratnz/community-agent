@@ -441,6 +441,20 @@ test(
 );
 
 test(
+  'defaultDocsIngestRun throws when the index itself is reachable but EVERY page fetch fails — the index fetch succeeding says nothing about page reachability (issue #335 follow-up)',
+  { skip },
+  async (t) => {
+    const pageUrl = `${config.docsIngest.indexUrl.replace(/\/[^/]*$/, '')}/docs/en/api/messages.md`;
+    const indexOkAllPagesFail = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [messages](${pageUrl})`;
+      throw new Error('docs host blocked the request');
+    };
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    await assert.rejects(() => defaultDocsIngestRun(indexOkAllPagesFail));
+  },
+);
+
+test(
   'defaultKnowledgeRefreshRun throws when every fixed topic errors on every attempt (real total failure, injected research)',
   { skip },
   async (t) => {

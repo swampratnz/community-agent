@@ -142,6 +142,20 @@ test('runDocsIngest: a reachable index that parses to zero page URLs is a legiti
   assert.equal(res.pages, 0);
 });
 
+test('runDocsIngest: index reachable but EVERY page fetch fails — indexFetchFailed stays false (that field is only for the index itself), yet pages > 0 && fetched === 0, the signal defaultDocsIngestRun uses to still detect this as a total failure', async () => {
+  const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+  const u2 = 'https://platform.claude.com/docs/en/api/models.md';
+  const indexOkAllPagesFail = async (url: string): Promise<string> => {
+    if (url === config.docsIngest.indexUrl) return `- [a](${u1})\n- [b](${u2})`;
+    throw new Error('docs host blocked the request');
+  };
+  const res = await runDocsIngest(indexOkAllPagesFail);
+  assert.equal(res.indexFetchFailed, false, 'the index itself fetched fine');
+  assert.equal(res.pages, 2);
+  assert.equal(res.fetched, 0, 'no page fetch succeeded');
+  assert.equal(res.failed, 2, 'both page fetches are counted as failures');
+});
+
 // --- DB-backed, injected fetcher -------------------------------------------
 
 /** Build an injected fetchText from an index page-list + a per-URL body map. */
