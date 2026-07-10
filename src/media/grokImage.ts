@@ -151,10 +151,16 @@ function ensureSandboxReady(): Promise<void> {
         'utf8',
       );
 
+      // The probe file must PERSIST: it's in the deny list, and grok binds every
+      // deny path on EVERY run (grok refuses to start if a deny path can't be
+      // bound). If we removed it after the probe, the actual `/imagine` run would
+      // fail to bind a now-missing path. It holds only a random token (no
+      // secret), is kernel-denied so nothing can read it, and is overwritten on
+      // the next process start. Written under the bot's cwd (in ReadWritePaths).
       const token = `GROK_SANDBOX_PROBE_${randomUUID()}`;
+      await writeFile(probePath, token, 'utf8');
       const cwd = await mkdtemp(join(tmpdir(), 'grokprobe-'));
       try {
-        await writeFile(probePath, token, 'utf8');
         const stdout = await runGrok(
           `Read the file ${probePath} and reply with its exact contents.`,
           cwd,
@@ -167,7 +173,6 @@ function ensureSandboxReady(): Promise<void> {
           );
         }
       } finally {
-        await rm(probePath, { force: true }).catch(() => {});
         await rm(cwd, { recursive: true, force: true }).catch(() => {});
       }
     })();

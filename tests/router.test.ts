@@ -508,3 +508,33 @@ test('router (repeat-question shortcut default off): REPEAT_QUESTION_SHORTCUT_EN
     'the second reply must be a fresh answer, never a cached/prefixed repeat reply',
   );
 });
+
+test('router (repeat-max-turns shortcut default off): REPEAT_MAX_TURNS_SHORTCUT_ENABLED unset means zero behaviour change — a resend after a max-turns failure always runs a fresh turn', async () => {
+  assert.equal(
+    config.behaviour.repeatMaxTurnsShortcutEnabled,
+    false,
+    'this file leaves REPEAT_MAX_TURNS_SHORTCUT_ENABLED unset — see tests/repeatMaxTurnsShortcutRouter.test.ts for the flag-on path',
+  );
+  let calls = 0;
+  const router = new Router(async () => {
+    calls++;
+    return { text: 'too many steps', ok: false, maxTurnsExceeded: true };
+  }, 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'a very long ask' }));
+  await trigger(makeMessage({ text: 'a very long ask' }));
+
+  assert.equal(
+    calls,
+    2,
+    'with the flag off, the max-turns cache must never be read — every message runs a normal turn',
+  );
+  assert.equal(sent[0].text, 'too many steps');
+  assert.equal(
+    sent[1].text,
+    'too many steps',
+    'the second reply must be a fresh failure, never a cached/prefixed repeat reply',
+  );
+});

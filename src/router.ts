@@ -4,7 +4,7 @@ import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
-import { INTERNAL_ERROR_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
+import { INTERNAL_ERROR_REPLY, MAX_TURNS_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
 import { formatKnowledgeCitationNote } from './agent/tools.js';
 import {
   cancelPendingAction,
@@ -61,6 +61,12 @@ const GUEST_KNOWLEDGE_SHORTCUT_NUDGE = '\n\nAsk a community admin to add you as 
 // rather than look like a fresh turn.
 const REPEAT_SHORTCUT_NOTICE = "↩️ You asked this a moment ago — here's my answer again:\n\n";
 
+// Prefix for a REPEAT_MAX_TURNS_SHORTCUT_ENABLED replay (issue #306) — makes
+// clear this is a replayed prior failure, not a fresh attempt that also
+// happened to hit the wall.
+const REPEAT_MAX_TURNS_SHORTCUT_NOTICE =
+  '↩️ Same request as a moment ago — it still needs breaking down:\n\n';
+
 /** The subset of a KnowledgeSearchHit the shortcut path carries through — just enough to render `formatKnowledgeCitationNote` (issue #214). */
 interface KnowledgeShortcutHit {
   id: number;
@@ -112,6 +118,17 @@ export class Router {
    * REPEAT_QUESTION_SHORTCUT_ENABLED short-circuit in `handle()`.
    */
   private readonly lastReply = new Map<string, { normalizedText: string; replyText: string; at: number }>();
+  /**
+   * `platform:conversationId:userId` -> the last `error_max_turns` failure
+   * served to that exact caller (issue #306) — the sibling of `lastReply`
+   * above, deliberately kept as its own map rather than folded into it:
+   * `lastReply`'s doc comment and read site both assume a hit is "a genuine
+   * answer to replay", which a max-turns failure is not. Same caller-scoped
+   * key, same window, same sweep; only populated when `AgentReply.
+   * maxTurnsExceeded === true`; consumed by the
+   * REPEAT_MAX_TURNS_SHORTCUT_ENABLED short-circuit in `handle()`.
+   */
+  private readonly lastMaxTurnsFailure = new Map<string, { normalizedText: string; at: number }>();
 
   private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
@@ -158,6 +175,9 @@ export class Router {
     }
     for (const [key, entry] of this.lastReply) {
       if (now - entry.at > this.REPEAT_SHORTCUT_WINDOW_MS) this.lastReply.delete(key);
+    }
+    for (const [key, entry] of this.lastMaxTurnsFailure) {
+      if (now - entry.at > this.REPEAT_SHORTCUT_WINDOW_MS) this.lastMaxTurnsFailure.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -535,6 +555,30 @@ export class Router {
       }
     }
 
+    // Deterministic max-turns repeat short-circuit (issue #306): the sibling
+    // of the shortcut above, for the one outcome it deliberately excludes — a
+    // turn that exhausted AGENT_MAX_TURNS. Same caller key, same normalized
+    // text match, same window; guaranteed to hit the exact same wall again
+    // (same input, tools, system prompt), so a second full turn is pure
+    // wasted spend. Off by default.
+    if (config.behaviour.repeatMaxTurnsShortcutEnabled) {
+      const cachedFailure = this.lastMaxTurnsFailure.get(this.callerKey(msg));
+      if (
+        cachedFailure &&
+        cachedFailure.normalizedText === this.normalize(msg.text) &&
+        Date.now() - cachedFailure.at < this.REPEAT_SHORTCUT_WINDOW_MS
+      ) {
+        logger.debug(
+          { platform: msg.platform, conversationId: msg.conversationId },
+          'repeat_max_turns_shortcut_hit',
+        );
+        await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
+          this.sendRepeatMaxTurnsShortcut(msg, adapter),
+        );
+        return;
+      }
+    }
+
     // Serialise per conversation so session resume stays consistent.
     await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter));
   }
@@ -669,6 +713,29 @@ export class Router {
     }).catch((err) => logger.error({ err }, 'Failed to record repeat-shortcut outbound interaction'));
   }
 
+  /**
+   * Sends the canned max-turns message for a repeat-max-turns shortcut hit
+   * (issue #306) without spawning a second full agent turn, and records it
+   * like a normal outbound reply — mirroring `sendRepeatShortcut`'s
+   * precedent (#259).
+   */
+  private async sendRepeatMaxTurnsShortcut(msg: IncomingMessage, adapter: PlatformAdapter): Promise<void> {
+    const replyText = `${REPEAT_MAX_TURNS_SHORTCUT_NOTICE}${MAX_TURNS_REPLY}`;
+    await this.send(adapter, msg.conversationId, replyText);
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: msg.conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: { replyToUserId: msg.userId, repeatMaxTurnsShortcut: true },
+    }).catch((err) =>
+      logger.error({ err }, 'Failed to record repeat-max-turns-shortcut outbound interaction'),
+    );
+  }
+
   private async respond(msg: IncomingMessage, role: Tier, adapter: PlatformAdapter): Promise<void> {
     const caller: CallerContext = {
       platform: msg.platform,
@@ -748,6 +815,18 @@ export class Router {
         this.lastReply.set(this.callerKey(msg), {
           normalizedText: this.normalize(msg.text),
           replyText: reply.text,
+          at: Date.now(),
+        });
+      }
+
+      // Cache this failure for the max-turns repeat shortcut (issue #306):
+      // only ever a genuine `error_max_turns` failure (`reply.maxTurnsExceeded
+      // === true`, never a truthy-ish absent value) — never a success, never
+      // any other kind of failure — so a repeat can only ever short-circuit
+      // the one guaranteed-to-repeat outcome.
+      if (config.behaviour.repeatMaxTurnsShortcutEnabled && reply.maxTurnsExceeded === true) {
+        this.lastMaxTurnsFailure.set(this.callerKey(msg), {
+          normalizedText: this.normalize(msg.text),
           at: Date.now(),
         });
       }

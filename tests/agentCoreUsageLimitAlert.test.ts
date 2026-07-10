@@ -15,6 +15,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.UPSTREAM_LIMIT_ALERT_ENABLED = 'true';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
+process.env.SUPER_ADMIN_WHATSAPP_NUMBERS = 'super-wa-1,super-wa-2';
 
 type QueryBehavior = { mode: 'throw'; message: string } | { mode: 'success'; text: string };
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
@@ -46,14 +47,17 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
   return corePromise;
 }
 
-function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
+function makeAdapter(
+  platform: PlatformAdapter['platform'] = 'discord',
+  connected = true,
+): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
   const dms: Array<{ userId: string; text: string }> = [];
   const adapter: PlatformAdapter = {
-    platform: 'discord',
+    platform,
     adminCapabilities: new Set(),
     async start() {},
     async stop() {},
-    isConnected: () => true,
+    isConnected: () => connected,
     onMessage() {},
     async sendMessage(_out: OutgoingMessage) {},
     async sendDirectMessage(userId: string, text: string) {
@@ -120,4 +124,123 @@ test('runAgentTurn: a usage-limit/overload error DMs super admins once, then sta
   await flush();
   assert.equal(thirdFailure.text, USAGE_LIMIT_REPLY_ADMIN_NOTIFIED);
   assert.equal(dms.length, 2, 'a new window after recovery DMs again');
+});
+
+test('runAgentTurn: a usage-limit failure on a Discord-originated turn also DMs WhatsApp super admins via getAdapter, none excluded, and never resends within the same window (issue #325)', async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { adapter, dms } = makeAdapter('discord');
+  const { adapter: waAdapter, dms: waDms } = makeAdapter('whatsapp');
+  const caller = makeCaller();
+  const getAdapter = (platform: 'discord' | 'whatsapp') => (platform === 'whatsapp' ? waAdapter : adapter);
+
+  // The usage-limit debounce latch is module-wide (not per-test), so start
+  // from a known "recovered" state before asserting a fresh window alerts.
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', adapter, getAdapter);
+  await flush();
+  dms.length = 0;
+  waDms.length = 0;
+
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', adapter, getAdapter);
+  await flush();
+
+  assert.equal(dms.length, 1, 'origin platform still gets exactly one DM');
+  assert.equal(dms[0].userId, 'super-1');
+  assert.equal(waDms.length, 2, 'the second connected platform gets one DM per its own super admin');
+  assert.deepEqual(
+    waDms.map((d) => d.userId).sort(),
+    ['super-wa-1', 'super-wa-2'],
+    'every whatsapp super admin id is reached — no excludeUserId/self-exclusion is applied to this system alert',
+  );
+
+  // Same ongoing window: a second failure must not resend on either platform.
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded still' };
+  await runAgentTurn(caller, 'hello again', adapter, getAdapter);
+  await flush();
+  assert.equal(dms.length, 1, 'debounce still one-per-window on the origin platform');
+  assert.equal(waDms.length, 2, 'debounce still one-per-window on the fanned-out platform');
+});
+
+test('runAgentTurn: an unregistered or disconnected second platform is silently skipped — no throw, no DM there, member-facing reply unchanged (issue #325)', async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { USAGE_LIMIT_REPLY_ADMIN_NOTIFIED } = await import('../src/agent/upstreamFailure.js');
+  const caller = makeCaller();
+
+  // (a) getAdapter resolves nothing for whatsapp — platform unregistered in this deployment.
+  {
+    const { adapter, dms } = makeAdapter('discord');
+    // Reset the module-wide debounce latch to "recovered" before asserting a
+    // fresh window alerts (see the sibling test above for why).
+    behavior = { mode: 'success', text: 'reset' };
+    await runAgentTurn(caller, 'reset', adapter, () => undefined);
+    await flush();
+    dms.length = 0;
+
+    behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+    const reply = await runAgentTurn(caller, 'hello', adapter, () => undefined);
+    await flush();
+    assert.equal(
+      reply.text,
+      USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
+      'reply text unchanged from the single-platform case',
+    );
+    assert.equal(dms.length, 1, 'origin platform DM still sent');
+  }
+
+  // (b) whatsapp is registered but its adapter reports disconnected.
+  {
+    const { adapter, dms } = makeAdapter('discord');
+    const { adapter: waAdapter, dms: waDms } = makeAdapter('whatsapp', false);
+    // Reset the module-wide debounce latch — part (a) above left it mid-window.
+    behavior = { mode: 'success', text: 'reset' };
+    await runAgentTurn(caller, 'reset', adapter, () => waAdapter);
+    await flush();
+    dms.length = 0;
+
+    behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+    const reply = await runAgentTurn(caller, 'hello', adapter, () => waAdapter);
+    await flush();
+    assert.equal(
+      reply.text,
+      USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
+      'reply text unchanged from the single-platform case',
+    );
+    assert.equal(dms.length, 1, 'origin platform DM still sent');
+    assert.equal(waDms.length, 0, 'disconnected platform receives zero DMs, no throw');
+  }
+});
+
+test("SECURITY: the all-platform usage-limit alert only ever reaches ids in that platform's configured superAdminIds(), and only for a connected, resolvable adapter (issue #325)", async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { superAdminIds } = await import('../src/auth/roles.js');
+  const { adapter, dms } = makeAdapter('discord');
+  const { adapter: waAdapter, dms: waDms } = makeAdapter('whatsapp');
+  const { dms: unregisteredDms } = makeAdapter('discord'); // never returned by getAdapter — must never receive anything
+  const caller = makeCaller();
+  const getAdapter = (platform: 'discord' | 'whatsapp') => (platform === 'whatsapp' ? waAdapter : undefined);
+
+  // Reset the module-wide debounce latch to "recovered" first (see the
+  // sibling fan-out test above for why this is needed).
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', adapter, getAdapter);
+  await flush();
+  dms.length = 0;
+  waDms.length = 0;
+  unregisteredDms.length = 0;
+
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', adapter, getAdapter);
+  await flush();
+
+  const discordAllowed = new Set(superAdminIds('discord'));
+  const whatsappAllowed = new Set(superAdminIds('whatsapp'));
+  for (const dm of dms) assert.ok(discordAllowed.has(dm.userId), `unexpected discord recipient ${dm.userId}`);
+  for (const dm of waDms)
+    assert.ok(whatsappAllowed.has(dm.userId), `unexpected whatsapp recipient ${dm.userId}`);
+  assert.equal(
+    unregisteredDms.length,
+    0,
+    'an adapter instance never returned by getAdapter must receive nothing',
+  );
 });

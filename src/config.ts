@@ -388,6 +388,17 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Sibling to REPEAT_QUESTION_SHORTCUT_ENABLED (issue #306): skip the agent
+  // turn entirely when the SAME caller sends the exact same whitespace-
+  // normalized text twice within REPEAT_SHORTCUT_WINDOW_MS of a turn that
+  // failed on `error_max_turns` — replies with the same canned max-turns
+  // message instead of spending a second full (guaranteed-to-repeat)
+  // AGENT_MAX_TURNS budget. Deliberately a separate flag/map from the
+  // success-only #259 shortcut. Off by default; see src/router.ts.
+  REPEAT_MAX_TURNS_SHORTCUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -608,6 +619,7 @@ export const config = {
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
+    repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {

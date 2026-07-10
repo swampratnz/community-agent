@@ -39,6 +39,7 @@ const {
   listKnowledgeCandidates,
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
+  listDuplicateKnowledge,
   countPendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
@@ -55,6 +56,7 @@ const {
   resolveContentReport,
   withdrawOwnReports,
   countOpenReports,
+  countRecentDmReportsByReporterAndTarget,
   REPORT_RATE_LIMIT_PER_DAY,
   recordAccessRequest,
   countAccessRequests,
@@ -89,6 +91,7 @@ const {
   setLanguagePreference,
   createAnswerFeedback,
   listAnswerFeedback,
+  listKnowledgeFeedbackSummary,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
   getMyDataSummary,
@@ -629,6 +632,134 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);
     void dupId;
     void distinctId;
+  },
+);
+
+test(
+  'repository: listDuplicateKnowledge finds an existing near-duplicate pair, reports each pair exactly once, and excludes a clearly distinct entry (issue #316)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-dup-scope`;
+    const { id: aId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: bId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    const { id: distinctId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pairs = await listDuplicateKnowledge(scope);
+
+    const matching = pairs.filter(
+      (p) => (p.aId === aId && p.bId === bId) || (p.aId === bId && p.bId === aId),
+    );
+    assert.equal(
+      matching.length,
+      1,
+      'the near-duplicate pair is reported exactly once, never as both A↔B and B↔A',
+    );
+    assert.ok(matching[0].similarity >= 0.92, 'reported similarity clears the duplicate threshold');
+
+    assert.ok(
+      !pairs.some((p) => p.aId === distinctId || p.bId === distinctId),
+      'a clearly distinct entry must not appear in any pair',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId, distinctId]]);
+  },
+);
+
+test(
+  'listDuplicateKnowledge returns an empty array when nothing meets the threshold (issue #316)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-dup-empty-scope`;
+    const { id } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pairs = await listDuplicateKnowledge(scope);
+    assert.deepEqual(pairs, [], 'a single entry with nothing to pair against yields no pairs');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'SECURITY: repository: listDuplicateKnowledge scope filter restricts results to that scope only, and a same-content pair split across different scopes is never returned (issue #316)',
+  { skip },
+  async () => {
+    const scopeX = `${RUN}-list-dup-scope-x`;
+    const scopeY = `${RUN}-list-dup-scope-y`;
+    const { id: xAId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope: scopeX,
+    });
+    const { id: xBId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: scopeX,
+    });
+    // Same content as the scope-X pair, but in a different scope — must never
+    // pair with either scope-X entry (a.scope = b.scope in the join) and must
+    // not appear when querying scope X.
+    const { id: yId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: scopeY,
+    });
+
+    const scopedToX = await listDuplicateKnowledge(scopeX);
+    assert.ok(
+      scopedToX.some((p) => (p.aId === xAId && p.bId === xBId) || (p.aId === xBId && p.bId === xAId)),
+      'the scope-X pair is returned when scoped to X',
+    );
+    assert.ok(
+      !scopedToX.some((p) => p.aId === yId || p.bId === yId),
+      'SECURITY: scope filter must exclude an entry from a different scope, even with near-identical content',
+    );
+
+    const unscoped = await listDuplicateKnowledge();
+    assert.ok(
+      !unscoped.some(
+        (p) =>
+          (p.aId === xAId && p.bId === yId) ||
+          (p.aId === yId && p.bId === xAId) ||
+          (p.aId === xBId && p.bId === yId) ||
+          (p.aId === yId && p.bId === xBId),
+      ),
+      'SECURITY: a same-content pair split across different scopes must never be reported, even with no scope filter applied — the self-join is scoped a.scope = b.scope',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAId, xBId, yId]]);
+  },
+);
+
+test(
+  'repository: listDuplicateKnowledge clamps limit to a sane maximum and tolerates a negative value, matching the recentModerationEntries convention (issue #316)',
+  { skip },
+  async () => {
+    const hugeLimit = await listDuplicateKnowledge(undefined, 10_000);
+    assert.ok(hugeLimit.length <= 100, 'limit is clamped to a sane maximum for an admin-only audit tool');
+
+    // A negative limit hits Postgres' "LIMIT must not be negative" if passed
+    // through unclamped — must not throw.
+    const negativeLimit = await listDuplicateKnowledge(undefined, -5);
+    assert.ok(
+      Array.isArray(negativeLimit),
+      'a negative limit is clamped rather than passed through to LIMIT',
+    );
   },
 );
 
@@ -1784,6 +1915,168 @@ test(
     );
 
     await pool.query(`DELETE FROM content_reports WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: countRecentDmReportsByReporterAndTarget counts matching DM reports within the window, inclusive of the just-filed one (issue #305)',
+  { skip },
+  async () => {
+    const reporter = `${RUN}-repeatreport-reporter`;
+    const target = `${RUN}-repeatreport-target`;
+    const conversationId = `${RUN}-c-repeatreport`;
+
+    const ids: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const created = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId,
+        targetUserId: target,
+        reason: `repeat report ${i}`,
+        isDirect: true,
+      });
+      assert.ok(created);
+      ids.push(created.id);
+      assert.equal(
+        await countRecentDmReportsByReporterAndTarget('discord', reporter, target),
+        i + 1,
+        `count is exactly ${i + 1} after the ${i + 1}th matching DM report, inclusive of the just-inserted row`,
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
+  },
+);
+
+test(
+  'repository: countRecentDmReportsByReporterAndTarget counts each (reporter, target) pair independently (issue #305)',
+  { skip },
+  async () => {
+    const reporter = `${RUN}-repeatreport-multi-target-reporter`;
+    const targetA = `${RUN}-repeatreport-target-a`;
+    const targetB = `${RUN}-repeatreport-target-b`;
+    const conversationId = `${RUN}-c-repeatreport-multi`;
+
+    const first = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: targetA,
+      reason: 'naming target A, first time',
+      isDirect: true,
+    });
+    const second = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: targetA,
+      reason: 'naming target A, second time',
+      isDirect: true,
+    });
+    const third = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId,
+      targetUserId: targetB,
+      reason: 'naming target B, first time',
+      isDirect: true,
+    });
+    assert.ok(first && second && third);
+
+    assert.equal(
+      await countRecentDmReportsByReporterAndTarget('discord', reporter, targetA),
+      2,
+      'target A has 2 matching reports',
+    );
+    assert.equal(
+      await countRecentDmReportsByReporterAndTarget('discord', reporter, targetB),
+      1,
+      'target B has only 1, counted independently of target A — never aggregated across targets',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[first.id, second.id, third.id]]);
+  },
+);
+
+test(
+  'repository: countRecentDmReportsByReporterAndTarget does not aggregate across different reporters naming the same target (issue #305)',
+  { skip },
+  async () => {
+    const target = `${RUN}-repeatreport-shared-target`;
+    const conversationId = `${RUN}-c-repeatreport-sharedtarget`;
+    const reporters = [`${RUN}-repeatreport-r1`, `${RUN}-repeatreport-r2`, `${RUN}-repeatreport-r3`];
+    const ids: number[] = [];
+    for (const reporter of reporters) {
+      const created = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId,
+        targetUserId: target,
+        reason: 'each reporter names the same target once',
+        isDirect: true,
+      });
+      assert.ok(created);
+      ids.push(created.id);
+    }
+
+    for (const reporter of reporters) {
+      assert.equal(
+        await countRecentDmReportsByReporterAndTarget('discord', reporter, target),
+        1,
+        'each reporter is counted independently — the count is per-reporter, not per-target-across-reporters',
+      );
+    }
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
+  },
+);
+
+test(
+  'SECURITY: repository: countRecentDmReportsByReporterAndTarget counts only rows matching (platform, reporter_user_id, target_user_id, is_dm = true) within the window (issue #305)',
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const reporter = `${RUN}-repeatreport-sec-reporter`;
+    const target = `${RUN}-repeatreport-sec-target`;
+    const conversationId = `${RUN}-c-repeatreport-sec`;
+
+    // Inserted directly via SQL (like the 200-row clamp test above) so every
+    // row's platform/reporter/target/is_dm/created_at is controlled exactly,
+    // independent of createContentReport's own per-reporter rate cap.
+    const insert = (p: string, r: string, t: string, isDm: boolean) =>
+      pool.query(
+        `INSERT INTO content_reports (platform, reporter_user_id, conversation_id, target_user_id, reason, is_dm)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [p, r, conversationId, t, 'fixture row', isDm],
+      );
+
+    const ids: number[] = [];
+    const matching = (await insert(platform, reporter, target, true)).rows[0].id;
+    ids.push(matching);
+
+    ids.push((await insert('whatsapp', reporter, target, true)).rows[0].id);
+    ids.push((await insert(platform, `${RUN}-repeatreport-sec-other-reporter`, target, true)).rows[0].id);
+    ids.push((await insert(platform, reporter, `${RUN}-repeatreport-sec-other-target`, true)).rows[0].id);
+
+    for (let i = 0; i < 5; i++) {
+      ids.push((await insert(platform, reporter, target, false)).rows[0].id);
+    }
+
+    const stale = (await insert(platform, reporter, target, true)).rows[0].id;
+    ids.push(stale);
+    await pool.query(`UPDATE content_reports SET created_at = now() - interval '31 days' WHERE id = $1`, [
+      stale,
+    ]);
+
+    assert.equal(
+      await countRecentDmReportsByReporterAndTarget(platform, reporter, target),
+      1,
+      'SECURITY: only the single exactly-matching in-window DM row is counted — a differing platform, ' +
+        'reporter, or target, five non-DM rows past the threshold, and a stale out-of-window row are all excluded',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [ids]);
   },
 );
 
@@ -3865,6 +4158,159 @@ test(
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
       [inScopeConvo, outOfScopeConvo],
     ]);
+  },
+);
+
+// listKnowledgeFeedbackSummary (issue #287): the grouped complement to
+// listAnswerFeedback, aggregating answer_feedback per knowledgeEntryId.
+test(
+  'repository: listKnowledgeFeedbackSummary aggregates per knowledge entry, applies the minUnhelpful threshold, sorts by unhelpfulCount descending, and never counts ratings on non-shortcut-served answers',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-knowledge-feedback-summary`;
+    const { id: hotEntryId } = await saveKnowledge({
+      content: `${RUN} hot entry content`,
+      title: `${RUN} hot entry`,
+    });
+    const { id: mediumEntryId } = await saveKnowledge({
+      content: `${RUN} medium entry content`,
+      title: `${RUN} medium entry`,
+    });
+    const { id: warmEntryId } = await saveKnowledge({
+      content: `${RUN} warm entry content`,
+      title: `${RUN} warm entry`,
+    });
+
+    async function rateShortcut(entryId: number, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-summary-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    // hotEntry: 3 unhelpful, 1 helpful — clears the default threshold with the highest unhelpfulCount.
+    users.push(await rateShortcut(hotEntryId, 'hot-u1', false));
+    users.push(await rateShortcut(hotEntryId, 'hot-u2', false));
+    users.push(await rateShortcut(hotEntryId, 'hot-u3', false));
+    users.push(await rateShortcut(hotEntryId, 'hot-u4', true));
+    // mediumEntry: exactly 2 unhelpful — clears the default threshold, fewer than hotEntry.
+    users.push(await rateShortcut(mediumEntryId, 'medium-u1', false));
+    users.push(await rateShortcut(mediumEntryId, 'medium-u2', false));
+    // warmEntry: exactly 1 unhelpful — below the default threshold of 2.
+    users.push(await rateShortcut(warmEntryId, 'warm-u1', false));
+
+    // Non-shortcut-served rating: must never be counted toward any entry.
+    const plainUser = `${RUN}-summary-plain`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a plain non-shortcut answer',
+      meta: { replyToUserId: plainUser },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: plainUser, helpful: false }),
+    );
+    users.push(plainUser);
+
+    const defaultSummary = await listKnowledgeFeedbackSummary([conversationId]);
+    const hotRow = defaultSummary.find((s) => s.knowledgeEntryId === hotEntryId);
+    assert.ok(hotRow, 'hotEntry clears the default threshold and is aggregated');
+    assert.equal(hotRow?.unhelpfulCount, 3, 'hotEntry unhelpfulCount is correct');
+    assert.equal(hotRow?.helpfulCount, 1, 'hotEntry helpfulCount is correct');
+    assert.ok(
+      defaultSummary.some((s) => s.knowledgeEntryId === mediumEntryId && s.unhelpfulCount === 2),
+      'mediumEntry (exactly 2 unhelpful) clears the default threshold',
+    );
+    assert.ok(
+      !defaultSummary.some((s) => s.knowledgeEntryId === warmEntryId),
+      'warmEntry (1 unhelpful) is excluded at the default minUnhelpful threshold of 2',
+    );
+    const hotIndex = defaultSummary.findIndex((s) => s.knowledgeEntryId === hotEntryId);
+    const mediumIndex = defaultSummary.findIndex((s) => s.knowledgeEntryId === mediumEntryId);
+    assert.ok(
+      hotIndex >= 0 && mediumIndex >= 0 && hotIndex < mediumIndex,
+      'entries are sorted by unhelpfulCount descending (hotEntry before mediumEntry)',
+    );
+
+    const lowerThreshold = await listKnowledgeFeedbackSummary([conversationId], 1);
+    assert.ok(
+      lowerThreshold.some((s) => s.knowledgeEntryId === warmEntryId && s.unhelpfulCount === 1),
+      'warmEntry is included once minUnhelpful is lowered to 1',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[hotEntryId, mediumEntryId, warmEntryId]]);
+  },
+);
+
+test(
+  'SECURITY: repository: listKnowledgeFeedbackSummary scopes by conversation — a rating recorded outside the calling admin scope is excluded from the aggregate entirely, while a null (super admin) scope sees it',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-knowledge-feedback-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-knowledge-feedback-scope-out`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} scope-test entry content` });
+
+    async function rateShortcut(conversationId: string, userSuffix: string) {
+      const userId = `${RUN}-summary-scope-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      );
+      return userId;
+    }
+
+    const inScopeUsers = [await rateShortcut(inScopeConvo, 'in-1'), await rateShortcut(inScopeConvo, 'in-2')];
+    const outOfScopeUsers = [
+      await rateShortcut(outOfScopeConvo, 'out-1'),
+      await rateShortcut(outOfScopeConvo, 'out-2'),
+    ];
+
+    const scoped = await listKnowledgeFeedbackSummary([inScopeConvo], 1);
+    const scopedRow = scoped.find((s) => s.knowledgeEntryId === entryId);
+    assert.ok(scopedRow, 'the in-scope ratings are aggregated');
+    assert.equal(
+      scopedRow?.unhelpfulCount,
+      2,
+      'SECURITY: only the 2 in-scope ratings are counted, never the 2 out-of-scope ratings',
+    );
+
+    const unscoped = await listKnowledgeFeedbackSummary(null, 1);
+    const unscopedRow = unscoped.find((s) => s.knowledgeEntryId === entryId);
+    assert.equal(
+      unscopedRow?.unhelpfulCount,
+      4,
+      'null scope (super admin) sees ratings from every conversation, including out-of-scope ones',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [...inScopeUsers, ...outOfScopeUsers],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
   },
 );
 

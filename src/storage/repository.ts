@@ -966,6 +966,50 @@ export async function deleteKnowledge(id: number): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+export interface KnowledgeDuplicatePair {
+  aId: number;
+  aTitle: string | null;
+  bId: number;
+  bTitle: string | null;
+  similarity: number;
+}
+
+/**
+ * Retroactive audit (issue #316) for near-duplicate knowledge pairs that
+ * `saveKnowledge`'s write-time nudge (KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD
+ * above) never caught: entries that predate that check, or that converged
+ * later via independent `updateKnowledge` edits. Same-scope only, same
+ * threshold, same `<=>` operator — deliberately reuses #93's established
+ * technique rather than inventing a new one. `a.id < b.id` both dedups each
+ * pair to a single row (never A↔B and B↔A) and gives the self-join a stable
+ * ordering to join on.
+ */
+export async function listDuplicateKnowledge(scope?: string, limit = 20): Promise<KnowledgeDuplicatePair[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  const params: unknown[] = [scope ?? null, KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD];
+  params.push(clampedLimit);
+  const { rows } = await pool.query(
+    `SELECT a.id AS a_id, a.title AS a_title,
+            b.id AS b_id, b.title AS b_title,
+            1 - (a.embedding <=> b.embedding) AS similarity
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND ($1::text IS NULL OR a.scope = $1)
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+      ORDER BY similarity DESC
+      LIMIT $3`,
+    params,
+  );
+  return rows.map((r) => ({
+    aId: Number(r.a_id),
+    aTitle: r.a_title,
+    bId: Number(r.b_id),
+    bTitle: r.b_title,
+    similarity: Number(r.similarity),
+  }));
+}
+
 /**
  * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
  * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic
@@ -3066,6 +3110,36 @@ export async function createContentReport(input: {
 }
 
 /**
+ * Count of DM reports the given reporter has filed naming the given target
+ * within the last `windowDays` — narrows the SECURITY.md-documented residual
+ * risk that a member who knows an admin's platform id (e.g. from an
+ * @-mention) can repeatedly name them in unrelated DM reports, quietly
+ * blinding that admin via the accused-admin exclusion in `listReports`/
+ * `countOpenReports`/`resolveContentReport` (issue #197), with nothing
+ * surfacing the pattern (issue #305). Scoped exactly to `(platform,
+ * reporter_user_id, target_user_id, is_dm = true)` — a different platform,
+ * reporter, target, or a non-DM report never contributes. Served by the
+ * existing `content_reports_reporter_rate_idx (platform, reporter_user_id,
+ * created_at DESC)` for its `(platform, reporter_user_id)` prefix; report
+ * volume is already capped at `REPORT_RATE_LIMIT_PER_DAY` per reporter per
+ * rolling 24h, so this stays cheap regardless of call frequency.
+ */
+export async function countRecentDmReportsByReporterAndTarget(
+  platform: Platform,
+  reporterUserId: string,
+  targetUserId: string,
+  windowDays = 30,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM content_reports
+      WHERE platform = $1 AND reporter_user_id = $2 AND target_user_id = $3
+        AND is_dm = true AND created_at > now() - ($4 || ' days')::interval`,
+    [platform, reporterUserId, targetUserId, String(windowDays)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Admin-tier view of reports, scoped to `conversationIds` (null = super
  * admin, unrestricted — same convention as recentModerationEntries). A
  * report filed from a 1:1 DM (`is_dm`) has no conversation any ordinary
@@ -3429,4 +3503,73 @@ export async function listAnswerFeedback(
     params,
   );
   return rows.map(mapAnswerFeedback);
+}
+
+export interface KnowledgeFeedbackSummary {
+  knowledgeEntryId: number;
+  title: string | null;
+  helpfulCount: number;
+  unhelpfulCount: number;
+  updatedAt: Date;
+}
+
+function mapKnowledgeFeedbackSummary(r: {
+  id: number | string;
+  title: string | null;
+  updated_at: Date;
+  helpful_count: number | string;
+  unhelpful_count: number | string;
+}): KnowledgeFeedbackSummary {
+  return {
+    knowledgeEntryId: Number(r.id),
+    title: r.title,
+    helpfulCount: Number(r.helpful_count),
+    unhelpfulCount: Number(r.unhelpful_count),
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Admin-tier aggregation of `answer_feedback` per knowledge entry (issue
+ * #287), the grouped complement to `listAnswerFeedback`'s flat per-row view.
+ * Reuses the SAME `answer_feedback` → `interactions` join and
+ * `conversation_id = ANY($1)` scope filter (null = super admin, unrestricted)
+ * `listAnswerFeedback` already uses, so an admin never counts a rating from a
+ * conversation they don't participate in. Ratings on interactions with no
+ * `knowledgeEntryId` (not served via the deterministic knowledge shortcut)
+ * never join to a `knowledge` row and are therefore never counted. Only
+ * entries with `unhelpfulCount >= minUnhelpful` are returned, sorted by
+ * `unhelpfulCount` descending.
+ */
+export async function listKnowledgeFeedbackSummary(
+  conversationIds: readonly string[] | null,
+  minUnhelpful = 2,
+  limit = 20,
+): Promise<KnowledgeFeedbackSummary[]> {
+  const params: unknown[] = [];
+  const filters: string[] = [`(interactions.meta->>'knowledgeEntryId') IS NOT NULL`];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);
+  }
+  params.push(Math.max(Math.trunc(minUnhelpful) || 2, 1));
+  const minUnhelpfulParam = params.length;
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 20, 1), 100);
+  params.push(clampedLimit);
+
+  const { rows } = await pool.query(
+    `SELECT knowledge.id, knowledge.title, knowledge.updated_at,
+            count(*) FILTER (WHERE answer_feedback.helpful) AS helpful_count,
+            count(*) FILTER (WHERE NOT answer_feedback.helpful) AS unhelpful_count
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+       JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint
+      WHERE ${filters.join(' AND ')}
+      GROUP BY knowledge.id, knowledge.title, knowledge.updated_at
+     HAVING count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $${minUnhelpfulParam}
+      ORDER BY unhelpful_count DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map(mapKnowledgeFeedbackSummary);
 }

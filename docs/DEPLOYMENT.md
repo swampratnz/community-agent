@@ -296,6 +296,11 @@ on the host. It's off unless `IMAGE_GEN_ENABLED=true`. To enable it:
    ```bash
    sudo apt install -y bubblewrap
    ```
+   The systemd unit must also **allow bubblewrap's namespaces**: the shipped
+   `deploy/community-agent.service` sets `RestrictNamespaces=user mnt pid net`
+   (not `true`) for this reason. If you hardened the unit yourself, image gen
+   fails with a "permission denied … sandbox probe" error until you allow those
+   namespace types (bwrap can't create a namespace under `RestrictNamespaces=true`).
 1. **Install the CLI** as the service user (or globally) and **log in once**
    with a SuperGrok subscription — device-code flow, no API key:
    ```bash

@@ -435,7 +435,13 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `interactions` is `ON DELETE SET NULL`, so purging the *rated* interaction
   (the recipient's own purge, a different identity than the rater) clears the
   reference rather than deleting the feedback row or leaving a dangling FK —
-  the aggregate helpful/unhelpful trend survives.
+  the aggregate helpful/unhelpful trend survives. `list_low_rated_knowledge`
+  (issue #287) is the grouped, admin-only complement — same admin gate and
+  conversation-scope filter, no new stored data, no CONFIRM (read-only). It
+  aggregates ratings by `knowledgeEntryId`, so a rating outside the caller's
+  scope is excluded from the count entirely, not merely hidden from a
+  per-row view (pinned by a `SECURITY:` test); an entry only surfaces once
+  its `unhelpfulCount` clears `minUnhelpful` (default 2).
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard
@@ -1017,12 +1023,14 @@ the supported path.
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and
-  the audit log. Non-confirm actions (`warn_user`, `announce` within scope,
-  `create_poll`/`create_thread` within scope) remain a lever a successful
-  injection could pull; both are bounded further by their own per-conversation
-  rate cap (`POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`,
-  in-memory) rather than CONFIRM, since each is lower-consequence than
-  `announce` and gating them harder would be inconsistent (issues #228, #229).
+  the audit log. Non-confirm actions (`warn_user`, `announce`, `create_poll`,
+  `create_thread`, each within scope) remain a lever a successful injection
+  could pull; all four are bounded further by their own per-conversation rate
+  cap (`WARN_USER_RATE_LIMIT_PER_HOUR` / `ANNOUNCE_RATE_LIMIT_PER_HOUR` /
+  `POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`, all
+  in-memory) rather than CONFIRM, since each is lower-consequence than a
+  destructive action and gating them harder would be inconsistent (issues
+  #228, #229, #315).
 - **Membership-scope staleness (narrowed, issue #286)**: adapters cache an
   admin's conversation list for ~60s, but an *observed* removal invalidates
   the affected cache entry immediately — Discord's `GuildMemberRemove` (full
