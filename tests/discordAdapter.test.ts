@@ -20,7 +20,8 @@ process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
 
-const { DiscordAdapter, WELCOME_MESSAGE } = await import('../src/platforms/discord/adapter.js');
+const { DiscordAdapter, WELCOME_MESSAGE, WELCOME_MESSAGE_OPEN } =
+  await import('../src/platforms/discord/adapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
@@ -2193,6 +2194,200 @@ test(
   },
 );
 
+// --- onGuildMemberAdd: access-mode-aware default welcome text (issue #351) -----
+
+test('onGuildMemberAdd: open access mode uses WELCOME_MESSAGE_OPEN, which states no admin approval is needed and nudges "what can you do?" (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [WELCOME_MESSAGE_OPEN]);
+    assert.ok(
+      /no admin approval needed/i.test(sent[0]),
+      'open-mode default must state plainly that no admin approval is needed',
+    );
+    assert.ok(sent[0].includes('what can you do?'), 'open-mode default must nudge the capability phrase');
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+
+test(
+  'SECURITY: onGuildMemberAdd gated-mode default welcome text is byte-for-byte unchanged from ' +
+    'WELCOME_MESSAGE (issue #351)',
+  async (t) => {
+    resetPolicyCacheForTests();
+    const wasWelcome = config.discord.welcome.enabled;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.discord.welcome.enabled = true;
+    config.rbac.accessMode.discord = 'gated';
+    t.mock.method(pool, 'query', stubPoliciesQuery());
+    try {
+      const adapter = new DiscordAdapter();
+      const sent: string[] = [];
+      const member = fakeGuildMember({
+        id: 'user-gated-mode',
+        guildId: config.discord.guildId,
+        send: async (payload) => {
+          sent.push(payload.content);
+        },
+      });
+      await fireGuildMemberAdd(adapter, member);
+      assert.deepEqual(
+        sent,
+        [WELCOME_MESSAGE],
+        'gated mode must send the existing WELCOME_MESSAGE default, byte-for-byte unchanged',
+      );
+    } finally {
+      config.discord.welcome.enabled = wasWelcome;
+      config.rbac.accessMode.discord = wasAccessMode;
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+test('onGuildMemberAdd: an admin-configured welcome message overrides the open-mode default too (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  const welcomeMessage = 'Custom welcome for our open-mode server!';
+  t.mock.method(pool, 'query', stubPoliciesQuery(undefined, { welcomeMessage }));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode-custom',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [welcomeMessage]);
+    assert.ok(
+      !sent[0].includes(WELCOME_MESSAGE_OPEN),
+      'the open-mode hardcoded default must not appear once an admin override is configured',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+
+test(
+  'onGuildMemberAdd: a standing mi welcome_message_mi override still takes precedence over the open-mode ' +
+    'default (issue #351)',
+  async (t) => {
+    resetPolicyCacheForTests();
+    const wasWelcome = config.discord.welcome.enabled;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.discord.welcome.enabled = true;
+    config.rbac.accessMode.discord = 'open';
+    const welcomeMessageMi = 'Kia ora and nau mai to our open-mode community!';
+    t.mock.method(
+      pool,
+      'query',
+      stubPoliciesQuery(undefined, { welcomeMessageMi, languagePreference: 'mi' }),
+    );
+    try {
+      const adapter = new DiscordAdapter();
+      const sent: string[] = [];
+      const member = fakeGuildMember({
+        id: 'user-open-mode-mi',
+        guildId: config.discord.guildId,
+        send: async (payload) => {
+          sent.push(payload.content);
+        },
+      });
+      await fireGuildMemberAdd(adapter, member);
+      assert.deepEqual(sent, [welcomeMessageMi]);
+      assert.ok(
+        !sent[0].includes(WELCOME_MESSAGE_OPEN),
+        'the open-mode default must not appear once a standing mi override is configured',
+      );
+    } finally {
+      config.discord.welcome.enabled = wasWelcome;
+      config.rbac.accessMode.discord = wasAccessMode;
+      resetPolicyCacheForTests();
+    }
+  },
+);
+
+test('onGuildMemberAdd: community guidelines are appended identically to the open-mode default (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  const guidelines = 'Be respectful. No spam. Keep discussion on-topic.';
+  t.mock.method(pool, 'query', stubPoliciesQuery(guidelines));
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode-guidelines',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [`${WELCOME_MESSAGE_OPEN}\n\nCommunity guidelines:\n${guidelines}`]);
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
+
+test('SECURITY: WELCOME_MESSAGE_OPEN carries no sender-supplied data (issue #351)', async (t) => {
+  resetPolicyCacheForTests();
+  const wasWelcome = config.discord.welcome.enabled;
+  const wasAccessMode = config.rbac.accessMode.discord;
+  config.discord.welcome.enabled = true;
+  config.rbac.accessMode.discord = 'open';
+  t.mock.method(pool, 'query', stubPoliciesQuery());
+  try {
+    const adapter = new DiscordAdapter();
+    const sent: string[] = [];
+    const member = fakeGuildMember({
+      id: 'user-open-mode-injection-check',
+      displayName: 'Injected DisplayName Marker',
+      guildId: config.discord.guildId,
+      send: async (payload) => {
+        sent.push(payload.content);
+      },
+    });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(sent, [WELCOME_MESSAGE_OPEN]);
+    assert.ok(
+      !sent[0].includes(member.id) && !sent[0].includes(member.displayName),
+      'the open-mode default must never interpolate the joining member id or display name',
+    );
+  } finally {
+    config.discord.welcome.enabled = wasWelcome;
+    config.rbac.accessMode.discord = wasAccessMode;
+    resetPolicyCacheForTests();
+  }
+});
 // --- onGuildMemberUpdate / onGuildRoleUpdate / onGuildRoleDelete: Discord
 // role-based-access membership-scope cache invalidation (issue #350) ---
 

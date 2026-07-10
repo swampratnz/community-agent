@@ -76,6 +76,16 @@ export const WELCOME_MESSAGE =
   'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
   'and an admin will see your request.';
 
+// Selected instead of WELCOME_MESSAGE when config.rbac.accessMode.discord is
+// 'open' (issue #351) — that mode already lets a guest message the bot with
+// no admin approval (router.ts gates on this exact value), so the default
+// text must say so rather than claim gating that isn't in effect. Generic
+// and static like WELCOME_MESSAGE — no joiner-supplied data interpolated.
+export const WELCOME_MESSAGE_OPEN =
+  "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context — " +
+  'go ahead and message me any time, no admin approval needed. Ask me "what can you do?" any time for ' +
+  'a quick rundown.';
+
 export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   readonly platform = 'discord' as const;
   readonly adminCapabilities = new Set([
@@ -380,7 +390,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * unaffected. DM-first; falls back to the configured channel if the
    * member has DMs closed. The welcome text itself is admin-configurable
    * (set_welcome_message, issue #253), falling back to the hardcoded
-   * WELCOME_MESSAGE default when unset. A rejoining member with a standing
+   * WELCOME_MESSAGE default when unset — WELCOME_MESSAGE_OPEN instead when
+   * config.rbac.accessMode.discord is 'open' (issue #351), since that mode
+   * already lets guests through without admin approval. A rejoining member with a standing
    * set_language_preference('mi') gets the admin-configured welcome_message_mi
    * variant instead, if one is set (issue #282) — falling back to the
    * default-language welcome unchanged when it isn't. Guidelines (below) stay
@@ -413,7 +425,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
     const languagePreference = await getLanguagePreference('discord', member.id);
     const welcomeMessageMi = languagePreference === 'mi' ? await getWelcomeMessageMi() : null;
-    const welcomeMessage = welcomeMessageMi ?? (await getWelcomeMessage()) ?? WELCOME_MESSAGE;
+    const defaultWelcomeMessage =
+      config.rbac.accessMode.discord === 'open' ? WELCOME_MESSAGE_OPEN : WELCOME_MESSAGE;
+    const welcomeMessage = welcomeMessageMi ?? (await getWelcomeMessage()) ?? defaultWelcomeMessage;
     const guidelines = await getCommunityGuidelines();
     const welcomeText = guidelines
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`

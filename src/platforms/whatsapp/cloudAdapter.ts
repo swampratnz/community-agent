@@ -62,6 +62,15 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE =
   'Kia ora! 👋 Thanks for messaging the NZ Claude Community bot. I can help answer Claude/Anthropic ' +
   "questions here in our 1:1 chat. If you're new, an admin may need to register you as a member first.";
 
+// Selected instead of WHATSAPP_CLOUD_WELCOME_MESSAGE when
+// config.rbac.accessMode.whatsapp is 'open' (issue #351) — same
+// generic/static, no-sender-data shape, adapted to state that no admin
+// approval is needed in that mode.
+export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
+  'Kia ora! 👋 Thanks for messaging the NZ Claude Community bot. I can help answer Claude/Anthropic ' +
+  'questions here in our 1:1 chat any time, no admin approval needed. Ask me "what can you do?" any ' +
+  'time for a quick rundown.';
+
 /**
  * WhatsApp via the official Meta Business Cloud API. ToS-compliant
  * alternative to {@link BaileysAdapter}: no linked-device session to ban,
@@ -306,7 +315,10 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * instead. Off unless `WHATSAPP_CLOUD_WELCOME_ENABLED=true`. Runs after the
    * `isAllowedSender` gate and before `this.handler` — the handler is what
    * records this message as an interaction, so the check must run first or
-   * every sender would look "known" by the time it ran.
+   * every sender would look "known" by the time it ran. Falls back to
+   * `WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN` instead of
+   * `WHATSAPP_CLOUD_WELCOME_MESSAGE` when `config.rbac.accessMode.whatsapp`
+   * is `'open'` (issue #351).
    */
   private async maybeSendFirstContactWelcome(from: string): Promise<void> {
     if (!config.whatsapp.cloud.welcomeEnabled) return;
@@ -324,7 +336,11 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     // never "drop the user's message."
     try {
       if (await isKnownConversation('whatsapp', from)) return;
-      const welcomeMessage = (await getWelcomeMessage()) ?? WHATSAPP_CLOUD_WELCOME_MESSAGE;
+      const defaultWelcomeMessage =
+        config.rbac.accessMode.whatsapp === 'open'
+          ? WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN
+          : WHATSAPP_CLOUD_WELCOME_MESSAGE;
+      const welcomeMessage = (await getWelcomeMessage()) ?? defaultWelcomeMessage;
       const guidelines = await getCommunityGuidelines();
       const welcomeText = guidelines
         ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
