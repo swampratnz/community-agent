@@ -2,11 +2,12 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { latestContextDigestAt } from './storage/repository.js';
-import { runContextBuilder, shouldRunContextBuilder } from './context/builder.js';
+import { runContextBuilder, shouldRunContextBuilder, type ClusterSummarizer } from './context/builder.js';
 import {
   latestRefreshAt,
   runKnowledgeRefresh,
   shouldRunKnowledgeRefresh,
+  type TopicResearcher,
 } from './context/knowledgeRefresh.js';
 import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './context/docsIngest.js';
 import { writeCommunityContextExport } from './context/export.js';
@@ -92,30 +93,82 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
   }
 }
 
-async function defaultContextBuilderRun(): Promise<void> {
+/**
+ * `summarize` is injectable (tests only) so the consecutive-failure alerting
+ * can be exercised end to end through the REAL total-failure detection below,
+ * without a real model call — production always uses runContextBuilder's own
+ * default. See issue #335.
+ */
+export async function defaultContextBuilderRun(summarize?: ClusterSummarizer): Promise<void> {
   const latest = await latestContextDigestAt();
   if (!shouldRunContextBuilder(latest, Date.now())) return;
-  const result = await runContextBuilder();
+  const result = summarize ? await runContextBuilder(summarize) : await runContextBuilder();
   logger.info(result, 'Context builder run complete');
   // Regenerate the anonymised export after a producing run (issue #53).
   // Writing the file is automatic; COMMITTING it stays a human step.
   if (config.contextExport.enabled && result.digests > 0) {
     await writeCommunityContextExport();
   }
+  // Total failure only: every cluster this run actually attempted (post
+  // distinct-user floor and maxSummaries cap — see BuilderResult.attempted)
+  // failed to summarise. A partial failure, or a legitimate zero-attempt run
+  // (nothing due, nothing eligible), must never throw (issue #335).
+  if (result.attempted > 0 && result.failed === result.attempted) {
+    throw new Error(`Context builder: all ${result.attempted} attempted clusters failed to summarise`);
+  }
 }
 
-async function defaultKnowledgeRefreshRun(): Promise<void> {
+/**
+ * `research` is injectable (tests only) — see defaultContextBuilderRun above.
+ */
+export async function defaultKnowledgeRefreshRun(research?: TopicResearcher): Promise<void> {
   const latest = await latestRefreshAt();
   if (!shouldRunKnowledgeRefresh(latest, Date.now())) return;
-  const result = await runKnowledgeRefresh();
+  const result = research ? await runKnowledgeRefresh(research) : await runKnowledgeRefresh();
   logger.info(result, 'Knowledge refresh run complete');
+  // Total failure only: every fixed topic errored. A partial failure (some
+  // topics ok, e.g. NO_UPDATE) must never throw (issue #335).
+  if (result.topics > 0 && result.failed === result.topics) {
+    throw new Error(`Knowledge refresh: all ${result.topics} topics failed`);
+  }
 }
 
-async function defaultDocsIngestRun(): Promise<void> {
+/**
+ * `fetchText` is injectable (tests only) — see defaultContextBuilderRun above.
+ */
+export async function defaultDocsIngestRun(fetchText?: (url: string) => Promise<string>): Promise<void> {
   const latest = await latestDocsIngestAt();
   if (!shouldRunDocsIngest(latest, Date.now())) return;
-  const result = await runDocsIngest();
+  const result = fetchText ? await runDocsIngest(fetchText) : await runDocsIngest();
   logger.info(result, 'Docs ingest run complete');
+  // Total failure, stage 1: the llms.txt index itself failed to fetch. A
+  // zero-URL parse (index reachable, lists nothing) must never throw
+  // (issue #335).
+  if (result.indexFetchFailed) {
+    throw new Error('Docs ingest: index fetch failed');
+  }
+  // Total failure, stage 2: the index was reachable and listed pages, but
+  // EVERY page fetch attempted this run failed (e.g. the docs host blocks
+  // the bot's user-agent, or a network partition to that host) — the index
+  // fetch succeeding told us nothing about whether the pages themselves are
+  // reachable.
+  if (result.pages > 0 && result.fetched === 0) {
+    throw new Error(`Docs ingest: all ${result.pages} page fetches failed`);
+  }
+  // Total failure, stage 3: pages fetched fine, but EVERY resulting chunk
+  // upsert threw (e.g. the DB rejects every write) — zero created/updated/
+  // unchanged/skipped means nothing about this run's chunk stage succeeded
+  // OR was a benign skip, so whatever chunks it attempted must all have
+  // errored.
+  if (
+    result.chunks > 0 &&
+    result.created === 0 &&
+    result.updated === 0 &&
+    result.unchanged === 0 &&
+    result.skipped === 0
+  ) {
+    throw new Error(`Docs ingest: all ${result.chunks} chunk upserts failed`);
+  }
 }
 
 /**

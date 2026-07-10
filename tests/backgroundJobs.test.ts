@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 
@@ -13,6 +13,17 @@ import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js
 // wait. INTERACTION_RETENTION_DAYS/ROSTER_DEPARTED_RETENTION_DAYS use their
 // respective config minimums (7/30) since config rejects any smaller
 // nonzero value.
+//
+// hasDb is captured BEFORE the DATABASE_URL fallback below so the issue #335
+// tests further down (which route through the REAL defaultXRun functions —
+// including their DB-backed freshness guards — rather than a directly-
+// throwing mock runOnce) can skip cleanly without a real Postgres, same
+// convention as tests/{docsIngest,knowledgeRefresh,contextBuilder}.test.ts.
+const hasDb = Boolean(process.env.DATABASE_URL);
+const skip = hasDb
+  ? false
+  : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
+
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
@@ -25,12 +36,34 @@ process.env.DOCS_INGEST_ENABLED = 'true';
 process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 
-const { startContextBuilder, startKnowledgeRefresh, startDocsIngest } =
-  await import('../src/backgroundJobs.js');
+const {
+  startContextBuilder,
+  startKnowledgeRefresh,
+  startDocsIngest,
+  defaultDocsIngestRun,
+  defaultKnowledgeRefreshRun,
+  defaultContextBuilderRun,
+} = await import('../src/backgroundJobs.js');
 const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
+const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
+const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/config.js');
+const pgvector = (await import('pgvector/pg')).default;
+
+after(async () => {
+  await closeDb();
+});
 
 const SIX_HOURS_MS = 6 * 3_600_000;
+/**
+ * Far enough in the future that ANY real row a concurrently-running test
+ * file might write (this table is shared DB-wide, unscoped) reads as
+ * "long ago" against it — the issue #335 tests below mock Date to this so
+ * each job's own freshness guard (which compares a real DB timestamp
+ * against Date.now()) can never be blocked by another test's fresh write.
+ */
+const FAR_FUTURE_MS = () => Date.now() + 5 * 365 * 24 * 3_600_000;
 
 function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
   const dms: Array<{ userId: string; text: string }> = [];
@@ -373,3 +406,146 @@ test('SECURITY: the alert DM body for roster-retention-purge never contains the 
     clearInterval(timer!);
   }
 });
+
+// --- issue #335: docsIngest/knowledgeRefresh/contextBuilder now actually
+// signal TOTAL failure to startTrackedJob (previously these three run
+// functions never threw, no matter how badly they failed, so #263's
+// consecutive-failure alert could never fire for them). The tests below call
+// the REAL defaultXRun wrappers — not a directly-throwing mock runOnce — so
+// they exercise the freshness guard, the run function, and the new
+// total-vs-partial-failure signal together. They need a real DB (the
+// freshness guards read a real timestamp), and mock Date to FAR_FUTURE_MS so
+// a concurrently-running test file's own writes to these DB-wide (unscoped)
+// tables can never make the guard skip a run this test expects to happen.
+
+test(
+  'defaultDocsIngestRun throws when the llms.txt index itself fails to fetch on every attempt (real total failure, injected fetchText)',
+  { skip },
+  async (t) => {
+    const alwaysFailingFetch = async (_url: string): Promise<string> => {
+      throw new Error('network down');
+    };
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    await assert.rejects(() => defaultDocsIngestRun(alwaysFailingFetch));
+  },
+);
+
+test(
+  'defaultDocsIngestRun does NOT throw on a reachable index that parses to zero page URLs — a legitimate no-op run',
+  { skip },
+  async (t) => {
+    const emptyIndex = async (_url: string): Promise<string> => '# Index\n\nno links here';
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    await assert.doesNotReject(() => defaultDocsIngestRun(emptyIndex));
+  },
+);
+
+test(
+  'defaultDocsIngestRun throws when the index itself is reachable but EVERY page fetch fails — the index fetch succeeding says nothing about page reachability (issue #335 follow-up)',
+  { skip },
+  async (t) => {
+    const pageUrl = `${config.docsIngest.indexUrl.replace(/\/[^/]*$/, '')}/docs/en/api/messages.md`;
+    const indexOkAllPagesFail = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [messages](${pageUrl})`;
+      throw new Error('docs host blocked the request');
+    };
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    await assert.rejects(() => defaultDocsIngestRun(indexOkAllPagesFail));
+  },
+);
+
+test(
+  'defaultKnowledgeRefreshRun throws when every fixed topic errors on every attempt (real total failure, injected research)',
+  { skip },
+  async (t) => {
+    const alwaysThrows = async (_q: string): Promise<string | null> => {
+      throw new Error('web search unavailable');
+    };
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    await assert.rejects(() => defaultKnowledgeRefreshRun(alwaysThrows));
+  },
+);
+
+test(
+  'SECURITY: defaultKnowledgeRefreshRun does NOT throw on a partial failure (1 of 2 fixed topics erroring) — pinning that per-item resilience can never regress into an alert-on-every-blip, since startTrackedJob only ever alerts on a THROW',
+  { skip },
+  async (t) => {
+    const partialFail = async (topicQuery: string): Promise<string | null> => {
+      if (topicQuery === REFRESH_TOPICS[0].query) throw new Error('transient failure for topic 1');
+      return 'Briefing bullet for topic 2.';
+    };
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    try {
+      await assert.doesNotReject(() => defaultKnowledgeRefreshRun(partialFail));
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE title = ANY($1)`, [[...REFRESH_TITLES]]);
+    }
+  },
+);
+
+/** Seed one eligible cluster (>= config default minDistinctUsers=3) on a private axis for the context-builder tests below. */
+async function seedEligibleCluster(run: string, axis: number): Promise<void> {
+  const vec = new Array(config.db.embeddingDim).fill(0);
+  vec[axis] = 1;
+  for (let i = 0; i < 3; i++) {
+    await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, embedding)
+       VALUES ('discord', $1, $2, 'member', 'inbound', $3, $4)`,
+      [`${run}-chan`, `${run}-u${i}`, `${run} recurring question ${i}`, pgvector.toSql(vec)],
+    );
+  }
+}
+
+test(
+  'defaultContextBuilderRun throws when every attempted cluster fails to summarise (real total failure, injected summarize)',
+  { skip },
+  async (t) => {
+    const run = `bgjobs335ctx${Date.now()}`;
+    await seedEligibleCluster(run, 40);
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    try {
+      await assert.rejects(() =>
+        defaultContextBuilderRun(async () => {
+          throw new Error('model unavailable');
+        }),
+      );
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${run}-chan`]);
+    }
+  },
+);
+
+test(
+  'startDocsIngest (via startTrackedJob): sends exactly one super-admin DM after 3 consecutive SCHEDULED ticks of a REAL total-failure result routed through defaultDocsIngestRun — not a directly-throwing mock runOnce',
+  { skip },
+  async (t) => {
+    const { adapter, dms } = makeAdapter();
+    const alwaysFailingFetch = async (_url: string): Promise<string> => {
+      throw new Error('network down');
+    };
+
+    // Unlike the directly-mocked-runOnce tests elsewhere in this file,
+    // defaultDocsIngestRun's freshness guard makes a REAL DB round-trip
+    // (latestDocsIngestAt) before failing — a single setImmediate (flush())
+    // isn't enough turns of the event loop for real socket I/O to settle, so
+    // this test gives each tick a short real wall-clock wait instead.
+    const flushDb = () => new Promise((resolve) => setTimeout(resolve, 100));
+
+    t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: FAR_FUTURE_MS() });
+    const timer = startDocsIngest([adapter], () => defaultDocsIngestRun(alwaysFailingFetch));
+    try {
+      await flushDb(); // 1st scheduled run (fires immediately) fails for real
+      assert.equal(dms.length, 0, 'no DM after the 1st consecutive failure');
+      t.mock.timers.tick(SIX_HOURS_MS);
+      await flushDb(); // 2nd
+      assert.equal(dms.length, 0, 'no DM after the 2nd consecutive failure');
+      t.mock.timers.tick(SIX_HOURS_MS);
+      await flushDb(); // 3rd — threshold reached
+      assert.equal(dms.length, 1, 'exactly one DM on the 3rd consecutive failure');
+      const body = dms[0].text;
+      assert.ok(!body.includes('network down'), 'the DM body must never contain the underlying fetch error');
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
