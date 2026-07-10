@@ -134,6 +134,10 @@ export const ADMIN_TOOLS = [
   // save_knowledge's write-time nudge never caught — same tier as its
   // siblings, no CONFIRM (read-only, no mutation).
   'mcp__community__list_duplicate_knowledge',
+  // Sibling of list_duplicate_knowledge (issue #330): same tier/read-only/no-
+  // CONFIRM shape, but the opposite similarity band — flags entries that may
+  // quietly disagree (mid-range similarity) rather than converged wording.
+  'mcp__community__list_knowledge_conflicts',
   'mcp__community__list_access_requests',
   'mcp__community__add_member_note',
   'mcp__community__list_member_notes',
