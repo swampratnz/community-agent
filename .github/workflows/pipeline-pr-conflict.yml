@@ -358,8 +358,103 @@ jobs:
           npm ci
           npm run migrate
 
-      - name: Resolve the merge conflict
+      # Deterministic FAST-PATH for the overwhelmingly common conflict: the
+      # generated per-file count manifest tests/security-floor.json (see
+      # scripts/check-security-test-count.mjs). Two in-flight PRs that each add
+      # a SECURITY: test bump the SAME file's entry, so they conflict textually
+      # even though the resolution is 100% mechanical — regenerate the manifest
+      # from the merged test tree, never hand-pick a number. Doing that here in
+      # shell (NO LLM, no full gate) clears a manifest-only conflict in seconds
+      # instead of a full agent turn, and means the agent below only ever sees
+      # genuinely SEMANTIC conflicts. origin/main is already present locally
+      # (the checkout used fetch-depth: 0), so no credentialed fetch is needed;
+      # this step has no GH_TOKEN and runs only the PR's own code (npm), so it
+      # adds no secret-exposure surface.
+      - name: Fast-path — resolve a security-floor.json-only conflict deterministically
         if: steps.precheck.outputs.proceed == 'true'
+        id: fastpath
+        env:
+          MANIFEST: tests/security-floor.json
+        run: |
+          set -uo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          before="$(git rev-parse HEAD)"
+          git merge --no-edit origin/main || true
+          unmerged="$(git diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ *$//')"
+          if [ "$unmerged" = "$MANIFEST" ]; then
+            # Neither side's numbers are correct (both added tests). Take either
+            # side for a syntactically valid file, then regenerate from the now-
+            # merged test files. `--write` only ever RAISES counts; if it exits
+            # non-zero because a count would DROP, a SECURITY: test was genuinely
+            # removed by the merge — leave it unresolved so the agent + a human
+            # reconcile it rather than papering over a deleted security test.
+            git checkout --theirs -- "$MANIFEST"
+            if npm run test:security:fix; then
+              git add "$MANIFEST"
+              git commit --no-edit
+            fi
+          fi
+          # Claim success only if the tree is fully merged AND a new commit
+          # exists. Any remaining conflict (a non-manifest file, or a refused
+          # lower) aborts cleanly so the full agent below handles it from a
+          # pristine branch tip.
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            git merge --abort || true
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            echo "Fast-path: conflicts beyond ${MANIFEST} remain — deferring to the resolve agent."
+          elif [ "$(git rev-parse HEAD)" != "$before" ]; then
+            echo "resolved=true" >> "$GITHUB_OUTPUT"
+            echo "Fast-path: resolved ${MANIFEST} deterministically (no LLM)."
+          else
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            echo "Fast-path: no new commit produced — deferring to the resolve agent."
+          fi
+
+      # The fast-path resolves + commits, but a push that RE-TRIGGERS the PR's
+      # CI needs the action's App token (a GITHUB_TOKEN push would not — see the
+      # header). So this tiny agent step does no reasoning: it only verifies the
+      # deterministic result compiles + the security gate passes, then pushes.
+      # The PR's own CI re-runs the full suite on the new commit regardless, so
+      # this lean check is a pre-filter, not the source of truth.
+      - name: Fast-path — verify + push the deterministic resolution
+        if: steps.precheck.outputs.proceed == 'true' && steps.fastpath.outputs.resolved == 'true'
+        id: fastpush
+        continue-on-error: true # the verify step below is the source of truth
+        uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1.0.165
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: '*'
+          prompt: |
+            Pull request #${{ matrix.number }}'s conflict with `main` was a
+            tests/security-floor.json-only conflict and has ALREADY been resolved
+            deterministically and committed on this branch (a merge commit is at
+            HEAD). Do NOT merge again and do NOT edit any file.
+
+            1. Verify the resolution compiles and the security gate passes:
+               `npm run typecheck && npm run test:security && npm run build`
+            2. If all three pass, push with EXACTLY this command: `git push origin
+               HEAD` (no other push form). If any command fails, STOP without
+               pushing and write ONE line naming what failed — the escalation
+               step surfaces it to the maintainer.
+
+            EXECUTION MODEL — READ FIRST: this is a SINGLE non-interactive batch
+            run. Run every command synchronously to completion in THIS turn and
+            act on its result; NEVER end your turn to "wait" for a command. Push
+            in this turn, or stop deliberately so the no-new-commit escalation
+            hands it to a human.
+          claude_args: |
+            --max-turns 30
+            --model sonnet
+            --allowedTools "Read,Grep,Glob,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr checks:*)"
+
+      - name: Resolve the merge conflict
+        if: steps.precheck.outputs.proceed == 'true' && steps.fastpath.outputs.resolved != 'true'
         id: fix
         continue-on-error: true # the verify step below is the source of truth
         uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1.0.165
@@ -490,7 +585,12 @@ jobs:
           # OR needs a workflows change" with no way to tell which). Same
           # transparency the build worker got in #251.
           summary=""
+          # Whichever path ran: the full resolve agent, or the fast-path's lean
+          # verify+push step (a security-floor.json-only resolution whose gate
+          # failed). Fall back to the fast-path's transcript so its blocker
+          # isn't opaque either.
           exec_file="${{ steps.fix.outputs.execution_file }}"
+          if [ -z "${exec_file}" ]; then exec_file="${{ steps.fastpush.outputs.execution_file }}"; fi
           if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
             summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
           fi
