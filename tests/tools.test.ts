@@ -87,6 +87,7 @@ const {
   clearAccessRequest,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
+const pgvector = (await import('pgvector/pg')).default;
 const { cancelPendingAction, hasPendingAction, takePendingAction } =
   await import('../src/agent/pendingActions.js');
 const { config } = await import('../src/config.js');
@@ -1454,6 +1455,98 @@ test('SECURITY: list_duplicate_knowledge rejects a non-admin caller (assertAtLea
       >;
     }
   )._registeredTools['list_duplicate_knowledge'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'a member caller must be rejected by the assertAtLeast re-check',
+  );
+});
+
+test(
+  'list_knowledge_conflicts renders a mid-band conflict-candidate pair with both ids/titles/similarity, and returns a clear message (not an error, not empty success) when nothing meets the band (issue #330)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-conflict-tool-scope`;
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+    // similarity to anchor = 0.7 — inside [0.55, 0.92)
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, 'Meetup cadence current', 'We meet monthly on the first Tuesday.', pgvector.toSql(anchorVec)],
+    );
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, 'Meetup cadence old', 'We meet fortnightly, alternating venues.', pgvector.toSql(midBandVec)],
+    );
+    const aId = Number(aRows[0].id);
+    const bId = Number(bRows[0].id);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-conflicts',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge_conflicts'];
+
+    const withPair = await registeredTool.handler({ scope });
+    const output = withPair.content[0]?.text ?? '';
+    assert.match(output, new RegExp(`#${aId} \\(.*Meetup cadence current.*\\)`));
+    assert.match(output, new RegExp(`#${bId} \\(.*Meetup cadence old.*\\)`));
+    assert.match(output, /\d+% similar/, 'similarity is rendered as a percentage');
+    assert.match(
+      output,
+      /candidate for admin review/i,
+      'output frames each pair as a candidate for review, not a confirmed contradiction',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[aId, bId]]);
+
+    const emptyScope = `${RUN}-list-conflict-tool-empty-scope`;
+    const empty = await registeredTool.handler({ scope: emptyScope });
+    assert.equal(
+      empty.content[0]?.text,
+      'No conflict-candidate knowledge pairs found.',
+      'empty state returns a clear human-readable message, not an error and not an empty success with no text',
+    );
+  },
+);
+
+test('SECURITY: list_knowledge_conflicts rejects a non-admin caller (assertAtLeast re-check, issue #330)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['list_knowledge_conflicts'];
 
   await assert.rejects(
     () => registeredTool.handler({}),

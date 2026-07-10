@@ -4,12 +4,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Merge queue: run the SAME required checks (build/lint/security-invariants)
+  # on the queue's temporary branch — main + the queued PR(s) merged together —
+  # so each PR is verified against the exact tree it will land as, and the
+  # queue integrates PRs one at a time without a human re-syncing each branch
+  # against a moving main. Required for the `main` branch-protection "Require
+  # merge queue" setting: the queue blocks on these checks, so they MUST fire on
+  # `merge_group` or every merge would stall.
+  merge_group:
 
 # Rapid pushes to a PR would otherwise stack redundant full CI runs (each with
 # its own pgvector service). Supersede-and-cancel applies to PR runs ONLY —
-# pushes to main always run to completion. A superseded run concludes
-# `cancelled`, not `failure`, so ci-retry / pipeline-pr-autofix (both keyed on
-# failure) ignore it.
+# pushes to main and merge-queue runs always run to completion (a cancelled
+# queue check would wedge the queue). A superseded run concludes `cancelled`,
+# not `failure`, so ci-retry / pipeline-pr-autofix (both keyed on failure)
+# ignore it.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

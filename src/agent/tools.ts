@@ -31,6 +31,7 @@ import {
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeDuplicateMatch,
   listDuplicateKnowledge,
+  listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
   listMemberNotes,
   MEMBER_NOTE_MAX_CHARS,
@@ -2458,6 +2459,39 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     { annotations: { readOnlyHint: true } },
   );
 
+  const listKnowledgeConflictsTool = tool(
+    'list_knowledge_conflicts',
+    'Audit the knowledge base for pairs of entries that are about the same topic but worded ' +
+      'differently enough that they may disagree (same scope, mid-range embedding similarity — clears ' +
+      "knowledge_search's relevance floor but sits well under the near-duplicate threshold). Sibling of " +
+      'list_duplicate_knowledge, which catches the opposite case (converged wording). Each pair is a ' +
+      'candidate for admin review, not a confirmed contradiction — check both entries and merge ' +
+      '(update_knowledge) or retire (delete_knowledge) as appropriate. Admin only.',
+    {
+      scope: z.string().optional().describe('Restrict the audit to a single scope (e.g. "global")'),
+      limit: z.number().optional().describe('Max pairs to return (default 20)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_knowledge_conflicts');
+      const pairs = await listKnowledgeConflictCandidates(args.scope, args.limit);
+      if (pairs.length === 0) return text('No conflict-candidate knowledge pairs found.');
+      return text(
+        untrusted(
+          'Conflict-candidate knowledge pairs — each is a candidate for admin review, not a confirmed contradiction',
+          pairs
+            .map((p) => {
+              const pct = (p.similarity * 100).toFixed(0);
+              const aLabel = p.aTitle ? `"${p.aTitle}"` : `#${p.aId}`;
+              const bLabel = p.bTitle ? `"${p.bTitle}"` : `#${p.bId}`;
+              return `#${p.aId} (${aLabel}) ↔ #${p.bId} (${bLabel}) — ${pct}% similar`;
+            })
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const updateKnowledgeTool = tool(
     'update_knowledge',
     'Correct an existing knowledge entry (title/content/scope/source). Re-embeds the content. Setting ' +
@@ -3768,6 +3802,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       saveKnowledgeTool,
       listKnowledgeTool,
       listDuplicateKnowledgeTool,
+      listKnowledgeConflictsTool,
       updateKnowledgeTool,
       deleteKnowledgeTool,
       listAccessRequestsTool,
