@@ -40,6 +40,7 @@ const {
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
   listDuplicateKnowledge,
+  listKnowledgeConflictCandidates,
   countPendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
@@ -761,6 +762,126 @@ test(
       Array.isArray(negativeLimit),
       'a negative limit is clamped rather than passed through to LIMIT',
     );
+  },
+);
+
+// Hand-crafted, orthonormal-basis embeddings (not run through the real
+// embedding model) so pairwise cosine similarity is exact and deterministic —
+// same technique as recentQuestionClusters above. All vectors are unit
+// length, so `1 - (a <=> b)` equals the plain dot product.
+const insertKnowledgeWithEmbedding = (scope: string, title: string, vec: number[]) =>
+  pool
+    .query(`INSERT INTO knowledge (scope, title, content, embedding) VALUES ($1,$2,$3,$4) RETURNING id`, [
+      scope,
+      title,
+      `content for ${title}`,
+      pgvector.toSql(vec),
+    ])
+    .then((r) => Number(r.rows[0].id));
+
+test(
+  'repository: listKnowledgeConflictCandidates returns a mid-band pair, excludes a near-duplicate pair (>= 0.92, owned by listDuplicateKnowledge), and excludes a pair below the conflict floor (issue #330)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-list-conflict-scope`;
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+
+    // similarity to anchor = 0.7 — inside [0.55, 0.92)
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    // similarity to anchor = 0.95 — near-duplicate band, must be excluded here
+    const nearDupVec = new Array(dim).fill(0);
+    nearDupVec[0] = 0.95;
+    nearDupVec[2] = Math.sqrt(1 - 0.95 ** 2);
+
+    // orthogonal to anchor (similarity 0) — clearly unrelated, below the floor
+    const unrelatedVec = new Array(dim).fill(0);
+    unrelatedVec[3] = 1;
+
+    const anchorId = await insertKnowledgeWithEmbedding(scope, 'anchor entry', anchorVec);
+    const midBandId = await insertKnowledgeWithEmbedding(scope, 'mid-band entry', midBandVec);
+    const nearDupId = await insertKnowledgeWithEmbedding(scope, 'near-dup entry', nearDupVec);
+    const unrelatedId = await insertKnowledgeWithEmbedding(scope, 'unrelated entry', unrelatedVec);
+
+    const pairs = await listKnowledgeConflictCandidates(scope);
+
+    const midBandPair = pairs.filter(
+      (p) => (p.aId === anchorId && p.bId === midBandId) || (p.aId === midBandId && p.bId === anchorId),
+    );
+    assert.equal(
+      midBandPair.length,
+      1,
+      'the mid-band pair is reported exactly once, never as both A↔B and B↔A',
+    );
+    assert.ok(midBandPair[0].similarity >= 0.55 && midBandPair[0].similarity < 0.92);
+
+    assert.ok(
+      !pairs.some(
+        (p) => (p.aId === anchorId && p.bId === nearDupId) || (p.aId === nearDupId && p.bId === anchorId),
+      ),
+      'a pair at >= 0.92 similarity is a near-duplicate, not a conflict candidate — owned by listDuplicateKnowledge',
+    );
+    assert.ok(
+      !pairs.some(
+        (p) => (p.aId === anchorId && p.bId === unrelatedId) || (p.aId === unrelatedId && p.bId === anchorId),
+      ),
+      'a clearly unrelated pair below the conflict floor must not be reported',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [anchorId, midBandId, nearDupId, unrelatedId],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: listKnowledgeConflictCandidates is scoped — a mid-band pair split across different scopes must never be reported, even with no scope filter applied (issue #330)',
+  { skip },
+  async () => {
+    const scopeX = `${RUN}-list-conflict-scope-x`;
+    const scopeY = `${RUN}-list-conflict-scope-y`;
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    const xAnchorId = await insertKnowledgeWithEmbedding(scopeX, 'anchor entry x', anchorVec);
+    const xMidBandId = await insertKnowledgeWithEmbedding(scopeX, 'mid-band entry x', midBandVec);
+    // Same embedding as the scope-X mid-band entry, but in a different scope —
+    // must never pair with the scope-X anchor (a.scope = b.scope in the join).
+    const yMidBandId = await insertKnowledgeWithEmbedding(scopeY, 'mid-band entry y', midBandVec);
+
+    const scopedToX = await listKnowledgeConflictCandidates(scopeX);
+    assert.ok(
+      scopedToX.some(
+        (p) => (p.aId === xAnchorId && p.bId === xMidBandId) || (p.aId === xMidBandId && p.bId === xAnchorId),
+      ),
+      'the scope-X pair is returned when scoped to X',
+    );
+    assert.ok(
+      !scopedToX.some((p) => p.aId === yMidBandId || p.bId === yMidBandId),
+      'SECURITY: scope filter must exclude an entry from a different scope, even with near-identical embeddings',
+    );
+
+    const unscoped = await listKnowledgeConflictCandidates();
+    assert.ok(
+      !unscoped.some(
+        (p) => (p.aId === xAnchorId && p.bId === yMidBandId) || (p.aId === yMidBandId && p.bId === xAnchorId),
+      ),
+      'SECURITY: a candidate pair split across different scopes must never be reported, even with no ' +
+        "scope filter applied — the self-join is scoped a.scope = b.scope, so one scope's entry can " +
+        "never leak into another scope's admin's conflict audit",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAnchorId, xMidBandId, yMidBandId]]);
   },
 );
 
