@@ -22,6 +22,8 @@ import {
   type PartialGuildMember,
   type Message,
   type PartialMessage,
+  type DMChannel,
+  type PermissionOverwrites,
   ChannelType,
 } from 'discord.js';
 import { config } from '../../config.js';
@@ -171,6 +173,21 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // new channel immediately instead of waiting for the next mute event.
     this.client.on(Events.ChannelCreate, (channel) => {
       this.onChannelCreate(channel).catch((err) => logger.error({ err }, 'Channel create handling failed'));
+    });
+    // Narrows the last documented residual membership-scope staleness gap
+    // (issue #328, the follow-up #286 deferred — see `conversationsForUser`'s
+    // doc comment / SECURITY.md "Membership-scope staleness"): a
+    // channel-specific permission-overwrite revoke with no guild exit had no
+    // listener, so a scope refusal could lag up to MEMBERSHIP_CACHE_TTL_MS.
+    // Wrapped like every other listener here: an uncaught throw from a
+    // discord.js event handler propagates out of the client's emit chain and
+    // can crash the whole process (Discord *and* WhatsApp handling).
+    this.client.on(Events.ChannelUpdate, (oldChannel, newChannel) => {
+      try {
+        this.onChannelUpdate(oldChannel, newChannel);
+      } catch (err) {
+        logger.error({ err }, 'Channel update handling failed');
+      }
     });
 
     this.client.once(Events.ClientReady, (c) => {
@@ -431,6 +448,55 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   }
 
   /**
+   * Narrows the channel-permission-overwrite membership-scope-staleness gap
+   * (issue #328): ignores channels outside `config.discord.guildId` and
+   * non-text channels (the same guard `conversationsForUser` already
+   * applies), and no-ops when the edit didn't actually touch
+   * `permissionOverwrites` (a name/topic edit, which is routine and must stay
+   * free). On a genuine overwrite change, clears the ENTIRE cache rather than
+   * diffing which users/roles it affects — see the issue's "smallest viable
+   * version": correct-by-construction (only ever invalidates sooner, never
+   * grants scope a live check wouldn't), and cheap since permission edits are
+   * infrequent. A per-user/per-role diff is the documented growth path, not
+   * implemented here.
+   */
+  private onChannelUpdate(
+    oldChannel: DMChannel | NonThreadGuildBasedChannel,
+    newChannel: DMChannel | NonThreadGuildBasedChannel,
+  ): void {
+    if (oldChannel.isDMBased() || newChannel.isDMBased()) return;
+    if (newChannel.guild.id !== config.discord.guildId) return;
+    if (!oldChannel.isTextBased() || !newChannel.isTextBased()) return;
+    if (
+      this.permissionOverwritesEqual(
+        oldChannel.permissionOverwrites.cache,
+        newChannel.permissionOverwrites.cache,
+      )
+    )
+      return;
+    this.membershipCache.clear();
+  }
+
+  /** True when two channels' permission-overwrite collections carry the same ids and allow/deny bitfields. */
+  private permissionOverwritesEqual(
+    a: ReadonlyMap<string, PermissionOverwrites>,
+    b: ReadonlyMap<string, PermissionOverwrites>,
+  ): boolean {
+    if (a.size !== b.size) return false;
+    for (const [id, overwrite] of a) {
+      const other = b.get(id);
+      if (!other) return false;
+      if (
+        overwrite.allow.bitfield !== other.allow.bitfield ||
+        overwrite.deny.bitfield !== other.deny.bitfield
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Idempotent upsert of every current (non-bot) guild member, so the roster
    * covers lurkers who joined before this feature existed. Uses the member
    * list the GuildMembers intent already streams to the bot — no new intent,
@@ -503,10 +569,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * Channels in the configured guild the user can currently view, plus their
    * DM with the bot. Backs admin conversation scoping; cached ~60s, but a
    * full guild exit invalidates the cache immediately via
-   * `onGuildMemberRemove`. The TTL only bounds staleness from membership
-   * changes this adapter doesn't directly observe (e.g. a channel-specific
-   * permission-overwrite change with no guild exit) — documented in
-   * SECURITY.md.
+   * `onGuildMemberRemove`, and a genuine channel permission-overwrite change
+   * in the configured guild invalidates the whole cache immediately via
+   * `onChannelUpdate` (issue #328). The TTL only bounds staleness from
+   * membership changes this adapter still doesn't observe at all —
+   * documented in SECURITY.md.
    */
   async conversationsForUser(userId: string): Promise<string[]> {
     const cached = this.membershipCache.get(userId);
