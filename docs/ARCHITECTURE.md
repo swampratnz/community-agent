@@ -238,7 +238,12 @@ of them read as the bot being broken. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
-fixed `_MI` constant instead of the English default.
+fixed `_MI` constant instead of the English default. The auto-moderation
+warn/block DMs (`Moderator.scan()`, `src/moderation/moderator.ts`) also honour
+a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
+is read once per flagged message (defensively, degrading to `'auto'` on
+failure so a lookup error can never skip or delay warning/mute enforcement)
+and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default.
 
 ## Onboarding (gated mode)
 
