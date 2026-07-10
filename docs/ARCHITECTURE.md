@@ -607,7 +607,16 @@ admin (issue #197) — see SECURITY.md's note on this.
 #60: #60 taught the model to attribute knowledge-base answers and flag
 general-knowledge ones, but explicitly deferred a rating mechanism as its own
 proposal. There was previously no calibrated signal on whether an answer
-actually helped — only that one was sent.
+actually helped — only that one was sent. Issue #366 closed a parity gap on
+the attribution side: `formatKnowledgeCitationNote` (issue #214) has always
+computed a real `source: <label> (<url>) · last verified <age>` clause for a
+trusted, `source_url`-bearing `knowledge_search` hit, but until #366 the model
+was told to drop it in favour of an informal, linkless "per our community
+notes..." — even though the deterministic knowledge shortcut (below) already
+relayed that same clause verbatim. The model-mediated path now relays the
+real link and date too when the tool result carries one, at parity with the
+shortcut path, while still forbidding it from ever surfacing a URL lifted
+from a hit's content body rather than the tool-computed citation clause.
 
 1. A member (or admin/super admin) calls `rate_answer(helpful: boolean)`. No
    free-text input at all — a smaller surface than `report_content`/
