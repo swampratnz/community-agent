@@ -1040,8 +1040,17 @@ the supported path.
   documented growth path, not implemented; the whole-cache clear can only
   invalidate sooner, never grant scope a live check wouldn't); and WhatsApp's
   `group-participants.update` with `action: 'remove'` clears the removed
-  user's entry the same way. The residual ~60s window still applies to: one
-  WhatsApp case the removal event itself cannot resolve — a
+  user's entry the same way. The residual ~60s window still applies to:
+  **Discord role-based access changes** — `conversationsForUser` derives
+  per-channel visibility from `channel.permissionsFor(member)`, which also
+  depends on the member's roles and each role's own permissions, but no
+  listener observes `GuildMemberUpdate` (a role added to/removed from a
+  member), `GuildRoleUpdate` (a role's own permissions edited), or
+  `GuildRoleDelete` (a role removed entirely) — this is arguably the *more*
+  common Discord admin workflow for revoking access (pulling someone out of a
+  role) versus hand-editing a channel's raw permission overwrites, and it
+  still carries the full ~60s stale-scope window today; and one WhatsApp case
+  the removal event itself cannot resolve — a
   `group-participants.update` carrying only an `@lid` (privacy) JID for a
   participant whose `membershipCache` entry is keyed by their *real phone
   number* (resolved elsewhere via `senderPn`/`participantPn` from message

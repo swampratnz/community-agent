@@ -179,9 +179,15 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // doc comment / SECURITY.md "Membership-scope staleness"): a
     // channel-specific permission-overwrite revoke with no guild exit had no
     // listener, so a scope refusal could lag up to MEMBERSHIP_CACHE_TTL_MS.
-    // Synchronous (an in-memory Map compare + clear) — nothing to await/catch.
+    // Wrapped like every other listener here: an uncaught throw from a
+    // discord.js event handler propagates out of the client's emit chain and
+    // can crash the whole process (Discord *and* WhatsApp handling).
     this.client.on(Events.ChannelUpdate, (oldChannel, newChannel) => {
-      this.onChannelUpdate(oldChannel, newChannel);
+      try {
+        this.onChannelUpdate(oldChannel, newChannel);
+      } catch (err) {
+        logger.error({ err }, 'Channel update handling failed');
+      }
     });
 
     this.client.once(Events.ClientReady, (c) => {
