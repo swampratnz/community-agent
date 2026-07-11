@@ -1,5 +1,5 @@
 {
-  "adminDigest.test.ts": 20,
+  "adminDigest.test.ts": 21,
   "agentCoreLanguagePreference.test.ts": 1,
   "agentCoreUsageLimitAlert.test.ts": 1,
   "agentModelTiering.test.ts": 1,
@@ -7,7 +7,7 @@
   "ambientArchiving.test.ts": 5,
   "ambientArchivingOff.test.ts": 2,
   "anthropicStatus.test.ts": 4,
-  "backgroundJobs.test.ts": 5,
+  "backgroundJobs.test.ts": 6,
   "backgroundJobsDisabled.test.ts": 2,
   "baileysAdapter.test.ts": 16,
   "baileysArchiving.test.ts": 2,
