@@ -1,5 +1,6 @@
 {
   "adminDigest.test.ts": 21,
+  "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreLanguagePreference.test.ts": 1,
   "agentCoreUsageLimitAlert.test.ts": 1,
   "agentModelTiering.test.ts": 1,
