@@ -1047,6 +1047,22 @@ tiering — while admin/super_admin keep `AGENT_MODEL`. Unset (default):
 byte-identical, every role uses `AGENT_MODEL`. Model choice is not a security
 boundary here — it never affects the role-derived tool surface (§3, §RBAC).
 
+The same lever extends (issue #394) to the two background, non-conversational
+classifier `query()` calls that have no caller role at all:
+`classifyAbuseWithLlm` (moderation Stage 2, opt-in) and `summarizeCluster`
+(the weekly context builder). Setting `AGENT_MODEL_CLASSIFIER` runs both on a
+lighter model; unset (default) both keep using `AGENT_MODEL`, byte-identical.
+Same posture as `AGENT_MODEL_MEMBER`: cosmetic to cost, never affects either
+call site's `tools`/`allowedTools`/`disallowedTools`/`maxTurns` (both are
+already tool-less, single-turn, and fixed-format). A missed abuse
+classification degrades to "clean" — the same failure mode as the opt-in
+Stage-2 check being off — so this is an accuracy/cost tradeoff the operator
+who sets the knob explicitly owns, not a bypass of any tier-derived tool,
+CONFIRM gate, redaction, or scoped-access boundary. `researchTopic`
+(`src/context/knowledgeRefresh.ts`) is deliberately untouched — it's
+multi-turn, uses `WebSearch`, and writes free-text content to the knowledge
+base, unlike the other two's fixed-format extraction.
+
 ## Residual risks (accepted, documented)
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
