@@ -714,7 +714,8 @@ export async function searchKnowledge(
   let queryVec: number[];
   try {
     queryVec = await embed(query);
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'Embedding query failed; skipping knowledge search');
     return [];
   }
   const globalOnly = opts.scopeRestriction === 'global-only';

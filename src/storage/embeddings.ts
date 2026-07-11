@@ -29,7 +29,15 @@ async function getExtractor(): Promise<FeatureExtractor> {
       )) as unknown as FeatureExtractor;
       logger.info('Embedding model ready');
       return pipe;
-    })();
+    })().catch((err) => {
+      // A rejected promise is still truthy, so without this reset the
+      // `if (!extractorPromise)` guard above would never re-fire — every
+      // subsequent embed() call would replay this exact rejection forever,
+      // wedging knowledge_search/memory recall for the process lifetime
+      // (issue #376). Clearing it lets the NEXT call retry the model load.
+      extractorPromise = null;
+      throw err;
+    });
   }
   return extractorPromise;
 }

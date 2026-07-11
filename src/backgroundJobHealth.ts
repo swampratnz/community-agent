@@ -46,7 +46,8 @@ export type BackgroundJobName =
   | 'docs-ingest'
   | 'interaction-retention-purge'
   | 'roster-retention-purge'
-  | 'anthropic-status-check';
+  | 'anthropic-status-check'
+  | 'embedding-model';
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught
