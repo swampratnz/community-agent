@@ -95,6 +95,13 @@ export const MEMBER_TOOLS = [
   // Discord-only; other adapters simply don't implement
   // PlatformAdapter.reactToMessage.
   'mcp__community__react_to_message',
+  // Read-only, no arguments, no CONFIRM (issue #388) — the read counterpart
+  // to the admin-tier, CONFIRM-gated create_event (issue #230). Publicly
+  // visible via Discord's own Events tab the moment create_event runs, so
+  // there's no confidentiality boundary to gate at admin tier, same
+  // reasoning as community_guidelines/check_status. Discord-only; other
+  // adapters simply don't implement PlatformAdapter.listUpcomingEvents.
+  'mcp__community__list_events',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */

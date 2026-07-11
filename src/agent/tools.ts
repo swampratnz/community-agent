@@ -549,6 +549,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
   '- React to a message with an emoji instead of replying\n' +
   '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
+  '- Ask what meetups/events are coming up ("what\'s on?")\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -647,6 +648,13 @@ export async function notifyAdminApproved(
     .sendDirectMessage(userId, message)
     .catch((err) => logger.warn({ err, userId }, 'Admin promotion DM failed'));
 }
+
+/**
+ * Fixed cap on how many upcoming events `list_events` returns (issue #388) —
+ * a small hardcoded constant over a config knob, matching this repo's
+ * existing convention for tool-shape limits (e.g. `GATED_NOTICE_MAX_ADMIN_NAMES`).
+ */
+export const EVENTS_LIST_LIMIT = 10;
 
 /** Truncation length for the suggestion text echoed back in a resolution DM. */
 const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
@@ -1267,6 +1275,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       'status page (a background poll, never a live fetch on this call).',
     {},
     async () => text(formatStatusMessage(getStatusCache(), Date.now())),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listEvents = tool(
+    'list_events',
+    'List upcoming Discord scheduled meetups/events (name, start/end time, location) — call this when ' +
+      'someone asks "what\'s coming up?", "when\'s the next meetup?", or similar, instead of guessing from ' +
+      'general knowledge or stale knowledge-base entries. Read-only, no arguments, sourced live from ' +
+      "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
+    {},
+    async () => {
+      if (!adapter.listUpcomingEvents) {
+        return text(`Event listings aren't available on ${caller.platform}.`, true);
+      }
+      const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
+      if (events.length === 0) return text('No upcoming events.');
+      return text(
+        events
+          .map((e) => {
+            const when = e.scheduledEndAt
+              ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
+              : e.scheduledStartAt;
+            const desc = e.description ? `: ${e.description}` : '';
+            return `- ${e.name} (${when}) @ ${e.location}${desc}`;
+          })
+          .join('\n'),
+      );
+    },
     { annotations: { readOnlyHint: true } },
   );
 
@@ -3964,6 +4000,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       communityInfo,
       communityGuidelines,
       checkStatus,
+      listEvents,
       knowledgeSearch,
       rememberSearch,
       forgetMe,

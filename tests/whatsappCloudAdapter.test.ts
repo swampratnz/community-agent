@@ -24,6 +24,7 @@ const { WhatsAppCloudAdapter, WHATSAPP_CLOUD_WELCOME_MESSAGE, WHATSAPP_CLOUD_WEL
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { buildToolServer } = await import('../src/agent/tools.js');
 
 /**
  * Records every Graph API call this adapter would have made. `responses[i].json`
@@ -1394,5 +1395,41 @@ test(
   () => {
     const adapter = new WhatsAppCloudAdapter();
     assert.equal(adapter.canPostTo, undefined);
+  },
+);
+
+test(
+  'list_events reports the standard unsupported-on-whatsapp reply on the real WhatsApp Cloud adapter, which ' +
+    'implements no scheduled-events primitive — mirrors the sendImage/reactToMessage unsupported-platform ' +
+    'pattern (issue #388)',
+  async () => {
+    const adapter = new WhatsAppCloudAdapter();
+    assert.equal(
+      adapter.listUpcomingEvents,
+      undefined,
+      'WhatsAppCloudAdapter must not implement listUpcomingEvents — Discord-only capability',
+    );
+    const server = buildToolServer(
+      {
+        platform: 'whatsapp',
+        userId: 'member-1',
+        userName: 'Member',
+        role: 'member',
+        conversationId: '64211234567',
+        isDirect: true,
+      },
+      adapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+        >;
+      }
+    )._registeredTools['list_events'];
+    const result = await registeredTool.handler();
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
   },
 );
