@@ -1086,6 +1086,30 @@ export async function listDuplicateKnowledge(scope?: string, limit = 20): Promis
 }
 
 /**
+ * Exact near-duplicate pair count (issue #378), for the weekly admin digest
+ * — the growth path #316 itself named ("fold a 'N duplicate pairs pending
+ * review' count into the weekly admin digest once the pull tool proves
+ * useful"). A true `SELECT count(*)` over the identical self-join
+ * `listDuplicateKnowledge` uses (same `a.id < b.id` same-scope join, same
+ * `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD` floor), never `.length` of that
+ * function's `LIMIT`-bounded list, so a backlog past its default limit of 20
+ * is not understated. Guild-wide when `scope` is omitted, matching
+ * `listDuplicateKnowledge`'s own unscoped behaviour.
+ */
+export async function countDuplicateKnowledge(scope?: string): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND ($1::text IS NULL OR a.scope = $1)
+        AND 1 - (a.embedding <=> b.embedding) >= $2`,
+    [scope ?? null, KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Half-open "conflict candidate" band (issue #330), sitting between the
  * retrieval relevance floor (KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, 0.35) and
  * the near-duplicate threshold (KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD,
@@ -1151,6 +1175,33 @@ export async function listKnowledgeConflictCandidates(
     bTitle: r.b_title,
     similarity: Number(r.similarity),
   }));
+}
+
+/**
+ * Exact conflict-candidate pair count (issue #378), for the weekly admin
+ * digest — the growth path #330 itself named ("fold a 'top conflict
+ * candidate' line into the weekly admin digest... deliberately deferred so
+ * this PR stays small and the band is proven useful via manual admin
+ * invocation first"). A true `SELECT count(*)` over the identical self-join
+ * `listKnowledgeConflictCandidates` uses (same `a.id < b.id` same-scope
+ * join, same half-open `[KNOWLEDGE_CONFLICT_SIMILARITY_MIN,
+ * KNOWLEDGE_CONFLICT_SIMILARITY_MAX)` band), never `.length` of that
+ * function's `LIMIT`-bounded list, so a backlog past its default limit of 20
+ * is not understated. Guild-wide when `scope` is omitted, matching
+ * `listKnowledgeConflictCandidates`'s own unscoped behaviour.
+ */
+export async function countKnowledgeConflictCandidates(scope?: string): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND ($1::text IS NULL OR a.scope = $1)
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+        AND 1 - (a.embedding <=> b.embedding) < $3`,
+    [scope ?? null, KNOWLEDGE_CONFLICT_SIMILARITY_MIN, KNOWLEDGE_CONFLICT_SIMILARITY_MAX],
+  );
+  return Number(rows[0].n);
 }
 
 /**

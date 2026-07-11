@@ -2,6 +2,8 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import {
   countAccessRequests,
+  countDuplicateKnowledge,
+  countKnowledgeConflictCandidates,
   countKnowledgeGaps,
   countLowRatedKnowledge,
   countMaxTurnsFailures,
@@ -54,6 +56,13 @@ const SNIPPET_MAX_CHARS = 300;
  * conversation-scoped and windowed identically to `knowledgeGapsCount` —
  * bare integer only, never message content, question text, user id, or
  * conversation id.
+ * `duplicateKnowledgeCount`/`conflictCandidateCount` (issue #378) come from
+ * `countDuplicateKnowledge`/`countKnowledgeConflictCandidates`, the exact
+ * `COUNT(*)` complements to the existing `list_duplicate_knowledge`/
+ * `list_knowledge_conflicts` admin tools (#316, #330) — guild-wide, matching
+ * `countStaleKnowledge`'s own unscoped precedent (the pair self-joins carry
+ * no conversation scope either). Bare integer only, never a pair's id,
+ * title, or content.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -69,6 +78,8 @@ export function buildAdminDigestMessage(
   leftThisWeek: number = 0,
   mutedMembersCount: number = 0,
   maxTurnsFailuresCount: number = 0,
+  duplicateKnowledgeCount: number = 0,
+  conflictCandidateCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -82,7 +93,9 @@ export function buildAdminDigestMessage(
     joinedThisWeek === 0 &&
     leftThisWeek === 0 &&
     mutedMembersCount === 0 &&
-    maxTurnsFailuresCount === 0
+    maxTurnsFailuresCount === 0 &&
+    duplicateKnowledgeCount === 0 &&
+    conflictCandidateCount === 0
   )
     return null;
 
@@ -154,6 +167,20 @@ export function buildAdminDigestMessage(
         'this week hit the step limit before finishing.',
     );
   }
+  if (duplicateKnowledgeCount > 0) {
+    // Bare integer only — no pair id, title, or content ever reaches the DM (#378).
+    sections.push(
+      `🔀 ${duplicateKnowledgeCount} near-duplicate knowledge pair(s) — run \`list_duplicate_knowledge\` ` +
+        'to review.',
+    );
+  }
+  if (conflictCandidateCount > 0) {
+    // Bare integer only — no pair id, title, or content ever reaches the DM (#378).
+    sections.push(
+      `⚖️ ${conflictCandidateCount} conflict-candidate knowledge pair(s) that may disagree — run ` +
+        '`list_knowledge_conflicts` to review.',
+    );
+  }
   return sections.join('\n');
 }
 
@@ -192,7 +219,10 @@ export function buildAdminDigestMessage(
  * the same platform always see the same muted-member count (issue #357).
  * `countMaxTurnsFailures(scope, ...)` is conversation-scoped by `scope`
  * (`interactions` has a `conversation_id`), same as `countKnowledgeGaps`
- * (issue #371). The freshness guard
+ * (issue #371). `countDuplicateKnowledge()`/`countKnowledgeConflictCandidates()`
+ * are guild-wide, unscoped calls (issue #378) — matching `countStaleKnowledge`/
+ * `countPendingKnowledgeCandidates`, since the pair self-joins carry no
+ * conversation scope either. The freshness guard
  * (`admin_digest_sends`) is a durable per-admin timestamp, so a restart
  * mid-week cannot cause a duplicate send within the same window. Super
  * admins are not enrolled — `listAdmins` only returns `community_users`
@@ -239,6 +269,8 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         roster,
         mutedMembersCount,
         maxTurnsFailuresCount,
+        duplicateKnowledgeCount,
+        conflictCandidateCount,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -265,6 +297,10 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // Conversation-scoped like knowledgeGapsCount (interactions.conversation_id),
         // over the same freshness window (#371).
         countMaxTurnsFailures(scope, FRESHNESS_DAYS),
+        // Guild-wide, unscoped — matching countStaleKnowledge/
+        // countPendingKnowledgeCandidates (issue #378).
+        countDuplicateKnowledge(),
+        countKnowledgeConflictCandidates(),
       ]);
       const message = buildAdminDigestMessage(
         clusters,
@@ -280,6 +316,8 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         roster.leftThisWeek,
         mutedMembersCount,
         maxTurnsFailuresCount,
+        duplicateKnowledgeCount,
+        conflictCandidateCount,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 
@@ -300,14 +338,16 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * summarising recurring-question clusters in their own scoped conversations,
  * plus pending access-request, open-report, pending-suggestion, (when
  * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, pending
- * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week, and
- * currently-muted-member counts (issue #21's deferred proactive follow-up,
- * extended by issue #133, issue #193, issue #199, issue #284, issue #324,
- * issue #344, and issue #357) — the same signals
+ * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
+ * currently-muted-member, near-duplicate-knowledge-pair, and
+ * conflict-candidate-knowledge-pair counts (issue #21's deferred proactive
+ * follow-up, extended by issue #133, issue #193, issue #199, issue #284,
+ * issue #324, issue #344, issue #357, and issue #378) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
- * `list_low_rated_knowledge`/`list_roster`/`moderation_history` already
- * compute on demand.
+ * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/
+ * `list_duplicate_knowledge`/`list_knowledge_conflicts` already compute on
+ * demand.
  */
 export function startAdminDigest(
   adapters: readonly PlatformAdapter[],
