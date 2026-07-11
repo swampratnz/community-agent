@@ -2927,6 +2927,49 @@ test(
 );
 
 test(
+  'repository: listKnowledge staleOnly ordering tracks the ACTIVE criterion — with the content-age ceiling on, ' +
+    'oldest-content-first even for a frequently-retrieved entry (issue #380)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-stale-ceiling-order-scope`;
+
+    // Oldest content, but very popular (recent last_retrieved_at). Under the old
+    // ORDER BY GREATEST(updated_at, last_retrieved_at) this sorted LAST ("least
+    // overdue") — the exact blind spot a content-age ceiling exists to close.
+    const { id: oldestPopular } = await saveKnowledge({
+      content: `${RUN} oldest content, frequently served`,
+      title: 'stale-ceiling-order-oldest-popular',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '300 days', last_retrieved_at = now() WHERE id = $1`,
+      [oldestPopular],
+    );
+
+    // Newer content (still past the 90d ceiling), never retrieved.
+    const { id: newerUnread } = await saveKnowledge({
+      content: `${RUN} newer content, never served`,
+      title: 'stale-ceiling-order-newer-unread',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '120 days', last_retrieved_at = NULL WHERE id = $1`,
+      [newerUnread],
+    );
+
+    const ordered = await listKnowledge({ scope, staleOnly: true, staleDays: 0, staleMaxAgeDays: 90 });
+    assert.deepEqual(
+      ordered.map((e) => e.id),
+      [oldestPopular, newerUnread],
+      'ceiling-only mode must order by content age (updated_at) so the oldest-content entry is first even ' +
+        'though it was just retrieved — not sunk to the end by GREATEST(updated_at, last_retrieved_at)',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[oldestPopular, newerUnread]]);
+  },
+);
+
+test(
   'SECURITY: listKnowledge staleOnly in ceiling-only mode (staleDays=0, staleMaxAgeDays>0) returns only entries ' +
     'past the ceiling, not the entire scope — a regression where the unguarded GREATEST(...) < now() - ' +
     "'0 days' disjunct matched virtually every pre-existing row, making staleOnly return everything " +

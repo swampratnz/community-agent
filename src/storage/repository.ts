@@ -939,9 +939,18 @@ export async function listKnowledge(
     );
   }
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-  const orderClause = input.staleOnly
-    ? `ORDER BY GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) ASC`
-    : `ORDER BY updated_at DESC`;
+  // "Most overdue first" must track whichever staleness criterion is active. When
+  // the content-age ceiling is on (#380), rank by `updated_at` (content age) so a
+  // genuinely-old entry surfaces first even if it's popular — sorting by
+  // GREATEST(updated_at, last_retrieved_at) would push a frequently-served but
+  // stale-content entry to "least urgent", the exact blind spot the ceiling
+  // exists to close. Window-only (`staleDays` alone) keeps longest-untouched
+  // (edit OR retrieval) first.
+  const orderClause = !input.staleOnly
+    ? `ORDER BY updated_at DESC`
+    : (input.staleMaxAgeDays ?? 0) > 0
+      ? `ORDER BY updated_at ASC`
+      : `ORDER BY GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) ASC`;
   params.push(input.limit ?? 20);
   const limitParam = params.length;
   params.push(input.offset ?? 0);
