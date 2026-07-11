@@ -2714,6 +2714,48 @@ test(
 );
 
 test(
+  'SECURITY: countStaleKnowledge in ceiling-only mode (days=0, maxAgeDays>0) counts only entries past the ' +
+    "ceiling, not the entire table — a regression where the unguarded GREATEST(...) < now() - '0 days' " +
+    "disjunct matched virtually every pre-existing row, making the OR's other branch irrelevant (issue #380)",
+  { skip },
+  async () => {
+    const beforeCeiling = await countStaleKnowledge(0, 90);
+
+    const { id: freshEntry } = await saveKnowledge({
+      content: `${RUN} freshly edited and freshly retrieved — must never count as stale in ceiling-only mode`,
+      title: 'stale-ceiling-only-fresh',
+      scope: 'global',
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '1 day', last_retrieved_at = now()
+        WHERE id = $1`,
+      [freshEntry],
+    );
+
+    const { id: popularAncient } = await saveKnowledge({
+      content: `${RUN} popular but ancient — must count as stale in ceiling-only mode`,
+      title: 'stale-ceiling-only-popular-ancient',
+      scope: 'global',
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '200 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [popularAncient],
+    );
+
+    assert.equal(
+      await countStaleKnowledge(0, 90),
+      beforeCeiling + 1,
+      'days=0 must exempt the freshly-edited entry from the first disjunct — only the entry past the ' +
+        '90-day ceiling counts, not every pre-existing row',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[freshEntry, popularAncient]]);
+    assert.equal(await countStaleKnowledge(0, 90), beforeCeiling, 'cleanup restores the prior ceiling count');
+  },
+);
+
+test(
   "repository: listKnowledge staleOnly reuses countStaleKnowledge's exact GREATEST predicate and orders most-overdue first (issue #280)",
   { skip },
   async () => {
@@ -2881,6 +2923,49 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [popularAncient]);
+  },
+);
+
+test(
+  'SECURITY: listKnowledge staleOnly in ceiling-only mode (staleDays=0, staleMaxAgeDays>0) returns only entries ' +
+    'past the ceiling, not the entire scope — a regression where the unguarded GREATEST(...) < now() - ' +
+    "'0 days' disjunct matched virtually every pre-existing row, making staleOnly return everything " +
+    '(issue #380)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-stale-ceiling-only-list-scope`;
+
+    const { id: freshEntry } = await saveKnowledge({
+      content: `${RUN} freshly edited and freshly retrieved — must never appear in ceiling-only staleOnly`,
+      title: 'stale-ceiling-only-list-fresh',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '1 day', last_retrieved_at = now()
+        WHERE id = $1`,
+      [freshEntry],
+    );
+
+    const { id: popularAncient } = await saveKnowledge({
+      content: `${RUN} popular but ancient — must appear in ceiling-only staleOnly`,
+      title: 'stale-ceiling-only-list-popular-ancient',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '200 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [popularAncient],
+    );
+
+    const ceilingOnly = await listKnowledge({ scope, staleOnly: true, staleDays: 0, staleMaxAgeDays: 90 });
+    assert.deepEqual(
+      ceilingOnly.map((e) => e.id),
+      [popularAncient],
+      'staleDays=0 must exempt the freshly-edited entry from the first disjunct — only the entry past ' +
+        'the 90-day ceiling is returned, not every entry in scope',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[freshEntry, popularAncient]]);
   },
 );
 

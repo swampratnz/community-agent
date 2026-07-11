@@ -934,7 +934,7 @@ export async function listKnowledge(
     params.push(input.staleMaxAgeDays ?? 0);
     const maxAgeDaysParam = params.length;
     clauses.push(
-      `(GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($${staleDaysParam} || ' days')::interval` +
+      `(($${staleDaysParam} > 0 AND GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($${staleDaysParam} || ' days')::interval)` +
         ` OR ($${maxAgeDaysParam} > 0 AND updated_at < now() - ($${maxAgeDaysParam} || ' days')::interval))`,
     );
   }
@@ -990,7 +990,7 @@ export async function countStaleKnowledge(days: number, maxAgeDays = 0): Promise
   const { rows } = await pool.query(
     `SELECT count(*) AS n
        FROM knowledge
-      WHERE GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($1 || ' days')::interval
+      WHERE ($1 > 0 AND GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($1 || ' days')::interval)
          OR ($2 > 0 AND updated_at < now() - ($2 || ' days')::interval)`,
     [days, maxAgeDays],
   );
