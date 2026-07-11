@@ -12,6 +12,7 @@
   "baileysAdapter.test.ts": 16,
   "baileysArchiving.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 1,
+  "classifierModelTieringSet.test.ts": 1,
   "config.test.ts": 6,
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,

@@ -38,6 +38,17 @@ const EnvSchema = z.object({
   // as AGENT_MODEL — no artificial model allow-list to maintain. Unset/empty
   // = opt-out: every role resolves to AGENT_MODEL, byte-identical to today.
   AGENT_MODEL_MEMBER: z.string().optional(),
+  // Optional override of AGENT_MODEL for the two tool-less, single-turn,
+  // fixed-format background classifier/extractor query() calls (issue #394):
+  // classifyAbuseWithLlm (src/moderation/moderator.ts) and summarizeCluster
+  // (src/context/builder.ts). Unlike AGENT_MODEL_MEMBER (keyed to caller
+  // role), these call sites have no caller role — one runs against ambient
+  // chat text, the other in an unattended weekly job — so this is a separate
+  // knob, same unconstrained-string validation, same unset/empty = opt-out
+  // posture. researchTopic (src/context/knowledgeRefresh.ts) is deliberately
+  // NOT covered: it's multi-turn, uses WebSearch, and produces free-text
+  // knowledge-base content where model strength plausibly matters.
+  AGENT_MODEL_CLASSIFIER: z.string().optional(),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
   // Lower agentic-loop ceiling for member/guest turns (issue #347):
   // MEMBER_TOOLS is a much narrower surface than admin+'s (no WebSearch, no
@@ -563,6 +574,7 @@ export const config = {
     oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN,
     model: env.AGENT_MODEL,
     memberModel: env.AGENT_MODEL_MEMBER,
+    classifierModel: env.AGENT_MODEL_CLASSIFIER,
     maxTurns: env.AGENT_MAX_TURNS,
     memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
   },

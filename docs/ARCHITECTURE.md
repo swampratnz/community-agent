@@ -434,6 +434,11 @@ Guardrails, all enforced in code (binding conditions from the issue review):
   on the last digest's `created_at` makes it ~one run per day, so the
   nightly redeploy restart can't double-run it.
 
+Each per-cluster summarisation call is tool-less, single-turn, and
+fixed-format, so its model is optionally tiered by the same
+`AGENT_MODEL_CLASSIFIER` knob as the moderation LLM abuse check above (issue
+#394) — unset (default) it uses `AGENT_MODEL` unchanged.
+
 ### Knowledge candidates (issue #102)
 
 The `knowledge_candidates` review queue deferred from #51 turns a digest
@@ -706,7 +711,10 @@ enabled (every message is inspected) — treat it like ambient archiving.
   small built-in default) that catches bad language on every message. Stage 2
   (`MODERATION_LLM_ABUSE_ENABLED`, off by default) escalates only
   wordlist-clean messages to a single tool-less LLM abuse check — one Claude
-  call per escalated message on the shared Max pool, so it's opt-in.
+  call per escalated message on the shared Max pool, so it's opt-in. That
+  call's model is optionally tiered by `AGENT_MODEL_CLASSIFIER` (issue #394):
+  unset (default) it uses `AGENT_MODEL` like every other call; set, it runs
+  the fixed-format, tool-less classification on a lighter model instead.
 - **Strikes** live in `member_warnings` (keyed on raw `(platform, user_id)`,
   like `response_style_prefs`). Each detection records one `source='auto'`
   warning; the member gets a warning DM and the alert goes to a private

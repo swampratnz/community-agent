@@ -287,7 +287,12 @@ export async function classifyAbuseWithLlm(text: string): Promise<Detection | nu
   for await (const message of query({
     prompt,
     options: {
-      model: config.llm.model,
+      // Tool-less, single-turn, fixed-format output — safe to run on a
+      // lighter model (issue #394, extending #382's role-tiering pattern to
+      // this background classifier). Unset (default) falls back to
+      // config.llm.model, byte-identical to pre-#394 behaviour. Cosmetic to
+      // cost, not security — must never affect the tool-gating fields below.
+      model: config.llm.classifierModel ?? config.llm.model,
       systemPrompt:
         'You are a strict but fair content-moderation classifier. Output only the one requested line.',
       tools: [],
