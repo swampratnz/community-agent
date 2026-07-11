@@ -321,6 +321,18 @@ test('the unreviewed-provenance caveat is keyed on the auto/unverified tag only,
   assert.match(prompt, /it\s+doesn't apply on a knowledge_search miss/);
 });
 
+test('guidelines instruct the model not to silently pick or blend conflicting knowledge_search hits, and to suggest confirming with an admin (issue #389)', () => {
+  const prompt = buildSystemPrompt(caller, {
+    codeAnswers: 'snippets',
+    responseStyle: 'standard',
+    languagePreference: 'auto',
+  });
+  assert.match(prompt, /Conflicting knowledge_search hits/);
+  assert.match(prompt, /do\s+NOT silently pick one entry/);
+  assert.match(prompt, /do NOT blend them into a single confident\s+claim/);
+  assert.match(prompt, /aren't fully consistent and suggest confirming with an admin/);
+});
+
 test('SECURITY: the unreviewed-provenance caveat edit does not alter the injection/RBAC-defense clauses (issue #318)', () => {
   const prompt = buildSystemPrompt(caller, {
     codeAnswers: 'snippets',
