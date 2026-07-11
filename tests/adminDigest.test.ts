@@ -685,6 +685,96 @@ function fakeAdapter(opts: {
   };
 }
 
+// --- issue #385: runAdminDigestOnce now signals total failure to
+// startTrackedJob (previously listAdmins() failures were caught-and-returned,
+// and the per-admin loop swallowed every error and continued — so the
+// consecutive-failure tracker wired up below could never trip, the exact
+// #335 trap). These four tests pin the throw-signal shape directly.
+
+test('runAdminDigestOnce: throws when listAdmins() itself rejects, instead of silently swallowing the failure into a return (issue #385)', async (t) => {
+  t.mock.method(pool, 'query', async () => {
+    throw new Error('sentinel-listadmins-rejected');
+  });
+
+  await assert.rejects(() => runAdminDigestOnce([]), /sentinel-listadmins-rejected/);
+});
+
+test(
+  "runAdminDigestOnce: throws when at least one admin is attempted and every attempted admin fails — a rejecting sendDirectMessage propagates as a per-admin failure (issue #385, applying #335's total-failure fix)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-totalfail-admin`;
+    const requesterId = `${RUN}-run-totalfail-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    // A pending access request guarantees a non-null digest message, so
+    // sendDirectMessage is actually reached (a quiet week would `continue`
+    // before ever calling it, which would prove nothing about the throw path).
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'guest' });
+
+    const baseAdapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-totalfail-empty`],
+      sent: [],
+    });
+    const adapter: PlatformAdapter = {
+      ...baseAdapter,
+      async sendDirectMessage() {
+        throw new Error('sentinel-totalfail-send');
+      },
+    };
+
+    await assert.rejects(() => runAdminDigestOnce([adapter]), /Admin digest: all 1 admin runs failed/);
+
+    await clearAccessRequest('discord', requesterId);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce does NOT throw when only some admins fail — a single bad admin must never abort the others nor be mistaken for total job failure (issue #385, #335 partial-failure convention)',
+  { skip },
+  async () => {
+    const okAdminId = `${RUN}-partial-ok-admin`;
+    const failAdminId = `${RUN}-partial-fail-admin`;
+    await upsertMember({ platform: 'discord', userId: okAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: failAdminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const baseAdapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-partial-empty`],
+      sent,
+    });
+    const adapter: PlatformAdapter = {
+      ...baseAdapter,
+      async conversationsForUser(userId) {
+        if (userId === failAdminId) throw new Error('sentinel-partial-admin-failure');
+        return baseAdapter.conversationsForUser(userId);
+      },
+    };
+
+    await assert.doesNotReject(() => runAdminDigestOnce([adapter]));
+
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[okAdminId, failAdminId]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [okAdminId, failAdminId],
+    ]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: resolves without throwing when no adapter is connected for any admin — a legitimate zero-attempt run, same as zero enrolled admins (issue #385)',
+  { skip },
+  async () => {
+    await assert.doesNotReject(() => runAdminDigestOnce([]));
+  },
+);
+
 test(
   'repository: listAdmins returns only community_users admins, never members or super admins',
   { skip },

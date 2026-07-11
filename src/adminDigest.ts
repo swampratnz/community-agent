@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { startTrackedJob } from './backgroundJobs.js';
 import {
   countAccessRequests,
   countDuplicateKnowledge,
@@ -21,8 +22,6 @@ import {
   type QuestionCluster,
 } from './storage/repository.js';
 import type { PlatformAdapter } from './platforms/types.js';
-
-const CHECK_INTERVAL_MS = 24 * 60 * 60_000; // daily tick; the freshness guard below makes it ~weekly per admin
 
 /** Freshness window and cluster window/limit — mirrors `question_digest`'s own defaults (tools.ts). */
 const FRESHNESS_DAYS = 7;
@@ -242,27 +241,42 @@ export function buildAdminDigestMessage(
  * admins are not enrolled — `listAdmins` only returns `community_users`
  * admins; super admins keep the on-demand, unrestricted-scope
  * `question_digest`/`list_access_requests`/`list_reports` tools instead.
+ *
+ * Total-failure signal for `startTrackedJob` (issue #385, applying #335's
+ * fix at the outset): a `listAdmins()` rejection propagates directly — that
+ * is unambiguously a total failure, never a "zero admins" success. Within
+ * the per-admin loop, an admin counts as `attempted` once a connected
+ * adapter is found for it, and as `succeeded` if its try block completes
+ * without throwing — a freshness-guard skip and a quiet-week no-send both
+ * count as success (nothing went wrong), only a caught error does not. If
+ * at least one admin was attempted and every attempted admin failed, the
+ * function throws after the loop; a partial failure (some succeed, some
+ * fail) or a legitimate zero-attempt run (no admins, or no connected
+ * adapter for any of them) never throws, matching #335's
+ * partial-failure-must-never-throw convention.
  */
 export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): Promise<void> {
-  let admins;
-  try {
-    admins = await listAdmins();
-  } catch (err) {
-    logger.error({ err }, 'Admin digest: failed to list admins');
-    return;
-  }
+  const admins = await listAdmins();
+
+  let attempted = 0;
+  let succeeded = 0;
 
   for (const admin of admins) {
     const adapter = adapters.find((a) => a.platform === admin.platform && a.isConnected());
     if (!adapter) continue;
 
+    attempted++;
+    let ok = false;
     try {
       const alreadySent = await wasAdminDigestSentRecently(
         admin.platform,
         admin.platformUserId,
         FRESHNESS_DAYS,
       );
-      if (alreadySent) continue;
+      if (alreadySent) {
+        ok = true;
+        continue;
+      }
 
       const scope = await adapter.conversationsForUser(admin.platformUserId);
       // Exclude reports filed against ANY of this admin's linked identities
@@ -341,21 +355,31 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         conflictCandidateCount,
         knowledgeStaleMaxAgeDays,
       );
-      if (!message) continue; // quiet week — no send, freshness row untouched
+      if (!message) {
+        ok = true;
+        continue; // quiet week — no send, freshness row untouched
+      }
 
       await adapter.sendDirectMessage(admin.platformUserId, message);
       await recordAdminDigestSent(admin.platform, admin.platformUserId);
+      ok = true;
     } catch (err) {
       logger.warn(
         { err, platform: admin.platform, id: admin.platformUserId },
         'Admin digest: per-admin run failed',
       );
+    } finally {
+      if (ok) succeeded++;
     }
+  }
+
+  if (attempted > 0 && succeeded === 0) {
+    throw new Error(`Admin digest: all ${attempted} admin runs failed`);
   }
 }
 
 /**
- * Daily timer (gated behind ADMIN_DIGEST_ENABLED, off by default — no timer
+ * Timer (gated behind ADMIN_DIGEST_ENABLED, off by default — no timer
  * created when unset) that pushes each `community_users` admin a weekly DM
  * summarising recurring-question clusters in their own scoped conversations,
  * plus pending access-request, open-report, pending-suggestion, (when
@@ -370,14 +394,23 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/
  * `list_duplicate_knowledge`/`list_knowledge_conflicts` already compute on
  * demand.
+ *
+ * Routed through `startTrackedJob` (issue #385) rather than a hand-rolled
+ * `setInterval`, wiring this job into the same consecutive-scheduled-failure
+ * alerting `startContextBuilder`/`startKnowledgeRefresh`/`startDocsIngest`/
+ * both retention purges/the status poller already have. `startTrackedJob`
+ * ticks every 6h rather than the previous 24h, but each admin's own
+ * `wasAdminDigestSentRecently(..., FRESHNESS_DAYS)` guard already makes
+ * actual DM sends idempotent at the ~weekly cadence regardless of how often
+ * the outer tick fires — the same "outer tick faster than the real
+ * cadence, inner freshness guard keeps behaviour unchanged" shape
+ * `startKnowledgeRefresh`/`startDocsIngest` already use. `runOnce` is
+ * injectable (tests only) so the alerting can be exercised without a real
+ * DB/adapters, same convention as every other tracked job.
  */
 export function startAdminDigest(
   adapters: readonly PlatformAdapter[],
+  runOnce: () => Promise<void> = () => runAdminDigestOnce(adapters),
 ): ReturnType<typeof setInterval> | null {
-  if (!config.adminDigest.enabled) return null;
-
-  void runAdminDigestOnce(adapters);
-  const timer = setInterval(() => void runAdminDigestOnce(adapters), CHECK_INTERVAL_MS);
-  timer.unref();
-  return timer;
+  return startTrackedJob('admin-digest', adapters, config.adminDigest.enabled, runOnce);
 }

@@ -35,6 +35,7 @@ process.env.KNOWLEDGE_REFRESH_ENABLED = 'true';
 process.env.DOCS_INGEST_ENABLED = 'true';
 process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
+process.env.ADMIN_DIGEST_ENABLED = 'true';
 
 const {
   startContextBuilder,
@@ -47,6 +48,7 @@ const {
 } = await import('../src/backgroundJobs.js');
 const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
+const { startAdminDigest } = await import('../src/adminDigest.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
@@ -103,6 +105,7 @@ const JOBS = [
   ['startRetentionPurge', startRetentionPurge],
   ['startRosterRetentionPurge', startRosterRetentionPurge],
   ['startEmbeddingHealthCheckJob', startEmbeddingHealthCheckJob],
+  ['startAdminDigest', startAdminDigest],
 ] as const;
 
 for (const [name, start] of JOBS) {
@@ -133,7 +136,7 @@ for (const [name, start] of JOBS) {
   });
 }
 
-test('each of the six jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
+test('each of the seven jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
   const { adapter, dms } = makeAdapter();
   const failOnce = async () => {
     throw new Error('sentinel-independent');
@@ -147,13 +150,14 @@ test('each of the six jobs keeps an independent tracker: one failure each (below
     startRetentionPurge([adapter], failOnce),
     startRosterRetentionPurge([adapter], failOnce),
     startEmbeddingHealthCheckJob([adapter], failOnce),
+    startAdminDigest([adapter], failOnce),
   ];
   try {
     await flush();
     assert.equal(
       dms.length,
       0,
-      'six distinct jobs each failing once (< threshold) never alerts — trackers are independent',
+      'seven distinct jobs each failing once (< threshold) never alerts — trackers are independent',
     );
   } finally {
     for (const timer of timers) if (timer) clearInterval(timer);
@@ -204,6 +208,41 @@ test("startContextBuilder: a successful run after a failure streak resets that j
 
   t.mock.timers.enable({ apis: ['setInterval'] });
   const timer = startContextBuilder([adapter], runOnce);
+  try {
+    await flush(); // failure 1
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alert
+    assert.equal(dms.length, 1, 'first streak of 3 consecutive failures alerts once');
+
+    mode = 'succeed';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // success -> silently resets the tracker
+    assert.equal(dms.length, 1, 'a successful run never itself sends a DM');
+
+    mode = 'fail';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 1 of the new streak
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alerts again
+    assert.equal(dms.length, 2, 'a fresh streak of 3 failures after recovery alerts again');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test("startAdminDigest: a successful run after a failure streak resets that job's tracker, so a fresh streak of 3 further failures alerts again (not a one-shot latch, issue #385)", async (t) => {
+  const { adapter, dms } = makeAdapter();
+  let mode: 'fail' | 'succeed' = 'fail';
+  const runOnce = async () => {
+    if (mode === 'fail') throw new Error('sentinel-rearm-admindigest');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startAdminDigest([adapter], runOnce);
   try {
     await flush(); // failure 1
     t.mock.timers.tick(SIX_HOURS_MS);
@@ -466,6 +505,33 @@ test('SECURITY: the alert DM body for embedding-model never contains the caught 
     assert.match(
       body,
       /^⚠️ Background job 'embedding-model' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('SECURITY: the alert DM body for admin-digest never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp) (issue #385)', async (t) => {
+  const sentinel = 'sentinel-secret-path-or-query-fragment-admindigest';
+  const { adapter, dms } = makeAdapter();
+  const runOnce = async () => {
+    throw new Error(sentinel);
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startAdminDigest([adapter], runOnce);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.equal(dms.length, 1, 'threshold reached, one alert sent');
+    const body = dms[0].text;
+    assert.ok(!body.includes(sentinel), 'the DM body must never contain the caught error message');
+    assert.match(
+      body,
+      /^⚠️ Background job 'admin-digest' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
     );
   } finally {
     clearInterval(timer!);
