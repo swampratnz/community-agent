@@ -2499,6 +2499,49 @@ test(
 );
 
 test(
+  'repository: countStaleKnowledge maxAgeDays ceiling counts a frequently-retrieved-but-ancient entry that staleDays alone exempts forever, and stays byte-identical to pre-#380 when omitted (issue #380)',
+  { skip },
+  async () => {
+    const before0 = await countStaleKnowledge(30);
+    const beforeCeiling = await countStaleKnowledge(30, 90);
+
+    const { id: popularAncient } = await saveKnowledge({
+      content: `${RUN} popular but ancient — retrieved moments ago, content is 200 days old`,
+      title: 'stale-max-age-popular-ancient',
+      scope: 'global',
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '200 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [popularAncient],
+    );
+
+    assert.equal(
+      await countStaleKnowledge(30),
+      before0,
+      'omitting maxAgeDays must never count the popular-but-ancient entry — byte-identical to pre-#380',
+    );
+    assert.equal(
+      await countStaleKnowledge(30, 0),
+      before0,
+      'maxAgeDays=0 (explicit) is identical to omitting it',
+    );
+    assert.equal(
+      await countStaleKnowledge(30, 90),
+      beforeCeiling + 1,
+      'maxAgeDays=90 must count the popular-but-ancient entry even though staleDays alone never would',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [popularAncient]);
+    assert.equal(
+      await countStaleKnowledge(30, 90),
+      beforeCeiling,
+      'cleanup restores the prior ceiling count',
+    );
+  },
+);
+
+test(
   "repository: listKnowledge staleOnly reuses countStaleKnowledge's exact GREATEST predicate and orders most-overdue first (issue #280)",
   { skip },
   async () => {
@@ -2624,6 +2667,48 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[staleInA, staleInB]]);
+  },
+);
+
+test(
+  'repository: listKnowledge staleOnly + staleMaxAgeDays includes a frequently-retrieved-but-ancient entry that staleDays alone excludes, and stays byte-identical to pre-#380 when omitted (issue #380)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-stale-max-age-scope`;
+
+    const { id: popularAncient } = await saveKnowledge({
+      content: `${RUN} popular but ancient`,
+      title: 'stale-max-age-list-popular-ancient',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '200 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [popularAncient],
+    );
+
+    const omitted = await listKnowledge({ scope, staleOnly: true, staleDays: 30 });
+    assert.deepEqual(
+      omitted.map((e) => e.id),
+      [],
+      'omitting staleMaxAgeDays must never surface the popular-but-ancient entry — byte-identical to pre-#380',
+    );
+
+    const explicitZero = await listKnowledge({ scope, staleOnly: true, staleDays: 30, staleMaxAgeDays: 0 });
+    assert.deepEqual(
+      explicitZero.map((e) => e.id),
+      [],
+      'staleMaxAgeDays=0 (explicit) is identical to omitting it',
+    );
+
+    const withCeiling = await listKnowledge({ scope, staleOnly: true, staleDays: 30, staleMaxAgeDays: 90 });
+    assert.deepEqual(
+      withCeiling.map((e) => e.id),
+      [popularAncient],
+      'staleMaxAgeDays=90 must include the popular-but-ancient entry even though staleDays alone never would',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [popularAncient]);
   },
 );
 
@@ -2777,6 +2862,77 @@ test("isKnowledgeStale (issue #214) mirrors countStaleKnowledge's edit-or-retrie
     'staleDays=0 (KNOWLEDGE_STALE_DAYS unset) disables the feature entirely, regardless of age',
   );
 });
+
+test(
+  'isKnowledgeStale maxAgeDays (issue #380): a popular entry retrieved just now still trips the absolute ' +
+    'content-age ceiling, closing the gap where staleDays alone can never fire on it',
+  () => {
+    const ancientEdit = new Date(Date.now() - 200 * 86_400_000);
+    const retrievedNow = new Date();
+    assert.equal(
+      isKnowledgeStale({ updatedAt: ancientEdit, lastRetrievedAt: retrievedNow }, 30),
+      false,
+      'staleDays alone: retrieved moments ago, so never stale — the exact self-defeating loop #380 closes',
+    );
+    assert.equal(
+      isKnowledgeStale({ updatedAt: ancientEdit, lastRetrievedAt: retrievedNow }, 30, 90),
+      true,
+      'maxAgeDays=90 fires on content age alone, deliberately ignoring lastRetrievedAt',
+    );
+  },
+);
+
+test('isKnowledgeStale maxAgeDays fires even with staleDays=0 — a valid config combo (ceiling-only mode)', () => {
+  const ancientEdit = new Date(Date.now() - 200 * 86_400_000);
+  assert.equal(
+    isKnowledgeStale({ updatedAt: ancientEdit, lastRetrievedAt: new Date() }, 0, 90),
+    true,
+    'maxAgeDays does not depend on staleDays being enabled',
+  );
+});
+
+test('isKnowledgeStale maxAgeDays omitted/0 is byte-identical to pre-#380 behaviour for every existing case', () => {
+  const oldDate = new Date(Date.now() - 400 * 86_400_000);
+  const recentDate = new Date(Date.now() - 1 * 86_400_000);
+  assert.equal(isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: recentDate }, 30, 0), false);
+  assert.equal(isKnowledgeStale({ updatedAt: recentDate, lastRetrievedAt: oldDate }, 30, 0), false);
+  assert.equal(isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: oldDate }, 30, 0), true);
+  assert.equal(isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: null }, 30, 0), true);
+  assert.equal(isKnowledgeStale({ updatedAt: oldDate, lastRetrievedAt: null }, 0, 0), false);
+});
+
+test(
+  'SECURITY: countStaleKnowledge/listKnowledge staleOnly stay byte-identical to pre-#380 behaviour when ' +
+    'maxAgeDays is omitted — the new ceiling parameter is a strict opt-in, never a default behaviour change ' +
+    '(issue #380)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-stale-max-age-security-scope`;
+    const { id: popularAncient } = await saveKnowledge({
+      content: `${RUN} popular but ancient (security regression check)`,
+      title: 'stale-max-age-security-popular-ancient',
+      scope,
+    });
+    await pool.query(
+      `UPDATE knowledge SET updated_at = now() - interval '200 days', last_retrieved_at = now()
+        WHERE id = $1`,
+      [popularAncient],
+    );
+
+    const countOmitted = await countStaleKnowledge(30);
+    const countExplicitZero = await countStaleKnowledge(30, 0);
+    assert.equal(countOmitted, countExplicitZero, 'omitting maxAgeDays must equal passing 0 explicitly');
+
+    const listOmitted = await listKnowledge({ scope, staleOnly: true, staleDays: 30 });
+    assert.deepEqual(
+      listOmitted.map((e) => e.id),
+      [],
+      'omitting staleMaxAgeDays must never surface the popular-but-ancient entry — matches pre-#380 output exactly',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [popularAncient]);
+  },
+);
 
 test(
   'repository: createSuggestion enforces a DB-backed rolling-24h cap per user, robust to a simulated restart (issue #46)',

@@ -227,6 +227,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         (i) => i.userId,
       );
       const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
+      const knowledgeStaleMaxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays;
       const [
         clusters,
         pendingAccessRequests,
@@ -244,7 +245,13 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         countAccessRequests(),
         countOpenReports(scope, viewerIds),
         countPendingSuggestions(),
-        knowledgeStaleDays > 0 ? countStaleKnowledge(knowledgeStaleDays) : Promise.resolve(0),
+        // The ceiling can be set on its own (KNOWLEDGE_STALE_DAYS=0,
+        // KNOWLEDGE_STALE_MAX_AGE_DAYS>0 is a valid config combo) — gate on
+        // either being on, so an operator running ceiling-only mode isn't
+        // silently skipped here the way this whole issue is about (#380).
+        knowledgeStaleDays > 0 || knowledgeStaleMaxAgeDays > 0
+          ? countStaleKnowledge(knowledgeStaleDays, knowledgeStaleMaxAgeDays)
+          : Promise.resolve(0),
         // Conversation-scoped like openReports (knowledge_gaps has a
         // conversation_id), over the same freshness window (#246).
         countKnowledgeGaps(scope, FRESHNESS_DAYS),
