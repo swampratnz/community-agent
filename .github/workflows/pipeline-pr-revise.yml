@@ -157,7 +157,7 @@ jobs:
             echo "attempt=$(( attempts + 1 ))"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: steps.precheck.outputs.proceed == 'true'
         with:
           # The branch precheck derived from the PR number via the API — NEVER
@@ -204,7 +204,7 @@ jobs:
         id: fix
         if: steps.mark.outcome == 'success'
         continue-on-error: true # the verify step below is the source of truth
-        uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1.0.165
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1.0.171
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token

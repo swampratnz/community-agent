@@ -303,7 +303,11 @@ system prompt on `AgentReply`, and the router threads a `'mi'` value into
 `adapter.sendMessage`'s optional `language` field, picked up by each adapter's
 `filtered()` helper. Every other `filtered()`/`sendMessage` call site (DMs,
 poll question/answers, thread name/description, announce, warn) is untouched
-and stays English-only.
+and stays English-only. `runAgentTurn`'s own four fixed failure fallbacks —
+internal-error, max-turns, generic non-success, and upstream usage-limit —
+also honour a standing `'mi'` preference the same way (issue #396): gated on
+`outcome.ok === false`, never on the text itself, so a genuine model answer
+can never be substituted.
 
 ## Onboarding (gated mode)
 
@@ -433,6 +437,11 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 - **Restart-safe cadence**: the timer ticks 6-hourly but a freshness guard
   on the last digest's `created_at` makes it ~one run per day, so the
   nightly redeploy restart can't double-run it.
+
+Each per-cluster summarisation call is tool-less, single-turn, and
+fixed-format, so its model is optionally tiered by the same
+`AGENT_MODEL_CLASSIFIER` knob as the moderation LLM abuse check above (issue
+#394) — unset (default) it uses `AGENT_MODEL` unchanged.
 
 ### Knowledge candidates (issue #102)
 
@@ -706,7 +715,10 @@ enabled (every message is inspected) — treat it like ambient archiving.
   small built-in default) that catches bad language on every message. Stage 2
   (`MODERATION_LLM_ABUSE_ENABLED`, off by default) escalates only
   wordlist-clean messages to a single tool-less LLM abuse check — one Claude
-  call per escalated message on the shared Max pool, so it's opt-in.
+  call per escalated message on the shared Max pool, so it's opt-in. That
+  call's model is optionally tiered by `AGENT_MODEL_CLASSIFIER` (issue #394):
+  unset (default) it uses `AGENT_MODEL` like every other call; set, it runs
+  the fixed-format, tool-less classification on a lighter model instead.
 - **Strikes** live in `member_warnings` (keyed on raw `(platform, user_id)`,
   like `response_style_prefs`). Each detection records one `source='auto'`
   warning; the member gets a warning DM and the alert goes to a private

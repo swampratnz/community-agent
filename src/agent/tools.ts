@@ -526,6 +526,24 @@ export function parseIsoInstant(value: string): Date | null {
   return Number.isNaN(ms) ? null : new Date(ms);
 }
 
+/**
+ * Pure formatter for the `usage_stats` tool reply (issue #401), so the
+ * added `backgroundCostUsd` line is directly testable without a DB. Byte-
+ * identical to before this issue when `backgroundCostUsd === 0` — no line
+ * is appended for a deployment with the three background features off (or
+ * before any of them has ever produced a billable call).
+ */
+export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days: number): string {
+  return (
+    `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+    `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
+    `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
+    (s.backgroundCostUsd > 0
+      ? `\nBackground jobs (moderation/digest/refresh): ~$${s.backgroundCostUsd.toFixed(2)}.`
+      : '')
+  );
+}
+
 /** Shared zod shape for create_event's startTime/endTime — format only; future/ordering checks are cross-field and live in the handler. */
 function isoInstantSchema(description: string) {
   return z
@@ -573,6 +591,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
   '- React to a message with an emoji instead of replying\n' +
   '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
+  '- Ask what meetups/events are coming up ("what\'s on?")\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -671,6 +690,13 @@ export async function notifyAdminApproved(
     .sendDirectMessage(userId, message)
     .catch((err) => logger.warn({ err, userId }, 'Admin promotion DM failed'));
 }
+
+/**
+ * Fixed cap on how many upcoming events `list_events` returns (issue #388) —
+ * a small hardcoded constant over a config knob, matching this repo's
+ * existing convention for tool-shape limits (e.g. `GATED_NOTICE_MAX_ADMIN_NAMES`).
+ */
+export const EVENTS_LIST_LIMIT = 10;
 
 /** Truncation length for the suggestion text echoed back in a resolution DM. */
 const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
@@ -1291,6 +1317,34 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       'status page (a background poll, never a live fetch on this call).',
     {},
     async () => text(formatStatusMessage(getStatusCache(), Date.now())),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listEvents = tool(
+    'list_events',
+    'List upcoming Discord scheduled meetups/events (name, start/end time, location) — call this when ' +
+      'someone asks "what\'s coming up?", "when\'s the next meetup?", or similar, instead of guessing from ' +
+      'general knowledge or stale knowledge-base entries. Read-only, no arguments, sourced live from ' +
+      "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
+    {},
+    async () => {
+      if (!adapter.listUpcomingEvents) {
+        return text(`Event listings aren't available on ${caller.platform}.`, true);
+      }
+      const events = await adapter.listUpcomingEvents(EVENTS_LIST_LIMIT);
+      if (events.length === 0) return text('No upcoming events.');
+      return text(
+        events
+          .map((e) => {
+            const when = e.scheduledEndAt
+              ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
+              : e.scheduledStartAt;
+            const desc = e.description ? `: ${e.description}` : '';
+            return `- ${e.name} (${when}) @ ${e.location}${desc}`;
+          })
+          .join('\n'),
+      );
+    },
     { annotations: { readOnlyHint: true } },
   );
 
@@ -3069,10 +3123,17 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-drafted first) instead of the default newest-first — ' +
+            'use this to find candidates that have sat unreviewed the longest.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge_candidates');
-      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50);
+      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50, args.oldestFirst ?? false);
       if (rows.length === 0) return text('No knowledge candidates found.');
       return text(
         untrusted(
@@ -3811,11 +3872,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       assertAtLeast(caller.role, 'super_admin', 'usage_stats');
       const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 365);
       const s = await usageStats(days);
-      return text(
-        `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
-          `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
-          `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}`,
-      );
+      return text(formatUsageStats(s, days));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -3997,6 +4054,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       communityInfo,
       communityGuidelines,
       checkStatus,
+      listEvents,
       knowledgeSearch,
       rememberSearch,
       forgetMe,

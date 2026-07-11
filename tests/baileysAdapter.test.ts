@@ -22,6 +22,7 @@ const {
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
+const { buildToolServer } = await import('../src/agent/tools.js');
 
 /**
  * Stubs the Baileys socket so sendMessage / sendDirectMessage can be
@@ -1127,5 +1128,41 @@ test(
       0,
       'learning the mapping must never trigger a live group fetch on its own',
     );
+  },
+);
+
+test(
+  'list_events reports the standard unsupported-on-whatsapp reply on the real Baileys adapter, which ' +
+    'implements no scheduled-events primitive — mirrors the sendImage/reactToMessage unsupported-platform ' +
+    'pattern (issue #388)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    assert.equal(
+      adapter.listUpcomingEvents,
+      undefined,
+      'BaileysAdapter must not implement listUpcomingEvents — Discord-only capability',
+    );
+    const server = buildToolServer(
+      {
+        platform: 'whatsapp',
+        userId: 'member-1',
+        userName: 'Member',
+        role: 'member',
+        conversationId: '64211234567@s.whatsapp.net',
+        isDirect: true,
+      },
+      adapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+        >;
+      }
+    )._registeredTools['list_events'];
+    const result = await registeredTool.handler();
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
   },
 );

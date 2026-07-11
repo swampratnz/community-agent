@@ -7,6 +7,7 @@ import {
   insertKnowledgeCandidate,
   knowledgeCoversTopic,
   recentInboundForClustering,
+  recordBackgroundJobCost,
   usageStats,
 } from '../storage/repository.js';
 
@@ -111,8 +112,13 @@ interface Cluster {
  * not a second model call, so this never changes the per-run cost cap. The
  * caller (`runContextBuilder`) decides whether to act on `candidate` at all
  * (CONTEXT_CANDIDATES_ENABLED) and applies the dedup guard before inserting.
+ *
+ * Exported (issue #394) so tests can mock `query()` and assert on this
+ * call site's `options` directly — `runContextBuilder`'s own tests inject a
+ * fake `summarize` specifically so they never spawn a real model call, which
+ * left this function's `model:` field with no direct coverage before #394.
  */
-async function summarizeCluster(
+export async function summarizeCluster(
   samples: string[],
 ): Promise<{ topic: string; summary: string; candidate: { title: string; content: string } | null }> {
   const clean = samples.map((s, i) => `${i + 1}. ${s.replace(/[<>]/g, ' ').slice(0, 300)}`);
@@ -131,10 +137,16 @@ async function summarizeCluster(
   ].join('\n');
 
   let resultText = '';
+  let costUsd = 0;
   for await (const message of query({
     prompt,
     options: {
-      model: config.llm.model,
+      // Tool-less, single-turn, fixed-format output — safe to run on a
+      // lighter model (issue #394, extending #382's role-tiering pattern to
+      // this background classifier). Unset (default) falls back to
+      // config.llm.model, byte-identical to pre-#394 behaviour. Cosmetic to
+      // cost, not security — must never affect the tool-gating fields below.
+      model: config.llm.classifierModel ?? config.llm.model,
       systemPrompt:
         'You distill community chat themes into short aggregate digests. Output only the requested lines.',
       tools: [],
@@ -148,6 +160,18 @@ async function summarizeCluster(
     if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
       resultText = message.result;
     }
+    if (
+      message.type === 'result' &&
+      'total_cost_usd' in message &&
+      typeof message.total_cost_usd === 'number'
+    ) {
+      costUsd = message.total_cost_usd;
+    }
+  }
+  if (costUsd > 0) {
+    recordBackgroundJobCost('context_builder', costUsd).catch((err) =>
+      logger.warn({ err }, 'background_job_cost_record_failed'),
+    );
   }
 
   const topic = /^TOPIC:\s*(.+)$/m.exec(resultText)?.[1]?.trim() || 'Community discussion';

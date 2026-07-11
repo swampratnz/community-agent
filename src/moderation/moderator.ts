@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { Platform } from '../platforms/types.js';
-import type { LanguagePreference } from '../storage/repository.js';
+import { recordBackgroundJobCost, type LanguagePreference } from '../storage/repository.js';
 import { excerptOf, makeWordlistDetector, type Detection } from './wordlist.js';
 
 export interface ScanContext {
@@ -284,10 +284,16 @@ export async function classifyAbuseWithLlm(text: string): Promise<Detection | nu
   ].join('\n');
 
   let resultText = '';
+  let costUsd = 0;
   for await (const message of query({
     prompt,
     options: {
-      model: config.llm.model,
+      // Tool-less, single-turn, fixed-format output — safe to run on a
+      // lighter model (issue #394, extending #382's role-tiering pattern to
+      // this background classifier). Unset (default) falls back to
+      // config.llm.model, byte-identical to pre-#394 behaviour. Cosmetic to
+      // cost, not security — must never affect the tool-gating fields below.
+      model: config.llm.classifierModel ?? config.llm.model,
       systemPrompt:
         'You are a strict but fair content-moderation classifier. Output only the one requested line.',
       tools: [],
@@ -301,6 +307,18 @@ export async function classifyAbuseWithLlm(text: string): Promise<Detection | nu
     if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
       resultText = message.result;
     }
+    if (
+      message.type === 'result' &&
+      'total_cost_usd' in message &&
+      typeof message.total_cost_usd === 'number'
+    ) {
+      costUsd = message.total_cost_usd;
+    }
+  }
+  if (costUsd > 0) {
+    recordBackgroundJobCost('moderation_llm', costUsd).catch((err) =>
+      logger.warn({ err }, 'background_job_cost_record_failed'),
+    );
   }
   const match = /^\s*ABUSE:\s*(.+)$/im.exec(resultText);
   if (!match) return null;

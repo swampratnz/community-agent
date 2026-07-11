@@ -2163,6 +2163,7 @@ export async function usageStats(days = 7): Promise<{
   costUsd: number;
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
   costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
+  backgroundCostUsd: number;
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2188,13 +2189,47 @@ export async function usageStats(days = 7): Promise<{
       GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
     [interval],
   );
+  const background = await sumBackgroundJobCosts(clampedDays);
   return {
     inbound: Number(totals[0].inbound),
     outbound: Number(totals[0].outbound),
     costUsd: Number(totals[0].cost),
     topUsers: top.map((r) => ({ userId: r.user_id, userName: r.user_name, messages: Number(r.n) })),
     costByRole: byRole.map((r) => ({ role: r.role, costUsd: Number(r.cost), replies: Number(r.n) })),
+    backgroundCostUsd: background.total,
   };
+}
+
+// --- Background job costs ---------------------------------------------------
+
+export type BackgroundJob = 'moderation_llm' | 'context_builder' | 'knowledge_refresh';
+
+/**
+ * Records the cost of a standalone background `query()` call (issue #401) —
+ * one of the three that spend from the shared Max pool but write no
+ * `interactions` row, so `usageStats()` would otherwise never see them.
+ * Callers are expected to fire this without awaiting and swallow rejections
+ * (see `classifyAbuseWithLlm`/`summarizeCluster`/`researchTopic`), matching
+ * this codebase's non-blocking-telemetry convention — a failed write must
+ * never block or fail the underlying job.
+ */
+export async function recordBackgroundJobCost(job: BackgroundJob, costUsd: number): Promise<void> {
+  await pool.query(`INSERT INTO background_job_costs (job, cost_usd) VALUES ($1, $2)`, [job, costUsd]);
+}
+
+export async function sumBackgroundJobCosts(
+  days = 7,
+): Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
+  const { rows } = await pool.query(
+    `SELECT job, coalesce(sum(cost_usd), 0) AS cost
+       FROM background_job_costs
+      WHERE created_at > now() - $1::interval
+      GROUP BY job ORDER BY job`,
+    [`${clampedDays} days`],
+  );
+  const byJob = rows.map((r) => ({ job: r.job as string, costUsd: Number(r.cost) }));
+  return { total: byJob.reduce((sum, r) => sum + r.costUsd, 0), byJob };
 }
 
 // --- Admin audit -----------------------------------------------------------
@@ -2478,10 +2513,18 @@ export async function knowledgeCoversTopic(topic: string): Promise<boolean> {
   return !!top && Number(top.similarity) >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
 }
 
-/** Admin-tier read of the candidate queue (`list_knowledge_candidates`). */
+/**
+ * Admin-tier read of the candidate queue (`list_knowledge_candidates`).
+ * `oldestFirst` (issue #398) flips the default `created_at DESC` to `ASC` so
+ * an admin can ask "what's been sitting the longest?" — the existing
+ * `knowledge_candidates_status_idx (status, created_at DESC)` serves the
+ * ascending scan via a backward index scan, so no new index is needed.
+ * Default (unset/false) is byte-identical to pre-#398 behaviour.
+ */
 export async function listKnowledgeCandidates(
   status?: KnowledgeCandidateStatus,
   limit = 50,
+  oldestFirst = false,
 ): Promise<KnowledgeCandidate[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
   const params: unknown[] = [];
@@ -2495,7 +2538,7 @@ export async function listKnowledgeCandidates(
     `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at
        FROM knowledge_candidates
        ${where}
-      ORDER BY created_at DESC
+      ORDER BY created_at ${oldestFirst ? 'ASC' : 'DESC'}
       LIMIT $${params.length}`,
     params,
   );
@@ -2514,6 +2557,26 @@ export async function listKnowledgeCandidates(
 export async function countPendingKnowledgeCandidates(): Promise<number> {
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM knowledge_candidates WHERE status = 'pending'`,
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Exact count of `pending` candidates older than `days` (issue #398) — the
+ * review-queue analogue of `countStaleKnowledge`, but for
+ * `knowledge_candidates`'s own age-of-review concern rather than
+ * content-freshness. Only `pending` rows count: an `accepted`/`declined`
+ * candidate has already been reviewed, so it can never inflate this count
+ * regardless of age. Gated behind `KNOWLEDGE_CANDIDATE_STALE_DAYS` (unset/0 =
+ * never called) by its callers, same convention as `countStaleKnowledge`.
+ */
+export async function countStalePendingKnowledgeCandidates(days: number): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM knowledge_candidates
+      WHERE status = 'pending'
+        AND created_at < now() - make_interval(days => $1)`,
+    [days],
   );
   return Number(rows[0].n);
 }

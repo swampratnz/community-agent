@@ -4,6 +4,7 @@ import {
   GatewayIntentBits,
   GuildScheduledEventEntityType,
   GuildScheduledEventPrivacyLevel,
+  GuildScheduledEventStatus,
   MessageFlags,
   Partials,
   PermissionFlagsBits,
@@ -56,10 +57,16 @@ import {
   type MessageHandler,
   type OutgoingMessage,
   type PlatformAdapter,
+  type UpcomingEvent,
 } from '../types.js';
 
 const MAX_DISCORD_LEN = 2000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
+// Matches MEMBERSHIP_CACHE_TTL_MS's "implementations cache briefly" convention
+// (see PlatformAdapter.listUpcomingEvents' doc comment) — a busy channel of
+// members asking "what's on?" can't turn into a scheduledEvents.fetch() call
+// per turn (issue #388).
+const EVENTS_CACHE_TTL_MS = 60_000;
 // Bounded retry for a transient permission-overwrite failure (issue #276):
 // initial attempt + 2 retries, short fixed delay — enough to ride out a
 // blip without meaningfully slowing a mute/channel-create handler. Small
@@ -108,6 +115,10 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   private readonly client: Client;
   private handler: MessageHandler | null = null;
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
+  // Single-entry cache (guild-wide, not per-user) for listUpcomingEvents —
+  // holds the full filtered/sorted list; each call slices to its own limit
+  // so the fetch itself is shared across differing limits (issue #388).
+  private eventsCache: { expires: number; events: UpcomingEvent[] } | null = null;
   private connected = false;
   private readonly moderator: Moderator;
   // Resolved lazily on first use and cached: the muted role and the admin
@@ -706,6 +717,60 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
     this.membershipCache.set(userId, { expires: Date.now() + MEMBERSHIP_CACHE_TTL_MS, ids });
     return ids;
+  }
+
+  /**
+   * Upcoming/active Discord scheduled events (issue #388, the read
+   * counterpart to `create_event`/#230) — `Scheduled`/`Active` only,
+   * `Completed`/`Canceled` excluded, sorted by start time ascending, capped
+   * at `limit`. Cached ~60s (`EVENTS_CACHE_TTL_MS`) as a single guild-wide
+   * entry holding the full filtered/sorted list, so differing `limit`
+   * callers share one `scheduledEvents.fetch()` and only the final slice
+   * differs.
+   */
+  async listUpcomingEvents(limit: number): Promise<UpcomingEvent[]> {
+    const now = Date.now();
+    if (!this.eventsCache || this.eventsCache.expires <= now) {
+      const guild = await this.client.guilds.fetch(config.discord.guildId);
+      const fetched = await guild.scheduledEvents.fetch();
+      const events: UpcomingEvent[] = [];
+      for (const event of fetched.values()) {
+        if (
+          event.status !== GuildScheduledEventStatus.Scheduled &&
+          event.status !== GuildScheduledEventStatus.Active
+        ) {
+          continue;
+        }
+        events.push({
+          name: event.name ?? '',
+          scheduledStartAt: (event.scheduledStartAt ?? new Date(0)).toISOString(),
+          scheduledEndAt: event.scheduledEndAt?.toISOString(),
+          location: await this.resolveEventLocation(event),
+          description: event.description ?? undefined,
+        });
+      }
+      events.sort((a, b) => Date.parse(a.scheduledStartAt) - Date.parse(b.scheduledStartAt));
+      this.eventsCache = { expires: now + EVENTS_CACHE_TTL_MS, events };
+    }
+    return this.eventsCache.events.slice(0, limit);
+  }
+
+  /**
+   * Resolve a scheduled event's location the same direction `create_event`
+   * already resolves it the other way (`performAdminAction`'s `location`
+   * handling): a voice/stage-hosted event's `channelId` resolves to that
+   * channel's name; anything else (external/physical) falls back to the raw
+   * `entityMetadata.location` string Discord stores for it.
+   */
+  private async resolveEventLocation(event: {
+    channelId: string | null;
+    entityMetadata: { location: string | null } | null;
+  }): Promise<string> {
+    if (event.channelId) {
+      const channel = await this.client.channels.fetch(event.channelId).catch(() => null);
+      if (channel && !channel.isDMBased() && 'name' in channel && channel.name) return channel.name;
+    }
+    return event.entityMetadata?.location ?? 'Unknown location';
   }
 
   /**
