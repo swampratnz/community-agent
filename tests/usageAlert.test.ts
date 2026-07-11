@@ -10,10 +10,19 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 
-const { initialUsageAlertTracker, stepUsageAlertTracker, startUsageAlert } =
+const { initialUsageAlertTracker, stepUsageAlertTracker, startUsageAlert, formatUsageAlertMessage } =
   await import('../src/usageAlert.js');
 
 const THRESHOLD = 100;
+
+const BASE_STATS = {
+  inbound: 10,
+  outbound: 100,
+  costUsd: 0,
+  topUsers: [],
+  costByRole: [],
+  backgroundCostUsd: 0,
+};
 
 test('startUsageAlert: USAGE_ALERT_DAILY_REPLIES unset (default) creates no timer', () => {
   const timer = startUsageAlert([]);
@@ -73,4 +82,35 @@ test('stepUsageAlertTracker: re-arms only after dropping below and crossing agai
 
   const secondCrossing = stepUsageAlertTracker(tracker, THRESHOLD, THRESHOLD);
   assert.equal(secondCrossing.shouldAlert, true, 'a fresh crossing after dropping below can alert again');
+});
+
+test('formatUsageAlertMessage: backgroundCostUsd === 0 produces a byte-identical message to before issue #401', () => {
+  const withCost = formatUsageAlertMessage({ ...BASE_STATS, costUsd: 12.34 }, THRESHOLD);
+  assert.equal(
+    withCost,
+    '⚠️ Usage alert: 100 replies in the last 24h (threshold 100). ~$12.34 recorded. Reply count is a coarse ' +
+      'proxy for shared Max-pool draw, not an exact reading — consider pause_bot if this is unexpected.',
+  );
+  assert.ok(!withCost.includes('background jobs'), 'no background-jobs clause when backgroundCostUsd is 0');
+});
+
+test('formatUsageAlertMessage: backgroundCostUsd > 0 adds a distinct clause, never summed into the existing ~$X.XX recorded figure (issue #401)', () => {
+  const message = formatUsageAlertMessage(
+    { ...BASE_STATS, costUsd: 12.34, backgroundCostUsd: 5.67 },
+    THRESHOLD,
+  );
+  assert.ok(
+    message.includes('~$12.34 recorded.'),
+    'the existing conversational-cost figure keeps its own meaning',
+  );
+  assert.ok(
+    message.includes('~$5.67 background jobs (moderation/digest/refresh).'),
+    'background cost appears as a separate clause',
+  );
+});
+
+test('formatUsageAlertMessage: costUsd === 0 and backgroundCostUsd > 0 still surfaces the background clause alone', () => {
+  const message = formatUsageAlertMessage({ ...BASE_STATS, costUsd: 0, backgroundCostUsd: 2 }, THRESHOLD);
+  assert.ok(!message.includes('recorded.'), 'no conversational-cost clause when costUsd is 0');
+  assert.ok(message.includes('~$2.00 background jobs (moderation/digest/refresh).'));
 });

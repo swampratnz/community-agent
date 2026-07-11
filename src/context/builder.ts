@@ -7,6 +7,7 @@ import {
   insertKnowledgeCandidate,
   knowledgeCoversTopic,
   recentInboundForClustering,
+  recordBackgroundJobCost,
   usageStats,
 } from '../storage/repository.js';
 
@@ -136,6 +137,7 @@ export async function summarizeCluster(
   ].join('\n');
 
   let resultText = '';
+  let costUsd = 0;
   for await (const message of query({
     prompt,
     options: {
@@ -158,6 +160,18 @@ export async function summarizeCluster(
     if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
       resultText = message.result;
     }
+    if (
+      message.type === 'result' &&
+      'total_cost_usd' in message &&
+      typeof message.total_cost_usd === 'number'
+    ) {
+      costUsd = message.total_cost_usd;
+    }
+  }
+  if (costUsd > 0) {
+    recordBackgroundJobCost('context_builder', costUsd).catch((err) =>
+      logger.warn({ err }, 'background_job_cost_record_failed'),
+    );
   }
 
   const topic = /^TOPIC:\s*(.+)$/m.exec(resultText)?.[1]?.trim() || 'Community discussion';

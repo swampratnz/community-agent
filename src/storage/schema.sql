@@ -554,3 +554,24 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_conversation_idx
 -- Backs the per-user rolling-24h insert cap (see repository.ts recordKnowledgeGap).
 CREATE INDEX IF NOT EXISTS knowledge_gaps_user_rate_idx
   ON knowledge_gaps (platform, user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Cost of the three standalone background `query()` calls (issue #401) that
+-- spend from the shared Max pool but write no `interactions` row, so
+-- `usageStats()` (interactions-only) never saw them: the opt-in Stage-2 LLM
+-- abuse classifier (`classifyAbuseWithLlm`), the offline context-builder
+-- digest call (`summarizeCluster`), and the daily knowledge-refresh research
+-- call (`researchTopic`). `job` is a fixed enum, never free text or anything
+-- derived from chat content. Bare aggregate data only, same as
+-- `admin_digest_sends` — no user id, conversation id, or platform, so
+-- forget_me/purge_user_data have nothing to touch here.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS background_job_costs (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  job        TEXT        NOT NULL CHECK (job IN ('moderation_llm', 'context_builder', 'knowledge_refresh')),
+  cost_usd   NUMERIC     NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS background_job_costs_created_at_idx
+  ON background_job_costs (created_at DESC);

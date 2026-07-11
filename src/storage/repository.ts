@@ -2126,6 +2126,7 @@ export async function usageStats(days = 7): Promise<{
   costUsd: number;
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
   costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
+  backgroundCostUsd: number;
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2151,13 +2152,47 @@ export async function usageStats(days = 7): Promise<{
       GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
     [interval],
   );
+  const background = await sumBackgroundJobCosts(clampedDays);
   return {
     inbound: Number(totals[0].inbound),
     outbound: Number(totals[0].outbound),
     costUsd: Number(totals[0].cost),
     topUsers: top.map((r) => ({ userId: r.user_id, userName: r.user_name, messages: Number(r.n) })),
     costByRole: byRole.map((r) => ({ role: r.role, costUsd: Number(r.cost), replies: Number(r.n) })),
+    backgroundCostUsd: background.total,
   };
+}
+
+// --- Background job costs ---------------------------------------------------
+
+export type BackgroundJob = 'moderation_llm' | 'context_builder' | 'knowledge_refresh';
+
+/**
+ * Records the cost of a standalone background `query()` call (issue #401) —
+ * one of the three that spend from the shared Max pool but write no
+ * `interactions` row, so `usageStats()` would otherwise never see them.
+ * Callers are expected to fire this without awaiting and swallow rejections
+ * (see `classifyAbuseWithLlm`/`summarizeCluster`/`researchTopic`), matching
+ * this codebase's non-blocking-telemetry convention — a failed write must
+ * never block or fail the underlying job.
+ */
+export async function recordBackgroundJobCost(job: BackgroundJob, costUsd: number): Promise<void> {
+  await pool.query(`INSERT INTO background_job_costs (job, cost_usd) VALUES ($1, $2)`, [job, costUsd]);
+}
+
+export async function sumBackgroundJobCosts(
+  days = 7,
+): Promise<{ total: number; byJob: Array<{ job: string; costUsd: number }> }> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
+  const { rows } = await pool.query(
+    `SELECT job, coalesce(sum(cost_usd), 0) AS cost
+       FROM background_job_costs
+      WHERE created_at > now() - $1::interval
+      GROUP BY job ORDER BY job`,
+    [`${clampedDays} days`],
+  );
+  const byJob = rows.map((r) => ({ job: r.job as string, costUsd: Number(r.cost) }));
+  return { total: byJob.reduce((sum, r) => sum + r.costUsd, 0), byJob };
 }
 
 // --- Admin audit -----------------------------------------------------------
