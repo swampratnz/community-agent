@@ -99,6 +99,14 @@ export class BaileysAdapter implements PlatformAdapter {
   private connected = false;
   private reconnectAttempts = 0;
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
+  /**
+   * Opportunistic LID-local-part -> phone-number mapping, learned for free in
+   * `resolveSenderId` from data every group message already carries. Consumed
+   * (and deleted) by `invalidateMembershipCacheFor` so a bare-`@lid` removal
+   * can also reach the same person's phone-keyed `membershipCache` entry —
+   * see docs/SECURITY.md "Membership-scope staleness".
+   */
+  private readonly lidToPhone = new Map<string, string>();
   /** WA Web version is fetched once and reused across reconnects. */
   private cachedVersion: [number, number, number] | null = null;
   private welcomeCooldown: WelcomeCooldownState = initialWelcomeCooldownState();
@@ -410,10 +418,19 @@ export class BaileysAdapter implements PlatformAdapter {
     return true;
   }
 
-  /** Resolve a message's sender to the same `user_id` form the normal path stores. */
+  /**
+   * Resolve a message's sender to the same `user_id` form the normal path
+   * stores. Side effect: for a group message routed by a LID JID where the
+   * phone number resolves, opportunistically remembers the LID->phone pairing
+   * in `lidToPhone` — the mapping `invalidateMembershipCacheFor` needs to
+   * reach a phone-keyed cache entry from a bare-`@lid` removal event later.
+   */
   private resolveSenderId(msg: WAMessage, isGroup: boolean, remoteJid: string): string {
     const senderNumber = senderPhoneNumber(msg, isGroup);
     const rawFallback = jidLocalPart(isGroup ? msg.key.participant : remoteJid);
+    if (isGroup && isLidJid(msg.key.participant) && senderNumber) {
+      this.lidToPhone.set(rawFallback, senderNumber);
+    }
     return senderNumber || (rawFallback ? lidFallbackId(rawFallback) : 'unknown');
   }
 
@@ -498,12 +515,20 @@ export class BaileysAdapter implements PlatformAdapter {
    * forms a cache key may have been stored under — an exact match on each
    * form only, so a similarly-shaped but different id is never deleted.
    *
-   * Known gap (documented in SECURITY.md "Membership-scope staleness"): a
-   * removal carrying only an `@lid` JID clears that LID-keyed entry, but
-   * cannot clear a *phone-number*-keyed entry for the same person — the
-   * event has no phone number to resolve it by, and the group's own
-   * metadata has already dropped the participant by the time this fires, so
-   * there's no live lookup to recover the mapping either.
+   * A removal carrying only an `@lid` JID also clears that same person's
+   * *phone-number*-keyed entry, via `lidToPhone` — the opportunistic mapping
+   * `resolveSenderId` learns from a prior group message. The entry is
+   * consumed (deleted) here: once the person has left, it has no further use,
+   * so it isn't left to accumulate for departed participants. `lidToPhone` is
+   * only ever consulted to delete, never to add, so a missing/stale mapping
+   * degrades to exactly today's gap and can never over-invalidate.
+   *
+   * Residual gap (documented in SECURITY.md "Membership-scope staleness"):
+   * a participant the bot never saw post in the group has no learned
+   * mapping, so a bare-`@lid` removal for them still can't reach a
+   * phone-keyed entry — the event has no phone number to resolve it by, and
+   * the group's own metadata has already dropped the participant by the time
+   * this fires, so there's no live lookup to recover the mapping either.
    */
   private invalidateMembershipCacheFor(raw: string[]): void {
     for (const jid of raw) {
@@ -511,6 +536,11 @@ export class BaileysAdapter implements PlatformAdapter {
       if (!local) continue;
       this.membershipCache.delete(local);
       this.membershipCache.delete(lidFallbackId(local));
+      const phone = this.lidToPhone.get(local);
+      if (phone) {
+        this.membershipCache.delete(phone);
+        this.lidToPhone.delete(local);
+      }
     }
   }
 
@@ -567,9 +597,12 @@ export class BaileysAdapter implements PlatformAdapter {
    * WhatsApp groups this user (phone number) is currently a participant of,
    * plus their own 1:1 with the bot. Backs admin conversation scoping;
    * cached ~60s, but a group removal event invalidates the affected entry
-   * immediately via `onGroupParticipantsUpdate`. The TTL only bounds
-   * staleness from membership changes this adapter doesn't directly observe
-   * — see SECURITY.md for the residual window.
+   * immediately via `onGroupParticipantsUpdate` — including a bare-`@lid`
+   * removal reaching this same person's phone-keyed entry, when a prior
+   * group message taught the LID->phone mapping (see `lidToPhone`). The TTL
+   * only bounds staleness from membership changes this adapter doesn't
+   * directly observe, or from a never-messaged participant's bare-`@lid`
+   * removal — see SECURITY.md for the residual window.
    */
   async conversationsForUser(userId: string): Promise<string[]> {
     const cached = this.membershipCache.get(userId);

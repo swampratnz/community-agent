@@ -516,6 +516,117 @@ test('SECURITY: the muted-member line is a deterministic function of mutedMember
   );
 });
 
+test('buildAdminDigestMessage: near-duplicate/conflict-candidate knowledge lines each appear only when their own count > 0, and all FOURTEEN signals zero -> null (issue #378)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all fourteen signals zero — including the two new knowledge-pair counts — is a quiet week',
+  );
+
+  const dupOnly = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0);
+  assert.ok(dupOnly, 'a non-zero near-duplicate-knowledge count alone still produces a DM');
+  const dupLines = dupOnly.split('\n').filter((l) => l.includes('🔀'));
+  assert.equal(dupLines.length, 1, 'exactly one near-duplicate-knowledge line');
+  assert.match(
+    dupLines[0],
+    /^🔀 6 near-duplicate knowledge pair\(s\) — run `list_duplicate_knowledge` to review\.$/,
+  );
+  assert.ok(!dupOnly.includes('⚖️'), 'no conflict-candidate line when that count is zero');
+
+  const conflictOnly = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4);
+  assert.ok(conflictOnly, 'a non-zero conflict-candidate-knowledge count alone still produces a DM');
+  const conflictLines = conflictOnly.split('\n').filter((l) => l.includes('⚖️'));
+  assert.equal(conflictLines.length, 1, 'exactly one conflict-candidate-knowledge line');
+  assert.match(
+    conflictLines[0],
+    /^⚖️ 4 conflict-candidate knowledge pair\(s\) that may disagree — run `list_knowledge_conflicts` to review\.$/,
+  );
+  assert.ok(!conflictOnly.includes('🔀'), 'no near-duplicate line when that count is zero');
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('🔀') &&
+      !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('⚖️'),
+    'neither new line appears when both counts are zero',
+  );
+});
+
+test('buildAdminDigestMessage: the near-duplicate-knowledge and conflict-candidate-knowledge lines never contain a knowledge entry id, title, or content — only the bare count (issue #378 privacy pin)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3);
+  assert.ok(message);
+  assert.ok(!/title|content/i.test(message), 'no pair field name or content ever leaks into the digest text');
+});
+
+test('SECURITY: the near-duplicate and conflict-candidate knowledge lines are a deterministic function of their count integers only, and never carry a knowledge entry id, title, or content (issue #378)', () => {
+  const secretTitle = 'A Very Identifiable Knowledge Entry Title';
+  const secretContent = 'a very identifiable knowledge entry body that must never leak';
+
+  // buildAdminDigestMessage never receives pair row content — only the bare
+  // counts — so there is nothing to smuggle in via an unrelated parameter
+  // either (same shape as the muted-member/max-turns privacy pins above).
+  const a = buildAdminDigestMessage(
+    [{ representative: secretTitle, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    9,
+    5,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: secretContent, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    9,
+    5,
+  );
+  assert.ok(a && b);
+  const dupLine = (m: string) => m.split('\n').find((l) => l.includes('🔀'));
+  const conflictLine = (m: string) => m.split('\n').find((l) => l.includes('⚖️'));
+  assert.equal(
+    dupLine(a),
+    dupLine(b),
+    'the near-duplicate-knowledge line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.equal(
+    conflictLine(a),
+    conflictLine(b),
+    'the conflict-candidate-knowledge line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    dupLine(a)!,
+    /^🔀 9 near-duplicate knowledge pair\(s\) — run `list_duplicate_knowledge` to review\.$/,
+  );
+  assert.match(
+    conflictLine(a)!,
+    /^⚖️ 5 conflict-candidate knowledge pair\(s\) that may disagree — run `list_knowledge_conflicts` to review\.$/,
+  );
+  assert.ok(
+    !dupLine(a)!.includes(secretTitle) &&
+      !dupLine(a)!.includes(secretContent) &&
+      !conflictLine(a)!.includes(secretTitle) &&
+      !conflictLine(a)!.includes(secretContent),
+    'SECURITY: no knowledge entry id, title, or content ever appears in either line — bare count only',
+  );
+});
+
 function fakeAdapter(opts: {
   platform: 'discord' | 'whatsapp';
   conversationIds: string[];
@@ -1825,5 +1936,181 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "SECURITY: runAdminDigestOnce: an admin with every other signal at zero but >=1 near-duplicate and >=1 conflict-candidate knowledge pair still receives a digest containing only the bare counts — never a pair's knowledge entry id, title, or content (issue #378 acceptance criteria)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-knowledgepairs-admin`;
+    const scope = `${RUN}-run-knowledgepairs-scope`;
+    const secretDupTitleA = 'a very identifiable near-duplicate title A that must never leak';
+    const secretDupTitleB = 'a very identifiable near-duplicate title B that must never leak';
+    const secretDupContent = 'a very identifiable body shared by both near-duplicate entries';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    // Near-duplicate pair (>= 0.92) — same content, near-identical title.
+    const { id: dupAId } = await saveKnowledge({
+      title: secretDupTitleA,
+      content: secretDupContent,
+      scope,
+    });
+    const { id: dupBId } = await saveKnowledge({
+      title: secretDupTitleB,
+      content: secretDupContent,
+      scope,
+    });
+
+    // Conflict-candidate pair (mid-band, [0.55, 0.92)) — hand-crafted
+    // orthonormal-basis embeddings so cosine similarity is exact, same
+    // technique as tests/repository.test.ts's listKnowledgeConflictCandidates
+    // fixtures.
+    const secretConflictTitleA = 'a very identifiable conflict-candidate title A that must never leak';
+    const secretConflictTitleB = 'a very identifiable conflict-candidate title B that must never leak';
+    const dim = config.db.embeddingDim;
+    const vecA = new Array(dim).fill(0);
+    vecA[0] = 1;
+    const vecB = new Array(dim).fill(0);
+    vecB[0] = 0.7;
+    vecB[1] = Math.sqrt(1 - 0.7 ** 2);
+    const { rows: conflictRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, embedding) VALUES
+         ($1,$2,'conflict body a',$4), ($1,$3,'conflict body b',$5)
+       RETURNING id`,
+      [scope, secretConflictTitleA, secretConflictTitleB, pgvector.toSql(vecA), pgvector.toSql(vecB)],
+    );
+    const conflictAId = Number(conflictRows[0].id);
+    const conflictBId = Number(conflictRows[1].id);
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-knowledgepairs-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the in-scope knowledge-pair backlog alone triggers a digest');
+    assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
+    assert.match(
+      sent[0].text,
+      /🔀 \d+ near-duplicate knowledge pair\(s\) — run `list_duplicate_knowledge` to review\./,
+      'the near-duplicate-knowledge line is present',
+    );
+    assert.match(
+      sent[0].text,
+      /⚖️ \d+ conflict-candidate knowledge pair\(s\) that may disagree — run `list_knowledge_conflicts` to review\./,
+      'the conflict-candidate-knowledge line is present',
+    );
+    for (const secret of [
+      secretDupTitleA,
+      secretDupTitleB,
+      secretDupContent,
+      secretConflictTitleA,
+      secretConflictTitleB,
+      String(dupAId),
+      String(dupBId),
+      String(conflictAId),
+      String(conflictBId),
+    ]) {
+      assert.ok(
+        !sent[0].text.includes(secret),
+        `SECURITY: "${secret}" (a knowledge entry id, title, or content) must never appear in the digest DM`,
+      );
+    }
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [dupAId, dupBId, conflictAId, conflictBId],
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the near-duplicate and conflict-candidate knowledge-pair counts are guild-wide, not conversation/admin-scoped — two admins with disjoint conversation scopes and no other in-scope signals see identical lines (issue #378 acceptance criteria)',
+  { skip },
+  async () => {
+    const admin1Id = `${RUN}-run-pairscope-admin1`;
+    const admin2Id = `${RUN}-run-pairscope-admin2`;
+    const convo1 = `${RUN}-c-pairscope-1`;
+    const convo2 = `${RUN}-c-pairscope-2`;
+    const scope = `${RUN}-run-pairscope-scope`;
+    await upsertMember({ platform: 'discord', userId: admin1Id, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: admin2Id, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const { id: dupAId } = await saveKnowledge({
+      title: 'pairscope near-duplicate A',
+      content: 'pairscope shared duplicate body',
+      scope,
+    });
+    const { id: dupBId } = await saveKnowledge({
+      title: 'pairscope near-duplicate B',
+      content: 'pairscope shared duplicate body',
+      scope,
+    });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    // A scope map so each admin resolves to their OWN disjoint conversation —
+    // proving the knowledge-pair counts don't vary with either admin's scope,
+    // matching the pending-knowledge-candidate precedent (#284).
+    const scopeByAdmin: Record<string, string[]> = { [admin1Id]: [convo1], [admin2Id]: [convo2] };
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      adminCapabilities: new Set(),
+      async start() {},
+      async stop() {},
+      isConnected: () => true,
+      onMessage() {},
+      async sendMessage() {},
+      async sendDirectMessage(userId, text) {
+        if (!userId.startsWith(RUN)) return;
+        sent.push({ userId, text });
+      },
+      async conversationsForUser(userId) {
+        return scopeByAdmin[userId] ?? [];
+      },
+      async performAdminAction() {
+        return '';
+      },
+    };
+
+    await runAdminDigestOnce([adapter]);
+
+    const admin1Msg = sent.find((s) => s.userId === admin1Id);
+    const admin2Msg = sent.find((s) => s.userId === admin2Id);
+    assert.ok(admin1Msg, 'admin 1 receives a digest despite zero clusters/reports in their own scope');
+    assert.ok(admin2Msg, 'admin 2 receives a digest despite zero clusters/reports in their own scope');
+
+    const dupLine = (text: string) => text.split('\n').find((l) => l.includes('🔀'));
+    const line1 = dupLine(admin1Msg.text);
+    const line2 = dupLine(admin2Msg.text);
+    assert.ok(line1, 'admin 1 sees the near-duplicate-knowledge line');
+    assert.ok(line2, 'admin 2 sees the near-duplicate-knowledge line');
+    assert.equal(
+      line1,
+      line2,
+      'SECURITY: the near-duplicate-knowledge count must be identical across admins with disjoint ' +
+        'conversation scopes — it is a guild-wide COUNT(*), never conversation-scoped',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[dupAId, dupBId]]);
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[admin1Id, admin2Id]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [admin1Id, admin2Id],
+    ]);
   },
 );

@@ -43,3 +43,37 @@ test('saveKnowledge skips the duplicate-check and still saves when embed() fails
   assert.equal(insertParams.length, 1, 'only the INSERT runs — the duplicate-check SELECT is skipped');
   assert.equal(insertParams[0][5], null, 'embedding column is null in the insert');
 });
+
+test("searchKnowledge returns [] and logs a warning (matching searchMemory's shape) when embed() fails, without ever including the query text (issue #376)", async (t) => {
+  t.mock.module('../src/storage/embeddings.js', {
+    namedExports: {
+      embed: async () => {
+        throw new Error('embedding backend unavailable');
+      },
+    },
+  });
+
+  const { logger } = await import('../src/logger.js');
+  const warn = t.mock.method(logger, 'warn');
+  const { pool } = await import('../src/storage/db.js');
+  const queryCalls: unknown[] = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+    queryCalls.push({ sql, params });
+    return { rows: [] };
+  });
+
+  const { searchKnowledge } = await import('../src/storage/repository.js');
+  const sentinel = 'sentinel-secret-member-query-9f3a';
+  const hits = await searchKnowledge(sentinel, { platform: 'discord', conversationId: 'x' });
+
+  assert.deepEqual(hits, [], 'a failed knowledge-search embedding degrades to "no matches"');
+  assert.equal(queryCalls.length, 0, 'the DB is never queried once embedding has failed');
+  assert.equal(warn.mock.calls.length, 1, 'exactly one warn-level line is logged');
+  const [meta, message] = warn.mock.calls[0].arguments;
+  assert.equal(message, 'Embedding query failed; skipping knowledge search');
+  assert.ok((meta as { err?: unknown }).err, 'the warn call carries the caught error, matching searchMemory');
+  assert.ok(
+    !String(message).includes(sentinel) && !JSON.stringify(meta).includes(sentinel),
+    'SECURITY: the log line must never contain the member-supplied query text',
+  );
+});

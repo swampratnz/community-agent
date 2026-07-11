@@ -43,6 +43,8 @@ const {
   declineKnowledgeCandidate,
   listDuplicateKnowledge,
   listKnowledgeConflictCandidates,
+  countDuplicateKnowledge,
+  countKnowledgeConflictCandidates,
   countPendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
@@ -969,6 +971,176 @@ test(
       'SECURITY: a candidate pair split across different scopes must never be reported, even with no ' +
         "scope filter applied — the self-join is scoped a.scope = b.scope, so one scope's entry can " +
         "never leak into another scope's admin's conflict audit",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAnchorId, xMidBandId, yMidBandId]]);
+  },
+);
+
+test(
+  "repository: countDuplicateKnowledge is an exact COUNT(*) past listDuplicateKnowledge's own default limit of 20, and scopes identically (issue #378)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-count-dup-scope`;
+    const dim = config.db.embeddingDim;
+
+    // Seven mutually near-duplicate entries (pairwise similarity 0.95, via
+    // the equal-pairwise-dot-product construction: v_i = sqrt(rho)*e0 +
+    // sqrt(1-rho)*e_i for orthogonal e_i) yield C(7,2) = 21 pairs — one past
+    // listDuplicateKnowledge's default limit of 20, so its own list() call
+    // understates the true backlog while the count must not.
+    const rho = 0.95;
+    const ids: number[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const vec = new Array(dim).fill(0);
+      vec[0] = Math.sqrt(rho);
+      vec[i] = Math.sqrt(1 - rho);
+      ids.push(await insertKnowledgeWithEmbedding(scope, `near-dup entry ${i}`, vec));
+    }
+    // One clearly unrelated entry that must not be counted in any pair.
+    const unrelatedVec = new Array(dim).fill(0);
+    unrelatedVec[dim - 1] = 1;
+    const unrelatedId = await insertKnowledgeWithEmbedding(scope, 'unrelated entry', unrelatedVec);
+
+    const listed = await listDuplicateKnowledge(scope);
+    assert.equal(listed.length, 20, "listDuplicateKnowledge's default limit understates the true 21 pairs");
+
+    const listedUnbounded = await listDuplicateKnowledge(scope, 100);
+    assert.equal(listedUnbounded.length, 21, 'the full unbounded pair count is 21 (C(7,2))');
+
+    assert.equal(
+      await countDuplicateKnowledge(scope),
+      21,
+      'countDuplicateKnowledge reports the exact backlog, matching the unbounded list length, not the limited one',
+    );
+    assert.ok(
+      !listedUnbounded.some((p) => p.aId === unrelatedId || p.bId === unrelatedId),
+      'the unrelated entry never appears in a pair',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[...ids, unrelatedId]]);
+    assert.equal(await countDuplicateKnowledge(scope), 0, 'deleting every inserted row empties the scope');
+  },
+);
+
+test(
+  'SECURITY: repository: countDuplicateKnowledge scopes identically to listDuplicateKnowledge — a same-content pair split across different scopes is never counted (issue #378)',
+  { skip },
+  async () => {
+    const scopeX = `${RUN}-count-dup-scope-x`;
+    const scopeY = `${RUN}-count-dup-scope-y`;
+    const { id: xAId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope: scopeX,
+    });
+    const { id: xBId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: scopeX,
+    });
+    const { id: yId } = await saveKnowledge({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope: scopeY,
+    });
+
+    assert.equal(await countDuplicateKnowledge(scopeX), 1, 'the scope-X pair is counted when scoped to X');
+    assert.equal(
+      await countDuplicateKnowledge(scopeY),
+      0,
+      'SECURITY: scope filter must exclude a cross-scope pair even with near-identical content',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAId, xBId, yId]]);
+  },
+);
+
+test(
+  "repository: countKnowledgeConflictCandidates is an exact COUNT(*) past listKnowledgeConflictCandidates's own default limit of 20, and excludes near-duplicate and below-floor pairs (issue #378)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-count-conflict-scope`;
+    const dim = config.db.embeddingDim;
+
+    // Seven entries with pairwise similarity 0.7 (inside the [0.55, 0.92)
+    // mid-band) yield C(7,2) = 21 conflict-candidate pairs — one past
+    // listKnowledgeConflictCandidates's default limit of 20.
+    const rho = 0.7;
+    const ids: number[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const vec = new Array(dim).fill(0);
+      vec[0] = Math.sqrt(rho);
+      vec[i] = Math.sqrt(1 - rho);
+      ids.push(await insertKnowledgeWithEmbedding(scope, `mid-band entry ${i}`, vec));
+    }
+    // A near-duplicate pair (>= 0.92) that must be excluded from the conflict count.
+    const dupVecA = new Array(dim).fill(0);
+    dupVecA[dim - 2] = 1;
+    const dupVecB = new Array(dim).fill(0);
+    dupVecB[dim - 2] = 0.95;
+    dupVecB[dim - 1] = Math.sqrt(1 - 0.95 ** 2);
+    const dupAId = await insertKnowledgeWithEmbedding(scope, 'near-dup entry a', dupVecA);
+    const dupBId = await insertKnowledgeWithEmbedding(scope, 'near-dup entry b', dupVecB);
+
+    const listed = await listKnowledgeConflictCandidates(scope);
+    assert.equal(
+      listed.length,
+      20,
+      "listKnowledgeConflictCandidates's default limit understates the true 21 pairs",
+    );
+
+    const listedUnbounded = await listKnowledgeConflictCandidates(scope, 100);
+    assert.equal(listedUnbounded.length, 21, 'the full unbounded conflict-candidate count is 21 (C(7,2))');
+
+    assert.equal(
+      await countKnowledgeConflictCandidates(scope),
+      21,
+      'countKnowledgeConflictCandidates reports the exact backlog, matching the unbounded list length',
+    );
+    assert.ok(
+      !listedUnbounded.some(
+        (p) => (p.aId === dupAId && p.bId === dupBId) || (p.aId === dupBId && p.bId === dupAId),
+      ),
+      'the near-duplicate pair (>= 0.92) is excluded from the conflict-candidate count',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[...ids, dupAId, dupBId]]);
+    assert.equal(
+      await countKnowledgeConflictCandidates(scope),
+      0,
+      'deleting every inserted row empties the scope',
+    );
+  },
+);
+
+test(
+  'SECURITY: repository: countKnowledgeConflictCandidates scopes identically to listKnowledgeConflictCandidates — a mid-band pair split across different scopes is never counted (issue #378)',
+  { skip },
+  async () => {
+    const scopeX = `${RUN}-count-conflict-scope-x`;
+    const scopeY = `${RUN}-count-conflict-scope-y`;
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    const xAnchorId = await insertKnowledgeWithEmbedding(scopeX, 'anchor entry x', anchorVec);
+    const xMidBandId = await insertKnowledgeWithEmbedding(scopeX, 'mid-band entry x', midBandVec);
+    const yMidBandId = await insertKnowledgeWithEmbedding(scopeY, 'mid-band entry y', midBandVec);
+
+    assert.equal(
+      await countKnowledgeConflictCandidates(scopeX),
+      1,
+      'the scope-X pair is counted when scoped to X',
+    );
+    assert.equal(
+      await countKnowledgeConflictCandidates(scopeY),
+      0,
+      'SECURITY: scope filter must exclude a cross-scope near-identical-embedding pair',
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAnchorId, xMidBandId, yMidBandId]]);

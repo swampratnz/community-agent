@@ -903,15 +903,17 @@ test(
 
 test(
   "SECURITY: a 'remove' event carrying only an @lid JID cannot invalidate a phone-number-keyed " +
-    'membershipCache entry for the same real person — the event has no phone number to resolve it by, so ' +
-    'that entry survives the full TTL exactly as before this fix (documented residual-window gap, ' +
-    'SECURITY.md "Membership-scope staleness", issue #286)',
+    'membershipCache entry for the same real person when NO prior group message ever taught the ' +
+    'LID->phone mapping — the removal event itself carries no phone number, so that entry survives ' +
+    'the full TTL (narrowed residual-window gap, SECURITY.md "Membership-scope staleness", issues #286 + #374)',
   async () => {
     const adapter = new BaileysAdapter();
     const calls = stubConversationsSocket(adapter, ['64211111111']);
 
     // Two entries for the SAME real person: one resolved (elsewhere) to
     // their real phone number, one to their otherwise-unresolvable LID.
+    // Seeded directly via conversationsForUser (never via a group message),
+    // so `lidToPhone` never learns this pairing — the case #374 leaves open.
     await adapter.conversationsForUser('64211111111');
     await adapter.conversationsForUser('lid:9999');
     assert.equal(calls.groupFetch, 2, 'two distinct cache keys each cause one cache-miss fetch');
@@ -930,7 +932,200 @@ test(
       calls.groupFetch,
       3,
       'the phone-number-keyed entry for the same person must NOT be invalidated by an @lid-only removal ' +
-        'event — this is the documented gap, not a regression introduced by this fix',
+        'event when no prior message ever taught the mapping — this is the narrowed, still-documented gap',
+    );
+  },
+);
+
+// --- LID->phone opportunistic mapping closes the above gap (issue #374) ---
+
+/**
+ * Fires an incoming WhatsApp GROUP text message through the private
+ * `onWhatsappMessage` handler, mirroring how `voiceDm`/`fireGroupJoin` reach
+ * other private adapter internals in this file. A handler must already be
+ * registered via `adapter.onMessage` — `onWhatsappMessage` returns early
+ * without one, same as production wiring.
+ */
+function fireGroupMessage(
+  adapter: InstanceType<typeof BaileysAdapter>,
+  opts: { groupJid: string; participant: string; participantPn?: string; id?: string },
+) {
+  const msg = {
+    key: {
+      remoteJid: opts.groupJid,
+      participant: opts.participant,
+      participantPn: opts.participantPn,
+      fromMe: false,
+      id: opts.id ?? 'MSG-374',
+    },
+    pushName: 'Tester',
+    messageTimestamp: 1_700_000_000,
+    message: { conversation: 'hello' },
+  };
+  return (adapter as unknown as { onWhatsappMessage: (m: unknown) => Promise<void> }).onWhatsappMessage(msg);
+}
+
+test(
+  "SECURITY: a 'remove' event carrying only an @lid JID now invalidates BOTH the lid-keyed AND the " +
+    'phone-number-keyed membershipCache entry for the same person, once a prior group message has taught ' +
+    'the LID->phone mapping (issue #374, closes the residual gap pinned above)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111']);
+    adapter.onMessage(async () => {});
+
+    await adapter.conversationsForUser('64211111111');
+    await adapter.conversationsForUser('lid:9999');
+    assert.equal(calls.groupFetch, 2, 'two distinct cache keys each cause one cache-miss fetch');
+
+    // A prior group message from this participant, routed by LID, resolving
+    // a real phone number — exactly what resolveSenderId sees on the hot path.
+    await fireGroupMessage(adapter, {
+      groupJid: 'group-374@g.us',
+      participant: '9999@lid',
+      participantPn: '64211111111@s.whatsapp.net',
+    });
+
+    await fireGroupJoin(adapter, {
+      id: 'group-374@g.us',
+      participants: ['9999@lid'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('lid:9999');
+    assert.equal(calls.groupFetch, 3, 'the lid-keyed entry is invalidated as before');
+
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(
+      calls.groupFetch,
+      4,
+      'the phone-number-keyed entry for the same person is now ALSO invalidated by the @lid-only removal, ' +
+        'because a prior message taught the LID->phone mapping',
+    );
+  },
+);
+
+test(
+  'SECURITY: a LID->phone mapping learned for participant A is never consulted when invalidating a ' +
+    "'remove' naming only participant B's @lid — B's own phone-keyed entry survives, and A's mapping is " +
+    'not corrupted or wrongly consumed by the unrelated event (issue #374)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111', '64222222222']);
+    adapter.onMessage(async () => {});
+
+    // Only A (lid 9999 / phone 64211111111) is ever taught a mapping.
+    await fireGroupMessage(adapter, {
+      groupJid: 'group-374b@g.us',
+      participant: '9999@lid',
+      participantPn: '64211111111@s.whatsapp.net',
+    });
+
+    await adapter.conversationsForUser('64211111111');
+    await adapter.conversationsForUser('64222222222');
+    assert.equal(calls.groupFetch, 2, 'two distinct users each cause one cache-miss fetch');
+
+    // Remove event names only B's (never-taught) @lid.
+    await fireGroupJoin(adapter, {
+      id: 'group-374b@g.us',
+      participants: ['8888@lid'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('64222222222');
+    assert.equal(
+      calls.groupFetch,
+      2,
+      "B's phone-keyed entry must survive — B's lid was never taught a mapping, and A's mapping must not " +
+        'be misapplied to an unrelated removal',
+    );
+
+    // A's own mapping must still be intact and usable afterwards — proving
+    // the unrelated B removal above didn't corrupt or consume it.
+    await fireGroupJoin(adapter, {
+      id: 'group-374b@g.us',
+      participants: ['9999@lid'],
+      action: 'remove',
+    });
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(
+      calls.groupFetch,
+      3,
+      "A's phone-keyed entry is invalidated once A's own removal event fires, proving A's mapping " +
+        "survived B's unrelated removal untouched",
+    );
+  },
+);
+
+test(
+  "lidToPhone entries are consumed once: a second identical 'remove' event for the same " +
+    'already-departed participant is a no-op, not a lingering mapping that mis-fires later (issue #374)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111']);
+    adapter.onMessage(async () => {});
+
+    await fireGroupMessage(adapter, {
+      groupJid: 'group-374c@g.us',
+      participant: '9999@lid',
+      participantPn: '64211111111@s.whatsapp.net',
+    });
+
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(calls.groupFetch, 1);
+
+    await fireGroupJoin(adapter, {
+      id: 'group-374c@g.us',
+      participants: ['9999@lid'],
+      action: 'remove',
+    });
+
+    // Re-cache a FRESH entry for the same phone number after the invalidation above.
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(calls.groupFetch, 2, 'the mapping consumed above invalidated the entry; this re-fetches it');
+
+    // A second, identical removal event for the same (already-departed) participant.
+    await fireGroupJoin(adapter, {
+      id: 'group-374c@g.us',
+      participants: ['9999@lid'],
+      action: 'remove',
+    });
+
+    await adapter.conversationsForUser('64211111111');
+    assert.equal(
+      calls.groupFetch,
+      2,
+      'the freshly re-cached entry must survive the duplicate removal — the mapping was already consumed ' +
+        'by the first removal, so there is nothing left to (mis-)invalidate a second time',
+    );
+  },
+);
+
+test(
+  'SECURITY: learning a LID->phone mapping from a group message never creates, extends, or otherwise ' +
+    'touches a membershipCache entry — the mapping is consulted ONLY at invalidation time, never to grant ' +
+    'or widen scope (issue #374)',
+  async () => {
+    const adapter = new BaileysAdapter();
+    const calls = stubConversationsSocket(adapter, ['64211111111']);
+    adapter.onMessage(async () => {});
+
+    await fireGroupMessage(adapter, {
+      groupJid: 'group-374d@g.us',
+      participant: '9999@lid',
+      participantPn: '64211111111@s.whatsapp.net',
+    });
+
+    const membershipCache = (adapter as unknown as { membershipCache: Map<string, unknown> }).membershipCache;
+    assert.equal(
+      membershipCache.size,
+      0,
+      'learning the mapping must not itself create a membershipCache entry for anyone',
+    );
+    assert.equal(
+      calls.groupFetch,
+      0,
+      'learning the mapping must never trigger a live group fetch on its own',
     );
   },
 );

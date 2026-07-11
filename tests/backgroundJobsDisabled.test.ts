@@ -16,8 +16,13 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { startContextBuilder, startKnowledgeRefresh, startDocsIngest, startStatusCheck } =
-  await import('../src/backgroundJobs.js');
+const {
+  startContextBuilder,
+  startKnowledgeRefresh,
+  startDocsIngest,
+  startStatusCheck,
+  startEmbeddingHealthCheckJob,
+} = await import('../src/backgroundJobs.js');
 const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 
@@ -72,4 +77,14 @@ test('SECURITY: startStatusCheck creates no timer, never invokes runOnce, and ca
   const timer = startStatusCheck([adapter], runOnce);
   assert.equal(timer, null, 'disabled by default — no timer created, no extra polling');
   assert.equal(dms.length, 0, 'no DM ever sent when the status check is disabled');
+});
+
+test('startEmbeddingHealthCheckJob creates a timer unconditionally — unlike every job above, it has no enable flag to leave off (issue #376)', () => {
+  const { adapter } = makeAdapter();
+  const timer = startEmbeddingHealthCheckJob([adapter], async () => {});
+  assert.ok(
+    timer,
+    'the embedding-model health check runs even when every other background job is disabled by default',
+  );
+  clearInterval(timer);
 });
