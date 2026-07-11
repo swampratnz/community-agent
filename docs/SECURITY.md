@@ -1052,7 +1052,7 @@ the supported path.
   in-memory) rather than CONFIRM, since each is lower-consequence than a
   destructive action and gating them harder would be inconsistent (issues
   #228, #229, #315).
-- **Membership-scope staleness (narrowed, issues #286 + #328 + #350)**:
+- **Membership-scope staleness (narrowed, issues #286 + #328 + #350 + #374)**:
   adapters cache an admin's conversation list for ~60s, but an *observed*
   change invalidates the affected cache entry immediately rather than
   waiting out the TTL. Discord's `GuildMemberRemove` (full guild exit)
@@ -1071,18 +1071,23 @@ the supported path.
   role set is unknowable fails safe and clears the cache rather than risk
   treating a real revocation as unchanged); and WhatsApp's
   `group-participants.update` with `action: 'remove'` clears the removed
-  user's entry the same way. The residual ~60s window still applies to: one
-  WhatsApp case the removal event itself cannot resolve — a
-  `group-participants.update` carrying only an `@lid` (privacy) JID for a
-  participant whose `membershipCache` entry is keyed by their *real phone
-  number* (resolved elsewhere via `senderPn`/`participantPn` from message
-  traffic). The removal payload is a bare JID list with no phone number
-  attached, and by the time the event fires the group's own metadata has
-  already dropped the departed participant, so there is no live lookup that
-  recovers the mapping — only a previously-cached LID-to-phone association
-  would, and none is kept today. That user's phone-keyed entry survives the
-  full TTL exactly as before this PR; only a cache entry keyed by the LID
-  form itself is cleared.
+  user's entry the same way — and, since #374, also the same person's
+  *phone-number*-keyed entry when a bare `@lid` removal is all the event
+  carries: `resolveSenderId` opportunistically learns a LID-local-part ->
+  phone-number mapping (`lidToPhone`) from every group message that resolves
+  one via `senderPn`/`participantPn`, and `invalidateMembershipCacheFor`
+  consumes (deletes) that mapping to reach the phone-keyed entry too. The
+  mapping is only ever consulted to *delete* a cache entry, never to add
+  one, so a missing/stale mapping degrades to exactly the prior gap and can
+  never over-invalidate an unrelated admin's scope. The residual ~60s window
+  now applies only to: a participant the bot never saw post in the group
+  (no prior message ⇒ no mapping ever learned) — a bare-`@lid` removal for
+  them still can't resolve a phone-keyed entry, since the removal payload
+  itself carries no phone number and the group's own metadata has already
+  dropped the departed participant by the time the event fires, so there is
+  no live lookup that recovers the mapping either. That user's phone-keyed
+  entry (if any) survives the full TTL exactly as before; only a cache entry
+  keyed by the LID form itself is cleared.
 - **Guest invisibility in gated mode is now CONDITIONAL, not absolute**
   (issue #48, an owner-approved posture change; extended to WhatsApp groups
   by issue #103). The precise guarantee is: **guest 1:1 DMs to the bot

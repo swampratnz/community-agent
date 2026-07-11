@@ -8,7 +8,7 @@
   "anthropicStatus.test.ts": 4,
   "backgroundJobs.test.ts": 4,
   "backgroundJobsDisabled.test.ts": 2,
-  "baileysAdapter.test.ts": 13,
+  "baileysAdapter.test.ts": 16,
   "baileysArchiving.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 1,
   "config.test.ts": 4,
