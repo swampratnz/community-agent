@@ -1595,7 +1595,7 @@ test('SECURITY: set_language_preference rejects any language outside {auto,en,mi
 // (already trusted, tier-resolved data), so the handler is exercised directly
 // via the MCP server's registered tool, same pattern as the
 // moderation_history zod test above — no DB, no adapter behaviour involved.
-function communityInfoHandler(role: 'member' | 'admin' | 'super_admin') {
+function communityInfoHandler(role: 'guest' | 'member' | 'admin' | 'super_admin') {
   const adapter = stubAdapter(async () => {});
   const caller = {
     platform: 'discord' as const,
@@ -1655,14 +1655,23 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   assert.ok(replyText.length < 1100, `reply should stay short; was ${replyText.length} chars`);
 });
 
-test('community_info appends an admin-extras line for admin/super_admin callers, on top of the member content (issue #92)', async () => {
+test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
   const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
 
   assert.ok(adminReply.startsWith(memberReply), 'admin reply must include the full member content');
-  assert.match(adminReply, /moderat/i, 'admin reply must note extra moderation/management capabilities');
-  assert.equal(superAdminReply, adminReply, 'super_admin sees the same extras line as admin');
+  assert.match(
+    adminReply,
+    /warn, mute, kick/i,
+    'admin reply must contain an ADMIN_CAPABILITIES_TEXT-unique line (moderate)',
+  );
+  assert.doesNotMatch(
+    adminReply,
+    /what's new/i,
+    'the old, misleading "ask what\'s new" pointer must be gone — superseded by inline content (issue #367)',
+  );
+  assert.equal(superAdminReply, adminReply, 'super_admin sees the same admin rundown as admin');
   assert.notEqual(adminReply, memberReply, 'admin reply must differ from the member-only reply');
 });
 
@@ -1735,15 +1744,155 @@ test('community_info anti-drift pin fails loudly for an uncovered member tool (i
   );
 });
 
-test('SECURITY: community_info member-tier reply never names an admin/super_admin-only tool, and the privileged-tools pointer line is unchanged (issue #311)', async () => {
+test('community_info: member-tier reply is byte-identical to the pinned member content, unaffected by the admin rundown (issue #367)', async () => {
   const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+
+  const expectedMemberCapabilitiesText =
+    'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
+    "Here's what you can ask me to do:\n" +
+    '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
+    '- Ask me for our community guidelines ("what are the rules here?")\n' +
+    '- Answer questions from curated community knowledge — just ask\n' +
+    '- Search back through your own past messages for something said earlier\n' +
+    "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
+    '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
+    '- Suggest how the bot or community could be better\n' +
+    '- Rate my last answer helpful or not\n' +
+    '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
+    '- React to a message with an emoji instead of replying\n' +
+    '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
+    '- Erase all your stored data any time ("forget me")';
+
+  assert.equal(
+    memberReply,
+    expectedMemberCapabilitiesText,
+    'a member-tier reply must be byte-identical to the pre-#367 output — this PR only touches the admin branch',
+  );
+});
+
+// Anti-drift pin (issue #367), mirroring MEMBER_CAPABILITY_COVERAGE above: the
+// docstring above ADMIN_CAPABILITIES_TEXT states "every entry in ADMIN_TOOLS
+// gets a mention" as an invariant. This coverage map ties every ADMIN_TOOLS id
+// to a regex its mention must satisfy in the rendered admin community_info
+// text, so a future admin tool shipping with no capabilities-text line fails
+// loudly here instead of drifting silently, the same way #311 caught the
+// member-side gap.
+const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__whats_new', /the changelog/i],
+  ['mcp__community__generate_image', /generate an image/i],
+  ['mcp__community__user_history', /history across conversations/i],
+  ['mcp__community__moderate', /warn, mute, kick/i],
+  ['mcp__community__clear_warnings', /clear a member's warnings/i],
+  ['mcp__community__announce', /make an announcement/i],
+  ['mcp__community__create_poll', /create a poll/i],
+  ['mcp__community__end_poll', /end one poll early/i],
+  ['mcp__community__create_thread', /open a Discord thread/i],
+  ['mcp__community__archive_thread', /archive a Discord thread/i],
+  ['mcp__community__create_event', /schedule an event/i],
+  ['mcp__community__set_community_guidelines', /set the community guidelines/i],
+  ['mcp__community__set_welcome_message', /welcome message/i],
+  ['mcp__community__save_knowledge', /save a new knowledge entry/i],
+  ['mcp__community__list_knowledge', /browse knowledge entries/i],
+  ['mcp__community__update_knowledge', /edit a knowledge entry/i],
+  ['mcp__community__delete_knowledge', /delete a knowledge entry/i],
+  ['mcp__community__list_duplicate_knowledge', /near-duplicate entries/i],
+  ['mcp__community__list_knowledge_conflicts', /conflicting entries/i],
+  ['mcp__community__list_access_requests', /waiting for access/i],
+  ['mcp__community__add_member_note', /add a note about a member/i],
+  ['mcp__community__list_member_notes', /review notes on a member/i],
+  ['mcp__community__delete_member_note', /delete a note/i],
+  ['mcp__community__list_roster', /joined or left the server/i],
+  ['mcp__community__list_context_digests', /context digests/i],
+  ['mcp__community__list_knowledge_candidates', /knowledge candidates/i],
+  ['mcp__community__accept_knowledge_candidate', /accept a candidate/i],
+  ['mcp__community__decline_knowledge_candidate', /decline a candidate/i],
+  ['mcp__community__question_digest', /recurring question clusters/i],
+  ['mcp__community__list_knowledge_gaps', /knowledge gaps/i],
+  ['mcp__community__moderation_history', /moderation history log/i],
+  ['mcp__community__add_member', /add a new member/i],
+  ['mcp__community__remove_member', /remove a member/i],
+  ['mcp__community__link_member', /link a member's cross-platform identity/i],
+  ['mcp__community__unlink_member', /unlink a member's cross-platform identity/i],
+  ['mcp__community__assign_community_role', /assign a Discord role/i],
+  ['mcp__community__remove_community_role', /remove a Discord role/i],
+  ['mcp__community__list_assignable_roles', /roles are available to assign/i],
+  ['mcp__community__list_reports', /review flagged content reports/i],
+  ['mcp__community__resolve_report', /resolve each report/i],
+  ['mcp__community__list_answer_feedback', /how members rated my answers/i],
+  ['mcp__community__list_low_rated_knowledge', /knowledge entries are rated poorly/i],
+  ['mcp__community__list_suggestions', /review suggestions members submit/i],
+  ['mcp__community__resolve_suggestion', /resolve each suggestion/i],
+]);
+// Every ADMIN_TOOLS entry gets its own line — no exemptions needed (unlike
+// MEMBER_CAPABILITY_EXEMPT, ADMIN_TOOLS has no self-referential tool like
+// community_info to exclude).
+const ADMIN_CAPABILITY_EXEMPT = new Set<string>();
+
+function assertAdminToolsCovered(
+  tools: readonly string[],
+  coverage: Map<string, RegExp>,
+  exempt: Set<string>,
+  renderedText: string,
+): void {
+  for (const toolId of tools) {
+    if (exempt.has(toolId)) continue;
+    const pattern = coverage.get(toolId);
+    assert.ok(
+      pattern,
+      `${toolId} has no ADMIN_CAPABILITY_COVERAGE entry — add a capabilities-text line and a coverage-map entry`,
+    );
+    assert.match(renderedText, pattern, `${toolId}'s capabilities-text line is missing or changed`);
+  }
+}
+
+test('community_info: every ADMIN_TOOLS entry has a capabilities-text line (issue #367 anti-drift pin)', async () => {
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  assertAdminToolsCovered(ADMIN_TOOLS, ADMIN_CAPABILITY_COVERAGE, ADMIN_CAPABILITY_EXEMPT, adminReply);
+});
+
+test('community_info anti-drift pin fails loudly for an uncovered admin tool (issue #367)', async () => {
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  // Synthetic fixture standing in for a future admin tool — ADMIN_TOOLS
+  // itself is `as const` and must not be mutated by a test. Demonstrates
+  // that the coverage check above would actually catch the exact drift
+  // #311 found on the member side, now on the admin side too.
+  const syntheticToolsWithGap = [...ADMIN_TOOLS, 'mcp__community__a_brand_new_admin_tool'];
+  assert.throws(
+    () =>
+      assertAdminToolsCovered(
+        syntheticToolsWithGap,
+        ADMIN_CAPABILITY_COVERAGE,
+        ADMIN_CAPABILITY_EXEMPT,
+        adminReply,
+      ),
+    /a_brand_new_admin_tool/,
+  );
+});
+
+test('community_info: admin reply stays under a hard char cap, not a wall of text (issue #367)', async () => {
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
-  assert.match(
-    adminReply,
-    /You also have moderation, announcement, and membership-management tools — ask "what's new" for a fuller rundown\./,
-    'this text-only PR must not change the existing admin/super_admin pointer line',
-  );
+  // 44 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
+  // (same discipline as the member cap at the ~1100-char member test above) —
+  // a hard cap, not a soft heuristic: a future admin tool added without
+  // consolidation should fail this rather than silently growing into a wall
+  // of text.
+  assert.ok(adminReply.length < 2600, `admin reply should stay short; was ${adminReply.length} chars`);
+});
+
+test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
+
+  for (const untieredReply of [memberReply, guestReply]) {
+    for (const [toolId, pattern] of ADMIN_CAPABILITY_COVERAGE) {
+      assert.doesNotMatch(
+        untieredReply,
+        pattern,
+        `non-admin reply must never contain the ADMIN_CAPABILITIES_TEXT line for "${toolId}"`,
+      );
+    }
+  }
 
   const privilegedToolIds = [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS].map((id) =>
     id.replace('mcp__community__', ''),
@@ -1753,6 +1902,11 @@ test('SECURITY: community_info member-tier reply never names an admin/super_admi
       memberReply,
       new RegExp(id, 'i'),
       `member-tier reply must never name the privileged tool "${id}"`,
+    );
+    assert.doesNotMatch(
+      guestReply,
+      new RegExp(id, 'i'),
+      `guest-tier reply must never name the privileged tool "${id}"`,
     );
   }
 });

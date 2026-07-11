@@ -529,6 +529,31 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Erase all your stored data any time ("forget me")';
 
 /**
+ * Plain-language rundown of what an admin can additionally ask the bot to
+ * do, on top of MEMBER_CAPABILITIES_TEXT above (issue #367) — every entry in
+ * ADMIN_TOOLS gets a mention, consolidated into behaviourally-related
+ * bullets rather than 44 one-per-line entries, same discipline
+ * MEMBER_CAPABILITIES_TEXT already uses (issue #311). Safety-relevant tools
+ * (moderate, clear_warnings, archive_thread) come first, mirroring
+ * MEMBER_CAPABILITIES_TEXT's own "most safety-relevant first" convention.
+ * No interpolation of any runtime/tool argument — static text only, same
+ * trust level as MEMBER_CAPABILITIES_TEXT.
+ */
+const ADMIN_CAPABILITIES_TEXT =
+  'As an admin, you also have:\n' +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, or review the moderation history log\n" +
+  "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
+  '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
+  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule an event\n' +
+  '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
+  "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
+  '- See who is waiting for access, or who has joined or left the server\n' +
+  "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
+  '- Set the community guidelines or the welcome message shown to new members\n' +
+  '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+  '- Generate an image, or check recent changes to the bot and community (the changelog)';
+
+/**
  * Best-effort confirmation DM for a member grant. Fires only on an actual
  * transition into membership (`wasAlreadyMember` false) so re-running
  * `add_member` on an existing member/admin doesn't re-send it. A failed DM
@@ -1138,10 +1163,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     {},
     async () => {
       if (caller.role === 'admin' || caller.role === 'super_admin') {
-        return text(
-          `${MEMBER_CAPABILITIES_TEXT}\n` +
-            'You also have moderation, announcement, and membership-management tools — ask "what\'s new" for a fuller rundown.',
-        );
+        return text(`${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}`);
       }
       return text(MEMBER_CAPABILITIES_TEXT);
     },
