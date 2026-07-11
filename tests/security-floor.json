@@ -1,5 +1,5 @@
 {
-  "adminDigest.test.ts": 21,
+  "adminDigest.test.ts": 22,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreLanguagePreference.test.ts": 1,
   "agentCoreUsageLimitAlert.test.ts": 1,
@@ -14,7 +14,7 @@
   "baileysArchiving.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 1,
   "classifierModelTieringSet.test.ts": 1,
-  "config.test.ts": 6,
+  "config.test.ts": 8,
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,
   "createThreadModerationGuard.test.ts": 2,

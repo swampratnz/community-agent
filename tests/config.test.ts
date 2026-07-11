@@ -367,3 +367,123 @@ test('config: KNOWLEDGE_STALE_MAX_AGE_DAYS=90 (the floor) loads cleanly', () => 
   );
   assert.equal(result.status, 0, 'KNOWLEDGE_STALE_MAX_AGE_DAYS=90 must load cleanly');
 });
+
+test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS unset (default) is disabled — zero behaviour change (issue #398)', () => {
+  assert.equal(config.adminDigest.knowledgeCandidateStaleDays, 0);
+});
+
+test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS=0 loads cleanly (explicit disable, issue #398)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_CANDIDATE_STALE_DAYS: '0',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'KNOWLEDGE_CANDIDATE_STALE_DAYS=0 must load cleanly');
+});
+
+test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS=14 (the floor) loads cleanly (issue #398)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_CANDIDATE_STALE_DAYS: '14',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'KNOWLEDGE_CANDIDATE_STALE_DAYS=14 must load cleanly');
+});
+
+test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS=90 (well above the floor) loads cleanly (issue #398)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_CANDIDATE_STALE_DAYS: '90',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'KNOWLEDGE_CANDIDATE_STALE_DAYS=90 must load cleanly');
+});
+
+test('SECURITY: KNOWLEDGE_CANDIDATE_STALE_DAYS=13 fails config validation — below the 14-day floor (issue #398)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_CANDIDATE_STALE_DAYS: '13',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'KNOWLEDGE_CANDIDATE_STALE_DAYS=13 must fail config validation, not load',
+  );
+  assert.match(result.stderr, /KNOWLEDGE_CANDIDATE_STALE_DAYS must be 0 \(disabled\) or at least 14/);
+});
+
+test('SECURITY: KNOWLEDGE_CANDIDATE_STALE_DAYS=1 fails config validation — below the 14-day floor (issue #398)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_CANDIDATE_STALE_DAYS: '1',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'KNOWLEDGE_CANDIDATE_STALE_DAYS=1 must fail config validation, not load');
+  assert.match(result.stderr, /KNOWLEDGE_CANDIDATE_STALE_DAYS must be 0 \(disabled\) or at least 14/);
+});

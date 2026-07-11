@@ -2441,10 +2441,18 @@ export async function knowledgeCoversTopic(topic: string): Promise<boolean> {
   return !!top && Number(top.similarity) >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
 }
 
-/** Admin-tier read of the candidate queue (`list_knowledge_candidates`). */
+/**
+ * Admin-tier read of the candidate queue (`list_knowledge_candidates`).
+ * `oldestFirst` (issue #398) flips the default `created_at DESC` to `ASC` so
+ * an admin can ask "what's been sitting the longest?" — the existing
+ * `knowledge_candidates_status_idx (status, created_at DESC)` serves the
+ * ascending scan via a backward index scan, so no new index is needed.
+ * Default (unset/false) is byte-identical to pre-#398 behaviour.
+ */
 export async function listKnowledgeCandidates(
   status?: KnowledgeCandidateStatus,
   limit = 50,
+  oldestFirst = false,
 ): Promise<KnowledgeCandidate[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
   const params: unknown[] = [];
@@ -2458,7 +2466,7 @@ export async function listKnowledgeCandidates(
     `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at
        FROM knowledge_candidates
        ${where}
-      ORDER BY created_at DESC
+      ORDER BY created_at ${oldestFirst ? 'ASC' : 'DESC'}
       LIMIT $${params.length}`,
     params,
   );
@@ -2477,6 +2485,26 @@ export async function listKnowledgeCandidates(
 export async function countPendingKnowledgeCandidates(): Promise<number> {
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM knowledge_candidates WHERE status = 'pending'`,
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Exact count of `pending` candidates older than `days` (issue #398) — the
+ * review-queue analogue of `countStaleKnowledge`, but for
+ * `knowledge_candidates`'s own age-of-review concern rather than
+ * content-freshness. Only `pending` rows count: an `accepted`/`declined`
+ * candidate has already been reviewed, so it can never inflate this count
+ * regardless of age. Gated behind `KNOWLEDGE_CANDIDATE_STALE_DAYS` (unset/0 =
+ * never called) by its callers, same convention as `countStaleKnowledge`.
+ */
+export async function countStalePendingKnowledgeCandidates(days: number): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM knowledge_candidates
+      WHERE status = 'pending'
+        AND created_at < now() - make_interval(days => $1)`,
+    [days],
   );
   return Number(rows[0].n);
 }

@@ -7568,6 +7568,68 @@ test(
   },
 );
 
+test(
+  'list_knowledge_candidates: oldestFirst orders the queue by created_at ascending instead of the default newest-first (issue #398)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-tool-sort-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+
+    const oldest = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tool-sort-topic-oldest`,
+      title: `${RUN} oldest tool fixture`,
+      content: 'oldest content',
+    });
+    const newest = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tool-sort-topic-newest`,
+      title: `${RUN} newest tool fixture`,
+      content: 'newest content',
+    });
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '2 days' WHERE id = $1`, [
+      oldest,
+    ]);
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '1 days' WHERE id = $1`, [
+      newest,
+    ]);
+
+    const tools = knowledgeCandidateHandlers();
+
+    const defaultOrder = await tools['list_knowledge_candidates'].handler({
+      status: 'pending',
+      limit: 200,
+    });
+    const defaultText = defaultOrder.content[0]?.text ?? '';
+    assert.ok(
+      defaultText.indexOf(`${RUN} newest tool fixture`) < defaultText.indexOf(`${RUN} oldest tool fixture`),
+      'default (no oldestFirst) lists the newest candidate before the oldest one',
+    );
+
+    const oldestFirstOrder = await tools['list_knowledge_candidates'].handler({
+      status: 'pending',
+      limit: 200,
+      oldestFirst: true,
+    });
+    const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+    assert.ok(
+      oldestFirstText.indexOf(`${RUN} oldest tool fixture`) <
+        oldestFirstText.indexOf(`${RUN} newest tool fixture`),
+      'oldestFirst: true lists the oldest candidate before the newest one',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[oldest, newest]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
 // my_submissions (issue #160): a member-tier, read-only pull of the caller's
 // OWN suggestions/reports, filling the gap left by best-effort resolution
 // DMs. Exercises the handler's wiring on top of the repository.test.ts
