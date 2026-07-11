@@ -131,6 +131,27 @@ export function blockedAlertText(ctx: ScanContext, active: number, hit: Detectio
 }
 
 /**
+ * Admin-channel alert for a mute triggered by a manual `warn_user` crossing
+ * the strike limit (issue #384), mirroring {@link blockedAlertText}'s shape
+ * for the auto-detected path — same "who, count, how to undo" content, minus
+ * a classifier `Detection` (there isn't one for a manual warn) and plus the
+ * issuing admin, so the alert isn't silent about a human-triggered mute.
+ */
+export function manualWarnBlockedAlertText(
+  userId: string,
+  issuedBy: string,
+  active: number,
+  limit: number,
+  reason: string,
+): string {
+  return (
+    `⛔ \`${userId}\` reached ${active}/${limit} warnings — most recently a manual warning from ` +
+    `\`${issuedBy}\` (${reason}) — and has been **muted** (blocked from posting).\n` +
+    `Clear their warnings to let them post again (ask me: "clear warnings for ${userId}").`
+  );
+}
+
+/**
  * Scans a message, records a warning when flagged, and escalates: a warning
  * DM + admin-channel notice under the limit, and a mute + block notice once the
  * active-strike count reaches it. Admins/super admins are never touched.
