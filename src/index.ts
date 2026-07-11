@@ -12,6 +12,7 @@ import {
   startKnowledgeRefresh,
   startDocsIngest,
   startStatusCheck,
+  startEmbeddingHealthCheckJob,
 } from './backgroundJobs.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
@@ -72,6 +73,11 @@ async function main(): Promise<void> {
   const disconnectAlertTimer = startDisconnectAlerts(adapters);
   const healthServer = await startHealthServer(adapters);
 
+  // 4c-bis. Embedding-model health check (always on — zero-cost local
+  //         self-test, no enabled flag, same convention as
+  //         startDisconnectAlerts; issue #376).
+  const embeddingHealthTimer = startEmbeddingHealthCheckJob(adapters);
+
   // 4d. Optional proactive usage alert (disabled unless configured).
   const usageAlertTimer = startUsageAlert(adapters);
 
@@ -99,6 +105,7 @@ async function main(): Promise<void> {
     if (retentionTimer) clearInterval(retentionTimer);
     if (rosterRetentionTimer) clearInterval(rosterRetentionTimer);
     clearInterval(disconnectAlertTimer);
+    if (embeddingHealthTimer) clearInterval(embeddingHealthTimer);
     if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
     if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);

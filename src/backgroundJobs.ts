@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
+import { embed } from './storage/embeddings.js';
 import { latestContextDigestAt } from './storage/repository.js';
 import { runContextBuilder, shouldRunContextBuilder, type ClusterSummarizer } from './context/builder.js';
 import {
@@ -212,6 +213,38 @@ export function startDocsIngest(
   runOnce: () => Promise<void> = defaultDocsIngestRun,
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('docs-ingest', adapters, config.docsIngest.enabled, runOnce);
+}
+
+/**
+ * Fixed, non-content probe string for the embedding-model health check
+ * below (issue #376) — never a member's query, knowledge content, or any
+ * per-user identifier, matching `buildJobFailureAlert`'s own "no leaked
+ * content" convention for its DM template.
+ */
+const EMBEDDING_HEALTH_PROBE = 'embedding-model-health-check-probe';
+
+export async function defaultEmbeddingHealthCheckRun(): Promise<void> {
+  await embed(EMBEDDING_HEALTH_PROBE);
+}
+
+/**
+ * Embedding-model health check (issue #376). `getExtractor()` in
+ * src/storage/embeddings.ts used to wedge permanently — until a full
+ * process restart — the first time the model's async load rejected; that's
+ * now fixed to retry on the next call, but a genuinely *sustained* outage
+ * (disk full, OOM) will still fail every retry, silently disabling
+ * knowledge_search/memory recall/save_knowledge bot-wide with zero operator
+ * signal. Unlike the other jobs above, this one is unconditional — no
+ * enabled flag — since it's a zero-cost local self-test, not a feature that
+ * needs its own on/off switch (same convention as `startDisconnectAlerts`).
+ * Reuses `startTrackedJob`'s existing threshold/cadence rather than
+ * introducing either a new constant or a faster bespoke poller.
+ */
+export function startEmbeddingHealthCheckJob(
+  adapters: readonly PlatformAdapter[],
+  runOnce: () => Promise<void> = defaultEmbeddingHealthCheckRun,
+): ReturnType<typeof setInterval> | null {
+  return startTrackedJob('embedding-model', adapters, true, runOnce);
 }
 
 /**
