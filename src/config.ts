@@ -32,6 +32,12 @@ const EnvSchema = z.object({
     .string()
     .min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
   AGENT_MODEL: z.string().default('claude-sonnet-5'),
+  // Optional per-tier override of AGENT_MODEL for member/guest turns (issue
+  // #382), mirroring AGENT_MAX_TURNS_MEMBER's role-tiering pattern applied to
+  // model choice instead of loop depth. Unconstrained string, same validation
+  // as AGENT_MODEL — no artificial model allow-list to maintain. Unset/empty
+  // = opt-out: every role resolves to AGENT_MODEL, byte-identical to today.
+  AGENT_MODEL_MEMBER: z.string().optional(),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
   // Lower agentic-loop ceiling for member/guest turns (issue #347):
   // MEMBER_TOOLS is a much narrower surface than admin+'s (no WebSearch, no
@@ -556,6 +562,7 @@ export const config = {
   llm: {
     oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN,
     model: env.AGENT_MODEL,
+    memberModel: env.AGENT_MODEL_MEMBER,
     maxTurns: env.AGENT_MAX_TURNS,
     memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
   },
