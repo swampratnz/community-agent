@@ -183,3 +183,83 @@ test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=2 (the refined minimum) l
   );
   assert.equal(result.status, 0, 'KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=2 must load cleanly');
 });
+
+test('config: KNOWLEDGE_STALE_MAX_AGE_DAYS unset (default) is disabled — zero behaviour change (issue #380)', () => {
+  assert.equal(config.adminDigest.knowledgeStaleMaxAgeDays, 0);
+});
+
+test('SECURITY: KNOWLEDGE_STALE_MAX_AGE_DAYS=50 fails config validation — below the 90-day floor (issue #380)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_STALE_MAX_AGE_DAYS: '50',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'KNOWLEDGE_STALE_MAX_AGE_DAYS=50 must fail config validation, not load');
+  assert.match(result.stderr, /KNOWLEDGE_STALE_MAX_AGE_DAYS must be 0 \(disabled\) or at least 90/);
+});
+
+test('SECURITY: KNOWLEDGE_STALE_MAX_AGE_DAYS smaller than a nonzero KNOWLEDGE_STALE_DAYS fails config validation — the absolute ceiling must never be shorter than the popularity-aware window (issue #380)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_STALE_DAYS: '100',
+        KNOWLEDGE_STALE_MAX_AGE_DAYS: '90',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'KNOWLEDGE_STALE_MAX_AGE_DAYS=90 with KNOWLEDGE_STALE_DAYS=100 must fail config validation, not load — both individually clear their own floor, but the ceiling would be shorter than the popularity-aware window',
+  );
+  assert.match(
+    result.stderr,
+    /KNOWLEDGE_STALE_MAX_AGE_DAYS must not be smaller than a nonzero KNOWLEDGE_STALE_DAYS/,
+  );
+});
+
+test('config: KNOWLEDGE_STALE_MAX_AGE_DAYS=90 (the floor) loads cleanly', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        KNOWLEDGE_STALE_MAX_AGE_DAYS: '90',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'KNOWLEDGE_STALE_MAX_AGE_DAYS=90 must load cleanly');
+});

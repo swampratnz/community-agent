@@ -101,6 +101,11 @@ memory**:
    `KNOWLEDGE_TIE_MARGIN` of each other and exactly one is stale (per
    `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), the fresher one is listed
    first — a real relevance gap always wins regardless of staleness.
+   `isKnowledgeStale` also honors an optional absolute content-age ceiling,
+   `KNOWLEDGE_STALE_MAX_AGE_DAYS` (issue #380, off unless set), OR-ed into the
+   same predicate: it fires on a hit's edit age alone, closing the gap where a
+   popular entry's frequent retrieval otherwise resets `KNOWLEDGE_STALE_DAYS`'s
+   clock forever.
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`, and
    curate existing entries with `list_knowledge` (browse by scope),
    `update_knowledge` (correct + re-embed), and `delete_knowledge` (retire,

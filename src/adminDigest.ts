@@ -80,6 +80,12 @@ export function buildAdminDigestMessage(
   maxTurnsFailuresCount: number = 0,
   duplicateKnowledgeCount: number = 0,
   conflictCandidateCount: number = 0,
+  // The content-age ceiling (KNOWLEDGE_STALE_MAX_AGE_DAYS, #380). Passed so the
+  // stale-knowledge line names the threshold that ACTUALLY produced the count —
+  // in ceiling-only mode (KNOWLEDGE_STALE_DAYS=0) the count comes from this
+  // ceiling, not a 0-day window, so rendering the raw `knowledgeStaleDays`
+  // would read "untouched for 0d+".
+  knowledgeStaleMaxAgeDays: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -120,9 +126,17 @@ export function buildAdminDigestMessage(
     sections.push(`💡 ${pendingSuggestions} pending suggestion(s) — run \`list_suggestions\`.`);
   }
   if (staleKnowledgeCount > 0) {
+    // Name whichever threshold(s) actually produced the count. `countStaleKnowledge`
+    // marks an entry stale if it's been untouched for `knowledgeStaleDays` OR its
+    // content is older than `knowledgeStaleMaxAgeDays` (#380), and either knob can
+    // be on alone — so in ceiling-only mode this reads "with content older than
+    // 90d", never "untouched for 0d+".
+    const thresholds: string[] = [];
+    if (knowledgeStaleDays > 0) thresholds.push(`untouched for ${knowledgeStaleDays}d+`);
+    if (knowledgeStaleMaxAgeDays > 0) thresholds.push(`with content older than ${knowledgeStaleMaxAgeDays}d`);
     sections.push(
-      `📚 ${staleKnowledgeCount} knowledge entr${staleKnowledgeCount === 1 ? 'y' : 'ies'} untouched for ` +
-        `${knowledgeStaleDays}d+ — run \`list_knowledge\` to review.`,
+      `📚 ${staleKnowledgeCount} knowledge entr${staleKnowledgeCount === 1 ? 'y' : 'ies'} ` +
+        `${thresholds.join(' or ')} — run \`list_knowledge\` to review.`,
     );
   }
   if (knowledgeGapsCount > 0) {
@@ -257,6 +271,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         (i) => i.userId,
       );
       const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
+      const knowledgeStaleMaxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays;
       const [
         clusters,
         pendingAccessRequests,
@@ -276,7 +291,13 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         countAccessRequests(),
         countOpenReports(scope, viewerIds),
         countPendingSuggestions(),
-        knowledgeStaleDays > 0 ? countStaleKnowledge(knowledgeStaleDays) : Promise.resolve(0),
+        // The ceiling can be set on its own (KNOWLEDGE_STALE_DAYS=0,
+        // KNOWLEDGE_STALE_MAX_AGE_DAYS>0 is a valid config combo) — gate on
+        // either being on, so an operator running ceiling-only mode isn't
+        // silently skipped here the way this whole issue is about (#380).
+        knowledgeStaleDays > 0 || knowledgeStaleMaxAgeDays > 0
+          ? countStaleKnowledge(knowledgeStaleDays, knowledgeStaleMaxAgeDays)
+          : Promise.resolve(0),
         // Conversation-scoped like openReports (knowledge_gaps has a
         // conversation_id), over the same freshness window (#246).
         countKnowledgeGaps(scope, FRESHNESS_DAYS),
@@ -318,6 +339,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         maxTurnsFailuresCount,
         duplicateKnowledgeCount,
         conflictCandidateCount,
+        knowledgeStaleMaxAgeDays,
       );
       if (!message) continue; // quiet week — no send, freshness row untouched
 

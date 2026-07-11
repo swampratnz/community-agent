@@ -162,6 +162,28 @@ test('buildAdminDigestMessage: stale-knowledge singular/plural wording and thres
   assert.match(singular, /^📚 1 knowledge entry untouched for 45d\+ — run `list_knowledge` to review\.$/);
 });
 
+test('buildAdminDigestMessage: stale-knowledge line names the ACTIVE threshold — ceiling-only mode reads "content older than Nd", never "0d+" (issue #380)', () => {
+  // Ceiling-only (KNOWLEDGE_STALE_DAYS=0, KNOWLEDGE_STALE_MAX_AGE_DAYS=90): the
+  // count comes from the content-age ceiling, so the line must describe THAT,
+  // not render the raw 0-day window. (15 leading positional args, then the
+  // ceiling as the last one.)
+  const ceilingOnly = buildAdminDigestMessage([], 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90);
+  assert.ok(ceilingOnly);
+  assert.match(
+    ceilingOnly,
+    /^📚 4 knowledge entries with content older than 90d — run `list_knowledge` to review\.$/,
+  );
+  assert.ok(!ceilingOnly.includes('0d+'), 'ceiling-only mode must never render the nonsensical "0d+" window');
+
+  // Both knobs on: name both criteria (the count is their union).
+  const both = buildAdminDigestMessage([], 0, 0, 0, 4, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90);
+  assert.ok(both);
+  assert.match(
+    both,
+    /^📚 4 knowledge entries untouched for 30d\+ or with content older than 90d — run `list_knowledge` to review\.$/,
+  );
+});
+
 test('buildAdminDigestMessage: the stale-knowledge line never contains entry titles or content — only the bare count (issue #199 privacy pin)', () => {
   const message = buildAdminDigestMessage([], 0, 0, 0, 3, 30);
   assert.ok(message);

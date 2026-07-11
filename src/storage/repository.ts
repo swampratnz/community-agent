@@ -833,14 +833,26 @@ export async function searchKnowledgeLexical(
  * "neither edited nor retrieved recently" definition so the codebase has one
  * staleness concept, not two. `staleDays` is `config.adminDigest
  * .knowledgeStaleDays`; 0 means the feature is off (never stale).
+ *
+ * `maxAgeDays` (issue #380, `config.adminDigest.knowledgeStaleMaxAgeDays`) is
+ * an additive, OR-ed absolute content-age ceiling that fires off `updatedAt`
+ * alone, deliberately ignoring `lastRetrievedAt` — a popular entry's
+ * `last_retrieved_at` otherwise resets `staleDays`'s clock on every hit,
+ * making the entries with the most reach the ones this predicate is
+ * structurally blindest to. 0 means the ceiling is off (never fires),
+ * matching `staleDays`'s own convention, so with both 0 this is
+ * byte-identical to the pre-#380 behaviour.
  */
 export function isKnowledgeStale(
   entry: { updatedAt: Date; lastRetrievedAt: Date | null },
   staleDays: number,
+  maxAgeDays = 0,
 ): boolean {
-  if (staleDays <= 0) return false;
-  const lastTouched = Math.max(entry.updatedAt.getTime(), entry.lastRetrievedAt?.getTime() ?? 0);
-  return Date.now() - lastTouched >= staleDays * 86_400_000;
+  if (staleDays > 0) {
+    const lastTouched = Math.max(entry.updatedAt.getTime(), entry.lastRetrievedAt?.getTime() ?? 0);
+    if (Date.now() - lastTouched >= staleDays * 86_400_000) return true;
+  }
+  return maxAgeDays > 0 && Date.now() - entry.updatedAt.getTime() >= maxAgeDays * 86_400_000;
 }
 
 /**
@@ -889,6 +901,11 @@ export interface KnowledgeEntry {
  * `provenance` (issue #294) filters to entries whose `created_by_role`
  * equals the given value, composed with `scope`/`staleOnly` via AND, same
  * combinable-filter pattern as `staleOnly`.
+ *
+ * `staleMaxAgeDays` (issue #380) is the same additive, OR-ed absolute
+ * content-age ceiling as `isKnowledgeStale`'s `maxAgeDays` — composed with
+ * `staleDays` inside `staleOnly`'s own predicate, not a separate filter.
+ * Unset/0 = disabled, so `staleOnly` alone is byte-identical to pre-#380.
  */
 export async function listKnowledge(
   input: {
@@ -897,6 +914,7 @@ export async function listKnowledge(
     offset?: number;
     staleOnly?: boolean;
     staleDays?: number;
+    staleMaxAgeDays?: number;
     provenance?: string;
   } = {},
 ): Promise<KnowledgeEntry[]> {
@@ -912,14 +930,27 @@ export async function listKnowledge(
   }
   if (input.staleOnly) {
     params.push(input.staleDays ?? 0);
+    const staleDaysParam = params.length;
+    params.push(input.staleMaxAgeDays ?? 0);
+    const maxAgeDaysParam = params.length;
     clauses.push(
-      `GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($${params.length} || ' days')::interval`,
+      `(($${staleDaysParam} > 0 AND GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($${staleDaysParam} || ' days')::interval)` +
+        ` OR ($${maxAgeDaysParam} > 0 AND updated_at < now() - ($${maxAgeDaysParam} || ' days')::interval))`,
     );
   }
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-  const orderClause = input.staleOnly
-    ? `ORDER BY GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) ASC`
-    : `ORDER BY updated_at DESC`;
+  // "Most overdue first" must track whichever staleness criterion is active. When
+  // the content-age ceiling is on (#380), rank by `updated_at` (content age) so a
+  // genuinely-old entry surfaces first even if it's popular — sorting by
+  // GREATEST(updated_at, last_retrieved_at) would push a frequently-served but
+  // stale-content entry to "least urgent", the exact blind spot the ceiling
+  // exists to close. Window-only (`staleDays` alone) keeps longest-untouched
+  // (edit OR retrieval) first.
+  const orderClause = !input.staleOnly
+    ? `ORDER BY updated_at DESC`
+    : (input.staleMaxAgeDays ?? 0) > 0
+      ? `ORDER BY updated_at ASC`
+      : `ORDER BY GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) ASC`;
   params.push(input.limit ?? 20);
   const limitParam = params.length;
   params.push(input.offset ?? 0);
@@ -958,13 +989,19 @@ export async function listKnowledge(
  * `last_retrieved_at` over a fresh edit). Guild-wide, matching
  * `countAccessRequests`/`countPendingSuggestions` — knowledge entries carry
  * no conversation scope for `list_knowledge` to restrict by either.
+ *
+ * `maxAgeDays` (issue #380) is the same additive, OR-ed absolute content-age
+ * ceiling as `isKnowledgeStale`'s — an entry whose `updated_at` alone exceeds
+ * it counts as stale regardless of `days`/`last_retrieved_at`. Unset/0 =
+ * disabled, so with the default this is byte-identical to pre-#380.
  */
-export async function countStaleKnowledge(days: number): Promise<number> {
+export async function countStaleKnowledge(days: number, maxAgeDays = 0): Promise<number> {
   const { rows } = await pool.query(
     `SELECT count(*) AS n
        FROM knowledge
-      WHERE GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($1 || ' days')::interval`,
-    [days],
+      WHERE ($1 > 0 AND GREATEST(updated_at, COALESCE(last_retrieved_at, updated_at)) < now() - ($1 || ' days')::interval)
+         OR ($2 > 0 AND updated_at < now() - ($2 || ' days')::interval)`,
+    [days, maxAgeDays],
   );
   return Number(rows[0].n);
 }
