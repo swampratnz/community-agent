@@ -1040,6 +1040,13 @@ layer is isolated in `src/agent/auth.ts`; switch to an API key by setting
 `ANTHROPIC_API_KEY` and removing the deletion in that file if you ever need
 the supported path.
 
+An operator wanting more headroom in this shared weekly pool during a busy
+period can set `AGENT_MODEL_MEMBER` (issue #382) to run a lighter model for
+member/guest turns — the highest-volume tier per §3's `AGENT_MAX_TURNS_MEMBER`
+tiering — while admin/super_admin keep `AGENT_MODEL`. Unset (default):
+byte-identical, every role uses `AGENT_MODEL`. Model choice is not a security
+boundary here — it never affects the role-derived tool surface (§3, §RBAC).
+
 ## Residual risks (accepted, documented)
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped

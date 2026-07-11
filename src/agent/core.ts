@@ -95,6 +95,10 @@ interface TurnOutcome {
  *  - `allowedTools` is derived from the caller's role only;
  *  - `maxTurns` is tiered by role: member/guest get the lower
  *    `AGENT_MAX_TURNS_MEMBER` ceiling, admin+ keep `AGENT_MAX_TURNS`.
+ *  - `model` is tiered by role the same way (issue #382): member/guest get
+ *    `AGENT_MODEL_MEMBER` when set, admin+ always keep `AGENT_MODEL`. This
+ *    tiering is cosmetic to cost, not security — it must never affect the
+ *    tool-gating fields above.
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
@@ -105,7 +109,11 @@ export function buildQueryOptions(
   // Web search is a privileged capability: admins and super admins only.
   const webSearch = atLeast(role, 'admin');
   return {
-    model: config.llm.model,
+    // Member/guest turns get the tiered AGENT_MODEL_MEMBER override when set
+    // (issue #382), the same highest-volume/lowest-trust role split #347
+    // already applies to maxTurns. Unset (the default) falls back to
+    // config.llm.model for every role — byte-identical to pre-#382 behaviour.
+    model: atLeast(role, 'admin') ? config.llm.model : (config.llm.memberModel ?? config.llm.model),
     systemPrompt,
     mcpServers,
     // The base built-in tool set. Empty = no built-ins at all; admin+ get

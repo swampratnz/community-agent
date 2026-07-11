@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-11
+
+### Added
+- **`AGENT_MODEL` is now optionally tiered by role** (#382): an operator can set `AGENT_MODEL_MEMBER` to run a lighter/cheaper model for member/guest turns — the highest-volume, lowest-trust tier per #347's own framing — while admin/super_admin keep `AGENT_MODEL` unchanged. Unset (the default) is byte-identical: every role resolves to `AGENT_MODEL` exactly as before. A direct lever for the shared weekly Max usage pool named in `docs/SECURITY.md`'s subscription-auth caveat; extends `buildQueryOptions`'s existing `atLeast(role, 'admin')` role split (the same one #347 uses for `maxTurns`) to the one field it didn't yet cover.
+
 ## 2026-07-10
 
 ### Added
