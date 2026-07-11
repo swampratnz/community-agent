@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden-query regression set for knowledge_search (issue #62). Each query must be a PARAPHRASE of its expectedTitle entry's content — never a near-verbatim quote of the entry's title/content — otherwise retrieval passes trivially and the test asserts nothing. 'entries' includes distractor rows (topically adjacent, not targeted by any query) so the eval actually exercises near-duplicate shadowing. Queries marked core:true form the must-hit set (100% floor); all queries together form the aggregate set (>=80% floor). Fixtures are seeded/cleaned up per-run by tests/knowledgeEval.test.ts and must not depend on ambient DB contents. 'negativeQueries' (issue #95) are queries no entry actually answers — an 'off-topic' one and a topically-adjacent 'near-miss' one — used to ground KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD (src/agent/tools.ts) empirically against this fixture's own entries and guard against embedding-model drift; they assert against searchKnowledge's raw top similarity, not the tool-handler filter (see tests/tools.test.ts for the handler-level filter assertion).",
+  "_comment": "Golden-query regression set for knowledge_search (issue #62). Each query must be a PARAPHRASE of its expectedTitle entry's content — never a near-verbatim quote of the entry's title/content — otherwise retrieval passes trivially and the test asserts nothing. 'entries' includes distractor rows (topically adjacent, not targeted by any query) so the eval actually exercises near-duplicate shadowing. Queries marked core:true form the must-hit set (100% floor); all queries together form the aggregate set (>=80% floor). Fixtures are seeded/cleaned up per-run by tests/knowledgeEval.test.ts and must not depend on ambient DB contents. 'negativeQueries' (issue #95) are queries no entry actually answers — an 'off-topic' one and a topically-adjacent 'near-miss' one — used to ground KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD (src/agent/tools.ts) empirically against this fixture's own entries and guard against embedding-model drift; they assert against searchKnowledge's raw top similarity, not the tool-handler filter (see tests/tools.test.ts for the handler-level filter assertion). 'fallbackQueries' (issue #362) is the deliberate exception to the paraphrase-only rule above: each is an EXACT-STRING query (an identifier copied verbatim from its expectedTitle entry's content) — the input class dense sentence embeddings underweight, and exactly what searchKnowledgeLexical's word_similarity fallback exists to resolve. Asserted against searchKnowledgeLexical directly, and checked for false positives against every OTHER fixture entry (including the distractor rows above).",
   "entries": [
     {
       "title": "Getting Anthropic API access",
@@ -64,6 +64,10 @@
     {
       "title": "Choosing a Claude model for a new project",
       "content": "Pick a smaller, faster model for high-volume simple tasks and reserve the largest model for work that genuinely needs deeper reasoning, since cost and latency scale with capability."
+    },
+    {
+      "title": "Knowledge staleness window",
+      "content": "The bot gently flags an answer as possibly outdated once a knowledge entry has gone this many days without being edited or looked up again; admins tune that window with the KNOWLEDGE_STALE_DAYS setting so the nudge fires neither too eagerly nor too rarely."
     }
   ],
   "queries": [
@@ -160,6 +164,12 @@
     {
       "query": "how many weeks does it usually take to hear back after applying for a role",
       "label": "near-miss: topically adjacent to 'Requesting admin role' (also about becoming an admin) but asks about timing no entry answers"
+    }
+  ],
+  "fallbackQueries": [
+    {
+      "query": "KNOWLEDGE_STALE_DAYS",
+      "expectedTitle": "Knowledge staleness window"
     }
   ]
 }

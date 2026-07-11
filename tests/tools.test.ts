@@ -108,6 +108,8 @@ const { superAdminIds } = await import('../src/auth/roles.js');
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const KNOWLEDGE_GAP_HANDLER_SCOPE = `${RUN}-knowledge-gap-handler`;
+const KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-knowledge-lexical-not-invoked`;
+const KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-knowledge-lexical-fallback`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
@@ -4338,6 +4340,132 @@ test(
     );
     assert.equal(rows.length, 1);
     assert.equal(rows[0].query_text, 'what time does the ferry to Waiheke leave on Saturdays');
+  },
+);
+
+test(
+  'knowledge_search tool handler never invokes the lexical fallback when semantic search already found a confident hit (issue #362) — output stays byte-identical to pre-#362 behaviour for the common case',
+  { skip },
+  async (t) => {
+    const { id: relevantId } = await saveKnowledge({
+      title: `Zylotrix onboarding steps ${RUN}`,
+      content: 'To onboard to Zylotrix, request an invite from an admin and complete the setup wizard.',
+      scope: KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE,
+    });
+
+    // Pass-through spy on the shared pool: real queries still run (this stays
+    // a real end-to-end DB test), but every SQL statement is inspected for
+    // searchKnowledgeLexical's distinctive `word_similarity` clause. This is
+    // a deterministic, model-independent proof that the fallback's query
+    // never executes — unlike constructing a "bait" entry whose semantic
+    // score must land below the relevance floor, which depends on real
+    // embedding-model behaviour and isn't reliably predictable per-entry.
+    let lexicalQueryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('word_similarity')) {
+        lexicalQueryRan = true;
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-lexical-not-invoked-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    const result = await registeredTool.handler({ query: 'how do I get set up on Zylotrix' });
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, /Zylotrix onboarding steps/, 'the confident semantic hit is returned');
+    assert.equal(
+      lexicalQueryRan,
+      false,
+      'the lexical fallback query must never execute when semantic search already found a confident hit',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [relevantId]);
+  },
+);
+
+test(
+  'knowledge_search tool handler resolves an exact-string query via the lexical fallback when semantic search comes up confident-empty, and does not record a knowledge gap (issue #362)',
+  { skip },
+  async () => {
+    const identifier = `KNOWLEDGE_STALE_DAYS_${RUN}`;
+    const { id: fallbackId } = await saveKnowledge({
+      title: 'Knowledge staleness window',
+      content:
+        'The bot gently flags an answer as possibly outdated once a knowledge entry has gone this many ' +
+        `days without being edited or looked up again; admins tune that window with the ${identifier} ` +
+        'setting so the nudge fires neither too eagerly nor too rarely.',
+      scope: KNOWLEDGE_LEXICAL_FALLBACK_SCOPE,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-lexical-fallback-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: KNOWLEDGE_LEXICAL_FALLBACK_SCOPE,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    // A bare identifier, no surrounding natural language — exactly the input
+    // class dense sentence embeddings underweight, so semantic search alone
+    // is expected to come up confident-empty against this descriptive,
+    // natural-language entry (the blind spot issue #362 evidences).
+    const result = await registeredTool.handler({ query: identifier });
+    const text = result.content[0]?.text ?? '';
+
+    assert.match(text, /Knowledge staleness window/, 'the lexical fallback resolves the exact-string query');
+    assert.doesNotMatch(
+      text,
+      /No matching knowledge entries/,
+      'the fallback must not report an empty result',
+    );
+
+    const fallbackCount = await waitForRetrievalCount(fallbackId, (c) => c >= 1);
+    assert.equal(
+      fallbackCount,
+      1,
+      'a lexical-fallback hit is recorded as a retrieval, same as a semantic hit',
+    );
+
+    const gapCount = await waitForGapCount(caller.platform, caller.userId, (c) => c >= 1, 1_000);
+    assert.equal(
+      gapCount,
+      0,
+      'a query the lexical fallback resolves must never be recorded as a knowledge gap',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [fallbackId]);
   },
 );
 
