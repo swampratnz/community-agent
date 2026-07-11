@@ -38,6 +38,7 @@ const {
   notifyReportWithdrawn,
   buildToolServer,
   formatKnowledgeSearchResults,
+  formatUsageStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
@@ -4327,6 +4328,37 @@ const fakeHit = (similarity: number, title = 'Some entry') => ({
   content: 'Some content.',
   similarity,
   updatedAt: new Date(),
+});
+
+const BASE_USAGE_STATS = {
+  inbound: 5,
+  outbound: 3,
+  costUsd: 1.5,
+  topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
+  costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
+  backgroundCostUsd: 0,
+};
+
+test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Background jobs'), 'no background-jobs line when backgroundCostUsd is 0');
+});
+
+test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line naming the figure (issue #401)', () => {
+  const out = formatUsageStats({ ...BASE_USAGE_STATS, backgroundCostUsd: 4.2 }, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs (moderation/digest/refresh): ~$4.20.',
+  );
 });
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {

@@ -56,6 +56,8 @@ const {
   KNOWLEDGE_GAP_DAILY_LIMIT,
   recentModerationEntries,
   usageStats,
+  recordBackgroundJobCost,
+  sumBackgroundJobCosts,
   createContentReport,
   listReports,
   listOwnReports,
@@ -2235,6 +2237,110 @@ test(
     );
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: sumBackgroundJobCosts sums only rows within the rolling window, broken down byJob (issue #401)',
+  { skip },
+  async () => {
+    const days = 1;
+    const before = await sumBackgroundJobCosts(days);
+    const beforeByJob = new Map(before.byJob.map((r) => [r.job, r.costUsd]));
+
+    await recordBackgroundJobCost('moderation_llm', 0.5);
+    await recordBackgroundJobCost('moderation_llm', 0.25);
+    await recordBackgroundJobCost('context_builder', 1.5);
+    await recordBackgroundJobCost('knowledge_refresh', 2);
+    // Outside the 1-day window — must not contribute to either total or byJob.
+    await pool.query(
+      `INSERT INTO background_job_costs (job, cost_usd, created_at) VALUES ($1, $2, now() - interval '2 days')`,
+      ['moderation_llm', 100],
+    );
+
+    const after = await sumBackgroundJobCosts(days);
+    const afterByJob = new Map(after.byJob.map((r) => [r.job, r.costUsd]));
+
+    assert.equal(
+      after.total - before.total,
+      4.25,
+      'total sums only the in-window rows: 0.5 + 0.25 + 1.5 + 2',
+    );
+    assert.equal(
+      (afterByJob.get('moderation_llm') ?? 0) - (beforeByJob.get('moderation_llm') ?? 0),
+      0.75,
+      'moderation_llm sums its two in-window rows, excluding the 2-day-old one',
+    );
+    assert.equal((afterByJob.get('context_builder') ?? 0) - (beforeByJob.get('context_builder') ?? 0), 1.5);
+    assert.equal((afterByJob.get('knowledge_refresh') ?? 0) - (beforeByJob.get('knowledge_refresh') ?? 0), 2);
+
+    await pool.query(`DELETE FROM background_job_costs WHERE cost_usd = ANY($1)`, [[0.5, 0.25, 1.5, 2, 100]]);
+  },
+);
+
+test(
+  'repository: usageStats().backgroundCostUsd equals sumBackgroundJobCosts(days).total for the same window, and every existing field is unchanged (issue #401)',
+  { skip },
+  async () => {
+    const days = 1;
+    const before = await usageStats(days);
+
+    await recordBackgroundJobCost('knowledge_refresh', 3.75);
+
+    const [after, background] = await Promise.all([usageStats(days), sumBackgroundJobCosts(days)]);
+
+    assert.equal(
+      after.backgroundCostUsd,
+      background.total,
+      'usageStats.backgroundCostUsd mirrors the same-window sum',
+    );
+    assert.equal(
+      after.backgroundCostUsd - before.backgroundCostUsd,
+      3.75,
+      'the newly recorded background cost is reflected',
+    );
+    assert.equal(
+      after.inbound,
+      before.inbound,
+      'existing inbound field is unchanged by a background-cost write',
+    );
+    assert.equal(
+      after.outbound,
+      before.outbound,
+      'existing outbound field is unchanged by a background-cost write',
+    );
+    assert.equal(
+      after.costUsd,
+      before.costUsd,
+      'existing costUsd field is unchanged by a background-cost write',
+    );
+    assert.deepEqual(after.costByRole, before.costByRole, 'existing costByRole field is unchanged');
+
+    await pool.query(`DELETE FROM background_job_costs WHERE cost_usd = $1`, [3.75]);
+  },
+);
+
+test(
+  'SECURITY: repository: background_job_costs stores only the fixed job enum and a numeric cost — no user id, conversation id, platform, or free text (issue #401)',
+  { skip },
+  async () => {
+    const { rows: columns } = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'background_job_costs' ORDER BY column_name`,
+    );
+    assert.deepEqual(
+      columns.map((c) => c.column_name).sort(),
+      ['cost_usd', 'created_at', 'id', 'job'],
+      'background_job_costs columns are a fixed job enum + numeric cost only — adding an identity-bearing column is a posture change',
+    );
+
+    // A literal, non-enum job value must be rejected outright by the CHECK
+    // constraint — job can never be free text.
+    await assert.rejects(
+      pool.query(`INSERT INTO background_job_costs (job, cost_usd) VALUES ($1, $2)`, ['not_a_real_job', 1]),
+      /violates check constraint/,
+      'the job CHECK constraint rejects anything outside the fixed enum',
+    );
   },
 );
 

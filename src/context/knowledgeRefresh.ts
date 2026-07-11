@@ -1,7 +1,12 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { latestKnowledgeUpdateAt, upsertGlobalKnowledgeByTitle, usageStats } from '../storage/repository.js';
+import {
+  latestKnowledgeUpdateAt,
+  recordBackgroundJobCost,
+  upsertGlobalKnowledgeByTitle,
+  usageStats,
+} from '../storage/repository.js';
 
 /**
  * Daily knowledge refresh: web-research a small FIXED set of fast-moving
@@ -57,8 +62,13 @@ export type TopicResearcher = (topicQuery: string) => Promise<string | null>;
  * Research one topic via web search and return a short sourced briefing, or
  * null when nothing credible/recent was found (the model replies NO_UPDATE, so
  * a quiet week leaves the existing entry untouched rather than blanking it).
+ *
+ * Exported (issue #401, mirroring #394's export of `summarizeCluster`) so
+ * tests can mock `query()` and assert on this call site's background
+ * cost-recording directly — `runKnowledgeRefresh`'s own tests inject a fake
+ * `research` specifically so they never spawn a real model call.
  */
-async function researchTopic(topicQuery: string): Promise<string | null> {
+export async function researchTopic(topicQuery: string): Promise<string | null> {
   const prompt = [
     'Research the topic below using web search, then write a briefing for a New Zealand',
     'Claude/AI community knowledge base.',
@@ -74,6 +84,7 @@ async function researchTopic(topicQuery: string): Promise<string | null> {
   ].join('\n');
 
   let resultText = '';
+  let costUsd = 0;
   for await (const message of query({
     prompt,
     options: {
@@ -93,6 +104,18 @@ async function researchTopic(topicQuery: string): Promise<string | null> {
     if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
       resultText = message.result;
     }
+    if (
+      message.type === 'result' &&
+      'total_cost_usd' in message &&
+      typeof message.total_cost_usd === 'number'
+    ) {
+      costUsd = message.total_cost_usd;
+    }
+  }
+  if (costUsd > 0) {
+    recordBackgroundJobCost('knowledge_refresh', costUsd).catch((err) =>
+      logger.warn({ err }, 'background_job_cost_record_failed'),
+    );
   }
 
   const text = resultText.trim();
