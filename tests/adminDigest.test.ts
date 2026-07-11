@@ -255,6 +255,52 @@ test('buildAdminDigestMessage: the knowledge-candidates line never contains cand
   );
 });
 
+test('buildAdminDigestMessage: KNOWLEDGE_CANDIDATE_STALE_DAYS unset (default) -> pending-candidates line is byte-identical to the pre-#398 (#284) wording (issue #398)', () => {
+  // Trailing args explicitly passed as 0 (knob unset, stale sub-count 0) —
+  // matches how runAdminDigestOnce calls this when the knob is unconfigured.
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  assert.ok(message);
+  assert.equal(
+    message,
+    '🧩 3 pending knowledge candidate(s) — run `list_knowledge_candidates`.',
+    'with the knob unset, the line must render exactly as it did before issue #398',
+  );
+});
+
+test('buildAdminDigestMessage: KNOWLEDGE_CANDIDATE_STALE_DAYS set with a nonzero stale sub-count extends the pending-candidates line; a zero sub-count leaves it bare (issue #398)', () => {
+  const withStale = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 2, 14);
+  assert.ok(withStale);
+  assert.equal(
+    withStale,
+    '🧩 5 pending knowledge candidate(s), 2 unreviewed for 14d+ — run `list_knowledge_candidates`.',
+    'knob set + nonzero stale sub-count -> the line names both the total and the stale sub-count',
+  );
+
+  const withoutStale = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14);
+  assert.ok(withoutStale);
+  assert.equal(
+    withoutStale,
+    '🧩 5 pending knowledge candidate(s) — run `list_knowledge_candidates`.',
+    'knob set but stale sub-count is 0 -> no "0 unreviewed" noise, bare total only',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: the extended knowledge-candidates line (stale sub-count present or absent) never contains candidate title, content, or topic — only integers (issue #398 privacy pin)', () => {
+  const withStale = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 2, 14);
+  assert.ok(withStale);
+  assert.ok(
+    !/title|content|topic/i.test(withStale),
+    'SECURITY: stale-present branch must never leak a candidate field name or its content',
+  );
+
+  const withoutStale = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14);
+  assert.ok(withoutStale);
+  assert.ok(
+    !/title|content|topic/i.test(withoutStale),
+    'SECURITY: stale-absent branch must never leak a candidate field name or its content either',
+  );
+});
+
 test('buildAdminDigestMessage: low-rated-knowledge line appears only when count > 0, and all EIGHT signals zero -> null (issue #324)', () => {
   assert.equal(
     buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0),

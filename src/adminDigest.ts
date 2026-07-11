@@ -13,6 +13,7 @@ import {
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
   countStaleKnowledge,
+  countStalePendingKnowledgeCandidates,
   listAdmins,
   recentQuestionClusters,
   recordAdminDigestSent,
@@ -62,6 +63,13 @@ const SNIPPET_MAX_CHARS = 300;
  * `countStaleKnowledge`'s own unscoped precedent (the pair self-joins carry
  * no conversation scope either). Bare integer only, never a pair's id,
  * title, or content.
+ * `pendingKnowledgeCandidatesStaleCount` (issue #398) is the
+ * `countStalePendingKnowledgeCandidates` sub-count of `pendingKnowledgeCandidates`
+ * that have sat unreviewed past `KNOWLEDGE_CANDIDATE_STALE_DAYS` — it only
+ * ever appears alongside the existing pending-candidates line (never its own
+ * section), and only when the knob is set and the sub-count is nonzero, so
+ * the default (knob unset) output is byte-identical to the pre-#398 (#284)
+ * wording. Bare integer only, same privacy convention as every signal above.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -85,6 +93,13 @@ export function buildAdminDigestMessage(
   // ceiling, not a 0-day window, so rendering the raw `knowledgeStaleDays`
   // would read "untouched for 0d+".
   knowledgeStaleMaxAgeDays: number = 0,
+  // Sub-count of `pendingKnowledgeCandidates` that have sat unreviewed past
+  // `KNOWLEDGE_CANDIDATE_STALE_DAYS` (issue #398). Always a subset of
+  // `pendingKnowledgeCandidates`, so it never needs its own entry in the
+  // all-signals-zero gate below — when the knob is unset/0 this stays 0 and
+  // the pending-candidates line is byte-identical to its pre-#398 form.
+  pendingKnowledgeCandidatesStaleCount: number = 0,
+  knowledgeCandidateStaleDays: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -146,9 +161,17 @@ export function buildAdminDigestMessage(
     );
   }
   if (pendingKnowledgeCandidates > 0) {
-    // Bare integer only — no candidate title/content/topic ever reaches the DM (#284).
+    // Bare integers only — no candidate title/content/topic ever reaches the
+    // DM (#284, extended by #398). The stale sub-count only appears when
+    // KNOWLEDGE_CANDIDATE_STALE_DAYS is set AND at least one pending
+    // candidate has crossed it — with the knob unset or the sub-count at 0,
+    // this line stays byte-identical to the pre-#398 (#284) wording.
+    const staleFragment =
+      knowledgeCandidateStaleDays > 0 && pendingKnowledgeCandidatesStaleCount > 0
+        ? `, ${pendingKnowledgeCandidatesStaleCount} unreviewed for ${knowledgeCandidateStaleDays}d+`
+        : '';
     sections.push(
-      `🧩 ${pendingKnowledgeCandidates} pending knowledge candidate(s) — run ` +
+      `🧩 ${pendingKnowledgeCandidates} pending knowledge candidate(s)${staleFragment} — run ` +
         '`list_knowledge_candidates`.',
     );
   }
@@ -286,6 +309,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
       );
       const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
       const knowledgeStaleMaxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays;
+      const knowledgeCandidateStaleDays = config.adminDigest.knowledgeCandidateStaleDays;
       const [
         clusters,
         pendingAccessRequests,
@@ -300,6 +324,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         maxTurnsFailuresCount,
         duplicateKnowledgeCount,
         conflictCandidateCount,
+        pendingKnowledgeCandidatesStaleCount,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -336,6 +361,12 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // countPendingKnowledgeCandidates (issue #378).
         countDuplicateKnowledge(),
         countKnowledgeConflictCandidates(),
+        // Guild-wide, unscoped like countPendingKnowledgeCandidates (issue
+        // #398); only runs the extra COUNT(*) when the knob is configured,
+        // matching countStaleKnowledge's own opt-in gating above.
+        knowledgeCandidateStaleDays > 0
+          ? countStalePendingKnowledgeCandidates(knowledgeCandidateStaleDays)
+          : Promise.resolve(0),
       ]);
       const message = buildAdminDigestMessage(
         clusters,
@@ -354,6 +385,8 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         duplicateKnowledgeCount,
         conflictCandidateCount,
         knowledgeStaleMaxAgeDays,
+        pendingKnowledgeCandidatesStaleCount,
+        knowledgeCandidateStaleDays,
       );
       if (!message) {
         ok = true;

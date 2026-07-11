@@ -3072,10 +3072,17 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-drafted first) instead of the default newest-first — ' +
+            'use this to find candidates that have sat unreviewed the longest.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge_candidates');
-      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50);
+      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50, args.oldestFirst ?? false);
       if (rows.length === 0) return text('No knowledge candidates found.');
       return text(
         untrusted(

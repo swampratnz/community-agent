@@ -46,6 +46,7 @@ const {
   countDuplicateKnowledge,
   countKnowledgeConflictCandidates,
   countPendingKnowledgeCandidates,
+  countStalePendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
   recordAdminAction,
@@ -1290,6 +1291,165 @@ test(
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
     assert.equal(
       await countPendingKnowledgeCandidates(),
+      before,
+      'deleting every inserted row restores the prior count',
+    );
+  },
+);
+
+test(
+  'repository: listKnowledgeCandidates defaults to created_at DESC (byte-identical to pre-#398), and oldestFirst flips it to ASC (issue #398)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-sort-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const oldest = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-sort-topic-oldest`,
+      title: 'oldest',
+      content: 'oldest content',
+    });
+    const middle = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-sort-topic-middle`,
+      title: 'middle',
+      content: 'middle content',
+    });
+    const newest = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-sort-topic-newest`,
+      title: 'newest',
+      content: 'newest content',
+    });
+
+    // Force distinct, known ages — insertKnowledgeCandidate has no created_at
+    // param (it always defaults to now()).
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '3 days' WHERE id = $1`, [
+      oldest,
+    ]);
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '2 days' WHERE id = $1`, [
+      middle,
+    ]);
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '1 days' WHERE id = $1`, [
+      newest,
+    ]);
+
+    const defaultOrder = (await listKnowledgeCandidates('pending', 200)).filter((c) =>
+      [oldest, middle, newest].includes(c.id),
+    );
+    assert.deepEqual(
+      defaultOrder.map((c) => c.id),
+      [newest, middle, oldest],
+      'no sort argument -> created_at DESC, unchanged from today',
+    );
+
+    const oldestFirstOrder = (await listKnowledgeCandidates('pending', 200, true)).filter((c) =>
+      [oldest, middle, newest].includes(c.id),
+    );
+    assert.deepEqual(
+      oldestFirstOrder.map((c) => c.id),
+      [oldest, middle, newest],
+      'oldestFirst=true -> created_at ASC',
+    );
+
+    // SECURITY: the new sort option is a read, not a review action — it must
+    // never itself change a candidate's status. accept_knowledge_candidate/
+    // decline_knowledge_candidate remain the only status-mutating paths
+    // (issue #102's human-curation invariant, unchanged by #398).
+    const statusesAfter = await pool.query(`SELECT status FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [oldest, middle, newest],
+    ]);
+    assert.ok(
+      statusesAfter.rows.every((r: { status: string }) => r.status === 'pending'),
+      'SECURITY: listKnowledgeCandidates (with or without oldestFirst) never mutates a candidate status',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[oldest, middle, newest]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'repository: countStalePendingKnowledgeCandidates counts only pending rows older than the threshold — accepted/declined rows never inflate it (issue #398)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-stale-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const before = await countStalePendingKnowledgeCandidates(14);
+
+    const stalePending = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-stale-topic-1`,
+      title: 'stale pending',
+      content: 'content',
+    });
+    const freshPending = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-stale-topic-2`,
+      title: 'fresh pending',
+      content: 'content',
+    });
+    const staleButAccepted = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-stale-topic-3`,
+      title: 'stale but accepted',
+      content: 'content',
+    });
+    const staleButDeclined = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-stale-topic-4`,
+      title: 'stale but declined',
+      content: 'content',
+    });
+
+    await pool.query(
+      `UPDATE knowledge_candidates SET created_at = now() - interval '30 days' WHERE id = ANY($1)`,
+      [[stalePending, staleButAccepted, staleButDeclined]],
+    );
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '1 days' WHERE id = $1`, [
+      freshPending,
+    ]);
+
+    const accepted = await acceptKnowledgeCandidate({ id: staleButAccepted, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const declined = await declineKnowledgeCandidate(staleButDeclined, 'admin-1');
+    assert.ok(declined);
+
+    // Only stalePending should count — freshPending is too recent, and the
+    // other two are no longer 'pending' despite being just as old.
+    assert.equal(
+      await countStalePendingKnowledgeCandidates(14),
+      before + 1,
+      'only the stale, still-pending row is counted',
+    );
+    assert.equal(
+      await countStalePendingKnowledgeCandidates(31),
+      before,
+      'a 31-day threshold excludes a 30-day-old row',
+    );
+
+    const ids = [stalePending, freshPending, staleButAccepted, staleButDeclined];
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [ids]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      await countStalePendingKnowledgeCandidates(14),
       before,
       'deleting every inserted row restores the prior count',
     );
