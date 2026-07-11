@@ -303,7 +303,11 @@ system prompt on `AgentReply`, and the router threads a `'mi'` value into
 `adapter.sendMessage`'s optional `language` field, picked up by each adapter's
 `filtered()` helper. Every other `filtered()`/`sendMessage` call site (DMs,
 poll question/answers, thread name/description, announce, warn) is untouched
-and stays English-only.
+and stays English-only. `runAgentTurn`'s own four fixed failure fallbacks —
+internal-error, max-turns, generic non-success, and upstream usage-limit —
+also honour a standing `'mi'` preference the same way (issue #396): gated on
+`outcome.ok === false`, never on the text itself, so a genuine model answer
+can never be substituted.
 
 ## Onboarding (gated mode)
 

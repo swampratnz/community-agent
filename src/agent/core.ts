@@ -23,6 +23,8 @@ import {
   stepUsageLimitTracker,
   USAGE_LIMIT_REPLY,
   USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
+  USAGE_LIMIT_REPLY_MI,
+  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI,
 } from './upstreamFailure.js';
 
 export interface AgentReply {
@@ -75,6 +77,42 @@ export const INTERNAL_ERROR_REPLY =
  */
 export const MAX_TURNS_REPLY =
   'Sorry — that took more steps than I allow per message. Try breaking it into smaller questions.';
+
+/**
+ * User-facing fallback for any other non-success `resultSubtype`. Hoisted
+ * from an inline literal (issue #396) so it can gain an `_MI` counterpart
+ * like its three siblings above.
+ */
+export const TURN_FAILED_REPLY = 'Sorry — I could not complete that request. Please try again.';
+
+// Fixed, human-authored te reo Māori variants (issue #396) of the four
+// runAgentTurn failure fallbacks above, served instead of the English
+// constant to a caller with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same trust level as the English
+// constants: no model call, no translation, no injection surface. Mirrors
+// the `_MI`-variant pattern established by #266/#282/#300/#331/#363.
+export const INTERNAL_ERROR_REPLY_MI =
+  'Aroha mai — i pā mai he hapa o roto, kāore i oti i ahau tēnā mahi. Tēnā koa, whakamātauria anō.';
+
+export const MAX_TURNS_REPLY_MI =
+  'Aroha mai — he maha rawa ngā hipanga i hiahiatia mō tēnei karere. Whakamātauria te wāwāhi i tō ' +
+  'pātai kia iti ake ngā wāhanga.';
+
+export const TURN_FAILED_REPLY_MI = 'Aroha mai — kāore i oti i ahau tēnā tono. Tēnā koa, whakamātauria anō.';
+
+/**
+ * Lookup from an English fallback constant to its `_MI` counterpart, applied
+ * to `outcome.text` in `runAgentTurn` just before it becomes `AgentReply.text`
+ * (issue #396). Keyed by string value rather than by branch so the mapping
+ * stays in one place next to the constants it substitutes.
+ */
+const FALLBACK_REPLY_MI: Readonly<Record<string, string>> = {
+  [INTERNAL_ERROR_REPLY]: INTERNAL_ERROR_REPLY_MI,
+  [MAX_TURNS_REPLY]: MAX_TURNS_REPLY_MI,
+  [TURN_FAILED_REPLY]: TURN_FAILED_REPLY_MI,
+  [USAGE_LIMIT_REPLY]: USAGE_LIMIT_REPLY_MI,
+  [USAGE_LIMIT_REPLY_ADMIN_NOTIFIED]: USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI,
+};
 
 interface TurnOutcome {
   ok: boolean;
@@ -225,8 +263,21 @@ export async function runAgentTurn(
     );
   }
 
+  // Substitute the 'mi' variant for a fixed failure-fallback string (issue
+  // #396). Gated on `outcome.ok === false` — never on matching the text
+  // itself — so a genuine model answer can never be rewritten, even in the
+  // vanishingly unlikely case its text happened to coincide with one of
+  // these constants (the #259 "threaded, not string-matched" discipline).
+  // Falls through unchanged for any text not in the lookup (e.g. English/
+  // 'auto'/undefined preference, or a value that isn't one of the four
+  // fallbacks).
+  const text =
+    !outcome.ok && languagePreference === 'mi'
+      ? (FALLBACK_REPLY_MI[outcome.text] ?? outcome.text)
+      : outcome.text;
+
   return {
-    text: outcome.text,
+    text,
     costUsd: outcome.costUsd,
     sessionId: outcome.sessionId,
     ok: outcome.ok,
@@ -384,10 +435,7 @@ async function execTurn(
       // Non-success results (e.g. max turns) are turn failures, not resume
       // failures — those throw during init and are handled in the catch above.
       resumeFailed: false,
-      text:
-        resultSubtype === 'error_max_turns'
-          ? MAX_TURNS_REPLY
-          : 'Sorry — I could not complete that request. Please try again.',
+      text: resultSubtype === 'error_max_turns' ? MAX_TURNS_REPLY : TURN_FAILED_REPLY,
       costUsd,
       sessionId,
       maxTurnsExceeded: resultSubtype === 'error_max_turns' ? true : undefined,

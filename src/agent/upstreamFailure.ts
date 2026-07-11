@@ -22,6 +22,17 @@ export const USAGE_LIMIT_REPLY =
 
 export const USAGE_LIMIT_REPLY_ADMIN_NOTIFIED = `${USAGE_LIMIT_REPLY} An admin has been notified.`;
 
+// Fixed, human-authored te reo Māori variants (issue #396), served instead of
+// the English constants above to a caller with a standing 'mi' language_prefs
+// row (getLanguagePreference, issue #189) — same trust level as the English
+// constants: no model call, no translation, no injection surface. Mirrors the
+// `_MI`-variant pattern established by #266/#300/#331/#363.
+export const USAGE_LIMIT_REPLY_MI =
+  'Aroha mai — kāore e taea e au te whakautu i tēnei wā nā te mea kua eke tēnei pouaka ki tōna tepe ' +
+  'whakamahi tahi. Ehara tēnei i te hapa — tēnā koa, whakamātauria anō i muri mai.';
+
+export const USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI = `${USAGE_LIMIT_REPLY_MI} Kua whakamōhiotia tētahi kaiwhakahaere.`;
+
 export interface UsageLimitTracker {
   alerted: boolean;
 }
