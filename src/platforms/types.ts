@@ -90,6 +90,22 @@ export function paramString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+/**
+ * A single upcoming/active event, as returned by {@link PlatformAdapter.listUpcomingEvents}
+ * (issue #388, the read counterpart to `create_event`/#230). Deliberately
+ * excludes any creator/organizer id or other member identifier — nothing
+ * about *who* created the event is needed to answer "what's coming up?".
+ */
+export interface UpcomingEvent {
+  name: string;
+  /** ISO 8601 instant. */
+  scheduledStartAt: string;
+  /** ISO 8601 instant, when the event has one. */
+  scheduledEndAt?: string;
+  location: string;
+  description?: string;
+}
+
 export interface PlatformAdapter {
   readonly platform: Platform;
 
@@ -169,6 +185,16 @@ export interface PlatformAdapter {
    * Implementations cache briefly (~60s) to avoid hammering platform APIs.
    */
   conversationsForUser(userId: string): Promise<string[]>;
+
+  /**
+   * Upcoming/active events (created via `create_event`/#230), earliest-first,
+   * capped at `limit`. Optional — adapters with no scheduled-events primitive
+   * (both WhatsApp adapters) simply omit it, and callers must feature-check
+   * before use, same convention as `sendImage?`/`reactToMessage?`/
+   * `canPostTo?`. Implementations cache briefly (~60s) to avoid hammering
+   * platform APIs, same convention as `conversationsForUser`.
+   */
+  listUpcomingEvents?(limit: number): Promise<UpcomingEvent[]>;
 
   /** Capabilities this adapter supports for {@link performAdminAction}. */
   readonly adminCapabilities: ReadonlySet<string>;

@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AdapterLookup, Platform, PlatformAdapter } from '../src/platforms/types.js';
+import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -63,6 +63,7 @@ const {
   THREAD_CREATE_RATE_LIMIT_PER_HOUR,
   WARN_USER_RATE_LIMIT_PER_HOUR,
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
+  EVENTS_LIST_LIMIT,
 } = await import('../src/agent/tools.js');
 const {
   MODERATION_ACTION_KINDS,
@@ -275,6 +276,24 @@ function stubReactAdapter(): PlatformAdapter & {
       reactCalls.push({ conversationId, messageId, emoji });
     },
   };
+}
+
+/**
+ * stubAdapter() plus listUpcomingEvents (issue #388) — list_events tool
+ * tests need the optional capability present; the underlying adapter-level
+ * fetch/filter/sort/cache logic is covered by tests/discordAdapter.test.ts,
+ * so this stub just hands back whatever `events` the test configures.
+ */
+function stubEventsAdapter(events: UpcomingEvent[]): PlatformAdapter & { calls: number } {
+  const result: PlatformAdapter & { calls: number } = {
+    ...stubAdapter(async () => {}),
+    calls: 0,
+    listUpcomingEvents: async () => {
+      result.calls += 1;
+      return events;
+    },
+  };
+  return result;
 }
 
 test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant', async () => {
@@ -1707,6 +1726,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__set_language_preference', /te reo Māori/i],
   ['mcp__community__catch_up', /catch you up|what did I miss/i],
   ['mcp__community__react_to_message', /react to a message/i],
+  ['mcp__community__list_events', /what's on|coming up/i],
 ]);
 // community_info is self-referential — it describes every OTHER member
 // tool, so it needs no line about itself.
@@ -1770,12 +1790,14 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
     '- React to a message with an emoji instead of replying\n' +
     '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
+    '- Ask what meetups/events are coming up ("what\'s on?")\n' +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
     memberReply,
     expectedMemberCapabilitiesText,
-    'a member-tier reply must be byte-identical to the pre-#367 output — this PR only touches the admin branch',
+    'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
+      'list_events line; otherwise unchanged since #367)',
   );
 });
 
@@ -6668,6 +6690,109 @@ test('SECURITY: react_to_message enforces a per-user daily reaction cap (issue #
     REACTION_RATE_LIMIT_PER_DAY,
     'a rate-limited attempt must not reach the adapter',
   );
+});
+
+// list_events tool handler (issue #388): the read counterpart to create_event
+// (issue #230). No arguments, no CONFIRM — the fetch/filter/sort/cache logic
+// itself lives in DiscordAdapter and is covered by tests/discordAdapter.test.ts;
+// this handler only needs to be exercised against a stub exposing
+// listUpcomingEvents so the tool-layer formatting/empty-result/unsupported-
+// platform behaviour is pinned independently of the real Discord client.
+function listEventsHandler(adapter: PlatformAdapter) {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'events-caller',
+      userName: 'Events Caller',
+      role: 'member' as const,
+      conversationId: 'events-convo',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['list_events'];
+}
+
+test('list_events replies plainly with "no upcoming events" for a zero-events guild, not an empty list or an error (issue #388)', async () => {
+  const adapter = stubEventsAdapter([]);
+  const result = await listEventsHandler(adapter).handler();
+  assert.equal(result.isError, false);
+  assert.match(result.content[0]?.text ?? '', /no upcoming events/i);
+});
+
+test('list_events formats each event with name, start/end time, location, and description (issue #388)', async () => {
+  const adapter = stubEventsAdapter([
+    {
+      name: 'Wellington Meetup',
+      scheduledStartAt: '2099-06-01T19:00:00.000Z',
+      scheduledEndAt: '2099-06-01T21:00:00.000Z',
+      location: 'Wellington Central Library',
+      description: 'Bring your laptop',
+    },
+    {
+      name: 'Auckland Hack Night',
+      scheduledStartAt: '2099-06-08T19:00:00.000Z',
+      location: 'general-voice',
+    },
+  ]);
+  const result = await listEventsHandler(adapter).handler();
+  const replyText = result.content[0]?.text ?? '';
+  assert.equal(result.isError, false);
+  assert.match(replyText, /Wellington Meetup/);
+  assert.match(replyText, /2099-06-01T19:00:00\.000Z/);
+  assert.match(replyText, /2099-06-01T21:00:00\.000Z/);
+  assert.match(replyText, /Wellington Central Library/);
+  assert.match(replyText, /Bring your laptop/);
+  assert.match(replyText, /Auckland Hack Night/);
+  assert.match(replyText, /general-voice/);
+});
+
+test(
+  "SECURITY: list_events' formatted output never includes a creator/organizer id or any other member " +
+    'identifier — only the UpcomingEvent fields (name/time/location/description) ever reach the reply ' +
+    '(issue #388)',
+  async () => {
+    const creatorId = 'discord-user-id-12345';
+    const adapter = stubEventsAdapter([
+      {
+        name: 'Christchurch Coffee & Code',
+        scheduledStartAt: '2099-07-01T19:00:00.000Z',
+        location: 'Christchurch Central Library',
+        // A future UpcomingEvent producer that accidentally widened the type
+        // to carry a creator id would still leak it here if the formatter
+        // ever spread the raw object instead of naming fields explicitly.
+        ...({ creatorId, creator: { id: creatorId } } as Record<string, unknown>),
+      },
+    ]);
+    const result = await listEventsHandler(adapter).handler();
+    const replyText = result.content[0]?.text ?? '';
+    assert.equal(result.isError, false);
+    assert.ok(!replyText.includes(creatorId), 'creator/organizer id must never reach the formatted reply');
+  },
+);
+
+test('list_events reports plainly when the adapter has no scheduled-events capability (e.g. WhatsApp)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const result = await listEventsHandler(adapter).handler();
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
+});
+
+test("list_events calls the adapter's listUpcomingEvents with the fixed EVENTS_LIST_LIMIT cap (issue #388)", async () => {
+  const adapter = stubEventsAdapter([]);
+  const seenLimits: number[] = [];
+  adapter.listUpcomingEvents = async (limit: number) => {
+    seenLimits.push(limit);
+    return [];
+  };
+  await listEventsHandler(adapter).handler();
+  assert.deepEqual(seenLimits, [EVENTS_LIST_LIMIT]);
 });
 
 // rate_answer tool handler (issue #118): exercises the handler's three

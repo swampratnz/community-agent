@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ChannelType, Events, GuildScheduledEventEntityType } from 'discord.js';
+import { ChannelType, Events, GuildScheduledEventEntityType, GuildScheduledEventStatus } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -692,6 +692,179 @@ test('SECURITY: performAdminAction("create_event") falls back to an external loc
     'a channel from another guild must never be treated as a channel-hosted location',
   );
 });
+
+interface FakeScheduledEvent {
+  status: GuildScheduledEventStatus;
+  name: string | null;
+  description: string | null;
+  scheduledStartAt: Date | null;
+  scheduledEndAt: Date | null;
+  channelId: string | null;
+  entityMetadata: { location: string | null } | null;
+}
+
+function fakeScheduledEvent(overrides: Partial<FakeScheduledEvent> = {}): FakeScheduledEvent {
+  return {
+    status: GuildScheduledEventStatus.Scheduled,
+    name: 'Event',
+    description: null,
+    scheduledStartAt: new Date('2099-01-01T00:00:00.000Z'),
+    scheduledEndAt: null,
+    channelId: null,
+    entityMetadata: { location: 'Somewhere' },
+    ...overrides,
+  };
+}
+
+/**
+ * Stubs client.guilds.fetch + client.channels.fetch for
+ * listUpcomingEvents (issue #388), mirroring stubClientForEvent's shape.
+ * `channelFetch` lets a test control whether a channel-hosted event's
+ * channelId resolves to a visible channel (with a `.name`) or not.
+ */
+function stubClientForListEvents(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  events: FakeScheduledEvent[],
+  channelFetch: (id: string) => Promise<unknown> = async () => {
+    throw new Error('channel not found');
+  },
+) {
+  const calls = { fetch: 0 };
+  const guild = {
+    id: config.discord.guildId,
+    scheduledEvents: {
+      fetch: async () => {
+        calls.fetch += 1;
+        return new Map(events.map((e, i) => [`event-${i}`, e]));
+      },
+    },
+  };
+  const client = (
+    adapter as unknown as {
+      client: {
+        guilds: { fetch: (id: string) => Promise<typeof guild> };
+        channels: { fetch: (id: string) => Promise<unknown> };
+      };
+    }
+  ).client;
+  client.guilds.fetch = async () => guild;
+  client.channels.fetch = channelFetch;
+  return calls;
+}
+
+test('listUpcomingEvents returns only Scheduled/Active events, excludes Completed/Canceled, sorted by start time ascending (issue #388)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForListEvents(adapter, [
+    fakeScheduledEvent({
+      name: 'Later Scheduled',
+      status: GuildScheduledEventStatus.Scheduled,
+      scheduledStartAt: new Date('2099-03-01T00:00:00.000Z'),
+    }),
+    fakeScheduledEvent({
+      name: 'Completed',
+      status: GuildScheduledEventStatus.Completed,
+      scheduledStartAt: new Date('2099-01-01T00:00:00.000Z'),
+    }),
+    fakeScheduledEvent({
+      name: 'Earlier Active',
+      status: GuildScheduledEventStatus.Active,
+      scheduledStartAt: new Date('2099-02-01T00:00:00.000Z'),
+    }),
+    fakeScheduledEvent({
+      name: 'Canceled',
+      status: GuildScheduledEventStatus.Canceled,
+      scheduledStartAt: new Date('2099-01-15T00:00:00.000Z'),
+    }),
+  ]);
+
+  const events = await adapter.listUpcomingEvents(10);
+
+  assert.deepEqual(
+    events.map((e) => e.name),
+    ['Earlier Active', 'Later Scheduled'],
+    'Completed/Canceled excluded; remaining two sorted by start time ascending',
+  );
+});
+
+test('listUpcomingEvents caps results at the given limit even when more events exist, earliest-first (issue #388)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForListEvents(
+    adapter,
+    Array.from({ length: 5 }, (_, i) =>
+      fakeScheduledEvent({
+        name: `Event ${i}`,
+        scheduledStartAt: new Date(2099, 0, i + 1),
+      }),
+    ),
+  );
+
+  const events = await adapter.listUpcomingEvents(2);
+
+  assert.deepEqual(
+    events.map((e) => e.name),
+    ['Event 0', 'Event 1'],
+  );
+});
+
+test("listUpcomingEvents resolves a voice/stage-hosted event's location to the channel name (issue #388)", async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForListEvents(
+    adapter,
+    [fakeScheduledEvent({ channelId: 'chan-voice-1', entityMetadata: null })],
+    async (id) => (id === 'chan-voice-1' ? { name: 'general-voice', isDMBased: () => false } : null),
+  );
+
+  const events = await adapter.listUpcomingEvents(10);
+
+  assert.equal(events[0].location, 'general-voice');
+});
+
+test('listUpcomingEvents falls back to the raw entityMetadata.location string for an external/physical event (issue #388)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForListEvents(adapter, [
+    fakeScheduledEvent({ channelId: null, entityMetadata: { location: 'Wellington Central Library' } }),
+  ]);
+
+  const events = await adapter.listUpcomingEvents(10);
+
+  assert.equal(events[0].location, 'Wellington Central Library');
+});
+
+test('listUpcomingEvents caches results for ~60s — a second call within the TTL does not re-invoke guild.scheduledEvents.fetch() (issue #388)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubClientForListEvents(adapter, [fakeScheduledEvent()]);
+
+  await adapter.listUpcomingEvents(10);
+  await adapter.listUpcomingEvents(10);
+
+  assert.equal(calls.fetch, 1, 'the second call must be served from cache, not a fresh Discord fetch');
+});
+
+test(
+  'SECURITY: listUpcomingEvents never leaks a creator/organizer id onto the returned UpcomingEvent — only ' +
+    'name/time/location/description are ever read off the raw scheduled-event object, so a future ' +
+    'discord.js field addition cannot silently leak through (issue #388)',
+  async () => {
+    const adapter = new DiscordAdapter();
+    const rawEventWithCreator = {
+      ...fakeScheduledEvent({ name: 'Meetup with a creator field' }),
+      creatorId: 'discord-user-id-99999',
+      creator: { id: 'discord-user-id-99999', username: 'organizer' },
+    };
+    stubClientForListEvents(adapter, [rawEventWithCreator]);
+
+    const events = await adapter.listUpcomingEvents(10);
+
+    assert.equal(events.length, 1);
+    const keys = Object.keys(events[0]);
+    assert.deepEqual(
+      keys.sort(),
+      ['description', 'location', 'name', 'scheduledEndAt', 'scheduledStartAt'].sort(),
+      'the returned object must carry exactly the UpcomingEvent fields — nothing else',
+    );
+    assert.ok(!JSON.stringify(events[0]).includes('discord-user-id-99999'));
+  },
+);
 
 interface FakeImageSendable {
   isTextBased: () => boolean;

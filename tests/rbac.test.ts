@@ -241,6 +241,22 @@ test('SECURITY: check_status is member+ (guests reach it in open mode; matches M
   }
 });
 
+test('SECURITY: list_events is member+ (guests reach it in open mode; matches MEMBER_TOOLS) and never lands in ADMIN_TOOLS/SUPER_ADMIN_TOOLS — issue #388', () => {
+  const tool = 'mcp__community__list_events';
+  assert.ok(MEMBER_TOOLS.includes(tool), 'list_events must be in MEMBER_TOOLS');
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach list_events`);
+  }
+  assert.ok(
+    toolsForRole('guest').includes(tool),
+    'guests reach list_events too (open mode; same as MEMBER_TOOLS) — a gated guest never reaches ' +
+      'the agent at all, so this only matters in open mode, same as check_status/react_to_message',
+  );
+  for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+    assert.notEqual(t, tool, 'list_events must not appear in ADMIN_TOOLS/SUPER_ADMIN_TOOLS');
+  }
+});
+
 test('SECURITY: list_answer_feedback is admin-only — a member can never read the aggregate rating queue, including ratings they themselves submitted (issue #118)', () => {
   const tool = 'mcp__community__list_answer_feedback';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_answer_feedback must be in ADMIN_TOOLS');
