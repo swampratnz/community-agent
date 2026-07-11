@@ -506,7 +506,22 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `countActiveWarnings`'s exact strike-limit/window definition so the
   digest's "muted" can never disagree with the actual mute trigger in
   `src/moderation/moderator.ts` — the DM text carries only the integer, never
-  a `member_warnings.reason`, `excerpt`, user id, or member name.
+  a `member_warnings.reason`, `excerpt`, user id, or member name. Issue #403
+  added a second, complementary sub-count alongside it: `countStaleMutedMembers`
+  surfaces members whose unwindowed strike count is still at/over the limit
+  but whose windowed count (the one `countMutedMembers` uses) has since fallen
+  below it — i.e. someone who was actually muted and then aged out of
+  `countMutedMembers`'s own deliberate windowed definition, with no other
+  admin-facing signal left anywhere that they're still blocked (mute state
+  is never persisted; only `clear_warnings` lifts one — see the auto-moderation
+  section above). This count is an **over-approximation, not an exact "is this
+  member still muted" signal** — mute state itself is never persisted, so a
+  member whose strikes simply accrued too slowly to ever cross the windowed
+  limit can also satisfy it despite never having actually been muted. The
+  digest hedges accordingly ("N more **may** still be muted... — check
+  `moderation_history`") rather than asserting it, is inert (no query) unless
+  `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
+  extends — carries only bare integers, never warning content or an identity.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument

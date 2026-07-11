@@ -10,6 +10,9 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 ### Added
 - **`AGENT_MODEL` is now optionally tiered by role** (#382): an operator can set `AGENT_MODEL_MEMBER` to run a lighter/cheaper model for member/guest turns — the highest-volume, lowest-trust tier per #347's own framing — while admin/super_admin keep `AGENT_MODEL` unchanged. Unset (the default) is byte-identical: every role resolves to `AGENT_MODEL` exactly as before. A direct lever for the shared weekly Max usage pool named in `docs/SECURITY.md`'s subscription-auth caveat; extends `buildQueryOptions`'s existing `atLeast(role, 'admin')` role split (the same one #347 uses for `maxTurns`) to the one field it didn't yet cover.
 
+### Changed
+- The weekly **admin digest**'s currently-muted-member count (#357) gained a hedged sub-signal for a cohort it deliberately excludes (#403): a member who was actually muted, then went quiet long enough that all their strikes aged out of the opt-in `MODERATION_STRIKE_WINDOW_DAYS` window, drops out of that count with no other admin-facing signal left that they're still blocked (nothing auto-unmutes; `clear_warnings` is still the only way out). `countStaleMutedMembers` surfaces this as "N more may still be muted from an earlier strike that's since aged out — check `moderation_history`" — hedged, not asserted, since the count is a provable upper bound rather than an exact "still muted" signal. Inert (no query) unless the window is configured; carries only a bare integer.
+
 ## 2026-07-10
 
 ### Added
