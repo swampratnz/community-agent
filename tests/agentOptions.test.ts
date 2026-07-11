@@ -111,6 +111,32 @@ test('config: admin/super_admin maxTurns is byte-identical to pre-tiering behavi
   }
 });
 
+test('config: AGENT_MODEL_MEMBER unset ⇒ buildQueryOptions.model is byte-identical to config.llm.model for every role (issue #382)', async () => {
+  const { config } = await import('../src/config.js');
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    assert.equal(
+      buildQueryOptions(role, 'prompt', {}, null).model,
+      config.llm.model,
+      `${role} must resolve to config.llm.model when AGENT_MODEL_MEMBER is unset`,
+    );
+  }
+});
+
+test('SECURITY: AGENT_MODEL_MEMBER unset ⇒ tools/allowedTools/disallowedTools are unaffected by the model-tiering field (issue #382 baseline run)', () => {
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null);
+    const webSearch = role === 'admin' || role === 'super_admin';
+    assert.deepEqual(opts.tools, webSearch ? ['WebSearch'] : []);
+    assert.deepEqual(
+      [...opts.allowedTools].sort(),
+      [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])].sort(),
+    );
+    assert.ok(opts.disallowedTools.includes('Task'));
+    assert.ok(opts.disallowedTools.includes('WebFetch'));
+    assert.equal(opts.disallowedTools.includes('WebSearch'), !webSearch);
+  }
+});
+
 test('SECURITY: under default config, member/guest maxTurns is strictly lower than admin/super_admin — tiering can never silently collapse to uniform (or invert) for the lower-trust tier', () => {
   const lowTrust = ['guest', 'member'] as const;
   const highTrust = ['admin', 'super_admin'] as const;

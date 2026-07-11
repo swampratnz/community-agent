@@ -32,6 +32,12 @@ const EnvSchema = z.object({
     .string()
     .min(1, 'CLAUDE_CODE_OAUTH_TOKEN is required (run `claude setup-token`)'),
   AGENT_MODEL: z.string().default('claude-sonnet-5'),
+  // Optional per-tier override of AGENT_MODEL for member/guest turns (issue
+  // #382), mirroring AGENT_MAX_TURNS_MEMBER's role-tiering pattern applied to
+  // model choice instead of loop depth. Unconstrained string, same validation
+  // as AGENT_MODEL — no artificial model allow-list to maintain. Unset/empty
+  // = opt-out: every role resolves to AGENT_MODEL, byte-identical to today.
+  AGENT_MODEL_MEMBER: z.string().optional(),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
   // Lower agentic-loop ceiling for member/guest turns (issue #347):
   // MEMBER_TOOLS is a much narrower surface than admin+'s (no WebSearch, no
@@ -354,6 +360,12 @@ const EnvSchema = z.object({
   // "0 disabled, else a sane minimum" convention of
   // INTERACTION_RETENTION_DAYS/ROSTER_DEPARTED_RETENTION_DAYS above.
   KNOWLEDGE_STALE_DAYS: z.coerce.number().int().nonnegative().default(0),
+  // Absolute content-age ceiling (issue #380): fires regardless of retrieval
+  // activity, closing the gap where a popular entry's `last_retrieved_at`
+  // resets KNOWLEDGE_STALE_DAYS's clock forever. Unset/0 = disabled, same
+  // convention as KNOWLEDGE_STALE_DAYS. OR-ed into the exact same shared
+  // `isKnowledgeStale` predicate — not a second staleness concept.
+  KNOWLEDGE_STALE_MAX_AGE_DAYS: z.coerce.number().int().nonnegative().default(0),
   // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
   // with no other content — sends one static reply instead. Off by default;
   // an operator opts in after confirming the canned reply tone fits their
@@ -444,6 +456,11 @@ const MIN_ROSTER_DEPARTED_RETENTION_DAYS = 30;
 // hasn't gotten around to re-checking yet rather than ones that are stale.
 const MIN_KNOWLEDGE_STALE_DAYS = 30;
 
+// 3x KNOWLEDGE_STALE_DAYS's own floor: this ceiling must fire even for
+// content still in active use, so it needs a generous grace period, not a
+// twitchy one.
+const MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS = 90;
+
 // A single rater must never be able to trigger the member-facing low-rated
 // caveat (issue #337) — the effective minimum is 2 so the signal always
 // reflects more than one identifiable person's opinion.
@@ -486,6 +503,28 @@ const EnvSchemaChecked = EnvSchema.refine(
   })
   .refine(
     (e) =>
+      e.KNOWLEDGE_STALE_MAX_AGE_DAYS === 0 ||
+      e.KNOWLEDGE_STALE_MAX_AGE_DAYS >= MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS,
+    {
+      message: `KNOWLEDGE_STALE_MAX_AGE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS}`,
+      path: ['KNOWLEDGE_STALE_MAX_AGE_DAYS'],
+    },
+  )
+  .refine(
+    (e) =>
+      e.KNOWLEDGE_STALE_MAX_AGE_DAYS === 0 ||
+      e.KNOWLEDGE_STALE_DAYS === 0 ||
+      e.KNOWLEDGE_STALE_MAX_AGE_DAYS >= e.KNOWLEDGE_STALE_DAYS,
+    {
+      // The absolute ceiling should never be shorter than the
+      // popularity-aware window when both are set, or the two would fight
+      // rather than compose.
+      message: 'KNOWLEDGE_STALE_MAX_AGE_DAYS must not be smaller than a nonzero KNOWLEDGE_STALE_DAYS',
+      path: ['KNOWLEDGE_STALE_MAX_AGE_DAYS'],
+    },
+  )
+  .refine(
+    (e) =>
       e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL === 0 ||
       e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL >= MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
     {
@@ -523,6 +562,7 @@ export const config = {
   llm: {
     oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN,
     model: env.AGENT_MODEL,
+    memberModel: env.AGENT_MODEL_MEMBER,
     maxTurns: env.AGENT_MAX_TURNS,
     memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
   },
@@ -630,6 +670,7 @@ export const config = {
   adminDigest: {
     enabled: env.ADMIN_DIGEST_ENABLED ?? false,
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
+    knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
