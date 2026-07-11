@@ -4,6 +4,8 @@ import { superAdminIds } from './auth/roles.js';
 import { usageStats } from './storage/repository.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
+type UsageAlertStats = Awaited<ReturnType<typeof usageStats>>;
+
 const CHECK_INTERVAL_MS = 60 * 60_000; // hourly — cheap read query, no need for health.ts's 30s cadence
 
 export interface UsageAlertTracker {
@@ -35,6 +37,26 @@ export function stepUsageAlertTracker(
 }
 
 /**
+ * Pure DM text builder (issue #401) so the message content — in particular
+ * the added `backgroundCostUsd` clause — is directly testable without
+ * standing up a full adapter/timer harness. The `~$X.XX recorded` figure
+ * keeps its existing, documented meaning (conversational-reply cost only);
+ * background-job cost is a distinct clause, never summed into it, so a
+ * deployment with all three background features off produces a
+ * byte-identical message to before this issue.
+ */
+export function formatUsageAlertMessage(stats: UsageAlertStats, threshold: number): string {
+  return (
+    `⚠️ Usage alert: ${stats.outbound} replies in the last 24h (threshold ${threshold}).` +
+    (stats.costUsd > 0 ? ` ~$${stats.costUsd.toFixed(2)} recorded.` : '') +
+    (stats.backgroundCostUsd > 0
+      ? ` ~$${stats.backgroundCostUsd.toFixed(2)} background jobs (moderation/digest/refresh).`
+      : '') +
+    ' Reply count is a coarse proxy for shared Max-pool draw, not an exact reading — consider pause_bot if this is unexpected.'
+  );
+}
+
+/**
  * Hourly check of usageStats(1) (rolling 24h) against USAGE_ALERT_DAILY_REPLIES.
  * Disabled (no timer created) unless the threshold is configured. On trip,
  * DMs super admins via the same sendDirectMessage path health.ts's
@@ -58,12 +80,7 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
             { outbound: stats.outbound, threshold, costUsd: stats.costUsd },
             'Usage alert threshold crossed',
           );
-          void alertSuperAdmins(
-            adapters,
-            `⚠️ Usage alert: ${stats.outbound} replies in the last 24h (threshold ${threshold}).` +
-              (stats.costUsd > 0 ? ` ~$${stats.costUsd.toFixed(2)} recorded.` : '') +
-              ' Reply count is a coarse proxy for shared Max-pool draw, not an exact reading — consider pause_bot if this is unexpected.',
-          );
+          void alertSuperAdmins(adapters, formatUsageAlertMessage(stats, threshold));
         }
       })
       .catch((err) => logger.error({ err }, 'Usage alert check failed'));

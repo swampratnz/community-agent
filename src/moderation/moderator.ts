@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { Platform } from '../platforms/types.js';
-import type { LanguagePreference } from '../storage/repository.js';
+import { recordBackgroundJobCost, type LanguagePreference } from '../storage/repository.js';
 import { excerptOf, makeWordlistDetector, type Detection } from './wordlist.js';
 
 export interface ScanContext {
@@ -284,6 +284,7 @@ export async function classifyAbuseWithLlm(text: string): Promise<Detection | nu
   ].join('\n');
 
   let resultText = '';
+  let costUsd = 0;
   for await (const message of query({
     prompt,
     options: {
@@ -306,6 +307,18 @@ export async function classifyAbuseWithLlm(text: string): Promise<Detection | nu
     if (message.type === 'result' && 'result' in message && typeof message.result === 'string') {
       resultText = message.result;
     }
+    if (
+      message.type === 'result' &&
+      'total_cost_usd' in message &&
+      typeof message.total_cost_usd === 'number'
+    ) {
+      costUsd = message.total_cost_usd;
+    }
+  }
+  if (costUsd > 0) {
+    recordBackgroundJobCost('moderation_llm', costUsd).catch((err) =>
+      logger.warn({ err }, 'background_job_cost_record_failed'),
+    );
   }
   const match = /^\s*ABUSE:\s*(.+)$/im.exec(resultText);
   if (!match) return null;

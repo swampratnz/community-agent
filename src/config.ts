@@ -377,6 +377,15 @@ const EnvSchema = z.object({
   // convention as KNOWLEDGE_STALE_DAYS. OR-ed into the exact same shared
   // `isKnowledgeStale` predicate — not a second staleness concept.
   KNOWLEDGE_STALE_MAX_AGE_DAYS: z.coerce.number().int().nonnegative().default(0),
+  // Review-queue age signal for `knowledge_candidates` (issue #398) — a
+  // separate concern from KNOWLEDGE_STALE_DAYS/KNOWLEDGE_STALE_MAX_AGE_DAYS
+  // above (content-freshness of *accepted* knowledge): this flags a
+  // never-reviewed *pending* candidate, whose `hasQueuedCandidateForTopic`
+  // dedup guard otherwise locks its topic out of re-drafting forever with no
+  // signal. Own knob, own (lower) floor — candidates should turn over in
+  // days/weeks, not the months KNOWLEDGE_STALE_DAYS tolerates. Unset/0 =
+  // disabled, same "0 disabled, else a sane minimum" convention.
+  KNOWLEDGE_CANDIDATE_STALE_DAYS: z.coerce.number().int().nonnegative().default(0),
   // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
   // with no other content — sends one static reply instead. Off by default;
   // an operator opts in after confirming the canned reply tone fits their
@@ -472,6 +481,11 @@ const MIN_KNOWLEDGE_STALE_DAYS = 30;
 // twitchy one.
 const MIN_KNOWLEDGE_STALE_MAX_AGE_DAYS = 90;
 
+// Deliberately below MIN_KNOWLEDGE_STALE_DAYS (30): a review queue should
+// turn over far sooner than curated knowledge goes stale, so this is its own,
+// lower floor rather than a reuse of that constant.
+const MIN_KNOWLEDGE_CANDIDATE_STALE_DAYS = 14;
+
 // A single rater must never be able to trigger the member-facing low-rated
 // caveat (issue #337) — the effective minimum is 2 so the signal always
 // reflects more than one identifiable person's opinion.
@@ -532,6 +546,15 @@ const EnvSchemaChecked = EnvSchema.refine(
       // rather than compose.
       message: 'KNOWLEDGE_STALE_MAX_AGE_DAYS must not be smaller than a nonzero KNOWLEDGE_STALE_DAYS',
       path: ['KNOWLEDGE_STALE_MAX_AGE_DAYS'],
+    },
+  )
+  .refine(
+    (e) =>
+      e.KNOWLEDGE_CANDIDATE_STALE_DAYS === 0 ||
+      e.KNOWLEDGE_CANDIDATE_STALE_DAYS >= MIN_KNOWLEDGE_CANDIDATE_STALE_DAYS,
+    {
+      message: `KNOWLEDGE_CANDIDATE_STALE_DAYS must be 0 (disabled) or at least ${MIN_KNOWLEDGE_CANDIDATE_STALE_DAYS}`,
+      path: ['KNOWLEDGE_CANDIDATE_STALE_DAYS'],
     },
   )
   .refine(
@@ -683,6 +706,7 @@ export const config = {
     enabled: env.ADMIN_DIGEST_ENABLED ?? false,
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
     knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
+    knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

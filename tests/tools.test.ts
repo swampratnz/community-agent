@@ -38,6 +38,7 @@ const {
   notifyReportWithdrawn,
   buildToolServer,
   formatKnowledgeSearchResults,
+  formatUsageStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
@@ -4329,6 +4330,37 @@ const fakeHit = (similarity: number, title = 'Some entry') => ({
   updatedAt: new Date(),
 });
 
+const BASE_USAGE_STATS = {
+  inbound: 5,
+  outbound: 3,
+  costUsd: 1.5,
+  topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
+  costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
+  backgroundCostUsd: 0,
+};
+
+test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Background jobs'), 'no background-jobs line when backgroundCostUsd is 0');
+});
+
+test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line naming the figure (issue #401)', () => {
+  const out = formatUsageStats({ ...BASE_USAGE_STATS, backgroundCostUsd: 4.2 }, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs (moderation/digest/refresh): ~$4.20.',
+  );
+});
+
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {
   const hits = [
     fakeHit(KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD - 0.01),
@@ -7564,6 +7596,68 @@ test(
     assert.equal(reDecline.isError, true, 'declining an already-declined candidate reports failure');
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'list_knowledge_candidates: oldestFirst orders the queue by created_at ascending instead of the default newest-first (issue #398)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-tool-sort-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+
+    const oldest = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tool-sort-topic-oldest`,
+      title: `${RUN} oldest tool fixture`,
+      content: 'oldest content',
+    });
+    const newest = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tool-sort-topic-newest`,
+      title: `${RUN} newest tool fixture`,
+      content: 'newest content',
+    });
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '2 days' WHERE id = $1`, [
+      oldest,
+    ]);
+    await pool.query(`UPDATE knowledge_candidates SET created_at = now() - interval '1 days' WHERE id = $1`, [
+      newest,
+    ]);
+
+    const tools = knowledgeCandidateHandlers();
+
+    const defaultOrder = await tools['list_knowledge_candidates'].handler({
+      status: 'pending',
+      limit: 200,
+    });
+    const defaultText = defaultOrder.content[0]?.text ?? '';
+    assert.ok(
+      defaultText.indexOf(`${RUN} newest tool fixture`) < defaultText.indexOf(`${RUN} oldest tool fixture`),
+      'default (no oldestFirst) lists the newest candidate before the oldest one',
+    );
+
+    const oldestFirstOrder = await tools['list_knowledge_candidates'].handler({
+      status: 'pending',
+      limit: 200,
+      oldestFirst: true,
+    });
+    const oldestFirstText = oldestFirstOrder.content[0]?.text ?? '';
+    assert.ok(
+      oldestFirstText.indexOf(`${RUN} oldest tool fixture`) <
+        oldestFirstText.indexOf(`${RUN} newest tool fixture`),
+      'oldestFirst: true lists the oldest candidate before the newest one',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[oldest, newest]]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
   },
 );

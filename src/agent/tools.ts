@@ -502,6 +502,24 @@ export function parseIsoInstant(value: string): Date | null {
   return Number.isNaN(ms) ? null : new Date(ms);
 }
 
+/**
+ * Pure formatter for the `usage_stats` tool reply (issue #401), so the
+ * added `backgroundCostUsd` line is directly testable without a DB. Byte-
+ * identical to before this issue when `backgroundCostUsd === 0` — no line
+ * is appended for a deployment with the three background features off (or
+ * before any of them has ever produced a billable call).
+ */
+export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days: number): string {
+  return (
+    `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+    `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
+    `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
+    (s.backgroundCostUsd > 0
+      ? `\nBackground jobs (moderation/digest/refresh): ~$${s.backgroundCostUsd.toFixed(2)}.`
+      : '')
+  );
+}
+
 /** Shared zod shape for create_event's startTime/endTime — format only; future/ordering checks are cross-field and live in the handler. */
 function isoInstantSchema(description: string) {
   return z
@@ -3072,10 +3090,17 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50, max 200)'),
+      oldestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          'Order by created_at ascending (oldest-drafted first) instead of the default newest-first — ' +
+            'use this to find candidates that have sat unreviewed the longest.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge_candidates');
-      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50);
+      const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50, args.oldestFirst ?? false);
       if (rows.length === 0) return text('No knowledge candidates found.');
       return text(
         untrusted(
@@ -3814,11 +3839,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       assertAtLeast(caller.role, 'super_admin', 'usage_stats');
       const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 365);
       const s = await usageStats(days);
-      return text(
-        `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
-          `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
-          `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}`,
-      );
+      return text(formatUsageStats(s, days));
     },
     { annotations: { readOnlyHint: true } },
   );
