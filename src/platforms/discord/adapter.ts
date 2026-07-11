@@ -94,6 +94,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'delete_message',
     'warn_user',
     'unmute_user',
+    'mute_user',
     'assign_community_role',
     'remove_community_role',
     'list_assignable_roles',
@@ -764,6 +765,23 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         // clear_warnings admin tool after it clears the DB strikes.
         await this.removeMutedRole(action.targetUserId!);
         return `Unmuted ${action.targetUserId}.`;
+      }
+      case 'mute_user': {
+        // Internal-only capability (never in `moderate`'s action enum):
+        // invoked by the `warn_user` branch when a manual warning pushes a
+        // member's strike count to the limit (issue #384), reusing the exact
+        // enforcement primitive `Moderator.scan` already uses for
+        // auto-detected strikes. `params.alertText`, when given, is posted to
+        // the admin-alerts channel so the mute isn't silent to admins —
+        // best-effort, never lets an alert failure mask a successful mute.
+        await this.muteUser(action.targetUserId!);
+        const alertText = paramString(action.params?.alertText);
+        if (alertText) {
+          await this.postAdminAlert(alertText).catch((err) =>
+            logger.warn({ err, targetUserId: action.targetUserId }, 'Manual-warn mute admin alert failed'),
+          );
+        }
+        return `Muted ${action.targetUserId}.`;
       }
       case 'assign_community_role': {
         const guild = await this.client.guilds.fetch(config.discord.guildId);

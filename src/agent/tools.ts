@@ -1,16 +1,18 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
-import { assertAtLeast, type CallerContext } from '../auth/rbac.js';
+import { assertAtLeast, atLeast, type CallerContext } from '../auth/rbac.js';
 import { normalizeMemberId } from '../auth/memberId.js';
 import { sanitizeName } from './systemPrompt.js';
-import { isSuperAdmin, superAdminIds } from '../auth/roles.js';
+import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
 import { memoryHitJumpLink } from './discordLink.js';
+import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
   acceptKnowledgeCandidate,
   addMemberNote,
+  addWarning,
   clearAccessRequest,
   clearWarnings,
   countActiveWarnings,
@@ -964,6 +966,55 @@ function reserveWarnSlot(conversationId: string, limit: number): boolean {
   return true;
 }
 
+/**
+ * Wires a manual `warn_user` into the same strike system `Moderator.scan`
+ * feeds for auto-detected hits (issue #384) — writes the warning row with
+ * `source: 'admin'` (unless the target resolves admin+, who are never warned
+ * or muted, mirroring `moderation/index.ts`'s `isExempt`), then escalates to
+ * a mute using the SAME `strikeWindowDays` windowing `Moderator.scan` uses
+ * for its own immediate-mute decision, so manual and automatic strikes agree.
+ * Callers must catch: this must never let a bookkeeping/enforcement failure
+ * mask that the warning DM itself already went out.
+ */
+async function applyManualWarnStrike(opts: {
+  adapter: PlatformAdapter;
+  platform: Platform;
+  targetUserId: string;
+  issuedByUserId: string;
+  reason: string;
+}): Promise<void> {
+  const { adapter, platform, targetUserId, issuedByUserId, reason } = opts;
+  if (atLeast(await resolveRole(platform, targetUserId), 'admin')) return;
+
+  await addWarning({
+    platform,
+    userId: targetUserId,
+    reason,
+    excerpt: null,
+    source: 'admin',
+    issuedBy: issuedByUserId,
+  });
+
+  if (!config.moderation.enabled || !adapter.adminCapabilities.has('mute_user')) return;
+
+  const active = await countActiveWarnings(platform, targetUserId, config.moderation.strikeWindowDays);
+  if (active < config.moderation.strikeLimit) return;
+
+  await adapter.performAdminAction({
+    kind: 'mute_user',
+    targetUserId,
+    params: {
+      alertText: manualWarnBlockedAlertText(
+        targetUserId,
+        issuedByUserId,
+        active,
+        config.moderation.strikeLimit,
+        reason,
+      ),
+    },
+  });
+}
+
 /** announce timestamps per conversation, for the rolling-hour cap (ANNOUNCE_RATE_LIMIT_PER_HOUR). */
 const announceTimestampsByConversation = new Map<string, number[]>();
 
@@ -1858,6 +1909,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
         durationMinutes: args.durationMinutes,
         messageId: args.messageId,
       };
+      // Set by `run()` on a successful warn_user delivery only — read below to
+      // gate the strike-system write on the DM actually having gone out,
+      // mirroring the proposal's "after run() succeeds" contract. Harmless
+      // for the other actions below, which never read it.
+      let warnDelivered = false;
       const run = async () => {
         const { success, result } = await audited({
           actionKind: args.action,
@@ -1872,6 +1928,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
               params,
             }),
         });
+        if (args.action === 'warn_user') warnDelivered = success;
         return success ? `Done: ${result}` : `Failed: ${result}`;
       };
 
@@ -1886,7 +1943,25 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
             true,
           );
         }
-        return text(await run());
+        const runResult = await run();
+        // Wires this manual warning into the strike system (issue #384):
+        // best-effort, so a bookkeeping/mute failure never turns an already-
+        // delivered warning DM into a reported failure.
+        if (warnDelivered) {
+          await applyManualWarnStrike({
+            adapter,
+            platform: caller.platform,
+            targetUserId: args.targetUserId,
+            issuedByUserId: caller.userId,
+            reason: args.reason,
+          }).catch((err) => {
+            logger.warn(
+              { err, targetUserId: hashId(args.targetUserId) },
+              'Manual-warn strike bookkeeping failed',
+            );
+          });
+        }
+        return text(runResult);
       }
       // delete_message: name the actual message id in the CONFIRM text, plus
       // a best-effort content preview when the bot has this message stored

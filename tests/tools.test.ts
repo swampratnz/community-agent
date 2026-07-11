@@ -86,6 +86,8 @@ const {
   getMemberRole,
   recordAccessRequest,
   clearAccessRequest,
+  countActiveWarnings,
+  clearWarnings,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const pgvector = (await import('pgvector/pg')).default;
@@ -130,6 +132,7 @@ const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
 const REACT_TO_MESSAGE_HANDLER_CONVO = `${RUN}-react-to-message-handler`;
 const REPORT_CONTENT_ACK_HANDLER_CONVO = `${RUN}-report-content-ack-handler`;
 const NOTIFY_SUPER_ADMINS_CROSS_PLATFORM_USER = `${RUN}-notify-super-admins-cross-platform`;
+const MANUAL_WARN_HANDLER_ADMIN = `${RUN}-manual-warn-handler-admin`;
 
 after(async () => {
   if (hasDb) {
@@ -210,6 +213,12 @@ after(async () => {
     ]);
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'announce' AND actor_user_id LIKE $1`, [
       `${ANNOUNCE_RATE_HANDLER_ADMIN}%`,
+    ]);
+    await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${RUN}-manual-warn%`]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id LIKE $1`, [`${RUN}-manual-warn%`]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}-manual-warn%`]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'warn_user' AND actor_user_id LIKE $1`, [
+      `${MANUAL_WARN_HANDLER_ADMIN}%`,
     ]);
   }
   await closeDb();
@@ -2392,6 +2401,7 @@ test(
 // announce/create_poll/create_thread below) — #270 deliberately left it on
 // the strict isKnownConversation-only check.
 function moderateAdapter(opts: {
+  platform?: 'discord' | 'whatsapp';
   capabilities?: string[];
   conversationsForUser?: PlatformAdapter['conversationsForUser'];
   performAdminAction?: PlatformAdapter['performAdminAction'];
@@ -2399,7 +2409,7 @@ function moderateAdapter(opts: {
   const performCalls: Parameters<PlatformAdapter['performAdminAction']>[0][] = [];
   const performAdminAction = opts.performAdminAction ?? (async () => 'warned');
   return {
-    platform: 'discord',
+    platform: opts.platform ?? 'discord',
     start: async () => {},
     stop: async () => {},
     isConnected: () => true,
@@ -2417,6 +2427,7 @@ function moderateAdapter(opts: {
 }
 
 function moderateHandler(caller: {
+  platform?: 'discord' | 'whatsapp';
   role?: 'member' | 'admin' | 'super_admin';
   userId?: string;
   conversationId?: string;
@@ -2424,7 +2435,7 @@ function moderateHandler(caller: {
 }) {
   const server = buildToolServer(
     {
-      platform: 'discord',
+      platform: caller.platform ?? 'discord',
       userId: caller.userId ?? 'admin-1',
       userName: 'Admin',
       role: caller.role ?? 'admin',
@@ -2827,6 +2838,278 @@ test(
       WARN_USER_RATE_LIMIT_PER_HOUR,
       'exactly the within-cap calls are audited; the refusal writes no admin_audit row',
     );
+  },
+);
+
+// Manual warn_user → strike system wiring (issue #384): the already-declared
+// `source: 'admin'` path on `addWarning` was dead until this — warn_user's DM
+// now also writes a member_warnings row, so my_warnings/clear_warnings and
+// the mute-escalation trigger all see admin-issued warnings the same way
+// they already see auto-detected ones.
+async function seedKnownUser(platform: 'discord' | 'whatsapp', conversationId: string, userId: string) {
+  await pool.query(
+    `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, created_at)
+     VALUES ($1,$2,$3,'member','inbound','hi', now())`,
+    [platform, conversationId, userId],
+  );
+}
+
+test(
+  "manual warn_user writes a member_warnings row with source='admin' and issued_by the calling admin " +
+    '(issue #384 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-write`;
+    const target = `${RUN}-manual-warn-write-target`;
+    await seedKnownUser('discord', convo, target);
+
+    const adapter = moderateAdapter({});
+    const handler = moderateHandler({ conversationId: convo, userId: MANUAL_WARN_HANDLER_ADMIN, adapter });
+
+    const result = await handler.handler({
+      action: 'warn_user',
+      targetUserId: target,
+      reason: 'off-topic spam',
+    });
+    assert.equal(result.isError, false);
+
+    const { rows } = await pool.query(
+      `SELECT source, issued_by, reason FROM member_warnings WHERE platform = 'discord' AND user_id = $1 AND cleared_at IS NULL`,
+      [target],
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, 'admin');
+    assert.equal(rows[0].issued_by, MANUAL_WARN_HANDLER_ADMIN);
+    assert.equal(rows[0].reason, 'off-topic spam');
+  },
+);
+
+test(
+  'SECURITY: manually warning a target who resolves to admin/super_admin never writes a member_warnings ' +
+    'row and never triggers mute_user, no matter how many times it is called (issue #384 acceptance ' +
+    'criterion 2 — preserves the "admins are never warned or muted" invariant, ARCHITECTURE.md:708)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-exempt`;
+    const target = `${RUN}-manual-warn-exempt-target`;
+    await seedKnownUser('discord', convo, target);
+    await upsertMember({
+      platform: 'discord',
+      userId: target,
+      role: 'admin',
+      addedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.enabled = true;
+    config.moderation.strikeLimit = 1;
+    try {
+      const adapter = moderateAdapter({ capabilities: ['warn_user', 'mute_user'] });
+      const handler = moderateHandler({ conversationId: convo, userId: MANUAL_WARN_HANDLER_ADMIN, adapter });
+
+      for (let i = 0; i < 3; i++) {
+        const result = await handler.handler({
+          action: 'warn_user',
+          targetUserId: target,
+          reason: `warn ${i}`,
+        });
+        assert.equal(result.isError, false, 'the DM still sends — unchanged, existing behaviour');
+      }
+
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM member_warnings WHERE platform = 'discord' AND user_id = $1`,
+        [target],
+      );
+      assert.equal(rows[0].n, 0, 'no member_warnings row for an admin+ target, ever');
+      assert.equal(
+        adapter.performCalls.filter((c) => c.kind === 'mute_user').length,
+        0,
+        'mute_user must never be invoked against an admin+ target',
+      );
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+test(
+  'manual warn_user makes my_warnings report the correct active count instead of undercounting to zero ' +
+    '(issue #384 acceptance criterion 3, extends the my_warnings suite from issue #182)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-my-warnings`;
+    const target = `${RUN}-manual-warn-my-warnings-target`;
+    await seedKnownUser('whatsapp', convo, target);
+
+    const adapter = moderateAdapter({ platform: 'whatsapp' });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: convo, adapter });
+
+    const warnResult = await handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam' });
+    assert.equal(warnResult.isError, false);
+
+    const myWarnings = await myWarningsHandler(target).handler();
+    assert.match(
+      myWarnings.content[0]?.text ?? '',
+      /1 active warning \(limit 3\)/,
+      'previously this reported "no active warnings" since source=admin rows were never written',
+    );
+  },
+);
+
+test(
+  "clear_warnings clears source='admin' rows too, restoring my_warnings to a clean count (issue #384 " +
+    'acceptance criterion 4)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-clear`;
+    const target = `${RUN}-manual-warn-clear-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    await addWarning({
+      platform: 'whatsapp',
+      userId: target,
+      reason: 'manual warn',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+    assert.equal(await countActiveWarnings('whatsapp', target), 1);
+
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter: stubAdapter(async () => {}),
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
+
+    assert.equal(
+      await countActiveWarnings('whatsapp', target),
+      0,
+      'the admin-source row must be cleared too',
+    );
+  },
+);
+
+test(
+  "manual warn_user escalates to a mute exactly once when the target's active count — mixing " +
+    "source='auto' and 'admin' rows, windowed by strikeWindowDays same as Moderator.scan — reaches " +
+    'strikeLimit, with moderation.enabled true and the adapter advertising mute_user (issue #384 ' +
+    'acceptance criterion 5)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-mute-escalate`;
+    const target = `${RUN}-manual-warn-mute-escalate-target`;
+    await seedKnownUser('discord', convo, target);
+    // One pre-existing AUTO strike, mirroring a real mix of auto + admin hits.
+    await addWarning({
+      platform: 'discord',
+      userId: target,
+      reason: 'wordlist hit',
+      excerpt: 'bad word',
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.enabled = true;
+    config.moderation.strikeLimit = 2;
+    try {
+      const adapter = moderateAdapter({ capabilities: ['warn_user', 'mute_user'] });
+      const handler = moderateHandler({ conversationId: convo, userId: MANUAL_WARN_HANDLER_ADMIN, adapter });
+
+      // This manual warn is the 2nd strike, hitting the (lowered) limit of 2.
+      const result = await handler.handler({
+        action: 'warn_user',
+        targetUserId: target,
+        reason: 'more spam',
+      });
+      assert.equal(result.isError, false);
+
+      const muteCalls = adapter.performCalls.filter((c) => c.kind === 'mute_user');
+      assert.equal(muteCalls.length, 1, 'mute_user must fire exactly once');
+      assert.equal(muteCalls[0].targetUserId, target);
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+test(
+  'SECURITY: with moderation.enabled false (the default), a manual warn still writes the ' +
+    'member_warnings row but never triggers a mute even after crossing strikeLimit (issue #384 ' +
+    'acceptance criterion 6 — the enforcement side effect stays behind the operator opt-in)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-disabled`;
+    const target = `${RUN}-manual-warn-disabled-target`;
+    await seedKnownUser('discord', convo, target);
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.enabled = false;
+    config.moderation.strikeLimit = 1;
+    try {
+      const adapter = moderateAdapter({ capabilities: ['warn_user', 'mute_user'] });
+      const handler = moderateHandler({ conversationId: convo, userId: MANUAL_WARN_HANDLER_ADMIN, adapter });
+
+      const result = await handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam' });
+      assert.equal(result.isError, false);
+
+      const active = await countActiveWarnings('discord', target);
+      assert.equal(active, 1, 'the bookkeeping fix applies regardless of moderation.enabled');
+      assert.equal(
+        adapter.performCalls.filter((c) => c.kind === 'mute_user').length,
+        0,
+        'the mute side effect stays behind the operator opt-in flag',
+      );
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+test(
+  'regression: on WhatsApp Cloud (adminCapabilities has warn_user but not mute_user), manual warn_user ' +
+    'still writes the bookkeeping row and the mute-escalation branch is a capability-gated no-op that ' +
+    'never throws (issue #384 acceptance criterion 7)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-manual-warn-whatsapp`;
+    const target = `${RUN}-manual-warn-whatsapp-target`;
+    await seedKnownUser('whatsapp', convo, target);
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.enabled = true;
+    config.moderation.strikeLimit = 1;
+    try {
+      // Mirrors the real WhatsApp Cloud adapter's adminCapabilities: warn_user, no mute_user.
+      const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['warn_user'] });
+      const handler = moderateHandler({ platform: 'whatsapp', conversationId: convo, adapter });
+
+      await assert.doesNotReject(
+        handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam 1' }),
+      );
+      await assert.doesNotReject(
+        handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam 2' }),
+      );
+
+      const active = await countActiveWarnings('whatsapp', target);
+      assert.equal(active, 2, 'bookkeeping fix applies on WhatsApp Cloud too');
+      assert.equal(
+        adapter.performCalls.filter((c) => c.kind === 'mute_user').length,
+        0,
+        'mute_user is never invoked — the adapter never advertised the capability',
+      );
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+    }
   },
 );
 
