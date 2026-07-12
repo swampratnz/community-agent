@@ -539,6 +539,13 @@ export const EVENT_DESCRIPTION_MAX_CHARS = 1000;
 export const EVENT_LOCATION_MAX_CHARS = 100;
 
 /**
+ * cancel_event's audit-only `reason` (issue #424) has no Discord field to
+ * bound it against — same shape as report_content's `reason`, so the same
+ * 500-char cap.
+ */
+export const EVENT_CANCEL_REASON_MAX_CHARS = 500;
+
+/**
  * create_event requires a concrete, resolved instant — never relative or
  * ambiguous text like "next Tuesday 7pm" (the exact ambiguity the proposal
  * calls out) — so this only accepts a strict ISO 8601 date-time with an
@@ -640,7 +647,7 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, or pull one member's full warning history with reasons\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
-  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule an event\n' +
+  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
   "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
@@ -1518,9 +1525,10 @@ export function buildToolServer(
 
   const listEvents = tool(
     'list_events',
-    'List upcoming Discord scheduled meetups/events (name, start/end time, location) — call this when ' +
+    'List upcoming Discord scheduled meetups/events (id, name, start/end time, location) — call this when ' +
       'someone asks "what\'s coming up?", "when\'s the next meetup?", or similar, instead of guessing from ' +
-      'general knowledge or stale knowledge-base entries. Read-only, no arguments, sourced live from ' +
+      'general knowledge or stale knowledge-base entries. Also the only way to discover a valid eventId for ' +
+      'cancel_event. Read-only, no arguments, sourced live from ' +
       "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
     {},
     async () => {
@@ -1536,7 +1544,7 @@ export function buildToolServer(
               ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
               : e.scheduledStartAt;
             const desc = e.description ? `: ${e.description}` : '';
-            return `- ${e.name} (${when}) @ ${e.location}${desc}`;
+            return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
           })
           .join('\n'),
       );
@@ -2795,6 +2803,63 @@ export function buildToolServer(
     },
   );
 
+  const cancelEvent = tool(
+    'cancel_event',
+    'Cancel a Discord Scheduled Event created via create_event: marks it Canceled (stays visible, ' +
+      "struck-through, RSVP history intact) rather than deleting it — Discord's own UI convention for a " +
+      'meetup that fell through. CONFIRM required. Discord only, admin only. Only a Scheduled event can be ' +
+      'canceled — an event that is already Active, Completed, or Canceled is refused.',
+    {
+      eventId: z.string().describe("The scheduled event's id (see list_events)"),
+      reason: z
+        .string()
+        .max(EVENT_CANCEL_REASON_MAX_CHARS)
+        .optional()
+        .describe(
+          `Optional note for the audit log (Discord has no public cancellation-reason field), max ` +
+            `${EVENT_CANCEL_REASON_MAX_CHARS} characters`,
+        ),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'cancel_event');
+      if (!adapter.adminCapabilities.has('cancel_event') || !adapter.getScheduledEvent) {
+        return text(`This platform (${adapter.platform}) does not support scheduled events.`, true);
+      }
+      // Target validation live from Discord, not the DB (scheduled events
+      // aren't tracked in `interactions`) — same "the bot must be able to
+      // verify what it's acting on" discipline as isKnownConversation/
+      // isKnownMessage, before a CONFIRM is ever registered (issue #424).
+      const event = await adapter.getScheduledEvent(args.eventId);
+      if (!event) {
+        return text(`Refusing: scheduled event "${args.eventId}" was not found in this guild.`, true);
+      }
+      if (event.status !== 'scheduled') {
+        return text(
+          `Refusing: event "${event.name}" is currently ${event.status}, not scheduled — only a scheduled ` +
+            'event can be canceled.',
+          true,
+        );
+      }
+      const params = { eventId: args.eventId, reason: args.reason };
+      // CONFIRM text quotes the resolved event name + start time verbatim,
+      // same discipline as create_event's own CONFIRM prompt — the human
+      // confirms the actual artifact, not model-composed prose.
+      return requireConfirm(
+        `cancel event "${event.name}" starting ${event.scheduledStartAt}` +
+          `${args.reason ? ` (reason: ${args.reason})` : ''}`,
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'cancel_event',
+            params,
+            run: () => adapter.performAdminAction({ kind: 'cancel_event', params }),
+          });
+          return success ? `Done: ${result}` : `Failed: ${result}`;
+        },
+      );
+    },
+  );
+
   const setCommunityGuidelines = tool(
     'set_community_guidelines',
     'Set the community guidelines/rules text shown to members (appended verbatim to new-member welcome ' +
@@ -2891,6 +2956,7 @@ export function buildToolServer(
         createdByRole: caller.role,
         sourceUrl: args.sourceUrl,
         sourceTitle: args.sourceTitle,
+        callerPlatform: caller.platform,
       });
       let reply = `Saved knowledge entry #${id}.`;
       if (similarEntry) {
@@ -3078,6 +3144,7 @@ export function buildToolServer(
               scope: args.scope,
               sourceUrl: args.sourceUrl,
               sourceTitle: args.sourceTitle,
+              callerPlatform: caller.platform,
             });
             if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
             return 'updated';
@@ -4503,6 +4570,7 @@ export function buildToolServer(
       createThread,
       archiveThread,
       createEvent,
+      cancelEvent,
       setCommunityGuidelines,
       setWelcomeMessage,
       saveKnowledgeTool,

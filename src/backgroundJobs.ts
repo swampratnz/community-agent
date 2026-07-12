@@ -35,9 +35,10 @@ const TICK_INTERVAL_MS = 6 * 3_600_000;
  * each job's own freshness guard, that's roughly 3 days of brokenness for
  * the daily jobs before an operator is DMed. No env var: alerting is
  * automatic whenever the corresponding job's own enable flag is already on
- * (issue #263).
+ * (issue #263). Exported (issue #426) so `usageAlert.ts` can reuse the same
+ * threshold for its own inlined tracker instead of redefining it.
  */
-const BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD = 3;
+export const BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD = 3;
 
 /**
  * Wires a job's tracker + threshold-alert plumbing around an injectable
