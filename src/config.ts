@@ -57,6 +57,17 @@ const EnvSchema = z.object({
   // AGENT_MAX_TURNS. admin/super_admin are unaffected — they keep
   // AGENT_MAX_TURNS unchanged.
   AGENT_MAX_TURNS_MEMBER: z.coerce.number().int().positive().default(6),
+  // Per-conversation rolling-hour cap on WebSearch invocations for admin+
+  // turns (issue #412) — WebSearch is the one metered, real-cost built-in
+  // Claude Code tool the bot grants (admin+ only, see buildQueryOptions), and
+  // unlike the bot's own MCP tools it was previously bounded only by the
+  // shared AGENT_MAX_TURNS loop-depth ceiling, not by a per-conversation cap
+  // like the four sibling reserve*Slot levers (create_poll/end_poll/
+  // create_thread/warn_user/announce). Generous default: a legitimate
+  // multi-step admin research turn never approaches it; the goal is a
+  // backstop against runaway/injected repetition across many turns in an
+  // hour, not throttling normal use.
+  AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(20),
 
   // Discord
   DISCORD_BOT_TOKEN: z.string().min(1),
@@ -600,6 +611,7 @@ export const config = {
     classifierModel: env.AGENT_MODEL_CLASSIFIER,
     maxTurns: env.AGENT_MAX_TURNS,
     memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
+    webSearchRateLimitPerHour: env.AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR,
   },
   discord: {
     botToken: env.DISCORD_BOT_TOKEN,

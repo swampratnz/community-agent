@@ -1017,6 +1017,37 @@ function reserveThreadSlot(conversationId: string, limit: number): boolean {
   return true;
 }
 
+/**
+ * WebSearch invocation timestamps per conversation, for its rolling-hour cap
+ * (`config.llm.webSearchRateLimitPerHour`, issue #412). Same sliding-window
+ * shape as `reservePollSlot`/`reserveThreadSlot`/`reserveWarnSlot` — WebSearch
+ * is a built-in SDK tool rather than one of this file's own MCP tools, so it
+ * is gated via a `PreToolUse` hook in `core.ts` instead of inline in a tool
+ * handler, but reuses the identical per-conversation cap primitive.
+ */
+const webSearchTimestampsByConversation = new Map<string, number[]>();
+
+/**
+ * Reserve one WebSearch slot for `conversationId` against a rolling hourly
+ * cap, same sliding-window shape as `reservePollSlot`. Returns false without
+ * reserving if the conversation already hit `limit` within the last hour.
+ * Exported so `core.ts`'s `buildQueryOptions` PreToolUse hook can call it.
+ */
+export function reserveWebSearchSlot(conversationId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (webSearchTimestampsByConversation.get(conversationId) ?? []).filter(
+    (t) => now - t < windowMs,
+  );
+  if (recent.length >= limit) {
+    webSearchTimestampsByConversation.set(conversationId, recent);
+    return false;
+  }
+  recent.push(now);
+  webSearchTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
 /** warn_user timestamps per conversation, for the rolling-hour cap (WARN_USER_RATE_LIMIT_PER_HOUR). */
 const warnTimestampsByConversation = new Map<string, number[]>();
 

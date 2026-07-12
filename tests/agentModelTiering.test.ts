@@ -29,14 +29,14 @@ test('config: AGENT_MODEL_MEMBER set resolves to config.llm.memberModel (issue #
 test('AGENT_MODEL_MEMBER set: guest/member resolve to it, admin/super_admin still resolve to config.llm.model (issue #382)', () => {
   for (const role of ['guest', 'member'] as const) {
     assert.equal(
-      buildQueryOptions(role, 'prompt', {}, null).model,
+      buildQueryOptions(role, 'prompt', {}, null, 'conv-1').model,
       config.llm.memberModel,
       `${role} must resolve to config.llm.memberModel when AGENT_MODEL_MEMBER is set`,
     );
   }
   for (const role of ['admin', 'super_admin'] as const) {
     assert.equal(
-      buildQueryOptions(role, 'prompt', {}, null).model,
+      buildQueryOptions(role, 'prompt', {}, null, 'conv-1').model,
       config.llm.model,
       `${role} must still resolve to config.llm.model, unaffected by AGENT_MODEL_MEMBER`,
     );
@@ -45,7 +45,7 @@ test('AGENT_MODEL_MEMBER set: guest/member resolve to it, admin/super_admin stil
 
 test('SECURITY: AGENT_MODEL_MEMBER set ⇒ tools/allowedTools/disallowedTools are unaffected by the model-tiering field (issue #382, matches the unset baseline in tests/agentOptions.test.ts)', () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
-    const opts = buildQueryOptions(role, 'prompt', {}, null);
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     const webSearch = role === 'admin' || role === 'super_admin';
     assert.deepEqual(opts.tools, webSearch ? ['WebSearch'] : []);
     assert.deepEqual(
