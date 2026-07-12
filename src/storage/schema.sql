@@ -555,6 +555,19 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_conversation_idx
 CREATE INDEX IF NOT EXISTS knowledge_gaps_user_rate_idx
   ON knowledge_gaps (platform, user_id, created_at DESC);
 
+-- Set once a later save_knowledge/update_knowledge clears
+-- KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD against this gap's stored query
+-- embedding (see repository.ts's resolveKnowledgeGaps, issue #422) — the
+-- accept-gap curation loop #213's review named but #208 never built. NULL
+-- (including every pre-existing row) means still unresolved. forget_me/
+-- purge_user_data delete the row outright regardless of this value.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+
+-- Backs the `AND resolved_at IS NULL` filter both list_knowledge_gaps
+-- (recentKnowledgeGapClusters) and countKnowledgeGaps add.
+CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
+  ON knowledge_gaps (conversation_id, created_at DESC) WHERE resolved_at IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- Cost of the three standalone background `query()` calls (issue #401) that
 -- spend from the shared Max pool but write no `interactions` row, so

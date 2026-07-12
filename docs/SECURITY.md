@@ -964,6 +964,27 @@ so it is:
   a missing grant fails clean rather than half-creating an event. Granted as
   part of the base bot invite — see the Discord platform notes below and
   docs/DEPLOYMENT.md step 7 ("Invite the Discord bot").
+- **`cancel_event`** (issue #424) is `create_event`'s destroy-adjacent
+  counterpart, the same pattern `create_poll`/`end_poll` and
+  `create_thread`/`archive_thread` already established: admin-tier +
+  CONFIRM-gated + audited + super-admin-alerted, marking a `Scheduled` event
+  `Canceled` (Discord's own UI convention — stays visible, RSVP history
+  intact) rather than deleting it. Its one new input, `eventId`, is
+  validated **live against `guild.scheduledEvents`** — the same "the bot must
+  be able to verify what it's acting on" discipline `isKnownConversation`/
+  `isKnownMessage` apply to DB-tracked targets, just sourced from Discord's
+  API since scheduled events aren't stored in `interactions` — so an unknown
+  or foreign-guild `eventId` is refused before any pending action is ever
+  registered. Only a `Scheduled` event may transition; `Active`/`Completed`/
+  already-`Canceled` are refused with a specific reason rather than attempting
+  an invalid Discord status transition (re-checked again at execute time,
+  since the CONFIRM's 60s TTL leaves a window for the event's state to
+  change). Same **Manage Events** grant as `create_event` — no new permission.
+  Discord-only, same unsupported-platform message as every sibling tool.
+  `list_events`' formatted output includes each event's `id` specifically so
+  there is a conversational path to a valid `eventId` — without it,
+  `cancel_event` would only ever be reachable by an admin manually copying a
+  snowflake out of Discord's own UI, which would defeat the tool's purpose.
 
 ### 12. GitHub issue filing (`suggest_issue`, opt-in)
 

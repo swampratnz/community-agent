@@ -132,6 +132,11 @@ export const ADMIN_TOOLS = [
   // notifying (RSVP/reminders), so admin-tier + CONFIRM, a genuinely higher
   // floor than announce/create_poll. See docs/SECURITY.md.
   'mcp__community__create_event',
+  // Symmetric destroy-adjacent counterpart to create_event (issue #424),
+  // same pattern create_poll/end_poll and create_thread/archive_thread
+  // already established: admin-tier + CONFIRM, marks the event Canceled
+  // rather than deleting it. See docs/SECURITY.md.
+  'mcp__community__cancel_event',
   // Content curation, same tier as save_knowledge — not super-admin like
   // set_policy, which is runtime bot control (issue #212).
   'mcp__community__set_community_guidelines',
