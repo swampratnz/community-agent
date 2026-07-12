@@ -244,6 +244,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -788,6 +789,12 @@ enabled (every message is inspected) — treat it like ambient archiving.
   `unmute_user` adapter action removing the role). It's lenient/reversible so
   it isn't CONFIRM-gated, and any admin can clear anyone's warnings. Clears are
   audited and surface in `moderation_history`.
+- **Reading**: `list_member_warnings(targetUserId)` (issue #410) is the
+  admin-facing counterpart `my_warnings`' docstring always promised — a
+  chronological, reason/excerpt-included view of one member's `member_warnings`
+  rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
+  reads only `admin_audit` and structurally can't surface auto-detected
+  strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
 
 Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
 see SECURITY.md for the blast-radius and enforcement caveats.

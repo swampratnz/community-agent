@@ -62,7 +62,7 @@ export const MEMBER_TOOLS = [
   'mcp__community__my_submissions',
   // Self-scoped read of the caller's OWN active warning count vs. the
   // configured limit — never a warning's reason/excerpt (admin-only context,
-  // see moderation_history) and never another member's warnings.
+  // see list_member_warnings) and never another member's warnings.
   'mcp__community__my_warnings',
   // Self-scoped, read-only summary of what's stored about the caller —
   // counts mirroring exactly what forget_me/purge_user_data would delete,
@@ -111,6 +111,11 @@ export const ADMIN_TOOLS = [
   'mcp__community__user_history',
   'mcp__community__moderate',
   'mcp__community__clear_warnings',
+  // Per-member, reason/excerpt-included warning history (auto + admin
+  // strikes) — the read moderation_history structurally can't provide, since
+  // it reads only admin_audit, never member_warnings (issue #410). Same
+  // (platform, userId)-only scope as clear_warnings, not conversation-scoped.
+  'mcp__community__list_member_warnings',
   'mcp__community__announce',
   'mcp__community__create_poll',
   // End a running poll early — same admin tier / conversation-scope / audit as

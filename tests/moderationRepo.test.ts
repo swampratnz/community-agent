@@ -22,6 +22,7 @@ const {
   countMutedMembers,
   countStaleMutedMembers,
   clearWarnings,
+  listMemberWarnings,
   purgeUserData,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
@@ -84,6 +85,75 @@ test(
     assert.equal(await countActiveWarnings('discord', user), 0, 'no active warnings remain');
     // Clearing again is a no-op (nothing active left).
     assert.equal(await clearWarnings('discord', user, 'admin-1'), 0);
+  },
+);
+
+test(
+  'listMemberWarnings: returns every row for a member with both auto and admin warnings, newest first, ' +
+    'with reason/excerpt/source/issuedBy/clearedAt intact (issue #410 acceptance criteria #1)',
+  { skip },
+  async () => {
+    const user = `${RUN}-list`;
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'bad language ("asshole")',
+      excerpt: 'you are an asshole',
+      source: 'auto',
+      issuedBy: null,
+    });
+    await addWarning({
+      platform: 'discord',
+      userId: user,
+      reason: 'spamming invite links',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: 'admin-7',
+    });
+    const cleared = await clearWarnings('discord', user, 'admin-7');
+    assert.equal(cleared, 2, 'sanity: both rows are cleared before the read, so clearedAt is exercised too');
+
+    const rows = await listMemberWarnings('discord', user);
+    assert.equal(rows.length, 2);
+    // Newest first: the admin row (added second) comes before the auto row.
+    assert.equal(rows[0].source, 'admin');
+    assert.equal(rows[0].reason, 'spamming invite links');
+    assert.equal(rows[0].excerpt, null);
+    assert.equal(rows[0].issuedBy, 'admin-7');
+    assert.ok(rows[0].clearedAt instanceof Date, 'clearedAt is populated after clearWarnings');
+    assert.equal(rows[0].clearedBy, 'admin-7');
+
+    assert.equal(rows[1].source, 'auto');
+    assert.equal(rows[1].reason, 'bad language ("asshole")');
+    assert.equal(rows[1].excerpt, 'you are an asshole');
+    assert.equal(rows[1].issuedBy, null);
+    assert.ok(rows[1].clearedAt instanceof Date);
+
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [user]);
+  },
+);
+
+test(
+  'listMemberWarnings: respects the limit parameter and defaults to 20 (issue #410)',
+  { skip },
+  async () => {
+    const user = `${RUN}-list-limit`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: 'discord',
+        userId: user,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    const limited = await listMemberWarnings('discord', user, 2);
+    assert.equal(limited.length, 2, 'an explicit limit is honoured');
+    const defaulted = await listMemberWarnings('discord', user);
+    assert.equal(defaulted.length, 3, 'the default limit (20) does not truncate a small history');
+
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [user]);
   },
 );
 
