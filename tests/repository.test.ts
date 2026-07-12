@@ -3912,6 +3912,57 @@ test(
 );
 
 test(
+  'repository: listRoster and rosterCounts work identically for platform "whatsapp" with zero code change (issue #407)',
+  { skip },
+  async () => {
+    const lurker = `${RUN}-wa-roster-lurker`;
+    const member = `${RUN}-wa-roster-member`;
+    const leaver = `${RUN}-wa-roster-leaver`;
+
+    // WhatsApp roster rows carry no display name (Baileys' group-participants.update
+    // carries no push name) — upsertRosterMember/markRosterLeave/listRoster/
+    // rosterCounts are unchanged, platform-generic functions; this is purely a
+    // regression check that the #407 WhatsApp integration needed no edits to them.
+    await upsertRosterMember({ platform: 'whatsapp', userId: lurker });
+    await upsertRosterMember({ platform: 'whatsapp', userId: member });
+    await upsertRosterMember({ platform: 'whatsapp', userId: leaver });
+    await upsertMember({ platform: 'whatsapp', userId: member, role: 'member', addedBy: `${RUN}-wa-admin` });
+    await markRosterLeave('whatsapp', leaver);
+
+    const notMembers = await listRoster('whatsapp', 'not_members', 7, 200);
+    assert.ok(
+      notMembers.some((r) => r.userId === lurker && !r.isMember),
+      'a present WhatsApp non-member appears in the onboarding queue, same as Discord',
+    );
+    assert.ok(
+      !notMembers.some((r) => r.userId === member),
+      'a registered WhatsApp member is not in the queue',
+    );
+    assert.ok(
+      !notMembers.some((r) => r.userId === leaver),
+      'someone who left is not in the onboarding queue',
+    );
+
+    const left = await listRoster('whatsapp', 'left', 7, 200);
+    assert.ok(
+      left.some((r) => r.userId === leaver && r.leftAt !== null),
+      'recent leavers appear under "left"',
+    );
+
+    const counts = await rosterCounts('whatsapp');
+    assert.ok(
+      counts.total >= 2,
+      'rosterCounts("whatsapp") is no longer permanently zero (issue #344 gap closed)',
+    );
+    assert.ok(counts.joinedThisWeek >= 2, 'this-week join count includes the WhatsApp fixtures');
+    assert.ok(counts.leftThisWeek >= 1, 'this-week leave count includes the WhatsApp leaver');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
+  },
+);
+
+test(
   'SECURITY: repository: roster stores identity metadata only — no content column exists and no roster write touches interactions (issue #47)',
   { skip },
   async () => {

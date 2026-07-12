@@ -467,20 +467,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   self-access path** (members cannot read notes about themselves) and that
   admins may manually transcribe web-researched facts into a note — both are
   scope decisions for this small, high-trust community, revisit if it grows.
-- **Server roster** (`server_roster`, issue #47): join/leave events plus a
-  startup backfill persist **identity metadata for every guild member** —
-  platform user id, display name, join/leave timestamps, rejoin count —
-  including non-members and lurkers who have never interacted with the bot.
-  It stores **no message content** (pinned by a `SECURITY:` test, plus a
-  structural column check so a content-bearing column can't appear
-  silently). Reads are **admin-tier and guild-wide** (`list_roster` is not
-  conversation-scoped — same precedent as `list_access_requests`), display
-  names are wrapped as untrusted data, and `forget_me`/`purge_user_data`
-  delete the person's roster row. Roster rows are durable (like
+- **Server roster** (`server_roster`, issue #47; extended to WhatsApp groups
+  by issue #407): join/leave events plus a startup backfill persist
+  **identity metadata for every guild member (or, for WhatsApp, every group
+  participant)** — platform user id, display name (Discord only; Baileys'
+  `group-participants.update` carries no push name, so WhatsApp rows have
+  none), join/leave timestamps, rejoin count — including non-members and
+  lurkers who have never interacted with the bot. It stores **no message
+  content** (pinned by a `SECURITY:` test on each platform's handlers, plus a
+  structural column check so a content-bearing column can't appear silently).
+  On WhatsApp, roster collection is scoped by the same `WHATSAPP_ALLOWED_JIDS`
+  gate already used for message intake and the welcome feature (a `SECURITY:`
+  test pins that an add/remove for a group outside that scope writes nothing),
+  and excludes the bot's own number/LID; it carries no new opt-in flag,
+  reasoning that group participant lists are visible to every member of a
+  WhatsApp group, the same "not a secret list" posture already applied to
+  Discord's roster. A known, documented limitation for multi-group WhatsApp
+  deployments: a single `(platform, user_id)` row can't represent per-group
+  presence, so a `remove` from one allowed group marks the row "left" even if
+  the person remains in another — the same coarseness Discord's single-guild
+  model sidesteps by construction. Reads are **admin-tier and guild/group-wide**
+  (`list_roster` is not conversation-scoped — same precedent as
+  `list_access_requests`), display names are wrapped as untrusted data, and
+  `forget_me`/`purge_user_data` delete the person's roster row by
+  `(platform, user_id)` regardless of platform. Roster rows are durable (like
   `community_users`) for members still present; departed members'
   (`left_at IS NOT NULL`) rows are age-purged after
   `ROSTER_DEPARTED_RETENTION_DAYS` (issue #136, unset/0 = disabled, floor of
-  30 days if set — mirrors `INTERACTION_RETENTION_DAYS`).
+  30 days if set — mirrors `INTERACTION_RETENTION_DAYS`), platform-agnostic
+  already.
 - **Weekly admin digest** (`admin_digest_sends`, issue #97): a daily timer
   (off unless `ADMIN_DIGEST_ENABLED`) proactively DMs each `community_users`
   admin the same recurring-question-cluster signal `question_digest` already

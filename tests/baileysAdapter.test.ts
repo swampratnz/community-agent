@@ -1,12 +1,14 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
-// before importing anything that (transitively) loads it. DATABASE_URL
-// points nowhere; policy reads fail and fall back to defaults (see
-// src/storage/policies.ts), so no real DB is needed for this adapter-level
-// test.
+// before importing anything that (transitively) loads it. Locally
+// DATABASE_URL points nowhere and policy reads fail over to defaults (see
+// src/storage/policies.ts); in CI (ci.yml) DATABASE_URL is a REAL pgvector
+// Postgres shared by the whole test job, not just tests/repository.test.ts.
+// Either way this file must stay DB-independent — see the blanket
+// `beforeEach` pool.query stub below.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
@@ -23,6 +25,22 @@ const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
+
+/**
+ * Issue #407: `onGroupParticipantsUpdate` now unconditionally writes to
+ * `server_roster` on every add/remove, not just reads policies. Against a
+ * REAL DATABASE_URL (CI's shared pgvector Postgres) an un-mocked
+ * `fireGroupJoin` would leave real roster rows behind, leaking into
+ * unrelated tests/files (e.g. tests/adminDigest.test.ts's
+ * `rosterCounts('whatsapp')` assertions) that share the same DB. Default
+ * every pool.query call in this file to a harmless empty response — any test
+ * that needs a specific response (roster writes, policy reads) installs its
+ * own `t.mock.method(pool, 'query', ...)` afterwards, which simply layers on
+ * top of this one for that test's duration.
+ */
+beforeEach((t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+});
 
 /**
  * Stubs the Baileys socket so sendMessage / sendDirectMessage can be
@@ -598,6 +616,259 @@ for (const action of ['remove', 'promote', 'demote']) {
     assert.equal(sent.length, 0);
   });
 }
+
+// --- WhatsApp roster tracking (issue #407) ----------------------------------
+
+/**
+ * Captures every pool.query call into `calls`, returning a generic success
+ * response, so server_roster/interactions writes can be asserted without a
+ * real DB — mirrors stubPoliciesQuery above and stubRejoinQueries in
+ * tests/discordAdapter.test.ts.
+ */
+function rosterQueryRecorder(calls: Array<{ sql: string; params?: unknown[] }>) {
+  return async (sql: string, params?: unknown[]) => {
+    calls.push({ sql, params });
+    return { rows: [], rowCount: 1 };
+  };
+}
+
+test('group-participants.update "add" upserts a server_roster row for each participant (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+
+  await fireGroupJoin(adapter, {
+    id: 'group-407-add@g.us',
+    participants: ['64211111111@s.whatsapp.net', '64222222222@s.whatsapp.net'],
+    action: 'add',
+  });
+
+  const inserts = calls.filter((c) => c.sql.includes('INSERT INTO server_roster'));
+  assert.equal(inserts.length, 2, 'one upsert per participant in the add event');
+  assert.deepEqual(
+    inserts.map((c) => c.params).sort((a, b) => String(a?.[1]).localeCompare(String(b?.[1]))),
+    [
+      ['whatsapp', '64211111111', null],
+      ['whatsapp', '64222222222', null],
+    ],
+    'each upsert is platform "whatsapp", the bare local-part userId, and no display name (Baileys carries none here)',
+  );
+});
+
+test("SECURITY: group-participants.update never roster-tracks the bot's own number or LID, on add or remove (issue #407)", async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+  (adapter as unknown as { botNumber: string; botLid: string }).botNumber = '64299999999';
+  (adapter as unknown as { botNumber: string; botLid: string }).botLid = '11111';
+
+  await fireGroupJoin(adapter, {
+    id: 'group-407-bot-add@g.us',
+    participants: ['64299999999@s.whatsapp.net', '11111@lid', '64211111111@s.whatsapp.net'],
+    action: 'add',
+  });
+  await fireGroupJoin(adapter, {
+    id: 'group-407-bot-remove@g.us',
+    participants: ['64299999999@s.whatsapp.net', '11111@lid', '64211111111@s.whatsapp.net'],
+    action: 'remove',
+  });
+
+  const rosterWrites = calls.filter((c) => c.sql.includes('server_roster'));
+  assert.equal(rosterWrites.length, 2, 'exactly one add-upsert and one remove-mark, both for the non-bot id');
+  for (const write of rosterWrites) {
+    assert.equal(write.params?.[1], '64211111111');
+  }
+});
+
+test('group-participants.update "remove" marks the participant left in server_roster AND still invalidates the membership cache (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+  const fetchCalls = stubConversationsSocket(adapter, ['64211111111']);
+  await adapter.conversationsForUser('64211111111');
+  assert.equal(fetchCalls.groupFetch, 1, 'precondition: first lookup is a cache miss');
+
+  await fireGroupJoin(adapter, {
+    id: 'group-286@g.us',
+    participants: ['64211111111@s.whatsapp.net'],
+    action: 'remove',
+  });
+
+  const updates = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+  assert.equal(updates.length, 1, 'the remove event marks the roster row left');
+  assert.deepEqual(updates[0].params, ['whatsapp', '64211111111']);
+
+  await adapter.conversationsForUser('64211111111');
+  assert.equal(
+    fetchCalls.groupFetch,
+    2,
+    'the existing membership-cache invalidation (issue #286) still fires alongside the new roster leave-mark, not replaced by it',
+  );
+});
+
+test('roster recording fires with WHATSAPP_WELCOME_ENABLED off (issue #407)', async (t) => {
+  assert.equal(config.whatsapp.welcome.enabled, false, 'precondition: default env has the flag off');
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+
+  await fireGroupJoin(adapter, {
+    id: 'group-407-flag-off@g.us',
+    participants: ['64211111111@s.whatsapp.net'],
+    action: 'add',
+  });
+
+  assert.equal(calls.filter((c) => c.sql.includes('INSERT INTO server_roster')).length, 1);
+});
+
+test('roster recording still fires identically with WHATSAPP_WELCOME_ENABLED on (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+  stubSocketForGroupWelcome(adapter);
+
+  await withWelcomeConfig({ enabled: true }, () =>
+    fireGroupJoin(adapter, {
+      id: 'group-407-flag-on@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'add',
+    }),
+  );
+
+  assert.equal(
+    calls.filter((c) => c.sql.includes('INSERT INTO server_roster')).length,
+    1,
+    'roster recording is independent of the welcome flag, mirroring Discord never depending on DISCORD_WELCOME_ENABLED',
+  );
+});
+
+test('SECURITY: with WHATSAPP_ALLOWED_JIDS set, an add or remove event for a group outside the allowlist writes zero server_roster rows (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+  const prevJids = allowedJids.allowedJids;
+  allowedJids.allowedJids = ['some-other-group@g.us'];
+
+  try {
+    const adapter = new BaileysAdapter();
+    await fireGroupJoin(adapter, {
+      id: 'not-allowed-407@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'add',
+    });
+    await fireGroupJoin(adapter, {
+      id: 'not-allowed-407@g.us',
+      participants: ['64211111111@s.whatsapp.net'],
+      action: 'remove',
+    });
+  } finally {
+    allowedJids.allowedJids = prevJids;
+  }
+
+  const rosterWrites = calls.filter((c) => c.sql.includes('server_roster'));
+  assert.equal(
+    rosterWrites.length,
+    0,
+    'roster identity data must never be collected for a group outside the operator-configured scope',
+  );
+});
+
+test('SECURITY: neither the add nor the remove roster path ever writes to interactions (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+
+  await fireGroupJoin(adapter, {
+    id: 'group-407-add-interactions@g.us',
+    participants: ['64211111111@s.whatsapp.net'],
+    action: 'add',
+  });
+  await fireGroupJoin(adapter, {
+    id: 'group-407-remove-interactions@g.us',
+    participants: ['64211111111@s.whatsapp.net'],
+    action: 'remove',
+  });
+
+  const interactionWrites = calls.filter((c) => c.sql.includes('interactions'));
+  assert.equal(interactionWrites.length, 0, 'no roster code path ever opens a message-content write path');
+});
+
+/** Reaches the private backfillRoster handler directly. */
+function fireBackfillRoster(adapter: InstanceType<typeof BaileysAdapter>): Promise<void> {
+  return (adapter as unknown as { backfillRoster: () => Promise<void> }).backfillRoster();
+}
+
+/** Stubs the socket's groupFetchAllParticipating for backfillRoster tests. */
+function stubGroupsSocket(
+  adapter: InstanceType<typeof BaileysAdapter>,
+  groups: Record<string, { participants: { id: string }[] }>,
+) {
+  (
+    adapter as unknown as {
+      sock: { groupFetchAllParticipating: () => Promise<Record<string, { participants: { id: string }[] }>> };
+    }
+  ).sock = { groupFetchAllParticipating: async () => groups };
+}
+
+test('WhatsApp roster startup backfill idempotently upserts every participant of every currently-participating group, excluding the bot (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const adapter = new BaileysAdapter();
+  (adapter as unknown as { botNumber: string }).botNumber = '64299999999';
+  stubGroupsSocket(adapter, {
+    'group-a@g.us': {
+      participants: [{ id: '64211111111@s.whatsapp.net' }, { id: '64299999999@s.whatsapp.net' }],
+    },
+    'group-b@g.us': { participants: [{ id: '64222222222@s.whatsapp.net' }] },
+  });
+
+  await fireBackfillRoster(adapter);
+  const inserts = calls.filter((c) => c.sql.includes('INSERT INTO server_roster'));
+  assert.equal(inserts.length, 2, 'two non-bot participants across both groups; the bot itself is excluded');
+  assert.deepEqual(inserts.map((c) => c.params?.[1]).sort(), ['64211111111', '64222222222']);
+
+  calls.length = 0;
+  await fireBackfillRoster(adapter);
+  const secondInserts = calls.filter((c) => c.sql.includes('INSERT INTO server_roster'));
+  assert.equal(
+    secondInserts.length,
+    2,
+    'running the backfill twice re-upserts the same participants — upsertRosterMember is idempotent, so no rows accumulate',
+  );
+});
+
+test('WhatsApp roster startup backfill respects WHATSAPP_ALLOWED_JIDS, skipping out-of-scope groups (issue #407)', async (t) => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+  const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+  const prevJids = allowedJids.allowedJids;
+  allowedJids.allowedJids = ['group-a@g.us'];
+
+  try {
+    const adapter = new BaileysAdapter();
+    stubGroupsSocket(adapter, {
+      'group-a@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      'group-b@g.us': { participants: [{ id: '64222222222@s.whatsapp.net' }] },
+    });
+    await fireBackfillRoster(adapter);
+  } finally {
+    allowedJids.allowedJids = prevJids;
+  }
+
+  const inserts = calls.filter((c) => c.sql.includes('INSERT INTO server_roster'));
+  assert.equal(inserts.length, 1, 'only the allowed group contributes backfill rows');
+  assert.equal(inserts[0].params?.[1], '64211111111');
+});
+
+test('WhatsApp roster startup backfill degrades to a warning log on failure, never crashing (issue #407)', async () => {
+  const adapter = new BaileysAdapter();
+  (adapter as unknown as { sock: { groupFetchAllParticipating: () => Promise<never> } }).sock = {
+    groupFetchAllParticipating: async () => {
+      throw new Error('simulated fetch failure');
+    },
+  };
+  await assert.doesNotReject(() => fireBackfillRoster(adapter));
+});
 
 test('stepWelcomeCooldown: sends on first contact for a group, then suppresses within the window', () => {
   let state = initialWelcomeCooldownState();

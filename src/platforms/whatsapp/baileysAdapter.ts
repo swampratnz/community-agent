@@ -18,7 +18,9 @@ import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from 
 import {
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
+  markRosterLeave,
   updateInteractionByMessageId,
+  upsertRosterMember,
 } from '../../storage/repository.js';
 import { isSuperAdmin } from '../../auth/roles.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
@@ -174,6 +176,11 @@ export class BaileysAdapter implements PlatformAdapter {
         this.botNumber = jidLocalPart(sock.user?.id);
         this.botLid = jidLocalPart((sock.user as { lid?: string } | undefined)?.lid);
         logger.info({ number: this.botNumber }, 'WhatsApp connected');
+        // One-shot idempotent roster backfill so "everyone already here" is
+        // covered, not just future joiners/leavers — mirrors Discord's
+        // day-one backfillRoster(). Fire-and-forget: a backfill failure must
+        // never block message handling.
+        void this.backfillRoster();
       }
       if (connection === 'close') {
         this.connected = false;
@@ -459,23 +466,52 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   /**
-   * WhatsApp's analogue of Discord's onGuildMemberAdd: `group-participants.update`
-   * fires whenever someone joins (or is added to) a group the linked number is
-   * in. Off unless WHATSAPP_WELCOME_ENABLED=true. Posts ONE static, non-agent
-   * message (no LLM call) to the group itself — deliberately never a 1:1 DM to
-   * the new participant, since an unsolicited DM to a stranger's number is
-   * exactly the Baileys ban-risk pattern this avoids. Baileys batches
-   * simultaneous joins into one event already; the cooldown additionally
-   * collapses sequential joins across time into a single message per window.
-   * The welcome text itself is admin-configurable (set_welcome_message,
-   * issue #253), falling back to the hardcoded WHATSAPP_GROUP_WELCOME_MESSAGE
-   * default when unset — WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN instead when
-   * config.rbac.accessMode.whatsapp is 'open' (issue #351). When community guidelines are set (issue #212),
-   * they're appended verbatim to it — never run through the model.
+   * WhatsApp's analogue of Discord's onGuildMemberAdd/onGuildMemberRemove:
+   * `group-participants.update` fires whenever someone joins/is added to or
+   * leaves/is removed from a group the linked number is in. Roster recording
+   * (issue #407, see above) always runs first, for both directions. Below
+   * that, the welcome message: off unless WHATSAPP_WELCOME_ENABLED=true.
+   * Posts ONE static, non-agent message (no LLM call) to the group itself —
+   * deliberately never a 1:1 DM to the new participant, since an unsolicited
+   * DM to a stranger's number is exactly the Baileys ban-risk pattern this
+   * avoids. Baileys batches simultaneous joins into one event already; the
+   * cooldown additionally collapses sequential joins across time into a
+   * single message per window. The welcome text itself is admin-configurable
+   * (set_welcome_message, issue #253), falling back to the hardcoded
+   * WHATSAPP_GROUP_WELCOME_MESSAGE default when unset —
+   * WHATSAPP_GROUP_WELCOME_MESSAGE_OPEN instead when
+   * config.rbac.accessMode.whatsapp is 'open' (issue #351). When community
+   * guidelines are set (issue #212), they're appended verbatim to it — never
+   * run through the model.
    */
   private async onGroupParticipantsUpdate(
     update: BaileysEventMap['group-participants.update'],
   ): Promise<void> {
+    // Roster recording (issue #407), independent of WHATSAPP_WELCOME_ENABLED
+    // below — mirroring Discord's roster recording, which has never depended
+    // on DISCORD_WELCOME_ENABLED (onGuildMemberAdd/onGuildMemberRemove).
+    // Scoped by the same WHATSAPP_ALLOWED_JIDS gate as message intake and the
+    // welcome message, so roster tracking never expands to a group the
+    // operator hasn't scoped the bot into.
+    const inScope =
+      config.whatsapp.allowedJids.length === 0 || config.whatsapp.allowedJids.includes(update.id);
+    if (inScope && (update.action === 'add' || update.action === 'remove')) {
+      for (const jid of update.participants) {
+        const local = jidLocalPart(jid);
+        // Never roster-track the bot's own number/LID.
+        if (!local || local === this.botNumber || (this.botLid !== '' && local === this.botLid)) continue;
+        if (update.action === 'add') {
+          await upsertRosterMember({ platform: 'whatsapp', userId: local }).catch((err) =>
+            logger.warn({ err, jid }, 'WhatsApp roster join record failed'),
+          );
+        } else {
+          await markRosterLeave('whatsapp', local).catch((err) =>
+            logger.warn({ err, jid }, 'WhatsApp roster leave record failed'),
+          );
+        }
+      }
+    }
+
     // Cache invalidation must run regardless of the welcome-message feature
     // flag below — it's a security-relevant scope narrowing, not part of the
     // welcome feature. A participant leaving one group may remain in others,
@@ -632,6 +668,39 @@ export class BaileysAdapter implements PlatformAdapter {
 
     this.membershipCache.set(userId, { expires: Date.now() + MEMBERSHIP_CACHE_TTL_MS, ids });
     return ids;
+  }
+
+  /**
+   * Idempotent upsert of every current participant across every in-scope
+   * (WHATSAPP_ALLOWED_JIDS, or all currently-participating groups when
+   * unset) group, so the roster covers members who joined before this
+   * feature existed — mirrors Discord's day-one `backfillRoster()`
+   * (`guild.members.fetch()`). Reuses the same `groupFetchAllParticipating()`
+   * call `conversationsForUser` already makes on every cache miss, and takes
+   * the same failure posture: a thrown fetch degrades to a warning log, not
+   * a startup crash. Runs once per connection (from `connection.update`'s
+   * 'open' branch); `upsertRosterMember` itself is idempotent, so re-running
+   * this (e.g. across a reconnect) changes no rows for an already-present
+   * participant.
+   */
+  private async backfillRoster(): Promise<void> {
+    if (!this.sock) return;
+    try {
+      const groups = await this.sock.groupFetchAllParticipating();
+      let count = 0;
+      for (const [jid, meta] of Object.entries(groups)) {
+        if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(jid)) continue;
+        for (const p of meta.participants ?? []) {
+          const local = jidLocalPart(p.id);
+          if (!local || local === this.botNumber || (this.botLid !== '' && local === this.botLid)) continue;
+          await upsertRosterMember({ platform: 'whatsapp', userId: local });
+          count += 1;
+        }
+      }
+      logger.info({ count }, 'WhatsApp roster backfill complete');
+    } catch (err) {
+      logger.warn({ err }, 'WhatsApp roster backfill failed');
+    }
   }
 
   /**
