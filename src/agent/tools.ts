@@ -546,20 +546,22 @@ export function parseIsoInstant(value: string): Date | null {
 }
 
 /**
- * Pure formatter for the `usage_stats` tool reply (issue #401), so the
- * added `backgroundCostUsd` line is directly testable without a DB. Byte-
- * identical to before this issue when `backgroundCostUsd === 0` — no line
- * is appended for a deployment with the three background features off (or
- * before any of them has ever produced a billable call).
+ * Pure formatter for the `usage_stats` tool reply (issue #401, broken down
+ * per-job by #438), so the background-jobs line is directly testable
+ * without a DB. Byte-identical to before #401 when `backgroundCostUsd === 0`
+ * — no line is appended for a deployment with the three background features
+ * off (or before any of them has ever produced a billable call).
  */
 export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days: number): string {
+  const byJob = s.backgroundCostByJob
+    .filter((r) => r.costUsd > 0)
+    .map((r) => `${r.job} ~$${r.costUsd.toFixed(2)}`)
+    .join(' · ');
   return (
     `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
-    (s.backgroundCostUsd > 0
-      ? `\nBackground jobs (moderation/digest/refresh): ~$${s.backgroundCostUsd.toFixed(2)}.`
-      : '')
+    (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '')
   );
 }
 

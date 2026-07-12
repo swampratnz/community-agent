@@ -2696,6 +2696,46 @@ test(
 );
 
 test(
+  'repository: usageStats().backgroundCostByJob equals sumBackgroundJobCosts(days).byJob for the same window, across all three job labels and outside the window (issue #438)',
+  { skip },
+  async () => {
+    const days = 1;
+    const before = await usageStats(days);
+    const beforeByJob = new Map(before.backgroundCostByJob.map((r) => [r.job, r.costUsd]));
+
+    await recordBackgroundJobCost('moderation_llm', 0.35);
+    await recordBackgroundJobCost('context_builder', 0.05);
+    await recordBackgroundJobCost('knowledge_refresh', 3.8);
+    // Outside the 1-day window — must not appear in either usageStats or sumBackgroundJobCosts.
+    await pool.query(
+      `INSERT INTO background_job_costs (job, cost_usd, created_at) VALUES ($1, $2, now() - interval '2 days')`,
+      ['moderation_llm', 100],
+    );
+
+    const [after, background] = await Promise.all([usageStats(days), sumBackgroundJobCosts(days)]);
+    const afterByJob = new Map(after.backgroundCostByJob.map((r) => [r.job, r.costUsd]));
+
+    assert.deepEqual(
+      after.backgroundCostByJob,
+      background.byJob,
+      'usageStats.backgroundCostByJob is sourced verbatim from sumBackgroundJobCosts(days).byJob',
+    );
+    assert.equal(
+      (afterByJob.get('moderation_llm') ?? 0) - (beforeByJob.get('moderation_llm') ?? 0),
+      0.35,
+      'moderation_llm reflects only the in-window row, excluding the 2-day-old one',
+    );
+    assert.equal((afterByJob.get('context_builder') ?? 0) - (beforeByJob.get('context_builder') ?? 0), 0.05);
+    assert.equal(
+      (afterByJob.get('knowledge_refresh') ?? 0) - (beforeByJob.get('knowledge_refresh') ?? 0),
+      3.8,
+    );
+
+    await pool.query(`DELETE FROM background_job_costs WHERE cost_usd = ANY($1)`, [[0.35, 0.05, 3.8, 100]]);
+  },
+);
+
+test(
   'SECURITY: repository: background_job_costs stores only the fixed job enum and a numeric cost — no user id, conversation id, platform, or free text (issue #401)',
   { skip },
   async () => {

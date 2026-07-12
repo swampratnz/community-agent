@@ -61,7 +61,7 @@
   "statusCheckAlert.test.ts": 1,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 7,
-  "tools.test.ts": 133,
+  "tools.test.ts": 135,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 10,
   "whatsappCloudWire.test.ts": 5,

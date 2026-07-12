@@ -2276,6 +2276,7 @@ export async function usageStats(days = 7): Promise<{
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
   costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
   backgroundCostUsd: number;
+  backgroundCostByJob: Array<{ job: string; costUsd: number }>;
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2309,6 +2310,7 @@ export async function usageStats(days = 7): Promise<{
     topUsers: top.map((r) => ({ userId: r.user_id, userName: r.user_name, messages: Number(r.n) })),
     costByRole: byRole.map((r) => ({ role: r.role, costUsd: Number(r.cost), replies: Number(r.n) })),
     backgroundCostUsd: background.total,
+    backgroundCostByJob: background.byJob,
   };
 }
 
