@@ -171,6 +171,33 @@ const EnvSchema = z.object({
   // Max issues one super admin can file per rolling calendar day. 0 = unlimited.
   GITHUB_ISSUE_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
 
+  // --- Dev-team dispatch service (super-admin dev_team_* tools) -------------
+  // Lets a SUPER ADMIN drive a remote "dev-team" build service over the
+  // tailnet straight from chat: dispatch an assess/deliver job, poll its
+  // status, and fetch the result; a background poller DMs the requester when a
+  // (~20 min) run finishes. OFF by default; super-admin only (see
+  // docs/SECURITY.md + src/agent/tools.ts). DEV_TEAM_AUTH_TOKEN is the bearer
+  // token the client sends on every request except GET /health — a credential,
+  // so it's kept out of logs and added to runtimeSecrets().
+  DEV_TEAM_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // The dev-team service base URL. Deliberately allows http:// as well as
+  // https:// — this is a tailnet-INTERNAL endpoint (e.g.
+  // http://ubuntudevagent:8738) reached only over the WireGuard-encrypted,
+  // device-authenticated Tailscale network, which already provides transport
+  // confidentiality/authentication. Do NOT add a `.startsWith('https://')`
+  // guard here the way DOCS_INGEST_INDEX_URL/STATUS_CHECK_API_URL do: those
+  // point at the public internet, this does not, and forcing https on a
+  // tailnet service with no public CA-signed cert would just break the feature.
+  DEV_TEAM_ENDPOINT_URL: z.string().url().optional(),
+  DEV_TEAM_AUTH_TOKEN: z.string().optional(),
+  // How often the completion-DM poller re-checks unnotified job watches. A
+  // finished run's requester is DMed within roughly this interval. Kept small
+  // (a fast, cheap tailnet GET), default 1 minute.
+  DEV_TEAM_WATCH_POLL_MINUTES: z.coerce.number().int().positive().max(60).default(1),
+
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
   WHATSAPP_AUTH_DIR: z.string().default('./whatsapp-auth'),
@@ -589,7 +616,17 @@ const EnvSchemaChecked = EnvSchema.refine(
     // rather than at the first super-admin who tries to file an issue.
     message: 'GITHUB_ISSUE_TOKEN is required when GITHUB_ISSUE_ENABLED=true',
     path: ['GITHUB_ISSUE_TOKEN'],
-  });
+  })
+  .refine(
+    (e) => !e.DEV_TEAM_ENABLED || (Boolean(e.DEV_TEAM_ENDPOINT_URL) && Boolean(e.DEV_TEAM_AUTH_TOKEN)),
+    {
+      // Both the endpoint and the bearer token are required to talk to the
+      // service — fail fast at startup rather than at the first super-admin who
+      // tries to dispatch a job.
+      message: 'DEV_TEAM_ENDPOINT_URL and DEV_TEAM_AUTH_TOKEN are both required when DEV_TEAM_ENABLED=true',
+      path: ['DEV_TEAM_ENABLED'],
+    },
+  );
 
 const parsed = EnvSchemaChecked.safeParse(emptyStringsToUndefined(process.env));
 if (!parsed.success) {
@@ -645,6 +682,12 @@ export const config = {
     grokBin: env.GROK_BIN,
     timeoutMs: env.IMAGE_GEN_TIMEOUT_MS,
     dailyLimit: env.IMAGE_GEN_DAILY_LIMIT,
+  },
+  devTeam: {
+    enabled: env.DEV_TEAM_ENABLED ?? false,
+    endpointUrl: env.DEV_TEAM_ENDPOINT_URL,
+    authToken: env.DEV_TEAM_AUTH_TOKEN,
+    watchPollMinutes: env.DEV_TEAM_WATCH_POLL_MINUTES,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,

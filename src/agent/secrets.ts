@@ -13,5 +13,6 @@ export function runtimeSecrets(): string[] {
     config.whatsapp.cloud.accessToken ?? '',
     config.whatsapp.cloud.verifyToken ?? '',
     config.whatsapp.cloud.appSecret ?? '',
+    config.devTeam.authToken ?? '',
   ];
 }

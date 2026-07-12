@@ -518,6 +518,26 @@ test("SECURITY: suggest_issue is super-admin only (issue-filing = the bot's only
   assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach suggest_issue');
 });
 
+test('SECURITY: dev_team_dispatch / dev_team_status / dev_team_result are super-admin only — never reachable by admin/member/guest (holds the dev-team service credential + outward-acting authority)', () => {
+  const tools = [
+    'mcp__community__dev_team_dispatch',
+    'mcp__community__dev_team_status',
+    'mcp__community__dev_team_result',
+  ];
+  for (const t of tools) {
+    assert.ok(SUPER_ADMIN_TOOLS.includes(t), `${t} must be in SUPER_ADMIN_TOOLS`);
+    assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member', 'admin'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+  }
+  for (const t of tools) {
+    assert.ok(toolsForRole('super_admin').includes(t), `super_admin must reach ${t}`);
+  }
+});
+
 test('SECURITY: assign_community_role / remove_community_role / list_assignable_roles are admin-only, never members or guests (issue #232)', () => {
   const tools = [
     'mcp__community__assign_community_role',

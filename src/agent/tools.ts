@@ -31,6 +31,7 @@ import {
   getMemberRole,
   getMyDataSummary,
   hasConflictAmongIds,
+  insertDevTeamWatch,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeDuplicateMatch,
   listDuplicateKnowledge,
@@ -94,6 +95,15 @@ import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
 import { redactSecrets } from './outbound.js';
 import { createIssue } from '../github/issues.js';
+import {
+  dispatchJob,
+  jobResult,
+  jobStatus,
+  listJobs,
+  type JobListEntry,
+  type JobResult,
+  type JobStatus,
+} from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
@@ -1199,6 +1209,75 @@ function ackReportedMessage(
       logger.warn({ err, messageId }, 'report_content acknowledgement reaction failed');
     }
   })();
+}
+
+/**
+ * Chat-message cap for anything echoed back from the dev-team service (issue:
+ * super-admin dev_team_* tools). A service report can be arbitrarily long;
+ * chat is not the place to dump it (the tools point at "the dashboard" for the
+ * full artifact), so every surfaced service string is truncated to this.
+ */
+export const DEV_TEAM_CHAT_CAP = 1500;
+
+/**
+ * Scrub + cap any text that originated from the dev-team service before it
+ * reaches chat: redact the service bearer token (defence in depth — the client
+ * never echoes it, but a hostile/echoing service response must not leak it or
+ * any other known secret either) and hard-cap the length.
+ */
+export function devTeamScrub(s: string): string {
+  const known = [config.devTeam.authToken].filter((v): v is string => Boolean(v));
+  return redactSecrets(s, known).slice(0, DEV_TEAM_CHAT_CAP);
+}
+
+/** One-job status, formatted for chat (TEXT-only; works on Discord and WhatsApp). */
+export function formatDevTeamJobStatus(s: JobStatus): string {
+  const lines = [`Job ${s.id} — ${s.mode} on ${s.repo}: ${s.state}`];
+  if (s.started) lines.push(`started ${s.started}`);
+  if (s.ended) lines.push(`ended ${s.ended}`);
+  if (typeof s.cost_usd === 'number') lines.push(`cost $${s.cost_usd.toFixed(2)}`);
+  if (s.error) lines.push(`error: ${s.error}`);
+  const recent = (s.progress ?? []).slice(-5);
+  if (recent.length > 0) {
+    lines.push('recent progress:');
+    for (const p of recent) lines.push(`- [${p.stage}] ${p.role}: ${p.message}`);
+  }
+  return lines.join('\n');
+}
+
+/** One line per recent job for the no-id `dev_team_status` listing. */
+export function formatDevTeamJobListEntry(j: JobListEntry): string {
+  const started = j.started ? `, started ${j.started}` : '';
+  const ended = j.ended ? `, ended ${j.ended}` : '';
+  return `- ${j.id} (${j.mode}, ${j.repo}): ${j.state}${started}${ended}`;
+}
+
+/**
+ * A finished job's result, formatted for chat. Handles the three contract
+ * shapes: a failed job (`success:false` + `error`), a succeeded assess
+ * (classification + executive summary + the top of the report), and a
+ * succeeded deliver (outcome + summary). The full artifact always lives on the
+ * dashboard — chat gets a capped digest only.
+ */
+export function formatDevTeamJobResult(r: JobResult): string {
+  if (r.success === false) {
+    const cost = typeof r.cost_usd === 'number' ? ` (cost $${r.cost_usd.toFixed(2)})` : '';
+    return `Job ${r.kind || 'run'} failed: ${r.error ?? 'unknown error'}${cost}`;
+  }
+  const cost = typeof r.cost_usd === 'number' ? `\ncost $${r.cost_usd.toFixed(2)}` : '';
+  if (r.kind === 'assess') {
+    const parts = [`Assessment: ${r.classification ?? 'unclassified'}`];
+    if (r.executive_summary) parts.push('', r.executive_summary);
+    if (r.report_markdown) parts.push('', r.report_markdown.slice(0, 800));
+    parts.push('', 'Full report on the dashboard.' + cost);
+    return parts.join('\n');
+  }
+  // deliver (or any other succeeded kind)
+  const parts = [`Delivery (${r.kind}): succeeded`];
+  if (r.classification) parts.push(`outcome: ${r.classification}`);
+  if (r.executive_summary) parts.push('', r.executive_summary);
+  parts.push('', 'Full report on the dashboard.' + cost);
+  return parts.join('\n');
 }
 
 /**
@@ -4096,6 +4175,140 @@ export function buildToolServer(
     { annotations: { readOnlyHint: false } },
   );
 
+  // --- Dev-team dispatch tools (super-admin only, TEXT-only) -----------------
+  // Drive the remote dev-team build service over the tailnet. All three assert
+  // super_admin at the handler (defence in depth on top of the tier-derived
+  // tool list) and refuse with a friendly message when the feature is off. The
+  // outputs are plain text so they work identically on Discord and WhatsApp.
+  const devTeamEnabledOr = (): { ok: true; endpoint: string; token: string } | { ok: false } => {
+    if (!config.devTeam.enabled || !config.devTeam.endpointUrl || !config.devTeam.authToken) {
+      return { ok: false };
+    }
+    return { ok: true, endpoint: config.devTeam.endpointUrl, token: config.devTeam.authToken };
+  };
+
+  const devTeamDispatch = tool(
+    'dev_team_dispatch',
+    'Dispatch a job to the remote dev-team build service over the tailnet. mode="assess" runs a read-only ' +
+      'assessment of a repo/task; mode="deliver" actually makes changes and opens a PR, so it requires ' +
+      "confirmation. Takes ~20 minutes; I'll DM you when it finishes. Super admin only.",
+    {
+      mode: z
+        .enum(['assess', 'deliver'])
+        .describe('"assess" (read-only) or "deliver" (makes changes; CONFIRM-gated)'),
+      repo: z.string().min(1).max(200).describe('Target repo, e.g. "owner/name"'),
+      title: z.string().max(200).optional().describe('Short title for the task'),
+      description: z.string().max(4000).optional().describe('What to assess/deliver'),
+      budget_usd: z.number().positive().max(1000).optional().describe('Optional spend cap in USD'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_dispatch');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+
+      const dispatch = async () => {
+        const { success, result } = await audited({
+          actionKind: 'dev_team_dispatch',
+          params: { mode: args.mode, repo: args.repo },
+          run: async () => {
+            const job = await dispatchJob(endpoint, token, {
+              mode: args.mode,
+              repo: args.repo,
+              title: args.title,
+              description: args.description,
+              budget_usd: args.budget_usd ?? null,
+            });
+            // Durable watch so the requester is DMed when the run finishes,
+            // even across a bot restart (poller in src/backgroundJobs.ts).
+            await insertDevTeamWatch({
+              jobId: job.id,
+              requesterPlatform: caller.platform,
+              requesterUserId: caller.userId,
+              mode: args.mode,
+              repo: args.repo,
+            });
+            return devTeamScrub(
+              `Dispatched ${args.mode} job ${job.id} on ${args.repo} (queued, position ${job.position}). ` +
+                "~20 min; I'll DM you when it's done.",
+            );
+          },
+        });
+        return success ? result : `Failed to dispatch: ${devTeamScrub(result)}`;
+      };
+
+      // deliver makes real changes / opens a PR: CONFIRM-gate it exactly like
+      // redeploy_bot, so an injected turn can request it but never complete one
+      // without the super admin's own out-of-band reply. assess is read-only
+      // and runs without confirmation.
+      if (args.mode === 'deliver') {
+        return requireConfirm(
+          `DISPATCH a DELIVER job to the dev-team service on ${args.repo} (it will make changes / open a PR)`,
+          'super_admin',
+          dispatch,
+        );
+      }
+      return text(await dispatch());
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const devTeamStatus = tool(
+    'dev_team_status',
+    'Check a dev-team job by id, or list recent jobs when no id is given. Read-only. Super admin only.',
+    { id: z.string().min(1).max(200).optional().describe('Job id; omit to list recent jobs') },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_status');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+      try {
+        if (args.id) {
+          const s = await jobStatus(endpoint, token, args.id);
+          return text(devTeamScrub(formatDevTeamJobStatus(s)));
+        }
+        const { jobs } = await listJobs(endpoint, token);
+        if (jobs.length === 0) return text('No dev-team jobs found.');
+        return text(devTeamScrub(jobs.map(formatDevTeamJobListEntry).join('\n')));
+      } catch (err) {
+        return text(
+          `Couldn't reach the dev-team service: ${devTeamScrub(err instanceof Error ? err.message : String(err))}`,
+          true,
+        );
+      }
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const devTeamResult = tool(
+    'dev_team_result',
+    "Fetch a finished dev-team job's result — the assessment verdict (classification + executive summary + " +
+      'top of the report) or the delivery outcome. Read-only; the full report lives on the dashboard. Super admin only.',
+    { id: z.string().min(1).max(200).describe('Job id') },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_result');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+      try {
+        const r = await jobResult(endpoint, token, args.id);
+        return text(devTeamScrub(formatDevTeamJobResult(r)));
+      } catch (err) {
+        return text(
+          `Couldn't fetch the result: ${devTeamScrub(err instanceof Error ? err.message : String(err))}`,
+          true,
+        );
+      }
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const generateImageTool = tool(
     'generate_image',
     'Generate an image from a text description and post it into the current conversation. Admin only. ' +
@@ -4222,6 +4435,9 @@ export function buildToolServer(
       setPolicy,
       redeployBot,
       suggestIssueTool,
+      devTeamDispatch,
+      devTeamStatus,
+      devTeamResult,
       generateImageTool,
     ],
   });

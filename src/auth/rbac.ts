@@ -193,6 +193,14 @@ export const SUPER_ADMIN_TOOLS = [
   // Files a GitHub issue via the bot's fine-grained repo token — super-admin
   // only because it is the bot's one outward write credential (docs/SECURITY.md).
   'mcp__community__suggest_issue',
+  // Drive the remote dev-team build service over the tailnet: dispatch a job
+  // (assess/deliver — deliver is additionally CONFIRM-gated), check status,
+  // fetch result. Super-admin only: it is outward-acting authority holding the
+  // service's bearer credential, the same trust floor as suggest_issue/
+  // redeploy_bot (docs/SECURITY.md).
+  'mcp__community__dev_team_dispatch',
+  'mcp__community__dev_team_status',
+  'mcp__community__dev_team_result',
 ] as const;
 
 export function toolsForRole(role: Tier): string[] {
