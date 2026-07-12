@@ -307,7 +307,19 @@ and stays English-only. `runAgentTurn`'s own four fixed failure fallbacks —
 internal-error, max-turns, generic non-success, and upstream usage-limit —
 also honour a standing `'mi'` preference the same way (issue #396): gated on
 `outcome.ok === false`, never on the text itself, so a genuine model answer
-can never be substituted.
+can never be substituted. The router's own CONFIRM/CANCEL intercept — the
+deterministic, out-of-band path that handles a reply to a pending destructive
+action, reachable by every tier via `forget_me`'s `guest`-floor confirm gate —
+gets the same treatment (issue #405): the `'Cancelled.'` reply, the
+tier-revoked-mid-TTL "permissions changed" outcome, and the authoritative
+"⚠️ Pending: ..." notice `respond()` emits after a tool registers a new pending
+action each pick a fixed `_MI` variant off the same `getLanguagePreference`
+read, with `pending.description` embedded unchanged in both language variants
+and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
+`classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
+outcome/failure strings (`pending.execute()`'s own return value and the
+`Failed: ...` fallback) stay out of scope and English-only, same as the
+ack-shortcut reply.
 
 ## Onboarding (gated mode)
 
