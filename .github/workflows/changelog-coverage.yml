@@ -26,6 +26,7 @@ concurrency:
 env:
   ISSUE_TITLE: '📝 Changelog coverage: merged PRs missing a CHANGELOG.md entry'
   WINDOW_DAYS: '14'
+  AUTOFILL_BRANCH: chore/changelog-autofill # companion changelog-autofill.yml drafts the fix here
 
 jobs:
   check:
@@ -60,6 +61,7 @@ jobs:
           {
             printf '%s merged PR(s) from the last %s days are not reflected in `CHANGELOG.md` (the file the `whats_new` tool reads).\n\n' "$(wc -l < gaps.md)" "$WINDOW_DAYS"
             printf 'Add a user-legible entry for each — or tick the box if it is genuinely internal (CI / deps / tests / pipeline). This is a heuristic (see `scripts/check-changelog-coverage.mjs`), so an occasional prose-documented PR may appear until it ages out of the window.\n\n'
+            printf '💡 The companion **changelog-autofill** workflow drafts these entries automatically — look for an open `%s` PR to review-and-merge instead of writing them by hand.\n\n' "$AUTOFILL_BRANCH"
             cat gaps.md
             printf '\n_Refreshed %s by the changelog-coverage workflow; auto-closes when the list is empty._\n' "$(date -u +%Y-%m-%dT%H:%MZ)"
           } > issue-body.md
