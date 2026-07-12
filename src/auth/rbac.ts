@@ -50,6 +50,11 @@ export const MEMBER_TOOLS = [
   // guests in open mode too, same tier as community_info/knowledge_search.
   'mcp__community__check_status',
   'mcp__community__knowledge_search',
+  // Read-only, no arguments — titles-only browse of the knowledge base, the
+  // proactive "what's covered" counterpart to knowledge_search's reactive
+  // search (issue #437). Reuses knowledge_search's exact scope predicate and
+  // additionally excludes 'auto'-provenance entries (issue #214 boundary).
+  'mcp__community__list_knowledge_topics',
   'mcp__community__remember_search',
   'mcp__community__forget_me',
   'mcp__community__report_content',

@@ -38,6 +38,7 @@ const {
   notifyReportWithdrawn,
   buildToolServer,
   formatKnowledgeSearchResults,
+  formatKnowledgeTopics,
   formatUsageStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
@@ -1683,10 +1684,11 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // Cap recalibrated for issue #311: MEMBER_TOOLS grew to 17 entries and
   // MEMBER_CAPABILITIES_TEXT now names all of them (consolidated into
   // behaviourally-related lines, not one bullet each), so the ~700-char cap
-  // sized for #92's original 9-entry text no longer fits. Still a hard cap,
-  // not a soft heuristic — a future addition that isn't consolidated should
-  // fail this rather than silently growing into a wall of text.
-  assert.ok(replyText.length < 1100, `reply should stay short; was ${replyText.length} chars`);
+  // sized for #92's original 9-entry text no longer fits. Bumped again for
+  // issue #437's list_knowledge_topics line. Still a hard cap, not a soft
+  // heuristic — a future addition that isn't consolidated should fail this
+  // rather than silently growing into a wall of text.
+  assert.ok(replyText.length < 1200, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -1719,6 +1721,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
+  ['mcp__community__list_knowledge_topics', /browse the topics/i],
   ['mcp__community__remember_search', /past messages|remember/i],
   ['mcp__community__forget_me', /forget/i],
   ['mcp__community__report_content', /report/i],
@@ -1788,6 +1791,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
     '- Answer questions from curated community knowledge — just ask\n' +
+    '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
     '- Search back through your own past messages for something said earlier\n' +
     "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
     '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -1803,7 +1807,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     memberReply,
     expectedMemberCapabilitiesText,
     'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
-      'list_events line; otherwise unchanged since #367)',
+      'list_events line, issue #437 added the list_knowledge_topics line; otherwise unchanged since #367)',
   );
 });
 
@@ -1912,11 +1916,11 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
   // 44 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
-  // (same discipline as the member cap at the ~1100-char member test above) —
+  // (same discipline as the member cap at the ~1200-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
-  // of text.
-  assert.ok(adminReply.length < 2600, `admin reply should stay short; was ${adminReply.length} chars`);
+  // of text. Bumped alongside the member cap for issue #437.
+  assert.ok(adminReply.length < 2800, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -5857,6 +5861,268 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [fallbackId]);
+  },
+);
+
+// list_knowledge_topics (issue #437): the member-facing, no-argument, titles-
+// only browse of the knowledge base — the proactive "what's covered"
+// counterpart to knowledge_search's reactive search.
+test('formatKnowledgeTopics renders a clear "no topics yet" message for an empty knowledge base, not an error or blank reply', () => {
+  assert.equal(formatKnowledgeTopics([], 0), 'No knowledge topics have been added yet.');
+});
+
+test('formatKnowledgeTopics appends no truncation note when the match count does not exceed the cap', () => {
+  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 2);
+  assert.equal(reply, '- Alpha\n- Beta');
+  assert.doesNotMatch(reply, /more/i);
+});
+
+test('formatKnowledgeTopics appends an exact "+N more" truncation note when the match count exceeds the cap', () => {
+  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 5);
+  assert.match(reply, /\+3 more — ask a specific question and I'll search everything\.$/);
+});
+
+const LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX = `${RUN}-list-knowledge-topics`;
+
+function getListKnowledgeTopicsHandler(caller: {
+  platform: 'discord' | 'whatsapp';
+  userId: string;
+  userName: string;
+  role: 'member';
+  conversationId: string;
+}) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(caller, adapter);
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, never>,
+          ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['list_knowledge_topics'];
+}
+
+test(
+  'list_knowledge_topics tool handler returns titles only, alphabetically ordered, and takes no arguments (issue #437)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-order-${RUN}`;
+    const titleA = `Aaa-topic-${RUN}`;
+    const titleZ = `Zzz-topic-${RUN}`;
+    const leakedContent = `SECRET-CONTENT-${RUN}`;
+    const leakedSourceUrl = `https://example.com/should-not-leak-${RUN}`;
+
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [scope, titleA, leakedContent],
+    );
+    const { rows: zRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role, source_url) VALUES ($1,$2,$3,'admin',$4) RETURNING id`,
+      [scope, titleZ, 'other content', leakedSourceUrl],
+    );
+    const ids = [Number(aRows[0].id), Number(zRows[0].id)];
+
+    try {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-list-topics-order-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      const indexA = replyText.indexOf(titleA);
+      const indexZ = replyText.indexOf(titleZ);
+      assert.ok(indexA >= 0 && indexZ >= 0, 'both fixture titles must be present');
+      assert.ok(indexA < indexZ, 'titles are ordered alphabetically');
+      assert.doesNotMatch(replyText, new RegExp(leakedContent), 'content must never appear — titles only');
+      assert.doesNotMatch(replyText, new RegExp(leakedSourceUrl), 'source_url must never appear');
+      assert.doesNotMatch(replyText, /"admin"/, 'created_by_role must never appear');
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_knowledge_topics never returns a title scoped to a different conversation, while a global-scoped and this-conversation-scoped title are both returned (issue #437)',
+  { skip },
+  async () => {
+    const convoA = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-convoA-${RUN}`;
+    const convoB = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-convoB-${RUN}`;
+    const titleGlobal = `Global-topic-${RUN}`;
+    const titleA = `ConvoA-topic-${RUN}`;
+    const titleB = `ConvoB-topic-${RUN}`;
+
+    const { rows: gRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ('global',$1,$2,'admin') RETURNING id`,
+      [titleGlobal, 'global content'],
+    );
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [convoA, titleA, 'convo a content'],
+    );
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [convoB, titleB, 'convo b content'],
+    );
+    const ids = [Number(gRows[0].id), Number(aRows[0].id), Number(bRows[0].id)];
+
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    // Large enough that none of these three fixture rows (plus whatever
+    // ambient global-scoped rows already exist) can be pushed out of the
+    // page by the cap — this test asserts scope filtering, not truncation.
+    config.behaviour.knowledgeTopicsListLimit = 100_000;
+    try {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-list-topics-scope-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: convoA,
+      };
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      assert.match(replyText, new RegExp(titleGlobal), 'a global-scoped title is visible');
+      assert.match(replyText, new RegExp(titleA), "the caller's own conversation-scoped title is visible");
+      assert.doesNotMatch(
+        replyText,
+        new RegExp(titleB),
+        'SECURITY: a title scoped to a DIFFERENT conversation must never be visible',
+      );
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_knowledge_topics excludes an auto-provenance entry even though it is otherwise scope-visible, while a non-auto entry in the same scope is returned (issue #437, issue #214 boundary)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-auto-${RUN}`;
+    const titleAuto = `Auto-topic-${RUN}`;
+    const titleCurated = `Curated-topic-${RUN}`;
+
+    const { rows: autoRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'auto') RETURNING id`,
+      [scope, titleAuto, 'auto-researched content'],
+    );
+    const { rows: curatedRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [scope, titleCurated, 'curated content'],
+    );
+    const ids = [Number(autoRows[0].id), Number(curatedRows[0].id)];
+
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    config.behaviour.knowledgeTopicsListLimit = 100_000;
+    try {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-list-topics-auto-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      assert.match(replyText, new RegExp(titleCurated), 'a non-auto entry in scope is returned');
+      assert.doesNotMatch(
+        replyText,
+        new RegExp(titleAuto),
+        'SECURITY: an auto-provenance entry must be excluded even though it is otherwise scope-visible',
+      );
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'list_knowledge_topics tool handler truncates to the configured cap and appends an exact "+N more" note reflecting the real remaining count (issue #437)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-cap-${RUN}`;
+    const titles = [`Cap-topic-1-${RUN}`, `Cap-topic-2-${RUN}`, `Cap-topic-3-${RUN}`];
+    const ids: number[] = [];
+    for (const title of titles) {
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+        [scope, title, 'content'],
+      );
+      ids.push(Number(rows[0].id));
+    }
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-list-topics-cap-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+
+    // Independently measure the real total this caller can see (same
+    // predicate the tool itself uses) so the expected truncation count is
+    // derived from live DB state, not an assumption about ambient rows —
+    // this scope is unique to this test, so the total is exactly our 3
+    // fixture rows plus whatever global-scoped rows already exist.
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM knowledge
+        WHERE scope IN ('global', $1, $2) AND created_by_role != 'auto'
+          AND title IS NOT NULL AND trim(title) != ''`,
+      [caller.platform, caller.conversationId],
+    );
+    const actualTotal = countRows[0].c as number;
+    const cappedLimit = actualTotal - 1;
+
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    config.behaviour.knowledgeTopicsListLimit = cappedLimit;
+    try {
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      assert.match(
+        replyText,
+        /\+1 more — ask a specific question and I'll search everything\.$/,
+        'truncation note states the exact remaining count',
+      );
+      const lines = replyText.split('\n').filter((l) => l.startsWith('- '));
+      assert.equal(lines.length, cappedLimit, 'the returned page is capped at the configured limit');
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'list_knowledge_topics tool handler is member-tier and reachable with no CONFIRM gate (issue #437)',
+  { skip },
+  async () => {
+    assert.ok(
+      MEMBER_TOOLS.includes('mcp__community__list_knowledge_topics'),
+      'list_knowledge_topics must be in MEMBER_TOOLS',
+    );
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-list-topics-member-tier`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-tier-${RUN}`,
+    };
+    const result = await getListKnowledgeTopicsHandler(caller).handler({});
+    assert.equal(result.isError, false, 'a plain member call succeeds with no CONFIRM/permission error');
   },
 );
 
