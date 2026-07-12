@@ -465,6 +465,18 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   scope is excluded from the count entirely, not merely hidden from a
   per-row view (pinned by a `SECURITY:` test); an entry only surfaces once
   its `unhelpfulCount` clears `minUnhelpful` (default 2).
+  `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL` (off by default, issue #337) is
+  the member-facing counterpart: once an entry's unhelpful count clears this
+  threshold, a served hit gets a fixed, non-interpolated caveat clause
+  (`KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`) nudging the member to `rate_answer`
+  too — the threshold decision crosses the render boundary as a boolean/id-set
+  membership only, never a raw count, so no single rater is inferable. Issue
+  #337 rendered this only on the deterministic knowledge-shortcut path; issue
+  #432 extends it to the `knowledge_search` path too (the dominant case, since
+  the shortcut only fires above a strict 0.9-cosine floor), via a batched,
+  same-shape lookup (`areKnowledgeEntriesLowRated`) that fails safe to no
+  caveat on a lookup error and renders per-hit rather than as one trailing
+  line.
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard

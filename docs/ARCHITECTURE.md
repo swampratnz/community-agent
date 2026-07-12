@@ -745,6 +745,19 @@ from a hit's content body rather than the tool-computed citation clause.
    from (e.g. a multi-topic turn that queries twice and answers from the
    first hit stamps the second). Treat a flagged entry as a strong lead worth
    reading, not as proof that entry caused every attributed unhelpful rating.
+6. `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL` (off by default, issue #337)
+   gates a member-facing caveat appended to a served hit once its unhelpful
+   count clears the threshold, prompting the member to `rate_answer` too.
+   Issue #337 shipped this only on the deterministic knowledge-shortcut path
+   (`sendKnowledgeShortcut`); `knowledge_search` — the dominant path, since
+   the shortcut only fires above `KNOWLEDGE_SHORTCUT_THRESHOLD`'s strict 0.9
+   cosine floor — always rendered the caveat off regardless of config. Issue
+   #432 closes that display-side asymmetry the same way #411 closed the
+   matching attribution one: the handler batches a lookup
+   (`areKnowledgeEntriesLowRated`) over every hit that cleared the relevance
+   floor and threads the resulting id set into `formatKnowledgeSearchResults`,
+   which appends the caveat to each low-rated hit's own line — never as a
+   single result-wide line like the conflict caveat (#389) above it.
 
 ## Auto-moderation (Discord)
 
