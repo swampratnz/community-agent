@@ -95,8 +95,12 @@ export function paramString(value: unknown, fallback = ''): string {
  * (issue #388, the read counterpart to `create_event`/#230). Deliberately
  * excludes any creator/organizer id or other member identifier — nothing
  * about *who* created the event is needed to answer "what's coming up?".
+ * `id` IS included (issue #424) — it's the event's own identity, not a
+ * member identifier, and `cancel_event` has no other conversational path to
+ * discover a valid id to act on.
  */
 export interface UpcomingEvent {
+  id: string;
   name: string;
   /** ISO 8601 instant. */
   scheduledStartAt: string;
@@ -104,6 +108,19 @@ export interface UpcomingEvent {
   scheduledEndAt?: string;
   location: string;
   description?: string;
+}
+
+/**
+ * A single scheduled event looked up by id, as returned by
+ * {@link PlatformAdapter.getScheduledEvent} (issue #424, `cancel_event`'s
+ * pre-CONFIRM target validation). Deliberately minimal — just enough for the
+ * tool to refuse cleanly and quote the artifact in its CONFIRM prompt.
+ */
+export interface ScheduledEventLookup {
+  name: string;
+  status: 'scheduled' | 'active' | 'completed' | 'canceled';
+  /** ISO 8601 instant. */
+  scheduledStartAt: string;
 }
 
 export interface PlatformAdapter {
@@ -195,6 +212,19 @@ export interface PlatformAdapter {
    * platform APIs, same convention as `conversationsForUser`.
    */
   listUpcomingEvents?(limit: number): Promise<UpcomingEvent[]>;
+
+  /**
+   * Look up a single scheduled event live by id, for `cancel_event`'s
+   * pre-CONFIRM target validation (issue #424) — scheduled events aren't
+   * tracked in `interactions`, so unlike `isKnownConversation`/
+   * `isKnownMessage` this is sourced live from the platform API rather than
+   * the DB. Returns `null` for an unknown id or one belonging to a different
+   * guild (never throws for "not found"), so a hallucinated/foreign
+   * `eventId` is refused before any pending action is registered. Optional —
+   * adapters with no scheduled-events primitive (both WhatsApp adapters)
+   * simply omit it, same convention as `listUpcomingEvents?`.
+   */
+  getScheduledEvent?(eventId: string): Promise<ScheduledEventLookup | null>;
 
   /** Capabilities this adapter supports for {@link performAdminAction}. */
   readonly adminCapabilities: ReadonlySet<string>;
