@@ -42,6 +42,36 @@ import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 export const GATED_NOTICE_MI =
   'Kia ora! He kaupapa mema anake tēnei kaiāwhina. Tonoa he kaiwhakahaere hapori ki te tāpiri i a koe hei mema, kātahi ka taea e au te āwhina.';
 
+// The three fixed strings the CONFIRM/CANCEL intercept itself authors (issue
+// #405) — the one deterministic path #300/#363's own sweep of this file
+// missed. Same `_MI` + `getLanguagePreference` pattern as every constant
+// above: no model call, no translation, no injection surface, and `.catch(()
+// => 'auto')` at each call site fails safe to the English default.
+export const CANCEL_TEXT = 'Cancelled.';
+export const CANCEL_TEXT_MI = 'Kua whakakorea.';
+
+export const PERMISSIONS_CHANGED_TEXT =
+  'Not executed: your permissions changed since this action was requested.';
+export const PERMISSIONS_CHANGED_TEXT_MI =
+  'Kāore i whakahaerehia: kua rerekē ō mana whakaaetanga mai i te wā i tonoa ai tēnei mahi.';
+
+// Wrapper around the deterministic pending-action notice (issue #405),
+// mirroring the "translate the shell, leave the dynamic payload alone"
+// pattern `agent/outbound.ts`'s CODE_TRUNCATED_NOTE_MI already established
+// for its own interpolated placeholder (issue #339) — `description` is a
+// tool-authored action summary (e.g. "delete knowledge entry #5"), not
+// free-form member text, and is embedded unchanged in both variants. `CONFIRM`
+// and `CANCEL` must stay literal, untranslated tokens in the `_MI` variant:
+// `classifyConfirmReply` matches exactly those strings, so translating them
+// would break the confirm protocol itself.
+export const PENDING_NOTICE = (description: string) =>
+  `⚠️ Pending: ${description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
+  `(This confirmation is handled outside the AI and must come from you in this conversation.)`;
+export const PENDING_NOTICE_MI = (description: string) =>
+  `⚠️ Kei te tatari: ${description}\nWhakahokia mai te CONFIRM i roto i te 60 hēkona kia haere tonu ai, ` +
+  `CANCEL rānei kia whakakorehia. (Ka whakahaeretia tēnei whakaūnga i waho o te AI, ā, me ahu mai i a koe ` +
+  `i roto i tēnei kōrerorero.)`;
+
 // Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
 // ackClassifier.ts). Sent via send() so outbound filtering still applies;
 // deliberately not counted toward the daily reply budget (no outbound
@@ -422,7 +452,10 @@ export class Router {
     if (verdict && hasPendingAction(msg.platform, msg.conversationId, msg.userId)) {
       if (verdict === 'cancel') {
         cancelPendingAction(msg.platform, msg.conversationId, msg.userId);
-        await this.send(adapter, msg.conversationId, 'Cancelled.').catch(() => {});
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        await this.send(adapter, msg.conversationId, lang === 'mi' ? CANCEL_TEXT_MI : CANCEL_TEXT).catch(
+          () => {},
+        );
         return;
       }
       const pending = takePendingAction(msg.platform, msg.conversationId, msg.userId);
@@ -431,7 +464,8 @@ export class Router {
         // Re-check the actor's CURRENT tier: a role revoked inside the
         // confirm TTL invalidates the queued action.
         if (!atLeast(role, pending.minTier)) {
-          outcome = 'Not executed: your permissions changed since this action was requested.';
+          const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+          outcome = lang === 'mi' ? PERMISSIONS_CHANGED_TEXT_MI : PERMISSIONS_CHANGED_TEXT;
         } else {
           try {
             outcome = await pending.execute();
@@ -844,10 +878,13 @@ export class Router {
         reply = { text: INTERNAL_ERROR_REPLY, ok: false };
       }
 
-      // Only this call site — the real-agent-turn main reply — threads the
-      // caller's language preference into the send (issue #339). Every other
-      // `this.send(...)` in this file (gated notice, cancel, ack shortcuts,
-      // pending notice, ...) intentionally omits it and stays English-only.
+      // This call site (the real-agent-turn main reply, issue #339), the
+      // gated notice (#363), and cancel/permissions-changed/pending-notice
+      // (#405) all thread the caller's language preference into the send.
+      // What's still intentionally English-only: the ack-shortcut reply and
+      // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
+      // and the `Failed: ...` fallback below) — see #405's proposal for why
+      // those are out of scope.
       await this.send(
         adapter,
         msg.conversationId,
@@ -864,11 +901,11 @@ export class Router {
       const pending = peekPendingAction(msg.platform, msg.conversationId, msg.userId);
       const registeredNewPending = Boolean(pending && pending !== priorPending);
       if (pending && registeredNewPending) {
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
         await this.send(
           adapter,
           msg.conversationId,
-          `⚠️ Pending: ${pending.description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
-            `(This confirmation is handled outside the AI and must come from you in this conversation.)`,
+          lang === 'mi' ? PENDING_NOTICE_MI(pending.description) : PENDING_NOTICE(pending.description),
         ).catch((err) => logger.warn({ err }, 'Failed to send deterministic pending notice'));
       }
 
