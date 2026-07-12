@@ -3535,7 +3535,8 @@ export function buildToolServer(
       "model's reply actually drew from it — treat a flagged entry as a lead to check, not certain proof. " +
       'Ratings on interactions with no knowledgeEntryId at all are still excluded. A rating from a ' +
       'conversation you do not participate in is not counted here even for admins — only for a super admin. ' +
-      'Admin only.',
+      'When present, includes the most recent member comment left on an unhelpful rating for that entry, ' +
+      'so you see why without switching to list_answer_feedback. Admin only.',
     {
       minUnhelpful: z
         .number()
@@ -3553,11 +3554,13 @@ export function buildToolServer(
         untrusted(
           'Low-rated knowledge entries',
           rows
-            .map(
-              (r) =>
+            .map((r) => {
+              const commentNote = r.sampleComment ? `\n  ${untrusted('comment', r.sampleComment)}` : '';
+              return (
                 `#${r.knowledgeEntryId}${r.title ? ` "${r.title}"` : ''} — ${r.helpfulCount} helpful, ` +
-                `${r.unhelpfulCount} unhelpful (updated ${r.updatedAt.toISOString()})`,
-            )
+                `${r.unhelpfulCount} unhelpful (updated ${r.updatedAt.toISOString()})${commentNote}`
+              );
+            })
             .join('\n'),
         ),
       );

@@ -427,10 +427,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   on without an admin consciously filing it.
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
-  boolean)` — **no free-text input at all**, a smaller surface than
-  `report_content`/`suggest_improvement` (which have a `reason`/`content`
-  field), since this was the explicit condition #60 set for revisiting a
-  rating mechanism. Write-only at member tier, DB-backed rolling-24h cap
+  boolean, comment?: string)`. Since issue #355, `comment` carries an
+  optional, bounded (≤200 char, control-char-stripped) free-text reason —
+  smaller than `report_content`/`suggest_improvement`'s `reason`/`content`
+  fields, but no longer the zero-free-text surface #60 originally set as the
+  condition for revisiting a rating mechanism; the same admin-only,
+  conversation-scoped, `untrusted()`-wrapped read posture those fields
+  already have applies here too (`list_answer_feedback`, and since #409,
+  the most recent unhelpful-rating comment per entry via
+  `list_low_rated_knowledge`). Write-only at member tier, DB-backed rolling-24h cap
   (`RATE_ANSWER_DAILY_LIMIT`, default 20 — higher than
   `report_content`/`suggest_improvement` because a rating carries no
   admin-triage cost per submission), non-destructive so no CONFIRM gate.
