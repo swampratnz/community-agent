@@ -4041,6 +4041,7 @@ export interface KnowledgeFeedbackSummary {
   helpfulCount: number;
   unhelpfulCount: number;
   updatedAt: Date;
+  sampleComment: string | null;
 }
 
 function mapKnowledgeFeedbackSummary(r: {
@@ -4049,6 +4050,7 @@ function mapKnowledgeFeedbackSummary(r: {
   updated_at: Date;
   helpful_count: number | string;
   unhelpful_count: number | string;
+  sample_comment: string | null;
 }): KnowledgeFeedbackSummary {
   return {
     knowledgeEntryId: Number(r.id),
@@ -4056,6 +4058,7 @@ function mapKnowledgeFeedbackSummary(r: {
     helpfulCount: Number(r.helpful_count),
     unhelpfulCount: Number(r.unhelpful_count),
     updatedAt: r.updated_at,
+    sampleComment: r.sample_comment,
   };
 }
 
@@ -4073,7 +4076,12 @@ function mapKnowledgeFeedbackSummary(r: {
  * recent qualifying hit in the turn, not a guarantee the model's reply
  * actually drew from that entry (see `AgentReply.knowledgeEntryId` in
  * `agent/core.ts`). Only entries with `unhelpfulCount >= minUnhelpful` are
- * returned, sorted by `unhelpfulCount` descending.
+ * returned, sorted by `unhelpfulCount` descending. `sampleComment` (issue
+ * #409) is the most recent non-null `comment` (#355) from an *unhelpful*
+ * rating on that entry, or null when none exists — comments on helpful
+ * ratings are never selected, since they aren't signal for what's wrong with
+ * the entry. Drawn from the same scope-filtered rows as the counts above, so
+ * a comment from a conversation outside `conversationIds` can never surface.
  */
 export async function listKnowledgeFeedbackSummary(
   conversationIds: readonly string[] | null,
@@ -4094,7 +4102,10 @@ export async function listKnowledgeFeedbackSummary(
   const { rows } = await pool.query(
     `SELECT knowledge.id, knowledge.title, knowledge.updated_at,
             count(*) FILTER (WHERE answer_feedback.helpful) AS helpful_count,
-            count(*) FILTER (WHERE NOT answer_feedback.helpful) AS unhelpful_count
+            count(*) FILTER (WHERE NOT answer_feedback.helpful) AS unhelpful_count,
+            (array_agg(answer_feedback.comment ORDER BY answer_feedback.created_at DESC)
+              FILTER (WHERE answer_feedback.comment IS NOT NULL AND NOT answer_feedback.helpful))[1]
+              AS sample_comment
        FROM answer_feedback
        JOIN interactions ON interactions.id = answer_feedback.interaction_id
        JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint

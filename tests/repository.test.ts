@@ -5679,6 +5679,185 @@ test(
   },
 );
 
+// sampleComment (issue #409): the most recent comment from an *unhelpful*
+// rating on the entry, surfaced by listKnowledgeFeedbackSummary so an admin
+// sees WHY without switching to list_answer_feedback's raw per-rating list.
+test(
+  'repository: listKnowledgeFeedbackSummary.sampleComment picks the most recent non-null comment from an unhelpful rating, or null when none exists',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-knowledge-feedback-sample-comment`;
+    const { id: commentedEntryId } = await saveKnowledge({
+      content: `${RUN} commented entry content`,
+      title: `${RUN} commented entry`,
+    });
+    const { id: uncommentedEntryId } = await saveKnowledge({
+      content: `${RUN} uncommented entry content`,
+      title: `${RUN} uncommented entry`,
+    });
+
+    async function rateShortcut(entryId: number, userSuffix: string, helpful: boolean, comment?: string) {
+      const userId = `${RUN}-sample-comment-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful, comment }),
+      );
+      return userId;
+    }
+
+    const users: string[] = [];
+    // Older unhelpful rating with a comment, then a newer unhelpful rating
+    // with a different comment — the newer one must win.
+    users.push(await rateShortcut(commentedEntryId, 'older', false, 'older complaint'));
+    users.push(await rateShortcut(commentedEntryId, 'newer', false, 'newer complaint'));
+    // No comment at all on this entry's ratings -> sampleComment stays null.
+    users.push(await rateShortcut(uncommentedEntryId, 'u1', false));
+    users.push(await rateShortcut(uncommentedEntryId, 'u2', false));
+
+    const summary = await listKnowledgeFeedbackSummary([conversationId], 2);
+    const commentedRow = summary.find((s) => s.knowledgeEntryId === commentedEntryId);
+    assert.equal(commentedRow?.sampleComment, 'newer complaint', 'the most recent comment wins');
+
+    const uncommentedRow = summary.find((s) => s.knowledgeEntryId === uncommentedEntryId);
+    assert.equal(uncommentedRow?.sampleComment, null, 'null when no unhelpful rating carries a comment');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[commentedEntryId, uncommentedEntryId]]);
+  },
+);
+
+test(
+  'repository: listKnowledgeFeedbackSummary.sampleComment never selects a comment left on a helpful rating',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-knowledge-feedback-sample-comment-helpful`;
+    const { id: mixedEntryId } = await saveKnowledge({
+      content: `${RUN} mixed entry content`,
+      title: `${RUN} mixed entry`,
+    });
+    const { id: onlyHelpfulEntryId } = await saveKnowledge({
+      content: `${RUN} only-helpful entry content`,
+      title: `${RUN} only-helpful entry`,
+    });
+
+    async function rateShortcut(entryId: number, userSuffix: string, helpful: boolean, comment?: string) {
+      const userId = `${RUN}-sample-comment-helpful-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful, comment }),
+      );
+      return userId;
+    }
+
+    const users: string[] = [];
+    // mixedEntry: a helpful rating with a comment, then two unhelpful ratings
+    // (one commented, one not) — the helpful comment must never be selected.
+    users.push(await rateShortcut(mixedEntryId, 'helpful', true, 'this was great'));
+    users.push(await rateShortcut(mixedEntryId, 'unhelpful-plain', false));
+    users.push(await rateShortcut(mixedEntryId, 'unhelpful-commented', false, 'unhelpful reason'));
+    // onlyHelpfulEntry: two unhelpful ratings (clearing the threshold) plus a
+    // helpful rating that carries the ONLY comment on the entry -> null.
+    users.push(await rateShortcut(onlyHelpfulEntryId, 'u1', false));
+    users.push(await rateShortcut(onlyHelpfulEntryId, 'u2', false));
+    users.push(await rateShortcut(onlyHelpfulEntryId, 'helpful-only-comment', true, 'glad it worked'));
+
+    const summary = await listKnowledgeFeedbackSummary([conversationId], 2);
+    const mixedRow = summary.find((s) => s.knowledgeEntryId === mixedEntryId);
+    assert.equal(
+      mixedRow?.sampleComment,
+      'unhelpful reason',
+      'the unhelpful comment is selected even though a helpful comment exists',
+    );
+
+    const onlyHelpfulRow = summary.find((s) => s.knowledgeEntryId === onlyHelpfulEntryId);
+    assert.equal(
+      onlyHelpfulRow?.sampleComment,
+      null,
+      'a comment on a helpful rating is never selected, even when it is the only comment on the entry',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[mixedEntryId, onlyHelpfulEntryId]]);
+  },
+);
+
+test(
+  'SECURITY: repository: listKnowledgeFeedbackSummary.sampleComment never surfaces a comment from a conversation outside the calling scope, even when the entry itself still lists via in-scope ratings',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-knowledge-feedback-sample-comment-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-knowledge-feedback-sample-comment-scope-out`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} scope-comment entry content` });
+
+    async function rateShortcut(conversationId: string, userSuffix: string, comment?: string) {
+      const userId = `${RUN}-sample-comment-scope-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false, comment }),
+      );
+      return userId;
+    }
+
+    const inScopeUsers = [await rateShortcut(inScopeConvo, 'in-1', 'in-scope complaint')];
+    const outOfScopeUsers = [
+      // Recorded AFTER the in-scope rating, so a naive "most recent" pick
+      // with no scope filter would wrongly select this one.
+      await rateShortcut(outOfScopeConvo, 'out-1', 'out-of-scope complaint'),
+    ];
+
+    const scoped = await listKnowledgeFeedbackSummary([inScopeConvo], 1);
+    const scopedRow = scoped.find((s) => s.knowledgeEntryId === entryId);
+    assert.ok(scopedRow, 'the entry still lists from its in-scope unhelpful rating');
+    assert.equal(
+      scopedRow?.sampleComment,
+      'in-scope complaint',
+      'SECURITY: the out-of-scope comment never surfaces, even though it is the more recent rating',
+    );
+
+    const unscoped = await listKnowledgeFeedbackSummary(null, 1);
+    const unscopedRow = unscoped.find((s) => s.knowledgeEntryId === entryId);
+    assert.equal(
+      unscopedRow?.sampleComment,
+      'out-of-scope complaint',
+      'a null (super admin) scope may see the more recent comment across all conversations',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [...inScopeUsers, ...outOfScopeUsers],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
 // isKnowledgeLowRated (issue #337): the entry-scoped, threshold-decision-only
 // lookup behind the member knowledge-shortcut's low-rated caveat. Deliberately
 // UNSCOPED by conversation (there is no admin identity to scope to at serve
