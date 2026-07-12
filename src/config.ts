@@ -197,6 +197,12 @@ const EnvSchema = z.object({
   // finished run's requester is DMed within roughly this interval. Kept small
   // (a fast, cheap tailnet GET), default 1 minute.
   DEV_TEAM_WATCH_POLL_MINUTES: z.coerce.number().int().positive().max(60).default(1),
+  // Rolling calendar-day cap on dev_team_dispatch calls per super admin
+  // (0 = unlimited). Same shape as GITHUB_ISSUE_DAILY_LIMIT: dispatch costs
+  // real money and ~20 min of the shared dev-team box per call, and assess
+  // deliberately has no CONFIRM gate, so an injected instruction reaching a
+  // super-admin turn must not be able to fire it unboundedly.
+  DEV_TEAM_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
 
   // WhatsApp
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
@@ -688,6 +694,7 @@ export const config = {
     endpointUrl: env.DEV_TEAM_ENDPOINT_URL,
     authToken: env.DEV_TEAM_AUTH_TOKEN,
     watchPollMinutes: env.DEV_TEAM_WATCH_POLL_MINUTES,
+    dailyLimit: env.DEV_TEAM_DAILY_LIMIT,
   },
   whatsapp: {
     provider: env.WHATSAPP_PROVIDER,

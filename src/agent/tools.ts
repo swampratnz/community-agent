@@ -96,6 +96,7 @@ import { generateImage } from '../media/grokImage.js';
 import { redactSecrets } from './outbound.js';
 import { createIssue } from '../github/issues.js';
 import {
+  devTeamField,
   dispatchJob,
   jobResult,
   jobStatus,
@@ -961,6 +962,31 @@ function reserveIssueDaily(key: string, limit: number): boolean {
   return true;
 }
 
+/**
+ * dev_team_dispatch calls per super admin, for the rolling calendar-day cap
+ * (DEV_TEAM_DAILY_LIMIT; PR #421 review). Every sibling that costs real money
+ * or hits an external service from the untrusted-content path has one of
+ * these — dispatch spends the shared subscription and ~20 min of the dev-team
+ * box per call, and assess deliberately has no CONFIRM gate, so call
+ * frequency must be bounded in code, not by model judgement. Exported for the
+ * SECURITY test. A reservation is NOT refunded on a later dispatch failure —
+ * a failed POST still probed the service, and refunds would let induced
+ * failures bypass the cap (same rationale as reserveImageGenDaily).
+ */
+const devTeamDispatchDaily = new Map<string, { day: string; count: number }>();
+export function reserveDevTeamDispatchDaily(key: string, limit: number): boolean {
+  if (limit <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = devTeamDispatchDaily.get(key);
+  if (!entry || entry.day !== today) {
+    devTeamDispatchDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
 /** create_poll timestamps per conversation, for the rolling-hour cap (POLL_RATE_LIMIT_PER_HOUR). */
 const pollTimestampsByConversation = new Map<string, number[]>();
 
@@ -1228,19 +1254,6 @@ export const DEV_TEAM_CHAT_CAP = 1500;
 export function devTeamScrub(s: string): string {
   const known = [config.devTeam.authToken].filter((v): v is string => Boolean(v));
   return redactSecrets(s, known).slice(0, DEV_TEAM_CHAT_CAP);
-}
-
-/**
- * Neutralize a short remote-derived identifier field (job id, mode, repo,
- * state) before splicing it into model-visible tool text: the contract says
- * these are plain slugs/enums, but nothing client-side enforces that a
- * hostile/compromised service didn't put instruction text or newlines in
- * them. Free-TEXT service fields (errors, progress, report prose) get the
- * full `untrusted()` quarantine instead — this lighter strip keeps the
- * status/list lines readable while closing the same injection class.
- */
-function devTeamField(v: string | number | null | undefined): string {
-  return String(v ?? '').replace(/[<>\r\n]/g, ' ');
 }
 
 /** One-job status, formatted for chat (TEXT-only; works on Discord and WhatsApp). */
@@ -4249,6 +4262,12 @@ export function buildToolServer(
       const { endpoint, token } = svc;
 
       const dispatch = async () => {
+        // Per-super-admin calendar-day cap (DEV_TEAM_DAILY_LIMIT). Checked at
+        // dispatch-execution time — after deliver's CONFIRM — so a denied
+        // confirmation never consumes a slot, but every real POST attempt does.
+        if (!reserveDevTeamDispatchDaily(`${caller.platform}:${caller.userId}`, config.devTeam.dailyLimit)) {
+          return `Daily dev-team dispatch limit reached (${config.devTeam.dailyLimit}/day). Try again tomorrow or raise DEV_TEAM_DAILY_LIMIT.`;
+        }
         const { success, result } = await audited({
           actionKind: 'dev_team_dispatch',
           params: { mode: args.mode, repo: args.repo },

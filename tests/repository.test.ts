@@ -6352,3 +6352,33 @@ test(
     ]);
   },
 );
+
+test(
+  "SECURITY: repository: purgeUserData (forget_me/purge_user_data) removes the requester's own dev_team_watches rows (PR #421 review)",
+  { skip },
+  async () => {
+    const targetUser = `${RUN}-dtw-purge-target`;
+    const otherUser = `${RUN}-dtw-purge-other`;
+
+    await pool.query(
+      `INSERT INTO dev_team_watches (job_id, requester_platform, requester_user_id, mode, repo)
+       VALUES ($1, 'discord', $2, 'assess', 'o/r'), ($3, 'discord', $4, 'assess', 'o/r')`,
+      [`${RUN}-dtw-job-1`, targetUser, `${RUN}-dtw-job-2`, otherUser],
+    );
+
+    const purged = await purgeUserData('discord', targetUser);
+    assert.ok(purged >= 1, 'purged count covers the watch row');
+
+    const targetRows = await pool.query(`SELECT 1 FROM dev_team_watches WHERE requester_user_id = $1`, [
+      targetUser,
+    ]);
+    assert.equal(targetRows.rows.length, 0, "the requester's dev_team_watches rows are gone");
+
+    const otherRows = await pool.query(`SELECT 1 FROM dev_team_watches WHERE requester_user_id = $1`, [
+      otherUser,
+    ]);
+    assert.equal(otherRows.rows.length, 1, "another requester's watch rows are untouched");
+
+    await pool.query(`DELETE FROM dev_team_watches WHERE requester_user_id = $1`, [otherUser]);
+  },
+);
