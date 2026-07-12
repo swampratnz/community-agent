@@ -50,6 +50,7 @@ import {
   listContextDigests,
   listKnowledge,
   listKnowledgeFeedbackSummary,
+  listKnowledgeTopics,
   listOwnReports,
   listOwnSuggestions,
   listReports,
@@ -602,6 +603,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
   '- Ask me for our community guidelines ("what are the rules here?")\n' +
   '- Answer questions from curated community knowledge — just ask\n' +
+  '- Browse the titles of what topics the knowledge base covers ("what do you know about?")\n' +
   '- Search back through your own past messages for something said earlier\n' +
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -1609,6 +1611,30 @@ export function buildToolServer(
           hasConflict,
         ),
       );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listKnowledgeTopicsTool = tool(
+    'list_knowledge_topics',
+    "Browse the titles of what this community's knowledge base covers — call this when someone asks " +
+      '"what do you know about?", "what\'s in your knowledge base?", or wants to scan what topics exist ' +
+      'before asking a specific question. Titles only, no arguments; use knowledge_search afterwards for ' +
+      'an actual answer.',
+    {},
+    async () => {
+      const result = await listKnowledgeTopics(
+        { platform: caller.platform, conversationId: caller.conversationId },
+        config.knowledge.topicsListLimit,
+      );
+      if (result.titles.length === 0) {
+        return text('No knowledge topics yet — ask an admin, or just ask me a question directly.');
+      }
+      const lines = result.titles.map((t) => `- ${t}`).join('\n');
+      const truncationNote = result.truncated
+        ? `\n+${result.remainingCount} more — ask a specific question and I'll search everything.`
+        : '';
+      return text(`${lines}${truncationNote}`);
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4510,6 +4536,7 @@ export function buildToolServer(
       checkStatus,
       listEvents,
       knowledgeSearch,
+      listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,
       reportContent,

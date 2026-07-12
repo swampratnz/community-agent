@@ -221,6 +221,7 @@ and every privileged action is audited and alerted to super admins by DM.
 |---|:--:|:--:|:--:|:--:|
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
+| `list_knowledge_topics` (titles-only browse of what the knowledge base covers; no arguments, same scope predicate as `knowledge_search`, excludes `'auto'`-provenance entries) | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |

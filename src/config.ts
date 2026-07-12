@@ -430,6 +430,10 @@ const EnvSchema = z.object({
   // days/weeks, not the months KNOWLEDGE_STALE_DAYS tolerates. Unset/0 =
   // disabled, same "0 disabled, else a sane minimum" convention.
   KNOWLEDGE_CANDIDATE_STALE_DAYS: z.coerce.number().int().nonnegative().default(0),
+  // Cap on `list_knowledge_topics`' member-facing titles-only browse (issue
+  // #437) — bounds a single reply so KB growth never produces an unbounded
+  // wall of titles; a trailing "+N more" note covers the rest.
+  KNOWLEDGE_TOPICS_LIST_LIMIT: z.coerce.number().int().positive().default(50),
   // Skip the agent turn entirely for pure acknowledgements ("thanks", "👍")
   // with no other content — sends one static reply instead. Off by default;
   // an operator opts in after confirming the canned reply tone fits their
@@ -769,6 +773,9 @@ export const config = {
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
     knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
     knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,
+  },
+  knowledge: {
+    topicsListLimit: env.KNOWLEDGE_TOPICS_LIST_LIMIT,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

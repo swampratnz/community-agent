@@ -19,6 +19,9 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1,super-2';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1';
+// Small cap so the list_knowledge_topics truncation-note test below doesn't
+// need 50+ fixture rows to exercise the "+N more" path (issue #437).
+process.env.KNOWLEDGE_TOPICS_LIST_LIMIT ??= '3';
 
 const skip = hasDb
   ? false
@@ -1719,6 +1722,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
+  ['mcp__community__list_knowledge_topics', /browse the titles/i],
   ['mcp__community__remember_search', /past messages|remember/i],
   ['mcp__community__forget_me', /forget/i],
   ['mcp__community__report_content', /report/i],
@@ -1788,6 +1792,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
     '- Answer questions from curated community knowledge — just ask\n' +
+    '- Browse the titles of what topics the knowledge base covers ("what do you know about?")\n' +
     '- Search back through your own past messages for something said earlier\n' +
     "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
     '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -1802,8 +1807,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
   assert.equal(
     memberReply,
     expectedMemberCapabilitiesText,
-    'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
-      'list_events line; otherwise unchanged since #367)',
+    'a member-tier reply must be byte-identical to the pinned member content (issue #437 added the ' +
+      'list_knowledge_topics line; otherwise unchanged since #388/#367)',
   );
 });
 
@@ -1915,8 +1920,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // (same discipline as the member cap at the ~1100-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
-  // of text.
-  assert.ok(adminReply.length < 2600, `admin reply should stay short; was ${adminReply.length} chars`);
+  // of text. Cap recalibrated for issue #437 (one new member-side line, which
+  // the admin reply includes on top of).
+  assert.ok(adminReply.length < 2800, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -5288,6 +5294,210 @@ test(
       0,
       'an entry that exists but falls below the relevance floor for this query must NOT be counted as a use',
     );
+  },
+);
+
+// Direct SQL insert (no embedding call) — list_knowledge_topics is a pure
+// titles-only SELECT and never touches `embedding`, so this is a faithful,
+// fast fixture for its tests (mirrors tests/repository.test.ts's own
+// insertKnowledgeTopic helper).
+const insertKnowledgeTopicFixture = (scope: string, title: string | null, createdByRole = 'admin') =>
+  pool
+    .query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role, source_url, source_title)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [
+        scope,
+        title,
+        `content body for ${title ?? 'untitled'} that must never appear in the topics browse`,
+        createdByRole,
+        'https://example.com/should-not-leak',
+        'Should not leak source title',
+      ],
+    )
+    .then((r) => Number(r.rows[0].id));
+
+function getListKnowledgeTopicsHandler(caller: {
+  platform: 'discord';
+  userId: string;
+  userName: string;
+  role: 'member';
+  conversationId: string;
+}) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(caller, adapter);
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: Record<string, never>) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['list_knowledge_topics'];
+}
+
+test('list_knowledge_topics is registered in MEMBER_TOOLS and takes no arguments', () => {
+  assert.ok(
+    MEMBER_TOOLS.includes('mcp__community__list_knowledge_topics'),
+    'list_knowledge_topics must be member-tier (and guest-in-open-mode) reachable',
+  );
+  const registeredTool = getListKnowledgeTopicsHandler({
+    platform: 'discord',
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member',
+    conversationId: 'convo-1',
+  });
+  assert.ok(registeredTool, 'list_knowledge_topics must be registered on the MCP tool server');
+  assert.deepEqual(
+    Object.keys(
+      (registeredTool as unknown as { inputSchema: { shape?: Record<string, unknown> } }).inputSchema.shape ??
+        {},
+    ),
+    [],
+    'the tool defines no input fields at all — no untrusted argument surface',
+  );
+  assert.equal(registeredTool.inputSchema.safeParse({}).success, true, 'an empty call is valid');
+});
+
+test(
+  'list_knowledge_topics returns a clear "no topics yet" message, not an error, when nothing is visible',
+  { skip },
+  async () => {
+    const scope = `${RUN}-topics-tool-empty`;
+    const registeredTool = getListKnowledgeTopicsHandler({
+      platform: 'discord',
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member',
+      conversationId: scope,
+    });
+    const result = await registeredTool.handler({});
+    assert.equal(result.isError, false, 'an empty result is not an error');
+    assert.match(result.content[0]?.text ?? '', /no (knowledge )?topics yet/i);
+  },
+);
+
+test(
+  'list_knowledge_topics: serialized output contains titles only — never content, source_url, or created_by_role — and appends a "+N more" note only when the cap is exceeded (issue #437)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-topics-tool-shape`;
+    const ids = await Promise.all(
+      ['Alpha entry', 'Bravo entry', 'Charlie entry', 'Delta entry'].map((t) =>
+        insertKnowledgeTopicFixture(scope, t),
+      ),
+    );
+
+    const registeredTool = getListKnowledgeTopicsHandler({
+      platform: 'discord',
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member',
+      conversationId: scope,
+    });
+    const result = await registeredTool.handler({});
+    const rendered = result.content[0]?.text ?? '';
+
+    // KNOWLEDGE_TOPICS_LIST_LIMIT is set to 3 for this test file — 4 matching
+    // titles must yield exactly the first 3 alphabetically plus a truncation note.
+    assert.match(rendered, /Alpha entry/);
+    assert.match(rendered, /Bravo entry/);
+    assert.match(rendered, /Charlie entry/);
+    assert.doesNotMatch(rendered, /Delta entry/, 'output is capped at KNOWLEDGE_TOPICS_LIST_LIMIT');
+    assert.match(rendered, /\+1 more/, 'truncation note states exactly how many more exist');
+
+    assert.doesNotMatch(
+      rendered,
+      /content body for/,
+      'SECURITY/leakage: the serialized output must never include entry content',
+    );
+    assert.doesNotMatch(
+      rendered,
+      /example\.com\/should-not-leak/,
+      'the serialized output must never include source_url',
+    );
+    assert.doesNotMatch(
+      rendered,
+      /Should not leak source title/,
+      'the serialized output must never include source_title',
+    );
+    assert.doesNotMatch(rendered, /\badmin\b/, 'the serialized output must never include created_by_role');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+  },
+);
+
+test(
+  'SECURITY: list_knowledge_topics never returns a title from a different conversation scope, while global and same-conversation titles ARE returned (issue #437)',
+  { skip },
+  async () => {
+    const conversationA = `${RUN}-topics-tool-conv-a`;
+    const conversationB = `${RUN}-topics-tool-conv-b`;
+    const globalId = await insertKnowledgeTopicFixture('global', `${RUN} tool global topic`);
+    const aId = await insertKnowledgeTopicFixture(conversationA, `${RUN} tool conv-a topic`);
+    const bId = await insertKnowledgeTopicFixture(conversationB, `${RUN} tool conv-b topic`);
+
+    const registeredTool = getListKnowledgeTopicsHandler({
+      platform: 'discord',
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member',
+      conversationId: conversationA,
+    });
+    const rendered = (await registeredTool.handler({})).content[0]?.text ?? '';
+
+    assert.match(rendered, new RegExp(`${RUN} tool global topic`), 'a global-scoped title is visible');
+    assert.match(
+      rendered,
+      new RegExp(`${RUN} tool conv-a topic`),
+      "the caller's own conversation-scoped title is visible",
+    );
+    assert.doesNotMatch(
+      rendered,
+      new RegExp(`${RUN} tool conv-b topic`),
+      'SECURITY: a title scoped to a different conversation must never be visible',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[globalId, aId, bId]]);
+  },
+);
+
+test(
+  "SECURITY: list_knowledge_topics excludes an otherwise scope-visible created_by_role='auto' entry, while a non-auto entry in the same scope IS returned (issue #437)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-topics-tool-auto`;
+    const autoId = await insertKnowledgeTopicFixture('global', `${RUN} tool auto topic`, 'auto');
+    const humanId = await insertKnowledgeTopicFixture('global', `${RUN} tool human topic`, 'admin');
+
+    const registeredTool = getListKnowledgeTopicsHandler({
+      platform: 'discord',
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member',
+      conversationId: scope,
+    });
+    const rendered = (await registeredTool.handler({})).content[0]?.text ?? '';
+
+    assert.doesNotMatch(
+      rendered,
+      new RegExp(`${RUN} tool auto topic`),
+      "SECURITY: an 'auto'-provenance entry must never appear in the topics browse",
+    );
+    assert.match(
+      rendered,
+      new RegExp(`${RUN} tool human topic`),
+      'a non-auto entry in the same scope is returned, proving the exclusion is provenance-based',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, humanId]]);
   },
 );
 

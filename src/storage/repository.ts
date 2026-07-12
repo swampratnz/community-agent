@@ -907,6 +907,59 @@ export async function searchKnowledgeLexical(
   }));
 }
 
+export interface KnowledgeTopicsResult {
+  titles: string[];
+  truncated: boolean;
+  /** How many more titles exist beyond `titles`; 0 unless `truncated`. */
+  remainingCount: number;
+}
+
+/**
+ * Member-facing "what's covered" browse (issue #437): titles only, no
+ * embedding call, reusing `searchKnowledge`'s exact scope-visibility
+ * predicate (`scope IN ('global', platform, conversationId)`) so a caller
+ * can never see a title from a scope they couldn't already reach via
+ * `knowledge_search`. Additionally excludes `created_by_role = 'auto'`
+ * entries (the #214 apparent-authority boundary — a quarantined
+ * auto-researched entry must not gain the credibility of an official-looking
+ * topic index) and null/blank-titled entries (some conversation-scoped
+ * entries have none — same `COALESCE(title, '')` situation
+ * `searchKnowledgeLexical` already works around).
+ *
+ * Fetches `limit + 1` rows in a single query; the common case (fewer than
+ * `limit` matching topics) never issues a second query. Only when that
+ * extra row is actually present does it run one cheap `COUNT(*)` — same
+ * indexed predicate — to report exactly how many more exist, so the tool can
+ * append a "+N more" note rather than a bare "truncated" flag.
+ */
+export async function listKnowledgeTopics(
+  caller: { platform: Platform; conversationId: string },
+  limit: number,
+): Promise<KnowledgeTopicsResult> {
+  const predicate = `scope IN ('global', $1, $2)
+     AND created_by_role != 'auto'
+     AND title IS NOT NULL
+     AND trim(title) != ''`;
+  const { rows } = await pool.query(
+    `SELECT title
+       FROM knowledge
+      WHERE ${predicate}
+      ORDER BY title
+      LIMIT $3`,
+    [caller.platform, caller.conversationId, limit + 1],
+  );
+  const titles: string[] = rows.slice(0, limit).map((r) => r.title as string);
+  if (rows.length <= limit) {
+    return { titles, truncated: false, remainingCount: 0 };
+  }
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM knowledge WHERE ${predicate}`,
+    [caller.platform, caller.conversationId],
+  );
+  const totalCount = Number(countRows[0]?.count ?? 0);
+  return { titles, truncated: true, remainingCount: Math.max(totalCount - limit, 0) };
+}
+
 /**
  * Whether a knowledge entry counts as stale for the member-facing "may be
  * outdated" nudge (issue #214) — reuses `countStaleKnowledge`'s exact

@@ -30,6 +30,7 @@ const {
   saveKnowledge,
   searchKnowledge,
   searchKnowledgeLexical,
+  listKnowledgeTopics,
   KNOWLEDGE_TRIGRAM_THRESHOLD,
   updateKnowledge,
   deleteKnowledge,
@@ -684,6 +685,111 @@ test(
     assert.equal(unchangedByEmptyBatch.retrievalCount, 2, 'recording an empty id list is a no-op');
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+// Direct SQL insert (no embedding) for listKnowledgeTopics fixtures — the
+// function never filters on embedding IS NOT NULL, so a null embedding is a
+// faithful, fast-to-set-up stand-in.
+const insertKnowledgeTopic = (scope: string, title: string | null, createdByRole = 'admin') =>
+  pool
+    .query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [scope, title, `content for ${title ?? 'untitled'}`, createdByRole],
+    )
+    .then((r) => Number(r.rows[0].id));
+
+test(
+  'repository: listKnowledgeTopics returns titles alphabetically, excludes null/blank titles, and reports no truncation under the cap',
+  { skip },
+  async () => {
+    const scope = `${RUN}-topics-basic`;
+    const caller = { platform: 'discord', conversationId: scope };
+    const bId = await insertKnowledgeTopic(scope, 'Bravo topic');
+    const aId = await insertKnowledgeTopic(scope, 'Alpha topic');
+    const nullTitleId = await insertKnowledgeTopic(scope, null);
+    const blankTitleId = await insertKnowledgeTopic(scope, '   ');
+
+    const result = await listKnowledgeTopics(caller, 50);
+
+    const idx = (t: string) => result.titles.indexOf(t);
+    assert.ok(idx('Alpha topic') !== -1 && idx('Bravo topic') !== -1, 'both titled entries are returned');
+    assert.ok(idx('Alpha topic') < idx('Bravo topic'), 'titles are ordered alphabetically');
+    assert.equal(result.truncated, false, 'below the cap, truncated is false');
+    assert.equal(result.remainingCount, 0);
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[bId, aId, nullTitleId, blankTitleId]]);
+  },
+);
+
+test(
+  'repository: listKnowledgeTopics reports an empty result cleanly, and a trailing +N-more count when the cap is exceeded',
+  { skip },
+  async () => {
+    const emptyScope = `${RUN}-topics-empty`;
+    const emptyResult = await listKnowledgeTopics({ platform: 'discord', conversationId: emptyScope }, 50);
+    assert.deepEqual(emptyResult, { titles: [], truncated: false, remainingCount: 0 });
+
+    const scope = `${RUN}-topics-cap`;
+    const ids = await Promise.all(
+      ['Topic A', 'Topic B', 'Topic C', 'Topic D', 'Topic E'].map((t) => insertKnowledgeTopic(scope, t)),
+    );
+    const capped = await listKnowledgeTopics({ platform: 'discord', conversationId: scope }, 3);
+    assert.equal(capped.titles.length, 3, 'result is capped at the given limit');
+    assert.deepEqual(capped.titles, ['Topic A', 'Topic B', 'Topic C'], 'the first 3 alphabetically are kept');
+    assert.equal(capped.truncated, true);
+    assert.equal(capped.remainingCount, 2, '5 matching topics - 3 returned = 2 remaining');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+  },
+);
+
+test(
+  'SECURITY: repository: listKnowledgeTopics scope filter matches searchKnowledge — a title scoped to a different conversation is never returned, while global and same-conversation titles are',
+  { skip },
+  async () => {
+    const conversationA = `${RUN}-topics-conv-a`;
+    const conversationB = `${RUN}-topics-conv-b`;
+    const globalId = await insertKnowledgeTopic('global', `${RUN} Global topic`);
+    const aId = await insertKnowledgeTopic(conversationA, `${RUN} Conversation A topic`);
+    const bId = await insertKnowledgeTopic(conversationB, `${RUN} Conversation B topic`);
+
+    const result = await listKnowledgeTopics({ platform: 'discord', conversationId: conversationA }, 50);
+
+    assert.ok(result.titles.includes(`${RUN} Global topic`), 'a global-scoped title is visible');
+    assert.ok(
+      result.titles.includes(`${RUN} Conversation A topic`),
+      "the caller's own conversation-scoped title is visible",
+    );
+    assert.ok(
+      !result.titles.includes(`${RUN} Conversation B topic`),
+      'SECURITY: a title scoped to a different conversation must never be visible',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[globalId, aId, bId]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listKnowledgeTopics excludes created_by_role='auto' entries even when otherwise scope-visible, while a non-auto entry in the same scope is returned",
+  { skip },
+  async () => {
+    const scope = `${RUN}-topics-auto`;
+    const autoId = await insertKnowledgeTopic('global', `${RUN} Auto-researched topic`, 'auto');
+    const humanId = await insertKnowledgeTopic('global', `${RUN} Human-curated topic`, 'admin');
+
+    const result = await listKnowledgeTopics({ platform: 'discord', conversationId: scope }, 50);
+
+    assert.ok(
+      !result.titles.includes(`${RUN} Auto-researched topic`),
+      "SECURITY: an 'auto'-provenance entry must never appear in the topics browse",
+    );
+    assert.ok(
+      result.titles.includes(`${RUN} Human-curated topic`),
+      'a non-auto entry in the same scope is returned, proving the exclusion is provenance-based, not accidental',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, humanId]]);
   },
 );
 
