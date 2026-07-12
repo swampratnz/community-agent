@@ -19,7 +19,8 @@ process.env.ACCESS_MODE_DISCORD = 'open';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
-const { RATE_LIMIT_NOTICE_TEXT, RATE_LIMIT_NOTICE_TEXT_MI } = await import('../src/rateLimitNotice.js');
+const { RATE_LIMIT_NOTICE_TEXT, RATE_LIMIT_NOTICE_TEXT_MI, RATE_LIMIT_NOTICE_TEXT_PLAIN } =
+  await import('../src/rateLimitNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -183,4 +184,105 @@ test('router (rate-limited): the language-preference lookup runs at most once pe
   }
 
   assert.equal(calls, 1, 'only the one notifying message in the window should read the language preference');
+});
+
+// --- Standing 'plain' response-style preference on the rate-limit notice (issue #430) ---
+
+test("router (rate-limited): a caller with a standing 'plain' response style (and 'auto' language) gets RATE_LIMIT_NOTICE_TEXT_PLAIN", async () => {
+  const router = new Router(
+    async () => makeReply('ok'),
+    20,
+    async () => false, // not paused
+    undefined,
+    undefined,
+    async () => 0,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  for (let i = 0; i < OVER_LIMIT_MESSAGE_COUNT; i += 1) {
+    await trigger(makeMessage());
+  }
+
+  const last = sent.at(-1);
+  assert.equal(last?.text, RATE_LIMIT_NOTICE_TEXT_PLAIN);
+});
+
+test("router (rate-limited): a caller with 'standard' response style still gets the English RATE_LIMIT_NOTICE_TEXT (byte-identical regression)", async () => {
+  const router = new Router(
+    async () => makeReply('ok'),
+    20,
+    async () => false, // not paused
+    undefined,
+    undefined,
+    async () => 0,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'standard',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  for (let i = 0; i < OVER_LIMIT_MESSAGE_COUNT; i += 1) {
+    await trigger(makeMessage());
+  }
+
+  const last = sent.at(-1);
+  assert.equal(last?.text, RATE_LIMIT_NOTICE_TEXT);
+});
+
+test("router (rate-limited): 'mi' takes precedence over 'plain' when both are set", async () => {
+  const router = new Router(
+    async () => makeReply('ok'),
+    20,
+    async () => false, // not paused
+    undefined,
+    undefined,
+    async () => 0,
+    async () => 'mi',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  for (let i = 0; i < OVER_LIMIT_MESSAGE_COUNT; i += 1) {
+    await trigger(makeMessage());
+  }
+
+  const last = sent.at(-1);
+  assert.equal(last?.text, RATE_LIMIT_NOTICE_TEXT_MI);
+  assert.notEqual(last?.text, RATE_LIMIT_NOTICE_TEXT_PLAIN);
+});
+
+test('SECURITY: a getResponseStyle failure on the rate-limit notice still sends the English default, never throws or drops the notice', async () => {
+  const router = new Router(
+    async () => makeReply('ok'),
+    20,
+    async () => false, // not paused
+    undefined,
+    undefined,
+    async () => 0,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('response_style_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  for (let i = 0; i < OVER_LIMIT_MESSAGE_COUNT; i += 1) {
+    await assert.doesNotReject(trigger(makeMessage()));
+  }
+
+  const last = sent.at(-1);
+  assert.equal(last?.text, RATE_LIMIT_NOTICE_TEXT);
 });

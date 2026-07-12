@@ -562,7 +562,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `admin_digest_sends` (not `community_users`), so it works for a guest in
   open mode too. No row means today's default (`'standard'`) behaviour —
   zero change for anyone who never calls the tool. Purge-coherent:
-  `forget_me`/`purge_user_data` delete the caller's row.
+  `forget_me`/`purge_user_data` delete the caller's row. Extended (issue
+  #430) to the eleven deterministic, non-model fallback/notice constants in
+  `router.ts`/`core.ts`/`upstreamFailure.ts` that already honour a standing
+  `'mi'` `language_preference` (see below) — each gains a fixed,
+  human-authored `_PLAIN` counterpart, selected by the same fail-safe
+  `getResponseStyle` read (degrading to `'standard'` on a lookup failure,
+  never throwing or dropping the reply). **`'mi'` always takes precedence
+  over `'plain'`** when a caller has both set, so this can never regress the
+  already-tested `_MI` behaviour; `PENDING_NOTICE_PLAIN` keeps the literal,
+  untranslated `CONFIRM`/`CANCEL` tokens byte-identical to the English/`_MI`
+  templates, same invariant as `PENDING_NOTICE_MI`.
 - **Standing language preference** (`language_prefs`, issue #189):
   structurally identical to `response_style_prefs` above — a member/guest-tier
   tool, `set_language_preference`, lets any caller opt into always receiving
