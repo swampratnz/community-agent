@@ -3014,6 +3014,61 @@ export async function rosterCounts(
   };
 }
 
+export interface EngagementBreakdown {
+  platform: Platform;
+  total: number;
+  engaged: number;
+  /** Percentage rounded to one decimal place; 0 when total is 0 (issue #419). */
+  percentage: number;
+}
+
+/**
+ * Guild-wide engagement %: what fraction of currently-present roster members
+ * (issue #419) have ever sent an inbound message. Denominator is
+ * `server_roster` where `left_at IS NULL` (durable, Discord-complete /
+ * WhatsApp-partial); numerator is the subset of those rows matched by
+ * distinct `(platform, user_id)` on an inbound `interactions` row —
+ * `interactions` is age-purged per `INTERACTION_RETENTION_DAYS`, so this is a
+ * "within the retention window" figure, not a lifetime one. Aggregate-only by
+ * design (super-admin `engagement_stats` tool, adversarial review #419): no
+ * per-member identity is ever returned, only counts and a percentage.
+ */
+export async function engagementStats(platform?: Platform): Promise<{
+  total: number;
+  engaged: number;
+  percentage: number;
+  byPlatform: EngagementBreakdown[];
+}> {
+  const params: unknown[] = [];
+  let where = 'r.left_at IS NULL';
+  if (platform) {
+    params.push(platform);
+    where += ` AND r.platform = $${params.length}`;
+  }
+  const { rows } = await pool.query(
+    `SELECT r.platform,
+            count(*) AS total,
+            count(e.user_id) AS engaged
+       FROM server_roster r
+       LEFT JOIN (
+         SELECT DISTINCT platform, user_id FROM interactions WHERE direction = 'inbound'
+       ) e ON e.platform = r.platform AND e.user_id = r.user_id
+      WHERE ${where}
+      GROUP BY r.platform
+      ORDER BY r.platform`,
+    params,
+  );
+  const pct = (engaged: number, total: number) => (total > 0 ? Math.round((engaged / total) * 1000) / 10 : 0);
+  const byPlatform: EngagementBreakdown[] = rows.map((r) => {
+    const total = Number(r.total);
+    const engaged = Number(r.engaged);
+    return { platform: r.platform as Platform, total, engaged, percentage: pct(engaged, total) };
+  });
+  const total = byPlatform.reduce((sum, p) => sum + p.total, 0);
+  const engaged = byPlatform.reduce((sum, p) => sum + p.engaged, 0);
+  return { total, engaged, percentage: pct(engaged, total), byPlatform };
+}
+
 /**
  * Age-based retention: delete `server_roster` rows for members who have
  * LEFT (left_at IS NOT NULL) more than `days` ago. Currently-present members
