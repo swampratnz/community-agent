@@ -46,6 +46,7 @@ import {
   isKnowledgeStale,
   linkMembers,
   listAccessRequests,
+  listAdminRoster,
   listAnswerFeedback,
   listContextDigests,
   listKnowledge,
@@ -4107,6 +4108,26 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const listAdminsTool = tool(
+    'list_admins',
+    'List everyone who currently holds bot-admin privilege, flagging any who have left the server/group. ' +
+      'Super admin only.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'super_admin', 'list_admins');
+      const roster = await listAdminRoster();
+      if (roster.length === 0) return text('No admins are currently configured in community_users.');
+      const lines = roster.map((a) => {
+        const name = a.displayName ?? '(no known name)';
+        const departed = a.leftServer ? ' — LEFT THE SERVER/GROUP' : '';
+        return `${a.platform}: ${name} (${a.platformUserId})${departed}`;
+      });
+      lines.push('Super admins are configured separately (env-sourced) and are not listed here.');
+      return text(lines.join('\n'));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const pauseBot = tool(
     'pause_bot',
     'Pause the bot community-wide (only super admins can still talk to it). Super admin only.',
@@ -4505,6 +4526,7 @@ export function buildToolServer(
       purgeUserDataTool,
       auditView,
       usageStatsTool,
+      listAdminsTool,
       pauseBot,
       resumeBot,
       setPolicy,

@@ -1563,6 +1563,47 @@ export async function listAdminDisplayNames(platform: Platform): Promise<string[
     .filter((name): name is string => name != null && name.trim() !== '');
 }
 
+export interface AdminRosterEntry {
+  platform: Platform;
+  platformUserId: string;
+  displayName: string | null;
+  leftServer: boolean;
+}
+
+/**
+ * Every `role = 'admin'` community_users row across both platforms, for the
+ * `list_admins` super-admin tool (issue #428) to answer "who currently holds
+ * bot-admin privilege?" as a direct query instead of a mental replay of
+ * `audit_view`'s grant/revoke log. Reuses the exact community_users→
+ * server_roster display-name precedence `listAdminDisplayNames` already
+ * uses. `leftServer` is `true` only when a matching `server_roster` row has
+ * `left_at IS NOT NULL`; a missing roster row (never seen leaving) or one
+ * with `left_at IS NULL` both read as "not known to have left" — this is
+ * the signal that surfaces a departed-but-still-admin account
+ * (`onGuildMemberRemove` clears roster/membership state but never touches
+ * `community_users.role`). Deterministically ordered by `community_users.id`
+ * like `listAdminDisplayNames`. Env-sourced super admins are never rows in
+ * `community_users`, so — like `listAdmins`/`listAdminDisplayNames` — they
+ * are excluded here too.
+ */
+export async function listAdminRoster(): Promise<AdminRosterEntry[]> {
+  const { rows } = await pool.query(
+    `SELECT cu.platform, cu.platform_user_id,
+            COALESCE(NULLIF(cu.display_name, ''), NULLIF(sr.display_name, '')) AS display_name,
+            sr.left_at IS NOT NULL AS left_server
+       FROM community_users cu
+       LEFT JOIN server_roster sr ON sr.platform = cu.platform AND sr.user_id = cu.platform_user_id
+      WHERE cu.role = 'admin'
+      ORDER BY cu.id ASC`,
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    platformUserId: r.platform_user_id as string,
+    displayName: r.display_name as string | null,
+    leftServer: r.left_server as boolean,
+  }));
+}
+
 /** Remove a member row entirely. Refuses to remove admins (revoke first). */
 /**
  * If a person group is left with fewer than two members, dissolve it: clear

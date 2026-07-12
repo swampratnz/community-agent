@@ -201,7 +201,13 @@ Tiers: **super_admin > admin > member > guest**.
 - **admin** — granted by a super admin (`grant_admin`); stored in
   `community_users`. Privileged data access is **scoped to conversations the
   admin actually participates in** — the adapter resolves their real channel/
-  group membership (cached ~60s) and that list becomes a SQL filter.
+  group membership (cached ~60s) and that list becomes a SQL filter. Leaving
+  the Discord server/WhatsApp group does **not** revoke `role='admin'` — only
+  an explicit `revoke_admin` does — so a departed admin can still DM the bot
+  with admin-tier tools; `list_admins` (super-admin, read-only, issue #428) is
+  the visibility tool that surfaces this state (flags a `community_users`
+  admin whose `server_roster` row shows `left_at` set) so a super admin can
+  notice and decide whether to revoke.
 - **member** — granted by an admin (`add_member`); stored in `community_users`.
 - **guest** — everyone else. In **gated** mode (`ACCESS_MODE_*=gated`, the
   default) guests get a "ask an admin to add you" pointer and their message
@@ -251,6 +257,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `assign_community_role` / `remove_community_role` / `list_assignable_roles` (cosmetic Discord roles, strictly orthogonal to tiers — see docs/SECURITY.md §10) | ❌ | ❌ | ✅, confirm-gated (list read-only), Discord only | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
+| `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
