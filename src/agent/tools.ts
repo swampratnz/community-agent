@@ -4281,16 +4281,33 @@ export function buildToolServer(
             });
             // Durable watch so the requester is DMed when the run finishes,
             // even across a bot restart (poller in src/backgroundJobs.ts).
-            await insertDevTeamWatch({
-              jobId: job.id,
-              requesterPlatform: caller.platform,
-              requesterUserId: caller.userId,
-              mode: args.mode,
-              repo: args.repo,
-            });
+            // BEST-EFFORT past this point: the POST above already started a
+            // real, cost-incurring remote job, so a watch-insert failure (DB
+            // hiccup, pool exhaustion) must NOT be reported as a dispatch
+            // failure — the caller would naturally retry and double a real
+            // job/cost, and the error text would not even carry the job id.
+            // Instead: partial success — surface the id + a "no DM, poll with
+            // dev_team_status" caveat, and leave the rest to the human.
+            let watchCaveat = '';
+            try {
+              await insertDevTeamWatch({
+                jobId: job.id,
+                requesterPlatform: caller.platform,
+                requesterUserId: caller.userId,
+                mode: args.mode,
+                repo: args.repo,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, jobId: job.id },
+                'dev_team_dispatch: job dispatched but the completion-watch insert failed; no completion DM will be sent',
+              );
+              watchCaveat =
+                " (note: I couldn't register the completion watch, so NO completion DM will come — check progress yourself with dev_team_status)";
+            }
             return devTeamScrub(
-              `Dispatched ${args.mode} job ${job.id} on ${args.repo} (queued, position ${job.position}). ` +
-                "~20 min; I'll DM you when it's done.",
+              `Dispatched ${devTeamField(args.mode)} job ${devTeamField(job.id)} on ${devTeamField(args.repo)} ` +
+                `(queued, position ${job.position}). ~20 min; I'll DM you when it's done.${watchCaveat}`,
             );
           },
         });
@@ -4303,7 +4320,7 @@ export function buildToolServer(
       // and runs without confirmation.
       if (args.mode === 'deliver') {
         return requireConfirm(
-          `DISPATCH a DELIVER job to the dev-team service on ${args.repo} (it will make changes / open a PR)`,
+          `DISPATCH a DELIVER job to the dev-team service on ${devTeamField(args.repo)} (it will make changes / open a PR)`,
           'super_admin',
           dispatch,
         );
