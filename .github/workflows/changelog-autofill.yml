@@ -1,0 +1,341 @@
+name: Changelog autofill
+
+# SELF-HEALING companion to changelog-coverage.yml. That workflow is a tripwire:
+# once a day it lists merged user-facing PRs missing a CHANGELOG.md entry and
+# keeps a single tracking ISSUE in sync — but it never fixes anything, so a gap
+# sits until a human writes the prose. This workflow closes that loop: it runs
+# the SAME coverage check and, when there's a gap, has Claude draft house-style
+# entries and open ONE standing PR you just review-and-merge. CHANGELOG.md is
+# what the bot's `whats_new` tool reads out to the community, so the bar on what
+# lands is a human merge — this only ever drafts a PR, never merges it.
+#
+# Why a SEPARATE file from changelog-coverage.yml: the coverage check is
+# read-only (contents:read, issues:write) and safe to keep minimal. This one
+# runs an agent that writes code and pushes a branch (contents:write,
+# id-token:write for the App token), so isolating it keeps the tripwire's small
+# trust surface intact and lets either be disabled independently.
+#
+# Guardrails (this spends the shared Max pool and opens outward-facing PRs):
+#   * INERT until CLAUDE_CODE_OAUTH_TOKEN exists — every step no-ops without it,
+#     so the workflow is safe to merge before the secret is set.
+#   * ONE standing PR, fixed branch `chore/changelog-autofill`. If an autofill PR
+#     is already open, the run SKIPS — it never force-pushes over your review and
+#     never opens a second. When you merge/close it, the next run drafts a fresh
+#     one for whatever gap remains. This bounds it to at most one agent run + one
+#     open PR at a time (no daily thrash of the Max pool or your notifications).
+#   * The agent may touch ONLY CHANGELOG.md. Its edit tools can't be scoped to
+#     one path, so this is prompt-stated and then ENFORCED deterministically,
+#     FAIL-CLOSED: the final step reads the opened PR's diff and, if it touched
+#     any other path, CLOSES the PR and deletes the branch (not just a label) —
+#     so an out-of-scope change never sits in a PR a reviewer might rubber-stamp.
+#
+# TRUST SURFACE (accepted, documented per PR #418 review — establishes the
+# precedent for feeding contributor-authored content to a write-capable agent):
+# to write an accurate entry the agent runs `gh pr view/diff <N>` on the flagged
+# PRs, whose numbers come from the deterministic checker via gaps.md. Those PRs
+# can include EXTERNAL, non-maintainer contributors — a wider input-trust
+# surface than the sibling loops (autofix/revise/conflict), which only ever act
+# on a bot PR with a `Closes #` body or an allowlisted maintainer's PR. So a
+# malicious PR body/diff is an injection vector into an agent holding
+# contents:write + push. The residual is bounded by, in order: (1) the agent has
+# NO `gh pr list` and no GITHUB_TOKEN — it can't enumerate the repo or read
+# secrets; (2) the fail-closed scope gate above auto-closes any PR that changes a
+# non-CHANGELOG path; (3) an in-scope result is only ever CHANGELOG.md prose a
+# human reads; (4) the App token can't merge, can't push `main` (branch
+# protection), and lacks the `workflows` scope; (5) a HUMAN merges every PR.
+# There is no path from an injected historical PR to production without that
+# human merge. Judged an acceptable, well-bounded surface for a docs janitor.
+#
+# SIDE-EFFECT VECTORS beyond the diff (per PR #418 second review): the scope gate
+# inspects only the autofill PR's DIFF, so a `gh` write to some OTHER pr/issue
+# would be invisible to it. Closed by tool choice: the agent has NO
+# `gh pr comment`/`gh pr edit` (dropped precisely because their target number
+# can't be matcher-pinned — an injected payload could otherwise post a forged
+# `pipeline-pr-*` marker comment on an unrelated PR); all commenting is done by
+# the deterministic GH_TOKEN steps. The one remaining `gh` write is
+# `gh pr create`: an injected `--head`/`--repo` is bounded because the agent can
+# only push AUTOFILL_BRANCH (push-form pinned + checkout/branch/switch withheld)
+# and the App token is installation-scoped, so the worst case is a visible,
+# human-gated, unmergeable PR from a pre-existing branch — never a comment
+# side-effect, never a cross-repo action, never a merge.
+#   * It NEVER merges the PR — a human does. The agent's `gh` can open/label/
+#     comment a PR but has no merge/close verb.
+#   * It CANNOT push .github/workflows/* (the App token lacks the `workflows`
+#     scope); a changelog PR never needs to, so there's nothing to escalate.
+#   * The PR is opened by the agent's GitHub App token (not GITHUB_TOKEN) so the
+#     PR's required CI checks actually run — a GITHUB_TOKEN-opened PR triggers no
+#     workflows, which would leave a branch-protected repo unable to merge it.
+#   * checkout uses persist-credentials:false so the job's GITHUB_TOKEN is not
+#     left in .git/config; deterministic steps use `gh` (GH_TOKEN env) and the
+#     agent uses the action's own App token — no persisted git credential.
+#   * GH_TOKEN is set per-step on the deterministic gh steps only, never on the
+#     agent step, so the agent can't read/exfiltrate it (it reads PR bodies and
+#     runs node/npm — i.e. arbitrary code — while drafting).
+
+on:
+  schedule:
+    - cron: '47 19 * * *' # 19:47 UTC daily — 30 min after changelog-coverage
+  workflow_dispatch:
+
+# A run is a long agent turn; never let a second scheduled/dispatched run cancel
+# one mid-draft. Serialise instead.
+concurrency:
+  group: changelog-autofill
+  cancel-in-progress: false
+
+permissions:
+  contents: write # agent pushes the chore/changelog-autofill branch
+  pull-requests: write # open + label the PR
+  id-token: write # claude-code-action mints its GitHub App token via OIDC
+
+env:
+  WINDOW_DAYS: '14'
+  AUTOFILL_BRANCH: chore/changelog-autofill
+  AUTOFILL_LABEL: changelog-autofill
+
+jobs:
+  autofill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — changelog autofill is inert."
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: env.HAS_TOKEN == 'true'
+        with:
+          fetch-depth: 0 # full history so a fresh branch off main is clean
+          # Do NOT persist the job's GITHUB_TOKEN in .git/config — the agent step
+          # reads untrusted PR bodies and runs node/npm and could read it. The
+          # agent pushes with the action's own App token; deterministic steps use
+          # `gh` (GH_TOKEN env). No persisted git credential is needed anywhere.
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        if: env.HAS_TOKEN == 'true'
+        with:
+          node-version: 24
+
+      - name: Compute changelog gaps
+        id: gaps
+        if: env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged --limit 150 \
+            --json number,title,mergedAt,body > prs.json
+          node scripts/check-changelog-coverage.mjs --window-days "$WINDOW_DAYS" < prs.json > gaps.md || true
+          echo "=== gaps (last ${WINDOW_DAYS}d) ==="; cat gaps.md || true
+          if [ -s gaps.md ]; then echo "has_gaps=true" >> "$GITHUB_OUTPUT"; else echo "has_gaps=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: No gap — nothing to draft
+        if: env.HAS_TOKEN == 'true' && steps.gaps.outputs.has_gaps == 'false'
+        run: echo "Every merged PR in the window is documented — no autofill PR needed."
+
+      # ONE standing PR: if an autofill PR is already open, stop here. We never
+      # force-push over a PR under review, and never open a second. It reappears
+      # for the next run once this one is merged or closed.
+      - name: Skip if an autofill PR is already open
+        id: standing
+        if: env.HAS_TOKEN == 'true' && steps.gaps.outputs.has_gaps == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$AUTOFILL_BRANCH" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$open" ]; then
+            echo "Autofill PR #$open is already open on $AUTOFILL_BRANCH — leaving it for a human. Skipping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fresh start: no open PR references the branch, so drop any stale remote
+      # ref left by a merged/closed prior PR (else the agent's non-force `git push
+      # origin HEAD` could be rejected non-fast-forward). Delete via the API ref
+      # endpoint — persist-credentials:false means there's no git cred for a
+      # `git push --delete`, and this needs none.
+      - name: Reset the autofill branch
+        if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$AUTOFILL_BRANCH" 2>/dev/null \
+            && echo "Deleted stale remote $AUTOFILL_BRANCH." \
+            || echo "No stale remote $AUTOFILL_BRANCH (fine)."
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$AUTOFILL_BRANCH"
+
+      # Ensure the labels the agent will apply exist (idempotent — create-if-
+      # missing, never error if present).
+      - name: Ensure labels exist
+        if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh label create "$AUTOFILL_LABEL" --repo "$GITHUB_REPOSITORY" \
+            --color 0e8a16 --description "Auto-drafted CHANGELOG.md catch-up PR" 2>/dev/null || true
+          gh label create documentation --repo "$GITHUB_REPOSITORY" \
+            --color 0075ca --description "Documentation" 2>/dev/null || true
+
+      # devDeps for the agent's checks (prettier + tsx for the whats_new parser
+      # test). No DB needed — tests/changelog.test.ts runs on dummy env.
+      - name: Install dependencies
+        if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
+        run: npm ci
+
+      - name: Draft the missing changelog entries and open the PR
+        id: draft
+        if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
+        continue-on-error: true # the scope-check step below is the source of truth
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1.0.171
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A scheduled run's actor is github-actions[bot]; the action rejects
+          # non-human actors by default (the same setting the other pipeline
+          # workflows use so they fire on bot-triggered runs).
+          allowed_bots: '*'
+          prompt: |
+            You are drafting CHANGELOG.md catch-up entries for the NZ Claude
+            Community agent ("Dave"). Branch `${{ env.AUTOFILL_BRANCH }}` is
+            checked out. You may edit ONLY `CHANGELOG.md` — no other file.
+
+            CONTEXT — why this matters: CHANGELOG.md is read verbatim by the
+            bot's `whats_new` tool and shown to community members, so entries
+            must be user-legible PROSE, not a git shortlog. Read `CLAUDE.md` for
+            conventions, and read the existing CHANGELOG.md to match its house
+            voice EXACTLY before writing.
+
+            The daily coverage check flagged the merged PRs missing an entry
+            (format `- [ ] #NNN (YYYY-MM-DD) — title`) into the file `gaps.md` at
+            the repo root — run `cat gaps.md` to read the list.
+
+            For EACH flagged PR:
+            1. Decide if it is genuinely user- or operator-facing. The coverage
+               check errs toward flagging, so some entries may be INTERNAL (CI,
+               dependency bumps, tests, pipeline/tooling, pure refactors with no
+               observable behaviour change). SKIP those — do not invent an entry
+               for a change no user would notice. If you skip all of them, make
+               NO commit and stop (say so in your final line).
+            2. For a real one, read it: `gh pr view <N>` and `gh pr diff <N>` so
+               the entry is accurate. Never guess from the title alone.
+            3. Add ONE bullet under the correct dated section `## YYYY-MM-DD`
+               (the PR's merge date from the flag line) and the right subsection
+               (`### Added` / `### Changed` / `### Fixed`). Create the dated
+               section if absent, placing it in date order with the NEWEST at the
+               top of the file; create a missing subsection under it. Match the
+               existing entries' style: a **bold lead**, the `(#NNN)` citation,
+               and a sentence or two on what changed and why it matters to a
+               member or operator. Do NOT duplicate an entry that already exists.
+
+            After editing:
+            4. `npx prettier --write CHANGELOG.md` then
+               `npx prettier --check CHANGELOG.md` (must pass).
+            5. `node --import tsx --test tests/changelog.test.ts` — the parser the
+               `whats_new` tool relies on. It must pass (0 failures).
+            6. Confirm CHANGELOG.md is the ONLY tracked change:
+               `git status --porcelain -- CHANGELOG.md` must show exactly
+               ` M CHANGELOG.md`. (The list files `gaps.md`/`prs.json` in the repo
+               root are gitignored CI scratch — ignore them; do NOT try to delete
+               them and do NOT run `git add -A` or `git commit -a`. You may stage
+               only CHANGELOG.md.)
+            7. Commit: `git add CHANGELOG.md` (that exact path — nothing else)
+               then a `git commit` whose message is
+               `docs: backfill CHANGELOG.md for recently-merged PRs`.
+            8. Push with EXACTLY: `git push origin HEAD` (no other push form,
+               never force).
+            9. Open the PR by running EXACTLY this command, with `--base main
+               --head chore/changelog-autofill` first and in that order (the tool
+               allowlist pins that literal prefix, so any other order or head is
+               rejected):
+               `gh pr create --base main --head chore/changelog-autofill --label changelog-autofill --label documentation --title "docs: backfill CHANGELOG.md for recently-merged PRs" --body "<body>"`.
+               In the body: list each PR you documented (with its `#NNN`), name any
+               flagged PR you deliberately SKIPPED as internal and why (one line
+               each), and state that this was auto-drafted and needs human review
+               before merge. Do NOT merge or close the PR — a human merges.
+
+            EXECUTION MODEL — READ FIRST: this is a SINGLE, non-interactive batch
+            run. There is no wakeup, resume, or background continuation — when
+            your turn ends, the job ends. Run every command synchronously to
+            completion in THIS turn and act on its result; never end your turn to
+            "wait" for a command. Either push + open the PR in THIS turn, or (if
+            nothing is genuinely user-facing) make no commit and stop with one
+            line saying so.
+          # Least-privilege tools:
+          #   * Edit/Write/Read/Grep/Glob for the changelog (Write can't be scoped
+          #     to one path — the ONLY-CHANGELOG.md rule is prompt-stated and then
+          #     ENFORCED fail-closed by the post-step, which CLOSES the PR +
+          #     deletes the branch on any out-of-scope diff).
+          #   * `gh` can VIEW a specific PR by number (from gaps.md) and CREATE
+          #     one PR — no `gh pr list` (never needs to enumerate the repo), no
+          #     merge/close, and DELIBERATELY no `gh pr comment`/`gh pr edit`:
+          #     the Bash matcher can't pin a `gh pr comment`'s target number, so
+          #     granting it would let an injected historical-PR payload post an
+          #     arbitrary comment to ANY pr/issue (e.g. a forged
+          #     pipeline-pr-* marker) — a side-effect the diff-only scope gate
+          #     would never see. All commenting is done by the deterministic
+          #     GH_TOKEN steps instead. This matches pipeline-build.yml, which
+          #     also withholds `gh pr comment` from its build agent.
+          #   * `gh pr create` is PINNED to the literal prefix the prompt uses —
+          #     `Bash(gh pr create --base main --head chore/changelog-autofill:*)`
+          #     — so `--base`/`--head` are fixed and only the trailing
+          #     `--label/--title/--body` vary. An injected `--head <other>`/`--repo
+          #     <other>` no longer matches and is denied. (Belt to that brace: the
+          #     git side already pins HEAD to AUTOFILL_BRANCH — `git push origin
+          #     HEAD` is the only push form and checkout/branch/switch are
+          #     withheld — and the App token is installation-scoped.)
+          #   * `git add` is PINNED to `Bash(git add CHANGELOG.md)` (not `:*`), so
+          #     the agent literally cannot `git add -A`/stage another path; commit
+          #     + the single exact push form `git push origin HEAD` (no `:*`);
+          #     checkout/branch/switch withheld so HEAD stays on the job-created
+          #     branch (see pipeline-pr-conflict.yml on why that matters).
+          claude_args: |
+            --max-turns 60
+            --model sonnet
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add CHANGELOG.md),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr create --base main --head chore/changelog-autofill:*),Bash(npx prettier:*),Bash(node:*)"
+
+      # Source of truth + FAIL-CLOSED SCOPE GATE. The agent's edit tools can't be
+      # scoped to a single path, so the "only CHANGELOG.md" rule is enforced HERE,
+      # deterministically: read the opened PR's diff, and if it touched any other
+      # path — the exact outcome a prompt-injection from an arbitrary historical
+      # PR's body/diff would aim for — CLOSE the PR and delete the branch rather
+      # than leave an out-of-scope change sitting in a PR a reviewer might
+      # rubber-stamp. Fail closed, not "label and hope". (An in-scope change is
+      # still only ever a CHANGELOG.md text edit a human reviews and merges — the
+      # App token can't merge, can't push `main`, and lacks the `workflows`
+      # scope, so there is no path to production without that human merge.)
+      - name: Verify scope + result (fail closed on out-of-scope diff)
+        if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          num="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$AUTOFILL_BRANCH" \
+            --json number --jq '.[0].number // empty')"
+          if [ -z "$num" ]; then
+            echo "No autofill PR was opened — the agent judged nothing user-facing (or stopped before pushing). Nothing to do."
+            exit 0
+          fi
+          echo "Autofill PR #$num opened. Checking it changed only CHANGELOG.md…"
+          files="$(gh pr diff "$num" --repo "$GITHUB_REPOSITORY" --name-only)"
+          echo "Changed files:"; echo "$files"
+          offenders="$(echo "$files" | grep -v -x 'CHANGELOG.md' || true)"
+          if [ -n "$offenders" ]; then
+            echo "::error::Autofill PR #$num changed files other than CHANGELOG.md — closing it (fail closed):"; echo "$offenders"
+            {
+              printf '🤖 Auto-closing: this auto-drafted changelog PR changed files other than `CHANGELOG.md`, which it is never allowed to. Closing and deleting the branch rather than leaving an out-of-scope change open for review. Out-of-scope paths:\n\n'
+              echo "$offenders" | sed 's/^/- `/; s/$/`/'
+              printf '\nRun: %s/%s/actions/runs/%s\n' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}"
+            } | gh pr comment "$num" --repo "$GITHUB_REPOSITORY" --body-file -
+            gh pr close "$num" --repo "$GITHUB_REPOSITORY" --delete-branch || true
+            exit 1
+          fi
+          echo "Scope OK — PR #$num touches only CHANGELOG.md. A human reviews and merges."
