@@ -322,8 +322,19 @@ read, with `pending.description` embedded unchanged in both language variants
 and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
 `classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
 outcome/failure strings (`pending.execute()`'s own return value and the
-`Failed: ...` fallback) stay out of scope and English-only, same as the
-ack-shortcut reply.
+`Failed: ...` fallback) stay out of scope and English-only. The five opt-in,
+off-by-default shortcut-reply strings `respond()` uses to skip a full agent
+turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
+`GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
+`REPEAT_MAX_TURNS_SHORTCUT_NOTICE` — get the same treatment as the closing
+installment of this series (issue #435): each reads `getLangPref` once (the
+guest-knowledge site shares one read across its two strings) and picks its
+`_MI` sibling. The repeat-question shortcut's replayed `cachedReplyText` (a
+stored, already-served real answer) is left untranslated, same "translate the
+shell, not the dynamic payload" discipline as #339/#405; the repeat-max-turns
+shortcut instead swaps in the already-existing `MAX_TURNS_REPLY_MI` (issue
+#396) alongside its own notice, since that failure text is itself a fixed
+constant, not caller-derived content.
 
 ## Onboarding (gated mode)
 

@@ -4,7 +4,13 @@ import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
 import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
-import { INTERNAL_ERROR_REPLY, MAX_TURNS_REPLY, runAgentTurn, type AgentReply } from './agent/core.js';
+import {
+  INTERNAL_ERROR_REPLY,
+  MAX_TURNS_REPLY,
+  MAX_TURNS_REPLY_MI,
+  runAgentTurn,
+  type AgentReply,
+} from './agent/core.js';
 import { formatKnowledgeCitationNote } from './agent/tools.js';
 import {
   cancelPendingAction,
@@ -103,6 +109,28 @@ const REPEAT_SHORTCUT_NOTICE = "↩️ You asked this a moment ago — here's my
 // happened to hit the wall.
 const REPEAT_MAX_TURNS_SHORTCUT_NOTICE =
   '↩️ Same request as a moment ago — it still needs breaking down:\n\n';
+
+// Fixed, human-authored te reo Māori variants (issue #435) of the five
+// opt-in shortcut-reply strings above, served instead of the English
+// constant to a caller with a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — the closing installment of the
+// #266 series, a scope #363/#396/#405 each named and deliberately deferred
+// as "a different file's call sites... a materially lower-reach path" since
+// every one of these five sits behind an off-by-default flag. Same trust
+// level as every English constant above: no model call, no translation, no
+// injection surface, and `.catch(() => 'auto')` at each call site fails safe
+// to the English default.
+const ACK_REPLY_TEXT_MI = 'Kāore he raru!';
+
+const KNOWLEDGE_SHORTCUT_SUFFIX_MI =
+  '\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.';
+
+const GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI =
+  '\n\nTonoa tētahi kaiwhakahaere hapori ki te tāpiri i a koe hei mema kia taea ai te kōrero tonu.';
+
+const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā wā — anei anō tāku whakautu:\n\n';
+
+const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
 
 /** The subset of a KnowledgeSearchHit the shortcut path carries through — just enough to render `formatKnowledgeCitationNote` (issue #214). */
 interface KnowledgeShortcutHit {
@@ -581,7 +609,10 @@ export class Router {
         { platform: msg.platform, conversationId: msg.conversationId },
         'ack_shortcut_skipped_turn',
       );
-      await this.enqueue(key, 'ack reply', () => this.send(adapter, msg.conversationId, ACK_REPLY_TEXT));
+      const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+      await this.enqueue(key, 'ack reply', () =>
+        this.send(adapter, msg.conversationId, lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT),
+      );
       return;
     }
 
@@ -738,7 +769,9 @@ export class Router {
     // shortcut never involves the model, so this is formatted from stored
     // fields exactly like knowledge_search's own note.
     const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays, lowRatedCaveat);
-    const replyText = `${hit.content}${note}${KNOWLEDGE_SHORTCUT_SUFFIX}`;
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
+    const replyText = `${hit.content}${note}${suffix}`;
     await this.send(adapter, msg.conversationId, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),
@@ -772,7 +805,12 @@ export class Router {
       'guest_knowledge_shortcut_hit',
     );
     const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays);
-    const replyText = `${hit.content}${note}${KNOWLEDGE_SHORTCUT_SUFFIX}${GUEST_KNOWLEDGE_SHORTCUT_NUDGE}`;
+    // Single lookup serves both interpolated strings below (acceptance
+    // criterion 3) — not a per-string read.
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
+    const nudge = lang === 'mi' ? GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI : GUEST_KNOWLEDGE_SHORTCUT_NUDGE;
+    const replyText = `${hit.content}${note}${suffix}${nudge}`;
     await this.send(adapter, msg.conversationId, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Guest knowledge shortcut retrieval count update failed'),
@@ -790,7 +828,12 @@ export class Router {
     adapter: PlatformAdapter,
     cachedReplyText: string,
   ): Promise<void> {
-    const replyText = `${REPEAT_SHORTCUT_NOTICE}${cachedReplyText}`;
+    // Only the fixed wrapper is translated — `cachedReplyText` is the
+    // original (already-served) answer's language, left untouched (issue
+    // #339/#405's "translate the shell, not the dynamic payload" discipline).
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const notice = lang === 'mi' ? REPEAT_SHORTCUT_NOTICE_MI : REPEAT_SHORTCUT_NOTICE;
+    const replyText = `${notice}${cachedReplyText}`;
     await this.send(adapter, msg.conversationId, replyText);
     await recordInteraction({
       platform: msg.platform,
@@ -811,7 +854,10 @@ export class Router {
    * precedent (#259).
    */
   private async sendRepeatMaxTurnsShortcut(msg: IncomingMessage, adapter: PlatformAdapter): Promise<void> {
-    const replyText = `${REPEAT_MAX_TURNS_SHORTCUT_NOTICE}${MAX_TURNS_REPLY}`;
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const notice = lang === 'mi' ? REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI : REPEAT_MAX_TURNS_SHORTCUT_NOTICE;
+    const failure = lang === 'mi' ? MAX_TURNS_REPLY_MI : MAX_TURNS_REPLY;
+    const replyText = `${notice}${failure}`;
     await this.send(adapter, msg.conversationId, replyText);
     await recordInteraction({
       platform: msg.platform,
