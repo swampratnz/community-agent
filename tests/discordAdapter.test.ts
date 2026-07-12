@@ -694,6 +694,7 @@ test('SECURITY: performAdminAction("create_event") falls back to an external loc
 });
 
 interface FakeScheduledEvent {
+  id: string;
   status: GuildScheduledEventStatus;
   name: string | null;
   description: string | null;
@@ -705,6 +706,7 @@ interface FakeScheduledEvent {
 
 function fakeScheduledEvent(overrides: Partial<FakeScheduledEvent> = {}): FakeScheduledEvent {
   return {
+    id: 'event-id-1',
     status: GuildScheduledEventStatus.Scheduled,
     name: 'Event',
     description: null,
@@ -830,6 +832,19 @@ test('listUpcomingEvents falls back to the raw entityMetadata.location string fo
   assert.equal(events[0].location, 'Wellington Central Library');
 });
 
+test(
+  "listUpcomingEvents surfaces each event's own id (issue #424) — otherwise cancel_event has no " +
+    'conversational path to discover a valid eventId to act on',
+  async () => {
+    const adapter = new DiscordAdapter();
+    stubClientForListEvents(adapter, [fakeScheduledEvent({ id: 'real-event-id-42', name: 'Meetup' })]);
+
+    const events = await adapter.listUpcomingEvents(10);
+
+    assert.equal(events[0].id, 'real-event-id-42');
+  },
+);
+
 test('listUpcomingEvents caches results for ~60s — a second call within the TTL does not re-invoke guild.scheduledEvents.fetch() (issue #388)', async () => {
   const adapter = new DiscordAdapter();
   const calls = stubClientForListEvents(adapter, [fakeScheduledEvent()]);
@@ -842,7 +857,7 @@ test('listUpcomingEvents caches results for ~60s — a second call within the TT
 
 test(
   'SECURITY: listUpcomingEvents never leaks a creator/organizer id onto the returned UpcomingEvent — only ' +
-    'name/time/location/description are ever read off the raw scheduled-event object, so a future ' +
+    'id/name/time/location/description are ever read off the raw scheduled-event object, so a future ' +
     'discord.js field addition cannot silently leak through (issue #388)',
   async () => {
     const adapter = new DiscordAdapter();
@@ -859,7 +874,7 @@ test(
     const keys = Object.keys(events[0]);
     assert.deepEqual(
       keys.sort(),
-      ['description', 'location', 'name', 'scheduledEndAt', 'scheduledStartAt'].sort(),
+      ['description', 'id', 'location', 'name', 'scheduledEndAt', 'scheduledStartAt'].sort(),
       'the returned object must carry exactly the UpcomingEvent fields — nothing else',
     );
     assert.ok(!JSON.stringify(events[0]).includes('discord-user-id-99999'));

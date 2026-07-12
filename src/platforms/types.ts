@@ -95,8 +95,12 @@ export function paramString(value: unknown, fallback = ''): string {
  * (issue #388, the read counterpart to `create_event`/#230). Deliberately
  * excludes any creator/organizer id or other member identifier — nothing
  * about *who* created the event is needed to answer "what's coming up?".
+ * `id` IS included (issue #424) — it's the event's own identity, not a
+ * member identifier, and `cancel_event` has no other conversational path to
+ * discover a valid id to act on.
  */
 export interface UpcomingEvent {
+  id: string;
   name: string;
   /** ISO 8601 instant. */
   scheduledStartAt: string;

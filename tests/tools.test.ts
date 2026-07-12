@@ -7563,9 +7563,10 @@ test('list_events replies plainly with "no upcoming events" for a zero-events gu
   assert.match(result.content[0]?.text ?? '', /no upcoming events/i);
 });
 
-test('list_events formats each event with name, start/end time, location, and description (issue #388)', async () => {
+test('list_events formats each event with id, name, start/end time, location, and description (issue #388)', async () => {
   const adapter = stubEventsAdapter([
     {
+      id: 'event-id-wellington',
       name: 'Wellington Meetup',
       scheduledStartAt: '2099-06-01T19:00:00.000Z',
       scheduledEndAt: '2099-06-01T21:00:00.000Z',
@@ -7573,6 +7574,7 @@ test('list_events formats each event with name, start/end time, location, and de
       description: 'Bring your laptop',
     },
     {
+      id: 'event-id-auckland',
       name: 'Auckland Hack Night',
       scheduledStartAt: '2099-06-08T19:00:00.000Z',
       location: 'general-voice',
@@ -7588,16 +7590,19 @@ test('list_events formats each event with name, start/end time, location, and de
   assert.match(replyText, /Bring your laptop/);
   assert.match(replyText, /Auckland Hack Night/);
   assert.match(replyText, /general-voice/);
+  assert.match(replyText, /event-id-wellington/);
+  assert.match(replyText, /event-id-auckland/);
 });
 
 test(
   "SECURITY: list_events' formatted output never includes a creator/organizer id or any other member " +
-    'identifier — only the UpcomingEvent fields (name/time/location/description) ever reach the reply ' +
+    'identifier — only the UpcomingEvent fields (id/name/time/location/description) ever reach the reply ' +
     '(issue #388)',
   async () => {
     const creatorId = 'discord-user-id-12345';
     const adapter = stubEventsAdapter([
       {
+        id: 'event-id-christchurch',
         name: 'Christchurch Coffee & Code',
         scheduledStartAt: '2099-07-01T19:00:00.000Z',
         location: 'Christchurch Central Library',
@@ -7611,6 +7616,48 @@ test(
     const replyText = result.content[0]?.text ?? '';
     assert.equal(result.isError, false);
     assert.ok(!replyText.includes(creatorId), 'creator/organizer id must never reach the formatted reply');
+  },
+);
+
+test(
+  "list_events' output is the only conversational path to a valid eventId, and that discovered id round-" +
+    'trips straight into cancel_event (issue #424) — end-to-end discovery, not a stubbed-in eventId',
+  async () => {
+    const listAdapter = stubEventsAdapter([
+      {
+        id: 'event-id-real-424',
+        name: 'Discoverable Meetup',
+        scheduledStartAt: EVENT_FUTURE_START,
+        location: 'Somewhere',
+      },
+    ]);
+    const listResult = await listEventsHandler(listAdapter).handler();
+    const replyText = listResult.content[0]?.text ?? '';
+    assert.match(
+      replyText,
+      /event-id-real-424/,
+      "the eventId cancel_event needs must be present in list_events' own reply text",
+    );
+
+    const discoveredEventId = /\[id: (\S+)\]/.exec(replyText)?.[1];
+    assert.equal(discoveredEventId, 'event-id-real-424');
+
+    const conversationId = 'convo-cancel-discovery';
+    const cancelAdapter = cancelEventAdapter({
+      getScheduledEvent: async (id) =>
+        id === discoveredEventId
+          ? { name: 'Discoverable Meetup', status: 'scheduled', scheduledStartAt: EVENT_FUTURE_START }
+          : null,
+    });
+    const cancelHandler = cancelEventHandler({ conversationId, adapter: cancelAdapter });
+
+    const cancelResult = await cancelHandler.handler({ eventId: discoveredEventId ?? '' });
+    assert.match(
+      cancelResult.content[0].text,
+      /CONFIRM/,
+      'the id discovered from list_events must be accepted by cancel_event, reaching the CONFIRM step',
+    );
+    assert.match(cancelResult.content[0].text, /Discoverable Meetup/);
   },
 );
 

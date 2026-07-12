@@ -742,7 +742,8 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * at `limit`. Cached ~60s (`EVENTS_CACHE_TTL_MS`) as a single guild-wide
    * entry holding the full filtered/sorted list, so differing `limit`
    * callers share one `scheduledEvents.fetch()` and only the final slice
-   * differs.
+   * differs. Includes each event's `id` (issue #424) — the only path by
+   * which `cancel_event` can ever learn a valid target id.
    */
   async listUpcomingEvents(limit: number): Promise<UpcomingEvent[]> {
     const now = Date.now();
@@ -758,6 +759,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
           continue;
         }
         events.push({
+          id: event.id,
           name: event.name ?? '',
           scheduledStartAt: (event.scheduledStartAt ?? new Date(0)).toISOString(),
           scheduledEndAt: event.scheduledEndAt?.toISOString(),

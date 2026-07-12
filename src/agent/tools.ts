@@ -521,6 +521,13 @@ export const EVENT_DESCRIPTION_MAX_CHARS = 1000;
 export const EVENT_LOCATION_MAX_CHARS = 100;
 
 /**
+ * cancel_event's audit-only `reason` (issue #424) has no Discord field to
+ * bound it against — same shape as report_content's `reason`, so the same
+ * 500-char cap.
+ */
+export const EVENT_CANCEL_REASON_MAX_CHARS = 500;
+
+/**
  * create_event requires a concrete, resolved instant — never relative or
  * ambiguous text like "next Tuesday 7pm" (the exact ambiguity the proposal
  * calls out) — so this only accepts a strict ISO 8601 date-time with an
@@ -1500,9 +1507,10 @@ export function buildToolServer(
 
   const listEvents = tool(
     'list_events',
-    'List upcoming Discord scheduled meetups/events (name, start/end time, location) — call this when ' +
+    'List upcoming Discord scheduled meetups/events (id, name, start/end time, location) — call this when ' +
       'someone asks "what\'s coming up?", "when\'s the next meetup?", or similar, instead of guessing from ' +
-      'general knowledge or stale knowledge-base entries. Read-only, no arguments, sourced live from ' +
+      'general knowledge or stale knowledge-base entries. Also the only way to discover a valid eventId for ' +
+      'cancel_event. Read-only, no arguments, sourced live from ' +
       "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
     {},
     async () => {
@@ -1518,7 +1526,7 @@ export function buildToolServer(
               ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
               : e.scheduledStartAt;
             const desc = e.description ? `: ${e.description}` : '';
-            return `- ${e.name} (${when}) @ ${e.location}${desc}`;
+            return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
           })
           .join('\n'),
       );
@@ -2769,8 +2777,12 @@ export function buildToolServer(
       eventId: z.string().describe("The scheduled event's id (see list_events)"),
       reason: z
         .string()
+        .max(EVENT_CANCEL_REASON_MAX_CHARS)
         .optional()
-        .describe('Optional note for the audit log (Discord has no public cancellation-reason field)'),
+        .describe(
+          `Optional note for the audit log (Discord has no public cancellation-reason field), max ` +
+            `${EVENT_CANCEL_REASON_MAX_CHARS} characters`,
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'cancel_event');

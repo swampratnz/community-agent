@@ -971,6 +971,10 @@ so it is:
   since the CONFIRM's 60s TTL leaves a window for the event's state to
   change). Same **Manage Events** grant as `create_event` — no new permission.
   Discord-only, same unsupported-platform message as every sibling tool.
+  `list_events`' formatted output includes each event's `id` specifically so
+  there is a conversational path to a valid `eventId` — without it,
+  `cancel_event` would only ever be reachable by an admin manually copying a
+  snowflake out of Discord's own UI, which would defeat the tool's purpose.
 
 ### 12. GitHub issue filing (`suggest_issue`, opt-in)
 
