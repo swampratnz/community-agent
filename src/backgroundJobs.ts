@@ -18,7 +18,7 @@ import {
   markDevTeamWatchNotified,
   type DevTeamWatch,
 } from './storage/repository.js';
-import { jobStatus, type JobStatus } from './devTeam/client.js';
+import { devTeamField, jobStatus, type JobStatus } from './devTeam/client.js';
 import {
   buildJobFailureAlert,
   initialJobFailureTracker,
@@ -324,11 +324,20 @@ function isTerminalDevTeamState(state: string): boolean {
 export function formatDevTeamCompletionDm(watch: DevTeamWatch, status: JobStatus): string {
   const verdict = status.state === 'succeeded' ? 'succeeded ✅' : 'failed ❌';
   const cost = typeof status.cost_usd === 'number' ? ` Cost $${status.cost_usd.toFixed(2)}.` : '';
+  // The error is service-originated free text — bracket/newline-neutralize it
+  // (and the watch's identifier fields, which trace back to tool-call args a
+  // super-admin turn shaped) exactly like the dev_team_* chat formatters in
+  // tools.ts, so an injected value can't add lines to an unprompted DM.
   const err =
-    status.state === 'failed' && status.error ? ` Error: ${String(status.error).slice(0, 200)}.` : '';
+    status.state === 'failed' && status.error
+      ? ` Error: ${devTeamField(String(status.error).slice(0, 200))}.`
+      : '';
+  const mode = devTeamField(watch.mode);
+  const jobId = devTeamField(watch.jobId);
+  const repo = devTeamField(watch.repo);
   return (
-    `Your dev-team ${watch.mode} job ${watch.jobId} on ${watch.repo} ${verdict}.${cost}${err} ` +
-    `Use \`dev_team_result ${watch.jobId}\` for the full result (dashboard has the complete report).`
+    `Your dev-team ${mode} job ${jobId} on ${repo} ${verdict}.${cost}${err} ` +
+    `Use \`dev_team_result ${jobId}\` for the full result (dashboard has the complete report).`
   );
 }
 

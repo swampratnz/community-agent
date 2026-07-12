@@ -32,11 +32,17 @@ after(async () => {
 // bake into the cached import), lazily on first use — same shape as
 // tests/suggestIssue.test.ts.
 const dispatchCalls: Array<{ mode: string; repo: string }> = [];
+// The REAL client module, imported before the mock is registered: client.ts is
+// dependency-free, and passing its genuine devTeamField through the mock means
+// the quarantine SECURITY tests below exercise the real neutralizer, not a
+// test double that could drift from it.
+const realClient = await import('../src/devTeam/client.js');
 let toolsPromise: Promise<typeof import('../src/agent/tools.js')> | null = null;
 function tools(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!toolsPromise) {
     t.mock.module('../src/devTeam/client.js', {
       namedExports: {
+        devTeamField: realClient.devTeamField,
         dispatchJob: async (_endpoint: string, _token: string, input: { mode: string; repo: string }) => {
           dispatchCalls.push({ mode: input.mode, repo: input.repo });
           return { id: 'job-mock-1', state: 'queued', position: 2 };
@@ -201,4 +207,18 @@ test('SECURITY: formatDevTeamJobListEntry neutralizes newlines and brackets in e
   } as never);
   assert.ok(!line.includes('\n'), 'a list entry must stay a single line');
   assert.ok(!line.includes('<'), 'angle brackets must be stripped');
+});
+
+test('SECURITY: reserveDevTeamDispatchDaily bounds dispatch frequency per super admin per UTC day (0 = unlimited)', async (t) => {
+  const { reserveDevTeamDispatchDaily } = await tools(t);
+  const key = `discord:cap-${Date.now()}`;
+  assert.equal(reserveDevTeamDispatchDaily(key, 2), true, 'first call fits');
+  assert.equal(reserveDevTeamDispatchDaily(key, 2), true, 'second call fits');
+  assert.equal(
+    reserveDevTeamDispatchDaily(key, 2),
+    false,
+    'third call is refused — the cap is code-enforced',
+  );
+  assert.equal(reserveDevTeamDispatchDaily(`other-${key}`, 2), true, 'the cap is per-identity');
+  assert.equal(reserveDevTeamDispatchDaily(key, 0), true, 'limit 0 means unlimited');
 });

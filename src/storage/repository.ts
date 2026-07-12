@@ -1907,6 +1907,13 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // dev_team_watches (super-admin dev-team dispatches) is keyed on the same
+    // (platform, user id) identity — purge coherence for a requester's
+    // job-watch rows (which record the repo/mode/job id they dispatched).
+    const { rowCount: devTeamWatches } = await client.query(
+      `DELETE FROM dev_team_watches WHERE requester_platform = $1 AND requester_user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -1922,7 +1929,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (warnings ?? 0) +
       candidates +
       (answerFeedback ?? 0) +
-      (knowledgeGaps ?? 0)
+      (knowledgeGaps ?? 0) +
+      (devTeamWatches ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

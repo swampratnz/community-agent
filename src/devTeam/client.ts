@@ -184,3 +184,18 @@ export async function listJobs(
 ): Promise<JobListResponse> {
   return request<JobListResponse>(endpoint, token, '/jobs', { method: 'GET' }, fetchImpl);
 }
+
+/**
+ * Neutralize a short service-derived identifier field (job id, mode, repo,
+ * state, timestamps) before it is spliced into model-visible tool text or an
+ * outbound DM: the dispatch contract says these are plain slugs/enums, but
+ * nothing client-side enforces that a hostile/compromised service (or an
+ * injection-shaped tool argument echoed back) did not put instruction text,
+ * newlines, or angle brackets in them. Free-TEXT service fields (errors,
+ * progress, report prose) additionally get the full untrusted() quarantine in
+ * src/agent/tools.ts — this lighter strip keeps one-line status/list/DM text
+ * readable while closing the same injection class.
+ */
+export function devTeamField(v: string | number | null | undefined): string {
+  return String(v ?? '').replace(/[<>\r\n]/g, ' ');
+}
