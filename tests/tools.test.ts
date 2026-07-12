@@ -39,6 +39,7 @@ const {
   buildToolServer,
   formatKnowledgeSearchResults,
   formatUsageStats,
+  formatEngagementStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
@@ -91,6 +92,8 @@ const {
   clearAccessRequest,
   countActiveWarnings,
   clearWarnings,
+  upsertRosterMember,
+  engagementStats,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -4793,6 +4796,94 @@ test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line namin
       'Top users:\n- Alice: 2 msgs\n' +
       'Background jobs (moderation/digest/refresh): ~$4.20.',
   );
+});
+
+test('formatEngagementStats renders an explicit "no members" message for an empty roster, never a divide error (issue #419)', () => {
+  const out = formatEngagementStats({ total: 0, engaged: 0, percentage: 0, byPlatform: [] });
+  assert.equal(out, 'No currently-present roster members to measure engagement against.');
+});
+
+test('formatEngagementStats renders overall + per-platform counts and percentage (issue #419)', () => {
+  const out = formatEngagementStats({
+    total: 10,
+    engaged: 4,
+    percentage: 40,
+    byPlatform: [
+      { platform: 'discord', total: 8, engaged: 4, percentage: 50 },
+      { platform: 'whatsapp', total: 2, engaged: 0, percentage: 0 },
+    ],
+  });
+  assert.match(out, /4\/10 present members have posted at least once \(40%\)/);
+  assert.match(out, /- discord: 4\/8 \(50%\)/);
+  assert.match(out, /- whatsapp: 0\/2 \(0%\)/);
+});
+
+test(
+  'SECURITY: formatEngagementStats never renders a member user_id or display_name, only aggregate ' +
+    'counts/percentage, even when the underlying roster has both engaged and unengaged known members ' +
+    '(issue #419 acceptance criterion #7)',
+  { skip },
+  async () => {
+    const engagedUser = `${RUN}-engagement-engaged`;
+    const lurkerUser = `${RUN}-engagement-lurker`;
+    const engagedDisplayName = 'Engagement Test Engaged Person';
+    const lurkerDisplayName = 'Engagement Test Lurker Person';
+    const conversationId = `${RUN}-engagement-convo`;
+
+    await upsertRosterMember({
+      platform: 'discord',
+      userId: engagedUser,
+      displayName: engagedDisplayName,
+    });
+    await upsertRosterMember({ platform: 'discord', userId: lurkerUser, displayName: lurkerDisplayName });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: engagedUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello there',
+    });
+
+    try {
+      const stats = await engagementStats('discord');
+      const out = formatEngagementStats(stats);
+
+      assert.doesNotMatch(out, new RegExp(engagedUser), 'SECURITY: no engaged member user_id leaks');
+      assert.doesNotMatch(out, new RegExp(lurkerUser), 'SECURITY: no unengaged member user_id leaks');
+      assert.doesNotMatch(out, new RegExp(engagedDisplayName), 'SECURITY: no engaged display_name leaks');
+      assert.doesNotMatch(out, new RegExp(lurkerDisplayName), 'SECURITY: no unengaged display_name leaks');
+      assert.match(out, /\d+\/\d+ present members have posted at least once \(\d+(\.\d+)?%\)/);
+    } finally {
+      await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[engagedUser, lurkerUser]]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+function engagementStatsHandler(role: 'member' | 'admin' | 'guest' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-engagement-stats-caller`,
+      userName: 'Caller',
+      role,
+      conversationId: `${RUN}-engagement-stats-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: { platform?: string }) => Promise<unknown> }>;
+    }
+  )._registeredTools['engagement_stats'];
+}
+
+test('SECURITY: engagement_stats handler refuses a forged direct call from a non-super-admin caller (assertAtLeast re-check, issue #419) — tool-surface absence for the same roles is covered in tests/rbac.test.ts', async () => {
+  for (const role of ['member', 'admin', 'guest'] as const) {
+    const registeredTool = engagementStatsHandler(role);
+    await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+  }
 });
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {

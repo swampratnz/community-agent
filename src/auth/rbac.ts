@@ -191,6 +191,7 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__purge_user_data',
   'mcp__community__audit_view',
   'mcp__community__usage_stats',
+  'mcp__community__engagement_stats',
   'mcp__community__pause_bot',
   'mcp__community__resume_bot',
   'mcp__community__set_policy',
