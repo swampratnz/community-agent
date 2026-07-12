@@ -622,7 +622,7 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, or pull one member's full warning history with reasons\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
-  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule an event\n' +
+  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
   "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
@@ -2759,6 +2759,59 @@ export function buildToolServer(
     },
   );
 
+  const cancelEvent = tool(
+    'cancel_event',
+    'Cancel a Discord Scheduled Event created via create_event: marks it Canceled (stays visible, ' +
+      "struck-through, RSVP history intact) rather than deleting it — Discord's own UI convention for a " +
+      'meetup that fell through. CONFIRM required. Discord only, admin only. Only a Scheduled event can be ' +
+      'canceled — an event that is already Active, Completed, or Canceled is refused.',
+    {
+      eventId: z.string().describe("The scheduled event's id (see list_events)"),
+      reason: z
+        .string()
+        .optional()
+        .describe('Optional note for the audit log (Discord has no public cancellation-reason field)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'cancel_event');
+      if (!adapter.adminCapabilities.has('cancel_event') || !adapter.getScheduledEvent) {
+        return text(`This platform (${adapter.platform}) does not support scheduled events.`, true);
+      }
+      // Target validation live from Discord, not the DB (scheduled events
+      // aren't tracked in `interactions`) — same "the bot must be able to
+      // verify what it's acting on" discipline as isKnownConversation/
+      // isKnownMessage, before a CONFIRM is ever registered (issue #424).
+      const event = await adapter.getScheduledEvent(args.eventId);
+      if (!event) {
+        return text(`Refusing: scheduled event "${args.eventId}" was not found in this guild.`, true);
+      }
+      if (event.status !== 'scheduled') {
+        return text(
+          `Refusing: event "${event.name}" is currently ${event.status}, not scheduled — only a scheduled ` +
+            'event can be canceled.',
+          true,
+        );
+      }
+      const params = { eventId: args.eventId, reason: args.reason };
+      // CONFIRM text quotes the resolved event name + start time verbatim,
+      // same discipline as create_event's own CONFIRM prompt — the human
+      // confirms the actual artifact, not model-composed prose.
+      return requireConfirm(
+        `cancel event "${event.name}" starting ${event.scheduledStartAt}` +
+          `${args.reason ? ` (reason: ${args.reason})` : ''}`,
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'cancel_event',
+            params,
+            run: () => adapter.performAdminAction({ kind: 'cancel_event', params }),
+          });
+          return success ? `Done: ${result}` : `Failed: ${result}`;
+        },
+      );
+    },
+  );
+
   const setCommunityGuidelines = tool(
     'set_community_guidelines',
     'Set the community guidelines/rules text shown to members (appended verbatim to new-member welcome ' +
@@ -4467,6 +4520,7 @@ export function buildToolServer(
       createThread,
       archiveThread,
       createEvent,
+      cancelEvent,
       setCommunityGuidelines,
       setWelcomeMessage,
       saveKnowledgeTool,

@@ -57,6 +57,7 @@ import {
   type MessageHandler,
   type OutgoingMessage,
   type PlatformAdapter,
+  type ScheduledEventLookup,
   type UpcomingEvent,
 } from '../types.js';
 
@@ -77,6 +78,20 @@ const MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS = 500;
 // 15 minutes — mirrors #203's BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS shape; a
 // permission-overwrite failure is a systemic condition, not a per-channel one.
 const MUTED_ROLE_ALERT_WINDOW_MS = 900_000;
+
+/** Maps discord.js's numeric `GuildScheduledEventStatus` to `ScheduledEventLookup`'s closed string union. */
+function mapScheduledEventStatus(status: GuildScheduledEventStatus): ScheduledEventLookup['status'] {
+  switch (status) {
+    case GuildScheduledEventStatus.Scheduled:
+      return 'scheduled';
+    case GuildScheduledEventStatus.Active:
+      return 'active';
+    case GuildScheduledEventStatus.Completed:
+      return 'completed';
+    case GuildScheduledEventStatus.Canceled:
+      return 'canceled';
+  }
+}
 
 export const WELCOME_MESSAGE =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
@@ -110,6 +125,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'create_thread',
     'archive_thread',
     'create_event',
+    'cancel_event',
   ]);
 
   private readonly client: Client;
@@ -756,6 +772,27 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   }
 
   /**
+   * Live lookup of a single scheduled event by id, for `cancel_event`'s
+   * pre-CONFIRM target validation (issue #424) — mirrors the "the bot must
+   * be able to verify what it's acting on" discipline `isKnownConversation`/
+   * `isKnownMessage` apply to DB-tracked targets, just sourced from Discord's
+   * live API since scheduled events aren't stored in `interactions`.
+   * `guild.scheduledEvents.fetch(id)` is scoped to THIS guild already, so an
+   * id belonging to a different guild fails the fetch exactly like an
+   * unknown id — both return `null` here rather than throwing.
+   */
+  async getScheduledEvent(eventId: string): Promise<ScheduledEventLookup | null> {
+    const guild = await this.client.guilds.fetch(config.discord.guildId);
+    const event = await guild.scheduledEvents.fetch(eventId).catch(() => null);
+    if (!event) return null;
+    return {
+      name: event.name ?? '',
+      status: mapScheduledEventStatus(event.status),
+      scheduledStartAt: (event.scheduledStartAt ?? new Date(0)).toISOString(),
+    };
+  }
+
+  /**
    * Resolve a scheduled event's location the same direction `create_event`
    * already resolves it the other way (`performAdminAction`'s `location`
    * handling): a voice/stage-hosted event's `channelId` resolves to that
@@ -1028,6 +1065,26 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
               });
             })();
         return `Created event "${created.name}" starting ${created.scheduledStartAt?.toISOString() ?? startTime}.`;
+      }
+      case 'cancel_event': {
+        // The tool layer already validates the event live and its Scheduled
+        // status before ever registering a CONFIRM (issue #424), but the
+        // CONFIRM has a 60s TTL during which the event's state could change
+        // (e.g. canceled directly in Discord's own UI) — re-check here too
+        // rather than trust a stale pre-CONFIRM read.
+        const guild = await this.client.guilds.fetch(config.discord.guildId);
+        const eventId = paramString(action.params?.eventId);
+        if (!eventId) throw new Error('cancel_event requires params.eventId');
+        const event = await guild.scheduledEvents.fetch(eventId).catch(() => null);
+        if (!event) throw new Error(`Scheduled event ${eventId} was not found.`);
+        if (event.status !== GuildScheduledEventStatus.Scheduled) {
+          throw new Error(
+            `Event "${event.name}" is currently ${mapScheduledEventStatus(event.status)}, not scheduled — ` +
+              'only a scheduled event can be canceled.',
+          );
+        }
+        await guild.scheduledEvents.edit(eventId, { status: GuildScheduledEventStatus.Canceled });
+        return `Canceled event "${event.name}".`;
       }
       default:
         throw new Error(`Unsupported Discord action: ${action.kind}`);

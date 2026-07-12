@@ -866,6 +866,139 @@ test(
   },
 );
 
+/**
+ * Stubs client.guilds.fetch for performAdminAction('cancel_event') and
+ * getScheduledEvent (issue #424, the destroy-adjacent counterpart to
+ * create_event): `fetchById` resolves a single scheduled event by id,
+ * mirroring the real `guild.scheduledEvents.fetch(id)` — already scoped to
+ * THIS guild, so an unknown id or one from a different guild both surface as
+ * "not found" here, same as the real API. `edit` records each attempted
+ * status transition so a test can assert none was attempted for a refusal.
+ */
+function stubClientForCancelEvent(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  fetchById: (id: string) => Promise<FakeScheduledEvent | null> = async () => null,
+) {
+  const edits: Array<{ id: string; options: Record<string, unknown> }> = [];
+  const guild = {
+    id: config.discord.guildId,
+    scheduledEvents: {
+      fetch: async (id: string) => {
+        const event = await fetchById(id);
+        if (!event) throw new Error('Unknown Guild Scheduled Event');
+        return event;
+      },
+      edit: async (id: string, options: Record<string, unknown>) => {
+        edits.push({ id, options });
+        return { ...(await fetchById(id)), ...options };
+      },
+    },
+  };
+  const client = (
+    adapter as unknown as {
+      client: { guilds: { fetch: (id: string) => Promise<typeof guild> } };
+    }
+  ).client;
+  client.guilds.fetch = async () => guild;
+  return edits;
+}
+
+test('performAdminAction("cancel_event") transitions a Scheduled event to Canceled via a real guild.scheduledEvents.edit call (issue #424)', async () => {
+  const adapter = new DiscordAdapter();
+  const scheduled = fakeScheduledEvent({
+    name: 'Wellington Meetup',
+    status: GuildScheduledEventStatus.Scheduled,
+  });
+  const edits = stubClientForCancelEvent(adapter, async (id) => (id === 'event-1' ? scheduled : null));
+
+  const result = await adapter.performAdminAction({ kind: 'cancel_event', params: { eventId: 'event-1' } });
+
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0].id, 'event-1');
+  assert.equal(edits[0].options.status, GuildScheduledEventStatus.Canceled);
+  assert.match(result, /Canceled event "Wellington Meetup"/);
+});
+
+test('SECURITY: performAdminAction("cancel_event") refuses cleanly when the event is not found, rather than attempting an edit (issue #424)', async () => {
+  const adapter = new DiscordAdapter();
+  const edits = stubClientForCancelEvent(adapter, async () => null);
+
+  await assert.rejects(
+    () => adapter.performAdminAction({ kind: 'cancel_event', params: { eventId: 'event-unknown' } }),
+    /was not found/i,
+  );
+  assert.equal(edits.length, 0, 'an event that was not found must never be edited');
+});
+
+test('SECURITY: performAdminAction("cancel_event") refuses an Active event rather than attempting an invalid status transition (issue #424)', async () => {
+  const adapter = new DiscordAdapter();
+  const active = fakeScheduledEvent({ name: 'Live Now', status: GuildScheduledEventStatus.Active });
+  const edits = stubClientForCancelEvent(adapter, async (id) => (id === 'event-active' ? active : null));
+
+  await assert.rejects(
+    () => adapter.performAdminAction({ kind: 'cancel_event', params: { eventId: 'event-active' } }),
+    /currently active, not scheduled/i,
+  );
+  assert.equal(edits.length, 0, 'an Active event must never be edited by cancel_event');
+});
+
+test('SECURITY: performAdminAction("cancel_event") refuses a Completed event rather than attempting an invalid status transition (issue #424)', async () => {
+  const adapter = new DiscordAdapter();
+  const completed = fakeScheduledEvent({ name: 'Past Meetup', status: GuildScheduledEventStatus.Completed });
+  const edits = stubClientForCancelEvent(adapter, async (id) =>
+    id === 'event-completed' ? completed : null,
+  );
+
+  await assert.rejects(
+    () => adapter.performAdminAction({ kind: 'cancel_event', params: { eventId: 'event-completed' } }),
+    /currently completed, not scheduled/i,
+  );
+  assert.equal(edits.length, 0, 'a Completed event must never be edited by cancel_event');
+});
+
+test('SECURITY: performAdminAction("cancel_event") refuses an already-Canceled event rather than attempting an invalid status transition (issue #424)', async () => {
+  const adapter = new DiscordAdapter();
+  const canceled = fakeScheduledEvent({ name: 'Called Off', status: GuildScheduledEventStatus.Canceled });
+  const edits = stubClientForCancelEvent(adapter, async (id) => (id === 'event-canceled' ? canceled : null));
+
+  await assert.rejects(
+    () => adapter.performAdminAction({ kind: 'cancel_event', params: { eventId: 'event-canceled' } }),
+    /currently canceled, not scheduled/i,
+  );
+  assert.equal(edits.length, 0, 'an already-Canceled event must never be re-edited by cancel_event');
+});
+
+test('getScheduledEvent resolves a live event by id, mapping GuildScheduledEventStatus to the closed status union (issue #424)', async () => {
+  const adapter = new DiscordAdapter();
+  const scheduled = fakeScheduledEvent({
+    name: 'Wellington Meetup',
+    status: GuildScheduledEventStatus.Scheduled,
+    scheduledStartAt: new Date('2099-06-01T07:00:00.000Z'),
+  });
+  stubClientForCancelEvent(adapter, async (id) => (id === 'event-1' ? scheduled : null));
+
+  const result = await adapter.getScheduledEvent('event-1');
+
+  assert.deepEqual(result, {
+    name: 'Wellington Meetup',
+    status: 'scheduled',
+    scheduledStartAt: '2099-06-01T07:00:00.000Z',
+  });
+});
+
+test(
+  'SECURITY: getScheduledEvent returns null (never throws) for an unknown or foreign-guild eventId — ' +
+    "cancel_event's pre-CONFIRM target validation depends on a clean null, not an uncaught rejection (issue #424)",
+  async () => {
+    const adapter = new DiscordAdapter();
+    stubClientForCancelEvent(adapter, async () => null);
+
+    const result = await adapter.getScheduledEvent('event-does-not-exist');
+
+    assert.equal(result, null);
+  },
+);
+
 interface FakeImageSendable {
   isTextBased: () => boolean;
   isDMBased: () => boolean;
