@@ -991,6 +991,14 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   `health.ts`'s disconnect alert already uses. No new privileged tool, no
   new RBAC surface, no auto-`pause_bot` — a super admin decides whether to
   pause manually.
+- The poller is also wired into the shared background-job consecutive-failure
+  tracker (`backgroundJobHealth.ts`'s `JobFailureTracker`, the same mechanism
+  covering context-builder/knowledge-refresh/docs-ingest/both retention
+  purges/embedding-model/admin-digest/anthropic-status-check): three
+  consecutive `usageStats(1)` failures DM super admins so the operator's
+  runaway-usage alarm can't itself go dark silently (issue #426). This is
+  independent of the threshold-crossing latch above — a check-failure alert
+  never suppresses or duplicates a threshold alert, or vice versa.
 
 `usageAlert.ts` is a **proactive** check on successful outbound reply
 *counts* — it says nothing about a turn actively **failing** because the
