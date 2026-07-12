@@ -45,6 +45,19 @@ name: Changelog autofill
 # protection), and lacks the `workflows` scope; (5) a HUMAN merges every PR.
 # There is no path from an injected historical PR to production without that
 # human merge. Judged an acceptable, well-bounded surface for a docs janitor.
+#
+# SIDE-EFFECT VECTORS beyond the diff (per PR #418 second review): the scope gate
+# inspects only the autofill PR's DIFF, so a `gh` write to some OTHER pr/issue
+# would be invisible to it. Closed by tool choice: the agent has NO
+# `gh pr comment`/`gh pr edit` (dropped precisely because their target number
+# can't be matcher-pinned — an injected payload could otherwise post a forged
+# `pipeline-pr-*` marker comment on an unrelated PR); all commenting is done by
+# the deterministic GH_TOKEN steps. The one remaining `gh` write is
+# `gh pr create`: an injected `--head`/`--repo` is bounded because the agent can
+# only push AUTOFILL_BRANCH (push-form pinned + checkout/branch/switch withheld)
+# and the App token is installation-scoped, so the worst case is a visible,
+# human-gated, unmergeable PR from a pre-existing branch — never a comment
+# side-effect, never a cross-repo action, never a merge.
 #   * It NEVER merges the PR — a human does. The agent's `gh` can open/label/
 #     comment a PR but has no merge/close verb.
 #   * It CANNOT push .github/workflows/* (the App token lacks the `workflows`
@@ -255,10 +268,26 @@ jobs:
           #   * Edit/Write/Read/Grep/Glob for the changelog (Write can't be scoped
           #     to one path — the ONLY-CHANGELOG.md rule is prompt-stated and then
           #     VERIFIED by the post-step, which flags any out-of-scope diff).
-          #   * `gh` can view a SPECIFIC PR by number (from gaps.md) and open/
-          #     label/comment ONE PR — no `gh pr list` (it never needs to
-          #     enumerate arbitrary PRs; the flagged numbers come from gaps.md),
-          #     and no merge/close verb.
+          #   * `gh` can VIEW a specific PR by number (from gaps.md) and CREATE
+          #     one PR — no `gh pr list` (never needs to enumerate the repo), no
+          #     merge/close, and DELIBERATELY no `gh pr comment`/`gh pr edit`:
+          #     the Bash matcher can't pin a `gh pr comment`'s target number, so
+          #     granting it would let an injected historical-PR payload post an
+          #     arbitrary comment to ANY pr/issue (e.g. a forged
+          #     pipeline-pr-* marker) — a side-effect the diff-only scope gate
+          #     would never see. All commenting is done by the deterministic
+          #     GH_TOKEN steps instead. This matches pipeline-build.yml, which
+          #     also withholds `gh pr comment` from its build agent.
+          #   * `gh pr create` is a wildcard (its `--title`/`--body` are dynamic,
+          #     so it can't be exact-matched). Its blast radius is bounded by the
+          #     git side: `git push origin HEAD` is the only push form AND
+          #     checkout/branch/switch are withheld, so HEAD is pinned to the
+          #     job-created AUTOFILL_BRANCH and the agent cannot push any other
+          #     branch — an injected `--head <other>` could at worst open a
+          #     visible, human-gated, unmergeable PR from a pre-existing branch,
+          #     and the App token is installation-scoped so `--repo <other>`
+          #     can't reach another repo. The scope gate manages only the
+          #     head=AUTOFILL_BRANCH PR.
           #   * git is add/commit + the single exact push form `git push origin
           #     HEAD` (no `:*`); checkout/branch/switch withheld so HEAD stays on
           #     the branch the job created (see pipeline-pr-conflict.yml's note on
@@ -266,7 +295,7 @@ jobs:
           claude_args: |
             --max-turns 60
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(npx prettier:*),Bash(node:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr create:*),Bash(npx prettier:*),Bash(node:*)"
 
       # Source of truth + FAIL-CLOSED SCOPE GATE. The agent's edit tools can't be
       # scoped to a single path, so the "only CHANGELOG.md" rule is enforced HERE,
