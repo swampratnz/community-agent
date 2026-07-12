@@ -726,9 +726,24 @@ from a hit's content body rather than the tool-computed citation clause.
    scrollback. Only entries with `unhelpfulCount >= minUnhelpful` (default 2,
    so a single troll/misclick rating never flags an entry) are returned,
    sorted worst-first. Ratings on interactions with no `knowledgeEntryId`
-   (i.e. answered via the model-mediated `knowledge_search` path rather than
-   the deterministic shortcut) never join to a `knowledge` row and so are
-   never counted — the same reach boundary #269 already drew for this field.
+   still never join to a `knowledge` row and so are never counted.
+   `knowledgeEntryId` used to be stamped only by the deterministic knowledge
+   shortcut, which meant the model-mediated `knowledge_search` path — the
+   common case — was invisible to this tool no matter how many times its
+   answers were rated unhelpful (#269/#287 explicitly deferred fixing this as
+   over-scoped for one PR). Issue #411 closes that gap: `knowledge_search`'s
+   handler now writes the top-scoring id of its most recent hit that clears
+   `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` into a turn-scoped ref
+   (`buildToolServer`'s `ToolServerTurnState`), which threads through
+   `TurnOutcome`/`AgentReply` (the same pattern `languagePreference`/
+   `maxTurnsExceeded` already use) into the router's normal outbound-record
+   `meta.knowledgeEntryId` — the identical key the shortcut path writes, so
+   neither aggregation query changed. This is a **best-effort correlation**,
+   not a guarantee: it names the last qualifying `knowledge_search` call in
+   the turn, not necessarily the entry the model's final prose actually drew
+   from (e.g. a multi-topic turn that queries twice and answers from the
+   first hit stamps the second). Treat a flagged entry as a strong lead worth
+   reading, not as proof that entry caused every attributed unhelpful rating.
 
 ## Auto-moderation (Discord)
 

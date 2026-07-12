@@ -946,6 +946,14 @@ export class Router {
         meta: {
           replyToUserId: msg.userId,
           ...(reply.maxTurnsExceeded === true ? { maxTurnsExceeded: true } : {}),
+          // Best-effort knowledge_search-hit correlation on the normal
+          // (non-shortcut) outbound path (issue #411) — the same scalar
+          // `knowledgeEntryId` meta key `sendKnowledgeShortcut` already
+          // writes, so both paths feed `listKnowledgeFeedbackSummary` /
+          // `listAnswerFeedback` with no query/schema change. Absent
+          // whenever no `knowledge_search` call in the turn had a hit clear
+          // the relevance floor.
+          ...(reply.knowledgeEntryId != null ? { knowledgeEntryId: reply.knowledgeEntryId } : {}),
         },
       }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
     } finally {

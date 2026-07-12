@@ -1200,7 +1200,25 @@ function ackReportedMessage(
   })();
 }
 
-export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter, getAdapter?: AdapterLookup) {
+/**
+ * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
+ * #411) — currently just the most recent qualifying `knowledge_search` hit,
+ * mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped signals
+ * already threaded through `TurnOutcome`/`AgentReply`. Optional so every
+ * existing `buildToolServer(caller, adapter)` call (this file's own tests,
+ * mainly) keeps compiling unchanged; callers that don't care about the
+ * correlation simply never read it back.
+ */
+export interface ToolServerTurnState {
+  lastKnowledgeHitId: number | null;
+}
+
+export function buildToolServer(
+  caller: CallerContext,
+  adapter: PlatformAdapter,
+  getAdapter?: AdapterLookup,
+  turnState?: ToolServerTurnState,
+) {
   /**
    * Resolves the adapter to notify through for a row stored under
    * `rowPlatform`: the current turn's own adapter when it matches, otherwise
@@ -1400,6 +1418,16 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       recordKnowledgeRetrieval(relevantIds).catch((err) =>
         logger.warn({ err }, 'Knowledge retrieval count update failed'),
       );
+      // Best-effort knowledge_search-hit correlation (issue #411): `hits` is
+      // already ordered by similarity descending (searchKnowledge's `ORDER
+      // BY embedding <=> $1`), so relevantIds[0] — if any cleared the floor —
+      // is this call's top-scoring hit. Only overwrite on a QUALIFYING call;
+      // a later call in the same turn whose hits all miss the floor must
+      // never clobber an earlier qualifying id with null (acceptance
+      // criterion #3: last *qualifying* call wins, not last call).
+      if (turnState && relevantIds.length > 0) {
+        turnState.lastKnowledgeHitId = relevantIds[0];
+      }
       // Live conflict-candidate check (issue #389): only the ids that
       // cleared the relevance floor for THIS query, restricted to a
       // scoped, LIMIT-1 self-join — never the full-table audit
@@ -3430,9 +3458,11 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
 
   const listAnswerFeedbackTool = tool(
     'list_answer_feedback',
-    "List member ratings (helpful/unhelpful) of the bot's answers from your conversations. A rating from " +
-      'a conversation you do not participate in is not visible here even to admins — only to a super ' +
-      'admin. Admin only.',
+    "List member ratings (helpful/unhelpful) of the bot's answers from your conversations. Where shown, " +
+      "'served from knowledge #N' is a best-effort correlation with the knowledge_search hit that most " +
+      "recently cleared the relevance floor in that turn — not a guarantee the model's answer actually drew " +
+      'from that entry. A rating from a conversation you do not participate in is not visible here even to ' +
+      'admins — only to a super admin. Admin only.',
     {
       unhelpfulOnly: z.boolean().optional().describe('Only show unhelpful (thumbs-down) ratings'),
       limit: z.number().optional().describe('Max entries (default 50)'),
@@ -3463,11 +3493,15 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
 
   const listLowRatedKnowledgeTool = tool(
     'list_low_rated_knowledge',
-    'Show knowledge entries with accumulated unhelpful ratings (>= minUnhelpful) on answers served via the ' +
-      'deterministic knowledge shortcut — grouped by entry so you can spot a bad or stale FAQ answer without ' +
-      "scanning list_answer_feedback's raw per-rating list. Excludes answers served via model-mediated " +
-      'knowledge_search (not linked to a specific entry). A rating from a conversation you do not participate ' +
-      'in is not counted here even for admins — only for a super admin. Admin only.',
+    'Show knowledge entries with accumulated unhelpful ratings (>= minUnhelpful) — grouped by entry so you ' +
+      "can spot a bad or stale FAQ answer without scanning list_answer_feedback's raw per-rating list. " +
+      'Covers answers served via the deterministic knowledge shortcut (exact match) AND, best-effort, the ' +
+      'normal model-mediated knowledge_search path: the entry attributed there is a correlation with the ' +
+      'most recent knowledge_search hit that cleared the relevance floor in that turn, not a guarantee the ' +
+      "model's reply actually drew from it — treat a flagged entry as a lead to check, not certain proof. " +
+      'Ratings on interactions with no knowledgeEntryId at all are still excluded. A rating from a ' +
+      'conversation you do not participate in is not counted here even for admins — only for a super admin. ' +
+      'Admin only.',
     {
       minUnhelpful: z
         .number()
