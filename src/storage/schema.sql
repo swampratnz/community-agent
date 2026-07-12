@@ -555,6 +555,19 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_conversation_idx
 CREATE INDEX IF NOT EXISTS knowledge_gaps_user_rate_idx
   ON knowledge_gaps (platform, user_id, created_at DESC);
 
+-- Set once a later save_knowledge/update_knowledge clears
+-- KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD against this gap's stored query
+-- embedding (see repository.ts's resolveKnowledgeGaps, issue #422) — the
+-- accept-gap curation loop #213's review named but #208 never built. NULL
+-- (including every pre-existing row) means still unresolved. forget_me/
+-- purge_user_data delete the row outright regardless of this value.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+
+-- Backs the `AND resolved_at IS NULL` filter both list_knowledge_gaps
+-- (recentKnowledgeGapClusters) and countKnowledgeGaps add.
+CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
+  ON knowledge_gaps (conversation_id, created_at DESC) WHERE resolved_at IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- Cost of the three standalone background `query()` calls (issue #401) that
 -- spend from the shared Max pool but write no `interactions` row, so
@@ -575,3 +588,30 @@ CREATE TABLE IF NOT EXISTS background_job_costs (
 
 CREATE INDEX IF NOT EXISTS background_job_costs_created_at_idx
   ON background_job_costs (created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Durable completion-DM watches for the super-admin dev-team dispatch tools
+-- (dev_team_dispatch). One row per dispatched job: who asked (platform +
+-- user id, for the DM back), plus the job's mode/repo for the verdict text. A
+-- background poller (src/backgroundJobs.ts) reads unnotified rows, checks each
+-- job's status over the tailnet, and on a terminal state (succeeded/failed)
+-- DMs the requester then stamps notified_at — so a ~20-min run's completion
+-- ping survives a bot restart and is sent at most once (the primary key +
+-- notified_at guard prevent a double-send). Identity + job metadata only,
+-- never any part of the requester's message content or the service's report.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dev_team_watches (
+  job_id             TEXT        PRIMARY KEY,
+  requester_platform TEXT        NOT NULL,
+  requester_user_id  TEXT        NOT NULL,
+  mode               TEXT        NOT NULL,
+  repo               TEXT        NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notified_at        TIMESTAMPTZ
+);
+
+-- The poller scans only unnotified rows every ~minute; a partial index keeps
+-- that scan cheap as completed-and-notified rows accumulate.
+CREATE INDEX IF NOT EXISTS dev_team_watches_unnotified_idx
+  ON dev_team_watches (created_at)
+  WHERE notified_at IS NULL;

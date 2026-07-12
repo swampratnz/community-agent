@@ -592,6 +592,10 @@ export async function saveKnowledge(input: {
   // given, otherwise left null.
   sourceUrl?: string;
   sourceTitle?: string;
+  // The saving admin's own platform (issue #422) — used only to scope
+  // automatic knowledge-gap resolution below when `scope` is a conversation
+  // id (see resolveKnowledgeGaps); never stored on the knowledge row itself.
+  callerPlatform?: Platform;
 }): Promise<{ id: number; similarEntry?: KnowledgeDuplicateMatch }> {
   const scope = input.scope ?? 'global';
   let embedding: number[] | null = null;
@@ -623,6 +627,7 @@ export async function saveKnowledge(input: {
     }
   }
 
+  const createdByRole = input.createdByRole ?? 'admin';
   const { rows } = await pool.query(
     `INSERT INTO knowledge (scope, title, content, source_user_id, created_by_role, embedding, source_url, source_title, verified_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CASE WHEN $7::text IS NOT NULL THEN now() ELSE NULL END) RETURNING id`,
@@ -631,12 +636,25 @@ export async function saveKnowledge(input: {
       input.title ?? null,
       input.content,
       input.sourceUserId ?? null,
-      input.createdByRole ?? 'admin',
+      createdByRole,
       embedding ? pgvector.toSql(embedding) : null,
       input.sourceUrl ?? null,
       input.sourceTitle ?? null,
     ],
   );
+
+  // SECURITY: never resolve gaps off unreviewed 'auto' web-research content
+  // (quarantined/untrusted at retrieval) — only a human-authored entry or a
+  // trusted 'docs' backfill may silently clear the "never confidently
+  // answered" signal. See resolveKnowledgeGaps.
+  if (embedding && createdByRole !== 'auto') {
+    try {
+      await resolveKnowledgeGaps(scope, embedding, input.callerPlatform ?? null);
+    } catch (err) {
+      logger.warn({ err }, 'Knowledge-gap resolution failed for new entry');
+    }
+  }
+
   return { id: Number(rows[0].id), similarEntry };
 }
 
@@ -673,6 +691,68 @@ export async function saveKnowledge(input: {
  * agent/tools.ts and storage/repository.ts importing each other.
  */
 export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
+
+/**
+ * Mark unresolved `knowledge_gaps` rows resolved when `embedding` (the
+ * vector `saveKnowledge`/`updateKnowledge` already computed for their write)
+ * now clears `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` against a gap's stored
+ * query embedding — the accept-gap curation loop issue #422 closes (#213's
+ * review named this sliver; #246 shipped the other one). This is the exact
+ * inverse of `recordKnowledgeGap`'s recording rule, so it's internally
+ * consistent by construction: a future identical query would no longer
+ * record a gap, so it's safe to mark the standing one resolved now.
+ *
+ * Scope filter mirrors `searchKnowledge`'s visibility model, but inverted
+ * (which gaps can *this entry* now answer, vs. which entries can *this
+ * caller* see) and, for the conversation-scoped case, deliberately
+ * *narrower*: `searchKnowledge` matches `scope = conversationId` alone
+ * (SECURITY: cross-platform conversation-id collisions are already
+ * mitigated in practice by non-overlapping id shapes there, but the resolve
+ * path can't rely on "probably fine" for an automatic write). So here a
+ * conversation-scoped entry (`scope` not `'global'` and not a `Platform`
+ * literal) only resolves gaps on `callerPlatform` — never cross-platform,
+ * even if a conversation id string happened to collide across platforms.
+ * `callerPlatform` is unused (and the conversation-scoped branch matches
+ * nothing) for a `'global'`- or platform-scoped entry.
+ *
+ * SECURITY: callers gate this on `createdByRole !== 'auto'` before invoking
+ * it (see saveKnowledge/updateKnowledge) — unreviewed 'auto' web-research
+ * content is quarantined/untrusted at retrieval and must never silently
+ * clear the "never confidently (human-)answered" signal `list_knowledge_gaps`
+ * / the digest count depend on. A trusted 'docs' backfill or a human-authored
+ * entry (any RBAC `Tier`) may resolve gaps; this function itself has no
+ * opinion on provenance, so that check MUST happen before it is called.
+ *
+ * Known conservative approximation: this checks raw cosine similarity against
+ * the gap's floor, not whether the new/edited entry would actually rank in
+ * `searchKnowledge`'s top-`topK` (default 5) for that historical query. If
+ * 5+ other entries already outscore it, a real future search still wouldn't
+ * surface this entry, yet the gap is marked resolved here anyway. Low
+ * severity at typical KB sizes; not worth the extra query per gap to fix.
+ *
+ * Non-blocking: callers must swallow failures themselves — a resolution
+ * error must never block the save/update it rides on, same convention
+ * `recordKnowledgeGap` already uses for the record side.
+ */
+async function resolveKnowledgeGaps(
+  scope: string,
+  embedding: number[],
+  callerPlatform: Platform | null,
+): Promise<void> {
+  await pool.query(
+    `UPDATE knowledge_gaps
+        SET resolved_at = now()
+      WHERE resolved_at IS NULL
+        AND embedding IS NOT NULL
+        AND (
+          $1 = 'global'
+          OR platform = $1
+          OR (platform = $2 AND conversation_id = $1)
+        )
+        AND 1 - (embedding <=> $3) >= $4`,
+    [scope, callerPlatform, pgvector.toSql(embedding), KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD],
+  );
+}
 
 /**
  * Semantic search over curated knowledge, scoped to what `caller` may see:
@@ -1019,15 +1099,20 @@ export async function updateKnowledge(input: {
   scope?: string;
   sourceUrl?: string;
   sourceTitle?: string;
+  // The editing admin's own platform (issue #422) — same use as
+  // saveKnowledge's callerPlatform, only for scoping automatic
+  // knowledge-gap resolution below; never stored on the knowledge row.
+  callerPlatform?: Platform;
 }): Promise<boolean> {
   const { rows: existingRows } = await pool.query(
-    `SELECT title, content, source_url, source_title FROM knowledge WHERE id = $1`,
+    `SELECT title, content, scope, source_url, source_title, created_by_role FROM knowledge WHERE id = $1`,
     [input.id],
   );
   if (existingRows.length === 0) return false;
 
   const title = input.title !== undefined ? input.title : existingRows[0].title;
   const content = input.content !== undefined ? input.content : existingRows[0].content;
+  const scope = input.scope !== undefined ? input.scope : existingRows[0].scope;
   const sourceUrl = input.sourceUrl !== undefined ? input.sourceUrl : existingRows[0].source_url;
   const sourceTitle = input.sourceTitle !== undefined ? input.sourceTitle : existingRows[0].source_title;
   const reVerify = input.sourceUrl !== undefined || input.sourceTitle !== undefined;
@@ -1056,6 +1141,18 @@ export async function updateKnowledge(input: {
       reVerify,
     ],
   );
+
+  // SECURITY: same 'auto'-provenance exclusion as saveKnowledge — an entry's
+  // created_by_role never changes here, so the pre-edit row's value is the
+  // authoritative check.
+  if (embedding && existingRows[0].created_by_role !== 'auto') {
+    try {
+      await resolveKnowledgeGaps(scope, embedding, input.callerPlatform ?? null);
+    } catch (err) {
+      logger.warn({ err }, 'Knowledge-gap resolution failed for edited entry');
+    }
+  }
+
   return (rowCount ?? 0) > 0;
 }
 
@@ -1907,6 +2004,13 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM knowledge_gaps WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // dev_team_watches (super-admin dev-team dispatches) is keyed on the same
+    // (platform, user id) identity — purge coherence for a requester's
+    // job-watch rows (which record the repo/mode/job id they dispatched).
+    const { rowCount: devTeamWatches } = await client.query(
+      `DELETE FROM dev_team_watches WHERE requester_platform = $1 AND requester_user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -1922,7 +2026,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (warnings ?? 0) +
       candidates +
       (answerFeedback ?? 0) +
-      (knowledgeGaps ?? 0)
+      (knowledgeGaps ?? 0) +
+      (devTeamWatches ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -3220,7 +3325,9 @@ export interface KnowledgeGapCluster {
  * the `list_knowledge_gaps` signal, mirroring `recentQuestionClusters` exactly
  * (same clustering code, same `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`,
  * same conversation-scoping convention) but sourced from `knowledge_gaps`
- * instead of `interactions`.
+ * instead of `interactions`. Excludes `resolved_at IS NOT NULL` rows (issue
+ * #422) — a gap `save_knowledge`/`update_knowledge` already resolved
+ * disappears immediately, not only once `created_at` ages past `days`.
  */
 export async function recentKnowledgeGapClusters(
   conversationIds: readonly string[] | null,
@@ -3241,6 +3348,7 @@ export async function recentKnowledgeGapClusters(
     `SELECT query_text, embedding
        FROM knowledge_gaps
       WHERE embedding IS NOT NULL
+        AND resolved_at IS NULL
         AND created_at > now() - $1::interval
         ${scope}
       ORDER BY created_at ASC`,
@@ -3772,12 +3880,16 @@ export async function countOpenReports(
  * from a conversation they don't participate in (mirrors `countOpenReports`'s
  * scoping). A true `COUNT(*)`, never `.length` of a `LIMIT`-bounded list, so a
  * backlog larger than `list_knowledge_gaps`' own limit is not understated.
+ * Excludes `resolved_at IS NOT NULL` rows (issue #422), same as
+ * `recentKnowledgeGapClusters` — a resolved gap drops out of the digest
+ * count immediately.
  */
 export async function countKnowledgeGaps(conversationIds: readonly string[], days: number): Promise<number> {
   if (conversationIds.length === 0) return 0;
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM knowledge_gaps
       WHERE conversation_id = ANY($1)
+        AND resolved_at IS NULL
         AND created_at >= now() - ($2 || ' days')::interval`,
     [[...conversationIds], String(days)],
   );
@@ -4239,4 +4351,63 @@ export async function countLowRatedKnowledge(
     params,
   );
   return Number(rows[0].n);
+}
+
+// --- Dev-team completion-DM watches (super-admin dev_team_dispatch) ----------
+
+export interface DevTeamWatchInput {
+  jobId: string;
+  requesterPlatform: Platform;
+  requesterUserId: string;
+  mode: string;
+  repo: string;
+}
+
+export interface DevTeamWatch {
+  jobId: string;
+  requesterPlatform: Platform;
+  requesterUserId: string;
+  mode: string;
+  repo: string;
+}
+
+/**
+ * Record a durable watch so the requester gets a completion DM once the
+ * dispatched job reaches a terminal state (see the poller in
+ * src/backgroundJobs.ts). `ON CONFLICT (job_id) DO NOTHING` makes a repeated
+ * dispatch of the same id idempotent rather than an error.
+ */
+export async function insertDevTeamWatch(input: DevTeamWatchInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO dev_team_watches (job_id, requester_platform, requester_user_id, mode, repo)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (job_id) DO NOTHING`,
+    [input.jobId, input.requesterPlatform, input.requesterUserId, input.mode, input.repo],
+  );
+}
+
+/** Watches whose job has not yet had its completion DM sent, oldest first. */
+export async function listUnnotifiedDevTeamWatches(): Promise<DevTeamWatch[]> {
+  const { rows } = await pool.query(
+    `SELECT job_id, requester_platform, requester_user_id, mode, repo
+       FROM dev_team_watches
+      WHERE notified_at IS NULL
+      ORDER BY created_at ASC`,
+  );
+  return rows.map((r) => ({
+    jobId: r.job_id,
+    requesterPlatform: r.requester_platform as Platform,
+    requesterUserId: r.requester_user_id,
+    mode: r.mode,
+    repo: r.repo,
+  }));
+}
+
+/**
+ * Stamp a watch as notified so its completion DM is never sent twice — the
+ * poller calls this only AFTER a successful `sendDirectMessage`, so a failed
+ * send leaves the row unnotified for the next tick to retry.
+ */
+export async function markDevTeamWatchNotified(jobId: string): Promise<void> {
+  await pool.query(`UPDATE dev_team_watches SET notified_at = now() WHERE job_id = $1`, [jobId]);
 }

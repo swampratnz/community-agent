@@ -48,7 +48,8 @@ export type BackgroundJobName =
   | 'roster-retention-purge'
   | 'anthropic-status-check'
   | 'embedding-model'
-  | 'admin-digest';
+  | 'admin-digest'
+  | 'usage-alert';
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught

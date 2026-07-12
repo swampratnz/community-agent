@@ -2,6 +2,13 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { usageStats } from './storage/repository.js';
+import { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD } from './backgroundJobs.js';
+import {
+  buildJobFailureAlert,
+  initialJobFailureTracker,
+  stepJobFailureTracker,
+  type JobFailureTracker,
+} from './backgroundJobHealth.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 type UsageAlertStats = Awaited<ReturnType<typeof usageStats>>;
@@ -69,10 +76,19 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
   if (!threshold) return null;
 
   let tracker = initialUsageAlertTracker();
+  let failureTracker: JobFailureTracker = initialJobFailureTracker();
+  let lastSuccessAt: number | null = null;
 
   const check = () => {
     usageStats(1)
       .then((stats) => {
+        lastSuccessAt = Date.now();
+        failureTracker = stepJobFailureTracker(
+          failureTracker,
+          false,
+          BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD,
+        ).tracker;
+
         const step = stepUsageAlertTracker(tracker, stats.outbound, threshold);
         tracker = step.tracker;
         if (step.shouldAlert) {
@@ -83,7 +99,17 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
           void alertSuperAdmins(adapters, formatUsageAlertMessage(stats, threshold));
         }
       })
-      .catch((err) => logger.error({ err }, 'Usage alert check failed'));
+      .catch((err) => {
+        logger.error({ err }, 'Usage alert check failed');
+        const step = stepJobFailureTracker(failureTracker, true, BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD);
+        failureTracker = step.tracker;
+        if (step.shouldAlert) {
+          void alertSuperAdmins(
+            adapters,
+            buildJobFailureAlert('usage-alert', failureTracker.consecutiveFailures, lastSuccessAt),
+          );
+        }
+      });
   };
   check();
   const timer = setInterval(check, CHECK_INTERVAL_MS);

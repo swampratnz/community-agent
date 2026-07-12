@@ -518,3 +518,99 @@ test('SECURITY: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR rejects a non-positive valu
   );
   assert.match(result.stderr, /AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR/);
 });
+
+test('config: dev-team dispatch service is off by default with no endpoint/token and a 1-minute watch poll', () => {
+  assert.equal(config.devTeam.enabled, false);
+  assert.equal(config.devTeam.endpointUrl, undefined);
+  assert.equal(config.devTeam.authToken, undefined);
+  assert.equal(config.devTeam.watchPollMinutes, 1);
+});
+
+test('config: DEV_TEAM_* env vars parse — enabled, an http:// tailnet endpoint, and a token all load cleanly (http is allowed for the tailnet-internal endpoint)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DEV_TEAM_ENABLED: 'true',
+        DEV_TEAM_ENDPOINT_URL: 'http://ubuntudevagent:8738',
+        DEV_TEAM_AUTH_TOKEN: 'dev-team-secret-token',
+        DEV_TEAM_WATCH_POLL_MINUTES: '2',
+      },
+    },
+  );
+  assert.equal(
+    result.status,
+    0,
+    'a fully-configured dev-team block must load cleanly, http endpoint included',
+  );
+  const printed = JSON.parse(result.stdout);
+  assert.equal(printed.devTeam.enabled, true);
+  assert.equal(printed.devTeam.endpointUrl, 'http://ubuntudevagent:8738');
+  assert.equal(printed.devTeam.authToken, 'dev-team-secret-token');
+  assert.equal(printed.devTeam.watchPollMinutes, 2);
+});
+
+test('SECURITY: DEV_TEAM_ENABLED=true without an endpoint URL and token fails config validation — fail-fast rather than at the first dispatch', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DEV_TEAM_ENABLED: 'true',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'DEV_TEAM_ENABLED=true with no url/token must fail config validation, not load',
+  );
+  assert.match(result.stderr, /DEV_TEAM_ENDPOINT_URL and DEV_TEAM_AUTH_TOKEN are both required/);
+});
+
+test('SECURITY: DEV_TEAM_ENABLED=true with an endpoint but NO token still fails config validation — a credential-less enable is refused', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DEV_TEAM_ENABLED: 'true',
+        DEV_TEAM_ENDPOINT_URL: 'http://ubuntudevagent:8738',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'DEV_TEAM_ENABLED=true with a url but no token must fail config validation',
+  );
+  assert.match(result.stderr, /DEV_TEAM_ENDPOINT_URL and DEV_TEAM_AUTH_TOKEN are both required/);
+});

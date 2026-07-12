@@ -31,6 +31,7 @@ import {
   getMemberRole,
   getMyDataSummary,
   hasConflictAmongIds,
+  insertDevTeamWatch,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   type KnowledgeDuplicateMatch,
   listDuplicateKnowledge,
@@ -95,6 +96,16 @@ import { recentChanges } from './changelog.js';
 import { generateImage } from '../media/grokImage.js';
 import { redactSecrets } from './outbound.js';
 import { createIssue } from '../github/issues.js';
+import {
+  devTeamField,
+  dispatchJob,
+  jobResult,
+  jobStatus,
+  listJobs,
+  type JobListEntry,
+  type JobResult,
+  type JobStatus,
+} from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
@@ -511,6 +522,13 @@ export const EVENT_DESCRIPTION_MAX_CHARS = 1000;
 export const EVENT_LOCATION_MAX_CHARS = 100;
 
 /**
+ * cancel_event's audit-only `reason` (issue #424) has no Discord field to
+ * bound it against — same shape as report_content's `reason`, so the same
+ * 500-char cap.
+ */
+export const EVENT_CANCEL_REASON_MAX_CHARS = 500;
+
+/**
  * create_event requires a concrete, resolved instant — never relative or
  * ambiguous text like "next Tuesday 7pm" (the exact ambiguity the proposal
  * calls out) — so this only accepts a strict ISO 8601 date-time with an
@@ -631,7 +649,7 @@ const ADMIN_CAPABILITIES_TEXT =
   "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, or pull one member's full warning history with reasons\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
-  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule an event\n' +
+  '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
   "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
@@ -971,6 +989,31 @@ function reserveIssueDaily(key: string, limit: number): boolean {
   return true;
 }
 
+/**
+ * dev_team_dispatch calls per super admin, for the rolling calendar-day cap
+ * (DEV_TEAM_DAILY_LIMIT; PR #421 review). Every sibling that costs real money
+ * or hits an external service from the untrusted-content path has one of
+ * these — dispatch spends the shared subscription and ~20 min of the dev-team
+ * box per call, and assess deliberately has no CONFIRM gate, so call
+ * frequency must be bounded in code, not by model judgement. Exported for the
+ * SECURITY test. A reservation is NOT refunded on a later dispatch failure —
+ * a failed POST still probed the service, and refunds would let induced
+ * failures bypass the cap (same rationale as reserveImageGenDaily).
+ */
+const devTeamDispatchDaily = new Map<string, { day: string; count: number }>();
+export function reserveDevTeamDispatchDaily(key: string, limit: number): boolean {
+  if (limit <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = devTeamDispatchDaily.get(key);
+  if (!entry || entry.day !== today) {
+    devTeamDispatchDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
 /** create_poll timestamps per conversation, for the rolling-hour cap (POLL_RATE_LIMIT_PER_HOUR). */
 const pollTimestampsByConversation = new Map<string, number[]>();
 
@@ -1222,6 +1265,98 @@ function ackReportedMessage(
 }
 
 /**
+ * Chat-message cap for anything echoed back from the dev-team service (issue:
+ * super-admin dev_team_* tools). A service report can be arbitrarily long;
+ * chat is not the place to dump it (the tools point at "the dashboard" for the
+ * full artifact), so every surfaced service string is truncated to this.
+ */
+export const DEV_TEAM_CHAT_CAP = 1500;
+
+/**
+ * Scrub + cap any text that originated from the dev-team service before it
+ * reaches chat: redact the service bearer token (defence in depth — the client
+ * never echoes it, but a hostile/echoing service response must not leak it or
+ * any other known secret either) and hard-cap the length.
+ */
+export function devTeamScrub(s: string): string {
+  const known = [config.devTeam.authToken].filter((v): v is string => Boolean(v));
+  return redactSecrets(s, known).slice(0, DEV_TEAM_CHAT_CAP);
+}
+
+/** One-job status, formatted for chat (TEXT-only; works on Discord and WhatsApp). */
+export function formatDevTeamJobStatus(s: JobStatus): string {
+  const lines = [
+    `Job ${devTeamField(s.id)} — ${devTeamField(s.mode)} on ${devTeamField(s.repo)}: ${devTeamField(s.state)}`,
+  ];
+  if (s.started) lines.push(`started ${devTeamField(s.started)}`);
+  if (s.ended) lines.push(`ended ${devTeamField(s.ended)}`);
+  if (typeof s.cost_usd === 'number') lines.push(`cost $${s.cost_usd.toFixed(2)}`);
+  // Service-originated free text is quarantined exactly like web-search and
+  // recalled-message content elsewhere in this file: a hostile assessed repo
+  // (or a compromised service) can write anything into these fields, and it
+  // must land in the model's context as labelled data, never as instructions.
+  if (s.error) lines.push(untrusted('dev-team service error', s.error));
+  const recent = (s.progress ?? []).slice(-5);
+  if (recent.length > 0) {
+    lines.push(
+      untrusted(
+        'recent dev-team progress',
+        recent.map((p) => `[${p.stage}] ${p.role}: ${p.message}`).join(' | '),
+      ),
+    );
+  }
+  return lines.join('\n');
+}
+
+/** One line per recent job for the no-id `dev_team_status` listing. */
+export function formatDevTeamJobListEntry(j: JobListEntry): string {
+  const started = j.started ? `, started ${devTeamField(j.started)}` : '';
+  const ended = j.ended ? `, ended ${devTeamField(j.ended)}` : '';
+  return `- ${devTeamField(j.id)} (${devTeamField(j.mode)}, ${devTeamField(j.repo)}): ${devTeamField(j.state)}${started}${ended}`;
+}
+
+/**
+ * A finished job's result, formatted for chat. Handles the three contract
+ * shapes: a failed job (`success:false` + `error`), a succeeded assess
+ * (classification + executive summary + the top of the report), and a
+ * succeeded deliver (outcome + summary). The full artifact always lives on the
+ * dashboard — chat gets a capped digest only. All service-originated prose is
+ * `untrusted()`-quarantined: an assessment report is generated FROM the
+ * assessed repository's own content, so a hostile repo can plant instruction
+ * text in it (the classic indirect-prompt-injection path into a
+ * super-admin-privileged turn).
+ */
+export function formatDevTeamJobResult(r: JobResult): string {
+  if (r.success === false) {
+    const cost = typeof r.cost_usd === 'number' ? ` (cost $${r.cost_usd.toFixed(2)})` : '';
+    return `Job ${devTeamField(r.kind) || 'run'} failed${cost}.\n${untrusted(
+      'dev-team service error',
+      r.error ?? 'unknown error',
+    )}`;
+  }
+  const cost = typeof r.cost_usd === 'number' ? `\ncost $${r.cost_usd.toFixed(2)}` : '';
+  if (r.kind === 'assess') {
+    const parts = [untrusted('assessment classification', r.classification ?? 'unclassified')];
+    if (r.executive_summary) {
+      parts.push('', untrusted('assessment executive summary', r.executive_summary));
+    }
+    if (r.report_markdown) {
+      parts.push('', untrusted('assessment report (top)', r.report_markdown.slice(0, 800)));
+    }
+    parts.push('', 'Full report on the dashboard.' + cost);
+    return parts.join('\n');
+  }
+  // deliver (or any other succeeded kind)
+  const parts = [`Delivery (${devTeamField(r.kind)}): succeeded`];
+  if (r.classification) parts.push(untrusted('delivery outcome', r.classification));
+  if (r.executive_summary) {
+    parts.push('', untrusted('delivery summary', r.executive_summary));
+  }
+  parts.push('', 'Full report on the dashboard.' + cost);
+  return parts.join('\n');
+}
+
+/**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
  * #411) — currently just the most recent qualifying `knowledge_search` hit,
  * mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped signals
@@ -1392,9 +1527,10 @@ export function buildToolServer(
 
   const listEvents = tool(
     'list_events',
-    'List upcoming Discord scheduled meetups/events (name, start/end time, location) — call this when ' +
+    'List upcoming Discord scheduled meetups/events (id, name, start/end time, location) — call this when ' +
       'someone asks "what\'s coming up?", "when\'s the next meetup?", or similar, instead of guessing from ' +
-      'general knowledge or stale knowledge-base entries. Read-only, no arguments, sourced live from ' +
+      'general knowledge or stale knowledge-base entries. Also the only way to discover a valid eventId for ' +
+      'cancel_event. Read-only, no arguments, sourced live from ' +
       "Discord's own Scheduled Events (the read counterpart to create_event). Discord-only.",
     {},
     async () => {
@@ -1410,7 +1546,7 @@ export function buildToolServer(
               ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
               : e.scheduledStartAt;
             const desc = e.description ? `: ${e.description}` : '';
-            return `- ${e.name} (${when}) @ ${e.location}${desc}`;
+            return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
           })
           .join('\n'),
       );
@@ -2651,6 +2787,63 @@ export function buildToolServer(
     },
   );
 
+  const cancelEvent = tool(
+    'cancel_event',
+    'Cancel a Discord Scheduled Event created via create_event: marks it Canceled (stays visible, ' +
+      "struck-through, RSVP history intact) rather than deleting it — Discord's own UI convention for a " +
+      'meetup that fell through. CONFIRM required. Discord only, admin only. Only a Scheduled event can be ' +
+      'canceled — an event that is already Active, Completed, or Canceled is refused.',
+    {
+      eventId: z.string().describe("The scheduled event's id (see list_events)"),
+      reason: z
+        .string()
+        .max(EVENT_CANCEL_REASON_MAX_CHARS)
+        .optional()
+        .describe(
+          `Optional note for the audit log (Discord has no public cancellation-reason field), max ` +
+            `${EVENT_CANCEL_REASON_MAX_CHARS} characters`,
+        ),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'cancel_event');
+      if (!adapter.adminCapabilities.has('cancel_event') || !adapter.getScheduledEvent) {
+        return text(`This platform (${adapter.platform}) does not support scheduled events.`, true);
+      }
+      // Target validation live from Discord, not the DB (scheduled events
+      // aren't tracked in `interactions`) — same "the bot must be able to
+      // verify what it's acting on" discipline as isKnownConversation/
+      // isKnownMessage, before a CONFIRM is ever registered (issue #424).
+      const event = await adapter.getScheduledEvent(args.eventId);
+      if (!event) {
+        return text(`Refusing: scheduled event "${args.eventId}" was not found in this guild.`, true);
+      }
+      if (event.status !== 'scheduled') {
+        return text(
+          `Refusing: event "${event.name}" is currently ${event.status}, not scheduled — only a scheduled ` +
+            'event can be canceled.',
+          true,
+        );
+      }
+      const params = { eventId: args.eventId, reason: args.reason };
+      // CONFIRM text quotes the resolved event name + start time verbatim,
+      // same discipline as create_event's own CONFIRM prompt — the human
+      // confirms the actual artifact, not model-composed prose.
+      return requireConfirm(
+        `cancel event "${event.name}" starting ${event.scheduledStartAt}` +
+          `${args.reason ? ` (reason: ${args.reason})` : ''}`,
+        'admin',
+        async () => {
+          const { success, result } = await audited({
+            actionKind: 'cancel_event',
+            params,
+            run: () => adapter.performAdminAction({ kind: 'cancel_event', params }),
+          });
+          return success ? `Done: ${result}` : `Failed: ${result}`;
+        },
+      );
+    },
+  );
+
   const setCommunityGuidelines = tool(
     'set_community_guidelines',
     'Set the community guidelines/rules text shown to members (appended verbatim to new-member welcome ' +
@@ -2747,6 +2940,7 @@ export function buildToolServer(
         createdByRole: caller.role,
         sourceUrl: args.sourceUrl,
         sourceTitle: args.sourceTitle,
+        callerPlatform: caller.platform,
       });
       let reply = `Saved knowledge entry #${id}.`;
       if (similarEntry) {
@@ -2934,6 +3128,7 @@ export function buildToolServer(
               scope: args.scope,
               sourceUrl: args.sourceUrl,
               sourceTitle: args.sourceTitle,
+              callerPlatform: caller.platform,
             });
             if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
             return 'updated';
@@ -4139,6 +4334,163 @@ export function buildToolServer(
     { annotations: { readOnlyHint: false } },
   );
 
+  // --- Dev-team dispatch tools (super-admin only, TEXT-only) -----------------
+  // Drive the remote dev-team build service over the tailnet. All three assert
+  // super_admin at the handler (defence in depth on top of the tier-derived
+  // tool list) and refuse with a friendly message when the feature is off. The
+  // outputs are plain text so they work identically on Discord and WhatsApp.
+  const devTeamEnabledOr = (): { ok: true; endpoint: string; token: string } | { ok: false } => {
+    if (!config.devTeam.enabled || !config.devTeam.endpointUrl || !config.devTeam.authToken) {
+      return { ok: false };
+    }
+    return { ok: true, endpoint: config.devTeam.endpointUrl, token: config.devTeam.authToken };
+  };
+
+  const devTeamDispatch = tool(
+    'dev_team_dispatch',
+    'Dispatch a job to the remote dev-team build service over the tailnet. mode="assess" runs a read-only ' +
+      'assessment of a repo/task; mode="deliver" actually makes changes and opens a PR, so it requires ' +
+      "confirmation. Takes ~20 minutes; I'll DM you when it finishes. Super admin only.",
+    {
+      mode: z
+        .enum(['assess', 'deliver'])
+        .describe('"assess" (read-only) or "deliver" (makes changes; CONFIRM-gated)'),
+      repo: z.string().min(1).max(200).describe('Target repo, e.g. "owner/name"'),
+      title: z.string().max(200).optional().describe('Short title for the task'),
+      description: z.string().max(4000).optional().describe('What to assess/deliver'),
+      budget_usd: z.number().positive().max(1000).optional().describe('Optional spend cap in USD'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_dispatch');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+
+      const dispatch = async () => {
+        // Per-super-admin calendar-day cap (DEV_TEAM_DAILY_LIMIT). Checked at
+        // dispatch-execution time — after deliver's CONFIRM — so a denied
+        // confirmation never consumes a slot, but every real POST attempt does.
+        if (!reserveDevTeamDispatchDaily(`${caller.platform}:${caller.userId}`, config.devTeam.dailyLimit)) {
+          return `Daily dev-team dispatch limit reached (${config.devTeam.dailyLimit}/day). Try again tomorrow or raise DEV_TEAM_DAILY_LIMIT.`;
+        }
+        const { success, result } = await audited({
+          actionKind: 'dev_team_dispatch',
+          params: { mode: args.mode, repo: args.repo },
+          run: async () => {
+            const job = await dispatchJob(endpoint, token, {
+              mode: args.mode,
+              repo: args.repo,
+              title: args.title,
+              description: args.description,
+              budget_usd: args.budget_usd ?? null,
+            });
+            // Durable watch so the requester is DMed when the run finishes,
+            // even across a bot restart (poller in src/backgroundJobs.ts).
+            // BEST-EFFORT past this point: the POST above already started a
+            // real, cost-incurring remote job, so a watch-insert failure (DB
+            // hiccup, pool exhaustion) must NOT be reported as a dispatch
+            // failure — the caller would naturally retry and double a real
+            // job/cost, and the error text would not even carry the job id.
+            // Instead: partial success — surface the id + a "no DM, poll with
+            // dev_team_status" caveat, and leave the rest to the human.
+            let watchCaveat = '';
+            try {
+              await insertDevTeamWatch({
+                jobId: job.id,
+                requesterPlatform: caller.platform,
+                requesterUserId: caller.userId,
+                mode: args.mode,
+                repo: args.repo,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, jobId: job.id },
+                'dev_team_dispatch: job dispatched but the completion-watch insert failed; no completion DM will be sent',
+              );
+              watchCaveat =
+                " (note: I couldn't register the completion watch, so NO completion DM will come — check progress yourself with dev_team_status)";
+            }
+            return devTeamScrub(
+              `Dispatched ${devTeamField(args.mode)} job ${devTeamField(job.id)} on ${devTeamField(args.repo)} ` +
+                `(queued, position ${job.position}). ~20 min; I'll DM you when it's done.${watchCaveat}`,
+            );
+          },
+        });
+        return success ? result : `Failed to dispatch: ${devTeamScrub(result)}`;
+      };
+
+      // deliver makes real changes / opens a PR: CONFIRM-gate it exactly like
+      // redeploy_bot, so an injected turn can request it but never complete one
+      // without the super admin's own out-of-band reply. assess is read-only
+      // and runs without confirmation.
+      if (args.mode === 'deliver') {
+        return requireConfirm(
+          `DISPATCH a DELIVER job to the dev-team service on ${devTeamField(args.repo)} (it will make changes / open a PR)`,
+          'super_admin',
+          dispatch,
+        );
+      }
+      return text(await dispatch());
+    },
+    { annotations: { readOnlyHint: false } },
+  );
+
+  const devTeamStatus = tool(
+    'dev_team_status',
+    'Check a dev-team job by id, or list recent jobs when no id is given. Read-only. Super admin only.',
+    { id: z.string().min(1).max(200).optional().describe('Job id; omit to list recent jobs') },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_status');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+      try {
+        if (args.id) {
+          const s = await jobStatus(endpoint, token, args.id);
+          return text(devTeamScrub(formatDevTeamJobStatus(s)));
+        }
+        const { jobs } = await listJobs(endpoint, token);
+        if (jobs.length === 0) return text('No dev-team jobs found.');
+        return text(devTeamScrub(jobs.map(formatDevTeamJobListEntry).join('\n')));
+      } catch (err) {
+        return text(
+          `Couldn't reach the dev-team service: ${devTeamScrub(err instanceof Error ? err.message : String(err))}`,
+          true,
+        );
+      }
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const devTeamResult = tool(
+    'dev_team_result',
+    "Fetch a finished dev-team job's result — the assessment verdict (classification + executive summary + " +
+      'top of the report) or the delivery outcome. Read-only; the full report lives on the dashboard. Super admin only.',
+    { id: z.string().min(1).max(200).describe('Job id') },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_result');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+      try {
+        const r = await jobResult(endpoint, token, args.id);
+        return text(devTeamScrub(formatDevTeamJobResult(r)));
+      } catch (err) {
+        return text(
+          `Couldn't fetch the result: ${devTeamScrub(err instanceof Error ? err.message : String(err))}`,
+          true,
+        );
+      }
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const generateImageTool = tool(
     'generate_image',
     'Generate an image from a text description and post it into the current conversation. Admin only. ' +
@@ -4222,6 +4574,7 @@ export function buildToolServer(
       createThread,
       archiveThread,
       createEvent,
+      cancelEvent,
       setCommunityGuidelines,
       setWelcomeMessage,
       saveKnowledgeTool,
@@ -4266,6 +4619,9 @@ export function buildToolServer(
       setPolicy,
       redeployBot,
       suggestIssueTool,
+      devTeamDispatch,
+      devTeamStatus,
+      devTeamResult,
       generateImageTool,
     ],
   });
