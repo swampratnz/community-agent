@@ -250,11 +250,13 @@ export const KNOWLEDGE_CONFLICT_CAVEAT_TEXT =
  * it applies to every hit regardless of provenance.
  *
  * `lowRatedCaveat` (issue #337) defaults to `false` and is deliberately
- * opt-in per call site: only the member `sendKnowledgeShortcut` path in
- * router.ts ever computes and passes `true` (behind
- * `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL`), so `knowledge_search`'s
- * model-facing rendering and the gated-guest shortcut — neither of which
- * pass it — stay byte-identical.
+ * opt-in per call site, gated behind `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL`:
+ * the member `sendKnowledgeShortcut` path in router.ts computes and passes it
+ * per #337, and `formatKnowledgeSearchResults` (via its own `lowRatedIds` set,
+ * issue #432) now does too for the `knowledge_search` path — the dominant
+ * answer path, since the shortcut only fires above a strict 0.9-cosine floor.
+ * The gated-guest shortcut still never passes it, so that path's rendering
+ * stays byte-identical.
  *
  * `maxAgeDays` (issue #380) defaults to `config.adminDigest
  * .knowledgeStaleMaxAgeDays` and is threaded straight into `isKnowledgeStale`
