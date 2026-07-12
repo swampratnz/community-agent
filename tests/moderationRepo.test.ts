@@ -16,8 +16,14 @@ const skip = hasDb
   ? false
   : 'DATABASE_URL not set — skipping DB-integration tests (CLAUDE.md: exercise against a local Postgres 16 + pgvector)';
 
-const { addWarning, countActiveWarnings, countMutedMembers, clearWarnings, purgeUserData } =
-  await import('../src/storage/repository.js');
+const {
+  addWarning,
+  countActiveWarnings,
+  countMutedMembers,
+  countStaleMutedMembers,
+  clearWarnings,
+  purgeUserData,
+} = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 
 const RUN = `modwarn-${Date.now()}`;
@@ -313,6 +319,176 @@ test(
     }
   },
 );
+
+test(
+  'countStaleMutedMembers: counts a user whose strikes all aged out of the window (still over the unwindowed limit) while excluding a below-limit user and a user still over the windowed limit (issue #403)',
+  { skip },
+  async () => {
+    const belowLimit = `${RUN}-stale-below`;
+    const currentlyMuted = `${RUN}-stale-current`;
+    const agedOut = `${RUN}-stale-aged-out`;
+    const before = await countStaleMutedMembers('discord', 3, 30);
+
+    try {
+      await addWarning({
+        platform: 'discord',
+        userId: belowLimit,
+        reason: 'x',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: currentlyMuted,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: agedOut,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+      await pool.query(
+        `UPDATE member_warnings SET created_at = now() - interval '31 days'
+          WHERE platform = 'discord' AND user_id = $1`,
+        [agedOut],
+      );
+
+      assert.equal(
+        await countStaleMutedMembers('discord', 3, 30),
+        before + 1,
+        'only the aged-out-but-still-over-the-unwindowed-limit user is counted — the below-limit user ' +
+          'never crosses the limit, and the currently-windowed-muted user belongs to countMutedMembers, not this',
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = ANY($1)`, [
+        [belowLimit, currentlyMuted, agedOut],
+      ]);
+    }
+  },
+);
+
+test(
+  'countStaleMutedMembers: mutually exclusive with countMutedMembers — a user still over the windowed limit is never double-counted by both (issue #403 acceptance criteria)',
+  { skip },
+  async () => {
+    const user = `${RUN}-stale-mutex`;
+    const beforeMuted = await countMutedMembers('discord', 3, 30);
+    const beforeStale = await countStaleMutedMembers('discord', 3, 30);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: user,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+
+      assert.equal(
+        await countMutedMembers('discord', 3, 30),
+        beforeMuted + 1,
+        'the user is currently over the windowed limit, so countMutedMembers counts them',
+      );
+      assert.equal(
+        await countStaleMutedMembers('discord', 3, 30),
+        beforeStale,
+        'the same user must NOT also be counted by countStaleMutedMembers — the two sets are disjoint',
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [user]);
+    }
+  },
+);
+
+test(
+  'countStaleMutedMembers: is an over-approximation — a user whose strikes accrued too slowly to ever cross the windowed limit is still included once their unwindowed count reaches it (issue #403 acceptance criteria #4)',
+  { skip },
+  async () => {
+    const user = `${RUN}-stale-slow-accrual`;
+    const before = await countStaleMutedMembers('discord', 3, 15);
+
+    try {
+      // Two strikes spaced outside a 15-day window, one inside it — spread
+      // wide enough that the windowed count (currently 1) never reaches the
+      // strikeLimit (3) at all, so this user was likely NEVER actually
+      // muted. Their unwindowed total (3) still hits the limit, so this
+      // function counts them anyway — the documented over-approximation.
+      await addWarning({
+        platform: 'discord',
+        userId: user,
+        reason: 'strike-old-1',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+      await addWarning({
+        platform: 'discord',
+        userId: user,
+        reason: 'strike-old-2',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+      await pool.query(
+        `UPDATE member_warnings SET created_at = now() - interval '20 days'
+          WHERE platform = 'discord' AND user_id = $1`,
+        [user],
+      );
+      await addWarning({
+        platform: 'discord',
+        userId: user,
+        reason: 'strike-recent',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+
+      assert.equal(
+        await countActiveWarnings('discord', user, 15),
+        1,
+        'sanity check: the windowed count for this user is 1, well under the limit of 3',
+      );
+      assert.equal(
+        await countStaleMutedMembers('discord', 3, 15),
+        before + 1,
+        'unwindowed count (3) is still at the limit, so this over-approximation counts the user even though ' +
+          'their windowed count never reached the limit — they likely were never actually muted',
+      );
+    } finally {
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [user]);
+    }
+  },
+);
+
+test('countStaleMutedMembers: returns 0 without issuing any DB query when windowDays is undefined (issue #403 acceptance criteria #2)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query', async () => {
+    throw new Error('must not query the database');
+  });
+
+  assert.equal(await countStaleMutedMembers('discord', 3), 0);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'with no window configured, windowed and unwindowed counts are always identical, so this cohort is ' +
+      'provably empty — the function must short-circuit before ever touching the database',
+  );
+});
 
 test(
   'SECURITY: a strike aging out of the configured window is never mutated or cleared — decay only changes what counts as active, never auto-unmutes (clear_warnings is still required)',

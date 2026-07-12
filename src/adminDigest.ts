@@ -13,6 +13,7 @@ import {
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
   countStaleKnowledge,
+  countStaleMutedMembers,
   countStalePendingKnowledgeCandidates,
   listAdmins,
   recentQuestionClusters,
@@ -52,6 +53,17 @@ const SNIPPET_MAX_CHARS = 300;
  * the digest's "muted" can never drift from the actual mute trigger in
  * `moderator.ts` — bare integer only, never a `member_warnings.reason`/
  * `excerpt`/user id/name.
+ * `staleMutedMembersCount` (issue #403) comes from `countStaleMutedMembers`
+ * — members whose UNWINDOWED strike count is still over the limit but whose
+ * WINDOWED count (the same one `mutedMembersCount` uses) has fallen below
+ * it, i.e. `mutedMembersCount`'s own deliberate exclusion once a muted
+ * member's strikes age out of the window. It is an OVER-APPROXIMATION (a
+ * member may satisfy this without ever having actually been muted — see
+ * `countStaleMutedMembers`'s doc comment) so the line hedges with "may still
+ * be muted" and is only appended when it's `> 0`; at `0` (the default
+ * unset-window case, or a window with nothing stale) the muted-members line
+ * is byte-identical to its pre-#403 form. Bare integer only, same privacy
+ * shape as `mutedMembersCount`.
  * `maxTurnsFailuresCount` (issue #371) comes from `countMaxTurnsFailures`,
  * conversation-scoped and windowed identically to `knowledgeGapsCount` —
  * bare integer only, never message content, question text, user id, or
@@ -100,6 +112,11 @@ export function buildAdminDigestMessage(
   // the pending-candidates line is byte-identical to its pre-#398 form.
   pendingKnowledgeCandidatesStaleCount: number = 0,
   knowledgeCandidateStaleDays: number = 0,
+  // Upper-bound count of members who may still be muted despite aging out of
+  // countMutedMembers's windowed definition — reuses that same count's
+  // strikeLimit/windowDays, appended last (not grouped with mutedMembersCount
+  // above) so every existing positional call site is unaffected (issue #403).
+  staleMutedMembersCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -115,7 +132,8 @@ export function buildAdminDigestMessage(
     mutedMembersCount === 0 &&
     maxTurnsFailuresCount === 0 &&
     duplicateKnowledgeCount === 0 &&
-    conflictCandidateCount === 0
+    conflictCandidateCount === 0 &&
+    staleMutedMembersCount === 0
   )
     return null;
 
@@ -189,10 +207,15 @@ export function buildAdminDigestMessage(
     if (leftThisWeek > 0) parts.push(`${leftThisWeek} left`);
     sections.push(`📈 ${parts.join(', ')} this week — run \`list_roster\` for detail.`);
   }
-  if (mutedMembersCount > 0) {
-    // Bare integer only — no member_warnings.reason/excerpt/user_id/name ever reaches the DM (#357).
+  if (mutedMembersCount > 0 || staleMutedMembersCount > 0) {
+    // Bare integers only — no member_warnings.reason/excerpt/user_id/name ever reaches the DM (#357, #403).
+    const staleClause =
+      staleMutedMembersCount > 0
+        ? ` (${staleMutedMembersCount} more may still be muted from an earlier strike that's since aged ` +
+          'out — check moderation_history)'
+        : '';
     sections.push(
-      `🔇 ${mutedMembersCount} member(s) currently muted — run \`moderation_history\` or ` +
+      `🔇 ${mutedMembersCount} member(s) currently muted${staleClause} — run \`moderation_history\` or ` +
         '`clear_warnings` to review.',
     );
   }
@@ -253,6 +276,10 @@ export function buildAdminDigestMessage(
  * (`member_warnings` has no conversation/channel column either), reusing
  * `config.moderation.strikeLimit`/`strikeWindowDays` verbatim so two admins on
  * the same platform always see the same muted-member count (issue #357).
+ * `countStaleMutedMembers(admin.platform, ...)` reuses the identical
+ * `strikeLimit`/`strikeWindowDays` pair alongside it (issue #403) — same
+ * guild-wide-by-platform scoping, and provably a no-op query when
+ * `strikeWindowDays` is unset (the default).
  * `countMaxTurnsFailures(scope, ...)` is conversation-scoped by `scope`
  * (`interactions` has a `conversation_id`), same as `countKnowledgeGaps`
  * (issue #371). `countDuplicateKnowledge()`/`countKnowledgeConflictCandidates()`
@@ -321,6 +348,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         lowRatedKnowledgeCount,
         roster,
         mutedMembersCount,
+        staleMutedMembersCount,
         maxTurnsFailuresCount,
         duplicateKnowledgeCount,
         conflictCandidateCount,
@@ -354,6 +382,14 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         // strikeWindowDays verbatim so "muted" here can never disagree with
         // the actual mute trigger in moderator.ts (issue #357).
         countMutedMembers(admin.platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays),
+        // Same platform/strikeLimit/strikeWindowDays as countMutedMembers just
+        // above — the disjoint, aged-out-but-still-over-the-unwindowed-limit
+        // cohort that count's windowed definition necessarily excludes (#403).
+        countStaleMutedMembers(
+          admin.platform,
+          config.moderation.strikeLimit,
+          config.moderation.strikeWindowDays,
+        ),
         // Conversation-scoped like knowledgeGapsCount (interactions.conversation_id),
         // over the same freshness window (#371).
         countMaxTurnsFailures(scope, FRESHNESS_DAYS),
@@ -387,6 +423,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeStaleMaxAgeDays,
         pendingKnowledgeCandidatesStaleCount,
         knowledgeCandidateStaleDays,
+        staleMutedMembersCount,
       );
       if (!message) {
         ok = true;
@@ -418,10 +455,11 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * plus pending access-request, open-report, pending-suggestion, (when
  * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, pending
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
- * currently-muted-member, near-duplicate-knowledge-pair, and
- * conflict-candidate-knowledge-pair counts (issue #21's deferred proactive
- * follow-up, extended by issue #133, issue #193, issue #199, issue #284,
- * issue #324, issue #344, issue #357, and issue #378) — the same signals
+ * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
+ * knowledge-pair, and conflict-candidate-knowledge-pair counts (issue #21's
+ * deferred proactive follow-up, extended by issue #133, issue #193, issue
+ * #199, issue #284, issue #324, issue #344, issue #357, issue #378, and
+ * issue #403) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/

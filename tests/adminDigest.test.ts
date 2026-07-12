@@ -50,6 +50,7 @@ const {
   rosterCounts,
   addWarning,
   countMutedMembers,
+  countStaleMutedMembers,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -581,6 +582,124 @@ test('SECURITY: the muted-member line is a deterministic function of mutedMember
       !mutedLine(a)!.includes(secretUserId) &&
       !mutedLine(a)!.includes(secretName),
     'SECURITY: no warning reason, excerpt, user id, or member name ever appears in the muted-member line — bare count only',
+  );
+});
+
+test('buildAdminDigestMessage: the stale-muted-member hedge clause appears only when staleMutedMembersCount > 0 — including when mutedMembersCount is itself zero — and all FIFTEEN signals zero -> null (issue #403)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all fifteen signals zero — including the new stale-muted-member upper bound — is a quiet week',
+  );
+
+  // mutedMembersCount > 0, staleMutedMembersCount = 0 (default/unset-window
+  // case) — byte-identical to the pre-#403 bare form.
+  const bare = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0);
+  assert.ok(bare);
+  const bareLine = bare.split('\n').find((l) => l.includes('🔇'));
+  assert.match(
+    bareLine!,
+    /^🔇 4 member\(s\) currently muted — run `moderation_history` or `clear_warnings` to review\.$/,
+    'with nothing stale, the muted-members line is byte-identical to its pre-#403 form',
+  );
+
+  // Both > 0 — the extended, hedged wording.
+  const extended = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 2);
+  assert.ok(extended);
+  const extendedLine = extended.split('\n').find((l) => l.includes('🔇'));
+  assert.match(
+    extendedLine!,
+    /^🔇 4 member\(s\) currently muted \(2 more may still be muted from an earlier strike that's since aged out — check moderation_history\) — run `moderation_history` or `clear_warnings` to review\.$/,
+  );
+
+  // The central case this issue exists to fix: mutedMembersCount is ZERO
+  // (nobody is currently over the windowed limit) but staleMutedMembersCount
+  // is not — this cohort must still surface, not stay invisible.
+  const invisibleCohort = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3);
+  assert.ok(
+    invisibleCohort,
+    'a non-zero stale-muted count alone, even with zero currently-muted members, must still produce a DM',
+  );
+  const invisibleLine = invisibleCohort.split('\n').find((l) => l.includes('🔇'));
+  assert.match(
+    invisibleLine!,
+    /^🔇 0 member\(s\) currently muted \(3 more may still be muted from an earlier strike that's since aged out — check moderation_history\) — run `moderation_history` or `clear_warnings` to review\.$/,
+  );
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('🔇'),
+    'no muted-member line at all when both counts are zero',
+  );
+});
+
+test('SECURITY: the stale-muted-member hedge clause is a deterministic function of staleMutedMembersCount only, and never carries a warning reason, excerpt, user id, or member name (issue #403)', () => {
+  const secretReason = 'bad language ("very identifiable slur")';
+  const secretExcerpt = 'the exact offending message text';
+  const secretUserId = 'discord-user-1122334455';
+  const secretName = 'Very Identifiable Stale Member Name';
+
+  // buildAdminDigestMessage never receives warning row content — only the
+  // bare counts — so there is nothing to smuggle in via an unrelated
+  // parameter either (same shape as the #357 muted-member privacy pin).
+  const a = buildAdminDigestMessage(
+    [{ representative: secretReason, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: secretExcerpt, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+  );
+  assert.ok(a && b);
+  const mutedLine = (m: string) => m.split('\n').find((l) => l.includes('🔇'));
+  assert.equal(
+    mutedLine(a),
+    mutedLine(b),
+    'the stale-muted hedge clause is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    mutedLine(a)!,
+    /^🔇 5 member\(s\) currently muted \(2 more may still be muted from an earlier strike that's since aged out — check moderation_history\) — run `moderation_history` or `clear_warnings` to review\.$/,
+  );
+  assert.ok(
+    !mutedLine(a)!.includes(secretReason) &&
+      !mutedLine(a)!.includes(secretExcerpt) &&
+      !mutedLine(a)!.includes(secretUserId) &&
+      !mutedLine(a)!.includes(secretName),
+    'SECURITY: no warning reason, excerpt, user id, or member name ever appears in the stale-muted hedge clause — bare counts only',
   );
 });
 
@@ -1991,6 +2110,86 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: countStaleMutedMembers(admin.platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays) is wired in — a member whose strikes fully age out of the window drops out of countMutedMembers but still surfaces via the hedged stale sub-clause, even when the base muted count is zero (issue #403 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-stalemuted-admin`;
+    const agedOutUser = `${RUN}-run-stalemuted-user`;
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    config.moderation.strikeWindowDays = 30;
+
+    try {
+      await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+      for (let i = 0; i < config.moderation.strikeLimit; i++) {
+        await addWarning({
+          platform: 'discord',
+          userId: agedOutUser,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+      await pool.query(
+        `UPDATE member_warnings SET created_at = now() - interval '31 days'
+          WHERE platform = 'discord' AND user_id = $1`,
+        [agedOutUser],
+      );
+
+      const expectedMuted = await countMutedMembers(
+        'discord',
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      const expectedStale = await countStaleMutedMembers(
+        'discord',
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      assert.ok(expectedStale >= 1, 'at least the just-backdated aged-out user is counted as stale-muted');
+
+      const sent: Array<{ userId: string; text: string }> = [];
+      const adapter = fakeAdapter({
+        platform: 'discord',
+        conversationIds: [`${RUN}-c-stalemuted-empty`],
+        sent,
+      });
+
+      await runAdminDigestOnce([adapter]);
+
+      assert.equal(
+        sent.length,
+        1,
+        'the stale-muted member alone triggers a digest, even though nobody is currently over the windowed limit',
+      );
+      const mutedLine = sent[0].text.split('\n').find((l) => l.includes('🔇'));
+      assert.ok(mutedLine, 'the muted-member line is present');
+      const match = mutedLine.match(
+        /^🔇 (\d+) member\(s\) currently muted \((\d+) more may still be muted from an earlier strike that's since aged out — check moderation_history\) — run `moderation_history` or `clear_warnings` to review\.$/,
+      );
+      assert.ok(match, `muted line matches the expected hedged format: ${mutedLine}`);
+      assert.equal(Number(match[1]), expectedMuted, 'the base count is exactly countMutedMembers');
+      assert.equal(Number(match[2]), expectedStale, 'the hedge sub-count is exactly countStaleMutedMembers');
+      assert.ok(
+        !sent[0].text.includes(agedOutUser),
+        "SECURITY: the stale-muted member's user id must never appear in the digest DM",
+      );
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+      await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [agedOutUser]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
   },
 );
 

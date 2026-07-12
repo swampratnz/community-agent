@@ -3391,6 +3391,52 @@ export async function countMutedMembers(
 }
 
 /**
+ * Count of distinct members on `platform` whose UNWINDOWED active-strike
+ * count is `>= strikeLimit` but whose WINDOWED active-strike count (the same
+ * `windowDays` bound `countMutedMembers`/`countActiveWarnings` use) is
+ * `< strikeLimit` — the cohort `countMutedMembers`'s windowed definition
+ * necessarily and correctly excludes (issue #357) once enough of a member's
+ * strikes age out of the window that they stop being counted "currently
+ * muted", even though nothing ever unmuted them — there is no auto-unmute;
+ * `clear_warnings` is the only path (docs/SECURITY.md). Mutually exclusive
+ * with `countMutedMembers`'s windowed `>= strikeLimit` set by construction
+ * (issue #403).
+ *
+ * This is an OVER-APPROXIMATION, not a precise "is this member still muted"
+ * signal: mute state is never persisted (there is no `muted_members` table,
+ * only `member_warnings`), and an actual mute only ever fired when a past
+ * scan's WINDOWED count crossed `strikeLimit`. A member whose strikes
+ * accrued slowly enough that the windowed count never crossed the limit at
+ * any scan can still satisfy unwindowed `>= strikeLimit` here despite never
+ * having been muted. Callers must hedge this as "may still be muted", never
+ * assert it as exact.
+ *
+ * Short-circuits to `0` with NO query at all when `windowDays` is
+ * `undefined` — the windowed and unwindowed counts are then always
+ * identical by construction, so this cohort is provably empty, and the
+ * signal is fully inert unless MODERATION_STRIKE_WINDOW_DAYS is configured.
+ * Bound parameters only, same injection posture as `countMutedMembers`.
+ */
+export async function countStaleMutedMembers(
+  platform: string,
+  strikeLimit: number,
+  windowDays?: number,
+): Promise<number> {
+  if (windowDays === undefined) return 0;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM (
+       SELECT user_id FROM member_warnings
+        WHERE platform = $1 AND cleared_at IS NULL
+        GROUP BY user_id
+       HAVING COUNT(*) >= $2
+          AND COUNT(*) FILTER (WHERE created_at >= now() - make_interval(days => $3::int)) < $2
+     ) t`,
+    [platform, strikeLimit, windowDays],
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
  * Clear all of a member's active warnings (an admin action), stamping who
  * cleared them and when. Returns the number of strikes cleared, so the caller
  * can tell "actually unblocked them" from "they had nothing to clear".
