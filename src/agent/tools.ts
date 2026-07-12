@@ -1230,26 +1230,49 @@ export function devTeamScrub(s: string): string {
   return redactSecrets(s, known).slice(0, DEV_TEAM_CHAT_CAP);
 }
 
+/**
+ * Neutralize a short remote-derived identifier field (job id, mode, repo,
+ * state) before splicing it into model-visible tool text: the contract says
+ * these are plain slugs/enums, but nothing client-side enforces that a
+ * hostile/compromised service didn't put instruction text or newlines in
+ * them. Free-TEXT service fields (errors, progress, report prose) get the
+ * full `untrusted()` quarantine instead — this lighter strip keeps the
+ * status/list lines readable while closing the same injection class.
+ */
+function devTeamField(v: string | number | null | undefined): string {
+  return String(v ?? '').replace(/[<>\r\n]/g, ' ');
+}
+
 /** One-job status, formatted for chat (TEXT-only; works on Discord and WhatsApp). */
 export function formatDevTeamJobStatus(s: JobStatus): string {
-  const lines = [`Job ${s.id} — ${s.mode} on ${s.repo}: ${s.state}`];
-  if (s.started) lines.push(`started ${s.started}`);
-  if (s.ended) lines.push(`ended ${s.ended}`);
+  const lines = [
+    `Job ${devTeamField(s.id)} — ${devTeamField(s.mode)} on ${devTeamField(s.repo)}: ${devTeamField(s.state)}`,
+  ];
+  if (s.started) lines.push(`started ${devTeamField(s.started)}`);
+  if (s.ended) lines.push(`ended ${devTeamField(s.ended)}`);
   if (typeof s.cost_usd === 'number') lines.push(`cost $${s.cost_usd.toFixed(2)}`);
-  if (s.error) lines.push(`error: ${s.error}`);
+  // Service-originated free text is quarantined exactly like web-search and
+  // recalled-message content elsewhere in this file: a hostile assessed repo
+  // (or a compromised service) can write anything into these fields, and it
+  // must land in the model's context as labelled data, never as instructions.
+  if (s.error) lines.push(untrusted('dev-team service error', s.error));
   const recent = (s.progress ?? []).slice(-5);
   if (recent.length > 0) {
-    lines.push('recent progress:');
-    for (const p of recent) lines.push(`- [${p.stage}] ${p.role}: ${p.message}`);
+    lines.push(
+      untrusted(
+        'recent dev-team progress',
+        recent.map((p) => `[${p.stage}] ${p.role}: ${p.message}`).join(' | '),
+      ),
+    );
   }
   return lines.join('\n');
 }
 
 /** One line per recent job for the no-id `dev_team_status` listing. */
 export function formatDevTeamJobListEntry(j: JobListEntry): string {
-  const started = j.started ? `, started ${j.started}` : '';
-  const ended = j.ended ? `, ended ${j.ended}` : '';
-  return `- ${j.id} (${j.mode}, ${j.repo}): ${j.state}${started}${ended}`;
+  const started = j.started ? `, started ${devTeamField(j.started)}` : '';
+  const ended = j.ended ? `, ended ${devTeamField(j.ended)}` : '';
+  return `- ${devTeamField(j.id)} (${devTeamField(j.mode)}, ${devTeamField(j.repo)}): ${devTeamField(j.state)}${started}${ended}`;
 }
 
 /**
@@ -1257,25 +1280,38 @@ export function formatDevTeamJobListEntry(j: JobListEntry): string {
  * shapes: a failed job (`success:false` + `error`), a succeeded assess
  * (classification + executive summary + the top of the report), and a
  * succeeded deliver (outcome + summary). The full artifact always lives on the
- * dashboard — chat gets a capped digest only.
+ * dashboard — chat gets a capped digest only. All service-originated prose is
+ * `untrusted()`-quarantined: an assessment report is generated FROM the
+ * assessed repository's own content, so a hostile repo can plant instruction
+ * text in it (the classic indirect-prompt-injection path into a
+ * super-admin-privileged turn).
  */
 export function formatDevTeamJobResult(r: JobResult): string {
   if (r.success === false) {
     const cost = typeof r.cost_usd === 'number' ? ` (cost $${r.cost_usd.toFixed(2)})` : '';
-    return `Job ${r.kind || 'run'} failed: ${r.error ?? 'unknown error'}${cost}`;
+    return `Job ${devTeamField(r.kind) || 'run'} failed${cost}.\n${untrusted(
+      'dev-team service error',
+      r.error ?? 'unknown error',
+    )}`;
   }
   const cost = typeof r.cost_usd === 'number' ? `\ncost $${r.cost_usd.toFixed(2)}` : '';
   if (r.kind === 'assess') {
-    const parts = [`Assessment: ${r.classification ?? 'unclassified'}`];
-    if (r.executive_summary) parts.push('', r.executive_summary);
-    if (r.report_markdown) parts.push('', r.report_markdown.slice(0, 800));
+    const parts = [untrusted('assessment classification', r.classification ?? 'unclassified')];
+    if (r.executive_summary) {
+      parts.push('', untrusted('assessment executive summary', r.executive_summary));
+    }
+    if (r.report_markdown) {
+      parts.push('', untrusted('assessment report (top)', r.report_markdown.slice(0, 800)));
+    }
     parts.push('', 'Full report on the dashboard.' + cost);
     return parts.join('\n');
   }
   // deliver (or any other succeeded kind)
-  const parts = [`Delivery (${r.kind}): succeeded`];
-  if (r.classification) parts.push(`outcome: ${r.classification}`);
-  if (r.executive_summary) parts.push('', r.executive_summary);
+  const parts = [`Delivery (${devTeamField(r.kind)}): succeeded`];
+  if (r.classification) parts.push(untrusted('delivery outcome', r.classification));
+  if (r.executive_summary) {
+    parts.push('', untrusted('delivery summary', r.executive_summary));
+  }
   parts.push('', 'Full report on the dashboard.' + cost);
   return parts.join('\n');
 }

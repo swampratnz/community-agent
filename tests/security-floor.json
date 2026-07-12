@@ -24,7 +24,7 @@
   "contextExport.test.ts": 4,
   "createThreadModerationGuard.test.ts": 2,
   "devTeamClient.test.ts": 3,
-  "devTeamTools.test.ts": 2,
+  "devTeamTools.test.ts": 5,
   "devTeamWatch.test.ts": 4,
   "discordAdapter.test.ts": 39,
   "discordThreadArchive.test.ts": 1,
