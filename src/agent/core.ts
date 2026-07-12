@@ -16,7 +16,7 @@ import {
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
-import { buildToolServer } from './tools.js';
+import { buildToolServer, type ToolServerTurnState } from './tools.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
@@ -59,6 +59,23 @@ export interface AgentReply {
    * code-policy note.
    */
   languagePreference?: LanguagePreference;
+  /**
+   * Best-effort correlation with the most recent `knowledge_search` call in
+   * this turn that had a hit clear `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`
+   * (issue #411) — the id of that call's top-scoring hit, threaded from
+   * `TurnOutcome.knowledgeEntryId` via the same turn-scoped-ref pattern
+   * `buildToolServer` already uses. This is a correlation, not a guarantee:
+   * it names the last qualifying `knowledge_search` call in the turn, not
+   * necessarily the entry the model's final reply actually drew from.
+   * `undefined` whenever no call in the turn had a qualifying hit, or the
+   * turn didn't end in a genuine success (`TurnOutcome.ok === true`) — never
+   * a stale id left over from an earlier failed attempt. The router's normal
+   * outbound-recording path (router.ts) writes this into the same
+   * `meta.knowledgeEntryId` key the deterministic knowledge-shortcut path
+   * already stamps, so both paths feed the same admin aggregation
+   * (`list_low_rated_knowledge` / `list_answer_feedback`).
+   */
+  knowledgeEntryId?: number;
 }
 
 /**
@@ -121,6 +138,7 @@ interface TurnOutcome {
   costUsd?: number;
   sessionId?: string;
   maxTurnsExceeded?: boolean;
+  knowledgeEntryId?: number;
 }
 
 /**
@@ -283,6 +301,7 @@ export async function runAgentTurn(
     ok: outcome.ok,
     maxTurnsExceeded: outcome.maxTurnsExceeded,
     languagePreference,
+    knowledgeEntryId: outcome.knowledgeEntryId,
   };
 }
 
@@ -350,7 +369,12 @@ async function execTurn(
   resumeSession: string | null,
   getAdapter?: AdapterLookup,
 ): Promise<TurnOutcome> {
-  const toolServer = buildToolServer(caller, adapter, getAdapter);
+  // Turn-scoped ref (issue #411): the knowledge_search handler writes the
+  // top-scoring id of its most recent qualifying hit here; read back below
+  // only on the genuine-success path (never on a thrown-error or non-success
+  // result, so a fallback/error reply can never carry a stale correlation).
+  const turnState: ToolServerTurnState = { lastKnowledgeHitId: null };
+  const toolServer = buildToolServer(caller, adapter, getAdapter, turnState);
 
   // Text of the assistant message currently being streamed. Reset per
   // assistant message so tool-use narration from earlier turns never leaks
@@ -444,5 +468,12 @@ async function execTurn(
 
   noteUsageLimitOutcome(false, adapter, caller.conversationId, getAdapter);
   const text = resultText.trim() || lastAssistantText.trim() || "I don't have a response for that.";
-  return { ok: true, resumeFailed: false, text, costUsd, sessionId };
+  return {
+    ok: true,
+    resumeFailed: false,
+    text,
+    costUsd,
+    sessionId,
+    ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
+  };
 }

@@ -5561,6 +5561,66 @@ test(
   },
 );
 
+// End-to-end aggregation for issue #411's normal (non-shortcut) knowledge_search
+// path: before #411, only sendKnowledgeShortcut ever stamped meta.knowledgeEntryId,
+// so an unhelpfully-rated answer served via the model-mediated knowledge_search
+// tool was structurally invisible to this aggregation no matter how it was
+// rated. The fix is entirely in what router.ts/core.ts/tools.ts WRITE to
+// meta — this query and its JOIN/WHERE clause are unchanged (the proposal's
+// whole point) — so this test proves that reach by recording an outbound
+// interaction with knowledgeEntryId set but WITHOUT knowledgeShortcut: true
+// (the shape the new normal-path recording now produces) and confirming it
+// is aggregated exactly like a shortcut-served one.
+test(
+  'repository: listKnowledgeFeedbackSummary / list_low_rated_knowledge now aggregate an unhelpfully-rated answer served via the normal (non-shortcut) knowledge_search path (issue #411, acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-knowledge-feedback-normal-path`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} normal-path entry content`,
+      title: `${RUN} normal-path entry`,
+    });
+
+    async function rateNormalPath(userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-normal-path-${userSuffix}`;
+      // The shape the router's normal outbound-recording path now produces
+      // (router.ts): knowledgeEntryId present, but no knowledgeShortcut flag
+      // at all — this is what distinguishes it from sendKnowledgeShortcut's
+      // meta and from a pre-#411 plain reply that carried neither.
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `model-mediated answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users = [
+      await rateNormalPath('u1', false),
+      await rateNormalPath('u2', false),
+      await rateNormalPath('u3', true),
+    ];
+
+    const summary = await listKnowledgeFeedbackSummary([conversationId]);
+    const row = summary.find((s) => s.knowledgeEntryId === entryId);
+    assert.ok(
+      row,
+      'an entry whose only ratings came via the normal knowledge_search path must now be aggregated',
+    );
+    assert.equal(row?.unhelpfulCount, 2);
+    assert.equal(row?.helpfulCount, 1);
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
 test(
   'SECURITY: repository: listKnowledgeFeedbackSummary scopes by conversation — a rating recorded outside the calling admin scope is excluded from the aggregate entirely, while a null (super admin) scope sees it',
   { skip },

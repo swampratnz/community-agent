@@ -114,6 +114,9 @@ const { superAdminIds } = await import('../src/auth/roles.js');
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const KNOWLEDGE_GAP_HANDLER_SCOPE = `${RUN}-knowledge-gap-handler`;
+const KNOWLEDGE_ENTRY_ID_TURN_STATE_SCOPE = `${RUN}-knowledge-entry-id-turn-state`;
+const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A = `${RUN}-knowledge-entry-id-scope-leak-a`;
+const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B = `${RUN}-knowledge-entry-id-scope-leak-b`;
 const KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-knowledge-lexical-not-invoked`;
 const KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-knowledge-lexical-fallback`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
@@ -5091,6 +5094,137 @@ test(
     );
     assert.equal(rows.length, 1);
     assert.equal(rows[0].query_text, 'what time does the ferry to Waiheke leave on Saturdays');
+  },
+);
+
+test(
+  'knowledge_search tool handler writes the top-scoring qualifying hit id into turnState.lastKnowledgeHitId, and a later below-floor call does not clear it (issue #411, acceptance criterion 3)',
+  { skip },
+  async () => {
+    const uniqueTitle = `Frobnicate setup guide ${RUN}`;
+    const { id: relevantId } = await saveKnowledge({
+      title: uniqueTitle,
+      content: 'To set up Frobnicate, install the CLI and run frobnicate init in your project root.',
+      scope: KNOWLEDGE_ENTRY_ID_TURN_STATE_SCOPE,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: KNOWLEDGE_ENTRY_ID_TURN_STATE_SCOPE,
+    };
+    const turnState: { lastKnowledgeHitId: number | null } = { lastKnowledgeHitId: null };
+    const server = buildToolServer(caller, adapter, undefined, turnState);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    await registeredTool.handler({ query: 'how do I set up Frobnicate' });
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      relevantId,
+      'a qualifying call must write its top-scoring hit id into turnState',
+    );
+
+    // A second, unrelated call in the same "turn" whose only in-scope entry
+    // falls below the relevance floor must NOT clobber the first id with
+    // null — the last QUALIFYING call wins, not simply the last call.
+    await registeredTool.handler({ query: 'what time does the ferry to Waiheke leave on Saturdays' });
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      relevantId,
+      'a later below-floor call must not clear an earlier qualifying turnState id',
+    );
+  },
+);
+
+test(
+  'knowledge_search tool handler leaves turnState.lastKnowledgeHitId null when buildToolServer was called with no turnState at all (issue #411)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: KNOWLEDGE_ENTRY_ID_TURN_STATE_SCOPE,
+    };
+    // No turnState argument at all — every existing buildToolServer(caller,
+    // adapter) call site in this file must keep compiling and behaving
+    // unchanged.
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    // Must not throw just because there's no turnState ref to write into.
+    await registeredTool.handler({ query: 'how do I set up Frobnicate' });
+  },
+);
+
+test(
+  'SECURITY: knowledge_search turnState correlation never crosses conversation scope — a call from a conversation with no matching entry never picks up another conversation-scoped entry id (issue #411, acceptance criterion 6)',
+  { skip },
+  async () => {
+    const sharedContent = `${RUN} scope-leak entry: the annual gala is held in November`;
+    const { id: scopedEntryId } = await saveKnowledge({
+      content: sharedContent,
+      scope: KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    // Caller is scoped to conversation B, which has no knowledge entries of
+    // its own — conversation A's entry must never be visible here, and so
+    // must never be written into this caller's turnState either.
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'member-1',
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B,
+    };
+    const turnState: { lastKnowledgeHitId: number | null } = { lastKnowledgeHitId: null };
+    const server = buildToolServer(caller, adapter, undefined, turnState);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { query: string }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['knowledge_search'];
+
+    await registeredTool.handler({ query: sharedContent });
+    assert.notEqual(
+      turnState.lastKnowledgeHitId,
+      scopedEntryId,
+      'SECURITY: an out-of-scope entry must never be written into this caller turnState',
+    );
+    assert.equal(
+      turnState.lastKnowledgeHitId,
+      null,
+      'no in-scope entry exists for this caller, so turnState must stay null',
+    );
   },
 );
 
