@@ -1242,6 +1242,50 @@ export async function countKnowledgeConflictCandidates(scope?: string): Promise<
 }
 
 /**
+ * Live-path conflict check (issue #389) for the exact set of ids
+ * `knowledge_search` is about to serve in one answer — the real-time
+ * backstop for the gap #330 (pull-only admin audit) and #378 (weekly digest
+ * count) both leave open between an entry being saved and an admin's next
+ * audit pass. Same technique, band, NULL-embedding exclusion, AND same-scope
+ * join predicate as `listKnowledgeConflictCandidates`/
+ * `countKnowledgeConflictCandidates` (same `[KNOWLEDGE_CONFLICT_SIMILARITY_MIN,
+ * KNOWLEDGE_CONFLICT_SIMILARITY_MAX)` half-open band, `1 - (a.embedding <=>
+ * b.embedding)` measure, `a.id < b.id AND a.scope = b.scope` pairing), but
+ * restricted to `a.id = ANY($1) AND b.id = ANY($1)` instead of a full-table
+ * self-join, and `LIMIT 1` since the caller only needs a boolean, not the
+ * pair(s) themselves.
+ *
+ * The `a.scope = b.scope` predicate is required here, not redundant:
+ * `searchKnowledge` queries `WHERE scope IN ('global', platform,
+ * conversationId)` in one call, so `ids` can span multiple scopes. A
+ * conversation-specific override of a global/platform entry (an intended,
+ * supported pattern per `save_knowledge`'s own scope docs) is typically
+ * topically similar to the entry it supersedes and would otherwise be
+ * misflagged as a conflict rather than recognised as a deliberate override
+ * (review on #393).
+ *
+ * Short-circuits to `false` with zero SQL queries when `ids.length < 2` —
+ * there is nothing to compare, and the caller (`knowledgeSearch` in
+ * tools.ts) already gates on this, but the guard lives here too so this
+ * function is safe to call directly without relying on that.
+ */
+export async function hasConflictAmongIds(ids: number[]): Promise<boolean> {
+  if (ids.length < 2) return false;
+  const { rows } = await pool.query(
+    `SELECT 1
+       FROM knowledge a
+       JOIN knowledge b ON a.id < b.id AND a.scope = b.scope
+      WHERE a.id = ANY($1) AND b.id = ANY($1)
+        AND a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+        AND 1 - (a.embedding <=> b.embedding) >= $2
+        AND 1 - (a.embedding <=> b.embedding) < $3
+      LIMIT 1`,
+    [ids, KNOWLEDGE_CONFLICT_SIMILARITY_MIN, KNOWLEDGE_CONFLICT_SIMILARITY_MAX],
+  );
+  return rows.length > 0;
+}
+
+/**
  * Upsert a `global`-scoped knowledge entry keyed by exact title. Used by the
  * daily knowledge refresh (src/context/knowledgeRefresh.ts): each fixed topic
  * has a stable title, so this refreshes the SAME row every run rather than

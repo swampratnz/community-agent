@@ -45,6 +45,7 @@ const {
   listKnowledgeConflictCandidates,
   countDuplicateKnowledge,
   countKnowledgeConflictCandidates,
+  hasConflictAmongIds,
   countPendingKnowledgeCandidates,
   countStalePendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
@@ -1149,6 +1150,112 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[xAnchorId, xMidBandId, yMidBandId]]);
   },
 );
+
+test(
+  'repository: hasConflictAmongIds returns true for a mid-band pair among the given ids, false when the only pair is below the floor, and false when the only pair is a near-duplicate at/above the ceiling (issue #389)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-has-conflict-scope`;
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+
+    // similarity to anchor = 0.7 — inside [0.55, 0.92)
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    // similarity to anchor = 0.95 — at/above the near-duplicate ceiling, must not count
+    const nearDupVec = new Array(dim).fill(0);
+    nearDupVec[0] = 0.95;
+    nearDupVec[2] = Math.sqrt(1 - 0.95 ** 2);
+
+    // orthogonal to anchor (similarity 0) — below the conflict floor
+    const unrelatedVec = new Array(dim).fill(0);
+    unrelatedVec[3] = 1;
+
+    const anchorId = await insertKnowledgeWithEmbedding(scope, 'anchor entry', anchorVec);
+    const midBandId = await insertKnowledgeWithEmbedding(scope, 'mid-band entry', midBandVec);
+    const nearDupId = await insertKnowledgeWithEmbedding(scope, 'near-dup entry', nearDupVec);
+    const unrelatedId = await insertKnowledgeWithEmbedding(scope, 'unrelated entry', unrelatedVec);
+
+    assert.equal(
+      await hasConflictAmongIds([anchorId, midBandId]),
+      true,
+      'a pair inside the [0.55, 0.92) band among the given ids is a conflict',
+    );
+    assert.equal(
+      await hasConflictAmongIds([anchorId, unrelatedId]),
+      false,
+      'a pair below the conflict floor is not a conflict',
+    );
+    assert.equal(
+      await hasConflictAmongIds([anchorId, nearDupId]),
+      false,
+      'a pair at/above the near-duplicate ceiling is not a conflict candidate — owned by listDuplicateKnowledge',
+    );
+    assert.equal(
+      await hasConflictAmongIds([anchorId, midBandId, unrelatedId]),
+      true,
+      'a conflicting pair is found even alongside an unrelated third id',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [anchorId, midBandId, nearDupId, unrelatedId],
+    ]);
+  },
+);
+
+test(
+  'repository: hasConflictAmongIds does not flag a mid-band-similar pair as a conflict when the two entries are in DIFFERENT scopes — a conversation-scoped override of a global entry is an intended pattern, not a conflict (review on #393)',
+  { skip },
+  async () => {
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+
+    // similarity to anchor = 0.7 — inside [0.55, 0.92), same as the
+    // same-scope mid-band case above, but this time the two entries live in
+    // different scopes.
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    const globalId = await insertKnowledgeWithEmbedding(
+      'global',
+      `${RUN}-cross-scope global entry`,
+      anchorVec,
+    );
+    const conversationId = await insertKnowledgeWithEmbedding(
+      `${RUN}-cross-scope-conversation`,
+      `${RUN}-cross-scope conversation override`,
+      midBandVec,
+    );
+
+    assert.equal(
+      await hasConflictAmongIds([globalId, conversationId]),
+      false,
+      'a mid-band-similar pair across different scopes must not be flagged — it is a supported scope override, ' +
+        'not a conflict admins need to reconcile',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[globalId, conversationId]]);
+  },
+);
+
+test('SECURITY: repository: hasConflictAmongIds issues zero SQL queries and returns false when fewer than 2 ids are given (issue #389)', async (t) => {
+  const calls: unknown[] = [];
+  t.mock.method(pool, 'query', (...args: unknown[]) => {
+    calls.push(args);
+    throw new Error('pool.query must not be called for fewer than 2 ids');
+  });
+
+  assert.equal(await hasConflictAmongIds([]), false);
+  assert.equal(await hasConflictAmongIds([1]), false);
+  assert.equal(calls.length, 0, 'hasConflictAmongIds must not query the database for fewer than 2 ids');
+});
 
 test(
   'repository: knowledge candidate CRUD — insert is pending, list filters by status, accept publishes via saveKnowledge (propagating the #93 duplicate nudge) and marks accepted, decline retains the row as declined and never touches knowledge (issue #102)',
