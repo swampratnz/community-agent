@@ -4023,10 +4023,14 @@ function mapKnowledgeFeedbackSummary(r: {
  * `conversation_id = ANY($1)` scope filter (null = super admin, unrestricted)
  * `listAnswerFeedback` already uses, so an admin never counts a rating from a
  * conversation they don't participate in. Ratings on interactions with no
- * `knowledgeEntryId` (not served via the deterministic knowledge shortcut)
- * never join to a `knowledge` row and are therefore never counted. Only
- * entries with `unhelpfulCount >= minUnhelpful` are returned, sorted by
- * `unhelpfulCount` descending.
+ * `knowledgeEntryId` never join to a `knowledge` row and are therefore never
+ * counted. `knowledgeEntryId` is written both by the deterministic knowledge
+ * shortcut (exact match) and, since issue #411, best-effort by the normal
+ * model-mediated `knowledge_search` path — a correlation with the most
+ * recent qualifying hit in the turn, not a guarantee the model's reply
+ * actually drew from that entry (see `AgentReply.knowledgeEntryId` in
+ * `agent/core.ts`). Only entries with `unhelpfulCount >= minUnhelpful` are
+ * returned, sorted by `unhelpfulCount` descending.
  */
 export async function listKnowledgeFeedbackSummary(
   conversationIds: readonly string[] | null,
