@@ -1207,6 +1207,44 @@ test(
   },
 );
 
+test(
+  'repository: hasConflictAmongIds does not flag a mid-band-similar pair as a conflict when the two entries are in DIFFERENT scopes — a conversation-scoped override of a global entry is an intended pattern, not a conflict (review on #393)',
+  { skip },
+  async () => {
+    const dim = config.db.embeddingDim;
+
+    const anchorVec = new Array(dim).fill(0);
+    anchorVec[0] = 1;
+
+    // similarity to anchor = 0.7 — inside [0.55, 0.92), same as the
+    // same-scope mid-band case above, but this time the two entries live in
+    // different scopes.
+    const midBandVec = new Array(dim).fill(0);
+    midBandVec[0] = 0.7;
+    midBandVec[1] = Math.sqrt(1 - 0.7 ** 2);
+
+    const globalId = await insertKnowledgeWithEmbedding(
+      'global',
+      `${RUN}-cross-scope global entry`,
+      anchorVec,
+    );
+    const conversationId = await insertKnowledgeWithEmbedding(
+      `${RUN}-cross-scope-conversation`,
+      `${RUN}-cross-scope conversation override`,
+      midBandVec,
+    );
+
+    assert.equal(
+      await hasConflictAmongIds([globalId, conversationId]),
+      false,
+      'a mid-band-similar pair across different scopes must not be flagged — it is a supported scope override, ' +
+        'not a conflict admins need to reconcile',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[globalId, conversationId]]);
+  },
+);
+
 test('SECURITY: repository: hasConflictAmongIds issues zero SQL queries and returns false when fewer than 2 ids are given (issue #389)', async (t) => {
   const calls: unknown[] = [];
   t.mock.method(pool, 'query', (...args: unknown[]) => {
