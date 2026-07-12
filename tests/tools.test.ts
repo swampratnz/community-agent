@@ -2016,28 +2016,44 @@ test('SECURITY: redeploy_bot handler refuses a direct call from an admin caller 
 // (which runs BEFORE the enabled gate) and the friendly disabled message. The
 // deliver-CONFIRM behaviour, which needs the feature ENABLED, is covered in
 // its own process in tests/devTeamTools.test.ts.
-for (const toolName of ['dev_team_dispatch', 'dev_team_status', 'dev_team_result'] as const) {
-  test(`SECURITY: ${toolName} handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)`, async () => {
-    const adapter = stubAdapter(async () => {});
-    const caller = {
-      platform: 'discord' as const,
-      userId: 'admin-1',
-      userName: 'Admin',
-      role: 'admin' as const,
-      conversationId: `convo-${toolName}-admin`,
-    };
-    const server = buildToolServer(caller, adapter);
-    const registeredTool = (
-      server.instance as unknown as {
-        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
-      }
-    )._registeredTools[toolName];
-    await assert.rejects(
-      () => registeredTool.handler({ id: 'j1', mode: 'assess', repo: 'o/r' }),
-      /Permission denied/,
-    );
-  });
+// SECURITY test names must be STATIC string literals — the security gate's
+// scan counts source occurrences, not runtime test instances, so a loop that
+// mints N tests from one literal silently under-counts the manifest (PR #421
+// review round 4). One helper, three static declarations.
+async function assertDevTeamAdminRejected(
+  toolName: 'dev_team_dispatch' | 'dev_team_status' | 'dev_team_result',
+): Promise<void> {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: `convo-${toolName}-admin`,
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+    }
+  )._registeredTools[toolName];
+  await assert.rejects(
+    () => registeredTool.handler({ id: 'j1', mode: 'assess', repo: 'o/r' }),
+    /Permission denied/,
+  );
 }
+
+test('SECURITY: dev_team_dispatch handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)', async () => {
+  await assertDevTeamAdminRejected('dev_team_dispatch');
+});
+
+test('SECURITY: dev_team_status handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)', async () => {
+  await assertDevTeamAdminRejected('dev_team_status');
+});
+
+test('SECURITY: dev_team_result handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)', async () => {
+  await assertDevTeamAdminRejected('dev_team_result');
+});
 
 test('dev_team_dispatch returns a friendly disabled message (not an error throw) when DEV_TEAM_ENABLED is off', async () => {
   const adapter = stubAdapter(async () => {});
