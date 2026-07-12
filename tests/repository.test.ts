@@ -54,6 +54,7 @@ const {
   recentQuestionClusters,
   recentKnowledgeGapClusters,
   recordKnowledgeGap,
+  countKnowledgeGaps,
   KNOWLEDGE_GAP_DAILY_LIMIT,
   recentModerationEntries,
   usageStats,
@@ -2048,6 +2049,273 @@ test(
     assert.equal(otherRows.rows.length, 1, "another user's knowledge_gaps rows are untouched");
 
     await pool.query(`DELETE FROM knowledge_gaps WHERE user_id = $1`, [otherUser]);
+  },
+);
+
+test(
+  'repository: saveKnowledge resolves a matching unresolved knowledge_gaps row once the new entry clears the relevance floor (issue #422)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-resolve-save`;
+    const userId = `${RUN}-gap-resolve-save-user`;
+    // No title on either side, so saveKnowledge embeds this exact string —
+    // identical to what recordKnowledgeGap embedded for the gap query — for
+    // a deterministic same-vector match (similarity 1.0) instead of relying
+    // on the embedding model's semantic judgement of a paraphrase.
+    const matchingQuery = `${RUN} how do I reset my zylotrix session`;
+    const unrelatedQuery = `${RUN} what time is the community bake sale`;
+
+    const matchingGap = await recordKnowledgeGap('discord', conversationId, userId, matchingQuery);
+    const unrelatedGap = await recordKnowledgeGap('discord', conversationId, userId, unrelatedQuery);
+    assert.ok(matchingGap !== 'rate_limited' && unrelatedGap !== 'rate_limited', 'fixture gaps recorded');
+
+    const { id: knowledgeId } = await saveKnowledge({ content: matchingQuery });
+
+    const { rows } = await pool.query(`SELECT id, resolved_at FROM knowledge_gaps WHERE id = ANY($1)`, [
+      [matchingGap.id, unrelatedGap.id],
+    ]);
+    const matchingRow = rows.find((r) => Number(r.id) === matchingGap.id);
+    const unrelatedRow = rows.find((r) => Number(r.id) === unrelatedGap.id);
+    assert.ok(matchingRow?.resolved_at, 'the gap the new entry now confidently answers is marked resolved');
+    assert.equal(
+      unrelatedRow?.resolved_at,
+      null,
+      'an unrelated standing gap is left untouched by an unrelated save',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  'repository: updateKnowledge resolves a standing gap when the edited content newly clears the relevance floor (issue #422)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-resolve-update`;
+    const userId = `${RUN}-gap-resolve-update-user`;
+    const gapQuery = `${RUN} how do I link my whatsapp account`;
+
+    const gap = await recordKnowledgeGap('discord', conversationId, userId, gapQuery);
+    assert.ok(gap !== 'rate_limited', 'fixture gap recorded');
+
+    const { id: knowledgeId } = await saveKnowledge({
+      content: `${RUN} the quarterly bake sale raises funds for the youth choir`,
+    });
+    const afterSave = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [gap.id]);
+    assert.equal(
+      afterSave.rows[0].resolved_at,
+      null,
+      "an entry that doesn't answer the gap's query leaves it unresolved",
+    );
+
+    const updated = await updateKnowledge({ id: knowledgeId, content: gapQuery });
+    assert.ok(updated, 'update applied');
+
+    const afterUpdate = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [gap.id]);
+    assert.ok(
+      afterUpdate.rows[0].resolved_at,
+      'editing the entry to now confidently answer the query resolves the standing gap',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  "SECURITY: repository: unreviewed 'auto' provenance never resolves a knowledge_gaps row — only a 'docs' backfill or a human-authored entry may, even when the content clears the relevance floor (issue #422)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-resolve-auto`;
+    const userId = `${RUN}-gap-resolve-auto-user`;
+    const autoQuery = `${RUN} how do I configure the zylotrix webhook`;
+    const docsQuery = `${RUN} how do I rotate the zylotrix api key`;
+
+    const autoGap = await recordKnowledgeGap('discord', conversationId, userId, autoQuery);
+    const docsGap = await recordKnowledgeGap('discord', conversationId, userId, docsQuery);
+    assert.ok(autoGap !== 'rate_limited' && docsGap !== 'rate_limited', 'fixture gaps recorded');
+
+    // 'auto' (unreviewed web-research) content matching a gap must NOT
+    // resolve it, even though it clears the relevance floor.
+    const { id: autoId } = await saveKnowledge({ content: autoQuery, createdByRole: 'auto' });
+    const afterAutoSave = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
+      autoGap.id,
+    ]);
+    assert.equal(
+      afterAutoSave.rows[0].resolved_at,
+      null,
+      "SECURITY: an 'auto'-provenance save must never resolve a matching gap",
+    );
+
+    // Editing that same 'auto' row (e.g. the daily refresh's updateKnowledge
+    // call) must also not resolve gaps — created_by_role never changes.
+    const autoUpdated = await updateKnowledge({ id: autoId, content: `${autoQuery} refreshed` });
+    assert.ok(autoUpdated, 'update applied');
+    const afterAutoUpdate = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
+      autoGap.id,
+    ]);
+    assert.equal(
+      afterAutoUpdate.rows[0].resolved_at,
+      null,
+      "SECURITY: updating an 'auto'-provenance row must never resolve a gap either",
+    );
+
+    // A trusted 'docs' backfill matching a different gap DOES resolve it —
+    // the gate is provenance-specific, not a blanket disable.
+    const { id: docsId } = await saveKnowledge({ content: docsQuery, createdByRole: 'docs' });
+    const afterDocsSave = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
+      docsGap.id,
+    ]);
+    assert.ok(afterDocsSave.rows[0].resolved_at, "a trusted 'docs'-provenance save still resolves a gap");
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, docsId]]);
+  },
+);
+
+test(
+  "SECURITY: repository: knowledge-gap resolution scope filter mirrors searchKnowledge's visibility model — a conversation-scoped entry resolves only gaps on the same platform AND conversation, a platform-scoped entry resolves only gaps on that platform, and neither ever crosses conversation or platform boundaries (issue #422)",
+  { skip },
+  async () => {
+    const convA = `${RUN}-c-gap-scope-a`;
+    const convB = `${RUN}-c-gap-scope-b`;
+    const userId = `${RUN}-gap-resolve-scope-user`;
+    const convQuery = `${RUN} conversation-scoped gap resolution query`;
+
+    // Same query text on three different (platform, conversation) shapes —
+    // deterministic identical embeddings, so any resolution difference
+    // between them is purely down to the scope filter, not embedding noise.
+    const sameConvSamePlatform = await recordKnowledgeGap('discord', convA, userId, convQuery);
+    const diffConvSamePlatform = await recordKnowledgeGap('discord', convB, userId, convQuery);
+    // Same conversation id string as convA, but a DIFFERENT platform — the
+    // cross-platform collision this AC specifically requires guarding
+    // against (a real conversation id is very unlikely to collide across
+    // platforms, but the resolve path must not rely on that).
+    const sameConvDiffPlatform = await recordKnowledgeGap('whatsapp', convA, userId, convQuery);
+    assert.ok(
+      sameConvSamePlatform !== 'rate_limited' &&
+        diffConvSamePlatform !== 'rate_limited' &&
+        sameConvDiffPlatform !== 'rate_limited',
+      'fixture gaps recorded',
+    );
+
+    const { id: convScopedId } = await saveKnowledge({
+      content: convQuery,
+      scope: convA,
+      callerPlatform: 'discord',
+    });
+
+    const convRows = await pool.query(`SELECT id, resolved_at FROM knowledge_gaps WHERE id = ANY($1)`, [
+      [sameConvSamePlatform.id, diffConvSamePlatform.id, sameConvDiffPlatform.id],
+    ]);
+    const byId = new Map(convRows.rows.map((r) => [Number(r.id), r.resolved_at]));
+    assert.ok(
+      byId.get(sameConvSamePlatform.id),
+      'a conversation-scoped entry resolves a gap in that same platform+conversation',
+    );
+    assert.equal(
+      byId.get(diffConvSamePlatform.id),
+      null,
+      'SECURITY: a conversation-scoped entry must never resolve a gap logged in a different conversation',
+    );
+    assert.equal(
+      byId.get(sameConvDiffPlatform.id),
+      null,
+      'SECURITY: a conversation-scoped entry must never resolve a gap on a different platform, even when ' +
+        'the conversation id string is identical',
+    );
+
+    // Platform-scoped case: resolves any matching gap on that platform,
+    // regardless of conversation, and never crosses to a different platform.
+    const platformQuery = `${RUN} platform-scoped gap resolution query`;
+    const convC = `${RUN}-c-gap-scope-c`;
+    const convD = `${RUN}-c-gap-scope-d`;
+    const onWhatsapp = await recordKnowledgeGap('whatsapp', convC, userId, platformQuery);
+    const onDiscord = await recordKnowledgeGap('discord', convD, userId, platformQuery);
+    assert.ok(onWhatsapp !== 'rate_limited' && onDiscord !== 'rate_limited', 'fixture gaps recorded');
+
+    const { id: platformScopedId } = await saveKnowledge({
+      content: platformQuery,
+      scope: 'whatsapp',
+      callerPlatform: 'discord', // deliberately mismatched: scope alone governs, not the caller's own platform
+    });
+
+    const platformRows = await pool.query(`SELECT id, resolved_at FROM knowledge_gaps WHERE id = ANY($1)`, [
+      [onWhatsapp.id, onDiscord.id],
+    ]);
+    const platformById = new Map(platformRows.rows.map((r) => [Number(r.id), r.resolved_at]));
+    assert.ok(
+      platformById.get(onWhatsapp.id),
+      'a platform-scoped entry resolves a matching gap on that platform',
+    );
+    assert.equal(
+      platformById.get(onDiscord.id),
+      null,
+      'SECURITY: a platform-scoped entry must never resolve a gap on a different platform',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = ANY($1)`, [
+      [convA, convB, convC, convD],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[convScopedId, platformScopedId]]);
+  },
+);
+
+test(
+  'repository: recentKnowledgeGapClusters and countKnowledgeGaps exclude a resolved gap immediately, not only after the created_at window ages out (issue #422)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-resolve-listing`;
+    const userA = `${RUN}-gap-resolve-listing-a`;
+    const userB = `${RUN}-gap-resolve-listing-b`;
+    const query = `${RUN} listing-exclusion gap query`;
+
+    const gapA = await recordKnowledgeGap('discord', conversationId, userA, query);
+    const gapB = await recordKnowledgeGap('discord', conversationId, userB, query);
+    assert.ok(gapA !== 'rate_limited' && gapB !== 'rate_limited', 'fixture gaps recorded');
+
+    const beforeClusters = await recentKnowledgeGapClusters([conversationId], 7, 10);
+    assert.equal(beforeClusters.length, 1, 'the two identical-query gaps form one cluster');
+    assert.equal(beforeClusters[0].count, 2);
+    const beforeCount = await countKnowledgeGaps([conversationId], 7);
+    assert.equal(beforeCount, 2);
+
+    // Both gaps share the exact query text, so a global-scope save that
+    // answers it resolves both in one shot (same as saveKnowledge's own
+    // resolution test above).
+    const { id: knowledgeId } = await saveKnowledge({ content: query });
+
+    const afterClusters = await recentKnowledgeGapClusters([conversationId], 7, 10);
+    assert.equal(
+      afterClusters.length,
+      0,
+      'a resolved gap drops out of the cluster list immediately — the created_at window (7 days) has not changed',
+    );
+    const afterCount = await countKnowledgeGaps([conversationId], 7);
+    assert.equal(afterCount, 0, 'a resolved gap drops out of the digest count immediately');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  'repository: purgeUserData (forget_me/purge_user_data) deletes a knowledge_gaps row regardless of resolved_at (issue #422)',
+  { skip },
+  async () => {
+    const targetUser = `${RUN}-gap-purge-resolved-target`;
+    const conversationId = `${RUN}-c-gap-purge-resolved`;
+
+    const gap = await recordKnowledgeGap('discord', conversationId, targetUser, 'a resolved gap query');
+    assert.ok(gap !== 'rate_limited', 'fixture gap recorded');
+    await pool.query(`UPDATE knowledge_gaps SET resolved_at = now() WHERE id = $1`, [gap.id]);
+
+    const purged = await purgeUserData('discord', targetUser);
+    assert.ok(purged >= 1, 'purged count covers the resolved gap row');
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_gaps WHERE user_id = $1`, [targetUser]);
+    assert.equal(rows.rows.length, 0, 'a resolved gap is deleted by purge just like an unresolved one');
   },
 );
 
