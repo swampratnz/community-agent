@@ -239,6 +239,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `moderate` / `announce` | ❌ | ❌ | ✅ *their conversations*, confirm-gated | ✅ anywhere |
 | `create_poll` (native Discord poll; announce-class outward post, rate-capped instead of confirm-gated — Discord only) | ❌ | ❌ | ✅ *their conversations* | ✅ anywhere |
 | `create_thread` (open a Discord thread; additive, rate-capped, self-refuses under an unscanned moderation allowlist — Discord only) / `archive_thread` (confirm-gated) | ❌ | ❌ | ✅ *their conversations* | ✅ anywhere |
+| `create_event` (real Discord Scheduled Event; outward + member-notifying, confirm-gated, guild-wide not conversation-scoped — Discord only) / `cancel_event` (marks it Canceled, not deleted; confirm-gated; live target validation against Discord's own scheduled events before any CONFIRM is registered) | ❌ | ❌ | ✅ | ✅ |
 | `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
 | `set_community_guidelines` (set/clear the rules text shown to members; content curation, not runtime control — same tier as `save_knowledge`) | ❌ | ❌ | ✅ | ✅ |
 | `set_welcome_message` (set/clear the new-member welcome text, in place of the hardcoded default; same shape as `set_community_guidelines`) | ❌ | ❌ | ✅ | ✅ |
@@ -554,7 +555,37 @@ serve. That decision used to be made and thrown away in the same request;
 - **Purge coherence**: `forget_me`/`purge_user_data` delete the caller's own
   `knowledge_gaps` rows, same treatment as `suggestions`/`content_reports`/
   `answer_feedback`. No dedicated age-based retention timer — purge-on-request
-  only, same precedent as those three tables.
+  only, same precedent as those three tables. Deleted regardless of the
+  resolution state below.
+- **Resolution (issue #422)**: a gap used to sit in `list_knowledge_gaps`/the
+  digest count for up to 30 days even after an admin fixed it, because both
+  read paths only filtered on `created_at`. `save_knowledge` and
+  `update_knowledge` now reuse the embedding they already compute for their
+  own write to run one extra `UPDATE`: any *unresolved* `knowledge_gaps` row
+  that now clears `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` against the new/
+  edited content is stamped `resolved_at = now()` — the exact inverse of the
+  recording rule above, so it's internally consistent by construction (a
+  future identical query would no longer record a gap). Fire-and-forget, like
+  `recordKnowledgeGap`: a resolution failure never blocks the save/update.
+  Scope-filtered like `searchKnowledge`'s visibility model, but *narrower* for
+  the conversation-scoped case: a `global`-scope entry may resolve any
+  matching gap, a platform-scoped entry only gaps on that platform, and a
+  conversation-scoped entry only gaps on that *same platform and*
+  conversation — never cross-platform, even if a conversation id string
+  happened to collide across platforms. `list_knowledge_gaps`/
+  `recentKnowledgeGapClusters` and the digest's `countKnowledgeGaps` both add
+  `resolved_at IS NULL`, so a resolved gap disappears immediately rather than
+  waiting out the `created_at` window.
+  `saveKnowledge`/`updateKnowledge` are shared by every knowledge write, not
+  only the admin `save_knowledge`/`update_knowledge` tools — the daily
+  research refresh and docs-ingest backfill (`createdByRole: 'auto'`/`'docs'`)
+  go through the same functions. Gap resolution is gated on
+  `createdByRole !== 'auto'`: an unreviewed, machine-scraped 'auto' entry
+  (already quarantined/untrusted at retrieval) must never silently clear the
+  "never confidently (human-)answered" signal with zero human curation. A
+  trusted `'docs'` backfill or any human-authored entry (admin `save_knowledge`
+  /`update_knowledge`, or `accept_knowledge_candidate`'s admin-reviewed
+  publish) may resolve gaps as normal.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
@@ -998,6 +1029,14 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   `health.ts`'s disconnect alert already uses. No new privileged tool, no
   new RBAC surface, no auto-`pause_bot` — a super admin decides whether to
   pause manually.
+- The poller is also wired into the shared background-job consecutive-failure
+  tracker (`backgroundJobHealth.ts`'s `JobFailureTracker`, the same mechanism
+  covering context-builder/knowledge-refresh/docs-ingest/both retention
+  purges/embedding-model/admin-digest/anthropic-status-check): three
+  consecutive `usageStats(1)` failures DM super admins so the operator's
+  runaway-usage alarm can't itself go dark silently (issue #426). This is
+  independent of the threshold-crossing latch above — a check-failure alert
+  never suppresses or duplicates a threshold alert, or vice versa.
 
 `usageAlert.ts` is a **proactive** check on successful outbound reply
 *counts* — it says nothing about a turn actively **failing** because the

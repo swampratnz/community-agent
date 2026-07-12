@@ -496,6 +496,22 @@ test('SECURITY: create_event is admin-tier — never reachable by member/guest (
   }
 });
 
+test('SECURITY: cancel_event is admin-tier — never reachable by member/guest (issue #424)', () => {
+  const tool = 'mcp__community__cancel_event';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'cancel_event must be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'cancel_event must not be in MEMBER_TOOLS');
+  assert.ok(
+    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    'cancel_event must not be double-listed in SUPER_ADMIN_TOOLS',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach cancel_event`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach cancel_event`);
+  }
+});
+
 test('SECURITY: redeploy_bot is super-admin only (issue #101) — never reachable by admin/member/guest', () => {
   const tool = 'mcp__community__redeploy_bot';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'redeploy_bot must be in SUPER_ADMIN_TOOLS');

@@ -1827,7 +1827,8 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__end_poll', /end one poll early/i],
   ['mcp__community__create_thread', /open a Discord thread/i],
   ['mcp__community__archive_thread', /archive a Discord thread/i],
-  ['mcp__community__create_event', /schedule an event/i],
+  ['mcp__community__create_event', /schedule\/cancel an event/i],
+  ['mcp__community__cancel_event', /cancel an event/i],
   ['mcp__community__set_community_guidelines', /set the community guidelines/i],
   ['mcp__community__set_welcome_message', /welcome message/i],
   ['mcp__community__save_knowledge', /save a new knowledge entry/i],
@@ -4273,6 +4274,198 @@ test('SECURITY: create_event truncates a long description in the CONFIRM text to
     new RegExp(`x{200}`),
     'the CONFIRM text must not contain the full untruncated description',
   );
+});
+
+// cancel_event (issue #424): the destroy-adjacent counterpart to create_event,
+// same admin-tier + CONFIRM-gated shape as archive_thread. Unlike create_event
+// (which is authoring a brand-new artifact), cancel_event acts on an EXISTING
+// one, so it must validate the target LIVE via adapter.getScheduledEvent
+// before ever registering a pending action — the same "the bot must be able
+// to verify what it's acting on" discipline isKnownConversation/
+// isKnownMessage apply to DB-tracked targets, just sourced from the platform
+// API since scheduled events aren't stored in `interactions`. Real
+// name/channel/entityType resolution lives in DiscordAdapter and is covered
+// by tests/discordAdapter.test.ts; this stub exercises the tools.ts layer
+// (RBAC, target validation, CONFIRM, audit) independently of the real
+// Discord client, same pattern as eventAdapter/createEventHandler above.
+function cancelEventAdapter(opts: {
+  capabilities?: string[];
+  getScheduledEvent?: PlatformAdapter['getScheduledEvent'];
+  performAdminAction?: PlatformAdapter['performAdminAction'];
+}): PlatformAdapter {
+  return {
+    platform: 'discord',
+    start: async () => {},
+    stop: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    sendMessage: async () => {},
+    sendDirectMessage: async () => {},
+    conversationsForUser: async () => [],
+    adminCapabilities: new Set(opts.capabilities ?? ['cancel_event']),
+    getScheduledEvent:
+      opts.getScheduledEvent ??
+      (async () => ({ name: 'Meetup', status: 'scheduled', scheduledStartAt: EVENT_FUTURE_START })),
+    performAdminAction: opts.performAdminAction ?? (async () => 'Canceled event "Meetup".'),
+  };
+}
+
+function cancelEventHandler(caller: {
+  role?: 'member' | 'admin' | 'super_admin';
+  userId?: string;
+  conversationId?: string;
+  adapter: PlatformAdapter;
+}) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId ?? 'admin-1',
+      userName: 'Admin',
+      role: caller.role ?? 'admin',
+      conversationId: caller.conversationId ?? 'convo-1',
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            eventId: string;
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['cancel_event'];
+}
+
+test('SECURITY: cancel_event rejects a non-admin caller (assertAtLeast re-check, issue #424)', async () => {
+  const adapter = cancelEventAdapter({});
+  const handler = cancelEventHandler({ role: 'member', adapter });
+  await assert.rejects(() => handler.handler({ eventId: 'event-1' }), /Permission denied/);
+});
+
+test('SECURITY: cancel_event refuses cleanly (no pending action) on a platform that does not support scheduled events — Discord-only (issue #424)', async () => {
+  const adapter = cancelEventAdapter({ capabilities: [] });
+  const handler = cancelEventHandler({ conversationId: 'convo-cancel-unsupported', adapter });
+  const result = await handler.handler({ eventId: 'event-1' });
+  assert.match(result.content[0].text, /does not support/i);
+  assert.equal(
+    hasPendingAction('discord', 'convo-cancel-unsupported', 'admin-1'),
+    false,
+    'an unsupported platform must never register a pending action',
+  );
+});
+
+test('SECURITY: cancel_event refuses an unknown or foreign-guild eventId before ever registering a pending action (issue #424)', async () => {
+  const conversationId = 'convo-cancel-unknown';
+  const adapter = cancelEventAdapter({
+    getScheduledEvent: async () => null,
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for an unknown eventId');
+    },
+  });
+  const handler = cancelEventHandler({ conversationId, adapter });
+  const result = await handler.handler({ eventId: 'event-does-not-exist' });
+  assert.match(result.content[0].text, /was not found/i);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: cancel_event refuses a currently Active event with a clear, specific reason — not attempting an invalid status transition (issue #424)', async () => {
+  const conversationId = 'convo-cancel-active';
+  const adapter = cancelEventAdapter({
+    getScheduledEvent: async () => ({
+      name: 'Live Now',
+      status: 'active',
+      scheduledStartAt: EVENT_FUTURE_START,
+    }),
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for a non-scheduled event');
+    },
+  });
+  const handler = cancelEventHandler({ conversationId, adapter });
+  const result = await handler.handler({ eventId: 'event-active' });
+  assert.match(result.content[0].text, /currently active, not scheduled/i);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: cancel_event refuses an already-Completed event with a clear, specific reason (issue #424)', async () => {
+  const conversationId = 'convo-cancel-completed';
+  const adapter = cancelEventAdapter({
+    getScheduledEvent: async () => ({
+      name: 'Past Meetup',
+      status: 'completed',
+      scheduledStartAt: EVENT_FUTURE_START,
+    }),
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for a non-scheduled event');
+    },
+  });
+  const handler = cancelEventHandler({ conversationId, adapter });
+  const result = await handler.handler({ eventId: 'event-completed' });
+  assert.match(result.content[0].text, /currently completed, not scheduled/i);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: cancel_event refuses an already-Canceled event with a clear, specific reason (issue #424)', async () => {
+  const conversationId = 'convo-cancel-already-canceled';
+  const adapter = cancelEventAdapter({
+    getScheduledEvent: async () => ({
+      name: 'Called Off',
+      status: 'canceled',
+      scheduledStartAt: EVENT_FUTURE_START,
+    }),
+    performAdminAction: async () => {
+      throw new Error('performAdminAction must never be reached for a non-scheduled event');
+    },
+  });
+  const handler = cancelEventHandler({ conversationId, adapter });
+  const result = await handler.handler({ eventId: 'event-canceled' });
+  assert.match(result.content[0].text, /currently canceled, not scheduled/i);
+  assert.equal(hasPendingAction('discord', conversationId, 'admin-1'), false);
+});
+
+test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose description quotes the resolved event name and start time; executing it calls performAdminAction and audits (issue #424)', async () => {
+  const conversationId = 'convo-cancel-confirm';
+  const calls: Array<{ kind: string; params?: Record<string, unknown> }> = [];
+  const adapter = cancelEventAdapter({
+    getScheduledEvent: async () => ({
+      name: 'Wellington Winter Meetup',
+      status: 'scheduled',
+      scheduledStartAt: EVENT_FUTURE_START,
+    }),
+    performAdminAction: async (action) => {
+      calls.push({ kind: action.kind, params: action.params });
+      return `Canceled event "${action.params?.eventId}".`;
+    },
+  });
+  const handler = cancelEventHandler({ conversationId, adapter });
+
+  const result = await handler.handler({ eventId: 'event-42', reason: 'rain' });
+  assert.match(result.content[0].text, /CONFIRM/, 'must ask for confirmation, not run immediately');
+  assert.match(
+    result.content[0].text,
+    /Wellington Winter Meetup/,
+    'the CONFIRM text must quote the resolved event name',
+  );
+  assert.match(
+    result.content[0].text,
+    new RegExp(EVENT_FUTURE_START.replace(/[+.]/g, '\\$&')),
+    'the CONFIRM text must quote the resolved ISO start time',
+  );
+  assert.match(result.content[0].text, /rain/, 'the CONFIRM text must quote the reason');
+  assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
+
+  const pending = takePendingAction('discord', conversationId, 'admin-1');
+  assert.ok(pending, 'must register a pending action');
+  const execResult = await pending?.execute();
+  assert.match(execResult ?? '', /Done:/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'cancel_event');
+  assert.deepEqual(calls[0].params, { eventId: 'event-42', reason: 'rain' });
 });
 
 test(
@@ -7371,9 +7564,10 @@ test('list_events replies plainly with "no upcoming events" for a zero-events gu
   assert.match(result.content[0]?.text ?? '', /no upcoming events/i);
 });
 
-test('list_events formats each event with name, start/end time, location, and description (issue #388)', async () => {
+test('list_events formats each event with id, name, start/end time, location, and description (issue #388)', async () => {
   const adapter = stubEventsAdapter([
     {
+      id: 'event-id-wellington',
       name: 'Wellington Meetup',
       scheduledStartAt: '2099-06-01T19:00:00.000Z',
       scheduledEndAt: '2099-06-01T21:00:00.000Z',
@@ -7381,6 +7575,7 @@ test('list_events formats each event with name, start/end time, location, and de
       description: 'Bring your laptop',
     },
     {
+      id: 'event-id-auckland',
       name: 'Auckland Hack Night',
       scheduledStartAt: '2099-06-08T19:00:00.000Z',
       location: 'general-voice',
@@ -7396,16 +7591,19 @@ test('list_events formats each event with name, start/end time, location, and de
   assert.match(replyText, /Bring your laptop/);
   assert.match(replyText, /Auckland Hack Night/);
   assert.match(replyText, /general-voice/);
+  assert.match(replyText, /event-id-wellington/);
+  assert.match(replyText, /event-id-auckland/);
 });
 
 test(
   "SECURITY: list_events' formatted output never includes a creator/organizer id or any other member " +
-    'identifier — only the UpcomingEvent fields (name/time/location/description) ever reach the reply ' +
+    'identifier — only the UpcomingEvent fields (id/name/time/location/description) ever reach the reply ' +
     '(issue #388)',
   async () => {
     const creatorId = 'discord-user-id-12345';
     const adapter = stubEventsAdapter([
       {
+        id: 'event-id-christchurch',
         name: 'Christchurch Coffee & Code',
         scheduledStartAt: '2099-07-01T19:00:00.000Z',
         location: 'Christchurch Central Library',
@@ -7419,6 +7617,48 @@ test(
     const replyText = result.content[0]?.text ?? '';
     assert.equal(result.isError, false);
     assert.ok(!replyText.includes(creatorId), 'creator/organizer id must never reach the formatted reply');
+  },
+);
+
+test(
+  "list_events' output is the only conversational path to a valid eventId, and that discovered id round-" +
+    'trips straight into cancel_event (issue #424) — end-to-end discovery, not a stubbed-in eventId',
+  async () => {
+    const listAdapter = stubEventsAdapter([
+      {
+        id: 'event-id-real-424',
+        name: 'Discoverable Meetup',
+        scheduledStartAt: EVENT_FUTURE_START,
+        location: 'Somewhere',
+      },
+    ]);
+    const listResult = await listEventsHandler(listAdapter).handler();
+    const replyText = listResult.content[0]?.text ?? '';
+    assert.match(
+      replyText,
+      /event-id-real-424/,
+      "the eventId cancel_event needs must be present in list_events' own reply text",
+    );
+
+    const discoveredEventId = /\[id: (\S+)\]/.exec(replyText)?.[1];
+    assert.equal(discoveredEventId, 'event-id-real-424');
+
+    const conversationId = 'convo-cancel-discovery';
+    const cancelAdapter = cancelEventAdapter({
+      getScheduledEvent: async (id) =>
+        id === discoveredEventId
+          ? { name: 'Discoverable Meetup', status: 'scheduled', scheduledStartAt: EVENT_FUTURE_START }
+          : null,
+    });
+    const cancelHandler = cancelEventHandler({ conversationId, adapter: cancelAdapter });
+
+    const cancelResult = await cancelHandler.handler({ eventId: discoveredEventId ?? '' });
+    assert.match(
+      cancelResult.content[0].text,
+      /CONFIRM/,
+      'the id discovered from list_events must be accepted by cancel_event, reaching the CONFIRM step',
+    );
+    assert.match(cancelResult.content[0].text, /Discoverable Meetup/);
   },
 );
 
