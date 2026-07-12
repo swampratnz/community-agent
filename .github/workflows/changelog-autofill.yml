@@ -241,21 +241,26 @@ jobs:
                `npx prettier --check CHANGELOG.md` (must pass).
             5. `node --import tsx --test tests/changelog.test.ts` — the parser the
                `whats_new` tool relies on. It must pass (0 failures).
-            6. Confirm ONLY CHANGELOG.md changed: `git status --porcelain` must
-               list nothing but ` M CHANGELOG.md`. If anything else is dirty, undo
-               it — you may edit only CHANGELOG.md.
-            7. Commit: `git add CHANGELOG.md` then a `git commit` whose message is
+            6. Confirm CHANGELOG.md is the ONLY tracked change:
+               `git status --porcelain -- CHANGELOG.md` must show exactly
+               ` M CHANGELOG.md`. (The list files `gaps.md`/`prs.json` in the repo
+               root are gitignored CI scratch — ignore them; do NOT try to delete
+               them and do NOT run `git add -A` or `git commit -a`. You may stage
+               only CHANGELOG.md.)
+            7. Commit: `git add CHANGELOG.md` (that exact path — nothing else)
+               then a `git commit` whose message is
                `docs: backfill CHANGELOG.md for recently-merged PRs`.
             8. Push with EXACTLY: `git push origin HEAD` (no other push form,
                never force).
-            9. Open the PR with `gh pr create --base main --head
-               ${{ env.AUTOFILL_BRANCH }} --label ${{ env.AUTOFILL_LABEL }}
-               --label documentation`, titled
-               `docs: backfill CHANGELOG.md for recently-merged PRs`. In the body:
-               list each PR you documented (with its `#NNN`), name any flagged PR
-               you deliberately SKIPPED as internal and why (one line each), and
-               state that this was auto-drafted and needs human review before
-               merge. Do NOT merge or close the PR — a human merges.
+            9. Open the PR by running EXACTLY this command, with `--base main
+               --head chore/changelog-autofill` first and in that order (the tool
+               allowlist pins that literal prefix, so any other order or head is
+               rejected):
+               `gh pr create --base main --head chore/changelog-autofill --label changelog-autofill --label documentation --title "docs: backfill CHANGELOG.md for recently-merged PRs" --body "<body>"`.
+               In the body: list each PR you documented (with its `#NNN`), name any
+               flagged PR you deliberately SKIPPED as internal and why (one line
+               each), and state that this was auto-drafted and needs human review
+               before merge. Do NOT merge or close the PR — a human merges.
 
             EXECUTION MODEL — READ FIRST: this is a SINGLE, non-interactive batch
             run. There is no wakeup, resume, or background continuation — when
@@ -267,7 +272,8 @@ jobs:
           # Least-privilege tools:
           #   * Edit/Write/Read/Grep/Glob for the changelog (Write can't be scoped
           #     to one path — the ONLY-CHANGELOG.md rule is prompt-stated and then
-          #     VERIFIED by the post-step, which flags any out-of-scope diff).
+          #     ENFORCED fail-closed by the post-step, which CLOSES the PR +
+          #     deletes the branch on any out-of-scope diff).
           #   * `gh` can VIEW a specific PR by number (from gaps.md) and CREATE
           #     one PR — no `gh pr list` (never needs to enumerate the repo), no
           #     merge/close, and DELIBERATELY no `gh pr comment`/`gh pr edit`:
@@ -278,24 +284,23 @@ jobs:
           #     would never see. All commenting is done by the deterministic
           #     GH_TOKEN steps instead. This matches pipeline-build.yml, which
           #     also withholds `gh pr comment` from its build agent.
-          #   * `gh pr create` is a wildcard (its `--title`/`--body` are dynamic,
-          #     so it can't be exact-matched). Its blast radius is bounded by the
-          #     git side: `git push origin HEAD` is the only push form AND
-          #     checkout/branch/switch are withheld, so HEAD is pinned to the
-          #     job-created AUTOFILL_BRANCH and the agent cannot push any other
-          #     branch — an injected `--head <other>` could at worst open a
-          #     visible, human-gated, unmergeable PR from a pre-existing branch,
-          #     and the App token is installation-scoped so `--repo <other>`
-          #     can't reach another repo. The scope gate manages only the
-          #     head=AUTOFILL_BRANCH PR.
-          #   * git is add/commit + the single exact push form `git push origin
-          #     HEAD` (no `:*`); checkout/branch/switch withheld so HEAD stays on
-          #     the branch the job created (see pipeline-pr-conflict.yml's note on
-          #     why that matters for the push target).
+          #   * `gh pr create` is PINNED to the literal prefix the prompt uses —
+          #     `Bash(gh pr create --base main --head chore/changelog-autofill:*)`
+          #     — so `--base`/`--head` are fixed and only the trailing
+          #     `--label/--title/--body` vary. An injected `--head <other>`/`--repo
+          #     <other>` no longer matches and is denied. (Belt to that brace: the
+          #     git side already pins HEAD to AUTOFILL_BRANCH — `git push origin
+          #     HEAD` is the only push form and checkout/branch/switch are
+          #     withheld — and the App token is installation-scoped.)
+          #   * `git add` is PINNED to `Bash(git add CHANGELOG.md)` (not `:*`), so
+          #     the agent literally cannot `git add -A`/stage another path; commit
+          #     + the single exact push form `git push origin HEAD` (no `:*`);
+          #     checkout/branch/switch withheld so HEAD stays on the job-created
+          #     branch (see pipeline-pr-conflict.yml on why that matters).
           claude_args: |
             --max-turns 60
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr create:*),Bash(npx prettier:*),Bash(node:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add CHANGELOG.md),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr create --base main --head chore/changelog-autofill:*),Bash(npx prettier:*),Bash(node:*)"
 
       # Source of truth + FAIL-CLOSED SCOPE GATE. The agent's edit tools can't be
       # scoped to a single path, so the "only CHANGELOG.md" rule is enforced HERE,

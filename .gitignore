@@ -28,6 +28,13 @@ models/
 # trips on it) — e.g. the default community-context export target, issue #108
 /var/
 
+# CI scratch files written by .github/workflows/changelog-autofill.yml into the
+# checked-out repo root (the merged-PR list + the computed gap list). Untracked
+# so the autofill agent's "only CHANGELOG.md is dirty" clean-tree check never
+# trips on them, and so a stray `git add -A` can't stage them.
+/prs.json
+/gaps.md
+
 # OS / editor
 .DS_Store
 *.swp
