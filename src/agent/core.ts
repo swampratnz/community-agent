@@ -1,4 +1,4 @@
-import { query, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookJSONOutput, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
@@ -16,7 +16,7 @@ import {
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
-import { buildToolServer } from './tools.js';
+import { buildToolServer, reserveWebSearchSlot } from './tools.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
@@ -137,12 +137,25 @@ interface TurnOutcome {
  *    `AGENT_MODEL_MEMBER` when set, admin+ always keep `AGENT_MODEL`. This
  *    tiering is cosmetic to cost, not security — it must never affect the
  *    tool-gating fields above.
+ *  - admin+'s WebSearch is additionally capped per-conversation via a
+ *    `PreToolUse` hook (issue #412): WebSearch is the one metered, real-cost
+ *    built-in tool the bot grants, and unlike the bot's own MCP tools
+ *    (`create_poll`/`create_thread`/`warn_user`/`announce`, each already
+ *    behind a `reserve*Slot` rolling-hour cap) it was previously bounded only
+ *    by the shared `maxTurns` loop-depth ceiling. `hooks.PreToolUse` is used
+ *    rather than `canUseTool` because a tool listed bare in `allowedTools`
+ *    (which `WebSearch` is) auto-approves and never reaches `canUseTool` —
+ *    only a `PreToolUse` hook is guaranteed to fire regardless of that
+ *    auto-approval path. Member/guest turns never get this hook at all —
+ *    there is nothing to gate, since `tools`/`allowedTools` already exclude
+ *    WebSearch for those tiers.
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
   systemPrompt: string,
   mcpServers: Record<string, McpServerConfig>,
   resumeSession: string | null,
+  conversationId: string,
 ) {
   // Web search is a privileged capability: admins and super admins only.
   const webSearch = atLeast(role, 'admin');
@@ -169,6 +182,58 @@ export function buildQueryOptions(
     ...(resumeSession ? { resume: resumeSession } : {}),
     // Don't load the host machine's ~/.claude config into the agent.
     settingSources: [] as [],
+    ...(webSearch
+      ? {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'WebSearch',
+                hooks: [
+                  async (): Promise<HookJSONOutput> => {
+                    // Fail closed: a thrown/rejected error while checking the
+                    // cap must never let the call through unbounded — it
+                    // denies instead of relying on any SDK default behaviour
+                    // on a hook exception, which this repo has never
+                    // exercised before (issue #412 AC-5).
+                    try {
+                      const allowed = reserveWebSearchSlot(
+                        conversationId,
+                        config.llm.webSearchRateLimitPerHour,
+                      );
+                      if (allowed) return { continue: true };
+                      return {
+                        continue: true,
+                        hookSpecificOutput: {
+                          hookEventName: 'PreToolUse',
+                          permissionDecision: 'deny',
+                          permissionDecisionReason:
+                            'WebSearch already hit the conversation limit ' +
+                            `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
+                        },
+                      };
+                    } catch (err) {
+                      logger.error(
+                        { err, conversationId },
+                        'WebSearch rate-limit check threw — failing closed (denying the call)',
+                      );
+                      return {
+                        continue: true,
+                        hookSpecificOutput: {
+                          hookEventName: 'PreToolUse',
+                          permissionDecision: 'deny',
+                          permissionDecisionReason:
+                            'WebSearch is temporarily unavailable — an internal error occurred while ' +
+                            'checking the rate limit.',
+                        },
+                      };
+                    }
+                  },
+                ],
+              },
+            ],
+          },
+        }
+      : {}),
   };
 }
 
@@ -364,7 +429,13 @@ async function execTurn(
   try {
     for await (const message of query({
       prompt,
-      options: buildQueryOptions(caller.role, systemPrompt, { community: toolServer }, resumeSession),
+      options: buildQueryOptions(
+        caller.role,
+        systemPrompt,
+        { community: toolServer },
+        resumeSession,
+        caller.conversationId,
+      ),
     })) {
       switch (message.type) {
         case 'system':

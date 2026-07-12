@@ -487,3 +487,34 @@ test('SECURITY: KNOWLEDGE_CANDIDATE_STALE_DAYS=1 fails config validation — bel
   assert.notEqual(result.status, 0, 'KNOWLEDGE_CANDIDATE_STALE_DAYS=1 must fail config validation, not load');
   assert.match(result.stderr, /KNOWLEDGE_CANDIDATE_STALE_DAYS must be 0 \(disabled\) or at least 14/);
 });
+
+test('config: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR defaults to 20 (issue #412)', () => {
+  assert.equal(config.llm.webSearchRateLimitPerHour, 20);
+});
+
+test('SECURITY: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR rejects a non-positive value — fail-fast rather than a silently unbounded WebSearch cap (issue #412)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR: '0',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR=0 must fail config validation, not load',
+  );
+  assert.match(result.stderr, /AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR/);
+});

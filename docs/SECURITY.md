@@ -144,6 +144,16 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the trigger — it's a coarse proxy for shared Max-pool draw that can't
   silently under-report the way `cost_usd` can (see below). No auto-pause;
   a super admin decides.
+- `WebSearch` — the one metered, real-cost built-in Claude Code tool the bot
+  grants (admin+ only) — carries its own per-conversation rolling-hour cap
+  (`AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR`, default 20, issue #412), enforced
+  via a `hooks.PreToolUse` matcher in `buildQueryOptions`
+  (`src/agent/core.ts`) rather than `canUseTool`, since a tool listed bare in
+  `allowedTools` (which `WebSearch` is) auto-approves and never reaches
+  `canUseTool`. Same sliding-window shape as the four `reserve*Slot` caps
+  below; fails closed on a hook error (denies rather than letting the call
+  through). Never constructed for member/guest turns — those tiers have no
+  WebSearch access to begin with.
 - A thrown `query()` error whose message matches a small, anchored
   usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
   honest member-facing reply instead of the generic internal-error one, and
@@ -1104,7 +1114,12 @@ base, unlike the other two's fixed-format extraction.
   `POLL_RATE_LIMIT_PER_HOUR` / `THREAD_CREATE_RATE_LIMIT_PER_HOUR`, all
   in-memory) rather than CONFIRM, since each is lower-consequence than a
   destructive action and gating them harder would be inconsistent (issues
-  #228, #229, #315).
+  #228, #229, #315). `WebSearch` — a built-in SDK tool rather than one of
+  this bot's own MCP tools, and the only one with a real per-call dollar
+  cost — carries the same per-conversation-rate-capped (not CONFIRM-gated)
+  treatment via `AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR` (issue #412), closing
+  the enumeration gap #315 left (its own framing covered only the bot's
+  custom tool set and never named the one built-in admin+ also has).
 - **Membership-scope staleness (narrowed, issues #286 + #328 + #350 + #374)**:
   adapters cache an admin's conversation list for ~60s, but an *observed*
   change invalidates the affected cache entry immediately rather than
