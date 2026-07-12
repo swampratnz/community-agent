@@ -13,6 +13,7 @@ import {
   startDocsIngest,
   startStatusCheck,
   startEmbeddingHealthCheckJob,
+  startDevTeamWatchPoller,
 } from './backgroundJobs.js';
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
@@ -99,6 +100,10 @@ async function main(): Promise<void> {
   // 4f. Optional weekly admin recurring-questions digest (disabled unless configured).
   const adminDigestTimer = startAdminDigest(adapters);
 
+  // 4g. Optional dev-team completion-DM poller (disabled unless DEV_TEAM_ENABLED):
+  //     DMs the requester when a dispatched ~20-min job finishes.
+  const devTeamWatchTimer = startDevTeamWatchPoller(adapters);
+
   // 5. Graceful shutdown.
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
@@ -112,6 +117,7 @@ async function main(): Promise<void> {
     if (docsIngestTimer) clearInterval(docsIngestTimer);
     if (statusCheckTimer) clearInterval(statusCheckTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
+    if (devTeamWatchTimer) clearInterval(devTeamWatchTimer);
     // Drain in-flight per-conversation turns BEFORE stopping any adapter, so
     // a reply generated during the drain window can still be sent on a live
     // connection (issue #210). Bounded by SHUTDOWN_DRAIN_TIMEOUT_MS so a

@@ -4185,3 +4185,62 @@ export async function countLowRatedKnowledge(
   );
   return Number(rows[0].n);
 }
+
+// --- Dev-team completion-DM watches (super-admin dev_team_dispatch) ----------
+
+export interface DevTeamWatchInput {
+  jobId: string;
+  requesterPlatform: Platform;
+  requesterUserId: string;
+  mode: string;
+  repo: string;
+}
+
+export interface DevTeamWatch {
+  jobId: string;
+  requesterPlatform: Platform;
+  requesterUserId: string;
+  mode: string;
+  repo: string;
+}
+
+/**
+ * Record a durable watch so the requester gets a completion DM once the
+ * dispatched job reaches a terminal state (see the poller in
+ * src/backgroundJobs.ts). `ON CONFLICT (job_id) DO NOTHING` makes a repeated
+ * dispatch of the same id idempotent rather than an error.
+ */
+export async function insertDevTeamWatch(input: DevTeamWatchInput): Promise<void> {
+  await pool.query(
+    `INSERT INTO dev_team_watches (job_id, requester_platform, requester_user_id, mode, repo)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (job_id) DO NOTHING`,
+    [input.jobId, input.requesterPlatform, input.requesterUserId, input.mode, input.repo],
+  );
+}
+
+/** Watches whose job has not yet had its completion DM sent, oldest first. */
+export async function listUnnotifiedDevTeamWatches(): Promise<DevTeamWatch[]> {
+  const { rows } = await pool.query(
+    `SELECT job_id, requester_platform, requester_user_id, mode, repo
+       FROM dev_team_watches
+      WHERE notified_at IS NULL
+      ORDER BY created_at ASC`,
+  );
+  return rows.map((r) => ({
+    jobId: r.job_id,
+    requesterPlatform: r.requester_platform as Platform,
+    requesterUserId: r.requester_user_id,
+    mode: r.mode,
+    repo: r.repo,
+  }));
+}
+
+/**
+ * Stamp a watch as notified so its completion DM is never sent twice — the
+ * poller calls this only AFTER a successful `sendDirectMessage`, so a failed
+ * send leaves the row unnotified for the next tick to retry.
+ */
+export async function markDevTeamWatchNotified(jobId: string): Promise<void> {
+  await pool.query(`UPDATE dev_team_watches SET notified_at = now() WHERE job_id = $1`, [jobId]);
+}

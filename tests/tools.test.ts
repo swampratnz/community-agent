@@ -2011,6 +2011,63 @@ test('SECURITY: redeploy_bot handler refuses a direct call from an admin caller 
   );
 });
 
+// --- dev-team dispatch tools (super-admin only). This file's process has
+// DEV_TEAM_ENABLED unset (disabled), so it covers the assertAtLeast re-check
+// (which runs BEFORE the enabled gate) and the friendly disabled message. The
+// deliver-CONFIRM behaviour, which needs the feature ENABLED, is covered in
+// its own process in tests/devTeamTools.test.ts.
+for (const toolName of ['dev_team_dispatch', 'dev_team_status', 'dev_team_result'] as const) {
+  test(`SECURITY: ${toolName} handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)`, async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `convo-${toolName}-admin`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools[toolName];
+    await assert.rejects(
+      () => registeredTool.handler({ id: 'j1', mode: 'assess', repo: 'o/r' }),
+      /Permission denied/,
+    );
+  });
+}
+
+test('dev_team_dispatch returns a friendly disabled message (not an error throw) when DEV_TEAM_ENABLED is off', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'super-1',
+    userName: 'SuperAdmin',
+    role: 'super_admin' as const,
+    conversationId: 'convo-devteam-disabled',
+  };
+  assert.equal(config.devTeam.enabled, false, 'precondition: dev-team feature is off in this test process');
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['dev_team_dispatch'];
+  const result = await registeredTool.handler({ mode: 'deliver', repo: 'o/r' });
+  assert.match(result.content[0].text, /not enabled/i, 'disabled feature must return a friendly message');
+  assert.equal(result.isError, true);
+  assert.equal(
+    hasPendingAction('discord', 'convo-devteam-disabled', 'super-1'),
+    false,
+    'a disabled deliver dispatch must never register a pending action',
+  );
+});
+
 test('SECURITY: update_knowledge registers a pending CONFIRM action instead of overwriting the KB in place (advisory E2)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {

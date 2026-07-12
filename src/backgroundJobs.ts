@@ -14,6 +14,12 @@ import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './contex
 import { writeCommunityContextExport } from './context/export.js';
 import { pollAnthropicStatus } from './status/anthropicStatus.js';
 import {
+  listUnnotifiedDevTeamWatches,
+  markDevTeamWatchNotified,
+  type DevTeamWatch,
+} from './storage/repository.js';
+import { jobStatus, type JobStatus } from './devTeam/client.js';
+import {
   buildJobFailureAlert,
   initialJobFailureTracker,
   stepJobFailureTracker,
@@ -301,6 +307,115 @@ export function startStatusCheck(
   };
   void run();
   const timer = setInterval(() => void run(), config.statusCheck.pollMinutes * 60_000);
+  timer.unref();
+  return timer;
+}
+
+/** A terminal job state — the poller sends the completion DM only for these. */
+function isTerminalDevTeamState(state: string): boolean {
+  return state === 'succeeded' || state === 'failed';
+}
+
+/**
+ * The completion-DM text for a finished dev-team job. Fixed template over
+ * identity + job metadata + terminal state only (the error is capped); the
+ * full artifact is on the dashboard, reachable via `dev_team_result`.
+ */
+export function formatDevTeamCompletionDm(watch: DevTeamWatch, status: JobStatus): string {
+  const verdict = status.state === 'succeeded' ? 'succeeded ✅' : 'failed ❌';
+  const cost = typeof status.cost_usd === 'number' ? ` Cost $${status.cost_usd.toFixed(2)}.` : '';
+  const err =
+    status.state === 'failed' && status.error ? ` Error: ${String(status.error).slice(0, 200)}.` : '';
+  return (
+    `Your dev-team ${watch.mode} job ${watch.jobId} on ${watch.repo} ${verdict}.${cost}${err} ` +
+    `Use \`dev_team_result ${watch.jobId}\` for the full result (dashboard has the complete report).`
+  );
+}
+
+/**
+ * Injectable dependencies for one pass of the dev-team completion-DM poller —
+ * every side effect (DB read, service GET, adapter DM, DB write) is overridable
+ * so the pass can be exercised without a real DB, network, or timers.
+ */
+export interface DevTeamWatchDeps {
+  adapters: readonly PlatformAdapter[];
+  listWatches?: () => Promise<DevTeamWatch[]>;
+  getStatus?: (id: string) => Promise<JobStatus>;
+  markNotified?: (jobId: string) => Promise<void>;
+}
+
+/**
+ * One pass of the completion-DM poller: read every unnotified watch, GET its
+ * job status over the tailnet, and for each job that has reached a terminal
+ * state DM the requester on their own platform, then stamp it notified so it is
+ * never sent twice. A failed status GET or a failed DM leaves the row
+ * unnotified for the next tick (best-effort retry); a missing/disconnected
+ * adapter is silently skipped, matching the AdapterLookup convention. Never
+ * throws — a single bad watch can't wedge the rest of the pass.
+ */
+export async function runDevTeamWatchOnce(deps: DevTeamWatchDeps): Promise<void> {
+  const listWatches = deps.listWatches ?? listUnnotifiedDevTeamWatches;
+  const getStatus =
+    deps.getStatus ??
+    ((id: string) => jobStatus(config.devTeam.endpointUrl ?? '', config.devTeam.authToken ?? '', id));
+  const markNotified = deps.markNotified ?? markDevTeamWatchNotified;
+  const byPlatform = new Map(deps.adapters.map((a) => [a.platform, a]));
+
+  const watches = await listWatches();
+  for (const watch of watches) {
+    let status: JobStatus;
+    try {
+      status = await getStatus(watch.jobId);
+    } catch (err) {
+      logger.warn({ err, jobId: watch.jobId }, 'dev-team watch: status check failed; will retry next tick');
+      continue;
+    }
+    if (!isTerminalDevTeamState(status.state)) continue;
+
+    const adapter = byPlatform.get(watch.requesterPlatform);
+    // No registered/connected adapter for the requester's platform: skip
+    // WITHOUT marking notified, so a later reconnect can still deliver the DM.
+    if (!adapter || !adapter.isConnected()) continue;
+
+    try {
+      await adapter.sendDirectMessage(watch.requesterUserId, formatDevTeamCompletionDm(watch, status));
+    } catch (err) {
+      logger.warn({ err, jobId: watch.jobId }, 'dev-team watch: completion DM failed; will retry next tick');
+      continue; // leave unnotified so the next tick retries
+    }
+    try {
+      await markNotified(watch.jobId);
+    } catch (err) {
+      // The DM went out; failing to stamp only risks a rare duplicate DM on a
+      // later tick, which is far less bad than losing the completion signal.
+      logger.warn({ err, jobId: watch.jobId }, 'dev-team watch: mark-notified failed after sending DM');
+    }
+  }
+}
+
+/**
+ * Dev-team completion-DM poller (off unless DEV_TEAM_ENABLED). Re-checks
+ * unnotified job watches every DEV_TEAM_WATCH_POLL_MINUTES (default 1 min) and
+ * DMs the requester when a ~20-min run finishes. `runOnce` is injectable for
+ * tests; production uses the DB- and client-backed default. Unlike the tracked
+ * jobs above it has no consecutive-failure alerting — a transient service blip
+ * is expected and simply retried on the next tick.
+ */
+export function startDevTeamWatchPoller(
+  adapters: readonly PlatformAdapter[],
+  runOnce: () => Promise<void> = () => runDevTeamWatchOnce({ adapters }),
+): ReturnType<typeof setInterval> | null {
+  if (!config.devTeam.enabled) return null;
+
+  const run = async () => {
+    try {
+      await runOnce();
+    } catch (err) {
+      logger.error({ err }, 'dev-team watch poller run failed');
+    }
+  };
+  void run();
+  const timer = setInterval(() => void run(), config.devTeam.watchPollMinutes * 60_000);
   timer.unref();
   return timer;
 }

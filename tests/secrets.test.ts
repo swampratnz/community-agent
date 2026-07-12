@@ -11,6 +11,10 @@ process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-cloud-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-cloud-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-cloud-app-secret';
+// The dev-team bearer token is a credential too (config.devTeam.authToken).
+// Set it WITHOUT DEV_TEAM_ENABLED so the config refine doesn't also require an
+// endpoint URL — runtimeSecrets() includes the token regardless of the flag.
+process.env.DEV_TEAM_AUTH_TOKEN ??= 'test-dev-team-token';
 
 const { runtimeSecrets } = await import('../src/agent/secrets.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
@@ -31,4 +35,17 @@ test('SECURITY: filterOutbound redacts every configured WhatsApp Cloud credentia
   assert.ok(!out.includes('test-cloud-access-token'));
   assert.ok(!out.includes('test-cloud-verify-token'));
   assert.ok(!out.includes('test-cloud-app-secret'));
+});
+
+test('SECURITY: runtimeSecrets() includes the dev-team bearer token, and filterOutbound redacts it', () => {
+  const secrets = runtimeSecrets();
+  assert.ok(
+    secrets.includes('test-dev-team-token'),
+    'the dev-team service credential must be covered by the belt-and-braces redaction layer',
+  );
+  const out = filterOutbound('dispatched via token=test-dev-team-token', 'full', secrets);
+  assert.ok(
+    !out.includes('test-dev-team-token'),
+    'the dev-team token must never survive the outbound filter',
+  );
 });
