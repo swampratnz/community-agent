@@ -23,10 +23,28 @@ name: Changelog autofill
 #     never opens a second. When you merge/close it, the next run drafts a fresh
 #     one for whatever gap remains. This bounds it to at most one agent run + one
 #     open PR at a time (no daily thrash of the Max pool or your notifications).
-#   * The agent may touch ONLY CHANGELOG.md. This is prompt-enforced, then
-#     VERIFIED deterministically after the fact: a post-step reads the opened
-#     PR's diff and, if it touched any other path, labels it `needs-human` and
-#     comments — so an out-of-scope edit is flagged, never quietly merged.
+#   * The agent may touch ONLY CHANGELOG.md. Its edit tools can't be scoped to
+#     one path, so this is prompt-stated and then ENFORCED deterministically,
+#     FAIL-CLOSED: the final step reads the opened PR's diff and, if it touched
+#     any other path, CLOSES the PR and deletes the branch (not just a label) —
+#     so an out-of-scope change never sits in a PR a reviewer might rubber-stamp.
+#
+# TRUST SURFACE (accepted, documented per PR #418 review — establishes the
+# precedent for feeding contributor-authored content to a write-capable agent):
+# to write an accurate entry the agent runs `gh pr view/diff <N>` on the flagged
+# PRs, whose numbers come from the deterministic checker via gaps.md. Those PRs
+# can include EXTERNAL, non-maintainer contributors — a wider input-trust
+# surface than the sibling loops (autofix/revise/conflict), which only ever act
+# on a bot PR with a `Closes #` body or an allowlisted maintainer's PR. So a
+# malicious PR body/diff is an injection vector into an agent holding
+# contents:write + push. The residual is bounded by, in order: (1) the agent has
+# NO `gh pr list` and no GITHUB_TOKEN — it can't enumerate the repo or read
+# secrets; (2) the fail-closed scope gate above auto-closes any PR that changes a
+# non-CHANGELOG path; (3) an in-scope result is only ever CHANGELOG.md prose a
+# human reads; (4) the App token can't merge, can't push `main` (branch
+# protection), and lacks the `workflows` scope; (5) a HUMAN merges every PR.
+# There is no path from an injected historical PR to production without that
+# human merge. Judged an acceptable, well-bounded surface for a docs janitor.
 #   * It NEVER merges the PR — a human does. The agent's `gh` can open/label/
 #     comment a PR but has no merge/close verb.
 #   * It CANNOT push .github/workflows/* (the App token lacks the `workflows`
@@ -161,11 +179,6 @@ jobs:
         if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
         run: npm ci
 
-      - name: Record starting HEAD
-        id: mark
-        if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
-        run: echo "head_before=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Draft the missing changelog entries and open the PR
         id: draft
         if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
@@ -242,7 +255,10 @@ jobs:
           #   * Edit/Write/Read/Grep/Glob for the changelog (Write can't be scoped
           #     to one path — the ONLY-CHANGELOG.md rule is prompt-stated and then
           #     VERIFIED by the post-step, which flags any out-of-scope diff).
-          #   * `gh` can view PRs and open/label/comment ONE PR — no merge/close.
+          #   * `gh` can view a SPECIFIC PR by number (from gaps.md) and open/
+          #     label/comment ONE PR — no `gh pr list` (it never needs to
+          #     enumerate arbitrary PRs; the flagged numbers come from gaps.md),
+          #     and no merge/close verb.
           #   * git is add/commit + the single exact push form `git push origin
           #     HEAD` (no `:*`); checkout/branch/switch withheld so HEAD stays on
           #     the branch the job created (see pipeline-pr-conflict.yml's note on
@@ -250,13 +266,19 @@ jobs:
           claude_args: |
             --max-turns 60
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(npx prettier:*),Bash(node:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(cat gaps.md),Bash(date:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(npx prettier:*),Bash(node:*)"
 
-      # Source of truth. Two jobs: (1) confirm the agent actually opened a PR and
-      # pushed a commit; (2) SCOPE TRIPWIRE — the PR must touch only CHANGELOG.md.
-      # An out-of-scope edit gets `needs-human` + a comment (never a silent
-      # merge; a human merges regardless).
-      - name: Verify scope + result
+      # Source of truth + FAIL-CLOSED SCOPE GATE. The agent's edit tools can't be
+      # scoped to a single path, so the "only CHANGELOG.md" rule is enforced HERE,
+      # deterministically: read the opened PR's diff, and if it touched any other
+      # path — the exact outcome a prompt-injection from an arbitrary historical
+      # PR's body/diff would aim for — CLOSE the PR and delete the branch rather
+      # than leave an out-of-scope change sitting in a PR a reviewer might
+      # rubber-stamp. Fail closed, not "label and hope". (An in-scope change is
+      # still only ever a CHANGELOG.md text edit a human reviews and merges — the
+      # App token can't merge, can't push `main`, and lacks the `workflows`
+      # scope, so there is no path to production without that human merge.)
+      - name: Verify scope + result (fail closed on out-of-scope diff)
         if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -273,12 +295,13 @@ jobs:
           echo "Changed files:"; echo "$files"
           offenders="$(echo "$files" | grep -v -x 'CHANGELOG.md' || true)"
           if [ -n "$offenders" ]; then
-            echo "::error::Autofill PR #$num changed files other than CHANGELOG.md:"; echo "$offenders"
-            gh pr edit "$num" --repo "$GITHUB_REPOSITORY" --add-label needs-human || true
+            echo "::error::Autofill PR #$num changed files other than CHANGELOG.md — closing it (fail closed):"; echo "$offenders"
             {
-              printf '🤖 This auto-drafted changelog PR unexpectedly changed files other than `CHANGELOG.md` — labelling `needs-human`. Please review the diff before merging (or close it). Out-of-scope paths:\n\n'
+              printf '🤖 Auto-closing: this auto-drafted changelog PR changed files other than `CHANGELOG.md`, which it is never allowed to. Closing and deleting the branch rather than leaving an out-of-scope change open for review. Out-of-scope paths:\n\n'
               echo "$offenders" | sed 's/^/- `/; s/$/`/'
+              printf '\nRun: %s/%s/actions/runs/%s\n' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}"
             } | gh pr comment "$num" --repo "$GITHUB_REPOSITORY" --body-file -
+            gh pr close "$num" --repo "$GITHUB_REPOSITORY" --delete-branch || true
             exit 1
           fi
           echo "Scope OK — PR #$num touches only CHANGELOG.md. A human reviews and merges."
