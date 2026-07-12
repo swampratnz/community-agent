@@ -146,8 +146,9 @@ memory**:
    ratings (`unhelpfulCount >= 2`, the pull-only complement to
    `list_low_rated_knowledge`), conversation-scoped like the knowledge-gaps
    count because `answer_feedback` also has a `conversation_id` — plus (issue
-   #344) a guild-wide, Discord-only joined-this-week/left-this-week roster
-   pulse, sourced from `rosterCounts(admin.platform)` — the same
+   #344) a guild-wide joined-this-week/left-this-week roster pulse (both
+   Discord and, since issue #407, WhatsApp), sourced from
+   `rosterCounts(admin.platform)` — the same
    `{ total, joinedThisWeek, leftThisWeek }` aggregate `list_roster` already
    computes over `server_roster` (issue #47), now pushed instead of pull-only —
    plus (issue #357) a guild-wide count of members currently muted by
@@ -159,8 +160,10 @@ memory**:
    — the pull-only complement to `moderation_history`/`clear_warnings`.
    As bare integers with no member name/id, it's guild-wide like the
    access-request/suggestion/candidate counts, not conversation-scoped;
-   `server_roster` is Discord-only, so `rosterCounts('whatsapp')` is always
-   zeros, leaving a WhatsApp admin's digest unaffected. Plus (issue #371) their
+   `server_roster` now covers WhatsApp groups too (issue #407), so
+   `rosterCounts('whatsapp')` reports real numbers for any deployment with
+   WhatsApp roster rows, with zero code change to `rosterCounts` itself.
+   Plus (issue #371) their
    own scoped count of outbound replies that hit `AGENT_MAX_TURNS`/
    `AGENT_MAX_TURNS_MEMBER` before finishing, sourced from
    `countMaxTurnsFailures(scope, ...)` — conversation-scoped like the
@@ -377,17 +380,30 @@ weakening it:
    guests. Admins call `list_access_requests` to see who's waiting instead of
    relying on informal pings; `add_member` clears the row for that user once
    actioned.
-3. **Server roster** (issue #47). The Discord adapter records every
-   `guildMemberAdd`/`guildMemberRemove` into `server_roster` (identity
-   metadata only — see SECURITY.md) and idempotently backfills the current
-   member list once on startup, skipping bots. `list_roster` (admin) answers
-   "who joined this week?", "who joined but was never added as a member?"
-   (the gated-mode onboarding queue — the exact conversion funnel
-   `add_member` serves), and "who left?", with a total/joined/left weekly
-   pulse line. Rejoins clear `left_at` and bump `rejoined_count`. No new
-   gateway intent: the `GuildMembers` intent the bot already holds for role
-   resolution streams these events anyway; a `GuildMember` partial is enabled
-   so leaves of uncached members still fire.
+3. **Server roster** (issue #47, extended to WhatsApp by issue #407). The
+   Discord adapter records every `guildMemberAdd`/`guildMemberRemove` into
+   `server_roster` (identity metadata only — see SECURITY.md) and
+   idempotently backfills the current member list once on startup, skipping
+   bots. No new gateway intent: the `GuildMembers` intent the bot already
+   holds for role resolution streams these events anyway; a `GuildMember`
+   partial is enabled so leaves of uncached members still fire. The Baileys
+   adapter mirrors this for WhatsApp groups: `onGroupParticipantsUpdate`
+   (already subscribed to `group-participants.update` for membership-cache
+   invalidation and the welcome message) now also upserts/marks-left on every
+   `add`/`remove`, scoped by `WHATSAPP_ALLOWED_JIDS` and independent of
+   `WHATSAPP_WELCOME_ENABLED`, plus an idempotent startup backfill via
+   `groupFetchAllParticipating()`; both exclude the bot's own number/LID. No
+   new subscription, schema change, or repository function — `server_roster`,
+   `upsertRosterMember`, and `markRosterLeave` were already platform-generic.
+   `list_roster` (admin) answers "who joined this week?", "who joined but was
+   never added as a member?" (the gated-mode onboarding queue — the exact
+   conversion funnel `add_member` serves), and "who left?", with a
+   total/joined/left weekly pulse line, for either platform. Rejoins clear
+   `left_at` and bump `rejoined_count`. A WhatsApp caveat not shared by
+   Discord's single-guild model: a `remove` from one group marks the row
+   "left" even if the person remains in another allowed group — a single
+   `(platform, user_id)` row can't represent per-group presence, documented
+   here rather than solved in this first version.
 4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
    static "ask a community admin" pointer a gated guest gets on every
    addressed message named no one to ask. `listAdminDisplayNames(platform)`

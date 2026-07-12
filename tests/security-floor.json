@@ -11,7 +11,7 @@
   "backgroundJobCost.test.ts": 3,
   "backgroundJobs.test.ts": 6,
   "backgroundJobsDisabled.test.ts": 2,
-  "baileysAdapter.test.ts": 16,
+  "baileysAdapter.test.ts": 19,
   "baileysArchiving.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 1,
   "classifierModelTieringSet.test.ts": 1,
