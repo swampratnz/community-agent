@@ -37,6 +37,7 @@ import {
   listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
   listMemberNotes,
+  listMemberWarnings,
   MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
   isKnownMessage,
@@ -607,7 +608,7 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, or review the moderation history log\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, or pull one member's full warning history with reasons\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule an event\n' +
@@ -1624,7 +1625,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
     "Check the caller's OWN active auto-moderation warning count and the configured limit — use this when " +
       'a member asks how many warnings they have or whether they can still post. Always scoped to the ' +
       "caller's own platform/user id, never a model-supplied identifier. Never includes a warning's reason " +
-      'or excerpt — that context stays admin-only (see moderation_history).',
+      'or excerpt — that context stays admin-only (see list_member_warnings).',
     {},
     async () => {
       const limit = config.moderation.strikeLimit;
@@ -2149,6 +2150,39 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       });
       return text(success ? result : `Failed: ${result}`);
     },
+  );
+
+  const listMemberWarningsTool = tool(
+    'list_member_warnings',
+    "Show one member's full auto-moderation warning history — both auto-detected (wordlist/LLM) and " +
+      "manually-issued (moderate's warn action) warnings, each with its reason and, for auto-detected " +
+      'strikes, the flagged excerpt, newest first. Use this before escalating (warn → timeout → kick/mute) ' +
+      "to see WHY a member was warned, not just how many times. Scoped to the target's (platform, userId) " +
+      'only, same as clear_warnings — not conversation-scoped. Admin only.',
+    {
+      targetUserId: z.string().describe('Platform user id whose warning history to show'),
+      limit: z.number().optional().describe('Max entries (default 20)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_member_warnings');
+      if (!(await isKnownUser(caller.platform, args.targetUserId))) {
+        return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
+      }
+      const rows = await listMemberWarnings(caller.platform, args.targetUserId, args.limit ?? 20);
+      if (rows.length === 0) return text(`No warnings on record for ${args.targetUserId}.`);
+      return text(
+        rows
+          .map((r) => {
+            const issuer = r.issuedBy ? ` by ${r.issuedBy}` : '';
+            const cleared = r.clearedAt ? ` [cleared ${r.clearedAt.toISOString()}]` : '';
+            const reasonText = `\n  ${untrusted('reason', r.reason)}`;
+            const excerptText = r.excerpt != null ? `\n  ${untrusted('excerpt', r.excerpt)}` : '';
+            return `[${r.createdAt.toISOString()}] ${r.source}${issuer}${cleared}:${reasonText}${excerptText}`;
+          })
+          .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
   );
 
   const announce = tool(
@@ -4073,6 +4107,7 @@ export function buildToolServer(caller: CallerContext, adapter: PlatformAdapter,
       userHistory,
       moderate,
       clearWarningsTool,
+      listMemberWarningsTool,
       announce,
       createPoll,
       endPoll,

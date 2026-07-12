@@ -3451,6 +3451,49 @@ export async function clearWarnings(platform: string, userId: string, clearedBy:
   return rowCount ?? 0;
 }
 
+export interface MemberWarningRow {
+  createdAt: Date;
+  source: 'auto' | 'admin';
+  reason: string;
+  excerpt: string | null;
+  issuedBy: string | null;
+  clearedAt: Date | null;
+  clearedBy: string | null;
+}
+
+/**
+ * Full warning history (both `source: 'auto'` and `source: 'admin'` rows,
+ * reason/excerpt included) for one member — the `list_member_warnings` read
+ * `moderation_history` structurally can't provide, since it reads only
+ * `admin_audit`, never `member_warnings` (issue #410). Scoped by
+ * `(platform, userId)` only, matching `clearWarnings`' own scope — the table
+ * has no `conversation_id` column (docs/SECURITY.md: "any admin may clear
+ * anyone's [warnings]").
+ */
+export async function listMemberWarnings(
+  platform: string,
+  userId: string,
+  limit = 20,
+): Promise<MemberWarningRow[]> {
+  const { rows } = await pool.query(
+    `SELECT created_at, source, reason, excerpt, issued_by, cleared_at, cleared_by
+       FROM member_warnings
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, userId, limit],
+  );
+  return rows.map((r) => ({
+    createdAt: r.created_at,
+    source: r.source,
+    reason: r.reason,
+    excerpt: r.excerpt,
+    issuedBy: r.issued_by,
+    clearedAt: r.cleared_at,
+    clearedBy: r.cleared_by,
+  }));
+}
+
 // --- Content reports (member-facing abuse/spam intake) -----------------------
 
 /** Per-reporter cap on new reports within a rolling window (anti-griefing on the admin queue). */
