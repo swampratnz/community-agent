@@ -592,6 +592,10 @@ export async function saveKnowledge(input: {
   // given, otherwise left null.
   sourceUrl?: string;
   sourceTitle?: string;
+  // The saving admin's own platform (issue #422) — used only to scope
+  // automatic knowledge-gap resolution below when `scope` is a conversation
+  // id (see resolveKnowledgeGaps); never stored on the knowledge row itself.
+  callerPlatform?: Platform;
 }): Promise<{ id: number; similarEntry?: KnowledgeDuplicateMatch }> {
   const scope = input.scope ?? 'global';
   let embedding: number[] | null = null;
@@ -637,6 +641,15 @@ export async function saveKnowledge(input: {
       input.sourceTitle ?? null,
     ],
   );
+
+  if (embedding) {
+    try {
+      await resolveKnowledgeGaps(scope, embedding, input.callerPlatform ?? null);
+    } catch (err) {
+      logger.warn({ err }, 'Knowledge-gap resolution failed for new entry');
+    }
+  }
+
   return { id: Number(rows[0].id), similarEntry };
 }
 
@@ -673,6 +686,53 @@ export async function saveKnowledge(input: {
  * agent/tools.ts and storage/repository.ts importing each other.
  */
 export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
+
+/**
+ * Mark unresolved `knowledge_gaps` rows resolved when `embedding` (the
+ * vector `saveKnowledge`/`updateKnowledge` already computed for their write)
+ * now clears `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` against a gap's stored
+ * query embedding — the accept-gap curation loop issue #422 closes (#213's
+ * review named this sliver; #246 shipped the other one). This is the exact
+ * inverse of `recordKnowledgeGap`'s recording rule, so it's internally
+ * consistent by construction: a future identical query would no longer
+ * record a gap, so it's safe to mark the standing one resolved now.
+ *
+ * Scope filter mirrors `searchKnowledge`'s visibility model, but inverted
+ * (which gaps can *this entry* now answer, vs. which entries can *this
+ * caller* see) and, for the conversation-scoped case, deliberately
+ * *narrower*: `searchKnowledge` matches `scope = conversationId` alone
+ * (SECURITY: cross-platform conversation-id collisions are already
+ * mitigated in practice by non-overlapping id shapes there, but the resolve
+ * path can't rely on "probably fine" for an automatic write). So here a
+ * conversation-scoped entry (`scope` not `'global'` and not a `Platform`
+ * literal) only resolves gaps on `callerPlatform` — never cross-platform,
+ * even if a conversation id string happened to collide across platforms.
+ * `callerPlatform` is unused (and the conversation-scoped branch matches
+ * nothing) for a `'global'`- or platform-scoped entry.
+ *
+ * Non-blocking: callers must swallow failures themselves — a resolution
+ * error must never block the save/update it rides on, same convention
+ * `recordKnowledgeGap` already uses for the record side.
+ */
+async function resolveKnowledgeGaps(
+  scope: string,
+  embedding: number[],
+  callerPlatform: Platform | null,
+): Promise<void> {
+  await pool.query(
+    `UPDATE knowledge_gaps
+        SET resolved_at = now()
+      WHERE resolved_at IS NULL
+        AND embedding IS NOT NULL
+        AND (
+          $1 = 'global'
+          OR platform = $1
+          OR (platform = $2 AND conversation_id = $1)
+        )
+        AND 1 - (embedding <=> $3) >= $4`,
+    [scope, callerPlatform, pgvector.toSql(embedding), KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD],
+  );
+}
 
 /**
  * Semantic search over curated knowledge, scoped to what `caller` may see:
@@ -1019,15 +1079,20 @@ export async function updateKnowledge(input: {
   scope?: string;
   sourceUrl?: string;
   sourceTitle?: string;
+  // The editing admin's own platform (issue #422) — same use as
+  // saveKnowledge's callerPlatform, only for scoping automatic
+  // knowledge-gap resolution below; never stored on the knowledge row.
+  callerPlatform?: Platform;
 }): Promise<boolean> {
   const { rows: existingRows } = await pool.query(
-    `SELECT title, content, source_url, source_title FROM knowledge WHERE id = $1`,
+    `SELECT title, content, scope, source_url, source_title FROM knowledge WHERE id = $1`,
     [input.id],
   );
   if (existingRows.length === 0) return false;
 
   const title = input.title !== undefined ? input.title : existingRows[0].title;
   const content = input.content !== undefined ? input.content : existingRows[0].content;
+  const scope = input.scope !== undefined ? input.scope : existingRows[0].scope;
   const sourceUrl = input.sourceUrl !== undefined ? input.sourceUrl : existingRows[0].source_url;
   const sourceTitle = input.sourceTitle !== undefined ? input.sourceTitle : existingRows[0].source_title;
   const reVerify = input.sourceUrl !== undefined || input.sourceTitle !== undefined;
@@ -1056,6 +1121,15 @@ export async function updateKnowledge(input: {
       reVerify,
     ],
   );
+
+  if (embedding) {
+    try {
+      await resolveKnowledgeGaps(scope, embedding, input.callerPlatform ?? null);
+    } catch (err) {
+      logger.warn({ err }, 'Knowledge-gap resolution failed for edited entry');
+    }
+  }
+
   return (rowCount ?? 0) > 0;
 }
 
@@ -3173,7 +3247,9 @@ export interface KnowledgeGapCluster {
  * the `list_knowledge_gaps` signal, mirroring `recentQuestionClusters` exactly
  * (same clustering code, same `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`,
  * same conversation-scoping convention) but sourced from `knowledge_gaps`
- * instead of `interactions`.
+ * instead of `interactions`. Excludes `resolved_at IS NOT NULL` rows (issue
+ * #422) — a gap `save_knowledge`/`update_knowledge` already resolved
+ * disappears immediately, not only once `created_at` ages past `days`.
  */
 export async function recentKnowledgeGapClusters(
   conversationIds: readonly string[] | null,
@@ -3194,6 +3270,7 @@ export async function recentKnowledgeGapClusters(
     `SELECT query_text, embedding
        FROM knowledge_gaps
       WHERE embedding IS NOT NULL
+        AND resolved_at IS NULL
         AND created_at > now() - $1::interval
         ${scope}
       ORDER BY created_at ASC`,
@@ -3725,12 +3802,16 @@ export async function countOpenReports(
  * from a conversation they don't participate in (mirrors `countOpenReports`'s
  * scoping). A true `COUNT(*)`, never `.length` of a `LIMIT`-bounded list, so a
  * backlog larger than `list_knowledge_gaps`' own limit is not understated.
+ * Excludes `resolved_at IS NOT NULL` rows (issue #422), same as
+ * `recentKnowledgeGapClusters` — a resolved gap drops out of the digest
+ * count immediately.
  */
 export async function countKnowledgeGaps(conversationIds: readonly string[], days: number): Promise<number> {
   if (conversationIds.length === 0) return 0;
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM knowledge_gaps
       WHERE conversation_id = ANY($1)
+        AND resolved_at IS NULL
         AND created_at >= now() - ($2 || ' days')::interval`,
     [[...conversationIds], String(days)],
   );

@@ -2855,6 +2855,7 @@ export function buildToolServer(
         createdByRole: caller.role,
         sourceUrl: args.sourceUrl,
         sourceTitle: args.sourceTitle,
+        callerPlatform: caller.platform,
       });
       let reply = `Saved knowledge entry #${id}.`;
       if (similarEntry) {
@@ -3042,6 +3043,7 @@ export function buildToolServer(
               scope: args.scope,
               sourceUrl: args.sourceUrl,
               sourceTitle: args.sourceTitle,
+              callerPlatform: caller.platform,
             });
             if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
             return 'updated';
