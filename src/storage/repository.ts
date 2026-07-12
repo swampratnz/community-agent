@@ -627,6 +627,7 @@ export async function saveKnowledge(input: {
     }
   }
 
+  const createdByRole = input.createdByRole ?? 'admin';
   const { rows } = await pool.query(
     `INSERT INTO knowledge (scope, title, content, source_user_id, created_by_role, embedding, source_url, source_title, verified_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CASE WHEN $7::text IS NOT NULL THEN now() ELSE NULL END) RETURNING id`,
@@ -635,14 +636,18 @@ export async function saveKnowledge(input: {
       input.title ?? null,
       input.content,
       input.sourceUserId ?? null,
-      input.createdByRole ?? 'admin',
+      createdByRole,
       embedding ? pgvector.toSql(embedding) : null,
       input.sourceUrl ?? null,
       input.sourceTitle ?? null,
     ],
   );
 
-  if (embedding) {
+  // SECURITY: never resolve gaps off unreviewed 'auto' web-research content
+  // (quarantined/untrusted at retrieval) — only a human-authored entry or a
+  // trusted 'docs' backfill may silently clear the "never confidently
+  // answered" signal. See resolveKnowledgeGaps.
+  if (embedding && createdByRole !== 'auto') {
     try {
       await resolveKnowledgeGaps(scope, embedding, input.callerPlatform ?? null);
     } catch (err) {
@@ -709,6 +714,21 @@ export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
  * even if a conversation id string happened to collide across platforms.
  * `callerPlatform` is unused (and the conversation-scoped branch matches
  * nothing) for a `'global'`- or platform-scoped entry.
+ *
+ * SECURITY: callers gate this on `createdByRole !== 'auto'` before invoking
+ * it (see saveKnowledge/updateKnowledge) — unreviewed 'auto' web-research
+ * content is quarantined/untrusted at retrieval and must never silently
+ * clear the "never confidently (human-)answered" signal `list_knowledge_gaps`
+ * / the digest count depend on. A trusted 'docs' backfill or a human-authored
+ * entry (any RBAC `Tier`) may resolve gaps; this function itself has no
+ * opinion on provenance, so that check MUST happen before it is called.
+ *
+ * Known conservative approximation: this checks raw cosine similarity against
+ * the gap's floor, not whether the new/edited entry would actually rank in
+ * `searchKnowledge`'s top-`topK` (default 5) for that historical query. If
+ * 5+ other entries already outscore it, a real future search still wouldn't
+ * surface this entry, yet the gap is marked resolved here anyway. Low
+ * severity at typical KB sizes; not worth the extra query per gap to fix.
  *
  * Non-blocking: callers must swallow failures themselves — a resolution
  * error must never block the save/update it rides on, same convention
@@ -1085,7 +1105,7 @@ export async function updateKnowledge(input: {
   callerPlatform?: Platform;
 }): Promise<boolean> {
   const { rows: existingRows } = await pool.query(
-    `SELECT title, content, scope, source_url, source_title FROM knowledge WHERE id = $1`,
+    `SELECT title, content, scope, source_url, source_title, created_by_role FROM knowledge WHERE id = $1`,
     [input.id],
   );
   if (existingRows.length === 0) return false;
@@ -1122,7 +1142,10 @@ export async function updateKnowledge(input: {
     ],
   );
 
-  if (embedding) {
+  // SECURITY: same 'auto'-provenance exclusion as saveKnowledge — an entry's
+  // created_by_role never changes here, so the pre-edit row's value is the
+  // authoritative check.
+  if (embedding && existingRows[0].created_by_role !== 'auto') {
     try {
       await resolveKnowledgeGaps(scope, embedding, input.callerPlatform ?? null);
     } catch (err) {

@@ -568,6 +568,16 @@ serve. That decision used to be made and thrown away in the same request;
   `recentKnowledgeGapClusters` and the digest's `countKnowledgeGaps` both add
   `resolved_at IS NULL`, so a resolved gap disappears immediately rather than
   waiting out the `created_at` window.
+  `saveKnowledge`/`updateKnowledge` are shared by every knowledge write, not
+  only the admin `save_knowledge`/`update_knowledge` tools — the daily
+  research refresh and docs-ingest backfill (`createdByRole: 'auto'`/`'docs'`)
+  go through the same functions. Gap resolution is gated on
+  `createdByRole !== 'auto'`: an unreviewed, machine-scraped 'auto' entry
+  (already quarantined/untrusted at retrieval) must never silently clear the
+  "never confidently (human-)answered" signal with zero human curation. A
+  trusted `'docs'` backfill or any human-authored entry (admin `save_knowledge`
+  /`update_knowledge`, or `accept_knowledge_candidate`'s admin-reviewed
+  publish) may resolve gaps as normal.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,

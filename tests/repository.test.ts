@@ -2124,6 +2124,57 @@ test(
 );
 
 test(
+  "SECURITY: repository: unreviewed 'auto' provenance never resolves a knowledge_gaps row — only a 'docs' backfill or a human-authored entry may, even when the content clears the relevance floor (issue #422)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-resolve-auto`;
+    const userId = `${RUN}-gap-resolve-auto-user`;
+    const autoQuery = `${RUN} how do I configure the zylotrix webhook`;
+    const docsQuery = `${RUN} how do I rotate the zylotrix api key`;
+
+    const autoGap = await recordKnowledgeGap('discord', conversationId, userId, autoQuery);
+    const docsGap = await recordKnowledgeGap('discord', conversationId, userId, docsQuery);
+    assert.ok(autoGap !== 'rate_limited' && docsGap !== 'rate_limited', 'fixture gaps recorded');
+
+    // 'auto' (unreviewed web-research) content matching a gap must NOT
+    // resolve it, even though it clears the relevance floor.
+    const { id: autoId } = await saveKnowledge({ content: autoQuery, createdByRole: 'auto' });
+    const afterAutoSave = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
+      autoGap.id,
+    ]);
+    assert.equal(
+      afterAutoSave.rows[0].resolved_at,
+      null,
+      "SECURITY: an 'auto'-provenance save must never resolve a matching gap",
+    );
+
+    // Editing that same 'auto' row (e.g. the daily refresh's updateKnowledge
+    // call) must also not resolve gaps — created_by_role never changes.
+    const autoUpdated = await updateKnowledge({ id: autoId, content: `${autoQuery} refreshed` });
+    assert.ok(autoUpdated, 'update applied');
+    const afterAutoUpdate = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
+      autoGap.id,
+    ]);
+    assert.equal(
+      afterAutoUpdate.rows[0].resolved_at,
+      null,
+      "SECURITY: updating an 'auto'-provenance row must never resolve a gap either",
+    );
+
+    // A trusted 'docs' backfill matching a different gap DOES resolve it —
+    // the gate is provenance-specific, not a blanket disable.
+    const { id: docsId } = await saveKnowledge({ content: docsQuery, createdByRole: 'docs' });
+    const afterDocsSave = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
+      docsGap.id,
+    ]);
+    assert.ok(afterDocsSave.rows[0].resolved_at, "a trusted 'docs'-provenance save still resolves a gap");
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[autoId, docsId]]);
+  },
+);
+
+test(
   "SECURITY: repository: knowledge-gap resolution scope filter mirrors searchKnowledge's visibility model — a conversation-scoped entry resolves only gaps on the same platform AND conversation, a platform-scoped entry resolves only gaps on that platform, and neither ever crosses conversation or platform boundaries (issue #422)",
   { skip },
   async () => {
