@@ -22,6 +22,7 @@ import {
   recordAccessRequest,
   recordInteraction,
   recordKnowledgeRetrieval,
+  recordShortcutHit as recordShortcutHitDefault,
   searchKnowledge,
 } from './storage/repository.js';
 import {
@@ -198,6 +199,7 @@ export class Router {
     private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
     private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated = isKnowledgeLowRated,
     private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
+    private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -581,6 +583,7 @@ export class Router {
         { platform: msg.platform, conversationId: msg.conversationId },
         'ack_shortcut_skipped_turn',
       );
+      this.recordShortcutHit('ack').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
       await this.enqueue(key, 'ack reply', () => this.send(adapter, msg.conversationId, ACK_REPLY_TEXT));
       return;
     }
@@ -624,6 +627,9 @@ export class Router {
           { platform: msg.platform, conversationId: msg.conversationId },
           'repeat_question_shortcut_hit',
         );
+        this.recordShortcutHit('repeat_question').catch((err) =>
+          logger.warn({ err }, 'shortcut_hit_record_failed'),
+        );
         await this.enqueue(key, 'repeat-question shortcut reply', () =>
           this.sendRepeatShortcut(msg, adapter, cached.replyText),
         );
@@ -647,6 +653,9 @@ export class Router {
         logger.debug(
           { platform: msg.platform, conversationId: msg.conversationId },
           'repeat_max_turns_shortcut_hit',
+        );
+        this.recordShortcutHit('repeat_max_turns').catch((err) =>
+          logger.warn({ err }, 'shortcut_hit_record_failed'),
         );
         await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
           this.sendRepeatMaxTurnsShortcut(msg, adapter),
@@ -719,6 +728,7 @@ export class Router {
     hit: KnowledgeShortcutHit,
   ): Promise<void> {
     logger.debug({ platform: msg.platform, conversationId: msg.conversationId }, 'knowledge_shortcut_hit');
+    this.recordShortcutHit('knowledge').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
     // Member-facing low-rated-answer caveat (issue #337) — opt-in, and
     // deliberately only ever computed on THIS path (never the guest
     // shortcut or knowledge_search): the extra count query is skipped
@@ -761,6 +771,10 @@ export class Router {
    * reply to it — is never stored, matching the invariant every other branch
    * of the gated-guest path already preserves (docs/SECURITY.md). Retrieval
    * count/last_retrieved_at is still bumped, same as any other shortcut hit.
+   * Also deliberately excluded from `shortcut_hits`/`recordShortcutHit`
+   * (issue #440): the `knowledge` kind counts the member-facing shortcut
+   * above only, so `usage_stats`'s count is never misread as covering guest
+   * hits too.
    */
   private async sendGuestKnowledgeShortcut(
     msg: IncomingMessage,

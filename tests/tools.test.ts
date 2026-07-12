@@ -4771,6 +4771,7 @@ const BASE_USAGE_STATS = {
   topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
   costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
   backgroundCostUsd: 0,
+  shortcutHits: { total: 0, byKind: [] as Array<{ kind: string; count: number }> },
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -4792,6 +4793,62 @@ test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line namin
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Background jobs (moderation/digest/refresh): ~$4.20.',
+  );
+});
+
+test('formatUsageStats: shortcutHits.total === 0 is byte-identical to the pre-#440 output (no shortcuts line)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Shortcuts fired'), 'no shortcuts line when shortcutHits.total is 0');
+});
+
+test('formatUsageStats: shortcutHits.total > 0 appends a per-kind breakdown with a dollar estimate from the member-tier average reply cost (issue #440)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      shortcutHits: {
+        total: 7,
+        byKind: [
+          { kind: 'ack', count: 2 },
+          { kind: 'knowledge', count: 3 },
+          { kind: 'repeat_question', count: 1 },
+          { kind: 'repeat_max_turns', count: 1 },
+        ],
+      },
+    },
+    7,
+  );
+  // member row: costUsd 1.5 / replies 3 = $0.50/reply avg; 7 * 0.50 = $3.50
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1) — ' +
+      '~$3.50 avoided at the member-tier average reply cost.',
+  );
+});
+
+test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits the dollar clause (divide-by-zero guard, issue #440)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      costByRole: [],
+      shortcutHits: { total: 4, byKind: [{ kind: 'ack', count: 4 }] },
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: none\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0).',
   );
 });
 

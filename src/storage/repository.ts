@@ -2276,6 +2276,7 @@ export async function usageStats(days = 7): Promise<{
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
   costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
   backgroundCostUsd: number;
+  shortcutHits: { total: number; byKind: Array<{ kind: string; count: number }> };
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2302,6 +2303,7 @@ export async function usageStats(days = 7): Promise<{
     [interval],
   );
   const background = await sumBackgroundJobCosts(clampedDays);
+  const shortcuts = await sumShortcutHits(clampedDays);
   return {
     inbound: Number(totals[0].inbound),
     outbound: Number(totals[0].outbound),
@@ -2309,6 +2311,7 @@ export async function usageStats(days = 7): Promise<{
     topUsers: top.map((r) => ({ userId: r.user_id, userName: r.user_name, messages: Number(r.n) })),
     costByRole: byRole.map((r) => ({ role: r.role, costUsd: Number(r.cost), replies: Number(r.n) })),
     backgroundCostUsd: background.total,
+    shortcutHits: shortcuts,
   };
 }
 
@@ -2342,6 +2345,37 @@ export async function sumBackgroundJobCosts(
   );
   const byJob = rows.map((r) => ({ job: r.job as string, costUsd: Number(r.cost) }));
   return { total: byJob.reduce((sum, r) => sum + r.costUsd, 0), byJob };
+}
+
+// --- Shortcut hits -----------------------------------------------------------
+
+export type ShortcutKind = 'ack' | 'knowledge' | 'repeat_question' | 'repeat_max_turns';
+
+/**
+ * Records a hit of one of the four env-gated turn-skipping shortcuts (issue
+ * #440) — each avoids a `query()` call against the shared Max pool but was
+ * previously visible only via a single `logger.debug`/`.info` line. Callers
+ * are expected to fire this without awaiting and swallow rejections (mirrors
+ * `recordBackgroundJobCost`'s convention) — a failed write must never block
+ * or delay the shortcut's own reply.
+ */
+export async function recordShortcutHit(kind: ShortcutKind): Promise<void> {
+  await pool.query(`INSERT INTO shortcut_hits (kind) VALUES ($1)`, [kind]);
+}
+
+export async function sumShortcutHits(
+  days = 7,
+): Promise<{ total: number; byKind: Array<{ kind: string; count: number }> }> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
+  const { rows } = await pool.query(
+    `SELECT kind, count(*) AS n
+       FROM shortcut_hits
+      WHERE created_at > now() - $1::interval
+      GROUP BY kind ORDER BY kind`,
+    [`${clampedDays} days`],
+  );
+  const byKind = rows.map((r) => ({ kind: r.kind as string, count: Number(r.n) }));
+  return { total: byKind.reduce((sum, r) => sum + r.count, 0), byKind };
 }
 
 // --- Admin audit -----------------------------------------------------------

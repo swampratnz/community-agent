@@ -145,6 +145,37 @@ test('router (repeat-question shortcut): the same caller resending the same whit
   );
 });
 
+test('router (repeat-question shortcut): a hit records a shortcut_hits row of kind "repeat_question" (issue #440)', async () => {
+  const calls: string[] = [];
+  const router = new Router(
+    async () => ({ text: `${RUN} the meetup is at 6pm`, ok: true }),
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (kind) => {
+      calls.push(kind);
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-shortcut-hit`;
+
+  await trigger(makeMessage({ text: `${RUN} what time is the meetup?`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} what time is the meetup?`, conversationId }));
+
+  assert.equal(sent.length, 2);
+  assert.deepEqual(
+    calls,
+    ['repeat_question'],
+    'only the second (shortcut) hit records a row, not the first real turn',
+  );
+});
+
 test('router (repeat-question shortcut): the same normalized text from a different userId in the same conversation is NOT short-circuited', async () => {
   let calls = 0;
   const router = new Router(async () => {

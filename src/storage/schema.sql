@@ -615,3 +615,27 @@ CREATE TABLE IF NOT EXISTS dev_team_watches (
 CREATE INDEX IF NOT EXISTS dev_team_watches_unnotified_idx
   ON dev_team_watches (created_at)
   WHERE notified_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Durable hit counts for the four env-gated turn-skipping shortcuts (issue
+-- #440) — each avoids a `query()` call against the shared Max pool but, until
+-- now, recorded nothing beyond a single `logger.debug`/`.info` line, so a
+-- super admin who enables one has no evidence of how often it actually fires.
+-- `kind` is a fixed enum, never free text or anything derived from message
+-- content — deliberately narrower than `interactions` (no user id,
+-- conversation id, or platform) and narrower than `background_job_costs`
+-- (no tie to a specific job run): a bare event marker, mirrored on that
+-- table's shape. The `knowledge` kind counts only the member-facing knowledge
+-- shortcut (`sendKnowledgeShortcut`) — the separate guest knowledge shortcut
+-- (`sendGuestKnowledgeShortcut`) is deliberately excluded (see router.ts) so
+-- this count is never misread as covering both. forget_me/purge_user_data
+-- have nothing to touch here, same as background_job_costs.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS shortcut_hits (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kind       TEXT        NOT NULL CHECK (kind IN ('ack', 'knowledge', 'repeat_question', 'repeat_max_turns')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
+  ON shortcut_hits (created_at DESC);

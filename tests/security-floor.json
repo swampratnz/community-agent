@@ -1,4 +1,5 @@
 {
+  "ackShortcutRouter.test.ts": 1,
   "adminDigest.test.ts": 23,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreKnowledgeEntryId.test.ts": 2,
@@ -53,7 +54,7 @@
   "redeploy.test.ts": 2,
   "repeatMaxTurnsShortcutRouter.test.ts": 1,
   "repeatQuestionShortcutRouter.test.ts": 2,
-  "repository.test.ts": 56,
+  "repository.test.ts": 57,
   "router.test.ts": 4,
   "secrets.test.ts": 3,
   "securityGateCanary.test.ts": 1,

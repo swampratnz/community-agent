@@ -168,6 +168,59 @@ test('ordering: an in-flight real turn is still delivered before a subsequent ac
   assert.equal(sent[1].text, 'No worries!', 'the ack reply must be delivered after, not before');
 });
 
+test('router (ack shortcut enabled): a hit records a shortcut_hits row of kind "ack" (issue #440)', async () => {
+  const calls: string[] = [];
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a pure acknowledgement');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (kind) => {
+      calls.push(kind);
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'thanks' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(calls, ['ack']);
+});
+
+test('SECURITY: router (ack shortcut enabled): a recordShortcutHit rejection never blocks or delays the ack reply (issue #440)', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a pure acknowledgement');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('shortcut_hits insert failed (simulated)');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'thanks' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'No worries!', 'the ack reply still sends despite the failed recording');
+});
+
 test('router (ack shortcut enabled): the ack path still respects the gated-guest gate ahead of it', async () => {
   const router = new Router(async () => {
     throw new Error('runTurn must not be called');

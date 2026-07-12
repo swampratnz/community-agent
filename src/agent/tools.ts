@@ -559,7 +559,36 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0
       ? `\nBackground jobs (moderation/digest/refresh): ~$${s.backgroundCostUsd.toFixed(2)}.`
-      : '')
+      : '') +
+    formatShortcutHitsLine(s.shortcutHits, s.costByRole)
+  );
+}
+
+/**
+ * Renders the shortcut-savings line (issue #440), the sibling of the
+ * background-job cost line above: it appends nothing when no shortcut has
+ * fired in the window (byte-identical to before this issue), so a deployment
+ * with all four shortcuts off (or none has fired yet) is unaffected. The
+ * dollar estimate reuses `costByRole`'s member-tier average reply cost
+ * (already computed by `usageStats()`, no new pricing constant) and is
+ * omitted — count-only — when the member tier has zero replies in the
+ * window, to avoid a divide-by-zero.
+ */
+function formatShortcutHitsLine(
+  shortcutHits: Awaited<ReturnType<typeof usageStats>>['shortcutHits'],
+  costByRole: Awaited<ReturnType<typeof usageStats>>['costByRole'],
+): string {
+  if (shortcutHits.total === 0) return '';
+  const countOf = (kind: string) => shortcutHits.byKind.find((k) => k.kind === kind)?.count ?? 0;
+  const memberRow = costByRole.find((r) => r.role === 'member');
+  const avgMemberCost = memberRow && memberRow.replies > 0 ? memberRow.costUsd / memberRow.replies : null;
+  const dollarClause =
+    avgMemberCost !== null
+      ? ` — ~$${(shortcutHits.total * avgMemberCost).toFixed(2)} avoided at the member-tier average reply cost`
+      : '';
+  return (
+    `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
+    `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')})${dollarClause}.`
   );
 }
 

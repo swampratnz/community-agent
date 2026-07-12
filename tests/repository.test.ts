@@ -60,6 +60,8 @@ const {
   usageStats,
   recordBackgroundJobCost,
   sumBackgroundJobCosts,
+  recordShortcutHit,
+  sumShortcutHits,
   createContentReport,
   listReports,
   listOwnReports,
@@ -2716,6 +2718,140 @@ test(
       /violates check constraint/,
       'the job CHECK constraint rejects anything outside the fixed enum',
     );
+  },
+);
+
+test(
+  'repository: sumShortcutHits sums only rows within the rolling window, broken down byKind (issue #440)',
+  { skip },
+  async () => {
+    const days = 1;
+    const before = await sumShortcutHits(days);
+    const beforeByKind = new Map(before.byKind.map((r) => [r.kind, r.count]));
+
+    await recordShortcutHit('ack');
+    await recordShortcutHit('ack');
+    await recordShortcutHit('knowledge');
+    await recordShortcutHit('repeat_question');
+    await recordShortcutHit('repeat_max_turns');
+    // Outside the 1-day window — must not contribute to either total or byKind.
+    await pool.query(`INSERT INTO shortcut_hits (kind, created_at) VALUES ($1, now() - interval '2 days')`, [
+      'ack',
+    ]);
+
+    const after = await sumShortcutHits(days);
+    const afterByKind = new Map(after.byKind.map((r) => [r.kind, r.count]));
+
+    assert.equal(after.total - before.total, 5, 'total sums only the in-window rows: 2 + 1 + 1 + 1');
+    assert.equal(
+      (afterByKind.get('ack') ?? 0) - (beforeByKind.get('ack') ?? 0),
+      2,
+      'ack sums its two in-window rows, excluding the 2-day-old one',
+    );
+    assert.equal((afterByKind.get('knowledge') ?? 0) - (beforeByKind.get('knowledge') ?? 0), 1);
+    assert.equal((afterByKind.get('repeat_question') ?? 0) - (beforeByKind.get('repeat_question') ?? 0), 1);
+    assert.equal((afterByKind.get('repeat_max_turns') ?? 0) - (beforeByKind.get('repeat_max_turns') ?? 0), 1);
+
+    await pool.query(
+      `DELETE FROM shortcut_hits WHERE kind = ANY($1) AND created_at > now() - interval '3 days'`,
+      [['ack', 'knowledge', 'repeat_question', 'repeat_max_turns']],
+    );
+  },
+);
+
+test(
+  'repository: sumShortcutHits reflects zero new hits when none are recorded in between two reads (empty-window case, issue #440)',
+  { skip },
+  async () => {
+    const before = await sumShortcutHits(1);
+    const after = await sumShortcutHits(1);
+    assert.equal(
+      after.total - before.total,
+      0,
+      'no hits recorded in between — the window contributes nothing',
+    );
+    assert.equal(
+      after.total,
+      after.byKind.reduce((sum, r) => sum + r.count, 0),
+      'total always equals the sum of byKind counts',
+    );
+  },
+);
+
+test(
+  'repository: usageStats().shortcutHits equals sumShortcutHits(days) for the same window, and every existing field is unchanged (issue #440)',
+  { skip },
+  async () => {
+    const days = 1;
+    const before = await usageStats(days);
+
+    await recordShortcutHit('ack');
+
+    const [after, shortcuts] = await Promise.all([usageStats(days), sumShortcutHits(days)]);
+
+    assert.deepEqual(after.shortcutHits, shortcuts, 'usageStats.shortcutHits mirrors the same-window sum');
+    assert.equal(
+      after.shortcutHits.total - before.shortcutHits.total,
+      1,
+      'the newly recorded shortcut hit is reflected',
+    );
+    assert.equal(
+      after.inbound,
+      before.inbound,
+      'existing inbound field is unchanged by a shortcut-hit write',
+    );
+    assert.equal(
+      after.outbound,
+      before.outbound,
+      'existing outbound field is unchanged by a shortcut-hit write',
+    );
+    assert.equal(
+      after.costUsd,
+      before.costUsd,
+      'existing costUsd field is unchanged by a shortcut-hit write',
+    );
+    assert.deepEqual(after.costByRole, before.costByRole, 'existing costByRole field is unchanged');
+    assert.equal(
+      after.backgroundCostUsd,
+      before.backgroundCostUsd,
+      'existing backgroundCostUsd field is unchanged by a shortcut-hit write',
+    );
+
+    await pool.query(
+      `DELETE FROM shortcut_hits WHERE kind = 'ack' AND created_at > now() - interval '1 hour'`,
+    );
+  },
+);
+
+test(
+  'SECURITY: repository: shortcut_hits stores only the fixed kind enum and a timestamp — no user id, conversation id, platform, or free text (issue #440)',
+  { skip },
+  async () => {
+    const { rows: columns } = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'shortcut_hits' ORDER BY column_name`,
+    );
+    assert.deepEqual(
+      columns.map((c) => c.column_name).sort(),
+      ['created_at', 'id', 'kind'],
+      'shortcut_hits columns are a fixed kind enum + timestamp only — adding an identity-bearing column is a posture change',
+    );
+
+    // A literal, non-enum kind value must be rejected outright by the CHECK
+    // constraint — kind can never be free text.
+    await assert.rejects(
+      pool.query(`INSERT INTO shortcut_hits (kind) VALUES ($1)`, ['not_a_real_kind']),
+      /violates check constraint/,
+      'the kind CHECK constraint rejects anything outside the fixed enum',
+    );
+
+    // sumShortcutHits's return shape carries only kind + count — no
+    // user/conversation identifier or free-text field can leak through it.
+    const result = await sumShortcutHits(1);
+    assert.deepEqual(Object.keys(result).sort(), ['byKind', 'total']);
+    for (const row of result.byKind) {
+      assert.deepEqual(Object.keys(row).sort(), ['count', 'kind']);
+    }
   },
 );
 
