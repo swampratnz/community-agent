@@ -2006,6 +2006,73 @@ test('list_assignable_roles flags a configured role that currently carries permi
   );
 });
 
+// --- ban_user (issue #445) --------------------------------------------------
+
+/** Stubs client.guilds.fetch for performAdminAction('ban_user'); `ban` records or throws as configured. */
+function stubBanGuild(adapter: Adapter, opts: { ban?: (userId: string, options: unknown) => Promise<void> }) {
+  const calls: Array<{ userId: string; options: unknown }> = [];
+  const fakeGuild = {
+    members: {
+      ban: async (userId: string, options: unknown) => {
+        calls.push({ userId, options });
+        if (opts.ban) await opts.ban(userId, options);
+      },
+    },
+  };
+  const client = (
+    adapter as unknown as { client: { guilds: { fetch: (id: string) => Promise<typeof fakeGuild> } } }
+  ).client;
+  client.guilds.fetch = async () => fakeGuild;
+  return calls;
+}
+
+test('performAdminAction("ban_user") calls guild.members.ban with the target and reason, returning a success string (issue #445 acceptance criterion #6)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubBanGuild(adapter, {});
+
+  const result = await adapter.performAdminAction({
+    kind: 'ban_user',
+    targetUserId: 'user-1',
+    params: { reason: 'repeat offender' },
+  });
+
+  assert.match(result, /Banned user-1/);
+  assert.deepEqual(calls, [{ userId: 'user-1', options: { reason: 'repeat offender' } }]);
+});
+
+test('performAdminAction("ban_user") defaults the reason to "No reason given" when none is supplied (issue #445)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubBanGuild(adapter, {});
+
+  await adapter.performAdminAction({ kind: 'ban_user', targetUserId: 'user-1' });
+
+  assert.deepEqual(calls, [{ userId: 'user-1', options: { reason: 'No reason given' } }]);
+});
+
+test(
+  'SECURITY: performAdminAction("ban_user") propagates a Discord API failure (e.g. the bot lacking Ban ' +
+    'Members) rather than reporting a false success — the caller (audited()) turns this into "Failed: …", ' +
+    'never an unhandled rejection or a false-success audit row (issue #445 acceptance criterion #6)',
+  async () => {
+    const adapter = new DiscordAdapter();
+    stubBanGuild(adapter, {
+      ban: async () => {
+        throw new Error('Missing Permissions');
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        adapter.performAdminAction({
+          kind: 'ban_user',
+          targetUserId: 'user-1',
+          params: { reason: 'repeat offender' },
+        }),
+      /Missing Permissions/,
+    );
+  },
+);
+
 test(
   'SECURITY: assign_community_role never touches the database — a cosmetic role grant leaves ' +
     'community_users/resolveRole untouched (secondary guard; the primary guard is the assign-time ' +

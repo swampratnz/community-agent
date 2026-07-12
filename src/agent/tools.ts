@@ -2164,10 +2164,10 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    'Perform a moderation action. warn_user sends immediately; timeout/kick/delete require the admin to reply CONFIRM. Admins can only act in conversations they are in.',
+    "Perform a moderation action. warn_user sends immediately; timeout/kick/ban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite, and there is no unban_user counterpart in this bot; use Discord's own UI to unban. Admins can only act in conversations they are in.",
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'delete_message', 'warn_user'])
+        .enum(['timeout_user', 'kick_user', 'ban_user', 'delete_message', 'warn_user'])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
@@ -3564,7 +3564,7 @@ export function buildToolServer(
 
   const moderationHistory = tool(
     'moderation_history',
-    "Show recent moderation actions (warnings, timeouts, kicks, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
+    "Show recent moderation actions (warnings, timeouts, kicks, bans, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
     {
       limit: z.number().optional().describe('Max entries (default 20, max 100)'),
       targetUserId: z.string().optional().describe('Only show actions taken against this member'),
