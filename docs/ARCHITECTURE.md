@@ -201,7 +201,13 @@ Tiers: **super_admin > admin > member > guest**.
 - **admin** — granted by a super admin (`grant_admin`); stored in
   `community_users`. Privileged data access is **scoped to conversations the
   admin actually participates in** — the adapter resolves their real channel/
-  group membership (cached ~60s) and that list becomes a SQL filter.
+  group membership (cached ~60s) and that list becomes a SQL filter. Leaving
+  the Discord server/WhatsApp group does **not** revoke `role='admin'` — only
+  an explicit `revoke_admin` does — so a departed admin can still DM the bot
+  with admin-tier tools; `list_admins` (super-admin, read-only, issue #428) is
+  the visibility tool that surfaces this state (flags a `community_users`
+  admin whose `server_roster` row shows `left_at` set) so a super admin can
+  notice and decide whether to revoke.
 - **member** — granted by an admin (`add_member`); stored in `community_users`.
 - **guest** — everyone else. In **gated** mode (`ACCESS_MODE_*=gated`, the
   default) guests get a "ask an admin to add you" pointer and their message
@@ -252,6 +258,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `assign_community_role` / `remove_community_role` / `list_assignable_roles` (cosmetic Discord roles, strictly orthogonal to tiers — see docs/SECURITY.md §10) | ❌ | ❌ | ✅, confirm-gated (list read-only), Discord only | ✅ |
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
+| `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
@@ -335,7 +342,21 @@ stored, already-served real answer) is left untranslated, same "translate the
 shell, not the dynamic payload" discipline as #339/#405; the repeat-max-turns
 shortcut instead swaps in the already-existing `MAX_TURNS_REPLY_MI` (issue
 #396) alongside its own notice, since that failure text is itself a fixed
-constant, not caller-derived content.
+constant, not caller-derived content. Separately, the eleven deterministic
+fallback/notice constants across `router.ts`/`core.ts`/`upstreamFailure.ts`
+also gain a
+fixed, human-authored `_PLAIN` counterpart honouring a standing `'plain'`
+`response_style` (issue #430) — the sibling preference's own gap on this
+exact non-model path, mirroring the `_MI` sweep mechanically via
+`getResponseStyle` instead of `getLanguagePreference`. **`'mi'` takes
+precedence over `'plain'`** whenever both are set (each call site only
+consults `getResponseStyle` after `getLanguagePreference` resolves to
+something other than `'mi'`), since every hand-authored `_MI` string is
+already short and plain by the charter's own te reo Māori register.
+`CANCEL_TEXT` deliberately has no `_PLAIN` counterpart (already at the floor
+of simplicity), and the gated-guest notice's `_PLAIN` substitution applies
+only to the static `GATED_NOTICE` fallback, never the dynamic, admin-naming
+`buildGatedNotice` output.
 
 ## Onboarding (gated mode)
 
@@ -787,6 +808,19 @@ from a hit's content body rather than the tool-computed citation clause.
    from (e.g. a multi-topic turn that queries twice and answers from the
    first hit stamps the second). Treat a flagged entry as a strong lead worth
    reading, not as proof that entry caused every attributed unhelpful rating.
+6. `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL` (off by default, issue #337)
+   gates a member-facing caveat appended to a served hit once its unhelpful
+   count clears the threshold, prompting the member to `rate_answer` too.
+   Issue #337 shipped this only on the deterministic knowledge-shortcut path
+   (`sendKnowledgeShortcut`); `knowledge_search` — the dominant path, since
+   the shortcut only fires above `KNOWLEDGE_SHORTCUT_THRESHOLD`'s strict 0.9
+   cosine floor — always rendered the caveat off regardless of config. Issue
+   #432 closes that display-side asymmetry the same way #411 closed the
+   matching attribution one: the handler batches a lookup
+   (`areKnowledgeEntriesLowRated`) over every hit that cleared the relevance
+   floor and threads the resulting id set into `formatKnowledgeSearchResults`,
+   which appends the caveat to each low-rated hit's own line — never as a
+   single result-wide line like the conflict caveat (#389) above it.
 
 ## Auto-moderation (Discord)
 

@@ -27,8 +27,10 @@ const {
   CANCEL_TEXT_MI,
   PERMISSIONS_CHANGED_TEXT,
   PERMISSIONS_CHANGED_TEXT_MI,
+  PERMISSIONS_CHANGED_TEXT_PLAIN,
   PENDING_NOTICE,
   PENDING_NOTICE_MI,
+  PENDING_NOTICE_PLAIN,
 } = await import('../src/router.js');
 const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
   await import('../src/agent/pendingActions.js');
@@ -456,5 +458,231 @@ test('SECURITY: PENDING_NOTICE_MI interpolates ONLY the pending.description plac
   // Replacing each call's own description with a shared placeholder must
   // yield byte-identical templates — proving no other part of the string
   // varies with the input, i.e. no hidden extra interpolation surface.
-  assert.equal(outA.replace('description A', ' '), outB.replace('description B', ' '));
+  assert.equal(outA.replace('description A', ' '), outB.replace('description B', ' '));
+});
+
+// --- Standing 'plain' response-style preference (issue #430) ---------------
+
+test("router (permissions changed): a tier-revoked-mid-TTL CONFIRM for a 'plain' (non-mi) caller receives PERMISSIONS_CHANGED_TEXT_PLAIN", async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'guest-1', {
+    description: `${RUN} grant admin (plain)`,
+    minTier: 'member',
+    execute: async () => {
+      throw new Error('execute must never run once the tier re-check fails');
+    },
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, userId: 'guest-1', text: 'CONFIRM' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PERMISSIONS_CHANGED_TEXT_PLAIN);
+});
+
+test("router (permissions changed): 'mi' takes precedence over 'plain' when both are set", async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'guest-1', {
+    description: `${RUN} grant admin (precedence)`,
+    minTier: 'member',
+    execute: async () => {
+      throw new Error('execute must never run once the tier re-check fails');
+    },
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, userId: 'guest-1', text: 'CONFIRM' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PERMISSIONS_CHANGED_TEXT_MI);
+  assert.notEqual(sent[0].text, PERMISSIONS_CHANGED_TEXT_PLAIN);
+});
+
+test('SECURITY: a getResponseStyle failure on the permissions-changed reply still sends the English default, never throws or drops the reply', async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'guest-1', {
+    description: `${RUN} grant admin (style-failsafe)`,
+    minTier: 'member',
+    execute: async () => {
+      throw new Error('execute must never run once the tier re-check fails');
+    },
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('response_style_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage({ conversationId, userId: 'guest-1', text: 'CONFIRM' })));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PERMISSIONS_CHANGED_TEXT);
+});
+
+test("router (pending notice): a newly-registered pending action for a 'plain' (non-mi) caller is served in PENDING_NOTICE_PLAIN, with pending.description embedded unchanged", async () => {
+  const conversationId = nextConvo();
+  const description = `${RUN} delete knowledge entry #7`;
+  const router = new Router(
+    async (caller) => {
+      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+        description,
+        minTier: 'guest',
+        execute: async () => 'done',
+      });
+      return makeReply('sure, reply CONFIRM to apply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, text: `${RUN} please delete entry 7` }));
+
+  assert.equal(sent.length, 2);
+  const notice = sent.find((s) => s.text.includes(description));
+  assert.ok(notice, 'pending.description must appear unchanged in the plain notice');
+  assert.equal(notice.text, PENDING_NOTICE_PLAIN(description));
+  assert.notEqual(notice.text, PENDING_NOTICE(description));
+});
+
+test("router (pending notice): 'mi' takes precedence over 'plain' when both are set for the pending notice", async () => {
+  const conversationId = nextConvo();
+  const description = `${RUN} delete knowledge entry #8`;
+  const router = new Router(
+    async (caller) => {
+      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+        description,
+        minTier: 'guest',
+        execute: async () => 'done',
+      });
+      return makeReply('sure, reply CONFIRM to apply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, text: `${RUN} please delete entry 8` }));
+
+  assert.equal(sent.length, 2);
+  const notice = sent.find((s) => s.text.includes(description));
+  assert.ok(notice);
+  assert.equal(notice.text, PENDING_NOTICE_MI(description));
+  assert.notEqual(notice.text, PENDING_NOTICE_PLAIN(description));
+});
+
+test('SECURITY: a getResponseStyle failure on the pending notice still sends the English default, never throws or drops the notice', async () => {
+  const conversationId = nextConvo();
+  const description = `${RUN} pending-style-failsafe`;
+  const router = new Router(
+    async (caller) => {
+      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+        description,
+        minTier: 'guest',
+        execute: async () => 'done',
+      });
+      return makeReply('sure, reply CONFIRM to apply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('response_style_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage({ conversationId, text: `${RUN} please do the thing` })));
+  assert.equal(sent.length, 2);
+  const notice = sent.find((s) => s.text.includes(description));
+  assert.ok(notice);
+  assert.equal(notice.text, PENDING_NOTICE(description));
+});
+
+test('SECURITY: PENDING_NOTICE_PLAIN keeps the CONFIRM/CANCEL reply tokens literal and untranslated, and a subsequent reply from a plain-style caller still classifies correctly', () => {
+  const notice = PENDING_NOTICE_PLAIN(`${RUN} some action`);
+  assert.match(notice, /\bCONFIRM\b/, 'the literal token CONFIRM must survive the plain rewording');
+  assert.match(notice, /\bCANCEL\b/, 'the literal token CANCEL must survive the plain rewording');
+
+  assert.equal(classifyConfirmReply('CONFIRM'), 'confirm');
+  assert.equal(classifyConfirmReply('CANCEL'), 'cancel');
+});
+
+test('SECURITY: PENDING_NOTICE_PLAIN interpolates ONLY the pending.description placeholder — every other part of the template is fixed regardless of input', () => {
+  const outA = PENDING_NOTICE_PLAIN('description A');
+  const outB = PENDING_NOTICE_PLAIN('description B');
+  assert.equal(outA.replace('description A', ' '), outB.replace('description B', ' '));
+});
+
+test('router (CANCEL): CANCEL_TEXT is deliberately left without a _PLAIN counterpart — no such export exists on the router module', async () => {
+  const routerModule = await import('../src/router.js');
+  assert.equal(
+    'CANCEL_TEXT_PLAIN' in routerModule,
+    false,
+    "CANCEL_TEXT is already at the floor of simplicity; adding a _PLAIN variant would be change for change's sake",
+  );
 });

@@ -29,7 +29,8 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
-const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI } = await import('../src/pauseNotice.js');
+const { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, PAUSE_NOTICE_TEXT_PLAIN } =
+  await import('../src/pauseNotice.js');
 const { RATE_LIMIT_NOTICE_TEXT } = await import('../src/rateLimitNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -318,4 +319,105 @@ test('router (paused): the language-preference lookup runs at most once per debo
     1,
     'only the first (notifying) message in the window should read the language preference',
   );
+});
+
+// --- Standing 'plain' response-style preference on the pause notice (issue #430) ---
+
+test("router (paused): a caller with a standing 'plain' response style (and 'auto' language) gets PAUSE_NOTICE_TEXT_PLAIN", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT_PLAIN);
+});
+
+test("router (paused): a caller with 'standard' response style still gets the English PAUSE_NOTICE_TEXT (byte-identical regression)", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'standard',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT);
+});
+
+test("router (paused): 'mi' takes precedence over 'plain' when both are set — the caller still gets PAUSE_NOTICE_TEXT_MI", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT_MI);
+  assert.notEqual(sent[0].text, PAUSE_NOTICE_TEXT_PLAIN);
+});
+
+test('SECURITY: a getResponseStyle failure on the pause notice still sends the English default, never throws or drops the notice', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called while paused');
+    },
+    20,
+    async () => true, // paused
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('response_style_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, PAUSE_NOTICE_TEXT);
 });
