@@ -136,6 +136,34 @@ test('router (guest knowledge shortcut): a near-exact global match (>= threshold
   assert.deepEqual(recorded, [[7]], 'retrieval_count/last_retrieved_at must be bumped for the served entry');
 });
 
+test('router (guest knowledge shortcut): a hit never records a shortcut_hits row — the "knowledge" kind counts the member-facing shortcut only (issue #440)', async () => {
+  const calls: string[] = [];
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (kind) => {
+      calls.push(kind);
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(calls, [], 'the guest knowledge shortcut must never call recordShortcutHit');
+});
+
 test('router (guest knowledge shortcut): a trusted hit with a source_url renders the deterministic citation line (issue #214)', async () => {
   const router = new Router(
     async () => {
