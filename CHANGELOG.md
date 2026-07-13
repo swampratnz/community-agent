@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+## 2026-07-13
+
+### Fixed
+- **`startDevTeamWatchPoller` now alerts on consecutive failures** (#452): the dev-team completion-DM poller was the last background job with no consecutive-failure escalation to super admins — it swallowed every error into a log line only, so a dead endpoint, expired `DEV_TEAM_AUTH_TOKEN`, or DB outage left an operator's dev-team completion DM silently and indefinitely undelivered, indistinguishable from "still running." It now steps the same shared job-failure tracker every other background job uses, at a cadence-scaled threshold (`statusCheckAlertThreshold`, the same helper `anthropic-status-check` uses) rather than the flat 3-failure threshold — appropriate since its own poll interval defaults to 1 minute, far faster than the other jobs' fixed 6h tick. A subsequent success resets it silently. No behaviour change unless `DEV_TEAM_ENABLED`; `runDevTeamWatchOnce`'s own per-watch best-effort retry is unchanged.
+
 ## 2026-07-12
 
 ### Added
