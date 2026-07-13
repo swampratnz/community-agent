@@ -331,7 +331,20 @@ and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
 `classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
 outcome/failure strings (`pending.execute()`'s own return value and the
 `Failed: ...` fallback) stay out of scope and English-only, same as the
-ack-shortcut reply.
+ack-shortcut reply. These same eleven deterministic fallback/notice
+constants across `router.ts`/`core.ts`/`upstreamFailure.ts` also gain a
+fixed, human-authored `_PLAIN` counterpart honouring a standing `'plain'`
+`response_style` (issue #430) — the sibling preference's own gap on this
+exact non-model path, mirroring the `_MI` sweep mechanically via
+`getResponseStyle` instead of `getLanguagePreference`. **`'mi'` takes
+precedence over `'plain'`** whenever both are set (each call site only
+consults `getResponseStyle` after `getLanguagePreference` resolves to
+something other than `'mi'`), since every hand-authored `_MI` string is
+already short and plain by the charter's own te reo Māori register.
+`CANCEL_TEXT` deliberately has no `_PLAIN` counterpart (already at the floor
+of simplicity), and the gated-guest notice's `_PLAIN` substitution applies
+only to the static `GATED_NOTICE` fallback, never the dynamic, admin-naming
+`buildGatedNotice` output.
 
 ## Onboarding (gated mode)
 
