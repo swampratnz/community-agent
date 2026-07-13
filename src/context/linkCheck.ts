@@ -95,12 +95,19 @@ function expandIpv6(ip: string): string[] {
 
 function isDisallowedIpv6(ip: string): boolean {
   const normalized = ip.toLowerCase();
-  if (normalized === '::1') return true; // loopback
+  if (normalized === '::' || normalized === '::1') return true; // unspecified / loopback
   const v4Mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
   if (v4Mapped) return isDisallowedIpv4(v4Mapped[1]);
-  const first16 = parseInt(expandIpv6(normalized)[0], 16);
+  const v4Compat = normalized.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4Compat) return isDisallowedIpv4(v4Compat[1]); // deprecated "IPv4-compatible" form
+  const groups = expandIpv6(normalized).map((g) => parseInt(g, 16));
+  const first16 = groups[0];
   if ((first16 & 0xfe00) === 0xfc00) return true; // fc00::/7 (unique local)
   if ((first16 & 0xffc0) === 0xfe80) return true; // fe80::/10 (link-local)
+  if ((first16 & 0xffc0) === 0xfec0) return true; // fec0::/10 (deprecated site-local)
+  if (groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+    return true; // 64:ff9b::/96 (NAT64 well-known prefix — may embed a disallowed IPv4 target)
+  }
   return false;
 }
 

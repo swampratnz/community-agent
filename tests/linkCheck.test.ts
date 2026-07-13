@@ -57,17 +57,23 @@ test('SECURITY: isDisallowedIp blocks every loopback/private/link-local/cloud-me
   for (const ip of publicV4) assert.equal(isDisallowedIp(ip, 4), false, `${ip} must NOT be blocked`);
 
   const blockedV6 = [
+    '::',
     '::1',
     'fc00::1',
     'fd12:3456::1',
     'fe80::1',
     'febf:ffff::1',
+    'fec0::1',
+    'fefe:ffff::1',
     '::ffff:127.0.0.1',
     '::ffff:169.254.169.254',
+    '::127.0.0.1', // deprecated "IPv4-compatible" form
+    '::169.254.169.254',
+    '64:ff9b::1', // NAT64 well-known prefix
   ];
   for (const ip of blockedV6) assert.equal(isDisallowedIp(ip, 6), true, `${ip} must be blocked`);
 
-  const publicV6 = ['2001:4860:4860::8888', 'fec0::1', '2606:4700:4700::1111'];
+  const publicV6 = ['2001:4860:4860::8888', '2606:4700:4700::1111'];
   for (const ip of publicV6) assert.equal(isDisallowedIp(ip, 6), false, `${ip} must NOT be blocked`);
 });
 
