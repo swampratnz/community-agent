@@ -5,7 +5,15 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+Dates are the **Pacific/Auckland (New Zealand)** calendar day, not UTC — this
+is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
+for anything after ~noon NZST/NZDT). Get today's date with
+`TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
+
 ## 2026-07-13
+
+### Added
+- **`dev_team_findings` + `dev_team_verify`**: two **super-admin** tools that close the trust loop on a dev-team assessment. `dev_team_findings` lists a completed assessment's individual findings (id + claim) as a numbered pick-list; `dev_team_verify` then dispatches a fresh, skeptical agent to independently re-check ONE finding (by id or claim substring) and DMs the requester the verdict — **CONFIRMED / REFUTED / NEEDS-CONTEXT** plus a one-line rationale — when it lands (~1–2 min), reusing the durable `dev_team_watches` completion-DM poller with a new `verify` mode. Both tools carry the full dev_team_* trust floor: two-layer gating (tier-derived tool list + `assertAtLeast` re-check in the handler), audited, and every model-authored service field (finding claims, verdict, rationale) is quarantined — bracket/newline-neutralized, capped, and token-scrubbed — before it reaches chat or an unprompted DM, since an assessment is generated from the assessed repository's own content (the classic indirect-prompt-injection path). Verify is read-only against the target repo and small-cost, so like `assess` it needs no CONFIRM.
 
 ### Fixed
 - **`startDevTeamWatchPoller` now alerts on consecutive failures** (#452): the dev-team completion-DM poller was the last background job with no consecutive-failure escalation to super admins — it swallowed every error into a log line only, so a dead endpoint, expired `DEV_TEAM_AUTH_TOKEN`, or DB outage left an operator's dev-team completion DM silently and indefinitely undelivered, indistinguishable from "still running." It now steps the same shared job-failure tracker every other background job uses, at a cadence-scaled threshold (`statusCheckAlertThreshold`, the same helper `anthropic-status-check` uses) rather than the flat 3-failure threshold — appropriate since its own poll interval defaults to 1 minute, far faster than the other jobs' fixed 6h tick. A subsequent success resets it silently. No behaviour change unless `DEV_TEAM_ENABLED`; `runDevTeamWatchOnce`'s own per-watch best-effort retry is unchanged.

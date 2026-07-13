@@ -24,7 +24,8 @@ import {
   markDevTeamWatchNotified,
   type DevTeamWatch,
 } from './storage/repository.js';
-import { devTeamField, jobStatus, type JobStatus } from './devTeam/client.js';
+import { devTeamField, jobResult, jobStatus, type JobResult, type JobStatus } from './devTeam/client.js';
+import { devTeamScrub } from './agent/tools.js';
 import {
   buildJobFailureAlert,
   initialJobFailureTracker,
@@ -381,6 +382,50 @@ export function formatDevTeamCompletionDm(watch: DevTeamWatch, status: JobStatus
 }
 
 /**
+ * The completion-DM text for a finished VERIFY job (a fresh, skeptical agent
+ * re-checking one finding of an earlier assessment — dev_team_verify). Unlike
+ * the generic template above, a verify DM leads with the thing the requester
+ * actually asked for: the verdict, plus a one-line rationale. Both are
+ * MODEL-AUTHORED service output (the verdict enum could be anything from a
+ * hostile/compromised service, and the rationale is free prose generated from
+ * the assessed repo's own content), so both are bracket/newline-neutralized,
+ * the rationale is capped, and the whole DM is devTeamScrub-ed — an injected
+ * value can never add a line to an unprompted DM or leak the bearer token.
+ * `result` is null when the verify result could not be fetched (failed job or
+ * transient fetch error) — the DM then degrades to the terminal state only.
+ */
+export function formatDevTeamVerifyCompletionDm(
+  watch: DevTeamWatch,
+  status: JobStatus,
+  result: JobResult | null,
+): string {
+  const jobId = devTeamField(watch.jobId);
+  // For a verify watch the repo column carries the SOURCE assessment job id
+  // (see dev_team_verify in src/agent/tools.ts).
+  const sourceJob = devTeamField(watch.repo);
+  if (status.state !== 'succeeded' || !result || result.success === false) {
+    const rawError = status.error ?? (result ? result.error : null);
+    const err = rawError ? ` Error: ${devTeamField(String(rawError).slice(0, 200))}.` : '';
+    return devTeamScrub(
+      `Your dev-team verification job ${jobId} (re-checking a finding of assessment ${sourceJob}) failed.${err} ` +
+        `Use \`dev_team_result ${jobId}\` for details.`,
+    );
+  }
+  const verdict = devTeamField(
+    typeof result.verdict === 'string' && result.verdict !== '' ? result.verdict : 'unknown',
+  ).toUpperCase();
+  const rationale =
+    typeof result.rationale === 'string' && result.rationale !== ''
+      ? ` — ${devTeamField(result.rationale).slice(0, 300)}`
+      : '';
+  const cost = typeof result.cost_usd === 'number' ? ` Cost $${result.cost_usd.toFixed(2)}.` : '';
+  return devTeamScrub(
+    `Verification done (assessment ${sourceJob}): **${verdict}**${rationale}.${cost} ` +
+      `Full detail via \`dev_team_result ${jobId}\`.`,
+  );
+}
+
+/**
  * Injectable dependencies for one pass of the dev-team completion-DM poller —
  * every side effect (DB read, service GET, adapter DM, DB write) is overridable
  * so the pass can be exercised without a real DB, network, or timers.
@@ -389,6 +434,7 @@ export interface DevTeamWatchDeps {
   adapters: readonly PlatformAdapter[];
   listWatches?: () => Promise<DevTeamWatch[]>;
   getStatus?: (id: string) => Promise<JobStatus>;
+  getResult?: (id: string) => Promise<JobResult>;
   markNotified?: (jobId: string) => Promise<void>;
 }
 
@@ -406,6 +452,9 @@ export async function runDevTeamWatchOnce(deps: DevTeamWatchDeps): Promise<void>
   const getStatus =
     deps.getStatus ??
     ((id: string) => jobStatus(config.devTeam.endpointUrl ?? '', config.devTeam.authToken ?? '', id));
+  const getResult =
+    deps.getResult ??
+    ((id: string) => jobResult(config.devTeam.endpointUrl ?? '', config.devTeam.authToken ?? '', id));
   const markNotified = deps.markNotified ?? markDevTeamWatchNotified;
   const byPlatform = new Map(deps.adapters.map((a) => [a.platform, a]));
 
@@ -425,8 +474,32 @@ export async function runDevTeamWatchOnce(deps: DevTeamWatchDeps): Promise<void>
     // WITHOUT marking notified, so a later reconnect can still deliver the DM.
     if (!adapter || !adapter.isConnected()) continue;
 
+    // A VERIFY watch's DM carries the verdict itself, which lives in the
+    // job's RESULT, not its status — fetch it for a succeeded verify job. A
+    // fetch failure retries next tick (same convention as a failed status
+    // GET) rather than degrading to a verdict-less DM: the send-once
+    // semantics mean a degraded DM could never be upgraded later.
+    let dm: string;
+    if (watch.mode === 'verify') {
+      let result: JobResult | null = null;
+      if (status.state === 'succeeded') {
+        try {
+          result = await getResult(watch.jobId);
+        } catch (err) {
+          logger.warn(
+            { err, jobId: watch.jobId },
+            'dev-team watch: verify result fetch failed; will retry next tick',
+          );
+          continue;
+        }
+      }
+      dm = formatDevTeamVerifyCompletionDm(watch, status, result);
+    } else {
+      dm = formatDevTeamCompletionDm(watch, status);
+    }
+
     try {
-      await adapter.sendDirectMessage(watch.requesterUserId, formatDevTeamCompletionDm(watch, status));
+      await adapter.sendDirectMessage(watch.requesterUserId, dm);
     } catch (err) {
       logger.warn({ err, jobId: watch.jobId }, 'dev-team watch: completion DM failed; will retry next tick');
       continue; // leave unnotified so the next tick retries
