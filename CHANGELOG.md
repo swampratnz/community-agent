@@ -10,6 +10,11 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-13
+
+### Fixed
+- **WhatsApp no longer leaves members staring at "Waiting for this message"** (#459): the Baileys adapter never serviced WhatsApp/Signal **retry receipts** — the resend request a recipient's client sends when it can't decrypt a message. Baileys can re-encrypt and resend the original, but only if the socket can hand back the plaintext through a `getMessage(key)` callback, and the adapter wired up neither that callback nor any record of what it had sent. So every retry receipt went unanswered and the recipient was left on the placeholder indefinitely — hitting proactive/outbound messages (super-admin alerts, DMs, group welcomes) hardest, since those are what a fresh or desynced Signal session most often fails to decrypt on first delivery, while inbound replies decrypted on our side were unaffected. The adapter now keeps a bounded in-memory cache of recently sent messages (1000 entries / 6h) and resolves retry receipts from it, so a recent message that failed first delivery is transparently resent instead of hanging. Best-effort by design: a message aged or evicted out of the cache simply behaves as before (no auto-resend), so there is no regression, only recovery for the common recent-message case that dominates real retry receipts.
+
 ## 2026-07-12
 
 ### Added
