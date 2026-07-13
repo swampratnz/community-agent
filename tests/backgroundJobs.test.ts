@@ -33,6 +33,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 process.env.CONTEXT_BUILDER_ENABLED = 'true';
 process.env.KNOWLEDGE_REFRESH_ENABLED = 'true';
 process.env.DOCS_INGEST_ENABLED = 'true';
+process.env.KNOWLEDGE_LINK_CHECK_ENABLED = 'true';
 process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 process.env.ADMIN_DIGEST_ENABLED = 'true';
@@ -41,10 +42,12 @@ const {
   startContextBuilder,
   startKnowledgeRefresh,
   startDocsIngest,
+  startKnowledgeLinkCheck,
   startEmbeddingHealthCheckJob,
   defaultDocsIngestRun,
   defaultKnowledgeRefreshRun,
   defaultContextBuilderRun,
+  defaultKnowledgeLinkCheckRun,
 } = await import('../src/backgroundJobs.js');
 const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
@@ -102,6 +105,7 @@ const JOBS = [
   ['startContextBuilder', startContextBuilder],
   ['startKnowledgeRefresh', startKnowledgeRefresh],
   ['startDocsIngest', startDocsIngest],
+  ['startKnowledgeLinkCheck', startKnowledgeLinkCheck],
   ['startRetentionPurge', startRetentionPurge],
   ['startRosterRetentionPurge', startRosterRetentionPurge],
   ['startEmbeddingHealthCheckJob', startEmbeddingHealthCheckJob],
@@ -136,7 +140,7 @@ for (const [name, start] of JOBS) {
   });
 }
 
-test('each of the seven jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
+test('each of the eight jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
   const { adapter, dms } = makeAdapter();
   const failOnce = async () => {
     throw new Error('sentinel-independent');
@@ -147,6 +151,7 @@ test('each of the seven jobs keeps an independent tracker: one failure each (bel
     startContextBuilder([adapter], failOnce),
     startKnowledgeRefresh([adapter], failOnce),
     startDocsIngest([adapter], failOnce),
+    startKnowledgeLinkCheck([adapter], failOnce),
     startRetentionPurge([adapter], failOnce),
     startRosterRetentionPurge([adapter], failOnce),
     startEmbeddingHealthCheckJob([adapter], failOnce),
@@ -157,7 +162,7 @@ test('each of the seven jobs keeps an independent tracker: one failure each (bel
     assert.equal(
       dms.length,
       0,
-      'seven distinct jobs each failing once (< threshold) never alerts — trackers are independent',
+      'eight distinct jobs each failing once (< threshold) never alerts — trackers are independent',
     );
   } finally {
     for (const timer of timers) if (timer) clearInterval(timer);
@@ -582,6 +587,23 @@ test(
     };
     t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
     await assert.rejects(() => defaultDocsIngestRun(indexOkAllPagesFail));
+  },
+);
+
+test(
+  'defaultKnowledgeLinkCheckRun does NOT throw on a legitimate zero-attempted-failure run (real freshness guard + real sweep, injected fetch/lookup that never fails)',
+  { skip },
+  async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+    const alwaysOk = {
+      lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      fetchImpl: (async () => ({
+        status: 200,
+        headers: { get: () => null },
+        body: null,
+      })) as unknown as typeof fetch,
+    };
+    await assert.doesNotReject(() => defaultKnowledgeLinkCheckRun(alwaysOk));
   },
 );
 

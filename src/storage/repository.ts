@@ -965,6 +965,9 @@ export interface KnowledgeEntry {
   sourceUrl: string | null;
   sourceTitle: string | null;
   verifiedAt: Date | null;
+  /** Link-rot check result (issue #448) — null means never checked (or no sourceUrl). */
+  sourceUnreachable: boolean | null;
+  sourceCheckedAt: Date | null;
 }
 
 /**
@@ -986,6 +989,13 @@ export interface KnowledgeEntry {
  * content-age ceiling as `isKnowledgeStale`'s `maxAgeDays` — composed with
  * `staleDays` inside `staleOnly`'s own predicate, not a separate filter.
  * Unset/0 = disabled, so `staleOnly` alone is byte-identical to pre-#380.
+ *
+ * `sourceUnreachable` (issue #448) filters to entries the weekly link-rot
+ * checker flagged `source_unreachable = true`, composed with the other
+ * filters via AND, same combinable-filter pattern as `staleOnly`/
+ * `provenance`. Structurally admin-gated the same way as `staleOnly` — this
+ * function has no caller/tier concept of its own; `list_knowledge` (the only
+ * caller) is admin-tier gated in full via `assertAtLeast`.
  */
 export async function listKnowledge(
   input: {
@@ -996,6 +1006,7 @@ export async function listKnowledge(
     staleDays?: number;
     staleMaxAgeDays?: number;
     provenance?: string;
+    sourceUnreachable?: boolean;
   } = {},
 ): Promise<KnowledgeEntry[]> {
   const params: unknown[] = [];
@@ -1007,6 +1018,9 @@ export async function listKnowledge(
   if (input.provenance) {
     params.push(input.provenance);
     clauses.push(`created_by_role = $${params.length}`);
+  }
+  if (input.sourceUnreachable) {
+    clauses.push(`source_unreachable = true`);
   }
   if (input.staleOnly) {
     params.push(input.staleDays ?? 0);
@@ -1036,7 +1050,7 @@ export async function listKnowledge(
   params.push(input.offset ?? 0);
   const { rows } = await pool.query(
     `SELECT id, scope, title, content, created_by_role, updated_at, retrieval_count, last_retrieved_at,
-            source_url, source_title, verified_at
+            source_url, source_title, verified_at, source_unreachable, source_checked_at
        FROM knowledge
        ${whereClause}
       ${orderClause}
@@ -1055,6 +1069,8 @@ export async function listKnowledge(
     sourceUrl: r.source_url,
     sourceTitle: r.source_title,
     verifiedAt: r.verified_at,
+    sourceUnreachable: r.source_unreachable,
+    sourceCheckedAt: r.source_checked_at,
   }));
 }
 
@@ -1084,6 +1100,38 @@ export async function countStaleKnowledge(days: number, maxAgeDays = 0): Promise
     [days, maxAgeDays],
   );
   return Number(rows[0].n);
+}
+
+/**
+ * Every knowledge entry carrying a `sourceUrl`, for the weekly link-rot
+ * checker (issue #448) to sweep. `sourceUrl` is admin-authored only (set via
+ * save_knowledge/update_knowledge/docs-ingest) — not a new untrusted-input
+ * surface. Guild-wide, unscoped, matching the checker's own job scope.
+ */
+export async function listKnowledgeSourceUrls(): Promise<Array<{ id: number; sourceUrl: string }>> {
+  const { rows } = await pool.query(
+    `SELECT id, source_url FROM knowledge WHERE source_url IS NOT NULL ORDER BY id`,
+  );
+  return rows.map((r) => ({ id: Number(r.id), sourceUrl: r.source_url }));
+}
+
+/**
+ * Persist one entry's link-rot check result (issue #448). Deliberately NOT
+ * routed through the `knowledge_set_updated_at` trigger's column list (see
+ * the schema comment on `source_unreachable`/`source_checked_at`) — a
+ * reachability check is not a content edit.
+ */
+export async function recordKnowledgeSourceCheck(id: number, unreachable: boolean): Promise<void> {
+  await pool.query(`UPDATE knowledge SET source_unreachable = $2, source_checked_at = now() WHERE id = $1`, [
+    id,
+    unreachable,
+  ]);
+}
+
+/** Freshness watermark for the checker's ~weekly scheduler guard (issue #448). */
+export async function latestKnowledgeSourceCheckAt(): Promise<Date | null> {
+  const { rows } = await pool.query(`SELECT max(source_checked_at) AS latest FROM knowledge`);
+  return rows[0]?.latest ?? null;
 }
 
 /**

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 
 // config.ts validates env at import time. CONTEXT_BUILDER_ENABLED /
-// KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED / INTERACTION_RETENTION_DAYS /
-// ROSTER_DEPARTED_RETENTION_DAYS / STATUS_CHECK_ENABLED / ADMIN_DIGEST_ENABLED
-// are deliberately left unset (all default off/0) so this file exercises the
-// disabled-by-default
+// KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED / KNOWLEDGE_LINK_CHECK_ENABLED /
+// INTERACTION_RETENTION_DAYS / ROSTER_DEPARTED_RETENTION_DAYS / STATUS_CHECK_ENABLED /
+// ADMIN_DIGEST_ENABLED are deliberately left unset (all default off/0) so this file
+// exercises the disabled-by-default
 // path in its own process, separate from tests/backgroundJobs.test.ts and
 // tests/statusCheckAlert.test.ts which pin their respective flags on — config
 // is parsed once per process at import time, so "enabled" and "disabled"
@@ -21,6 +21,7 @@ const {
   startContextBuilder,
   startKnowledgeRefresh,
   startDocsIngest,
+  startKnowledgeLinkCheck,
   startStatusCheck,
   startEmbeddingHealthCheckJob,
 } = await import('../src/backgroundJobs.js');
@@ -55,6 +56,7 @@ const JOBS = [
   ['startContextBuilder', startContextBuilder],
   ['startKnowledgeRefresh', startKnowledgeRefresh],
   ['startDocsIngest', startDocsIngest],
+  ['startKnowledgeLinkCheck', startKnowledgeLinkCheck],
   ['startRetentionPurge', startRetentionPurge],
   ['startRosterRetentionPurge', startRosterRetentionPurge],
   ['startAdminDigest', startAdminDigest],

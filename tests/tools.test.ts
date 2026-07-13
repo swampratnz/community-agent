@@ -1423,6 +1423,88 @@ test('SECURITY: list_knowledge rejects a non-admin caller even when the new prov
 });
 
 test(
+  'list_knowledge sourceUnreachable filter returns only entries the link-rot checker flagged (issue #448)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-source-unreachable-tool-scope`;
+    const { id: flaggedId } = await saveKnowledge({
+      title: 'tool-filter-flagged',
+      content: 'flagged as unreachable by the link-rot checker',
+      scope,
+      sourceUrl: 'https://tool-filter-flagged.example.com/page',
+    });
+    const { id: healthyId } = await saveKnowledge({
+      title: 'tool-filter-healthy',
+      content: 'still reachable, must not appear',
+      scope,
+      sourceUrl: 'https://tool-filter-healthy.example.com/page',
+    });
+    await pool.query(
+      `UPDATE knowledge SET source_unreachable = true, source_checked_at = now() WHERE id = $1`,
+      [flaggedId],
+    );
+    await pool.query(
+      `UPDATE knowledge SET source_unreachable = false, source_checked_at = now() WHERE id = $1`,
+      [healthyId],
+    );
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: 'convo-list-knowledge-source-unreachable',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['list_knowledge'];
+
+    const result = await registeredTool.handler({ scope, sourceUnreachable: true });
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /tool-filter-flagged/, 'the flagged entry must appear');
+    assert.match(output, /source unreachable/i, 'the unreachable marker renders in the entry line');
+    assert.doesNotMatch(output, /tool-filter-healthy/, 'a healthy entry must not appear');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[flaggedId, healthyId]]);
+  },
+);
+
+test('SECURITY: list_knowledge rejects a non-admin caller even when the new sourceUnreachable param is supplied (assertAtLeast re-check, issue #448)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'member-1',
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['list_knowledge'];
+
+  await assert.rejects(
+    () => registeredTool.handler({ sourceUnreachable: true }),
+    /admin/i,
+    'a member caller must be rejected by the assertAtLeast re-check even with sourceUnreachable set — the ' +
+      'new param opens no lower-privilege path',
+  );
+});
+
+test(
   'list_duplicate_knowledge renders a near-duplicate pair with both ids/titles/similarity, and returns a clear message (not an error, not empty success) when nothing meets the threshold (issue #316)',
   { skip },
   async () => {

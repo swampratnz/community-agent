@@ -359,6 +359,15 @@ const EnvSchema = z.object({
   DOCS_INGEST_EXCLUDE_PATHS: z
     .string()
     .default('api/go,api/csharp,api/java,api/python,api/typescript,api/ruby,api/php,api/cli,api/compliance'),
+  // Knowledge link-rot check (issue #448): a weekly background job HEAD-checks
+  // every knowledge entry's sourceUrl and flags dead citations for admin
+  // review (list_knowledge sourceUnreachable filter). OFF by default, matching
+  // every other opt-in background poll in this repo. No model in the loop —
+  // see src/context/linkCheck.ts for the SSRF-hardened fetch/classify logic.
+  KNOWLEDGE_LINK_CHECK_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Anthropic status check (issue #206): poll Anthropic's own public status
   // page on a background timer and expose the cached result via the
   // member-tier check_status tool, so "is this me or an Anthropic incident"
@@ -749,6 +758,9 @@ export const config = {
     maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
     concurrency: env.DOCS_INGEST_CONCURRENCY,
     excludePaths: csv(env.DOCS_INGEST_EXCLUDE_PATHS),
+  },
+  knowledgeLinkCheck: {
+    enabled: env.KNOWLEDGE_LINK_CHECK_ENABLED ?? false,
   },
   statusCheck: {
     enabled: env.STATUS_CHECK_ENABLED ?? false,
