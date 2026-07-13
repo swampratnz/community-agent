@@ -166,6 +166,11 @@ ownership rules:
 - Never commit secrets. `.env` is git-ignored; `whatsapp-auth/` and `src/auth/`
   are distinct — the latter is source and must stay tracked.
 - Do not put model identifiers in commits, PR bodies, or code.
+- `CHANGELOG.md` `##` section dates are the **Pacific/Auckland (NZ)** calendar
+  day, not UTC. The build worker runs in a UTC CI shell, so use
+  `TZ='Pacific/Auckland' date +%F` for "today" — a bare `date` is a day behind
+  NZ after ~noon local. Reuse the existing top section if it's already today's
+  NZ date rather than opening a duplicate.
 - Human-facing conventions (style, test expectations, commit/PR rules) are
   also written up in `docs/STANDARDS.md` — keep the two in sync if either
   changes.
