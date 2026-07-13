@@ -4775,6 +4775,7 @@ const BASE_USAGE_STATS = {
   topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
   costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
   backgroundCostUsd: 0,
+  backgroundCostByJob: [],
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -4788,14 +4789,125 @@ test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#40
   assert.ok(!out.includes('Background jobs'), 'no background-jobs line when backgroundCostUsd is 0');
 });
 
-test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line naming the figure (issue #401)', () => {
-  const out = formatUsageStats({ ...BASE_USAGE_STATS, backgroundCostUsd: 4.2 }, 7);
+test('formatUsageStats: all three jobs non-zero renders each as its own segment, joined with " · " (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 3.8 },
+        { job: 'moderation_llm', costUsd: 0.35 },
+        { job: 'context_builder', costUsd: 0.05 },
+      ],
+    },
+    7,
+  );
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Background jobs (moderation/digest/refresh): ~$4.20.',
+      'Background jobs: knowledge_refresh ~$3.80 · moderation_llm ~$0.35 · context_builder ~$0.05.',
+  );
+});
+
+test('formatUsageStats: exactly one job non-zero renders a single segment, no $0.00 entries for the other two (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 4.2 },
+        { job: 'moderation_llm', costUsd: 0 },
+        { job: 'context_builder', costUsd: 0 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs: knowledge_refresh ~$4.20.',
+  );
+  assert.ok(!out.includes('$0.00'), 'zero-cost jobs are omitted, not rendered as $0.00');
+});
+
+test('formatUsageStats: mixed zero/non-zero jobs omits the zero-cost ones (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 0.75,
+      backgroundCostByJob: [
+        { job: 'moderation_llm', costUsd: 0.75 },
+        { job: 'context_builder', costUsd: 0 },
+        { job: 'knowledge_refresh', costUsd: 0 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs: moderation_llm ~$0.75.',
+  );
+});
+
+test('SECURITY: formatUsageStats background-jobs line only ever contains the fixed BackgroundJob enum values and numeric ~$X.XX figures — never a user id, conversation id, platform, or free-text string (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 3.8 },
+        { job: 'moderation_llm', costUsd: 0.35 },
+        { job: 'context_builder', costUsd: 0.05 },
+      ],
+    },
+    7,
+  );
+  const line = out.split('\n').find((l) => l.startsWith('Background jobs:'));
+  assert.ok(line, 'a background-jobs line is present when a job has nonzero cost');
+  assert.equal(
+    line,
+    'Background jobs: knowledge_refresh ~$3.80 · moderation_llm ~$0.35 · context_builder ~$0.05.',
+    'must be byte-identical to the exact enum + figure composition — no room for an interpolated identity value',
+  );
+  const BACKGROUND_JOB_LINE_RE =
+    /^Background jobs: (?:(?:moderation_llm|context_builder|knowledge_refresh) ~\$\d+\.\d{2})(?: · (?:moderation_llm|context_builder|knowledge_refresh) ~\$\d+\.\d{2})*\.$/;
+  assert.match(
+    line,
+    BACKGROUND_JOB_LINE_RE,
+    'the whole line must match fixed job-enum segments and numeric costs only',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-job breakdown (assertAtLeast re-check, issue #438)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the byJob breakdown',
   );
 });
 
