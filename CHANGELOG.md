@@ -10,6 +10,11 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-14
+
+### Added
+- **Departed-admin proactive alert** (`DEPARTED_ADMIN_ALERT_ENABLED`, #472): closes the growth path #428 itself named and deferred. `list_admins` (#428) already let a super admin *pull* the "which current admins have left the server/group but still hold bot-admin privilege via DM" signal, but nothing ever pushed it — a departed admin's DM-tier access stayed invisible unless a super admin thought to run the tool. This adds an opt-in job, off by default, on the same 6h background-job cadence as every other proactive check: it counts departed-but-still-admin entries and DMs every super admin exactly once when that count first goes from zero to non-zero, re-arming only once every departed admin has been revoked or reinstated (a partial fix doesn't re-arm or re-nag). The DM is a bare count plus fixed pointer text — never a name, id, or platform — matching every other alert/digest signal's convention. No new tool, no schema change, no new RBAC surface; auto-revoke remains deliberately out of scope.
+
 ## 2026-07-13
 
 ### Added

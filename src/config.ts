@@ -295,6 +295,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Proactive super-admin alert (issue #472) when listAdminRoster() shows one
+  // or more current admins have left the server/group but still hold
+  // admin-tier privilege via DM — closes #428's own named deferred growth
+  // path from passive (list_admins, pull) to active (DM, push). Off by
+  // default, consistent with this repo's convention for new proactive DMs.
+  DEPARTED_ADMIN_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Offline context builder (issue #51): distills stored interactions into
   // durable context_digests on a ~daily cadence. Off by default; when on,
   // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
@@ -787,6 +796,9 @@ export const config = {
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
     knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
     knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,
+  },
+  departedAdminAlert: {
+    enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
