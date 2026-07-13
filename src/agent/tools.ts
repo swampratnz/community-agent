@@ -87,6 +87,7 @@ import {
   updateKnowledge,
   upsertMember,
   usageStats,
+  engagementStats,
   userMessages,
 } from '../storage/repository.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi, updatePolicy } from '../storage/policies.js';
@@ -589,6 +590,25 @@ function formatShortcutHitsLine(
   return (
     `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
     `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')})${dollarClause}.`
+  );
+}
+
+/**
+ * Pure formatter for the `engagement_stats` tool reply (issue #419).
+ * Aggregate-only by design: renders counts and a percentage per the
+ * adversarial-review acceptance criteria, never a member id or display name
+ * — there is nothing in `EngagementBreakdown`/the overall totals to leak.
+ */
+export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementStats>>): string {
+  if (s.total === 0) return 'No currently-present roster members to measure engagement against.';
+  const overall = `${s.engaged}/${s.total} present members have posted at least once (${s.percentage}%).`;
+  const perPlatform = s.byPlatform
+    .map((p) => `- ${p.platform}: ${p.engaged}/${p.total} (${p.percentage}%)`)
+    .join('\n');
+  return (
+    `${overall}\n${perPlatform}\n` +
+    `Note: "posted" is bounded by the interaction retention window (older inbound activity may have been ` +
+    `purged); roster coverage is Discord-complete but WhatsApp-partial.`
   );
 }
 
@@ -4203,6 +4223,26 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const engagementStatsTool = tool(
+    'engagement_stats',
+    'Show what fraction of currently-present roster members have ever posted at least once — aggregate ' +
+      'counts and a percentage only, never individual member identities. "Posted" is bounded by the ' +
+      'interaction retention window (older activity may have been purged, so this is not a lifetime figure), ' +
+      'and roster coverage is Discord-complete but WhatsApp-partial. Super admin only.',
+    {
+      platform: z
+        .enum(['discord', 'whatsapp'])
+        .optional()
+        .describe('Restrict to one platform (default: all)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'engagement_stats');
+      const s = await engagementStats(args.platform);
+      return text(formatEngagementStats(s));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const pauseBot = tool(
     'pause_bot',
     'Pause the bot community-wide (only super admins can still talk to it). Super admin only.',
@@ -4602,6 +4642,7 @@ export function buildToolServer(
       purgeUserDataTool,
       auditView,
       usageStatsTool,
+      engagementStatsTool,
       pauseBot,
       resumeBot,
       setPolicy,
