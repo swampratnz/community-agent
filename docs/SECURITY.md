@@ -393,7 +393,7 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   member's turn or silently reporting a stale "operational" — pinned by
   `SECURITY:` tests. No new DB table, no migration — the data is already
   public, ephemeral, and re-fetchable.
-- **Knowledge link-rot check** (`LINK_CHECK_ENABLED`, off by default —
+- **Knowledge link-rot check** (`KNOWLEDGE_LINK_CHECK_ENABLED`, off by default —
   src/context/linkCheck.ts, issue #448): a ~weekly job that HEAD-checks every
   `knowledge` entry's `sourceUrl` and stamps whether it's still reachable, so
   a dead citation doesn't keep rendering to members as authoritative forever
