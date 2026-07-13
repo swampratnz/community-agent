@@ -783,6 +783,9 @@ export interface KnowledgeSearchHit {
   /** When the citation was (re-)confirmed; null if no source_url has ever been set. */
   verifiedAt: Date | null;
   lastRetrievedAt: Date | null;
+  /** Weekly link-rot checker's verdict (issue #448); null means never checked. */
+  sourceUnreachable: boolean | null;
+  sourceCheckedAt: Date | null;
 }
 
 export async function searchKnowledge(
@@ -802,6 +805,7 @@ export async function searchKnowledge(
   const { rows } = await pool.query(
     globalOnly
       ? `SELECT id, title, content, created_by_role, updated_at, source_url, source_title, verified_at, last_retrieved_at,
+                source_unreachable, source_checked_at,
                 1 - (embedding <=> $1) AS similarity
            FROM knowledge
           WHERE embedding IS NOT NULL
@@ -809,6 +813,7 @@ export async function searchKnowledge(
           ORDER BY embedding <=> $1
           LIMIT $2`
       : `SELECT id, title, content, created_by_role, updated_at, source_url, source_title, verified_at, last_retrieved_at,
+                source_unreachable, source_checked_at,
                 1 - (embedding <=> $1) AS similarity
            FROM knowledge
           WHERE embedding IS NOT NULL
@@ -830,6 +835,8 @@ export async function searchKnowledge(
     sourceTitle: r.source_title,
     verifiedAt: r.verified_at,
     lastRetrievedAt: r.last_retrieved_at,
+    sourceUnreachable: r.source_unreachable,
+    sourceCheckedAt: r.source_checked_at,
   }));
 }
 
@@ -876,6 +883,7 @@ export async function searchKnowledgeLexical(
   const { rows } = await pool.query(
     globalOnly
       ? `SELECT id, title, content, created_by_role, updated_at, source_url, source_title, verified_at, last_retrieved_at,
+                source_unreachable, source_checked_at,
                 word_similarity($1, COALESCE(title, '') || ' ' || content) AS similarity
            FROM knowledge
           WHERE scope = 'global'
@@ -883,6 +891,7 @@ export async function searchKnowledgeLexical(
           ORDER BY similarity DESC
           LIMIT $3`
       : `SELECT id, title, content, created_by_role, updated_at, source_url, source_title, verified_at, last_retrieved_at,
+                source_unreachable, source_checked_at,
                 word_similarity($1, COALESCE(title, '') || ' ' || content) AS similarity
            FROM knowledge
           WHERE scope IN ('global', $2, $3)
@@ -904,6 +913,8 @@ export async function searchKnowledgeLexical(
     sourceTitle: r.source_title,
     verifiedAt: r.verified_at,
     lastRetrievedAt: r.last_retrieved_at,
+    sourceUnreachable: r.source_unreachable,
+    sourceCheckedAt: r.source_checked_at,
   }));
 }
 

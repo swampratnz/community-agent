@@ -35,6 +35,8 @@ function makeHit(id: number, similarity: number): KnowledgeSearchHit {
     sourceTitle: null,
     verifiedAt: null,
     lastRetrievedAt: null,
+    sourceUnreachable: null,
+    sourceCheckedAt: null,
   };
 }
 
