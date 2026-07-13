@@ -101,7 +101,15 @@ ownership rules:
   manifest (`npm run test:security:fix`) rather than hand-counting, and its
   escalation comment carries the agent's final summary so an unresolved conflict
   says WHICH files couldn't be reconciled instead of the old opaque "incompatible
-  or needs a workflows change". One attempt per conflict: a
+  or needs a workflows change". Both resolution paths (the deterministic
+  floor-only fast path and the full agent) **re-run `npm run migrate` AFTER
+  merging main**, because the merge can bring migrations the pre-merge migrate
+  didn't have — without it the DB-backed `test:security` fails on a stale schema
+  (`column/relation ... does not exist`) and the resolver falsely escalated
+  `needs-human` on a non-issue. The agent uses the exact form
+  `CLAUDE_CODE_OAUTH_TOKEN=ci-dummy-token npm run migrate` (config requires the
+  var; migrate never calls Claude, so the dummy is safe), which is why that one
+  literal command is in its allowlist. One attempt per conflict: a
   failed resolution escalates `needs-human`, and the eligibility filter skips
   `needs-human` PRs so it never thrashes. Same push guardrails as autofix
   (read-only `gh`, exact `git push origin HEAD`). It never opens or merges
