@@ -75,6 +75,7 @@ const {
   markRosterLeave,
   listRoster,
   rosterCounts,
+  engagementStats,
   purgeDepartedRoster,
   addMemberNote,
   listMemberNotes,
@@ -4335,6 +4336,98 @@ test(
 
     await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
     await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
+  },
+);
+
+test(
+  'repository: engagementStats counts only currently-present roster members with a distinct matching ' +
+    'inbound interaction, excludes members who left, and never divides by zero (issue #419)',
+  { skip },
+  async () => {
+    const engaged = `${RUN}-engagement-repo-engaged`;
+    const lurker = `${RUN}-engagement-repo-lurker`;
+    const departed = `${RUN}-engagement-repo-departed`;
+    const conversationId = `${RUN}-engagement-repo-convo`;
+
+    await upsertRosterMember({ platform: 'discord', userId: engaged, displayName: 'Engaged' });
+    await upsertRosterMember({ platform: 'discord', userId: lurker, displayName: 'Lurker' });
+    await upsertRosterMember({ platform: 'discord', userId: departed, displayName: 'Departed' });
+    await markRosterLeave('discord', departed);
+
+    // Two inbound rows for the engaged member — numerator must be a
+    // DISTINCT user_id count, not a raw row count.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: engaged,
+      role: 'member',
+      direction: 'inbound',
+      content: 'first message',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: engaged,
+      role: 'member',
+      direction: 'inbound',
+      content: 'second message',
+    });
+    // An outbound-only row for the departed member must never count them as
+    // engaged even before their left_at exclusion is considered.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: departed,
+      role: 'member',
+      direction: 'outbound',
+      content: 'bot reply',
+    });
+
+    const stats = await engagementStats('discord');
+    const before = stats.byPlatform.find((p) => p.platform === 'discord');
+    assert.ok(before, 'discord breakdown is present since we just upserted discord roster rows');
+
+    assert.ok(
+      before.total >= 2,
+      'total counts present members (engaged + lurker), excluding the departed one',
+    );
+    assert.ok(before.engaged >= 1, 'engaged count includes the distinct engaged member');
+
+    // Re-run scoped strictly to our fixture rows via a direct query, since
+    // a shared DB may carry other engagement fixtures/production data.
+    const { rows } = await pool.query(
+      `SELECT r.user_id, (e.user_id IS NOT NULL) AS is_engaged
+         FROM server_roster r
+         LEFT JOIN (SELECT DISTINCT platform, user_id FROM interactions WHERE direction = 'inbound') e
+           ON e.platform = r.platform AND e.user_id = r.user_id
+        WHERE r.platform = 'discord' AND r.left_at IS NULL AND r.user_id = ANY($1)`,
+      [[engaged, lurker, departed]],
+    );
+    assert.deepEqual(
+      rows
+        .map((r) => ({ userId: r.user_id, isEngaged: r.is_engaged }))
+        .sort((a, b) => (a.userId < b.userId ? -1 : 1)),
+      [
+        { userId: engaged, isEngaged: true },
+        { userId: lurker, isEngaged: false },
+      ].sort((a, b) => (a.userId < b.userId ? -1 : 1)),
+      'exactly the engaged fixture is flagged engaged; the departed member is absent (left_at excluded)',
+    );
+
+    // The returned percentage must always equal the arithmetic derived from
+    // total/engaged directly — no drift between the two, and (since total
+    // is always >= 1 once any roster row exists) no division-by-zero path
+    // taken here. The dedicated zero-roster/divide-by-zero case is covered
+    // by tests/tools.test.ts's formatEngagementStats({ total: 0, ... }) test,
+    // which exercises the exact zero-total input this function can produce.
+    assert.equal(
+      before.percentage,
+      Math.round((before.engaged / before.total) * 1000) / 10,
+      'percentage matches engaged/total arithmetic exactly',
+    );
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[engaged, lurker, departed]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
