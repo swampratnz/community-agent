@@ -65,7 +65,7 @@
   "securityGateWrite.test.ts": 5,
   "statusCheckAlert.test.ts": 1,
   "suggestIssue.test.ts": 3,
-  "systemPrompt.test.ts": 8,
+  "systemPrompt.test.ts": 9,
   "tools.test.ts": 154,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 10,
