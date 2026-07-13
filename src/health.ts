@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { healthcheck } from './storage/db.js';
+import { getJobHealthSnapshot } from './backgroundJobHealth.js';
 import {
   buildHealthzPayload,
   buildReadyzPayload,
@@ -72,8 +73,12 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
  * off-box (issue #220); front it with a reverse proxy or set HEALTH_HOST to
  * expose it.
  *
- *   GET /healthz -> {status, db, adapters} — adapter-aware; degraded (503) if
- *                   any chat adapter is disconnected. For monitoring.
+ *   GET /healthz -> {status, db, adapters, jobs?} — adapter-aware; degraded
+ *                   (503) if any chat adapter is disconnected, the DB is
+ *                   unreachable, or any background job has crossed its own
+ *                   consecutive-failure alert threshold. `jobs` is present
+ *                   only when at least one background job has run at least
+ *                   once this process (issue #467). For monitoring.
  *   GET /readyz  -> {status, db} — liveness + DB only, independent of adapter
  *                   connectivity (issue #216). Point the deploy HEALTH_URL
  *                   here so a reconnecting socket can't roll a good build back.
@@ -115,7 +120,7 @@ async function handleHealthz(adapters: readonly PlatformAdapter[], res: ServerRe
   const adapterStatus: Record<string, boolean> = {};
   for (const adapter of adapters) adapterStatus[adapter.platform] = adapter.isConnected();
 
-  const payload = buildHealthzPayload(dbOk, adapterStatus);
+  const payload = buildHealthzPayload(dbOk, adapterStatus, getJobHealthSnapshot());
   res
     .writeHead(payload.status === 'ok' ? 200 : 503, { 'Content-Type': 'application/json' })
     .end(JSON.stringify(payload));

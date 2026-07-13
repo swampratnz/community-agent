@@ -21,6 +21,8 @@ process.env.DEV_TEAM_AUTH_TOKEN = 'test-dev-team-token';
 // pins the floored end with DEV_TEAM_WATCH_POLL_MINUTES=60.
 
 const { startDevTeamWatchPoller, statusCheckAlertThreshold } = await import('../src/backgroundJobs.js');
+const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
+  await import('../src/backgroundJobHealth.js');
 
 const POLL_MS = 1 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(1);
@@ -161,6 +163,34 @@ test('runDevTeamWatchOnce per-watch best-effort retry semantics are untouched by
       0,
       'a resolving runOnce never trips the failure tracker, however many ticks pass',
     );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test("startDevTeamWatchPoller: records 'dev-team-watch' in the shared job-health registry on both a successful and a failed run (issue #467)", async (t) => {
+  resetJobHealthRegistryForTests();
+  const { adapter } = makeAdapter();
+  let mode: 'fail' | 'succeed' = 'fail';
+  const runOnce = async () => {
+    if (mode === 'fail') throw new Error('dev-team status endpoint unreachable');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDevTeamWatchPoller([adapter], runOnce);
+  try {
+    await flush(); // 1st run fails
+    let snap = getJobHealthSnapshot()['dev-team-watch'];
+    assert.ok(snap, 'a snapshot is recorded after the first (failed) run');
+    assert.equal(snap.consecutiveFailures, 1);
+    assert.equal(snap.lastSuccessAt, null);
+
+    mode = 'succeed';
+    t.mock.timers.tick(POLL_MS);
+    await flush(); // 2nd run succeeds
+    snap = getJobHealthSnapshot()['dev-team-watch'];
+    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
   }

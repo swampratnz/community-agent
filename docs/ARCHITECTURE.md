@@ -1028,6 +1028,26 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   Intended for an external uptime monitor; bind to localhost and put a
   reverse proxy in front if exposing it, same guidance as the Cloud API
   webhook port.
+- **`jobs` field on `/healthz`** (issue #467) — every opt-in background job
+  (the alerting series below) already tracks its own consecutive-failure
+  state in memory (`JobFailureTracker`/`backgroundJobHealth.ts`), but until
+  now that state was a local closure only the job's own one-time debounced
+  super-admin DM could see — invisible to `/healthz`, which an external
+  uptime monitor may be the operator's *only* window into. `backgroundJobs.ts`
+  (and `usageAlert.ts`'s own inlined tracker) now also mirror every tracker
+  update into a small in-memory registry (`recordJobRun`/`getJobHealthSnapshot`
+  in `backgroundJobHealth.ts`), which `/healthz` threads through as an
+  additional, optional `jobs?: Record<string, {consecutiveFailures: number,
+  lastRunAt: string, lastSuccessAt: string | null}>` field — present only once
+  at least one background job has run this process. Each value is a fixed
+  `BackgroundJobName` enum key, an integer, or an ISO timestamp only — never
+  an error message or stack (same "never echo the raw error" convention as
+  the DM template). A job whose tracker has crossed its own alert threshold
+  (`alerted === true`, a *confirmed* outage) also flips top-level `status` to
+  `"degraded"`, even when `db` and every adapter are healthy; a single
+  sub-threshold failure never does, and a job's next successful run clears
+  its contribution (same silent-recovery convention every tracker already
+  follows). `/readyz` is deliberately untouched by this — see below.
 - `WhatsAppCloudAdapter.isConnected()` — a stateless webhook receiver has no
   persistent connection to track the way Baileys/Discord have, so this
   instead reflects the local HTTP listener being up AND the last 3
