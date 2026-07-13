@@ -177,6 +177,9 @@ interface KnowledgeShortcutHit {
   sourceUrl: string | null;
   sourceTitle: string | null;
   verifiedAt: Date | null;
+  /** Weekly link-rot checker's verdict (issue #448); null means never checked. */
+  sourceUnreachable: boolean | null;
+  sourceCheckedAt: Date | null;
 }
 
 /**
@@ -810,6 +813,8 @@ export class Router {
       sourceUrl: top.sourceUrl,
       sourceTitle: top.sourceTitle,
       verifiedAt: top.verifiedAt,
+      sourceUnreachable: top.sourceUnreachable,
+      sourceCheckedAt: top.sourceCheckedAt,
     };
   }
 

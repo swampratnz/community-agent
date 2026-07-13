@@ -650,6 +650,40 @@ test(
 );
 
 test(
+  'repository: searchKnowledge and searchKnowledgeLexical both surface source_unreachable/source_checked_at (issue #465) — the weekly link-rot checker (#448) verdict, previously only threaded into the admin-only listKnowledge',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} dead link fixture, distinctively worded for both search paths`,
+      sourceUrl: 'https://example.com/rotted-page',
+      sourceTitle: 'Rotted page',
+    });
+    const checkedAt = new Date();
+    await pool.query(`UPDATE knowledge SET source_unreachable = true, source_checked_at = $2 WHERE id = $1`, [
+      id,
+      checkedAt,
+    ]);
+
+    const caller = { platform: 'discord' as const, conversationId: 'x' };
+    const semanticHits = await searchKnowledge(`${RUN} dead link fixture`, caller);
+    const semanticHit = semanticHits.find((h) => h.id === id);
+    assert.ok(semanticHit, 'searchKnowledge must still return the flagged entry');
+    assert.equal(semanticHit.sourceUnreachable, true);
+    assert.ok(semanticHit.sourceCheckedAt);
+    assert.equal(new Date(semanticHit.sourceCheckedAt).getTime(), checkedAt.getTime());
+
+    const lexicalHits = await searchKnowledgeLexical(`${RUN} dead link fixture`, caller, 5);
+    const lexicalHit = lexicalHits.find((h) => h.id === id);
+    assert.ok(lexicalHit, 'searchKnowledgeLexical must still return the flagged entry');
+    assert.equal(lexicalHit.sourceUnreachable, true);
+    assert.ok(lexicalHit.sourceCheckedAt);
+    assert.equal(new Date(lexicalHit.sourceCheckedAt).getTime(), checkedAt.getTime());
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
   "repository: recordKnowledgeRetrieval bumps retrieval_count/last_retrieved_at, listKnowledge exposes them, and updated_at (and #27/#5's ordering/hedging that key off it) is left untouched",
   { skip },
   async () => {

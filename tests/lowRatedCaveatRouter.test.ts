@@ -100,6 +100,8 @@ function fixedHitSearch(
       sourceTitle: null,
       verifiedAt: null,
       lastRetrievedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
       ...overrides,
     },
   ];

@@ -101,6 +101,8 @@ function fixedHitSearch(
       sourceTitle: null,
       verifiedAt: null,
       lastRetrievedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
       ...overrides,
     },
   ];
@@ -189,6 +191,32 @@ test('router (guest knowledge shortcut): a trusted hit with a source_url renders
     /source: docs: api\/pricing \(https:\/\/docs\.anthropic\.com\/en\/api\/pricing\)/,
   );
   assert.match(sent[0].text, /last verified/);
+});
+
+test('router (guest knowledge shortcut): a hit flagged source_unreachable=true renders the "⚠️ link appears dead" caveat instead of "last verified" (issue #465)', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95, {
+      sourceUrl: 'https://docs.anthropic.com/en/api/pricing',
+      sourceTitle: 'docs: api/pricing',
+      verifiedAt: new Date(),
+      sourceUnreachable: true,
+      sourceCheckedAt: new Date(),
+    }),
+    async () => {},
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /⚠️ link appears dead/);
+  assert.doesNotMatch(sent[0].text, /last verified/);
 });
 
 test("SECURITY: router (guest knowledge shortcut): the lookup is scope-restricted to global-only, never the caller's own conversation/platform scope (issue #165)", async () => {

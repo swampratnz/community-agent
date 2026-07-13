@@ -95,6 +95,8 @@ function fixedHitSearch(
       sourceTitle: null,
       verifiedAt: null,
       lastRetrievedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
       ...overrides,
     },
   ];
@@ -174,6 +176,8 @@ test('SECURITY: router (knowledge shortcut): an auto-researched near-exact match
       sourceTitle: null,
       verifiedAt: null,
       lastRetrievedAt: null,
+      sourceUnreachable: null,
+      sourceCheckedAt: null,
     },
   ];
   const router = new Router(
@@ -282,6 +286,32 @@ test('router (knowledge shortcut): a trusted hit with a source_url renders the d
     /source: docs: api\/messages \(https:\/\/docs\.anthropic\.com\/en\/api\/messages\)/,
   );
   assert.match(sent[0].text, /last verified/);
+});
+
+test('router (knowledge shortcut): a hit flagged source_unreachable=true renders the "⚠️ link appears dead" caveat instead of "last verified" (issue #465)', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95, {
+      sourceUrl: 'https://docs.anthropic.com/en/api/messages',
+      sourceTitle: 'docs: api/messages',
+      verifiedAt: new Date(),
+      sourceUnreachable: true,
+      sourceCheckedAt: new Date(),
+    }),
+    async () => {},
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /⚠️ link appears dead/);
+  assert.doesNotMatch(sent[0].text, /last verified/);
 });
 
 test('router (knowledge shortcut): a hit with no source_url renders no citation line', async () => {
