@@ -50,7 +50,8 @@ export type BackgroundJobName =
   | 'anthropic-status-check'
   | 'embedding-model'
   | 'admin-digest'
-  | 'usage-alert';
+  | 'usage-alert'
+  | 'dev-team-watch';
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught

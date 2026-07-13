@@ -518,9 +518,16 @@ export async function runDevTeamWatchOnce(deps: DevTeamWatchDeps): Promise<void>
  * Dev-team completion-DM poller (off unless DEV_TEAM_ENABLED). Re-checks
  * unnotified job watches every DEV_TEAM_WATCH_POLL_MINUTES (default 1 min) and
  * DMs the requester when a ~20-min run finishes. `runOnce` is injectable for
- * tests; production uses the DB- and client-backed default. Unlike the tracked
- * jobs above it has no consecutive-failure alerting — a transient service blip
- * is expected and simply retried on the next tick.
+ * tests; production uses the DB- and client-backed default.
+ *
+ * Consecutive-failure alerting (issue #452): mirrors `startStatusCheck`'s
+ * inlined-tracker shape, not `startTrackedJob` (which hardcodes a 6h tick) —
+ * this job's own poll cadence is configurable and much faster, so it reuses
+ * the same cadence-scaled `statusCheckAlertThreshold` rather than the flat
+ * `BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD`, avoiding a false page on a brief
+ * blip at the fast default cadence. `runDevTeamWatchOnce`'s own per-watch
+ * best-effort retry is unchanged — only the outer poll throwing (dead
+ * endpoint, expired token, DB outage) counts as a tracked failure.
  */
 export function startDevTeamWatchPoller(
   adapters: readonly PlatformAdapter[],
@@ -528,11 +535,26 @@ export function startDevTeamWatchPoller(
 ): ReturnType<typeof setInterval> | null {
   if (!config.devTeam.enabled) return null;
 
+  let tracker: JobFailureTracker = initialJobFailureTracker();
+  let lastSuccessAt: number | null = null;
+  const threshold = statusCheckAlertThreshold(config.devTeam.watchPollMinutes);
+
   const run = async () => {
+    let failed = false;
     try {
       await runOnce();
+      lastSuccessAt = Date.now();
     } catch (err) {
+      failed = true;
       logger.error({ err }, 'dev-team watch poller run failed');
+    }
+    const step = stepJobFailureTracker(tracker, failed, threshold);
+    tracker = step.tracker;
+    if (step.shouldAlert) {
+      void alertSuperAdmins(
+        adapters,
+        buildJobFailureAlert('dev-team-watch', tracker.consecutiveFailures, lastSuccessAt),
+      );
     }
   };
   void run();
