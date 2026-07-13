@@ -102,6 +102,18 @@ ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_url TEXT;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_title TEXT;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 
+-- Link-rot check (issue #448): an opt-in weekly background job HEAD-checks
+-- every entry's source_url and stamps whether it's still reachable, so a
+-- dead citation doesn't keep rendering as authoritative to members forever
+-- with no admin signal. Both nullable/default NULL: an entry with no
+-- source_url, or one never yet checked, has source_unreachable = NULL
+-- ("unknown"), distinct from false ("checked, still resolves"). Deliberately
+-- excluded from the knowledge_set_updated_at trigger's column list, same
+-- exclusion as retrieval_count/source_url above — a reachability check is
+-- not a content edit.
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_unreachable BOOLEAN;
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_checked_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
 

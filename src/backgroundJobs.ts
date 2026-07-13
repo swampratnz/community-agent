@@ -11,6 +11,12 @@ import {
   type TopicResearcher,
 } from './context/knowledgeRefresh.js';
 import { latestDocsIngestAt, runDocsIngest, shouldRunDocsIngest } from './context/docsIngest.js';
+import {
+  latestLinkCheckAt,
+  runKnowledgeLinkCheck,
+  shouldRunKnowledgeLinkCheck,
+  type ClassifyDeps,
+} from './context/linkCheck.js';
 import { writeCommunityContextExport } from './context/export.js';
 import { pollAnthropicStatus } from './status/anthropicStatus.js';
 import {
@@ -180,6 +186,25 @@ export async function defaultDocsIngestRun(fetchText?: (url: string) => Promise<
 }
 
 /**
+ * `deps` is injectable (tests only) — see defaultContextBuilderRun above.
+ */
+export async function defaultKnowledgeLinkCheckRun(deps?: ClassifyDeps): Promise<void> {
+  const latest = await latestLinkCheckAt();
+  if (!shouldRunKnowledgeLinkCheck(latest, Date.now())) return;
+  const result = await runKnowledgeLinkCheck(deps);
+  logger.info(result, 'Knowledge link check run complete');
+  // Total failure only: every entry this run actually attempted (candidates
+  // minus 'refused' — an SSRF-guard-blocked entry was never attempted, see
+  // src/context/linkCheck.ts) ended in a thrown failure. A partial failure,
+  // or a legitimate zero-attempt run (nothing to check, or everything
+  // refused), must never throw (issue #335's convention).
+  const attempted = result.candidates - result.refused;
+  if (attempted > 0 && result.failed === attempted) {
+    throw new Error(`Knowledge link check: all ${attempted} attempted entries failed`);
+  }
+}
+
+/**
  * Offline context builder (issue #51). Off unless CONTEXT_BUILDER_ENABLED.
  * Ticks every 6h but the ~daily freshness guard (based on the last digest's
  * created_at) makes it effectively one run per day — restart-safe, so the
@@ -220,6 +245,19 @@ export function startDocsIngest(
   runOnce: () => Promise<void> = defaultDocsIngestRun,
 ): ReturnType<typeof setInterval> | null {
   return startTrackedJob('docs-ingest', adapters, config.docsIngest.enabled, runOnce);
+}
+
+/**
+ * Weekly knowledge link-rot check (off unless KNOWLEDGE_LINK_CHECK_ENABLED).
+ * Ticks every 6h but a ~weekly freshness guard (max source_checked_at across
+ * `knowledge`) makes it effectively one run per week and redeploy-safe. See
+ * src/context/linkCheck.ts for the SSRF-hardened fetch/classify logic.
+ */
+export function startKnowledgeLinkCheck(
+  adapters: readonly PlatformAdapter[],
+  runOnce: () => Promise<void> = defaultKnowledgeLinkCheckRun,
+): ReturnType<typeof setInterval> | null {
+  return startTrackedJob('knowledge-link-check', adapters, config.knowledgeLinkCheck.enabled, runOnce);
 }
 
 /**

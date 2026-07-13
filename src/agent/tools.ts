@@ -3100,6 +3100,13 @@ export function buildToolServer(
           'Filter to entries created by this role/provenance (e.g. "auto" to review unreviewed ' +
             'web-researched entries)',
         ),
+      sourceUnreachable: z
+        .boolean()
+        .optional()
+        .describe(
+          'Only show entries whose sourceUrl the weekly link-rot check flagged as unreachable ' +
+            '(dead citation — re-verify or fix)',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_knowledge');
@@ -3116,6 +3123,7 @@ export function buildToolServer(
         offset: args.offset,
         ...(args.staleOnly ? { staleOnly: true, staleDays, staleMaxAgeDays } : {}),
         ...(args.provenance ? { provenance: args.provenance } : {}),
+        ...(args.sourceUnreachable ? { sourceUnreachable: true } : {}),
       });
       if (entries.length === 0) return text('No knowledge entries found.');
       return text(
@@ -3128,7 +3136,8 @@ export function buildToolServer(
                 `(updated ${e.updatedAt.toISOString()}, retrieved ${e.retrievalCount}x` +
                 `${e.lastRetrievedAt ? `, last ${e.lastRetrievedAt.toISOString()}` : ''}` +
                 `${e.sourceUrl ? `, source: ${e.sourceTitle ?? e.sourceUrl} (${e.sourceUrl})` : ''}` +
-                `${e.verifiedAt ? `, verified ${e.verifiedAt.toISOString()}` : ''})`,
+                `${e.verifiedAt ? `, verified ${e.verifiedAt.toISOString()}` : ''}` +
+                `${e.sourceUnreachable ? `, ⚠️ source unreachable (checked ${e.sourceCheckedAt?.toISOString()})` : ''})`,
             )
             .join('\n'),
         ),

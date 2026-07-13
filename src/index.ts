@@ -11,6 +11,7 @@ import {
   startContextBuilder,
   startKnowledgeRefresh,
   startDocsIngest,
+  startKnowledgeLinkCheck,
   startStatusCheck,
   startEmbeddingHealthCheckJob,
   startDevTeamWatchPoller,
@@ -91,6 +92,9 @@ async function main(): Promise<void> {
   // 4e-ter. Optional weekly docs ingest (disabled unless configured).
   const docsIngestTimer = startDocsIngest(adapters);
 
+  // 4e-ter-bis. Optional weekly knowledge link-rot check (disabled unless configured).
+  const knowledgeLinkCheckTimer = startKnowledgeLinkCheck(adapters);
+
   // 4e-quater. Optional Anthropic status check poll (disabled unless
   //            configured). Routed through backgroundJobs.ts's startStatusCheck
   //            for consecutive-failure alerting (issue #321), hence the
@@ -115,6 +119,7 @@ async function main(): Promise<void> {
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
     if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
     if (docsIngestTimer) clearInterval(docsIngestTimer);
+    if (knowledgeLinkCheckTimer) clearInterval(knowledgeLinkCheckTimer);
     if (statusCheckTimer) clearInterval(statusCheckTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
     if (devTeamWatchTimer) clearInterval(devTeamWatchTimer);

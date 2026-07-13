@@ -44,6 +44,7 @@ export type BackgroundJobName =
   | 'context-builder'
   | 'knowledge-refresh'
   | 'docs-ingest'
+  | 'knowledge-link-check'
   | 'interaction-retention-purge'
   | 'roster-retention-purge'
   | 'anthropic-status-check'
