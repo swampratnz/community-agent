@@ -1660,6 +1660,47 @@ export async function listAdminDisplayNames(platform: Platform): Promise<string[
     .filter((name): name is string => name != null && name.trim() !== '');
 }
 
+export interface AdminRosterEntry {
+  platform: Platform;
+  platformUserId: string;
+  displayName: string | null;
+  leftServer: boolean;
+}
+
+/**
+ * Every `role = 'admin'` community_users row across both platforms, for the
+ * `list_admins` super-admin tool (issue #428) to answer "who currently holds
+ * bot-admin privilege?" as a direct query instead of a mental replay of
+ * `audit_view`'s grant/revoke log. Reuses the exact community_users→
+ * server_roster display-name precedence `listAdminDisplayNames` already
+ * uses. `leftServer` is `true` only when a matching `server_roster` row has
+ * `left_at IS NOT NULL`; a missing roster row (never seen leaving) or one
+ * with `left_at IS NULL` both read as "not known to have left" — this is
+ * the signal that surfaces a departed-but-still-admin account
+ * (`onGuildMemberRemove` clears roster/membership state but never touches
+ * `community_users.role`). Deterministically ordered by `community_users.id`
+ * like `listAdminDisplayNames`. Env-sourced super admins are never rows in
+ * `community_users`, so — like `listAdmins`/`listAdminDisplayNames` — they
+ * are excluded here too.
+ */
+export async function listAdminRoster(): Promise<AdminRosterEntry[]> {
+  const { rows } = await pool.query(
+    `SELECT cu.platform, cu.platform_user_id,
+            COALESCE(NULLIF(cu.display_name, ''), NULLIF(sr.display_name, '')) AS display_name,
+            sr.left_at IS NOT NULL AS left_server
+       FROM community_users cu
+       LEFT JOIN server_roster sr ON sr.platform = cu.platform AND sr.user_id = cu.platform_user_id
+      WHERE cu.role = 'admin'
+      ORDER BY cu.id ASC`,
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    platformUserId: r.platform_user_id as string,
+    displayName: r.display_name as string | null,
+    leftServer: r.left_server as boolean,
+  }));
+}
+
 /** Remove a member row entirely. Refuses to remove admins (revoke first). */
 /**
  * If a person group is left with fewer than two members, dissolve it: clear
@@ -3117,6 +3158,61 @@ export async function rosterCounts(
     joinedThisWeek: Number(rows[0]?.joined_week ?? 0),
     leftThisWeek: Number(rows[0]?.left_week ?? 0),
   };
+}
+
+export interface EngagementBreakdown {
+  platform: Platform;
+  total: number;
+  engaged: number;
+  /** Percentage rounded to one decimal place; 0 when total is 0 (issue #419). */
+  percentage: number;
+}
+
+/**
+ * Guild-wide engagement %: what fraction of currently-present roster members
+ * (issue #419) have ever sent an inbound message. Denominator is
+ * `server_roster` where `left_at IS NULL` (durable, Discord-complete /
+ * WhatsApp-partial); numerator is the subset of those rows matched by
+ * distinct `(platform, user_id)` on an inbound `interactions` row —
+ * `interactions` is age-purged per `INTERACTION_RETENTION_DAYS`, so this is a
+ * "within the retention window" figure, not a lifetime one. Aggregate-only by
+ * design (super-admin `engagement_stats` tool, adversarial review #419): no
+ * per-member identity is ever returned, only counts and a percentage.
+ */
+export async function engagementStats(platform?: Platform): Promise<{
+  total: number;
+  engaged: number;
+  percentage: number;
+  byPlatform: EngagementBreakdown[];
+}> {
+  const params: unknown[] = [];
+  let where = 'r.left_at IS NULL';
+  if (platform) {
+    params.push(platform);
+    where += ` AND r.platform = $${params.length}`;
+  }
+  const { rows } = await pool.query(
+    `SELECT r.platform,
+            count(*) AS total,
+            count(e.user_id) AS engaged
+       FROM server_roster r
+       LEFT JOIN (
+         SELECT DISTINCT platform, user_id FROM interactions WHERE direction = 'inbound'
+       ) e ON e.platform = r.platform AND e.user_id = r.user_id
+      WHERE ${where}
+      GROUP BY r.platform
+      ORDER BY r.platform`,
+    params,
+  );
+  const pct = (engaged: number, total: number) => (total > 0 ? Math.round((engaged / total) * 1000) / 10 : 0);
+  const byPlatform: EngagementBreakdown[] = rows.map((r) => {
+    const total = Number(r.total);
+    const engaged = Number(r.engaged);
+    return { platform: r.platform as Platform, total, engaged, percentage: pct(engaged, total) };
+  });
+  const total = byPlatform.reduce((sum, p) => sum + p.total, 0);
+  const engaged = byPlatform.reduce((sum, p) => sum + p.engaged, 0);
+  return { total, engaged, percentage: pct(engaged, total), byPlatform };
 }
 
 /**

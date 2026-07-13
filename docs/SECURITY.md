@@ -552,6 +552,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `moderation_history`") rather than asserting it, is inert (no query) unless
   `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
   extends — carries only bare integers, never warning content or an identity.
+- **`list_admins`** (super-admin, read-only, no arguments, issue #428):
+  answers "who currently holds bot-admin tier?" as a direct query —
+  `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
+  `server_roster` on `(platform, user_id)`, same display-name precedence as
+  `listAdminDisplayNames`. This closes a real visibility gap: leaving the
+  Discord server/WhatsApp group only clears roster/membership-scope state
+  (`onGuildMemberRemove` → `markRosterLeave`) and never touches
+  `community_users.role`, so a departed admin keeps admin-tier tools via DM
+  until a super admin explicitly calls `revoke_admin` — and today there is no
+  other way to notice that state exists. Each roster line is flagged
+  `leftServer: true` only when the matching `server_roster` row has `left_at
+  IS NOT NULL`; no matching row or `left_at IS NULL` both read as "not known
+  to have left." No CONFIRM, no `admin_audit` row (matches `audit_view`/
+  `usage_stats`, the existing read-only super-admin tools) — it mutates
+  nothing and takes no arguments, so there is no untrusted-input surface.
+  Env-sourced super admins are never `community_users` rows and so never
+  appear in the output, same exclusion as `listAdmins`/`listAdminDisplayNames`;
+  the reply says so explicitly so the list isn't mistaken for "everyone with
+  elevated access." Auto-revoke on departure is deliberately out of scope —
+  visibility first, matching how `grant_admin`/`revoke_admin` keep privilege
+  changes human-decided rather than automatic.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
