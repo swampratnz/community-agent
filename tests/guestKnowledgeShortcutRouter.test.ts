@@ -251,6 +251,107 @@ test('router (guest knowledge shortcut): a lookup failure falls through to the s
   assert.match(sent[0].text, /member-only/i);
 });
 
+// --- Standing 'mi' language preference on the guest knowledge shortcut (issue #435) ---
+
+test("router (guest knowledge shortcut): a gated guest with a standing (possibly stale, ex-member) 'mi' preference gets both KNOWLEDGE_SHORTCUT_SUFFIX_MI and GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI, from a single lookup", async () => {
+  let langCalls = 0;
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    async () => {
+      langCalls += 1;
+      return 'mi';
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    'Yes — this bot is free for members.\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.\n\nTonoa tētahi kaiwhakahaere hapori ki te tāpiri i a koe hei mema kia taea ai te kōrero tonu.',
+  );
+  assert.equal(langCalls, 1, 'both mi strings must share a single getLangPref read, not two');
+});
+
+test("router (guest knowledge shortcut): a guest with 'auto' (the default) still gets today's English suffix + nudge, byte-identical", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /From our knowledge base/i);
+  assert.match(sent[0].text, /ask a community admin/i);
+});
+
+test('SECURITY: a getLanguagePreference failure on the guest knowledge shortcut still sends the English default, never throws or drops the reply', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /From our knowledge base/i);
+  assert.match(sent[0].text, /ask a community admin/i);
+});
+
+test('SECURITY: KNOWLEDGE_SHORTCUT_SUFFIX_MI and GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI are fixed, non-interpolated strings — byte-identical regardless of the served KB entry or caller', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95, { content: 'A completely different pricing answer.' }),
+    async () => {},
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ userId: 'another-guest' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    'A completely different pricing answer.\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.\n\nTonoa tētahi kaiwhakahaere hapori ki te tāpiri i a koe hei mema kia taea ai te kōrero tonu.',
+  );
+});
+
 test('router (guest knowledge shortcut): a member (non-guest) is completely unaffected by the guest-only flag', async () => {
   const router = new Router(
     async () => ({ text: 'real answer' }),

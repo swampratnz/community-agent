@@ -4944,6 +4944,7 @@ const BASE_USAGE_STATS = {
   topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
   costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
   backgroundCostUsd: 0,
+  backgroundCostByJob: [],
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -4957,14 +4958,125 @@ test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#40
   assert.ok(!out.includes('Background jobs'), 'no background-jobs line when backgroundCostUsd is 0');
 });
 
-test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line naming the figure (issue #401)', () => {
-  const out = formatUsageStats({ ...BASE_USAGE_STATS, backgroundCostUsd: 4.2 }, 7);
+test('formatUsageStats: all three jobs non-zero renders each as its own segment, joined with " · " (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 3.8 },
+        { job: 'moderation_llm', costUsd: 0.35 },
+        { job: 'context_builder', costUsd: 0.05 },
+      ],
+    },
+    7,
+  );
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Background jobs (moderation/digest/refresh): ~$4.20.',
+      'Background jobs: knowledge_refresh ~$3.80 · moderation_llm ~$0.35 · context_builder ~$0.05.',
+  );
+});
+
+test('formatUsageStats: exactly one job non-zero renders a single segment, no $0.00 entries for the other two (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 4.2 },
+        { job: 'moderation_llm', costUsd: 0 },
+        { job: 'context_builder', costUsd: 0 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs: knowledge_refresh ~$4.20.',
+  );
+  assert.ok(!out.includes('$0.00'), 'zero-cost jobs are omitted, not rendered as $0.00');
+});
+
+test('formatUsageStats: mixed zero/non-zero jobs omits the zero-cost ones (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 0.75,
+      backgroundCostByJob: [
+        { job: 'moderation_llm', costUsd: 0.75 },
+        { job: 'context_builder', costUsd: 0 },
+        { job: 'knowledge_refresh', costUsd: 0 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs: moderation_llm ~$0.75.',
+  );
+});
+
+test('SECURITY: formatUsageStats background-jobs line only ever contains the fixed BackgroundJob enum values and numeric ~$X.XX figures — never a user id, conversation id, platform, or free-text string (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 3.8 },
+        { job: 'moderation_llm', costUsd: 0.35 },
+        { job: 'context_builder', costUsd: 0.05 },
+      ],
+    },
+    7,
+  );
+  const line = out.split('\n').find((l) => l.startsWith('Background jobs:'));
+  assert.ok(line, 'a background-jobs line is present when a job has nonzero cost');
+  assert.equal(
+    line,
+    'Background jobs: knowledge_refresh ~$3.80 · moderation_llm ~$0.35 · context_builder ~$0.05.',
+    'must be byte-identical to the exact enum + figure composition — no room for an interpolated identity value',
+  );
+  const BACKGROUND_JOB_LINE_RE =
+    /^Background jobs: (?:(?:moderation_llm|context_builder|knowledge_refresh) ~\$\d+\.\d{2})(?: · (?:moderation_llm|context_builder|knowledge_refresh) ~\$\d+\.\d{2})*\.$/;
+  assert.match(
+    line,
+    BACKGROUND_JOB_LINE_RE,
+    'the whole line must match fixed job-enum segments and numeric costs only',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-job breakdown (assertAtLeast re-check, issue #438)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the byJob breakdown',
   );
 });
 
@@ -5951,6 +6063,58 @@ test(
   },
 );
 
+test(
+  'knowledge_search tool handler issues NO low-rated-lookup query and renders byte-identical output when KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is unset/0 (the default) — this file never sets it non-zero (issue #432)',
+  { skip },
+  async (t) => {
+    assert.equal(
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+      0,
+      'this test only proves anything with the feature at its off default',
+    );
+    const scope = `${KNOWLEDGE_CONFLICT_HANDLER_SCOPE_PREFIX}-low-rated-disabled`;
+    const { id } = await saveKnowledge({
+      title: `Low-rated-disabled entry ${RUN}`,
+      content: 'This entry checks the low-rated caveat is off by default.',
+      scope,
+    });
+
+    let lowRatedQueryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('WHERE knowledge.id = ANY($1)')) {
+        lowRatedQueryRan = true;
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-low-rated-disabled-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+    const query = 'This entry checks the low-rated caveat is off by default.';
+    const result = await getKnowledgeSearchHandler(caller).handler({ query });
+    const text = result.content[0]?.text ?? '';
+
+    assert.equal(
+      lowRatedQueryRan,
+      false,
+      'the low-rated lookup query must never run when the feature is disabled',
+    );
+    assert.match(text, /Low-rated-disabled entry/, 'the hit itself still renders normally');
+    assert.doesNotMatch(text, /rate_answer/, 'no caveat may render when the feature is disabled');
+    // formatKnowledgeSearchResults' own lowRatedIds default is an empty Set
+    // (proven byte-identical to omitting the argument entirely by the pure
+    // unit test above) — so a disabled-feature handler call that never even
+    // computes a non-empty set is, by construction, the same pre-#432 shape.
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
 test('formatKnowledgeSearchResults never appends the conflict caveat when there are no relevant hits, even if hasConflict is (incorrectly) passed true (issue #389)', () => {
   assert.equal(
     formatKnowledgeSearchResults([], undefined, undefined, true),
@@ -5992,6 +6156,69 @@ test('SECURITY: formatKnowledgeSearchResults appends the conflict caveat as an E
     withConflict,
     `${withoutConflict}\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})`,
     'must be byte-identical to the exported static clause appended once as a trailing line',
+  );
+});
+
+// formatKnowledgeSearchResults' lowRatedIds param (issue #432) — the
+// display-side counterpart to hasConflict above: computed once by the
+// caller (via areKnowledgeEntriesLowRated) and threaded straight through,
+// but checked PER-HIT rather than rendered as a single trailing line.
+test('formatKnowledgeSearchResults with the default (empty) lowRatedIds is byte-identical to omitting the argument entirely (issue #432)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.9,
+    updatedAt: new Date(),
+    autoGenerated: false,
+    sourceUrl: null,
+    sourceTitle: null,
+    verifiedAt: null,
+  };
+  assert.equal(
+    formatKnowledgeSearchResults([a], undefined, undefined, false, new Set()),
+    formatKnowledgeSearchResults([a], undefined, undefined, false),
+  );
+});
+
+test("SECURITY: formatKnowledgeSearchResults appends the low-rated caveat to only the hit whose id is in lowRatedIds — never a sibling hit's line, and never as a result-wide trailing line (issue #432)", () => {
+  const a = {
+    id: 101,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.9,
+    updatedAt: new Date(),
+    autoGenerated: false,
+    sourceUrl: null,
+    sourceTitle: null,
+    verifiedAt: null,
+  };
+  const b = { ...a, id: 202, title: 'B', content: 'Content B', similarity: 0.8 };
+  const out = formatKnowledgeSearchResults([a, b], undefined, undefined, false, new Set([202]));
+  const lines = out.split('\n');
+  const aLine = lines.find((l) => l.includes('Content A'));
+  const bLine = lines.find((l) => l.includes('Content B'));
+  const escapedCaveat = KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.doesNotMatch(aLine ?? '', new RegExp(escapedCaveat), 'hit a (id 101) is not in lowRatedIds');
+  assert.match(bLine ?? '', new RegExp(escapedCaveat), 'hit b (id 202) is in lowRatedIds');
+  assert.equal(
+    (out.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
+    1,
+    'the caveat must appear exactly once, tied to its own hit — never duplicated as a result-wide line',
+  );
+});
+
+test('formatKnowledgeSearchResults never appends the low-rated caveat when there are no relevant hits, even if lowRatedIds (incorrectly) contains an id (issue #432)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.01,
+    updatedAt: new Date(),
+  };
+  assert.equal(
+    formatKnowledgeSearchResults([a], undefined, undefined, false, new Set([1])),
+    'No matching knowledge entries.',
   );
 });
 

@@ -330,9 +330,21 @@ read, with `pending.description` embedded unchanged in both language variants
 and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
 `classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
 outcome/failure strings (`pending.execute()`'s own return value and the
-`Failed: ...` fallback) stay out of scope and English-only, same as the
-ack-shortcut reply. These same eleven deterministic fallback/notice
-constants across `router.ts`/`core.ts`/`upstreamFailure.ts` also gain a
+`Failed: ...` fallback) stay out of scope and English-only. The five opt-in,
+off-by-default shortcut-reply strings `respond()` uses to skip a full agent
+turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
+`GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
+`REPEAT_MAX_TURNS_SHORTCUT_NOTICE` — get the same treatment as the closing
+installment of this series (issue #435): each reads `getLangPref` once (the
+guest-knowledge site shares one read across its two strings) and picks its
+`_MI` sibling. The repeat-question shortcut's replayed `cachedReplyText` (a
+stored, already-served real answer) is left untranslated, same "translate the
+shell, not the dynamic payload" discipline as #339/#405; the repeat-max-turns
+shortcut instead swaps in the already-existing `MAX_TURNS_REPLY_MI` (issue
+#396) alongside its own notice, since that failure text is itself a fixed
+constant, not caller-derived content. Separately, the eleven deterministic
+fallback/notice constants across `router.ts`/`core.ts`/`upstreamFailure.ts`
+also gain a
 fixed, human-authored `_PLAIN` counterpart honouring a standing `'plain'`
 `response_style` (issue #430) — the sibling preference's own gap on this
 exact non-model path, mirroring the `_MI` sweep mechanically via
@@ -796,6 +808,19 @@ from a hit's content body rather than the tool-computed citation clause.
    from (e.g. a multi-topic turn that queries twice and answers from the
    first hit stamps the second). Treat a flagged entry as a strong lead worth
    reading, not as proof that entry caused every attributed unhelpful rating.
+6. `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL` (off by default, issue #337)
+   gates a member-facing caveat appended to a served hit once its unhelpful
+   count clears the threshold, prompting the member to `rate_answer` too.
+   Issue #337 shipped this only on the deterministic knowledge-shortcut path
+   (`sendKnowledgeShortcut`); `knowledge_search` — the dominant path, since
+   the shortcut only fires above `KNOWLEDGE_SHORTCUT_THRESHOLD`'s strict 0.9
+   cosine floor — always rendered the caveat off regardless of config. Issue
+   #432 closes that display-side asymmetry the same way #411 closed the
+   matching attribution one: the handler batches a lookup
+   (`areKnowledgeEntriesLowRated`) over every hit that cleared the relevance
+   floor and threads the resulting id set into `formatKnowledgeSearchResults`,
+   which appends the caveat to each low-rated hit's own line — never as a
+   single result-wide line like the conflict caveat (#389) above it.
 
 ## Auto-moderation (Discord)
 
