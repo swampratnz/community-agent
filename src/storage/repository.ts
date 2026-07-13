@@ -117,6 +117,13 @@ export async function searchMemory(
     /** Restrict to this set of conversations (admin scoping). */
     conversationIds?: readonly string[];
     topK?: number;
+    /**
+     * Cosine-similarity floor (issue #474). Defaults to
+     * config.behaviour.memoryRelevanceThreshold (0 = no floor, byte-identical
+     * to pre-#474 behaviour) so every call site inherits the operator's
+     * configured value with no per-site plumbing.
+     */
+    relevanceThreshold?: number;
   } = {},
 ): Promise<MemoryHit[]> {
   const topK = opts.topK ?? config.behaviour.memoryTopK;
@@ -143,6 +150,14 @@ export async function searchMemory(
   if (opts.conversationIds) {
     params.push([...opts.conversationIds]);
     filters.push(`conversation_id = ANY($${params.length})`);
+  }
+  const relevanceThreshold = opts.relevanceThreshold ?? config.behaviour.memoryRelevanceThreshold;
+  // A `0` threshold must be a true no-op (AC2) — a `>= 0` clause would
+  // exclude exactly-zero/negative-similarity rows that today's unfiltered
+  // query returns, so only add the clause when a real floor is active.
+  if (relevanceThreshold > 0) {
+    params.push(relevanceThreshold);
+    filters.push(`1 - (embedding <=> $1) >= $${params.length}`);
   }
   params.push(topK);
 

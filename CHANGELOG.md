@@ -13,6 +13,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-14
 
 ### Added
+- **`MEMORY_RELEVANCE_THRESHOLD`** (#474): automatic per-turn memory recall and
+  the `remember_search` tool both search past interactions via `searchMemory`,
+  which previously had no relevance floor at all — every configured
+  `MEMORY_TOP_K` slot was filled regardless of how relevant the match actually
+  was, and because recalled messages ride in the user turn (not the system
+  prompt), a low-relevance recalled message was full-price input token spend
+  on every single reply, not a cache hit. `MEMORY_RELEVANCE_THRESHOLD` adds an
+  optional cosine-similarity floor to that query, mirroring `knowledge_search`'s
+  own relevance floor but kept separately tunable since memory recall has no
+  eval fixture yet to derive a safe always-on default from. Defaults to `0`
+  (no floor — byte-identical to today's behaviour); both call sites inherit
+  the configured value automatically, with no new tool or RBAC surface.
 - **Departed-admin proactive alert** (`DEPARTED_ADMIN_ALERT_ENABLED`, #472): closes the growth path #428 itself named and deferred. `list_admins` (#428) already let a super admin *pull* the "which current admins have left the server/group but still hold bot-admin privilege via DM" signal, but nothing ever pushed it — a departed admin's DM-tier access stayed invisible unless a super admin thought to run the tool. This adds an opt-in job, off by default, on the same 6h background-job cadence as every other proactive check: it counts departed-but-still-admin entries and DMs every super admin exactly once when that count first goes from zero to non-zero, re-arming only once every departed admin has been revoked or reinstated (a partial fix doesn't re-arm or re-nag). The DM is a bare count plus fixed pointer text — never a name, id, or platform — matching every other alert/digest signal's convention. No new tool, no schema change, no new RBAC surface; auto-revoke remains deliberately out of scope.
 
 ## 2026-07-13

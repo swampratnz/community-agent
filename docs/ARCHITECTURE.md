@@ -940,6 +940,24 @@ If this becomes a problem: cap session length (start fresh after N turns), or
 move to the SDK's streaming-input mode with a persistent process per busy
 conversation.
 
+**Memory recall relevance floor** (`MEMORY_RELEVANCE_THRESHOLD`, default `0` =
+off, issue #474): automatic per-turn memory recall (the "Memory & 'learning'"
+section above) and `remember_search` both funnel through `searchMemory`, which
+until #474 had no similarity floor at all — every configured `MEMORY_TOP_K`
+slot was filled regardless of relevance. Because recalled messages ride in the
+**user turn**, not the system prompt, they sit downstream of the Agent SDK's
+cached prefix, so a low-relevance recalled message is full-price input token
+spend on every single reply, not a cache hit. `MEMORY_RELEVANCE_THRESHOLD` adds
+a cosine-similarity floor (`1 - (embedding <=> query) >= threshold`) to that
+query, mirroring `knowledge_search`'s own `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`
+(0.35) — but kept as a separate, independently-tunable value rather than
+reusing that constant, since it was empirically derived for longer curated
+knowledge-base content and there's no equivalent eval fixture yet for raw
+conversational message embeddings. Default `0` is a true no-op (byte-identical
+to pre-#474 behaviour); an operator raises it once they've observed their own
+corpus's `similarity` distribution (visible today via `remember_search`'s
+`(NN% match)` display).
+
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
 exact matches — see `src/ackClassifier.ts`) skips the agent turn entirely and

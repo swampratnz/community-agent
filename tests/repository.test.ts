@@ -18,9 +18,11 @@ const skip = hasDb
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
+const { embed } = await import('../src/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const {
   recordInteraction,
+  searchMemory,
   setClaudeSessionId,
   getClaudeSession,
   clearUserSessions,
@@ -7260,5 +7262,185 @@ test(
     assert.equal(otherRows.rows.length, 1, "another requester's watch rows are untouched");
 
     await pool.query(`DELETE FROM dev_team_watches WHERE requester_user_id = $1`, [otherUser]);
+  },
+);
+
+// searchMemory's relevanceThreshold floor (issue #474) — same technique as
+// tests/tools.test.ts's atCosineSimilarity: derive a fixture embedding at an
+// EXACT known cosine similarity to the query's own real embed() output via
+// Gram-Schmidt, rather than relying on the model's actual semantic judgement
+// of hand-picked text (unreliable for landing precisely on either side of a
+// threshold).
+function memoryAtCosineSimilarity(anchor: number[], rho: number): number[] {
+  const dim = anchor.length;
+  const seed = new Array(dim).fill(0);
+  seed[Math.abs(anchor[0]) > 0.9 ? 1 : 0] = 1;
+  const dot = seed.reduce((s, v, i) => s + v * anchor[i], 0);
+  const orth = seed.map((v, i) => v - dot * anchor[i]);
+  const norm = Math.sqrt(orth.reduce((s, v) => s + v * v, 0));
+  const unitOrth = orth.map((v) => v / norm);
+  const scale = Math.sqrt(1 - rho * rho);
+  return anchor.map((v, i) => rho * v + scale * unitOrth[i]);
+}
+
+const insertMemoryAt = (conversationId: string, userId: string, content: string, vec: number[]) =>
+  pool
+    .query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content, embedding)
+       VALUES ('discord',$1,$2,'member','inbound',$3,$4) RETURNING id`,
+      [conversationId, userId, content, pgvector.toSql(vec)],
+    )
+    .then((r) => Number(r.rows[0].id));
+
+test(
+  'repository: searchMemory relevanceThreshold excludes rows below the floor, keeps rows at/above it in similarity-descending order, and topK still applies among the survivors (issue #474, AC1)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-mem-floor`;
+    const userId = `${RUN}-mem-floor-user`;
+    const query = 'when is the next community meetup scheduled';
+    const anchor = await embed(query);
+
+    const highId = await insertMemoryAt(
+      conversationId,
+      userId,
+      'high match row',
+      memoryAtCosineSimilarity(anchor, 0.9),
+    );
+    const midId = await insertMemoryAt(
+      conversationId,
+      userId,
+      'mid match row',
+      memoryAtCosineSimilarity(anchor, 0.6),
+    );
+    const lowId = await insertMemoryAt(
+      conversationId,
+      userId,
+      'low match row',
+      memoryAtCosineSimilarity(anchor, 0.3),
+    );
+    const belowFloorId = await insertMemoryAt(
+      conversationId,
+      userId,
+      'below floor row',
+      memoryAtCosineSimilarity(anchor, 0.1),
+    );
+
+    const hits = await searchMemory(query, { conversationId, relevanceThreshold: 0.5, topK: 10 });
+    assert.deepEqual(
+      hits.map((h) => h.content),
+      ['high match row', 'mid match row'],
+      'only rows at/above the 0.5 floor survive, in similarity-descending order',
+    );
+    assert.ok(
+      hits.every((h) => h.similarity >= 0.5),
+      'every surviving hit clears the configured floor',
+    );
+
+    const limited = await searchMemory(query, { conversationId, relevanceThreshold: 0.5, topK: 1 });
+    assert.deepEqual(
+      limited.map((h) => h.content),
+      ['high match row'],
+      'topK still applies among the rows that clear the floor',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE id = ANY($1)`, [[highId, midId, lowId, belowFloorId]]);
+  },
+);
+
+test(
+  'repository: searchMemory relevanceThreshold of 0 is a true no-op, returning rows at exactly-zero and negative similarity unchanged (issue #474, AC2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-mem-noop`;
+    const userId = `${RUN}-mem-noop-user`;
+    const query = 'what time does the meetup start this week';
+    const anchor = await embed(query);
+
+    const zeroId = await insertMemoryAt(
+      conversationId,
+      userId,
+      'zero similarity row',
+      memoryAtCosineSimilarity(anchor, 0),
+    );
+    const negativeId = await insertMemoryAt(
+      conversationId,
+      userId,
+      'negative similarity row',
+      memoryAtCosineSimilarity(anchor, -0.4),
+    );
+
+    const withExplicitZero = await searchMemory(query, {
+      conversationId,
+      relevanceThreshold: 0,
+      topK: 10,
+    });
+    const withOmittedThreshold = await searchMemory(query, { conversationId, topK: 10 });
+
+    assert.deepEqual(
+      new Set(withExplicitZero.map((h) => h.content)),
+      new Set(['zero similarity row', 'negative similarity row']),
+      'an explicit 0 threshold must not exclude exactly-zero or negative-similarity rows',
+    );
+    assert.deepEqual(
+      new Set(withOmittedThreshold.map((h) => h.content)),
+      new Set(['zero similarity row', 'negative similarity row']),
+      'omitting relevanceThreshold falls back to config default (0 in this test env) — identical result set',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE id = ANY($1)`, [[zeroId, negativeId]]);
+  },
+);
+
+test(
+  'SECURITY: repository: searchMemory relevanceThreshold composes as an additional AND with existing scope filters — never widens scope. An out-of-scope row that clears the floor is still never returned, for both conversationId and conversationIds scoping (issue #474, AC5)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-mem-scope-in`;
+    const outOfScopeConvo = `${RUN}-mem-scope-out`;
+    const userId = `${RUN}-mem-scope-user`;
+    const query = 'how do I reset my community forum password';
+    const anchor = await embed(query);
+
+    const inScopeId = await insertMemoryAt(
+      inScopeConvo,
+      userId,
+      'in scope row',
+      memoryAtCosineSimilarity(anchor, 0.9),
+    );
+    // Deliberately a HIGHER similarity than the in-scope row, so a $N
+    // parameter-index regression that dropped or reordered the scope
+    // predicate would surface this row ahead of (or instead of) the
+    // in-scope one.
+    const outOfScopeId = await insertMemoryAt(
+      outOfScopeConvo,
+      userId,
+      'out of scope row',
+      memoryAtCosineSimilarity(anchor, 0.95),
+    );
+
+    const scopedById = await searchMemory(query, {
+      conversationId: inScopeConvo,
+      relevanceThreshold: 0.5,
+      topK: 10,
+    });
+    assert.deepEqual(
+      scopedById.map((h) => h.content),
+      ['in scope row'],
+      'conversationId scope returns only the in-scope row even though the out-of-scope row has higher similarity',
+    );
+
+    const scopedByIds = await searchMemory(query, {
+      conversationIds: [inScopeConvo],
+      relevanceThreshold: 0.5,
+      topK: 10,
+    });
+    assert.deepEqual(
+      scopedByIds.map((h) => h.content),
+      ['in scope row'],
+      'SECURITY: the admin conversationIds scope must never leak a higher-similarity out-of-scope row',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE id = ANY($1)`, [[inScopeId, outOfScopeId]]);
   },
 );
