@@ -603,8 +603,10 @@ CREATE INDEX IF NOT EXISTS background_job_costs_created_at_idx
 
 -- ---------------------------------------------------------------------------
 -- Durable completion-DM watches for the super-admin dev-team dispatch tools
--- (dev_team_dispatch). One row per dispatched job: who asked (platform +
--- user id, for the DM back), plus the job's mode/repo for the verdict text. A
+-- (dev_team_dispatch, dev_team_verify). One row per dispatched job: who asked
+-- (platform + user id, for the DM back), plus the job's mode/repo for the
+-- verdict text (for mode 'verify' the repo column carries the SOURCE
+-- assessment job id instead — all the verdict DM needs to name). A
 -- background poller (src/backgroundJobs.ts) reads unnotified rows, checks each
 -- job's status over the tailnet, and on a terminal state (succeeded/failed)
 -- DMs the requester then stamps notified_at — so a ~20-min run's completion

@@ -5,7 +5,10 @@ import {
   generateBacklog,
   jobResult,
   jobStatus,
+  jobVerifications,
+  listFindings,
   listJobs,
+  verifyFinding,
   type FetchImpl,
 } from '../src/devTeam/client.js';
 
@@ -158,6 +161,101 @@ test('SECURITY: generateBacklog non-2xx throws with the status and a CAPPED (200
       assert.match(err.message, /Dev-team service 400 Bad Request:/);
       assert.match(err.message, /no assessment for that job/);
       assert.ok(!err.message.includes('y'.repeat(201)), 'the body must be capped at 200 chars');
+      assert.ok(!err.message.includes(TOKEN), 'the token must never leak into the error');
+      return true;
+    },
+  );
+});
+
+test('SECURITY: listFindings / jobVerifications GET their per-job paths (id URL-encoded, bearer header) and parse the body', async () => {
+  const findingsCalls: Recorded[] = [];
+  const findings = await listFindings(
+    ENDPOINT,
+    TOKEN,
+    'job 42/../x',
+    fakeFetch(
+      200,
+      {
+        job_id: 'job 42/../x',
+        findings: [{ id: 'f-1', phase: 'analysis', role: 'security', claim: 'c', evidence: 'e', hash: 'h' }],
+      },
+      findingsCalls,
+    ),
+  );
+  assert.equal(findings.findings.length, 1);
+  assert.equal(findings.findings[0].id, 'f-1');
+  assert.equal(
+    findingsCalls[0].url,
+    'http://ubuntudevagent:8738/jobs/job%2042%2F..%2Fx/findings',
+    'the job id must be URL-encoded so it cannot traverse to another service path',
+  );
+  assert.equal(findingsCalls[0].method, 'GET');
+  assert.equal(findingsCalls[0].headers['authorization'], `Bearer ${TOKEN}`);
+
+  const verificationCalls: Recorded[] = [];
+  const verifications = await jobVerifications(
+    ENDPOINT,
+    TOKEN,
+    'job 42/../x',
+    fakeFetch(
+      200,
+      {
+        job_id: 'job 42/../x',
+        verifications: [
+          { finding_id: 'f-1', verdict: 'refuted', rationale: 'r', citations: [], cost_usd: 0.4, ts: 't' },
+        ],
+      },
+      verificationCalls,
+    ),
+  );
+  assert.equal(verifications.verifications[0].verdict, 'refuted');
+  assert.equal(
+    verificationCalls[0].url,
+    'http://ubuntudevagent:8738/jobs/job%2042%2F..%2Fx/verifications',
+    'the job id must be URL-encoded so it cannot traverse to another service path',
+  );
+  assert.equal(verificationCalls[0].method, 'GET');
+  assert.equal(verificationCalls[0].headers['authorization'], `Bearer ${TOKEN}`);
+});
+
+test('SECURITY: verifyFinding POSTs /jobs with mode:"verify" + source_job + finding_id + budget_usd:null and the bearer header', async () => {
+  const calls: Recorded[] = [];
+  const res = await verifyFinding(
+    ENDPOINT,
+    TOKEN,
+    { sourceJob: 'job-42', findingId: 'f-7' },
+    fakeFetch(202, { id: 'verify-1', state: 'queued', position: 1 }, calls),
+  );
+  assert.deepEqual(res, { id: 'verify-1', state: 'queued', position: 1 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'http://ubuntudevagent:8738/jobs');
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].headers['authorization'], `Bearer ${TOKEN}`, 'bearer header must carry the token');
+  assert.equal(calls[0].headers['content-type'], 'application/json');
+  assert.deepEqual(JSON.parse(calls[0].body!), {
+    mode: 'verify',
+    source_job: 'job-42',
+    finding_id: 'f-7',
+    budget_usd: null,
+  });
+});
+
+test('SECURITY: verifyFinding / listFindings non-2xx throw with the status and a CAPPED (200-char) body slice, never the bearer token', async () => {
+  const longBody = '{"error":"finding not found"}' + 'z'.repeat(500);
+  await assert.rejects(
+    () => verifyFinding(ENDPOINT, TOKEN, { sourceJob: 'j', findingId: 'f' }, fakeFetch(400, longBody)),
+    (err: Error) => {
+      assert.match(err.message, /Dev-team service 400 Bad Request:/);
+      assert.match(err.message, /finding not found/);
+      assert.ok(!err.message.includes('z'.repeat(201)), 'the body must be capped at 200 chars');
+      assert.ok(!err.message.includes(TOKEN), 'the token must never leak into the error');
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => listFindings(ENDPOINT, TOKEN, 'j', fakeFetch(400, '{"error":"no assessment for that job"}')),
+    (err: Error) => {
+      assert.match(err.message, /no assessment for that job/);
       assert.ok(!err.message.includes(TOKEN), 'the token must never leak into the error');
       return true;
     },
