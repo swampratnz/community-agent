@@ -82,6 +82,12 @@ const SNIPPET_MAX_CHARS = 300;
  * section), and only when the knob is set and the sub-count is nonzero, so
  * the default (knob unset) output is byte-identical to the pre-#398 (#284)
  * wording. Bare integer only, same privacy convention as every signal above.
+ * `notMembersCount` (issue #460) is the standing size of the onboarding
+ * queue — `rosterCounts().notMembers`, unwindowed unlike `joinedThisWeek`/
+ * `leftThisWeek` — passed as `0` by the caller for an `'open'`-access-mode
+ * platform (see `runAdminDigestOnce`), since a `not_members` row there
+ * already has full member-tool access and the count would be a meaningless
+ * nag. Bare integer only, same privacy convention as every signal above.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -117,6 +123,15 @@ export function buildAdminDigestMessage(
   // strikeLimit/windowDays, appended last (not grouped with mutedMembersCount
   // above) so every existing positional call site is unaffected (issue #403).
   staleMutedMembersCount: number = 0,
+  // Standing size of the onboarding queue — `server_roster` rows with
+  // `left_at IS NULL` and no matching `community_users` row (issue #460).
+  // Unlike `joinedThisWeek`/`leftThisWeek`, this carries no rolling window,
+  // so it's the still-missing proactive half of the queue #47's `list_roster
+  // filter: not_members` already exposes pull-only. The caller passes `0`
+  // (line omitted) for an `'open'`-access-mode platform, where every
+  // not_members row already has full member-tool access and the count would
+  // be a structurally meaningless nag — see `runAdminDigestOnce`.
+  notMembersCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -133,7 +148,8 @@ export function buildAdminDigestMessage(
     maxTurnsFailuresCount === 0 &&
     duplicateKnowledgeCount === 0 &&
     conflictCandidateCount === 0 &&
-    staleMutedMembersCount === 0
+    staleMutedMembersCount === 0 &&
+    notMembersCount === 0
   )
     return null;
 
@@ -207,6 +223,13 @@ export function buildAdminDigestMessage(
     if (leftThisWeek > 0) parts.push(`${leftThisWeek} left`);
     sections.push(`📈 ${parts.join(', ')} this week — run \`list_roster\` for detail.`);
   }
+  if (notMembersCount > 0) {
+    // Bare integer only — no display name, user id, or joined_at ever reaches the DM (#460).
+    sections.push(
+      `🆕 ${notMembersCount} guest(s) joined but haven't been added as a member yet — run ` +
+        '`list_roster` (filter: not_members) to review.',
+    );
+  }
   if (mutedMembersCount > 0 || staleMutedMembersCount > 0) {
     // Bare integers only — no member_warnings.reason/excerpt/user_id/name ever reaches the DM (#357, #403).
     const staleClause =
@@ -271,7 +294,11 @@ export function buildAdminDigestMessage(
  * `rosterCounts(admin.platform)` is likewise guild-wide by platform — same
  * signal every enrolled admin on that platform sees (issue #344); `server_roster`
  * is Discord-only, so a WhatsApp admin's `rosterCounts('whatsapp')` is always
- * zeros, leaving the rest of their digest byte-for-byte unchanged.
+ * zeros, leaving the rest of their digest byte-for-byte unchanged. Its
+ * `notMembers` field (issue #460) is only forwarded to the digest when
+ * `config.rbac.accessMode[admin.platform] === 'gated'` — an `'open'`-mode
+ * not_members row already has full member-tool access, so the count would be
+ * a structurally meaningless nag there; it is suppressed to `0` instead.
  * `countMutedMembers(admin.platform, ...)` is likewise guild-wide by platform
  * (`member_warnings` has no conversation/channel column either), reusing
  * `config.moderation.strikeLimit`/`strikeWindowDays` verbatim so two admins on
@@ -404,6 +431,11 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
           ? countStalePendingKnowledgeCandidates(knowledgeCandidateStaleDays)
           : Promise.resolve(0),
       ]);
+      // Onboarding-queue count only means anything in 'gated' mode — an
+      // 'open'-mode not_members row already has full member-tool access
+      // (router.ts's guest-vs-member gate), so it's suppressed to 0 (line
+      // omitted) rather than nagged (issue #460).
+      const notMembersCount = config.rbac.accessMode[admin.platform] === 'gated' ? roster.notMembers : 0;
       const message = buildAdminDigestMessage(
         clusters,
         pendingAccessRequests,
@@ -424,6 +456,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         pendingKnowledgeCandidatesStaleCount,
         knowledgeCandidateStaleDays,
         staleMutedMembersCount,
+        notMembersCount,
       );
       if (!message) {
         ok = true;
@@ -456,10 +489,11 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, pending
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
  * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
- * knowledge-pair, and conflict-candidate-knowledge-pair counts (issue #21's
- * deferred proactive follow-up, extended by issue #133, issue #193, issue
- * #199, issue #284, issue #324, issue #344, issue #357, issue #378, and
- * issue #403) — the same signals
+ * knowledge-pair, conflict-candidate-knowledge-pair, and (in `'gated'`
+ * access mode) onboarding-queue counts (issue #21's deferred proactive
+ * follow-up, extended by issue #133, issue #193, issue #199, issue #284,
+ * issue #324, issue #344, issue #357, issue #378, issue #403, and issue
+ * #460) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/

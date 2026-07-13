@@ -814,6 +814,105 @@ test('SECURITY: the near-duplicate and conflict-candidate knowledge lines are a 
   );
 });
 
+test('buildAdminDigestMessage: onboarding-queue line appears only when notMembersCount > 0, and all SIXTEEN signals zero -> null (issue #460)', () => {
+  assert.equal(
+    buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    'all sixteen signals zero — including the new onboarding-queue count — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🆕'));
+  assert.match(
+    line!,
+    /^🆕 3 guest\(s\) joined but haven't been added as a member yet — run `list_roster` \(filter: not_members\) to review\.$/,
+  );
+
+  assert.ok(
+    !buildAdminDigestMessage([], 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)!.includes('🆕'),
+    'no onboarding-queue line when notMembersCount is zero, even though the DM is non-empty',
+  );
+});
+
+test('buildAdminDigestMessage: notMembersCount omitted (default 0) -> output is byte-identical to the pre-#460 form (issue #460)', () => {
+  const before = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0);
+  const after = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0);
+  assert.equal(
+    after,
+    before,
+    'notMembersCount defaulting to 0 must not change any existing call site output',
+  );
+});
+
+test('SECURITY: the onboarding-queue line is a deterministic function of notMembersCount only, and never carries a display name, user id, or joined_at (issue #460)', () => {
+  const secretName = 'Very Identifiable Guest Display Name';
+  const secretUserId = 'discord-user-9988776655';
+
+  // buildAdminDigestMessage never receives roster row content — only the bare
+  // count — so there is nothing to smuggle in via an unrelated parameter
+  // either (same shape as the roster-growth/muted-member privacy pins above).
+  const a = buildAdminDigestMessage(
+    [{ representative: secretName, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    7,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: secretUserId, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    7,
+  );
+  assert.ok(a && b);
+  const queueLine = (m: string) => m.split('\n').find((l) => l.includes('🆕'));
+  assert.equal(
+    queueLine(a),
+    queueLine(b),
+    'the onboarding-queue line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    queueLine(a)!,
+    /^🆕 7 guest\(s\) joined but haven't been added as a member yet — run `list_roster` \(filter: not_members\) to review\.$/,
+  );
+  assert.ok(
+    !queueLine(a)!.includes(secretName) && !queueLine(a)!.includes(secretUserId),
+    'SECURITY: no display name, user id, or joined_at ever appears in the onboarding-queue line — bare count only',
+  );
+});
+
 function fakeAdapter(opts: {
   platform: 'discord' | 'whatsapp';
   conversationIds: string[];
@@ -1863,7 +1962,7 @@ test(
     // regression fails loudly here instead of silently in production.
     assert.deepEqual(
       await rosterCounts('whatsapp'),
-      { total: 0, joinedThisWeek: 0, leftThisWeek: 0 },
+      { total: 0, joinedThisWeek: 0, leftThisWeek: 0, notMembers: 0 },
       "no code path ever writes a whatsapp row to server_roster — rosterCounts('whatsapp') is always zero",
     );
 
@@ -1900,6 +1999,105 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "runAdminDigestOnce: roster.notMembers passes through to the onboarding-queue digest line when the admin's platform access mode is 'gated' (issue #460)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-notmembers-gated-admin`;
+    const guestId = `${RUN}-run-notmembers-gated-guest`;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'gated';
+
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertRosterMember({ platform: 'discord', userId: guestId });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-notmembers-gated-empty`],
+      sent,
+    });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+
+      assert.equal(sent.length, 1, 'the never-added guest alone triggers a digest');
+      const line = sent[0].text.split('\n').find((l) => l.includes('🆕'));
+      assert.ok(line, "the onboarding-queue line is present in 'gated' mode");
+      const match = line.match(
+        /^🆕 (\d+) guest\(s\) joined but haven't been added as a member yet — run `list_roster` \(filter: not_members\) to review\.$/,
+      );
+      assert.ok(match, `onboarding-queue line matches the expected format: ${line}`);
+      assert.ok(
+        Number(match[1]) >= 1,
+        'notMembersCount reflects at least the one fixture just inserted via rosterCounts(admin.platform)',
+      );
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+      await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: runAdminDigestOnce: the onboarding-queue line is never rendered for an 'open'-access-mode platform even when not_members rows exist (issue #460)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-notmembers-open-admin`;
+    const guestId = `${RUN}-run-notmembers-open-guest`;
+    const suggesterId = `${RUN}-run-notmembers-open-suggester`;
+    const wasAccessMode = config.rbac.accessMode.discord;
+    config.rbac.accessMode.discord = 'open';
+
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertRosterMember({ platform: 'discord', userId: guestId });
+    // An unrelated pending suggestion so the digest still sends despite the
+    // onboarding-queue count being suppressed to 0 — proving the line is
+    // gated, not merely that the whole digest went quiet.
+    const created = await createSuggestion({
+      platform: 'discord',
+      userId: suggesterId,
+      displayName: 'open-mode notmembers suggester',
+      content: 'unrelated suggestion content',
+    });
+    assert.ok(created);
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-notmembers-open-empty`],
+      sent,
+    });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+
+      assert.equal(sent.length, 1, 'the pending suggestion alone triggers a digest');
+      assert.ok(
+        !sent[0].text.includes('🆕'),
+        "SECURITY: no onboarding-queue line for an 'open'-access-mode platform, even with a nonzero not_members row",
+      );
+      assert.match(
+        sent[0].text,
+        /💡 \d+ pending suggestion\(s\)/,
+        'the rest of the digest is unaffected by the suppressed onboarding-queue signal',
+      );
+    } finally {
+      config.rbac.accessMode.discord = wasAccessMode;
+      await pool.query(`DELETE FROM suggestions WHERE id = $1`, [created.id]);
+      await pool.query(`DELETE FROM server_roster WHERE user_id = $1`, [guestId]);
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
   },
 );
 

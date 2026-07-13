@@ -163,6 +163,13 @@ memory**:
    `server_roster` now covers WhatsApp groups too (issue #407), so
    `rosterCounts('whatsapp')` reports real numbers for any deployment with
    WhatsApp roster rows, with zero code change to `rosterCounts` itself.
+   Alongside it, `rosterCounts(admin.platform).notMembers` (issue #460) is the
+   *standing* size of the onboarding queue — present-but-never-added guests,
+   unwindowed unlike joined/left-this-week — forwarded to the digest only
+   when `config.rbac.accessMode[admin.platform] === 'gated'` (an `'open'`-mode
+   guest already has full member-tool access, so the count would be a
+   meaningless nag there); a bare integer, same privacy shape as every other
+   signal here.
    Plus (issue #371) their
    own scoped count of outbound replies that hit `AGENT_MAX_TURNS`/
    `AGENT_MAX_TURNS_MEMBER` before finishing, sourced from
