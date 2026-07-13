@@ -1,6 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { BackgroundJobName } from '../src/backgroundJobHealth.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -58,6 +59,8 @@ const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledg
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
+const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
+  await import('../src/backgroundJobHealth.js');
 
 after(async () => {
   await closeDb();
@@ -115,6 +118,19 @@ const JOBS = [
   ['startDepartedAdminAlert', startDepartedAdminAlert],
 ] as const;
 
+/** Maps each starter above to the BackgroundJobName key it records under in the shared job-health registry (issue #467). */
+const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
+  startContextBuilder: 'context-builder',
+  startKnowledgeRefresh: 'knowledge-refresh',
+  startDocsIngest: 'docs-ingest',
+  startKnowledgeLinkCheck: 'knowledge-link-check',
+  startRetentionPurge: 'interaction-retention-purge',
+  startRosterRetentionPurge: 'roster-retention-purge',
+  startEmbeddingHealthCheckJob: 'embedding-model',
+  startAdminDigest: 'admin-digest',
+  startDepartedAdminAlert: 'departed-admin-alert',
+};
+
 for (const [name, start] of JOBS) {
   test(`${name}: sends exactly one super-admin DM after its run function throws on 3 consecutive scheduled ticks, and zero DMs while failures stay below threshold`, async (t) => {
     const { adapter, dms } = makeAdapter();
@@ -142,6 +158,79 @@ for (const [name, start] of JOBS) {
     }
   });
 }
+
+// --- issue #467: every job kind mirrors its tracker update into the shared,
+// in-memory job-health registry `/healthz` reads from (getJobHealthSnapshot).
+// Each job's own registry entry is independent of the others, so the reset
+// below only needs to happen once per test, not per job.
+
+for (const [name, start] of JOBS) {
+  test(`${name}: a successful run() records a fresh, non-alerted snapshot for '${JOB_NAMES[name]}' in the shared job-health registry`, async (t) => {
+    resetJobHealthRegistryForTests();
+    const { adapter } = makeAdapter();
+    const runOnce = async () => {};
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = start([adapter], runOnce);
+    try {
+      await flush();
+      const snap = getJobHealthSnapshot()[JOB_NAMES[name]];
+      assert.ok(snap, `${name}: a snapshot is recorded after its first run`);
+      assert.equal(snap.consecutiveFailures, 0, `${name}: a success records zero consecutive failures`);
+      assert.equal(snap.alerted, false, `${name}: a success never leaves alerted true`);
+      assert.ok(snap.lastSuccessAt !== null, `${name}: a successful run records a lastSuccessAt`);
+    } finally {
+      clearInterval(timer!);
+    }
+  });
+
+  test(`${name}: a failed run() records a non-zero consecutiveFailures (and no lastSuccessAt yet) for '${JOB_NAMES[name]}' in the shared job-health registry`, async (t) => {
+    resetJobHealthRegistryForTests();
+    const { adapter } = makeAdapter();
+    const runOnce = async () => {
+      throw new Error(`sentinel-registry-${name}`);
+    };
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = start([adapter], runOnce);
+    try {
+      await flush();
+      const snap = getJobHealthSnapshot()[JOB_NAMES[name]];
+      assert.ok(snap, `${name}: a snapshot is recorded after its first (failed) run`);
+      assert.equal(snap.consecutiveFailures, 1, `${name}: the 1st consecutive failure is reflected`);
+      assert.equal(snap.alerted, false, `${name}: below threshold, alerted stays false`);
+      assert.equal(snap.lastSuccessAt, null, `${name}: never having succeeded, lastSuccessAt stays null`);
+    } finally {
+      clearInterval(timer!);
+    }
+  });
+}
+
+test("SECURITY: a job's registry entry after a failed run() never contains the caught error message or stack — only the numeric/boolean/timestamp fields", async (t) => {
+  resetJobHealthRegistryForTests();
+  const sentinel = 'sentinel-secret-path-or-query-fragment-registry-wiring';
+  const { adapter } = makeAdapter();
+  const runOnce = async () => {
+    throw new Error(sentinel);
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDocsIngest([adapter], runOnce);
+  try {
+    await flush();
+    const snap = getJobHealthSnapshot()['docs-ingest']!;
+    assert.deepEqual(
+      new Set(Object.keys(snap)),
+      new Set(['consecutiveFailures', 'alerted', 'lastRunAt', 'lastSuccessAt']),
+    );
+    assert.ok(
+      !JSON.stringify(snap).includes(sentinel),
+      'the registry entry must never contain the caught error message',
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
 
 test('each of the nine jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
   const { adapter, dms } = makeAdapter();

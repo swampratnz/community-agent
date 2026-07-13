@@ -6,6 +6,7 @@ import { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD } from './backgroundJobs.js';
 import {
   buildJobFailureAlert,
   initialJobFailureTracker,
+  recordJobRun,
   stepJobFailureTracker,
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
@@ -88,6 +89,7 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
           false,
           BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD,
         ).tracker;
+        recordJobRun('usage-alert', failureTracker, Date.now(), lastSuccessAt);
 
         const step = stepUsageAlertTracker(tracker, stats.outbound, threshold);
         tracker = step.tracker;
@@ -103,6 +105,7 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
         logger.error({ err }, 'Usage alert check failed');
         const step = stepJobFailureTracker(failureTracker, true, BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD);
         failureTracker = step.tracker;
+        recordJobRun('usage-alert', failureTracker, Date.now(), lastSuccessAt);
         if (step.shouldAlert) {
           void alertSuperAdmins(
             adapters,

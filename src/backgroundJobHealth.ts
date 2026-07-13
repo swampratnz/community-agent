@@ -74,3 +74,44 @@ export function buildJobFailureAlert(
     `(last success: ${lastSuccess}). Check server logs for details.`
   );
 }
+
+/**
+ * In-memory snapshot of a job's latest tracker state (issue #467) — a second
+ * place to stash the exact same fields every `startTrackedJob`/inlined-tracker
+ * call site already computes, so `/healthz` (via `healthState.ts`) has
+ * something queryable beyond the one-time debounced chat DM above. Never
+ * stores the caught error's message/stack, same convention as
+ * `buildJobFailureAlert`.
+ */
+export interface JobHealthSnapshot {
+  consecutiveFailures: number;
+  alerted: boolean;
+  lastRunAt: number;
+  lastSuccessAt: number | null;
+}
+
+const jobHealthRegistry = new Map<BackgroundJobName, JobHealthSnapshot>();
+
+/** Called by every tracker call site right after it steps its own tracker. */
+export function recordJobRun(
+  jobName: BackgroundJobName,
+  tracker: JobFailureTracker,
+  lastRunAt: number,
+  lastSuccessAt: number | null,
+): void {
+  jobHealthRegistry.set(jobName, {
+    consecutiveFailures: tracker.consecutiveFailures,
+    alerted: tracker.alerted,
+    lastRunAt,
+    lastSuccessAt,
+  });
+}
+
+/** Shallow copy for read — callers can never mutate the shared registry. */
+export function getJobHealthSnapshot(): Partial<Record<BackgroundJobName, JobHealthSnapshot>> {
+  return Object.fromEntries(jobHealthRegistry);
+}
+
+export function resetJobHealthRegistryForTests(): void {
+  jobHealthRegistry.clear();
+}

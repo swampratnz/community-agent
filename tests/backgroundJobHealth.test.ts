@@ -1,10 +1,13 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 // backgroundJobHealth.ts is deliberately free of config/HTTP/DB imports (see
 // its header) so this file needs no dummy env setup, unlike most tests here.
 import {
   buildJobFailureAlert,
+  getJobHealthSnapshot,
   initialJobFailureTracker,
+  recordJobRun,
+  resetJobHealthRegistryForTests,
   stepJobFailureTracker,
 } from '../src/backgroundJobHealth.js';
 
@@ -82,4 +85,70 @@ test('buildJobFailureAlert: a known last-success time is rendered as an ISO time
     'the last-success time is ISO-formatted in the message',
   );
   assert.match(message, /^⚠️ Background job 'context-builder' has failed 5 consecutive times/);
+});
+
+// --- issue #467: the in-memory job-health registry `/healthz` reads from.
+// Reset before each test so these are independent of ordering/pollution from
+// each other (and from any other module in this same test process that
+// happens to import backgroundJobHealth.js).
+
+beforeEach(() => {
+  resetJobHealthRegistryForTests();
+});
+
+test('getJobHealthSnapshot: empty registry (nothing has recorded a run yet) returns an empty object', () => {
+  assert.deepEqual(getJobHealthSnapshot(), {});
+});
+
+test('recordJobRun + getJobHealthSnapshot: records the exact tracker fields plus lastRunAt/lastSuccessAt for the given job, leaving other jobs untouched', () => {
+  const tracker = { consecutiveFailures: 2, alerted: false };
+  recordJobRun('docs-ingest', tracker, 1_000, 500);
+  assert.deepEqual(getJobHealthSnapshot(), {
+    'docs-ingest': { consecutiveFailures: 2, alerted: false, lastRunAt: 1_000, lastSuccessAt: 500 },
+  });
+});
+
+test('recordJobRun: a later call for the same job overwrites its snapshot rather than accumulating', () => {
+  recordJobRun('embedding-model', { consecutiveFailures: 1, alerted: false }, 100, null);
+  recordJobRun('embedding-model', { consecutiveFailures: 0, alerted: false }, 200, 200);
+  assert.deepEqual(getJobHealthSnapshot(), {
+    'embedding-model': { consecutiveFailures: 0, alerted: false, lastRunAt: 200, lastSuccessAt: 200 },
+  });
+});
+
+test('recordJobRun: distinct jobs keep independent snapshots', () => {
+  recordJobRun('admin-digest', { consecutiveFailures: 3, alerted: true }, 100, null);
+  recordJobRun('usage-alert', { consecutiveFailures: 0, alerted: false }, 200, 200);
+  assert.deepEqual(getJobHealthSnapshot(), {
+    'admin-digest': { consecutiveFailures: 3, alerted: true, lastRunAt: 100, lastSuccessAt: null },
+    'usage-alert': { consecutiveFailures: 0, alerted: false, lastRunAt: 200, lastSuccessAt: 200 },
+  });
+});
+
+test('getJobHealthSnapshot: returns a shallow copy — mutating the returned object never affects a later read', () => {
+  recordJobRun('context-builder', { consecutiveFailures: 0, alerted: false }, 100, 100);
+  const snapshot = getJobHealthSnapshot();
+  delete snapshot['context-builder'];
+  assert.ok(
+    getJobHealthSnapshot()['context-builder'],
+    'the registry itself is untouched by mutating a prior read',
+  );
+});
+
+test('SECURITY: JobHealthSnapshot never carries an error message or stack — recordJobRun only ever accepts the fixed tracker shape (consecutiveFailures/alerted) plus numeric timestamps, so there is no parameter through which a caught error could reach the registry', () => {
+  const sentinel = 'sentinel-secret-path-or-query-fragment-registry';
+  // The only inputs recordJobRun accepts are a JobFailureTracker (two fixed
+  // fields) and two numeric/null timestamps — there is no string parameter
+  // for an error message to flow through, so this asserts the registry's
+  // recorded shape has exactly those keys and nothing else, for every job.
+  recordJobRun('docs-ingest', { consecutiveFailures: 3, alerted: true }, 100, null);
+  const snapshot = getJobHealthSnapshot()['docs-ingest']!;
+  assert.deepEqual(
+    new Set(Object.keys(snapshot)),
+    new Set(['consecutiveFailures', 'alerted', 'lastRunAt', 'lastSuccessAt']),
+  );
+  assert.ok(
+    !JSON.stringify(snapshot).includes(sentinel),
+    'no dynamic string can appear in the recorded snapshot',
+  );
 });
