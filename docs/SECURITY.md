@@ -1141,6 +1141,73 @@ typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
   from the audio payload); DMs to the bot are always addressed. This does not
   widen who can trigger the bot — the super-admin gate still applies.
 
+### 14. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
+
+An operator-curated allowlist of Discord channel ids in which a top-level
+human post that does **not** address the bot (no mention/reply/DM) still gets
+an answer, contained in a thread anchored to that post. This is the one
+deliberate widening of the summon gate (`router.ts`'s
+`!msg.addressedToBot && !msg.isDirect`) in the whole codebase — every other
+control downstream of it is reused completely unchanged:
+
+- **Off by default, byte-identical.** Unset/empty `AUTO_ANSWER_CHANNEL_IDS`
+  means no post that isn't addressed/direct ever produces a reply — pinned by
+  a router test. Enabling it is a per-channel operator decision (the channel's
+  own stated purpose — a help/forum channel — is the consent boundary), not a
+  global posture change.
+- **No new untrusted-input path in substance, only in trigger.** The router
+  already classifies and stores every non-addressed message as `kind:
+  'ambient'` (issue #48/#103); this only adds a reply branch at the summon
+  gate. No new ingestion, no new retention, no schema change.
+- **Tool surface is the existing floor, never escalated.** An auto-answered
+  turn resolves the poster's tier via the exact same `resolveRole` call an
+  addressed turn uses, and `toolsForRole` is invoked with that same value —
+  no new code path computes or overrides the tool list. In gated mode, an
+  unregistered guest is already excluded further up the function (the
+  gated-guest branch returns before the auto-answer gate is ever evaluated),
+  so it inherits that exclusion for free; in open mode a guest is answered at
+  guest tier, which is already the same tool surface as member (`MEMBER_TOOLS`
+  is what `toolsForRole`'s default branch returns). Pinned by `SECURITY:`
+  router tests in both modes.
+- **Self/bot/webhook loop prevention.** `IncomingMessage.isBotAuthor` is a
+  second, router-level backstop (in addition to the Discord adapter never
+  constructing an `IncomingMessage` for a bot- or webhook-authored message in
+  the first place): the auto-answer gate refuses any post carrying it. Pinned
+  by a `SECURITY:` router test.
+- **Existing cost levers apply unchanged, no new bypass.** Per-user rate
+  limit, the daily reply budget, `AGENT_MODEL_MEMBER`/`AGENT_MAX_TURNS_MEMBER`,
+  and the repeat-question shortcut all still gate an auto-answer turn exactly
+  as they gate an addressed one — none of that logic was touched, only the
+  summon gate above it. Pinned by `SECURITY:` router tests (over-budget shed,
+  repeat-question shortcut hit).
+- **Per-channel rolling-hour cap.** A new, separate sliding-window limiter
+  (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, default 10), mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot`/`ANNOUNCE_RATE_LIMIT_PER_HOUR`
+  shape but operator-tunable — bounds the flood/cost risk of a channel that
+  turns out busier than expected. Never applies to an addressed/mention reply
+  in the same channel. Pinned by a router test.
+- **Threaded, not bare-channel.** The reply is contained in a new Discord
+  thread anchored to the origin post
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action, just router-driven rather than
+  model-requested) rather than posted directly into the channel. The thread's
+  name is a truncated echo of the question and is routed through the same
+  outbound filter (secret redaction) as every other bot-composed string
+  reaching Discord, since a highly-visible channel/thread title is a worse
+  exposure surface than an ordinary reply for a member who pastes a secret
+  into their question. If thread creation fails (a transient Discord API
+  error), the router falls back to replying directly in the channel rather
+  than silently dropping the answer. Pinned by adapter + router tests
+  (including a `SECURITY:` redaction test end-to-end through thread creation
+  and the reply send).
+- **Discord-only.** `PlatformAdapter.startAutoAnswerThread` is optional,
+  mirroring `sendImage?`/`reactToMessage?`/`canPostTo?`'s convention; the
+  WhatsApp adapters simply don't implement it, and the auto-answer gate
+  itself is additionally hard-restricted to `msg.platform === 'discord'`.
+  WhatsApp/Baileys auto-answer carries separate ToS/ban risk and is
+  deliberately out of scope for this feature — a different proposal.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

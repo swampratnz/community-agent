@@ -13,6 +13,7 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-14
 
 ### Added
+- **Help-channel auto-answer mode** (`AUTO_ANSWER_CHANNEL_IDS`, Discord-only, #477): closes the gap where a member who posts a question in a help channel without mentioning the bot got nothing — the summon gate only ever fired for people who already knew the bot existed. An operator can now allowlist specific channels (e.g. a `#help` forum) where a top-level, non-addressed human post still gets an answer, contained in a new thread anchored to that post rather than posted bare into the channel. Unset/empty is the default and is byte-identical to today. Every existing control is reused unchanged — role resolution, the gated-mode guest exclusion, the tier-derived tool surface (member/guest only, never elevated), the per-user rate limit, the daily reply budget, and the repeat-question shortcut — plus two new guards: a configurable per-channel rolling-hour cap (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, mirroring the existing `announce` rate limiter) and an explicit self/bot/webhook loop-prevention check. See docs/ARCHITECTURE.md and docs/SECURITY.md §14.
 - **`MEMORY_RELEVANCE_THRESHOLD`** (#474): automatic per-turn memory recall and
   the `remember_search` tool both search past interactions via `searchMemory`,
   which previously had no relevance floor at all — every configured

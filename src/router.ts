@@ -202,6 +202,8 @@ export class Router {
   private readonly adapters = new Map<string, PlatformAdapter>();
   private readonly chains = new Map<string, Promise<void>>();
   private readonly userHits = new Map<string, number[]>();
+  /** conversationId -> auto-answer timestamps, for the per-channel rolling-hour cap (issue #477, AUTO_ANSWER_RATE_LIMIT_PER_HOUR). */
+  private readonly autoAnswerHits = new Map<string, number[]>();
 
   private readonly RATE_LIMIT = 8; // messages
   private readonly RATE_WINDOW_MS = 60_000; // per minute
@@ -281,6 +283,10 @@ export class Router {
     for (const [key, hits] of this.userHits) {
       if (hits.every((t) => now - t >= this.RATE_WINDOW_MS)) this.userHits.delete(key);
     }
+    const autoAnswerWindowMs = 60 * 60 * 1000;
+    for (const [key, hits] of this.autoAnswerHits) {
+      if (hits.every((t) => now - t >= autoAnswerWindowMs)) this.autoAnswerHits.delete(key);
+    }
     for (const [key, at] of this.budgetNotified) {
       if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
     }
@@ -355,6 +361,43 @@ export class Router {
     hits.push(now);
     this.userHits.set(userKey, hits);
     return hits.length > this.RATE_LIMIT;
+  }
+
+  /**
+   * Reserve one auto-answer slot for `conversationId` against a rolling
+   * hourly cap (issue #477), same sliding-window shape as agent/tools.ts's
+   * `reserveAnnounceSlot` — kept as its own instance-scoped map here rather
+   * than reused from tools.ts since auto-answer is router-driven, not a
+   * model-invoked tool. Backed by the configurable
+   * `AUTO_ANSWER_RATE_LIMIT_PER_HOUR` rather than a fixed constant. Never
+   * called for an addressed/mention reply — only the auto-answer path.
+   */
+  private reserveAutoAnswerSlot(conversationId: string): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = (this.autoAnswerHits.get(conversationId) ?? []).filter((t) => now - t < windowMs);
+    if (recent.length >= config.discord.autoAnswerRateLimitPerHour) {
+      this.autoAnswerHits.set(conversationId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.autoAnswerHits.set(conversationId, recent);
+    return true;
+  }
+
+  /**
+   * Creates the Discord thread an auto-answer reply is contained in (issue
+   * #477), anchored to the origin post via its native message id. Throws if
+   * the adapter doesn't support it (only Discord does; callers only reach
+   * here when `msg.platform === 'discord'`) or has no message id, or if the
+   * platform call itself fails — either way the caller falls back to
+   * replying directly in the channel rather than losing the answer.
+   */
+  private async startAutoAnswerThread(msg: IncomingMessage, adapter: PlatformAdapter): Promise<string> {
+    if (!adapter.startAutoAnswerThread) throw new Error('Adapter does not support auto-answer threads');
+    if (!msg.messageId) throw new Error('Auto-answer requires a message id to anchor the thread to');
+    const name = msg.text.trim().slice(0, 90) || 'Question';
+    return adapter.startAutoAnswerThread(msg.conversationId, msg.messageId, name);
   }
 
   /**
@@ -572,9 +615,32 @@ export class Router {
       }
     }
 
-    // Only respond when addressed (mention/reply) or in a direct conversation.
-    if (!msg.addressedToBot && !msg.isDirect) return;
+    // Auto-answer (issue #477): an operator-allowlisted Discord channel
+    // (AUTO_ANSWER_CHANNEL_IDS) gets an answer for a plain top-level human
+    // post too, not just one that mentions/replies to the bot — this only
+    // relaxes the summon gate immediately below for exactly that case.
+    // Everything else — CONFIRM intercept above, pause/rate-limit/budget
+    // below, and the role-derived tool surface via resolveRole/toolsForRole
+    // — applies completely unchanged; this widens WHICH posts reach them,
+    // never what a post is allowed to do once there. `isBotAuthor` is a
+    // second, router-level backstop against a self/bot/webhook loop, on top
+    // of the adapter already never constructing an IncomingMessage for one.
+    const isAutoAnswerCandidate =
+      !msg.addressedToBot &&
+      !msg.isDirect &&
+      !msg.isBotAuthor &&
+      msg.platform === 'discord' &&
+      config.discord.autoAnswerChannelIds.includes(msg.conversationId);
+
+    // Only respond when addressed (mention/reply), in a direct conversation,
+    // or an auto-answer candidate.
+    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return;
     if (!msg.text.trim()) return;
+
+    // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
+    // of this new untrusted-input path. Never applied to an addressed/mention
+    // reply in the same channel, only to auto-answered ones.
+    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(msg.conversationId)) return;
 
     // Paused: only super admins get through (so they can resume it). Everyone
     // else gets a debounced notice instead of silence (issue #128, mirroring
@@ -669,6 +735,23 @@ export class Router {
     // agent turn runs (so recall can see it and ordering stays sane).
     await recorded;
 
+    // Auto-answer replies are contained in a new Discord thread anchored to
+    // the origin post (issue #477), never sent bare into the channel — every
+    // shortcut/respond send below is redirected through `replyConversationId`.
+    // A thread-creation failure (e.g. a transient Discord API error) degrades
+    // to answering directly in the channel rather than silently dropping the
+    // reply.
+    let replyConversationId: string | undefined;
+    if (isAutoAnswerCandidate) {
+      replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
+        logger.warn(
+          { err, conversationId: msg.conversationId },
+          'Auto-answer thread creation failed; replying in channel',
+        );
+        return undefined;
+      });
+    }
+
     const key = this.convoKey(msg);
 
     // Deterministic short-circuit for pure acknowledgements ("thanks", "👍")
@@ -685,7 +768,11 @@ export class Router {
       this.recordShortcutHit('ack').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
       const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
       await this.enqueue(key, 'ack reply', () =>
-        this.send(adapter, msg.conversationId, lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT),
+        this.send(
+          adapter,
+          replyConversationId ?? msg.conversationId,
+          lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT,
+        ),
       );
       return;
     }
@@ -703,7 +790,7 @@ export class Router {
       const hit = await this.tryKnowledgeShortcut(msg);
       if (hit) {
         await this.enqueue(key, 'knowledge shortcut reply', () =>
-          this.sendKnowledgeShortcut(msg, adapter, hit),
+          this.sendKnowledgeShortcut(msg, adapter, hit, replyConversationId),
         );
         return;
       }
@@ -733,7 +820,7 @@ export class Router {
           logger.warn({ err }, 'shortcut_hit_record_failed'),
         );
         await this.enqueue(key, 'repeat-question shortcut reply', () =>
-          this.sendRepeatShortcut(msg, adapter, cached.replyText),
+          this.sendRepeatShortcut(msg, adapter, cached.replyText, replyConversationId),
         );
         return;
       }
@@ -760,14 +847,14 @@ export class Router {
           logger.warn({ err }, 'shortcut_hit_record_failed'),
         );
         await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
-          this.sendRepeatMaxTurnsShortcut(msg, adapter),
+          this.sendRepeatMaxTurnsShortcut(msg, adapter, replyConversationId),
         );
         return;
       }
     }
 
     // Serialise per conversation so session resume stays consistent.
-    await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter));
+    await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter, replyConversationId));
   }
 
   /**
@@ -830,7 +917,9 @@ export class Router {
     msg: IncomingMessage,
     adapter: PlatformAdapter,
     hit: KnowledgeShortcutHit,
+    replyConversationId?: string,
   ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     logger.debug({ platform: msg.platform, conversationId: msg.conversationId }, 'knowledge_shortcut_hit');
     this.recordShortcutHit('knowledge').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
     // Member-facing low-rated-answer caveat (issue #337) — opt-in, and
@@ -855,13 +944,13 @@ export class Router {
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
     const replyText = `${hit.content}${note}${suffix}`;
-    await this.send(adapter, msg.conversationId, replyText);
+    await this.send(adapter, target, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),
     );
     await recordInteraction({
       platform: msg.platform,
-      conversationId: msg.conversationId,
+      conversationId: target,
       userId: 'bot',
       userName: 'CommunityAgent',
       role: 'member',
@@ -914,17 +1003,19 @@ export class Router {
     msg: IncomingMessage,
     adapter: PlatformAdapter,
     cachedReplyText: string,
+    replyConversationId?: string,
   ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     // Only the fixed wrapper is translated — `cachedReplyText` is the
     // original (already-served) answer's language, left untouched (issue
     // #339/#405's "translate the shell, not the dynamic payload" discipline).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const notice = lang === 'mi' ? REPEAT_SHORTCUT_NOTICE_MI : REPEAT_SHORTCUT_NOTICE;
     const replyText = `${notice}${cachedReplyText}`;
-    await this.send(adapter, msg.conversationId, replyText);
+    await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
-      conversationId: msg.conversationId,
+      conversationId: target,
       userId: 'bot',
       userName: 'CommunityAgent',
       role: 'member',
@@ -940,15 +1031,20 @@ export class Router {
    * like a normal outbound reply — mirroring `sendRepeatShortcut`'s
    * precedent (#259).
    */
-  private async sendRepeatMaxTurnsShortcut(msg: IncomingMessage, adapter: PlatformAdapter): Promise<void> {
+  private async sendRepeatMaxTurnsShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const notice = lang === 'mi' ? REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI : REPEAT_MAX_TURNS_SHORTCUT_NOTICE;
     const failure = lang === 'mi' ? MAX_TURNS_REPLY_MI : MAX_TURNS_REPLY;
     const replyText = `${notice}${failure}`;
-    await this.send(adapter, msg.conversationId, replyText);
+    await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
-      conversationId: msg.conversationId,
+      conversationId: target,
       userId: 'bot',
       userName: 'CommunityAgent',
       role: 'member',
@@ -960,7 +1056,13 @@ export class Router {
     );
   }
 
-  private async respond(msg: IncomingMessage, role: Tier, adapter: PlatformAdapter): Promise<void> {
+  private async respond(
+    msg: IncomingMessage,
+    role: Tier,
+    adapter: PlatformAdapter,
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     const caller: CallerContext = {
       platform: msg.platform,
       userId: msg.userId,
@@ -1018,12 +1120,7 @@ export class Router {
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
       // those are out of scope.
-      await this.send(
-        adapter,
-        msg.conversationId,
-        reply.text,
-        reply.languagePreference === 'mi' ? 'mi' : undefined,
-      );
+      await this.send(adapter, target, reply.text, reply.languagePreference === 'mi' ? 'mi' : undefined);
 
       // If the turn registered a NEW pending destructive action, the model
       // composed the reply above and could have hidden or misrepresented the
@@ -1045,7 +1142,7 @@ export class Router {
               ? PENDING_NOTICE_PLAIN(pending.description)
               : PENDING_NOTICE(pending.description);
         }
-        await this.send(adapter, msg.conversationId, pendingText).catch((err) =>
+        await this.send(adapter, target, pendingText).catch((err) =>
           logger.warn({ err }, 'Failed to send deterministic pending notice'),
         );
       }
@@ -1077,7 +1174,7 @@ export class Router {
 
       await recordInteraction({
         platform: msg.platform,
-        conversationId: msg.conversationId,
+        conversationId: target,
         userId: 'bot',
         userName: 'CommunityAgent',
         role: 'member',
