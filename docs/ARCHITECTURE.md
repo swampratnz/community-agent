@@ -1036,7 +1036,11 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   `true` on the next successful send, so an idle deployment stays reported
   as disconnected until outbound traffic resumes even after the underlying
   issue is fixed. Best-effort typing-indicator failures never affect this
-  signal.
+  signal. A `429` (Meta's normal per-number rate-limit response, not an
+  outage) is retried exactly once, honoring `Retry-After` (clamped to 5s),
+  before counting toward this threshold — so a legitimate traffic burst
+  self-heals silently instead of both dropping the member's reply and
+  falsely tripping the disconnect alert (issue #470).
 
 The debounce/payload logic lives in `src/healthState.ts`, deliberately free
 of config/HTTP/adapter imports so it's unit-tested directly (`src/health.ts`

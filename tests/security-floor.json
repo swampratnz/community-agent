@@ -68,7 +68,7 @@
   "systemPrompt.test.ts": 9,
   "tools.test.ts": 154,
   "whatsappAmbientArchiving.test.ts": 3,
-  "whatsappCloudAdapter.test.ts": 10,
+  "whatsappCloudAdapter.test.ts": 14,
   "whatsappCloudWire.test.ts": 5,
   "whatsappWire.test.ts": 1
 }

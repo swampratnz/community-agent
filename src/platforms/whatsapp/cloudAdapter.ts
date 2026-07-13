@@ -54,6 +54,17 @@ const MESSAGE_ID_DEDUP_WINDOW_MS = 5 * 60_000;
  * broken egress) survives long enough to cross the threshold.
  */
 const SEND_FAILURE_THRESHOLD = 3;
+/**
+ * Fallback backoff for a single 429 retry (see `retryAfterDelayMs`) when
+ * Meta's `Retry-After` header is absent or unparseable.
+ */
+const SEND_RETRY_DEFAULT_BACKOFF_MS = 1_000;
+/**
+ * Hard clamp on any 429 retry delay, including a `Retry-After` value derived
+ * from the header — so an extreme or malformed header can't block the
+ * webhook handler for an extended period.
+ */
+const SEND_RETRY_MAX_BACKOFF_MS = 5_000;
 
 // Generic and static — no @-mention or echo of the sender, so nothing
 // user-supplied (msg.name/msg.from) ever reaches the text. Mirrors
@@ -434,6 +445,32 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Isolated so tests can mock it and assert the computed delay without
+   * waiting on a real timer.
+   */
+  private async sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Issues `fetch(url, init)`, retrying exactly once — honoring
+   * `Retry-After` via `retryAfterDelayMs` — if (and only if) the first
+   * response is a `429`. Reuses the exact same `init` (including its
+   * already-built, already-filtered `body`) for the retry, so nothing is
+   * re-derived or re-filtered. A non-429 non-OK response, or a 429 whose
+   * retry also fails, is returned as-is for the caller's existing `!res.ok`
+   * handling, unchanged from today. A rejected fetch (network error) on
+   * either attempt propagates to the caller's own try/catch, same as an
+   * unretried failure today.
+   */
+  private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+    const res = await fetch(url, init);
+    if (res.status !== 429) return res;
+    await this.sleep(retryAfterDelayMs(res));
+    return fetch(url, init);
+  }
+
   private async sendChunk(
     to: string,
     phoneNumberId: string,
@@ -442,19 +479,22 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   ): Promise<void> {
     let res: Response;
     try {
-      res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+      res = await this.fetchWithRetry(
+        `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to,
+            type: 'text',
+            text: { body },
+          }),
         },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to,
-          type: 'text',
-          text: { body },
-        }),
-      });
+      );
     } catch (err) {
       // A rejected fetch (DNS/TCP/TLS failure, timeout, offline) is just as
       // much a send failure as a non-OK response — and it's the shape a real
@@ -507,11 +547,14 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
 
     let res: Response;
     try {
-      res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/media`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: form,
-      });
+      res = await this.fetchWithRetry(
+        `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/media`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}` },
+          body: form,
+        },
+      );
     } catch (err) {
       // Same rationale as sendChunk: a rejected fetch is as much a send
       // failure as a non-OK response, and must count toward isConnected().
@@ -541,19 +584,22 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   ): Promise<void> {
     let res: Response;
     try {
-      res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+      res = await this.fetchWithRetry(
+        `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to,
+            type: 'image',
+            image: caption !== undefined ? { id: mediaId, caption } : { id: mediaId },
+          }),
         },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to,
-          type: 'image',
-          image: caption !== undefined ? { id: mediaId, caption } : { id: mediaId },
-        }),
-      });
+      );
     } catch (err) {
       this.recordSendFailure();
       throw err instanceof Error ? err : new Error(`WhatsApp Cloud send failed: ${String(err)}`);
@@ -601,6 +647,22 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
         );
     }
   }
+}
+
+/**
+ * Reads Meta's `Retry-After` header off a 429 response — an integer count of
+ * seconds, per Meta's documented Graph API behaviour, not an HTTP-date — and
+ * converts it to a clamped delay in ms. Falls back to
+ * `SEND_RETRY_DEFAULT_BACKOFF_MS` when the header is absent, unparseable, or
+ * non-positive; always clamps to `SEND_RETRY_MAX_BACKOFF_MS` regardless of
+ * the header value, so an extreme or malformed header can't stall a retry
+ * for an extended period.
+ */
+function retryAfterDelayMs(res: Response): number {
+  const header = res.headers.get('retry-after');
+  const seconds = header === null ? NaN : Number(header);
+  const delayMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : SEND_RETRY_DEFAULT_BACKOFF_MS;
+  return Math.min(delayMs, SEND_RETRY_MAX_BACKOFF_MS);
 }
 
 function readBody(req: HttpRequest): Promise<Buffer> {
