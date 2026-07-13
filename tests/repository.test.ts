@@ -106,6 +106,7 @@ const {
   listAnswerFeedback,
   listKnowledgeFeedbackSummary,
   isKnowledgeLowRated,
+  areKnowledgeEntriesLowRated,
   countLowRatedKnowledge,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
@@ -1258,6 +1259,21 @@ test('SECURITY: repository: hasConflictAmongIds issues zero SQL queries and retu
   assert.equal(await hasConflictAmongIds([]), false);
   assert.equal(await hasConflictAmongIds([1]), false);
   assert.equal(calls.length, 0, 'hasConflictAmongIds must not query the database for fewer than 2 ids');
+});
+
+test('SECURITY: repository: areKnowledgeEntriesLowRated issues zero SQL queries and returns an empty set for an empty ids array (issue #432)', async (t) => {
+  const calls: unknown[] = [];
+  t.mock.method(pool, 'query', (...args: unknown[]) => {
+    calls.push(args);
+    throw new Error('pool.query must not be called for an empty ids array');
+  });
+
+  assert.deepEqual(await areKnowledgeEntriesLowRated([], 2), new Set());
+  assert.equal(
+    calls.length,
+    0,
+    'areKnowledgeEntriesLowRated must not query the database for an empty ids array',
+  );
 });
 
 test(
@@ -6424,6 +6440,74 @@ test(
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRatedEntryId, otherEntryId]]);
+  },
+);
+
+// areKnowledgeEntriesLowRated (issue #432): the batched sibling of
+// isKnowledgeLowRated above, feeding the display-side caveat on the normal
+// knowledge_search path (as opposed to isKnowledgeLowRated's shortcut-only
+// caller). Same join/threshold semantics, extended to ≥3 entries straddling
+// the threshold in one call.
+test(
+  'SECURITY: repository: areKnowledgeEntriesLowRated returns exactly the subset of ids whose unhelpful count clears the threshold, never a raw count, and short-circuits an empty input without a query',
+  { skip },
+  async () => {
+    const convoA = `${RUN}-c-batch-low-rated-a`;
+    const convoB = `${RUN}-c-batch-low-rated-b`;
+    const { id: lowRatedEntryId } = await saveKnowledge({ content: `${RUN} batch low-rated entry` });
+    const { id: belowThresholdEntryId } = await saveKnowledge({
+      content: `${RUN} batch below-threshold entry`,
+    });
+    const { id: unratedEntryId } = await saveKnowledge({ content: `${RUN} batch unrated entry` });
+
+    async function rate(conversationId: string, entryId: number, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-batch-low-rated-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `knowledge_search answer for ${userId}`,
+        meta: { knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    // lowRatedEntryId: 2 unhelpful across two conversations — clears a
+    // threshold of 2.
+    users.push(await rate(convoA, lowRatedEntryId, 'a1', false));
+    users.push(await rate(convoB, lowRatedEntryId, 'b1', false));
+    // belowThresholdEntryId: only 1 unhelpful — never clears a threshold of 2.
+    users.push(await rate(convoA, belowThresholdEntryId, 'a2', false));
+    // unratedEntryId: no feedback at all.
+
+    const neverServedEntryId = unratedEntryId + 1_000_000;
+
+    const result = await areKnowledgeEntriesLowRated(
+      [lowRatedEntryId, belowThresholdEntryId, unratedEntryId, neverServedEntryId],
+      2,
+    );
+    assert.ok(
+      result instanceof Set,
+      'SECURITY: must cross the boundary as a Set of ids, never a count or map',
+    );
+    assert.deepEqual(
+      [...result].sort((a, b) => a - b),
+      [lowRatedEntryId].sort((a, b) => a - b),
+      'only the id whose unhelpful count clears the threshold is present; below-threshold, unrated, and never-served ids are absent',
+    );
+
+    const emptyResult = await areKnowledgeEntriesLowRated([], 2);
+    assert.deepEqual(emptyResult, new Set(), 'an empty ids array returns an empty set');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [lowRatedEntryId, belowThresholdEntryId, unratedEntryId],
+    ]);
   },
 );
 

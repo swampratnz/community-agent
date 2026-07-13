@@ -4353,6 +4353,41 @@ export async function isKnowledgeLowRated(entryId: number, minUnhelpful: number)
 }
 
 /**
+ * Batched sibling of `isKnowledgeLowRated` (issue #432) — the normal
+ * `knowledge_search` path checks many hits per call, so this exists to avoid
+ * one query per hit; same join and `>= $2` threshold, but `ANY($1)` +
+ * `GROUP BY` over a whole id list at once, returning only the subset that
+ * crosses the threshold.
+ *
+ * SECURITY: same aggregate-only posture as `isKnowledgeLowRated` — the
+ * returned `Set<number>` carries only which ids cleared the threshold, never
+ * a raw unhelpful count or any per-rating row, preserving the "no single
+ * identifiable rater can be inferred" property `minUnhelpful`'s `>= 2` floor
+ * (config.ts) exists to protect.
+ *
+ * Short-circuits to an empty set for an empty `entryIds` array without
+ * issuing a query — mirrors `hasConflictAmongIds`'s own zero-query
+ * short-circuit for a too-small input.
+ */
+export async function areKnowledgeEntriesLowRated(
+  entryIds: readonly number[],
+  minUnhelpful: number,
+): Promise<Set<number>> {
+  if (entryIds.length === 0) return new Set();
+  const { rows } = await pool.query(
+    `SELECT knowledge.id
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+       JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint
+      WHERE knowledge.id = ANY($1)
+      GROUP BY knowledge.id
+     HAVING count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $2`,
+    [entryIds, minUnhelpful],
+  );
+  return new Set(rows.map((r) => Number(r.id)));
+}
+
+/**
  * Count distinct knowledge entries with `unhelpfulCount >= minUnhelpful`
  * (issue #324), for the weekly admin digest — the growth path #287 itself
  * named. Reuses the SAME `answer_feedback` → `interactions` → `knowledge`
