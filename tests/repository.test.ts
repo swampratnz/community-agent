@@ -3057,6 +3057,47 @@ test('SECURITY: repository: listReports scopes by conversation and filters by st
   await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[inScope.id, outOfScope.id]]);
 });
 
+test('repository: listReports narrows by targetUserId (issue #463)', { skip }, async () => {
+  const convo = `${RUN}-c-reports-target`;
+  const reporter = `${RUN}-reports-target-reporter`;
+  const targetA = `${RUN}-reports-target-a`;
+  const targetB = `${RUN}-reports-target-b`;
+
+  const reportA = await createContentReport({
+    platform: 'discord',
+    reporterUserId: reporter,
+    conversationId: convo,
+    targetUserId: targetA,
+    reason: 'filed against target A',
+  });
+  const reportB = await createContentReport({
+    platform: 'discord',
+    reporterUserId: reporter,
+    conversationId: convo,
+    targetUserId: targetB,
+    reason: 'filed against target B',
+  });
+  assert.ok(reportA && reportB);
+
+  const unfiltered = await listReports([convo], undefined, 50, undefined);
+  assert.ok(
+    unfiltered.some((r) => r.id === reportA.id) && unfiltered.some((r) => r.id === reportB.id),
+    'omitting targetUserId leaves both reports visible, unchanged from before #463',
+  );
+
+  const filteredToA = await listReports([convo], undefined, 50, undefined, targetA);
+  assert.ok(
+    filteredToA.some((r) => r.id === reportA.id),
+    'targetUserId filter includes the matching report',
+  );
+  assert.ok(
+    !filteredToA.some((r) => r.id === reportB.id),
+    'targetUserId filter excludes a report against a different target',
+  );
+
+  await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[reportA.id, reportB.id]]);
+});
+
 test(
   'SECURITY: repository: countOpenReports scopes by conversation and counts only open status',
   { skip },
@@ -3322,7 +3363,15 @@ test(
       conversationId: outOfScopeConvo,
       reason: 'shared-channel report the viewer does not participate in — must stay excluded',
     });
-    assert.ok(dmReport && channelReport);
+    const dmReportAgainstViewer = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: dmConvo,
+      targetUserId: viewer,
+      reason: 'a DM report filed against the viewing admin themselves',
+      isDirect: true,
+    });
+    assert.ok(dmReport && channelReport && dmReportAgainstViewer);
 
     const withoutViewer = await listReports([inScopeConvo]);
     assert.ok(
@@ -3357,7 +3406,18 @@ test(
       'SECURITY: the broadening must not let a scoped admin resolve an out-of-scope, non-DM report',
     );
 
-    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[dmReport.id, channelReport.id]]);
+    // issue #463: the new targetUserId filter is appended AFTER the
+    // accused-admin exclusion, so setting it to the caller's own id must not
+    // resurface a DM report filed against themselves.
+    const scopedWithSelfTarget = await listReports([inScopeConvo], undefined, 50, [viewer], viewer);
+    assert.ok(
+      !scopedWithSelfTarget.some((r) => r.id === dmReportAgainstViewer.id),
+      'SECURITY: targetUserId set to the caller’s own id must not surface a DM report filed against themselves',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [
+      [dmReport.id, channelReport.id, dmReportAgainstViewer.id],
+    ]);
   },
 );
 

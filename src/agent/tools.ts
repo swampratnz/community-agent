@@ -3760,6 +3760,7 @@ export function buildToolServer(
         .optional()
         .describe('Filter by status (default: all statuses)'),
       limit: z.number().optional().describe('Max entries (default 50)'),
+      targetUserId: z.string().optional().describe('Only show reports filed against this member'),
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'list_reports');
@@ -3769,7 +3770,7 @@ export function buildToolServer(
       // one platform could otherwise see a DM report filed against their other
       // identity, since a single raw id `<> ALL` their own list.
       const viewerIds = (await resolveLinkedIdentities(caller.platform, caller.userId)).map((i) => i.userId);
-      const rows = await listReports(allowed, args.status, args.limit ?? 50, viewerIds);
+      const rows = await listReports(allowed, args.status, args.limit ?? 50, viewerIds, args.targetUserId);
       if (rows.length === 0) return text('No reports found (within your conversations).');
       return text(
         untrusted(

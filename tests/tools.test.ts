@@ -7602,7 +7602,7 @@ function listReportsHandler(userId: string) {
       _registeredTools: Record<
         string,
         {
-          handler: (args: { status?: string; limit?: number }) => Promise<{
+          handler: (args: { status?: string; limit?: number; targetUserId?: string }) => Promise<{
             content: Array<{ type: string; text: string }>;
           }>;
         }
@@ -7654,6 +7654,42 @@ test(
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [
       [dmReport.id, dmReportAgainstAdmin.id],
     ]);
+  },
+);
+
+test(
+  'list_reports threads targetUserId through to repository.listReports (issue #463)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-reports-target-admin`;
+    const targetA = `${RUN}-list-reports-target-a`;
+    const targetB = `${RUN}-list-reports-target-b`;
+
+    const reportA = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-list-reports-target-reporter`,
+      conversationId: 'convo-1',
+      targetUserId: targetA,
+      reason: 'filed against target A',
+    });
+    const reportB = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-list-reports-target-reporter`,
+      conversationId: 'convo-1',
+      targetUserId: targetB,
+      reason: 'filed against target B',
+    });
+    assert.ok(reportA && reportB);
+
+    const result = await listReportsHandler(admin).handler({ targetUserId: targetA });
+    const text = result.content[0]?.text ?? '';
+    assert.match(text, new RegExp(`#${reportA.id}\\b`), 'the report against the requested target is visible');
+    assert.ok(
+      !new RegExp(`#${reportB.id}\\b`).test(text),
+      'a report against a different target is excluded once targetUserId is set',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[reportA.id, reportB.id]]);
   },
 );
 
