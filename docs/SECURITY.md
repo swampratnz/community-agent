@@ -630,6 +630,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   elevated access." Auto-revoke on departure is deliberately out of scope —
   visibility first, matching how `grant_admin`/`revoke_admin` keep privilege
   changes human-decided rather than automatic.
+- **Departed-admin proactive alert** (`src/departedAdminAlert.ts`, off unless
+  `DEPARTED_ADMIN_ALERT_ENABLED`, issue #472): closes the growth path #428
+  itself named and deferred — `listAdminRoster()`/`list_admins` above was
+  pull-only, so a departed-but-still-admin account was invisible unless a
+  super admin thought to run `list_admins`. This adds the missing push: an
+  opt-in job on the same 6h `startTrackedJob` cadence as every other
+  background job counts `listAdminRoster()` entries with `leftServer ===
+  true` and DMs every super admin, via the same `alertSuperAdmins` pattern
+  `usageAlert.ts`/`backgroundJobs.ts` already use, when that count first
+  transitions `0 → >0`. A pure latch (`stepUsageAlertTracker`, imported from
+  `usageAlert.ts` rather than re-implemented) fires exactly once per
+  crossing and re-arms only once the count returns to exactly 0 — a partial
+  remediation (e.g. 3 departed admins down to 1) does not re-arm and does
+  not re-alert. The DM carries a bare integer count plus fixed template text
+  only — never a display name, platform user id, or platform string — same
+  "bare integer" convention as every other digest/alert signal in this
+  codebase. No schema change, no new tool, no new RBAC surface: it only
+  threads the already-super-admin-gated `listAdminRoster()` signal through
+  the already-proven `startTrackedJob`/`alertSuperAdmins` machinery. Like
+  `list_admins`, auto-revoke on departure remains deliberately out of
+  scope — this is visibility, not action.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
