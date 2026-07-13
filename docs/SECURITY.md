@@ -651,6 +651,40 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the already-proven `startTrackedJob`/`alertSuperAdmins` machinery. Like
   `list_admins`, auto-revoke on departure remains deliberately out of
   scope — this is visibility, not action.
+- **Real-time access-request alert** (`notifyAccessRequest` in `router.ts`,
+  off unless `ACCESS_REQUEST_ALERT_ENABLED`, issue #480): the discrete-event
+  push complement to the pull-only `list_access_requests` tool and the
+  passive weekly-digest `pendingAccessRequests` count (issue #133) — same
+  "push what was pullable" precedent as `notifyReportFiled` (#90). It is a
+  **router-level side effect only**, never a model-callable tool and never
+  routed through the agent/model loop, so it adds no new prompt-injection
+  surface: `recordAccessRequest` (`storage/repository.ts`) now returns
+  whether its upsert was a fresh INSERT (`RETURNING (xmax = 0) AS inserted`,
+  Postgres's own free signal — no new column, no new query) or a repeat
+  UPDATE of an already-pending row, and the router fires the alert only when
+  `inserted === true`. A second, third, etc. addressed message from the same
+  still-pending (uncleared) guest reports `inserted === false` and triggers
+  **zero** additional notifications — the upsert's own dedup is the entire
+  debounce, no new state to track. Recipients are the same guild-wide
+  `listAdmins()` roster the weekly digest already reaches (`community_users
+  WHERE role = 'admin'`), **not** `superAdminIds()` — an access request is
+  routine admin business, matching the digest's own audience choice for the
+  identical `pendingAccessRequests` signal. The DM payload is built from only
+  the guest's `platform` and `userName` (run through `sanitizeName`, the same
+  hostile-display-name neutralisation `list_access_requests` already applies)
+  — it is constructed independently of the inbound message and never has
+  access to `msg.text`, so message content cannot leak into it even in
+  principle. A guild-wide (not per-conversation, matching the guild-wide
+  audience) rolling-hour cap, `ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`
+  (default 10, same sliding-window shape as `tools.ts`'s
+  `reserveAnnounceSlot`), bounds worst-case DM volume under a raid or a
+  channel getting linked somewhere; once exhausted, later first-time requests
+  within that hour are still written to `access_requests` (still visible via
+  `list_access_requests`/the digest — nothing is lost) but do not notify, and
+  a fresh hour resumes notifying. With the flag unset/false, behaviour is
+  byte-identical to before #480: `recordAccessRequest`'s new return value is
+  computed but the alert branch never reads it, so no admin DM is ever sent
+  and no rate-limit state is ever touched.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument

@@ -469,7 +469,32 @@ weakening it:
    from a Discord nickname has no length or newline limit an admin couldn't
    abuse to forge Markdown link syntax or a fake system message. A name that
    sanitizes to empty is omitted, not shown blank.
-5. **`community_info` names every tool the caller actually has.** The
+5. **Real-time access-request alert** (issue #480, off unless
+   `ACCESS_REQUEST_ALERT_ENABLED=true`). The pending-access queue above is
+   pull-only (`list_access_requests`) plus a passive weekly digest count
+   (issue #133) — this closes the gap with a push notification the moment a
+   gated guest's addressed message creates a FRESH `access_requests` row.
+   `recordAccessRequest` reports insert-vs-update via Postgres's own
+   `xmax = 0` trick on its `RETURNING` clause — no new column or query shape —
+   and `router.ts` fires `notifyAccessRequest` only when that read reports
+   `inserted === true`; a repeat ping from the same still-pending guest
+   (`inserted === false`) never notifies again, so the upsert's own dedup IS
+   the debounce. Guild-wide `listAdmins()` audience, same recipients the
+   weekly digest's `pendingAccessRequests` count already reaches — not
+   `superAdminIds()`, since this is routine admin business. The DM names only
+   the guest's platform and (`sanitizeName`-cleaned) display name, never
+   message content, matching `access_requests`' own storage contract. A
+   guild-wide rolling-hour cap (`ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`,
+   default 10) bounds worst-case DM volume under a raid; once exhausted, later
+   first-time requests in that hour are still recorded (so nothing is lost —
+   `list_access_requests`/the digest still see them) but do not notify, and a
+   fresh hour resumes notifying. Never routed through the agent/model loop —
+   this is a router-level side effect off an existing DB upsert's return
+   value, so it adds no new prompt-injection surface. `add_member`'s existing
+   `clearAccessRequest` call means the next gated address from that same user
+   after being added (and later, if regated) is treated as a fresh insert and
+   notifies once more.
+6. **`community_info` names every tool the caller actually has.** The
    `community_info` tool (issue #92) answers "what can you do?" with
    `MEMBER_CAPABILITIES_TEXT`, a plain-language line for every `MEMBER_TOOLS`
    entry, pinned against drift by an anti-drift coverage test (issue #311).

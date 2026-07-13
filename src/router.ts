@@ -3,7 +3,8 @@ import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
-import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
+import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
+import { sanitizeName } from './agent/systemPrompt.js';
 import {
   INTERNAL_ERROR_REPLY,
   MAX_TURNS_REPLY,
@@ -26,6 +27,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  listAdmins,
   recordAccessRequest,
   recordInteraction,
   recordKnowledgeRetrieval,
@@ -168,6 +170,43 @@ const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā
 
 const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
 
+/**
+ * Real-time admin alert fired the moment a gated guest's FIRST-EVER addressed
+ * message creates a fresh `access_requests` row (issue #480) — the discrete-
+ * event complement to the weekly digest's passive `pendingAccessRequests`
+ * count, mirroring `notifyReportFiled`'s "push what was pullable" precedent
+ * (#90). Called directly off `recordAccessRequest`'s insert-vs-update
+ * `RETURNING` value in `handle()` below — never routed through the agent/
+ * model loop, so a guest's own message content cannot reach this at all: only
+ * their platform + display name are threaded through, matching
+ * `access_requests`' own "identity + counts only" storage contract.
+ * Guild-wide `listAdmins()` audience (the same recipients the weekly digest's
+ * `pendingAccessRequests` count already reaches), not `superAdminIds()` — an
+ * access request is routine admin business, not a super-admin-tier concern.
+ * The guest's display name is sanitised the same way `list_access_requests`
+ * already renders it (`sanitizeName`), so a hostile name can't fake a fresh
+ * instruction line in front of the human admin reading the DM. Best-effort
+ * per admin/platform: a failed DM to one admin never blocks the others,
+ * matching `notifySuperAdmins`'s own fire-and-forget-per-recipient shape.
+ */
+export async function notifyAccessRequest(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  guest: { platform: Platform; userId: string; userName?: string },
+  listAdminsFn: typeof listAdmins = listAdmins,
+): Promise<void> {
+  const admins = await listAdminsFn();
+  if (admins.length === 0) return;
+  const name = guest.userName ? sanitizeName(guest.userName) : '';
+  const message = `🔔 New access request from ${name || guest.userId} on ${guest.platform}. Use add_member to let them in.`;
+  for (const admin of admins) {
+    const target = adapterFor(admin.platform);
+    if (!target || !target.isConnected()) continue;
+    target
+      .sendDirectMessage(admin.platformUserId, message)
+      .catch((err) => logger.warn({ err, platform: admin.platform }, 'Access-request alert failed'));
+  }
+}
+
 /** The subset of a KnowledgeSearchHit the shortcut path carries through — just enough to render `formatKnowledgeCitationNote` (issue #214). */
 interface KnowledgeShortcutHit {
   id: number;
@@ -259,6 +298,13 @@ export class Router {
    * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
    * defaults to the real DB-backed shortcut-hit recorder (issue #440),
    * fired at each of the four member-facing shortcut short-circuits.
+   * `notifyAccessRequestFn` defaults to the real `notifyAccessRequest`
+   * (issue #480), consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on
+   * and `recordAccessRequest` reports a fresh insert — overridable so tests
+   * can assert the alert fired/didn't without a live DB or adapter.
+   * `recordAccessRequestFn` defaults to the real DB-backed upsert; overridable
+   * (like every other DB read/write above) so its insert-vs-update return
+   * value can be controlled in tests without a live Postgres.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -272,8 +318,32 @@ export class Router {
     private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
     private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
     private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
+    private readonly recordAccessRequestFn: typeof recordAccessRequest = recordAccessRequest,
+    private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
+  }
+
+  /** Rolling-hour timestamps for `ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR` (issue #480) — guild-wide, not per-conversation, since the alert audience (`listAdmins()`) is guild-wide too. */
+  private readonly accessRequestAlertTimestamps: number[] = [];
+
+  /**
+   * Reserve one access-request-alert slot against a rolling hourly cap, same
+   * sliding-window shape as `tools.ts`'s `reserveAnnounceSlot`/
+   * `reservePollSlot` — but keyless/guild-wide rather than per-conversation,
+   * matching this alert's guild-wide `listAdmins()` audience. Returns false
+   * without reserving if the guild already hit `limit` within the last hour;
+   * the request is still recorded by the caller either way (issue #480).
+   */
+  private reserveAccessRequestAlertSlot(limit: number): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = this.accessRequestAlertTimestamps.filter((t) => now - t < windowMs);
+    this.accessRequestAlertTimestamps.length = 0;
+    this.accessRequestAlertTimestamps.push(...recent);
+    if (recent.length >= limit) return false;
+    this.accessRequestAlertTimestamps.push(now);
+    return true;
   }
 
   private sweep(): void {
@@ -455,9 +525,34 @@ export class Router {
       }
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
-        recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch(
-          (err) => logger.warn({ err }, 'Failed to record access request'),
-        );
+        // Awaited (unlike before issue #480) so the insert-vs-update result
+        // is available to gate the real-time alert below — a fast local
+        // failure (unreachable DB) is caught and treated as "not fresh", same
+        // fail-safe shape as the other awaited-but-best-effort DB reads in
+        // this method (e.g. `checkPaused`/`getLangPref` above).
+        const inserted = await this.recordAccessRequestFn({
+          platform: msg.platform,
+          userId: msg.userId,
+          userName: msg.userName,
+        }).catch((err) => {
+          logger.warn({ err }, 'Failed to record access request');
+          return false;
+        });
+        // Real-time admin alert (issue #480): fires ONLY on a fresh
+        // `access_requests` row — a repeat ping from the same still-pending
+        // guest (`inserted === false`) never notifies again, the upsert's own
+        // dedup is the entire debounce. Flag off/unset is a true no-op: with
+        // it unset, `inserted` is computed but never read past this line, so
+        // behaviour is byte-identical to before #480 either way.
+        if (config.accessRequestAlert.enabled && inserted) {
+          if (this.reserveAccessRequestAlertSlot(config.accessRequestAlert.rateLimitPerHour)) {
+            this.notifyAccessRequestFn((platform) => this.adapters.get(platform), {
+              platform: msg.platform,
+              userId: msg.userId,
+              userName: msg.userName,
+            }).catch((err) => logger.warn({ err }, 'Failed to fire access-request alert'));
+          }
+        }
         if (!this.rateLimited(userKey)) {
           // Guest knowledge shortcut (issue #165): before the static "ask an
           // admin" pointer, try a global-only near-exact FAQ match — same
