@@ -12,7 +12,13 @@ import type { Platform } from '../src/platforms/types.js';
 // confirmCancelMi.router.test.ts) so a non-super-admin caller — unresolvable
 // in `community_users` with the DB unreachable, so it resolves to 'guest' —
 // still reaches the escalation intercept instead of being short-circuited by
-// the gated-guest branch, which only fires in gated mode.
+// the gated-guest branch, which only fires in gated mode. Also the ONLY place
+// that sets BOTH ESCALATION_TO_ADMIN_ENABLED and
+// REPEAT_MAX_TURNS_SHORTCUT_ENABLED together, so the repeat-shortcut's own
+// `offerEscalation` call site (issue #479's "dead offer / orphaned entry"
+// hazard on the replay path) is actually exercised — neither flag alone
+// (as set by this file vs. repeatMaxTurnsShortcutRouter.test.ts, isolated
+// per Node test-runner file process) reaches that branch.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
@@ -22,6 +28,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1,super-2';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
 process.env.ESCALATION_TO_ADMIN_ENABLED = 'true';
+process.env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
 const { Router, ESCALATION_RATE_LIMIT_PER_HOUR } = await import('../src/router.js');
@@ -38,6 +45,8 @@ const ESCALATION_CONFIRMED_TEXT = '👍 Flagged for a community admin — someon
 const ESCALATION_RATE_LIMITED_TEXT =
   'Already flagged the max I can this hour, sorry — please try again later or contact an admin directly.';
 const ESCALATION_WINDOW_MS = 600_000;
+const REPEAT_MAX_TURNS_SHORTCUT_NOTICE =
+  '↩️ Same request as a moment ago — it still needs breaking down:\n\n';
 
 const RUN = `escalation-router-${Date.now()}`;
 
@@ -134,6 +143,10 @@ test('config: ESCALATION_TO_ADMIN_ENABLED=true is reflected in config.behaviour.
   assert.equal(config.behaviour.escalationToAdminEnabled, true);
 });
 
+test('config: REPEAT_MAX_TURNS_SHORTCUT_ENABLED=true is reflected in config.behaviour.repeatMaxTurnsShortcutEnabled', () => {
+  assert.equal(config.behaviour.repeatMaxTurnsShortcutEnabled, true);
+});
+
 test('router (escalation offer, flag off): a max-turns failure produces byte-identical MAX_TURNS_REPLY, no offer, no pending entry, and a later "yes" never calls notifyAdmins (acceptance criterion 1)', async () => {
   const originalFlag = config.behaviour.escalationToAdminEnabled;
   (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = false;
@@ -182,6 +195,55 @@ test('router (escalation offer, flag on): a max-turns failure appends the offer 
   const entry = internals.pendingEscalations.get(key);
   assert.ok(entry, 'a live pending entry must exist behind the offer');
   assert.equal(entry?.query, `${RUN} a long ask`);
+});
+
+test('SECURITY: router (escalation offer via repeat-max-turns shortcut): with both flags on, a repeated identical message that hits sendRepeatMaxTurnsShortcut re-offers escalation with its own live pending entry, and a subsequent "yes" confirms it exactly like the non-shortcut path (issue #479 dead-offer/orphaned-entry hazard, repeat-shortcut replay case)', async () => {
+  let calls = 0;
+  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => {
+    calls++;
+    return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-repeat-shortcut-offer`;
+  const text = `${RUN} a very long repeat-shortcut ask`;
+
+  // First send: a genuine model turn hits max-turns and gets the offer.
+  await trigger(makeMessage({ text, conversationId, userId: 'super-1' }));
+  assert.equal(calls, 1);
+  assert.equal(sent[0].text, `${MAX_TURNS_REPLY}${ESCALATION_OFFER_SUFFIX}`);
+
+  // Second, identical send: short-circuited by sendRepeatMaxTurnsShortcut —
+  // must NOT spawn a second model turn, but must still carry the repeat
+  // notice + a freshly re-offered escalation (its own live pending entry,
+  // not a dead leftover from the first offer).
+  await trigger(makeMessage({ text, conversationId, userId: 'super-1' }));
+  assert.equal(calls, 1, 'the repeat-shortcut must short-circuit — no second model turn');
+  assert.equal(
+    sent[1].text,
+    `${REPEAT_MAX_TURNS_SHORTCUT_NOTICE}${MAX_TURNS_REPLY}${ESCALATION_OFFER_SUFFIX}`,
+    'the shortcut reply must carry the repeat notice AND the re-offered escalation suffix',
+  );
+
+  const internals = router as unknown as {
+    pendingEscalations: Map<string, { query: string; at: number }>;
+  };
+  const key = `discord:${conversationId}:super-1`;
+  const entry = internals.pendingEscalations.get(key);
+  assert.ok(entry, 'the repeat-shortcut offer must record its own live pending entry');
+  assert.equal(entry?.query, text);
+
+  // A subsequent "yes" must confirm exactly like the non-shortcut path:
+  // single notifyAdmins call, fixed confirmation text, entry consumed.
+  await trigger(makeMessage({ text: 'yes', conversationId, userId: 'super-1' }));
+  assert.equal(calls, 1, 'the confirmation must never spawn a model turn');
+  assert.equal(notifyCalls.length, 1, 'exactly one notifyAdmins call from the shortcut-path offer');
+  assert.equal(sent[2].text, ESCALATION_CONFIRMED_TEXT);
+  assert.equal(
+    internals.pendingEscalations.has(key),
+    false,
+    'the shortcut-path pending entry must be consumed (deleted) once confirmed',
+  );
 });
 
 test('router (escalation offer): a reply with maxTurnsExceeded !== true never gets the offer appended or a pending entry recorded', async () => {
