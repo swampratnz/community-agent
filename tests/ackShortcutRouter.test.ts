@@ -168,6 +168,96 @@ test('ordering: an in-flight real turn is still delivered before a subsequent ac
   assert.equal(sent[1].text, 'No worries!', 'the ack reply must be delivered after, not before');
 });
 
+// --- Standing 'mi' language preference on the ack shortcut (issue #435) ----
+
+test("router (ack shortcut enabled): a caller with a standing 'mi' language preference gets ACK_REPLY_TEXT_MI, not the English default", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a pure acknowledgement');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'thanks' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'Kāore he raru!');
+});
+
+test("router (ack shortcut enabled): a caller with 'auto' (the default) still gets byte-identical 'No worries!'", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a pure acknowledgement');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'thanks' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'No worries!');
+});
+
+test('SECURITY: a getLanguagePreference failure on the ack shortcut still sends the English default, never throws or drops the reply', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a pure acknowledgement');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage({ text: 'thanks' })));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'No worries!');
+});
+
+test('SECURITY: ACK_REPLY_TEXT_MI is a fixed, non-interpolated string — byte-identical regardless of the caller or message content', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a pure acknowledgement');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'thanks', userId: 'super-1' }));
+  await trigger(makeMessage({ text: '👍', userId: 'super-1' }));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].text, sent[1].text, 'no hidden interpolation on caller/message-controlled input');
+  assert.equal(sent[0].text, 'Kāore he raru!');
+});
+
 test('router (ack shortcut enabled): the ack path still respects the gated-guest gate ahead of it', async () => {
   const router = new Router(async () => {
     throw new Error('runTurn must not be called');
