@@ -88,6 +88,80 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+// Retry-receipt cache: when a recipient can't decrypt a message we sent, their
+// device asks for a resend and Baileys serves it via the `getMessage` handler,
+// which reads the `sentMessages` cache we populate on every content send.
+// Without it a proactive/background-job DM that fails first-delivery decryption
+// is stuck on WhatsApp's "Waiting for this message. This may take a while."
+// A socket stub whose sendMessage returns a WAMessage-shaped result (the real
+// Baileys return; stubSocket above returns void, which `remember` safely skips).
+function stubSocketReturningWAMessage(adapter: InstanceType<typeof BaileysAdapter>): { ids: string[] } {
+  const ids: string[] = [];
+  let n = 0;
+  (
+    adapter as unknown as {
+      sock: {
+        sendMessage: (
+          jid: string,
+          msg: { text?: string },
+        ) => Promise<{ key: { id: string }; message: { conversation: string } }>;
+        sendPresenceUpdate: (type: string, jid?: string) => Promise<void>;
+      };
+    }
+  ).sock = {
+    sendMessage: async (_jid, msg) => {
+      const id = `wa-${n++}`;
+      ids.push(id);
+      return { key: { id }, message: { conversation: msg.text ?? '' } };
+    },
+    sendPresenceUpdate: async () => {},
+  };
+  return { ids };
+}
+
+function sentCache(
+  adapter: InstanceType<typeof BaileysAdapter>,
+): Map<string, { message: { conversation?: string }; at: number }> {
+  return (
+    adapter as unknown as { sentMessages: Map<string, { message: { conversation?: string }; at: number }> }
+  ).sentMessages;
+}
+
+test('sendMessage caches the sent message so a retry receipt can be resent (getMessage backing)', async () => {
+  const adapter = new BaileysAdapter();
+  const { ids } = stubSocketReturningWAMessage(adapter);
+  await adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'proactive alert' });
+  assert.equal(ids.length, 1);
+  const cached = sentCache(adapter).get(ids[0]);
+  assert.ok(cached, 'the sent message id is in the retry cache');
+  assert.equal(
+    cached.message.conversation,
+    'proactive alert',
+    'getMessage can return the original content to resend',
+  );
+});
+
+test('sendDirectMessage caches the sent message too — the proactive-DM path that saw "Waiting for this message…"', async () => {
+  const adapter = new BaileysAdapter();
+  const { ids } = stubSocketReturningWAMessage(adapter);
+  await adapter.sendDirectMessage('64211234567', 'super-admin alert');
+  assert.equal(ids.length, 1);
+  assert.ok(sentCache(adapter).get(ids[0]), 'a proactive DM is cached so its retry receipt can be served');
+});
+
+test('the sent-message retry cache is bounded — oldest entries evict past the max, newest kept', () => {
+  const adapter = new BaileysAdapter();
+  const remember = (adapter as unknown as { remember: (m: unknown) => void }).remember.bind(adapter);
+  const total = 1005; // a handful over SENT_MESSAGE_CACHE_MAX (1000)
+  for (let i = 0; i < total; i++) {
+    remember({ key: { id: `m-${i}` }, message: { conversation: `msg ${i}` } });
+  }
+  const cache = sentCache(adapter);
+  assert.equal(cache.size, 1000, 'cache never exceeds the max');
+  assert.ok(!cache.has('m-0'), 'the oldest entry was evicted');
+  assert.ok(cache.has(`m-${total - 1}`), 'the newest entry is retained');
+});
+
 /** Stubs the socket's sendMessage to capture the native image+caption payload sendImage builds (issue #174). */
 function stubSocketForImage(adapter: InstanceType<typeof BaileysAdapter>) {
   const sent: Array<{ image: Buffer; caption?: string }> = [];

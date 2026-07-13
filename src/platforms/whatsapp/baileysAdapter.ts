@@ -45,6 +45,14 @@ import {
 const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
+// Bounds for the sent-message retry cache (see `sentMessages`). Retry receipts
+// for an undecryptable message arrive within minutes, occasionally hours; keep
+// enough to service them without letting the cache grow unbounded on a busy
+// number. In-memory only, so a process restart clears it (a retry older than
+// that is not recoverable anyway).
+const SENT_MESSAGE_CACHE_MAX = 1000;
+const SENT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
+
 // Generic and static — no @-mention or echo of the joiner, so a bulk add
 // can't be turned into a mass-ping and no participant JID reaches the chat.
 export const WHATSAPP_GROUP_WELCOME_MESSAGE =
@@ -112,6 +120,33 @@ export class BaileysAdapter implements PlatformAdapter {
   /** WA Web version is fetched once and reused across reconnects. */
   private cachedVersion: [number, number, number] | null = null;
   private welcomeCooldown: WelcomeCooldownState = initialWelcomeCooldownState();
+  /**
+   * Bounded cache of the messages we've SENT (id -> content), so `getMessage`
+   * (wired into makeWASocket in connect()) can answer a recipient's retry
+   * receipt and RE-SEND a message their device failed to decrypt. Without it an
+   * undecryptable message is never recovered and the recipient sees WhatsApp's
+   * "Waiting for this message. This may take a while." indefinitely — the
+   * failure mode that dogged proactive/background-job DMs, which (unlike a reply
+   * to a fresh inbound) have no recent message to refresh the Signal session.
+   */
+  private readonly sentMessages = new Map<string, { message: proto.IMessage; at: number }>();
+
+  /**
+   * Cache a just-sent message so `getMessage` can resend it on a retry receipt.
+   * Bounds by age and size — the Map iterates in insertion order, so the oldest
+   * entries evict first. No-op for a send with no id/content (e.g. a revoke).
+   */
+  private remember(sent: WAMessage | undefined): void {
+    const id = sent?.key?.id;
+    const message = sent?.message;
+    if (!id || !message) return;
+    this.sentMessages.set(id, { message, at: Date.now() });
+    const cutoff = Date.now() - SENT_MESSAGE_CACHE_TTL_MS;
+    for (const [key, entry] of this.sentMessages) {
+      if (entry.at >= cutoff && this.sentMessages.size <= SENT_MESSAGE_CACHE_MAX) break;
+      this.sentMessages.delete(key);
+    }
+  }
 
   onMessage(handler: MessageHandler): void {
     this.handler = handler;
@@ -157,6 +192,12 @@ export class BaileysAdapter implements PlatformAdapter {
       printQRInTerminal: false,
       // Baileys is chatty; route its logs through pino at warn+.
       logger: logger.child({ mod: 'baileys' }),
+      // Service a recipient's retry receipt: when their device can't decrypt a
+      // message we sent, Baileys calls this to fetch the original and re-send
+      // it. Without it the message is never recovered and the recipient is
+      // stuck on "Waiting for this message…". Backed by the bounded
+      // `sentMessages` cache we populate on every content send (see remember()).
+      getMessage: async (key) => this.sentMessages.get(key.id ?? '')?.message ?? undefined,
     });
     this.sock = sock;
 
@@ -540,7 +581,7 @@ export class BaileysAdapter implements PlatformAdapter {
     const welcomeText = guidelines
       ? `${welcomeMessage}\n\nCommunity guidelines:\n${guidelines}`
       : welcomeMessage;
-    await this.sock.sendMessage(update.id, { text: welcomeText });
+    this.remember(await this.sock.sendMessage(update.id, { text: welcomeText }));
   }
 
   /**
@@ -593,7 +634,9 @@ export class BaileysAdapter implements PlatformAdapter {
 
   async sendMessage(out: OutgoingMessage): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text, out.language) });
+    this.remember(
+      await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text, out.language) }),
+    );
     // Clear the "composing" indicator now that the reply has actually sent.
     // Best-effort: a presence update failing here must not affect the send
     // that already succeeded above.
@@ -609,10 +652,12 @@ export class BaileysAdapter implements PlatformAdapter {
     caption?: string,
   ): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    await this.sock.sendMessage(conversationId, {
-      image: image.data,
-      caption: caption ? await this.filtered(caption) : undefined,
-    });
+    this.remember(
+      await this.sock.sendMessage(conversationId, {
+        image: image.data,
+        caption: caption ? await this.filtered(caption) : undefined,
+      }),
+    );
   }
 
   /** Best-effort "composing…" presence update while a turn is in flight. */
@@ -626,7 +671,9 @@ export class BaileysAdapter implements PlatformAdapter {
     if (!isPhoneUserId(userId)) {
       throw new Error(`Refusing to DM "${userId}": not a phone-number id (LID-only sender?).`);
     }
-    await this.sock.sendMessage(`${userId}@s.whatsapp.net`, { text: await this.filtered(text) });
+    this.remember(
+      await this.sock.sendMessage(`${userId}@s.whatsapp.net`, { text: await this.filtered(text) }),
+    );
   }
 
   /**
