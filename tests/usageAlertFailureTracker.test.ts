@@ -47,6 +47,8 @@ async function mockUsageStats(): Promise<UsageStats> {
 let modulesPromise: Promise<{
   startUsageAlert: typeof import('../src/usageAlert.js').startUsageAlert;
   BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD: number;
+  getJobHealthSnapshot: typeof import('../src/backgroundJobHealth.js').getJobHealthSnapshot;
+  resetJobHealthRegistryForTests: typeof import('../src/backgroundJobHealth.js').resetJobHealthRegistryForTests;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
@@ -55,11 +57,21 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
       t.mock.module('../src/storage/repository.js', {
         namedExports: { ...realRepo, usageStats: mockUsageStats },
       });
-      const [{ startUsageAlert }, { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD }] = await Promise.all([
+      const [
+        { startUsageAlert },
+        { BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD },
+        { getJobHealthSnapshot, resetJobHealthRegistryForTests },
+      ] = await Promise.all([
         import('../src/usageAlert.js'),
         import('../src/backgroundJobs.js'),
+        import('../src/backgroundJobHealth.js'),
       ]);
-      return { startUsageAlert, BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD };
+      return {
+        startUsageAlert,
+        BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD,
+        getJobHealthSnapshot,
+        resetJobHealthRegistryForTests,
+      };
     })();
   }
   return modulesPromise;
@@ -174,6 +186,34 @@ test('startUsageAlert: a successful check after a failure streak resets the trac
       await flush();
     }
     assert.equal(dms.length, 2, 'a fresh streak of threshold failures after recovery alerts again');
+  } finally {
+    clearInterval(timer!);
+    mode = 'succeed';
+  }
+});
+
+test("startUsageAlert: records 'usage-alert' in the shared job-health registry on both a successful and a failed check (issue #467)", async (t) => {
+  const { startUsageAlert, getJobHealthSnapshot, resetJobHealthRegistryForTests } = await modules(t);
+  resetJobHealthRegistryForTests();
+  mode = 'fail';
+  outbound = 5;
+  const { adapter } = makeAdapter();
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startUsageAlert([adapter]);
+  try {
+    await flush(); // 1st check fails
+    let snap = getJobHealthSnapshot()['usage-alert'];
+    assert.ok(snap, 'a snapshot is recorded after the first (failed) check');
+    assert.equal(snap.consecutiveFailures, 1);
+    assert.equal(snap.lastSuccessAt, null);
+
+    mode = 'succeed';
+    t.mock.timers.tick(POLL_MS);
+    await flush(); // 2nd check succeeds
+    snap = getJobHealthSnapshot()['usage-alert'];
+    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
     mode = 'succeed';

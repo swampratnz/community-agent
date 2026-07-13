@@ -17,6 +17,8 @@ process.env.STATUS_CHECK_ENABLED = 'true';
 process.env.STATUS_CHECK_POLL_MINUTES = '5';
 
 const { startStatusCheck, statusCheckAlertThreshold } = await import('../src/backgroundJobs.js');
+const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
+  await import('../src/backgroundJobHealth.js');
 
 const POLL_MS = 5 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(5);
@@ -131,6 +133,32 @@ test("startStatusCheck: polls at config.statusCheck.pollMinutes, not backgroundJ
     t.mock.timers.tick(1);
     await flush();
     assert.equal(calls, 2, 'a second run fires exactly at the configured poll interval, not a 6h tick');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test("startStatusCheck: records 'anthropic-status-check' in the shared job-health registry on both a successful and a failed run (issue #467)", async (t) => {
+  resetJobHealthRegistryForTests();
+  const { adapter } = makeAdapter();
+  let mode: 'fail' | 'succeed' = 'fail';
+  const runOnce = async () => mode === 'succeed';
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startStatusCheck([adapter], runOnce);
+  try {
+    await flush(); // 1st run fails
+    let snap = getJobHealthSnapshot()['anthropic-status-check'];
+    assert.ok(snap, 'a snapshot is recorded after the first (failed) run');
+    assert.equal(snap.consecutiveFailures, 1);
+    assert.equal(snap.lastSuccessAt, null);
+
+    mode = 'succeed';
+    t.mock.timers.tick(POLL_MS);
+    await flush(); // 2nd run succeeds
+    snap = getJobHealthSnapshot()['anthropic-status-check'];
+    assert.equal(snap!.consecutiveFailures, 0, 'a success resets consecutiveFailures in the registry');
+    assert.ok(snap!.lastSuccessAt !== null, 'a success records a lastSuccessAt in the registry');
   } finally {
     clearInterval(timer!);
   }

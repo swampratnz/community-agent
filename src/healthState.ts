@@ -3,6 +3,8 @@
  * Kept free of config/HTTP/adapter imports so it is unit-testable.
  */
 
+import type { BackgroundJobName, JobHealthSnapshot } from './backgroundJobHealth.js';
+
 export interface DisconnectTracker {
   disconnectedSince: number | null;
   alerted: boolean;
@@ -39,15 +41,55 @@ export function stepDisconnectTracker(
   };
 }
 
+/** JSON-friendly (ISO timestamp) projection of a JobHealthSnapshot for the wire — see buildHealthzPayload. */
+export interface JobHealthPayload {
+  consecutiveFailures: number;
+  lastRunAt: string;
+  lastSuccessAt: string | null;
+}
+
 export interface HealthzPayload {
   status: 'ok' | 'degraded';
   db: boolean;
   adapters: Record<string, boolean>;
+  jobs?: Record<string, JobHealthPayload>;
 }
 
-export function buildHealthzPayload(dbOk: boolean, adapterStatus: Record<string, boolean>): HealthzPayload {
-  const allOk = dbOk && Object.values(adapterStatus).every(Boolean);
-  return { status: allOk ? 'ok' : 'degraded', db: dbOk, adapters: adapterStatus };
+/**
+ * `jobHealth` is optional and, when empty/omitted, the payload is
+ * byte-identical to the pre-#467 shape (no `jobs` key at all) — a deployment
+ * with every optional background job disabled sees no change. When present, a
+ * job whose tracker has crossed its own alert threshold (`alerted === true` —
+ * a CONFIRMED outage, not a single sub-threshold blip) also flips the
+ * top-level `status` to `"degraded"`, the same signal `db`/`adapters` already
+ * contribute. Never widen this beyond the fixed enum key + integer + ISO
+ * timestamp fields below: `/healthz` is unauthenticated and world-reachable if
+ * `HEALTH_HOST` is opened, so no dynamic string (an error message, a stack)
+ * may ever reach this payload.
+ */
+export function buildHealthzPayload(
+  dbOk: boolean,
+  adapterStatus: Record<string, boolean>,
+  jobHealth?: Partial<Record<BackgroundJobName, JobHealthSnapshot>>,
+): HealthzPayload {
+  const entries = jobHealth ? Object.entries(jobHealth) : [];
+  const anyJobAlerted = entries.some(([, snapshot]) => snapshot.alerted);
+  const allOk = dbOk && Object.values(adapterStatus).every(Boolean) && !anyJobAlerted;
+  const payload: HealthzPayload = { status: allOk ? 'ok' : 'degraded', db: dbOk, adapters: adapterStatus };
+  if (entries.length > 0) {
+    payload.jobs = Object.fromEntries(
+      entries.map(([name, snapshot]) => [
+        name,
+        {
+          consecutiveFailures: snapshot.consecutiveFailures,
+          lastRunAt: new Date(snapshot.lastRunAt).toISOString(),
+          lastSuccessAt:
+            snapshot.lastSuccessAt === null ? null : new Date(snapshot.lastSuccessAt).toISOString(),
+        },
+      ]),
+    );
+  }
+  return payload;
 }
 
 export interface ReadyzPayload {

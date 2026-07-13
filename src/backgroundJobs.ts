@@ -29,6 +29,7 @@ import { devTeamScrub } from './agent/tools.js';
 import {
   buildJobFailureAlert,
   initialJobFailureTracker,
+  recordJobRun,
   stepJobFailureTracker,
   type BackgroundJobName,
   type JobFailureTracker,
@@ -77,10 +78,12 @@ export function startTrackedJob(
       await runOnce();
       lastSuccessAt = Date.now();
       tracker = stepJobFailureTracker(tracker, false, BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD).tracker;
+      recordJobRun(jobName, tracker, Date.now(), lastSuccessAt);
     } catch (err) {
       logger.error({ err, job: jobName }, 'Background job run failed');
       const step = stepJobFailureTracker(tracker, true, BACKGROUND_JOB_FAILURE_ALERT_THRESHOLD);
       tracker = step.tracker;
+      recordJobRun(jobName, tracker, Date.now(), lastSuccessAt);
       if (step.shouldAlert) {
         void alertSuperAdmins(
           adapters,
@@ -338,6 +341,7 @@ export function startStatusCheck(
     if (succeeded) lastSuccessAt = Date.now();
     const step = stepJobFailureTracker(tracker, !succeeded, threshold);
     tracker = step.tracker;
+    recordJobRun('anthropic-status-check', tracker, Date.now(), lastSuccessAt);
     if (step.shouldAlert) {
       void alertSuperAdmins(
         adapters,
@@ -550,6 +554,7 @@ export function startDevTeamWatchPoller(
     }
     const step = stepJobFailureTracker(tracker, failed, threshold);
     tracker = step.tracker;
+    recordJobRun('dev-team-watch', tracker, Date.now(), lastSuccessAt);
     if (step.shouldAlert) {
       void alertSuperAdmins(
         adapters,
