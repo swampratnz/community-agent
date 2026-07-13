@@ -2,10 +2,13 @@
 // dev_team_* tools in src/agent/tools.ts, and the completion-DM poller in
 // src/backgroundJobs.ts). Codes to a FROZEN contract:
 //
-//   POST /jobs        {mode,repo,title,description,budget_usd} -> 202 {id,state,position}
-//   GET  /jobs                                                 -> {jobs:[...]}
-//   GET  /jobs/{id}                                            -> {id,mode,repo,state,...}
-//   GET  /jobs/{id}/result                                     -> {kind,...} | 409 {error,state}
+//   POST /jobs         {mode,repo,title,description,budget_usd} -> 202 {id,state,position}
+//   GET  /jobs                                                  -> {jobs:[...]}
+//   GET  /jobs/{id}                                             -> {id,mode,repo,state,...}
+//   GET  /jobs/{id}/result                                      -> {kind,...} | 409 {error,state}
+//   POST /jobs/{id}/backlog  (no body)                          -> 200 {job_id,stories_added,stories_total}
+//                                                                | 404 {"error":"no assessment for that job"}
+//                                                                | 409 {"error":"backlog generation needs a dashboard workspace"}
 //
 // The service is a tailnet-internal endpoint (config.devTeam.endpointUrl, which
 // deliberately allows http:// — see config.ts). Every request carries
@@ -75,6 +78,17 @@ export interface JobResult {
   error?: string;
   cost_usd: number | null;
   [key: string]: unknown;
+}
+
+/**
+ * Response to POST /jobs/{id}/backlog — a completed assessment turned into a
+ * tracked backlog on the dispatch service (a server-side transform of an
+ * existing report; no repo change, no model cost).
+ */
+export interface BacklogResponse {
+  job_id: string;
+  stories_added: number;
+  stories_total: number;
 }
 
 export interface DispatchInput {
@@ -172,6 +186,26 @@ export async function jobResult(
     token,
     `/jobs/${encodeURIComponent(id)}/result`,
     { method: 'GET' },
+    fetchImpl,
+  );
+}
+
+/**
+ * POST /jobs/{id}/backlog — turn a previously completed assessment into a
+ * tracked backlog (throws on 404 "no assessment for that job" and on 409
+ * "backlog generation needs a dashboard workspace").
+ */
+export async function generateBacklog(
+  endpoint: string,
+  token: string,
+  jobId: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<BacklogResponse> {
+  return request<BacklogResponse>(
+    endpoint,
+    token,
+    `/jobs/${encodeURIComponent(jobId)}/backlog`,
+    { method: 'POST' },
     fetchImpl,
   );
 }

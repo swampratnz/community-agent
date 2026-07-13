@@ -207,12 +207,14 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__suggest_issue',
   // Drive the remote dev-team build service over the tailnet: dispatch a job
   // (assess/deliver — deliver is additionally CONFIRM-gated), check status,
-  // fetch result. Super-admin only: it is outward-acting authority holding the
+  // fetch result, turn a completed assessment into a tracked backlog.
+  // Super-admin only: it is outward-acting authority holding the
   // service's bearer credential, the same trust floor as suggest_issue/
   // redeploy_bot (docs/SECURITY.md).
   'mcp__community__dev_team_dispatch',
   'mcp__community__dev_team_status',
   'mcp__community__dev_team_result',
+  'mcp__community__dev_team_backlog',
 ] as const;
 
 export function toolsForRole(role: Tier): string[] {
