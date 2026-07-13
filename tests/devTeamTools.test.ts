@@ -13,7 +13,10 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
-process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
+// 'super-cap' is a second super admin used only by the daily-cap test below, so
+// it can exhaust its OWN per-identity quota without starving the other tests
+// that dispatch/verify as 'super-1'.
+process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1,super-cap';
 process.env.DEV_TEAM_ENABLED ??= 'true';
 process.env.DEV_TEAM_ENDPOINT_URL ??= 'http://ubuntudevagent:8738';
 process.env.DEV_TEAM_AUTH_TOKEN ??= 'dev-team-secret-token';
@@ -421,4 +424,35 @@ test('SECURITY: reserveDevTeamDispatchDaily bounds dispatch frequency per super 
   );
   assert.equal(reserveDevTeamDispatchDaily(`other-${key}`, 2), true, 'the cap is per-identity');
   assert.equal(reserveDevTeamDispatchDaily(key, 0), true, 'limit 0 means unlimited');
+});
+
+test('SECURITY: dev_team_verify is bounded by the per-super-admin daily cap (shares the DEV_TEAM_DAILY_LIMIT bucket; a capped call never POSTs)', async (t) => {
+  const { buildToolServer, reserveDevTeamDispatchDaily } = await tools(t);
+  const { config } = await import('../src/config.js');
+  const capUser = 'super-cap';
+  const key = `discord:${capUser}`;
+  // Exhaust this super admin's day directly (isolated from super-1's tests).
+  for (let i = 0; i < config.devTeam.dailyLimit; i++) {
+    assert.equal(reserveDevTeamDispatchDaily(key, config.devTeam.dailyLimit), true);
+  }
+  const before = verifyCalls.length;
+  const caller = {
+    platform: 'discord' as const,
+    userId: capUser,
+    userName: 'Cap',
+    role: 'super_admin' as const,
+    conversationId: 'convo-verify-cap',
+    isDirect: true,
+  };
+  const server = buildToolServer(caller, stubAdapter());
+  const handler = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })
+    ._registeredTools['dev_team_verify'].handler;
+  const res = await handler({ job_id: 'assess-x', finding: 'f1' });
+  assert.match(res.content[0].text, /Daily dev-team dispatch limit reached/);
+  assert.equal(res.isError, true, 'a capped verify is an error reply');
+  assert.equal(
+    verifyCalls.length,
+    before,
+    'a capped verify must never reach the client / POST a paid remote job',
+  );
 });

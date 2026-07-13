@@ -4776,6 +4776,18 @@ export function buildToolServer(
         return text('The dev-team service is not enabled on this server.', true);
       }
       const { endpoint, token } = svc;
+      // Per-super-admin calendar-day cap (DEV_TEAM_DAILY_LIMIT), shared with
+      // dev_team_dispatch: verify POSTs a real, cost-incurring remote job on
+      // the untrusted-content path (the finding text it targets comes from the
+      // assessed repo) and has no CONFIRM, so an injection-influenced turn that
+      // loops it over many findings must be bounded in code, not by model
+      // judgement. Checked before the POST; a bounced call spends no slot.
+      if (!reserveDevTeamDispatchDaily(`${caller.platform}:${caller.userId}`, config.devTeam.dailyLimit)) {
+        return text(
+          `Daily dev-team dispatch limit reached (${config.devTeam.dailyLimit}/day). Try again tomorrow or raise DEV_TEAM_DAILY_LIMIT.`,
+          true,
+        );
+      }
       const { success, result } = await audited({
         actionKind: 'dev_team_verify',
         params: { job_id: args.job_id, finding: args.finding },

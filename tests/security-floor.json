@@ -27,7 +27,7 @@
   "createThreadModerationGuard.test.ts": 2,
   "devTeamClient.test.ts": 8,
   "devTeamDispatchPartial.test.ts": 1,
-  "devTeamTools.test.ts": 9,
+  "devTeamTools.test.ts": 10,
   "devTeamWatch.test.ts": 7,
   "discordAdapter.test.ts": 45,
   "discordThreadArchive.test.ts": 1,
