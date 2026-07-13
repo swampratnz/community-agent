@@ -25,7 +25,7 @@ const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { countRepliesToUser } = await import('../src/storage/repository.js');
-const { MAX_TURNS_REPLY } = await import('../src/agent/core.js');
+const { MAX_TURNS_REPLY, MAX_TURNS_REPLY_MI } = await import('../src/agent/core.js');
 
 await embed('warmup').catch(() => {});
 
@@ -368,6 +368,109 @@ test("SECURITY: router (repeat-max-turns shortcut): a max-turns failure cached f
   await discordTrigger(makeMessage({ text, conversationId: convoA, userId: 'super-1', platform: 'discord' }));
   assert.equal(calls, 4, 'the original caller must still be short-circuited by their own cache entry');
   assert.match(discordSent[3].text, /^↩️/);
+});
+
+// --- Standing 'mi' language preference on the repeat-max-turns shortcut (issue #435) ---
+
+test("router (repeat-max-turns shortcut): a caller with a standing 'mi' language preference gets REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI prefixed onto MAX_TURNS_REPLY_MI, not MAX_TURNS_REPLY", async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      calls++;
+      return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-mi`;
+
+  await trigger(makeMessage({ text: `${RUN} a mi long ask`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} a mi long ask`, conversationId }));
+
+  assert.equal(calls, 1);
+  assert.equal(sent.length, 2);
+  assert.equal(
+    sent[1].text,
+    `↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n${MAX_TURNS_REPLY_MI}`,
+  );
+});
+
+test("router (repeat-max-turns shortcut): a caller with 'auto' (the default) still gets today's English notice + MAX_TURNS_REPLY, byte-identical", async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      calls++;
+      return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-auto`;
+
+  await trigger(makeMessage({ text: `${RUN} an auto long ask`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} an auto long ask`, conversationId }));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].text, `${REPEAT_MAX_TURNS_SHORTCUT_NOTICE}${MAX_TURNS_REPLY}`);
+});
+
+test('SECURITY: a getLanguagePreference failure on the repeat-max-turns shortcut still sends the English default, never throws or drops the reply', async () => {
+  const router = new Router(
+    async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-failsafe`;
+
+  await trigger(makeMessage({ text: `${RUN} failsafe long ask`, conversationId }));
+  await assert.doesNotReject(trigger(makeMessage({ text: `${RUN} failsafe long ask`, conversationId })));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].text, `${REPEAT_MAX_TURNS_SHORTCUT_NOTICE}${MAX_TURNS_REPLY}`);
+});
+
+test('SECURITY: REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI and MAX_TURNS_REPLY_MI are fixed, non-interpolated strings — byte-identical across distinct conversations/callers', async () => {
+  const router = new Router(
+    async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-mi-fixed`;
+
+  await trigger(makeMessage({ text: `${RUN} another long ask`, conversationId, userId: 'super-2' }));
+  await trigger(makeMessage({ text: `${RUN} another long ask`, conversationId, userId: 'super-2' }));
+
+  assert.equal(sent.length, 2);
+  assert.equal(
+    sent[1].text,
+    `↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n${MAX_TURNS_REPLY_MI}`,
+  );
 });
 
 // The flag-disabled path is also covered above (flag-off regression test);

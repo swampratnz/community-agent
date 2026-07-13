@@ -113,6 +113,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   readonly adminCapabilities = new Set([
     'timeout_user',
     'kick_user',
+    'ban_user',
     'delete_message',
     'warn_user',
     'unmute_user',
@@ -846,6 +847,13 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         const member = await guild.members.fetch(action.targetUserId!);
         await member.kick(paramString(action.params?.reason, 'No reason given'));
         return `Kicked ${member.user.tag}.`;
+      }
+      case 'ban_user': {
+        const guild = await this.client.guilds.fetch(config.discord.guildId);
+        await guild.members.ban(action.targetUserId!, {
+          reason: paramString(action.params?.reason, 'No reason given'),
+        });
+        return `Banned ${action.targetUserId}.`;
       }
       case 'delete_message': {
         const channel = await this.client.channels.fetch(action.conversationId!);

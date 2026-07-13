@@ -23,6 +23,7 @@ const BASE_STATS = {
   costByRole: [],
   backgroundCostUsd: 0,
   shortcutHits: { total: 0, byKind: [] },
+  backgroundCostByJob: [],
 };
 
 test('startUsageAlert: USAGE_ALERT_DAILY_REPLIES unset (default) creates no timer', () => {

@@ -38,6 +38,7 @@ const {
   notifyReportWithdrawn,
   buildToolServer,
   formatKnowledgeSearchResults,
+  formatKnowledgeTopics,
   formatUsageStats,
   formatEngagementStats,
   resolveSanitizedLabel,
@@ -92,6 +93,9 @@ const {
   clearAccessRequest,
   countActiveWarnings,
   clearWarnings,
+  countRepliesToUser,
+  linkMembers,
+  getMyDataSummary,
   markRosterLeave,
   upsertRosterMember,
   engagementStats,
@@ -230,6 +234,10 @@ after(async () => {
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}-manual-warn%`]);
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'warn_user' AND actor_user_id LIKE $1`, [
       `${MANUAL_WARN_HANDLER_ADMIN}%`,
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}-ban-%`]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id LIKE $1`, [
+      `${RUN}-ban-%`,
     ]);
   }
   await closeDb();
@@ -1687,10 +1695,11 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // Cap recalibrated for issue #311: MEMBER_TOOLS grew to 17 entries and
   // MEMBER_CAPABILITIES_TEXT now names all of them (consolidated into
   // behaviourally-related lines, not one bullet each), so the ~700-char cap
-  // sized for #92's original 9-entry text no longer fits. Still a hard cap,
-  // not a soft heuristic — a future addition that isn't consolidated should
-  // fail this rather than silently growing into a wall of text.
-  assert.ok(replyText.length < 1100, `reply should stay short; was ${replyText.length} chars`);
+  // sized for #92's original 9-entry text no longer fits. Bumped again for
+  // issue #437's list_knowledge_topics line. Still a hard cap, not a soft
+  // heuristic — a future addition that isn't consolidated should fail this
+  // rather than silently growing into a wall of text.
+  assert.ok(replyText.length < 1200, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -1723,6 +1732,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__community_guidelines', /guideline|rule/i],
   ['mcp__community__check_status', /known Anthropic outage/i],
   ['mcp__community__knowledge_search', /knowledge/i],
+  ['mcp__community__list_knowledge_topics', /browse the topics/i],
   ['mcp__community__remember_search', /past messages|remember/i],
   ['mcp__community__forget_me', /forget/i],
   ['mcp__community__report_content', /report/i],
@@ -1792,6 +1802,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
     '- Answer questions from curated community knowledge — just ask\n' +
+    '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
     '- Search back through your own past messages for something said earlier\n' +
     "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
     '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -1807,7 +1818,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     memberReply,
     expectedMemberCapabilitiesText,
     'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
-      'list_events line; otherwise unchanged since #367)',
+      'list_events line, issue #437 added the list_knowledge_topics line; otherwise unchanged since #367)',
   );
 });
 
@@ -1916,11 +1927,11 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
   // 44 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
-  // (same discipline as the member cap at the ~1100-char member test above) —
+  // (same discipline as the member cap at the ~1200-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
-  // of text.
-  assert.ok(adminReply.length < 2600, `admin reply should stay short; was ${adminReply.length} chars`);
+  // of text. Bumped alongside the member cap for issue #437.
+  assert.ok(adminReply.length < 2800, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -2556,7 +2567,7 @@ function moderateHandler(caller: {
         string,
         {
           handler: (args: {
-            action: 'timeout_user' | 'kick_user' | 'delete_message' | 'warn_user';
+            action: 'timeout_user' | 'kick_user' | 'ban_user' | 'delete_message' | 'warn_user';
             targetUserId: string;
             reason: string;
             durationMinutes?: number;
@@ -2889,6 +2900,171 @@ test(
       false,
       'warn_user sends immediately and never queues a CONFIRM',
     );
+  },
+);
+
+test(
+  'SECURITY: moderate refuses ban_user on a platform that does not support it, before any CONFIRM is ' +
+    'queued or performAdminAction is called (issue #445 acceptance criterion #1) — mirrors the existing ' +
+    'adminCapabilities gate every other action already gets',
+  async () => {
+    const conv = `${RUN}-ban-unsupported-platform`;
+    const targetUser = `${conv}-target`;
+    const adapter = moderateAdapter({
+      platform: 'whatsapp',
+      capabilities: ['warn_user', 'kick_user', 'delete_message'],
+    });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: targetUser,
+      reason: 'repeat offender',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /does not support "ban_user"/);
+    assert.equal(hasPendingAction('whatsapp', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test('SECURITY: moderate rejects a member-tier caller for ban_user before any Discord call or audit write (issue #445 acceptance criterion #2)', async () => {
+  const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+  const handler = moderateHandler({ role: 'member', adapter });
+
+  await assert.rejects(
+    () =>
+      handler.handler({
+        action: 'ban_user',
+        targetUserId: 'anyone',
+        reason: 'repeat offender',
+      }),
+    /Permission denied/,
+  );
+  assert.equal(adapter.performCalls.length, 0, 'a refused caller must never reach performAdminAction');
+});
+
+test(
+  'SECURITY: ban_user does not execute until CONFIRM is received — queued only, no performAdminAction ' +
+    'call and no admin_audit row until the admin confirms (issue #445 acceptance criterion #3), mirroring ' +
+    'the existing kick_user/timeout_user CONFIRM behaviour',
+  { skip },
+  async () => {
+    const conv = `${RUN}-ban-confirm-gate`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('discord', conv, targetUser);
+    const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+    const handler = moderateHandler({ conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: targetUser,
+      reason: 'repeat offender',
+    });
+
+    assert.equal(result.isError, false);
+    assert.match(
+      result.content[0]?.text ?? '',
+      new RegExp(`ban_user on ${targetUser} in ${conv} \\(reason:`),
+    );
+    assert.equal(adapter.performCalls.length, 0, 'CONFIRM only queues the action, never runs it');
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), true);
+
+    const { rows: beforeConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id = $1`,
+      [targetUser],
+    );
+    assert.equal(beforeConfirm[0].n, 0, 'no admin_audit row before CONFIRM — a queued action is not audited');
+
+    cancelPendingAction('discord', conv, 'admin-1');
+  },
+);
+
+test(
+  'A successful ban_user writes exactly one admin_audit row with action_kind = ban_user, surfaced by ' +
+    "moderation_history scoped to the admin's own conversations (issue #445 acceptance criteria #5)",
+  { skip },
+  async () => {
+    const conv = `${RUN}-ban-audit`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('discord', conv, targetUser);
+    const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+    const handler = moderateHandler({ conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: targetUser,
+      reason: 'repeat offender',
+    });
+    assert.equal(result.isError, false);
+
+    const pending = takePendingAction('discord', conv, 'admin-1');
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(adapter.performCalls.length, 1);
+    assert.equal(adapter.performCalls[0].kind, 'ban_user');
+    assert.equal(adapter.performCalls[0].targetUserId, targetUser);
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id = $1`,
+      [targetUser],
+    );
+    assert.equal(rows[0].n, 1, 'exactly one admin_audit row for the confirmed ban');
+
+    const modHistoryServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: conv,
+      },
+      adapter,
+    );
+    const modHistoryTool = (
+      modHistoryServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { targetUserId?: string; actionKind?: string }) => Promise<{
+              content: Array<{ type: string; text: string }>;
+              isError?: boolean;
+            }>;
+          }
+        >;
+      }
+    )._registeredTools['moderation_history'];
+    const historyResult = await modHistoryTool.handler({ targetUserId: targetUser, actionKind: 'ban_user' });
+    assert.equal(historyResult.isError, false);
+    assert.match(
+      historyResult.content[0]?.text ?? '',
+      new RegExp(`ban_user \\(${targetUser}\\)`),
+      'the ban_user audit row must be surfaced by moderation_history',
+    );
+  },
+);
+
+test(
+  'SECURITY: ban_user against a targetUserId never seen on the platform is refused by the existing ' +
+    'isKnownUser check before any Discord call (issue #445 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-ban-unknown-user`;
+    const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+    const handler = moderateHandler({ conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: `${conv}-never-seen`,
+      reason: 'repeat offender',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /has never been seen on discord/);
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), false);
+    assert.equal(adapter.performCalls.length, 0, 'no admin action for a refused, unseen target');
   },
 );
 
@@ -4776,6 +4952,7 @@ const BASE_USAGE_STATS = {
   costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
   backgroundCostUsd: 0,
   shortcutHits: { total: 0, byKind: [] as Array<{ kind: string; count: number }> },
+  backgroundCostByJob: [],
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -4789,14 +4966,125 @@ test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#40
   assert.ok(!out.includes('Background jobs'), 'no background-jobs line when backgroundCostUsd is 0');
 });
 
-test('formatUsageStats: backgroundCostUsd > 0 appends exactly one new line naming the figure (issue #401)', () => {
-  const out = formatUsageStats({ ...BASE_USAGE_STATS, backgroundCostUsd: 4.2 }, 7);
+test('formatUsageStats: all three jobs non-zero renders each as its own segment, joined with " · " (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 3.8 },
+        { job: 'moderation_llm', costUsd: 0.35 },
+        { job: 'context_builder', costUsd: 0.05 },
+      ],
+    },
+    7,
+  );
   assert.equal(
     out,
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Background jobs (moderation/digest/refresh): ~$4.20.',
+      'Background jobs: knowledge_refresh ~$3.80 · moderation_llm ~$0.35 · context_builder ~$0.05.',
+  );
+});
+
+test('formatUsageStats: exactly one job non-zero renders a single segment, no $0.00 entries for the other two (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 4.2 },
+        { job: 'moderation_llm', costUsd: 0 },
+        { job: 'context_builder', costUsd: 0 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs: knowledge_refresh ~$4.20.',
+  );
+  assert.ok(!out.includes('$0.00'), 'zero-cost jobs are omitted, not rendered as $0.00');
+});
+
+test('formatUsageStats: mixed zero/non-zero jobs omits the zero-cost ones (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 0.75,
+      backgroundCostByJob: [
+        { job: 'moderation_llm', costUsd: 0.75 },
+        { job: 'context_builder', costUsd: 0 },
+        { job: 'knowledge_refresh', costUsd: 0 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Background jobs: moderation_llm ~$0.75.',
+  );
+});
+
+test('SECURITY: formatUsageStats background-jobs line only ever contains the fixed BackgroundJob enum values and numeric ~$X.XX figures — never a user id, conversation id, platform, or free-text string (issue #438)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      backgroundCostUsd: 4.2,
+      backgroundCostByJob: [
+        { job: 'knowledge_refresh', costUsd: 3.8 },
+        { job: 'moderation_llm', costUsd: 0.35 },
+        { job: 'context_builder', costUsd: 0.05 },
+      ],
+    },
+    7,
+  );
+  const line = out.split('\n').find((l) => l.startsWith('Background jobs:'));
+  assert.ok(line, 'a background-jobs line is present when a job has nonzero cost');
+  assert.equal(
+    line,
+    'Background jobs: knowledge_refresh ~$3.80 · moderation_llm ~$0.35 · context_builder ~$0.05.',
+    'must be byte-identical to the exact enum + figure composition — no room for an interpolated identity value',
+  );
+  const BACKGROUND_JOB_LINE_RE =
+    /^Background jobs: (?:(?:moderation_llm|context_builder|knowledge_refresh) ~\$\d+\.\d{2})(?: · (?:moderation_llm|context_builder|knowledge_refresh) ~\$\d+\.\d{2})*\.$/;
+  assert.match(
+    line,
+    BACKGROUND_JOB_LINE_RE,
+    'the whole line must match fixed job-enum segments and numeric costs only',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-job breakdown (assertAtLeast re-check, issue #438)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the byJob breakdown',
   );
 });
 
@@ -6121,6 +6409,268 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [fallbackId]);
+  },
+);
+
+// list_knowledge_topics (issue #437): the member-facing, no-argument, titles-
+// only browse of the knowledge base — the proactive "what's covered"
+// counterpart to knowledge_search's reactive search.
+test('formatKnowledgeTopics renders a clear "no topics yet" message for an empty knowledge base, not an error or blank reply', () => {
+  assert.equal(formatKnowledgeTopics([], 0), 'No knowledge topics have been added yet.');
+});
+
+test('formatKnowledgeTopics appends no truncation note when the match count does not exceed the cap', () => {
+  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 2);
+  assert.equal(reply, '- Alpha\n- Beta');
+  assert.doesNotMatch(reply, /more/i);
+});
+
+test('formatKnowledgeTopics appends an exact "+N more" truncation note when the match count exceeds the cap', () => {
+  const reply = formatKnowledgeTopics(['Alpha', 'Beta'], 5);
+  assert.match(reply, /\+3 more — ask a specific question and I'll search everything\.$/);
+});
+
+const LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX = `${RUN}-list-knowledge-topics`;
+
+function getListKnowledgeTopicsHandler(caller: {
+  platform: 'discord' | 'whatsapp';
+  userId: string;
+  userName: string;
+  role: 'member';
+  conversationId: string;
+}) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(caller, adapter);
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: Record<string, never>,
+          ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['list_knowledge_topics'];
+}
+
+test(
+  'list_knowledge_topics tool handler returns titles only, alphabetically ordered, and takes no arguments (issue #437)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-order-${RUN}`;
+    const titleA = `Aaa-topic-${RUN}`;
+    const titleZ = `Zzz-topic-${RUN}`;
+    const leakedContent = `SECRET-CONTENT-${RUN}`;
+    const leakedSourceUrl = `https://example.com/should-not-leak-${RUN}`;
+
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [scope, titleA, leakedContent],
+    );
+    const { rows: zRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role, source_url) VALUES ($1,$2,$3,'admin',$4) RETURNING id`,
+      [scope, titleZ, 'other content', leakedSourceUrl],
+    );
+    const ids = [Number(aRows[0].id), Number(zRows[0].id)];
+
+    try {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-list-topics-order-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      const indexA = replyText.indexOf(titleA);
+      const indexZ = replyText.indexOf(titleZ);
+      assert.ok(indexA >= 0 && indexZ >= 0, 'both fixture titles must be present');
+      assert.ok(indexA < indexZ, 'titles are ordered alphabetically');
+      assert.doesNotMatch(replyText, new RegExp(leakedContent), 'content must never appear — titles only');
+      assert.doesNotMatch(replyText, new RegExp(leakedSourceUrl), 'source_url must never appear');
+      assert.doesNotMatch(replyText, /"admin"/, 'created_by_role must never appear');
+    } finally {
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_knowledge_topics never returns a title scoped to a different conversation, while a global-scoped and this-conversation-scoped title are both returned (issue #437)',
+  { skip },
+  async () => {
+    const convoA = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-convoA-${RUN}`;
+    const convoB = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-convoB-${RUN}`;
+    const titleGlobal = `Global-topic-${RUN}`;
+    const titleA = `ConvoA-topic-${RUN}`;
+    const titleB = `ConvoB-topic-${RUN}`;
+
+    const { rows: gRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ('global',$1,$2,'admin') RETURNING id`,
+      [titleGlobal, 'global content'],
+    );
+    const { rows: aRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [convoA, titleA, 'convo a content'],
+    );
+    const { rows: bRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [convoB, titleB, 'convo b content'],
+    );
+    const ids = [Number(gRows[0].id), Number(aRows[0].id), Number(bRows[0].id)];
+
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    // Large enough that none of these three fixture rows (plus whatever
+    // ambient global-scoped rows already exist) can be pushed out of the
+    // page by the cap — this test asserts scope filtering, not truncation.
+    config.behaviour.knowledgeTopicsListLimit = 100_000;
+    try {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-list-topics-scope-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: convoA,
+      };
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      assert.match(replyText, new RegExp(titleGlobal), 'a global-scoped title is visible');
+      assert.match(replyText, new RegExp(titleA), "the caller's own conversation-scoped title is visible");
+      assert.doesNotMatch(
+        replyText,
+        new RegExp(titleB),
+        'SECURITY: a title scoped to a DIFFERENT conversation must never be visible',
+      );
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_knowledge_topics excludes an auto-provenance entry even though it is otherwise scope-visible, while a non-auto entry in the same scope is returned (issue #437, issue #214 boundary)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-auto-${RUN}`;
+    const titleAuto = `Auto-topic-${RUN}`;
+    const titleCurated = `Curated-topic-${RUN}`;
+
+    const { rows: autoRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'auto') RETURNING id`,
+      [scope, titleAuto, 'auto-researched content'],
+    );
+    const { rows: curatedRows } = await pool.query(
+      `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+      [scope, titleCurated, 'curated content'],
+    );
+    const ids = [Number(autoRows[0].id), Number(curatedRows[0].id)];
+
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    config.behaviour.knowledgeTopicsListLimit = 100_000;
+    try {
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-list-topics-auto-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      assert.match(replyText, new RegExp(titleCurated), 'a non-auto entry in scope is returned');
+      assert.doesNotMatch(
+        replyText,
+        new RegExp(titleAuto),
+        'SECURITY: an auto-provenance entry must be excluded even though it is otherwise scope-visible',
+      );
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'list_knowledge_topics tool handler truncates to the configured cap and appends an exact "+N more" note reflecting the real remaining count (issue #437)',
+  { skip },
+  async () => {
+    const scope = `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-cap-${RUN}`;
+    const titles = [`Cap-topic-1-${RUN}`, `Cap-topic-2-${RUN}`, `Cap-topic-3-${RUN}`];
+    const ids: number[] = [];
+    for (const title of titles) {
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge (scope, title, content, created_by_role) VALUES ($1,$2,$3,'admin') RETURNING id`,
+        [scope, title, 'content'],
+      );
+      ids.push(Number(rows[0].id));
+    }
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-list-topics-cap-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+
+    // Independently measure the real total this caller can see (same
+    // predicate the tool itself uses) so the expected truncation count is
+    // derived from live DB state, not an assumption about ambient rows —
+    // this scope is unique to this test, so the total is exactly our 3
+    // fixture rows plus whatever global-scoped rows already exist.
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM knowledge
+        WHERE scope IN ('global', $1, $2) AND created_by_role != 'auto'
+          AND title IS NOT NULL AND trim(title) != ''`,
+      [caller.platform, caller.conversationId],
+    );
+    const actualTotal = countRows[0].c as number;
+    const cappedLimit = actualTotal - 1;
+
+    const originalLimit = config.behaviour.knowledgeTopicsListLimit;
+    config.behaviour.knowledgeTopicsListLimit = cappedLimit;
+    try {
+      const result = await getListKnowledgeTopicsHandler(caller).handler({});
+      const replyText = result.content[0]?.text ?? '';
+
+      assert.match(
+        replyText,
+        /\+1 more — ask a specific question and I'll search everything\.$/,
+        'truncation note states the exact remaining count',
+      );
+      const lines = replyText.split('\n').filter((l) => l.startsWith('- '));
+      assert.equal(lines.length, cappedLimit, 'the returned page is capped at the configured limit');
+    } finally {
+      config.behaviour.knowledgeTopicsListLimit = originalLimit;
+      await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [ids]);
+    }
+  },
+);
+
+test(
+  'list_knowledge_topics tool handler is member-tier and reachable with no CONFIRM gate (issue #437)',
+  { skip },
+  async () => {
+    assert.ok(
+      MEMBER_TOOLS.includes('mcp__community__list_knowledge_topics'),
+      'list_knowledge_topics must be in MEMBER_TOOLS',
+    );
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-list-topics-member-tier`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${LIST_KNOWLEDGE_TOPICS_SCOPE_PREFIX}-tier-${RUN}`,
+    };
+    const result = await getListKnowledgeTopicsHandler(caller).handler({});
+    assert.equal(result.isError, false, 'a plain member call succeeds with no CONFIRM/permission error');
   },
 );
 
@@ -9359,6 +9909,273 @@ test(
     const result = await myDataHandler(`${MY_DATA_HANDLER_USER}-admin-caller`, 'admin').handler();
     assert.equal(result.isError, false);
     assert.match(result.content[0]?.text ?? '', /Messages you've sent: 0/);
+  },
+);
+
+// my_data's daily reply-budget line (issue #444): reuses the exact
+// countRepliesToUser function router.ts's own enforcement calls, so what
+// this reports can never diverge from what actually gates the caller.
+test(
+  "my_data reports the caller's own reply-budget standing when under the configured daily limit (issue #444)",
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-under`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 5;
+    try {
+      for (let i = 0; i < 2; i++) {
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: 'convo-1',
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `reply ${i}`,
+          meta: { replyToUserId: userId },
+        });
+      }
+
+      const result = await myDataHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+      assert.match(output, /Replies in the last 24h: 2 \/ 5/);
+      assert.doesNotMatch(output, /reached today's limit/);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test(
+  'my_data appends the "reached today\'s limit" trailer once the caller\'s 24h reply count is at/over the configured limit (issue #444)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-over`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 2;
+    try {
+      for (let i = 0; i < 2; i++) {
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: 'convo-1',
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `reply ${i}`,
+          meta: { replyToUserId: userId },
+        });
+      }
+
+      const result = await myDataHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+      assert.match(output, /Replies in the last 24h: 2 \/ 2 — you've reached today's limit\./);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test(
+  'my_data reports a super admin as exempt from the daily reply limit and never shows a used/limit count for them (issue #444)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-super`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply to a super admin',
+      meta: { replyToUserId: userId },
+    });
+
+    const result = await myDataHandler(userId, 'super_admin').handler();
+    const output = result.content[0]?.text ?? '';
+    assert.match(output, /Daily reply limit: exempt \(super admin\)\./);
+    assert.doesNotMatch(output, /\d+ \/ \d+/, 'a super admin must never see a used/limit count');
+  },
+);
+
+test(
+  'my_data reports "none configured" with no used/limit count when the daily reply limit is disabled (issue #444)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-unlimited`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 0;
+    try {
+      const result = await myDataHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+      assert.match(output, /Daily reply limit: none configured\./);
+      assert.doesNotMatch(output, /\d+ \/ \d+/);
+      assert.doesNotMatch(output, /reached today's limit/);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test("my_data's tool description mentions the daily reply budget so the model knows to surface it (issue #444)", () => {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId: 'u1',
+      userName: 'Member',
+      role: 'member',
+      conversationId: 'c1',
+    },
+    stubAdapter(async () => {}),
+  );
+  const description = (
+    server.instance as unknown as { _registeredTools: Record<string, { description?: string }> }
+  )._registeredTools['my_data'].description;
+  assert.match(description ?? '', /reply budget/i);
+});
+
+test(
+  'my_data: getMyDataSummary/MyDataSummary is unchanged by the reply-budget addition — the new line is ' +
+    'computed in the my_data handler only (issue #444)',
+  { skip },
+  async () => {
+    const summary = await getMyDataSummary('whatsapp', `${MY_DATA_HANDLER_USER}-summary-shape`);
+    assert.deepEqual(
+      Object.keys(summary).sort(),
+      [
+        'knowledgeEntries',
+        'ownMessages',
+        'repliesToThem',
+        'reportsFiled',
+        'responseStyle',
+        'suggestionsFiled',
+      ],
+      'MyDataSummary must carry exactly its original six fields — the reply-budget line is not bolted onto it',
+    );
+  },
+);
+
+test(
+  "SECURITY: my_data's reply-budget count is isolated per caller — caller A's reported used count is " +
+    "independent of caller B's reply volume (issue #444)",
+  { skip },
+  async () => {
+    const userA = `${MY_DATA_HANDLER_USER}-budget-isolation-a`;
+    const userB = `${MY_DATA_HANDLER_USER}-budget-isolation-b`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 50;
+    try {
+      await recordInteraction({
+        platform: 'whatsapp',
+        conversationId: 'convo-1',
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply to A',
+        meta: { replyToUserId: userA },
+      });
+      for (let i = 0; i < 3; i++) {
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: 'convo-1',
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `reply to B ${i}`,
+          meta: { replyToUserId: userB },
+        });
+      }
+
+      const resultA = await myDataHandler(userA).handler();
+      const outputA = resultA.content[0]?.text ?? '';
+      assert.match(
+        outputA,
+        /Replies in the last 24h: 1 \/ 50/,
+        "SECURITY: caller A's reported reply count must reflect only their own replies, never caller B's",
+      );
+
+      const resultB = await myDataHandler(userB).handler();
+      const outputB = resultB.content[0]?.text ?? '';
+      assert.match(outputB, /Replies in the last 24h: 3 \/ 50/);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test(
+  "SECURITY: my_data's reply-budget count for a linked-identity caller exactly matches countRepliesToUser " +
+    '— what the tool shows can never diverge from what the router actually enforces (issue #444)',
+  { skip },
+  async () => {
+    const discordUser = `${MY_DATA_HANDLER_USER}-budget-linked-d`;
+    const whatsappUser = `${MY_DATA_HANDLER_USER}-budget-linked-w`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 50;
+    try {
+      await upsertMember({
+        platform: 'discord',
+        userId: discordUser,
+        role: 'member',
+        addedBy: `${MY_DATA_HANDLER_USER}-budget-linked-admin`,
+      });
+      await upsertMember({
+        platform: 'whatsapp',
+        userId: whatsappUser,
+        role: 'member',
+        addedBy: `${MY_DATA_HANDLER_USER}-budget-linked-admin`,
+      });
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: 'convo-1',
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply on discord',
+        meta: { replyToUserId: discordUser },
+      });
+      await recordInteraction({
+        platform: 'whatsapp',
+        conversationId: 'convo-1',
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply on whatsapp',
+        meta: { replyToUserId: whatsappUser },
+      });
+
+      await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+      const expectedUsed = await countRepliesToUser('discord', discordUser);
+      assert.equal(expectedUsed, 2, 'sanity: the linked aggregate the router would enforce against');
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: discordUser,
+          userName: 'Linked Member',
+          role: 'member' as const,
+          conversationId: 'convo-1',
+        },
+        stubAdapter(async () => {}),
+      );
+      const result = await (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['my_data'].handler();
+      const output = result.content[0]?.text ?? '';
+
+      assert.match(
+        output,
+        new RegExp(`Replies in the last 24h: ${expectedUsed} / 50`),
+        'SECURITY: my_data must report exactly the linked-identity aggregate countRepliesToUser (and hence ' +
+          'the router budget check) would use for this caller',
+      );
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
   },
 );
 

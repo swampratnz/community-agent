@@ -11,8 +11,8 @@ a living document — review it whenever you add a tool or a platform.
 3. **WhatsApp linked-device credentials** (`whatsapp-auth/`) — effectively
    control of the bot's WhatsApp number.
 4. **The interaction database** — contains community members' messages (PII).
-5. **Moderation authority** — the ability to timeout/kick/announce, and (when
-   auto-moderation is enabled) to mute/block members via a Discord role.
+5. **Moderation authority** — the ability to timeout/kick/ban/announce, and
+   (when auto-moderation is enabled) to mute/block members via a Discord role.
 
 ## Threat model & controls
 
@@ -1133,7 +1133,9 @@ privileged tool, no RBAC surface.
   `GuildMembers` are privileged intents — enable them in the Developer Portal
   or the bot will fail to log in.**
 - Give the bot the least role permissions required for moderation (Timeout
-  Members, Kick Members, Manage Messages) plus Manage Events (required for the
+  Members, Kick Members, **Ban Members** — required for the admin `ban_user`
+  action; without it, `ban_user` fails cleanly as `Failed: …` rather than
+  silently no-oping — Manage Messages) plus Manage Events (required for the
   admin `create_event` tool, §11), and place its role appropriately in the
   hierarchy.
 
