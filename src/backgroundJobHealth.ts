@@ -51,7 +51,8 @@ export type BackgroundJobName =
   | 'embedding-model'
   | 'admin-digest'
   | 'usage-alert'
-  | 'dev-team-watch';
+  | 'dev-team-watch'
+  | 'departed-admin-alert';
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught

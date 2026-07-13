@@ -214,7 +214,9 @@ Tiers: **super_admin > admin > member > guest**.
   with admin-tier tools; `list_admins` (super-admin, read-only, issue #428) is
   the visibility tool that surfaces this state (flags a `community_users`
   admin whose `server_roster` row shows `left_at` set) so a super admin can
-  notice and decide whether to revoke.
+  notice and decide whether to revoke. `src/departedAdminAlert.ts` (off
+  unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue #472) turns that same signal
+  proactive — see "Departed-admin alert" below.
 - **member** — granted by an admin (`add_member`); stored in `community_users`.
 - **guest** — everyone else. In **gated** mode (`ACCESS_MODE_*=gated`, the
   default) guests get a "ask an admin to add you" pointer and their message
@@ -1123,6 +1125,37 @@ overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
   notified" when this flag is actually on.
 - No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
   decides.
+
+## Departed-admin alert
+
+`src/departedAdminAlert.ts` (off unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue
+#472) closes the growth path #428 itself named and deliberately deferred:
+`listAdminRoster()`/`list_admins` already compute and surface `leftServer`
+per admin, but only on pull — a super admin only learns a departed admin
+still holds bot-admin privilege via DM if they think to run `list_admins`.
+
+- Routed through the shared `startTrackedJob` (the same 6h cadence as
+  context-builder/knowledge-refresh/docs-ingest/both retention purges/
+  admin-digest), so a throwing `runOnce` (e.g. a DB error from
+  `listAdminRoster`) gets the existing consecutive-failure alerting for
+  free — no bespoke tracker.
+- Each tick calls `listAdminRoster()` and counts entries with `leftServer
+  === true`, then steps a pure threshold-1 latch — `usageAlert.ts`'s own
+  `stepUsageAlertTracker`, reused by **import**, not copy, per the
+  adversarial-review note on issue #472 — against that count. The latch
+  fires exactly once on the tick the count first transitions `0 → >0`, and
+  re-arms only once the count returns to exactly `0`; a partial decrease
+  (e.g. 3 departed admins down to 1) never re-arms and never re-alerts.
+- On trip, DMs every super admin via the same `sendDirectMessage` +
+  `superAdminIds` path `usageAlert.ts`/`health.ts` already use. The message
+  is a bare integer count plus fixed template text only — never a display
+  name, platform user id, or platform string, matching every other digest/
+  alert signal's convention in this codebase.
+- No schema change, no new tool, no new RBAC surface: this only threads an
+  already-super-admin-gated read (`listAdminRoster`, backing `list_admins`)
+  through already-proven alert machinery. Auto-revoke on departure remains
+  deliberately out of scope, same as `list_admins` itself — this closes the
+  visibility gap, not the decision to revoke.
 
 ## Switching WhatsApp providers
 
