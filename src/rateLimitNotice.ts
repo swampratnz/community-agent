@@ -15,6 +15,15 @@ export const RATE_LIMIT_NOTICE_TEXT =
 export const RATE_LIMIT_NOTICE_TEXT_MI =
   'Kei te tere rawa āu karere — tēnā koa, tatari mō tētahi wā poto ka whakamātau anō ai.';
 
+// Fixed, human-authored plain-language variant (issue #430), served instead
+// of RATE_LIMIT_NOTICE_TEXT to a caller with a standing 'plain' response-style
+// preference (getResponseStyle, issue #126) whose language preference is
+// NOT 'mi' — 'mi' takes precedence over 'plain' (see router.ts). Same trust
+// level as the English constant: no model call, no translation, no injection
+// surface.
+export const RATE_LIMIT_NOTICE_TEXT_PLAIN =
+  "You're sending messages too fast. Please wait a bit, then try again.";
+
 export function shouldNotifyRateLimited(
   lastNotifiedAt: number | undefined,
   now: number,
