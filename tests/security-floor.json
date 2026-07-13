@@ -56,7 +56,7 @@
   "redeploy.test.ts": 2,
   "repeatMaxTurnsShortcutRouter.test.ts": 1,
   "repeatQuestionShortcutRouter.test.ts": 2,
-  "repository.test.ts": 57,
+  "repository.test.ts": 60,
   "router.test.ts": 4,
   "secrets.test.ts": 3,
   "securityGateCanary.test.ts": 1,
