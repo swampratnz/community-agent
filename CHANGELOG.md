@@ -10,6 +10,22 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-14
+
+### Added
+- **`MEMORY_RELEVANCE_THRESHOLD`** (#474): automatic per-turn memory recall and
+  the `remember_search` tool both search past interactions via `searchMemory`,
+  which previously had no relevance floor at all — every configured
+  `MEMORY_TOP_K` slot was filled regardless of how relevant the match actually
+  was, and because recalled messages ride in the user turn (not the system
+  prompt), a low-relevance recalled message was full-price input token spend
+  on every single reply, not a cache hit. `MEMORY_RELEVANCE_THRESHOLD` adds an
+  optional cosine-similarity floor to that query, mirroring `knowledge_search`'s
+  own relevance floor but kept separately tunable since memory recall has no
+  eval fixture yet to derive a safe always-on default from. Defaults to `0`
+  (no floor — byte-identical to today's behaviour); both call sites inherit
+  the configured value automatically, with no new tool or RBAC surface.
+
 ## 2026-07-13
 
 ### Added

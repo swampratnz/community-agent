@@ -266,6 +266,13 @@ const EnvSchema = z.object({
 
   // Behaviour
   MEMORY_TOP_K: z.coerce.number().int().nonnegative().default(6),
+  // Cosine-similarity floor for automatic memory recall and remember_search
+  // (issue #474), mirroring KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD's shape but
+  // kept separate and tunable rather than hardcoded, since memory recall has
+  // no eval fixture yet to derive a production-safe always-on default from.
+  // Default 0 = no floor (byte-identical to today's behaviour), matching this
+  // repo's convention for opt-in knobs (e.g. KNOWLEDGE_CANDIDATE_STALE_DAYS).
+  MEMORY_RELEVANCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0),
   // Max agent replies per user per rolling 24h (0 = unlimited).
   DAILY_REPLY_LIMIT_PER_USER: z.coerce.number().int().nonnegative().default(50),
   // Session hygiene: start a fresh Claude session past either cap.
@@ -790,6 +797,7 @@ export const config = {
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
+    memoryRelevanceThreshold: env.MEMORY_RELEVANCE_THRESHOLD,
     dailyReplyLimitPerUser: env.DAILY_REPLY_LIMIT_PER_USER,
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
