@@ -139,6 +139,7 @@ test('router (repeat-max-turns shortcut): a hit records a shortcut_hits row of k
     undefined,
     undefined,
     undefined,
+    undefined,
     async (kind) => {
       calls.push(kind);
     },

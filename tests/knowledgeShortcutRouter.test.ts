@@ -146,6 +146,7 @@ test('router (knowledge shortcut): a hit records a shortcut_hits row of kind "kn
     undefined,
     undefined,
     undefined,
+    undefined,
     async (kind) => {
       calls.push(kind);
     },

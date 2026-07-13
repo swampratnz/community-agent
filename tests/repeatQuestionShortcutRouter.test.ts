@@ -157,6 +157,7 @@ test('router (repeat-question shortcut): a hit records a shortcut_hits row of ki
     undefined,
     undefined,
     undefined,
+    undefined,
     async (kind) => {
       calls.push(kind);
     },

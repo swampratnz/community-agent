@@ -182,6 +182,7 @@ test('router (ack shortcut enabled): a hit records a shortcut_hits row of kind "
     undefined,
     undefined,
     undefined,
+    undefined,
     async (kind) => {
       calls.push(kind);
     },
@@ -201,6 +202,7 @@ test('SECURITY: router (ack shortcut enabled): a recordShortcutHit rejection nev
       throw new Error('runTurn must not be called for a pure acknowledgement');
     },
     20,
+    undefined,
     undefined,
     undefined,
     undefined,

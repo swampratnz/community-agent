@@ -150,6 +150,7 @@ test('router (guest knowledge shortcut): a hit never records a shortcut_hits row
     undefined,
     undefined,
     undefined,
+    undefined,
     async (kind) => {
       calls.push(kind);
     },

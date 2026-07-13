@@ -15,6 +15,14 @@ export const PAUSE_NOTICE_TEXT = 'The assistant is temporarily paused — please
 export const PAUSE_NOTICE_TEXT_MI =
   'Kua whakatārewahia te kaiāwhina mō tētahi wā poto — tēnā koa, tukua he wā.';
 
+// Fixed, human-authored plain-language variant (issue #430), served instead
+// of PAUSE_NOTICE_TEXT to a caller with a standing 'plain' response-style
+// preference (getResponseStyle, issue #126) whose language preference is NOT
+// 'mi' — 'mi' takes precedence over 'plain' (see router.ts). Same trust level
+// as the English constant: no model call, no translation, no injection
+// surface.
+export const PAUSE_NOTICE_TEXT_PLAIN = 'The assistant is paused right now. Please try again later.';
+
 export function shouldNotifyPaused(
   lastNotifiedAt: number | undefined,
   now: number,
