@@ -162,6 +162,27 @@ test('the sent-message retry cache is bounded — oldest entries evict past the 
   assert.ok(cache.has(`m-${total - 1}`), 'the newest entry is retained');
 });
 
+// The function actually wired into makeWASocket's `getMessage` is
+// `recallSentMessage`; exercise it directly (no live socket) so the retry-receipt
+// lookup itself is covered, not just the cache it reads.
+test('recallSentMessage returns cached content for a known key and undefined otherwise (getMessage backing)', async () => {
+  const adapter = new BaileysAdapter();
+  const { ids } = stubSocketReturningWAMessage(adapter);
+  await adapter.sendMessage({ conversationId: '64211234567@s.whatsapp.net', text: 'proactive alert' });
+  const recall = (
+    adapter as unknown as {
+      recallSentMessage: (key: { id?: string }) => { conversation?: string } | undefined;
+    }
+  ).recallSentMessage.bind(adapter);
+  assert.equal(
+    recall({ id: ids[0] })?.conversation,
+    'proactive alert',
+    'a retry receipt for a known message id resolves to the original content',
+  );
+  assert.equal(recall({ id: 'never-sent' }), undefined, 'an unknown id resolves to undefined');
+  assert.equal(recall({}), undefined, 'a key with no id resolves to undefined (no throw)');
+});
+
 /** Stubs the socket's sendMessage to capture the native image+caption payload sendImage builds (issue #174). */
 function stubSocketForImage(adapter: InstanceType<typeof BaileysAdapter>) {
   const sent: Array<{ image: Buffer; caption?: string }> = [];

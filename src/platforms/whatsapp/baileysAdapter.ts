@@ -7,6 +7,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   type BaileysEventMap,
   type WAMessage,
+  type WAMessageKey,
   type WASocket,
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
@@ -148,6 +149,17 @@ export class BaileysAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * Look up a previously sent message so Baileys can re-encrypt and resend it in
+   * response to a retry receipt. Wired into `makeWASocket`'s `getMessage`; a
+   * private method (rather than an inline closure) so it can be tested without a
+   * live socket. Returns undefined for an unknown/evicted key — Baileys then
+   * simply can't auto-resend, the same as before this cache existed.
+   */
+  private recallSentMessage(key: WAMessageKey): proto.IMessage | undefined {
+    return this.sentMessages.get(key.id ?? '')?.message ?? undefined;
+  }
+
   onMessage(handler: MessageHandler): void {
     this.handler = handler;
   }
@@ -197,7 +209,7 @@ export class BaileysAdapter implements PlatformAdapter {
       // it. Without it the message is never recovered and the recipient is
       // stuck on "Waiting for this message…". Backed by the bounded
       // `sentMessages` cache we populate on every content send (see remember()).
-      getMessage: async (key) => this.sentMessages.get(key.id ?? '')?.message ?? undefined,
+      getMessage: async (key) => this.recallSentMessage(key),
     });
     this.sock = sock;
 
