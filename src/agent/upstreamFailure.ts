@@ -33,6 +33,18 @@ export const USAGE_LIMIT_REPLY_MI =
 
 export const USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI = `${USAGE_LIMIT_REPLY_MI} Kua whakamōhiotia tētahi kaiwhakahaere.`;
 
+// Fixed, human-authored plain-language variants (issue #430) of the two
+// constants above, served instead to a caller with a standing 'plain'
+// response-style preference (getResponseStyle, issue #126) whose language
+// preference is NOT 'mi' — 'mi' takes precedence over 'plain' (see
+// core.ts's FALLBACK_REPLY_PLAIN). Same trust level as the English
+// constants: no model call, no translation, no injection surface.
+export const USAGE_LIMIT_REPLY_PLAIN =
+  "Sorry, I can't answer right now. Too many people are using me at once. " +
+  'This is not a problem with your message — please try again later.';
+
+export const USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN = `${USAGE_LIMIT_REPLY_PLAIN} An admin has been told.`;
+
 export interface UsageLimitTracker {
   alerted: boolean;
 }

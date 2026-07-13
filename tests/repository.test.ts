@@ -92,6 +92,7 @@ const {
   getMemberRole,
   resolveDisplayName,
   listAdminDisplayNames,
+  listAdminRoster,
   removeMember,
   linkMembers,
   unlinkMember,
@@ -5239,6 +5240,136 @@ test(
 
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
+    ]);
+  },
+);
+
+test(
+  'listAdminRoster: resolves community_users->server_roster names across both platforms, excludes members, deterministically ordered by community_users.id (issue #428)',
+  { skip },
+  async () => {
+    const adminOwnName = `${RUN}-lar-admin-own`;
+    const adminRosterName = `${RUN}-lar-admin-roster`;
+    const member = `${RUN}-lar-member`;
+    const whatsappAdmin = `${RUN}-lar-admin-whatsapp`;
+
+    await upsertMember({
+      platform: 'discord',
+      userId: adminOwnName,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Roster Own Name`,
+    });
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [adminRosterName, `${RUN} Roster Fallback Name`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: adminRosterName,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    await upsertMember({
+      platform: 'discord',
+      userId: member,
+      role: 'member',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Just A Member`,
+    });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} WhatsApp Admin`,
+    });
+
+    const roster = await listAdminRoster();
+    const mine = roster.filter((a) => a.platformUserId.startsWith(RUN));
+
+    assert.deepEqual(
+      mine.map((a) => ({ platform: a.platform, name: a.displayName })),
+      [
+        { platform: 'discord', name: `${RUN} Roster Own Name` },
+        { platform: 'discord', name: `${RUN} Roster Fallback Name` },
+        { platform: 'whatsapp', name: `${RUN} WhatsApp Admin` },
+      ],
+      'community_users own name wins, falls back to server_roster, ordered by community_users.id, spans both platforms',
+    );
+    assert.ok(
+      !mine.some((a) => a.platformUserId === member),
+      'a plain member is never returned by listAdminRoster',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+      [adminOwnName, adminRosterName, member, whatsappAdmin],
+    ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
+      adminRosterName,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: listAdminRoster flags leftServer true only when server_roster.left_at is set — a missing roster row or left_at IS NULL both read as false (issue #428, the departed-but-still-admin visibility gap)',
+  { skip },
+  async () => {
+    const departedAdmin = `${RUN}-lar-sec-departed`;
+    const presentAdmin = `${RUN}-lar-sec-present`;
+    const noRosterAdmin = `${RUN}-lar-sec-noroster`;
+
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [departedAdmin, `${RUN} Departed Admin`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: departedAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    // onGuildMemberRemove calls markRosterLeave but never touches
+    // community_users.role — this is exactly the gap #428 surfaces.
+    const left = await markRosterLeave('discord', departedAdmin);
+    assert.ok(left, 'fixture setup: markRosterLeave must actually flip left_at');
+
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [presentAdmin, `${RUN} Present Admin`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: presentAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+
+    // No server_roster row at all — never observed leaving.
+    await upsertMember({
+      platform: 'discord',
+      userId: noRosterAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} No Roster Admin`,
+    });
+
+    const roster = await listAdminRoster();
+    const byId = (id: string) => roster.find((a) => a.platformUserId === id);
+
+    assert.equal(byId(departedAdmin)?.leftServer, true, 'left_at set must flag leftServer: true');
+    assert.equal(byId(presentAdmin)?.leftServer, false, 'left_at IS NULL must flag leftServer: false');
+    assert.equal(
+      byId(noRosterAdmin)?.leftServer,
+      false,
+      'no matching roster row must flag leftServer: false',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+      [departedAdmin, presentAdmin, noRosterAdmin],
+    ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [departedAdmin, presentAdmin],
     ]);
   },
 );

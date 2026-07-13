@@ -21,7 +21,8 @@ process.env.ACCESS_MODE_DISCORD = 'open';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
-const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI } = await import('../src/dailyBudgetNotice.js');
+const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI, DAILY_BUDGET_NOTICE_TEXT_PLAIN } =
+  await import('../src/dailyBudgetNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -287,4 +288,97 @@ test('router (budget exceeded): the language-preference lookup runs at most once
     1,
     'only the first (notifying) message in the window should read the language preference',
   );
+});
+
+// --- Standing 'plain' response-style preference on the daily-budget notice (issue #430) ---
+
+test("router (budget exceeded): a caller with a standing 'plain' response style (and 'auto' language) gets DAILY_BUDGET_NOTICE_TEXT_PLAIN", async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999, // over the daily limit
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT_PLAIN);
+});
+
+test("router (budget exceeded): a caller with 'standard' response style still gets the English DAILY_BUDGET_NOTICE_TEXT (byte-identical regression)", async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => 'standard',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT);
+});
+
+test("router (budget exceeded): 'mi' takes precedence over 'plain' when both are set", async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999,
+    async () => 'mi',
+    undefined,
+    undefined,
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT_MI);
+  assert.notEqual(sent[0].text, DAILY_BUDGET_NOTICE_TEXT_PLAIN);
+});
+
+test('SECURITY: a getResponseStyle failure on the daily-budget notice still sends the English default, never throws or drops the notice', async () => {
+  const router = new Router(
+    async () => makeReply('should not be reached while over budget'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    async () => 999,
+    async () => 'auto',
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('response_style_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT);
 });

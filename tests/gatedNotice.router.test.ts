@@ -18,7 +18,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 
 const { pool, closeDb } = await import('../src/storage/db.js');
-const { Router } = await import('../src/router.js');
+const { Router, GATED_NOTICE_MI, GATED_NOTICE_PLAIN } = await import('../src/router.js');
 const { GATED_NOTICE } = await import('../src/gatedNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -181,4 +181,111 @@ test('SECURITY: router (gated guest): a gated-notice builder failure is caught �
     GATED_NOTICE,
     'a builder failure degrades to the static fallback, never a thrown error',
   );
+});
+
+// --- Standing 'plain' response-style preference on the gated notice (issue #430) ---
+
+test("router (gated guest): a caller with a standing 'plain' response style gets GATED_NOTICE_PLAIN when the builder falls back to the static notice", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    async () => GATED_NOTICE, // builder resolves to the static fallback (no admin names)
+    async () => 'plain',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, GATED_NOTICE_PLAIN);
+});
+
+test("router (gated guest): a 'plain' response style does NOT override a dynamic, admin-naming notice — only the static fallback gets a _PLAIN substitute", async () => {
+  const dynamicNotice =
+    'Kia ora! This assistant is member-only. Ask a community admin — Alice or Bob — to add you as a member and I can help.';
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    async () => dynamicNotice,
+    async () => {
+      throw new Error('getRespStyle must never be consulted on the dynamic-notice path');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, dynamicNotice);
+});
+
+test("router (gated guest): 'mi' takes precedence over 'plain' when both are set — GATED_NOTICE_MI is sent and getRespStyle is never consulted", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+    undefined,
+    async () => GATED_NOTICE,
+    async () => {
+      throw new Error('getRespStyle must never be consulted once the language preference resolves to mi');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, GATED_NOTICE_MI);
+  assert.notEqual(sent[0].text, GATED_NOTICE_PLAIN);
+});
+
+test('SECURITY: router (gated guest): a getResponseStyle failure on the static-fallback path still sends GATED_NOTICE, never throws or drops the notice', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a gated guest');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+    undefined,
+    async () => GATED_NOTICE,
+    async () => {
+      throw new Error('response_style_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, GATED_NOTICE);
 });

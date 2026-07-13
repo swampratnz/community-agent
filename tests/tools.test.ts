@@ -92,6 +92,7 @@ const {
   clearAccessRequest,
   countActiveWarnings,
   clearWarnings,
+  markRosterLeave,
   upsertRosterMember,
   engagementStats,
 } = await import('../src/storage/repository.js');
@@ -9918,5 +9919,123 @@ test(
     assert.equal(calls[0].kind, 'archive_thread');
     assert.equal(calls[0].conversationId, conversationId);
     assert.match(executed ?? '', /^Done: Archived thread/);
+  },
+);
+
+// list_admins (issue #428) — the read-side counterpart to grant_admin/
+// revoke_admin: a super admin's on-demand "who currently holds the tier?"
+// lookup. Read-only like audit_view/usage_stats, so no CONFIRM registration
+// and no admin_audit row, unlike the mutating grant_admin/revoke_admin tests
+// above.
+function listAdminsHandler(caller: { userId: string; adapter: PlatformAdapter }) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId,
+      userName: 'SuperAdmin',
+      role: 'super_admin',
+      conversationId: `${RUN}-list-admins-convo`,
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: object,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['list_admins'];
+}
+
+test(
+  'SECURITY: list_admins is read-only — no CONFIRM is registered and no admin_audit row is written, matching audit_view/usage_stats (issue #428)',
+  { skip },
+  async () => {
+    const actor = `${RUN}-la-actor`;
+    const adapter = stubAdapter(async () => {});
+    const handler = listAdminsHandler({ userId: actor, adapter });
+
+    const result = await handler.handler({});
+    assert.doesNotMatch(result.content[0]?.text ?? '', /CONFIRM/);
+    assert.equal(
+      hasPendingAction('discord', `${RUN}-list-admins-convo`, actor),
+      false,
+      'list_admins must never register a pending CONFIRM action',
+    );
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE actor_user_id = $1 AND action_kind = 'list_admins'`,
+      [actor],
+    );
+    assert.equal(rows[0].n, 0, 'list_admins must never write an admin_audit row');
+  },
+);
+
+test(
+  'SECURITY: list_admins reports leftServer for a departed admin, resolves display names, and never lists env-sourced super admins (issue #428)',
+  { skip },
+  async () => {
+    const departedAdmin = `${RUN}-la-departed`;
+    const presentAdmin = `${RUN}-la-present`;
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [departedAdmin, `${RUN} Departed`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: departedAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    await markRosterLeave('discord', departedAdmin);
+    await upsertMember({
+      platform: 'discord',
+      userId: presentAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Present`,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const handler = listAdminsHandler({ userId: `${RUN}-la-actor2`, adapter });
+
+    try {
+      const result = await handler.handler({});
+      const out = result.content[0]?.text ?? '';
+
+      assert.match(
+        out,
+        new RegExp(`discord: ${RUN} Departed \\(${departedAdmin}\\) — LEFT THE SERVER/GROUP`),
+      );
+      assert.match(out, new RegExp(`discord: ${RUN} Present \\(${presentAdmin}\\)`));
+      assert.doesNotMatch(
+        out.split('\n').find((l) => l.includes(presentAdmin)) ?? '',
+        /LEFT THE SERVER\/GROUP/,
+        'a present admin must not carry the departed marker',
+      );
+      assert.match(
+        out,
+        /Super admins are configured separately/,
+        'reply notes super admins are configured separately, so the list is not mistaken for "everyone with elevated access"',
+      );
+      for (const superAdminId of superAdminIds('discord')) {
+        assert.ok(
+          !out.includes(superAdminId),
+          'env-sourced super admins (never community_users rows) must never appear in list_admins output',
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+        [departedAdmin, presentAdmin],
+      ]);
+      await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
+        departedAdmin,
+      ]);
+    }
   },
 );

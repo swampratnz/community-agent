@@ -18,6 +18,7 @@ import { isPaused } from './storage/policies.js';
 import {
   countRepliesToUser,
   getLanguagePreference,
+  getResponseStyle,
   isKnowledgeLowRated,
   recordAccessRequest,
   recordInteraction,
@@ -27,10 +28,20 @@ import {
 import {
   RATE_LIMIT_NOTICE_TEXT,
   RATE_LIMIT_NOTICE_TEXT_MI,
+  RATE_LIMIT_NOTICE_TEXT_PLAIN,
   shouldNotifyRateLimited,
 } from './rateLimitNotice.js';
-import { PAUSE_NOTICE_TEXT, PAUSE_NOTICE_TEXT_MI, shouldNotifyPaused } from './pauseNotice.js';
-import { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI } from './dailyBudgetNotice.js';
+import {
+  PAUSE_NOTICE_TEXT,
+  PAUSE_NOTICE_TEXT_MI,
+  PAUSE_NOTICE_TEXT_PLAIN,
+  shouldNotifyPaused,
+} from './pauseNotice.js';
+import {
+  DAILY_BUDGET_NOTICE_TEXT,
+  DAILY_BUDGET_NOTICE_TEXT_MI,
+  DAILY_BUDGET_NOTICE_TEXT_PLAIN,
+} from './dailyBudgetNotice.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 
@@ -42,6 +53,16 @@ import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 export const GATED_NOTICE_MI =
   'Kia ora! He kaupapa mema anake tēnei kaiāwhina. Tonoa he kaiwhakahaere hapori ki te tāpiri i a koe hei mema, kātahi ka taea e au te āwhina.';
 
+// Fixed, human-authored plain-language variant (issue #430) of the static
+// GATED_NOTICE fallback ONLY — `getGatedNotice`'s dynamic admin-name
+// interpolation (gatedNotice.ts's `renderGatedNotice`) is unchanged; see the
+// gated-notice call site below for how the two are told apart. Served to a
+// gated guest with a standing 'plain' response-style preference
+// (getResponseStyle, issue #126) whose language preference is NOT 'mi' —
+// 'mi' takes precedence over 'plain'.
+export const GATED_NOTICE_PLAIN =
+  'Kia ora! Only members can use this assistant. Please ask a community admin to add you as a member — then I can help.';
+
 // The three fixed strings the CONFIRM/CANCEL intercept itself authors (issue
 // #405) — the one deterministic path #300/#363's own sweep of this file
 // missed. Same `_MI` + `getLanguagePreference` pattern as every constant
@@ -49,11 +70,18 @@ export const GATED_NOTICE_MI =
 // => 'auto')` at each call site fails safe to the English default.
 export const CANCEL_TEXT = 'Cancelled.';
 export const CANCEL_TEXT_MI = 'Kua whakakorea.';
+// Deliberately no CANCEL_TEXT_PLAIN (issue #430): already at the floor of
+// simplicity, so a plain variant would be change for change's sake.
 
 export const PERMISSIONS_CHANGED_TEXT =
   'Not executed: your permissions changed since this action was requested.';
 export const PERMISSIONS_CHANGED_TEXT_MI =
   'Kāore i whakahaerehia: kua rerekē ō mana whakaaetanga mai i te wā i tonoa ai tēnei mahi.';
+// Fixed, human-authored plain-language variant (issue #430) — rewords the
+// English constant's passive-voice, negation-first construction into a
+// short, direct statement. Same trust level as the English constant.
+export const PERMISSIONS_CHANGED_TEXT_PLAIN =
+  'I did not do this. Your permission level changed after you asked, so I can no longer do it.';
 
 // Wrapper around the deterministic pending-action notice (issue #405),
 // mirroring the "translate the shell, leave the dynamic payload alone"
@@ -71,6 +99,13 @@ export const PENDING_NOTICE_MI = (description: string) =>
   `⚠️ Kei te tatari: ${description}\nWhakahokia mai te CONFIRM i roto i te 60 hēkona kia haere tonu ai, ` +
   `CANCEL rānei kia whakakorehia. (Ka whakahaeretia tēnei whakaūnga i waho o te AI, ā, me ahu mai i a koe ` +
   `i roto i tēnei kōrerorero.)`;
+// Fixed, human-authored plain-language variant (issue #430) — same
+// "translate the shell, leave CONFIRM/CANCEL and `description` literal"
+// treatment as PENDING_NOTICE_MI, but also rewords the meta, abstract
+// parenthetical into something concrete a plain-language reader can act on.
+export const PENDING_NOTICE_PLAIN = (description: string) =>
+  `⚠️ Waiting for you: ${description}\nReply CONFIRM within 60 seconds to go ahead, or CANCEL to stop. ` +
+  `(A person must reply CONFIRM or CANCEL — I cannot do this step myself.)`;
 
 // Static reply for the ACK_SHORTCUT_ENABLED short-circuit (see
 // ackClassifier.ts). Sent via send() so outbound filtering still applies;
@@ -186,7 +221,10 @@ export class Router {
    * typing-indicator, pause, knowledge-shortcut, budget-check-failure,
    * language-notice, and gated-notice behaviour can be exercised without
    * spawning a real Claude Code subprocess, waiting 8 real seconds, or a
-   * live DB.
+   * live DB. `getRespStyle` defaults to the real standing-response-style-
+   * preference read (issue #430), mirroring `getLangPref`'s shape exactly —
+   * consulted at the same call sites, but only when `getLangPref` didn't
+   * already resolve to 'mi' (which takes precedence).
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -198,6 +236,7 @@ export class Router {
     private readonly getLangPref: typeof getLanguagePreference = getLanguagePreference,
     private readonly checkLowRatedKnowledge: typeof isKnowledgeLowRated = isKnowledgeLowRated,
     private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
+    private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -410,13 +449,26 @@ export class Router {
             // catch here is defense-in-depth so an injected/future builder
             // can never turn a lookup failure into silence for a gated guest.
             const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-            const notice =
-              lang === 'mi'
-                ? GATED_NOTICE_MI
-                : await this.getGatedNotice(msg.platform).catch((err) => {
-                    logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
-                    return GATED_NOTICE;
-                  });
+            let notice: string;
+            if (lang === 'mi') {
+              notice = GATED_NOTICE_MI;
+            } else {
+              notice = await this.getGatedNotice(msg.platform).catch((err) => {
+                logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
+                return GATED_NOTICE;
+              });
+              // _PLAIN only substitutes for the STATIC fallback (issue #430)
+              // — a dynamic, admin-naming notice is left untouched. The
+              // response-style lookup is deliberately nested inside this
+              // branch so it's never paid on the (far more common) dynamic-
+              // notice path.
+              if (notice === GATED_NOTICE) {
+                const style = await this.getRespStyle(msg.platform, msg.userId).catch(
+                  () => 'standard' as const,
+                );
+                if (style === 'plain') notice = GATED_NOTICE_PLAIN;
+              }
+            }
             await this.send(adapter, msg.conversationId, notice).catch((err) =>
               logger.warn({ err }, 'Failed to send gated notice'),
             );
@@ -465,7 +517,12 @@ export class Router {
         // confirm TTL invalidates the queued action.
         if (!atLeast(role, pending.minTier)) {
           const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-          outcome = lang === 'mi' ? PERMISSIONS_CHANGED_TEXT_MI : PERMISSIONS_CHANGED_TEXT;
+          if (lang === 'mi') {
+            outcome = PERMISSIONS_CHANGED_TEXT_MI;
+          } else {
+            const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+            outcome = style === 'plain' ? PERMISSIONS_CHANGED_TEXT_PLAIN : PERMISSIONS_CHANGED_TEXT;
+          }
         } else {
           try {
             outcome = await pending.execute();
@@ -499,11 +556,14 @@ export class Router {
         // channel's shed messages never pay a per-message DB read — at most
         // once per PAUSE_NOTIFY_WINDOW_MS per user, same as the send itself.
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        await this.send(
-          adapter,
-          msg.conversationId,
-          lang === 'mi' ? PAUSE_NOTICE_TEXT_MI : PAUSE_NOTICE_TEXT,
-        ).catch(() => {});
+        let pauseText = PAUSE_NOTICE_TEXT;
+        if (lang === 'mi') {
+          pauseText = PAUSE_NOTICE_TEXT_MI;
+        } else {
+          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          if (style === 'plain') pauseText = PAUSE_NOTICE_TEXT_PLAIN;
+        }
+        await this.send(adapter, msg.conversationId, pauseText).catch(() => {});
       }
       return;
     }
@@ -519,11 +579,14 @@ export class Router {
         // rate-limit path exists to shed load, so it must not add a
         // per-message DB read to every over-limit message.
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        await this.send(
-          adapter,
-          msg.conversationId,
-          lang === 'mi' ? RATE_LIMIT_NOTICE_TEXT_MI : RATE_LIMIT_NOTICE_TEXT,
-        ).catch(() => {});
+        let rateLimitText = RATE_LIMIT_NOTICE_TEXT;
+        if (lang === 'mi') {
+          rateLimitText = RATE_LIMIT_NOTICE_TEXT_MI;
+        } else {
+          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          if (style === 'plain') rateLimitText = RATE_LIMIT_NOTICE_TEXT_PLAIN;
+        }
+        await this.send(adapter, msg.conversationId, rateLimitText).catch(() => {});
       }
       return;
     }
@@ -554,11 +617,14 @@ export class Router {
           // budget path exists to shed load, so it must not add a
           // per-message DB read to every over-budget message.
           const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-          await this.send(
-            adapter,
-            msg.conversationId,
-            lang === 'mi' ? DAILY_BUDGET_NOTICE_TEXT_MI : DAILY_BUDGET_NOTICE_TEXT,
-          ).catch(() => {});
+          let budgetText = DAILY_BUDGET_NOTICE_TEXT;
+          if (lang === 'mi') {
+            budgetText = DAILY_BUDGET_NOTICE_TEXT_MI;
+          } else {
+            const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+            if (style === 'plain') budgetText = DAILY_BUDGET_NOTICE_TEXT_PLAIN;
+          }
+          await this.send(adapter, msg.conversationId, budgetText).catch(() => {});
         }
         return;
       }
@@ -902,11 +968,19 @@ export class Router {
       const registeredNewPending = Boolean(pending && pending !== priorPending);
       if (pending && registeredNewPending) {
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-        await this.send(
-          adapter,
-          msg.conversationId,
-          lang === 'mi' ? PENDING_NOTICE_MI(pending.description) : PENDING_NOTICE(pending.description),
-        ).catch((err) => logger.warn({ err }, 'Failed to send deterministic pending notice'));
+        let pendingText: string;
+        if (lang === 'mi') {
+          pendingText = PENDING_NOTICE_MI(pending.description);
+        } else {
+          const style = await this.getRespStyle(msg.platform, msg.userId).catch(() => 'standard' as const);
+          pendingText =
+            style === 'plain'
+              ? PENDING_NOTICE_PLAIN(pending.description)
+              : PENDING_NOTICE(pending.description);
+        }
+        await this.send(adapter, msg.conversationId, pendingText).catch((err) =>
+          logger.warn({ err }, 'Failed to send deterministic pending notice'),
+        );
       }
 
       // Cache this reply for the repeat-question shortcut (issue #259):
