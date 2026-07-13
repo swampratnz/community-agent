@@ -3,9 +3,16 @@
 // src/backgroundJobs.ts). Codes to a FROZEN contract:
 //
 //   POST /jobs         {mode,repo,title,description,budget_usd} -> 202 {id,state,position}
+//   POST /jobs         {mode:"verify",source_job,finding_id,budget_usd}
+//                                                               -> 202 {id,state,position}
+//                                                                | 404 {"error":"no assessment for that job"|"finding not found"}
 //   GET  /jobs                                                  -> {jobs:[...]}
 //   GET  /jobs/{id}                                             -> {id,mode,repo,state,...}
 //   GET  /jobs/{id}/result                                      -> {kind,...} | 409 {error,state}
+//                                                                 (kind:"verify" adds {source_job,finding_id,verdict,rationale,citations})
+//   GET  /jobs/{id}/findings                                    -> {job_id,findings:[{id,phase,role,claim,evidence,hash}]}
+//                                                                | 404 {"error":"no assessment for that job"}
+//   GET  /jobs/{id}/verifications                               -> {job_id,verifications:[{finding_id,verdict,rationale,citations,cost_usd,ts}]}
 //   POST /jobs/{id}/backlog  (no body)                          -> 200 {job_id,stories_added,stories_total}
 //                                                                | 404 {"error":"no assessment for that job"}
 //                                                                | 409 {"error":"backlog generation needs a dashboard workspace"}
@@ -97,6 +104,52 @@ export interface DispatchInput {
   title?: string;
   description?: string;
   budget_usd?: number | null;
+}
+
+/**
+ * One finding of a completed assessment (GET /jobs/{id}/findings). `claim` and
+ * `evidence` are MODEL-AUTHORED free text generated from the assessed repo's
+ * own content — callers must quarantine them (untrusted()/devTeamField + cap)
+ * before they reach model-visible tool text.
+ */
+export interface AssessmentFinding {
+  id: string;
+  phase: string;
+  role: string;
+  claim: string;
+  evidence: string;
+  hash: string;
+}
+
+/** GET /jobs/{id}/findings. */
+export interface FindingsResponse {
+  job_id: string;
+  findings: AssessmentFinding[];
+}
+
+export type VerifyVerdict = 'confirmed' | 'refuted' | 'needs-context';
+
+export interface VerifyInput {
+  /** The completed assessment job whose finding is being re-checked. */
+  sourceJob: string;
+  /** Finding id (or claim substring — the service resolves it) to verify. */
+  findingId: string;
+}
+
+/** One entry of GET /jobs/{id}/verifications. */
+export interface JobVerification {
+  finding_id: string;
+  verdict: VerifyVerdict;
+  rationale: string;
+  citations: string[];
+  cost_usd: number | null;
+  ts: string;
+}
+
+/** GET /jobs/{id}/verifications. */
+export interface VerificationsResponse {
+  job_id: string;
+  verifications: JobVerification[];
 }
 
 export type FetchImpl = typeof fetch;
@@ -206,6 +259,70 @@ export async function generateBacklog(
     token,
     `/jobs/${encodeURIComponent(jobId)}/backlog`,
     { method: 'POST' },
+    fetchImpl,
+  );
+}
+
+/**
+ * GET /jobs/{id}/findings — a completed assessment's findings (throws on 404
+ * "no assessment for that job").
+ */
+export async function listFindings(
+  endpoint: string,
+  token: string,
+  jobId: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<FindingsResponse> {
+  return request<FindingsResponse>(
+    endpoint,
+    token,
+    `/jobs/${encodeURIComponent(jobId)}/findings`,
+    { method: 'GET' },
+    fetchImpl,
+  );
+}
+
+/**
+ * POST /jobs with mode "verify" — dispatch a fresh, skeptical agent to
+ * re-check ONE finding of a completed assessment (throws on 404
+ * "no assessment for that job" / "finding not found"). Returns the same
+ * 202 {id,state,position} shape as an assess/deliver dispatch.
+ */
+export async function verifyFinding(
+  endpoint: string,
+  token: string,
+  input: VerifyInput,
+  fetchImpl: FetchImpl = fetch,
+): Promise<DispatchResponse> {
+  return request<DispatchResponse>(
+    endpoint,
+    token,
+    '/jobs',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: 'verify',
+        source_job: input.sourceJob,
+        finding_id: input.findingId,
+        budget_usd: null,
+      }),
+    },
+    fetchImpl,
+  );
+}
+
+/** GET /jobs/{id}/verifications — all verification verdicts for a SOURCE assessment job. */
+export async function jobVerifications(
+  endpoint: string,
+  token: string,
+  jobId: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<VerificationsResponse> {
+  return request<VerificationsResponse>(
+    endpoint,
+    token,
+    `/jobs/${encodeURIComponent(jobId)}/verifications`,
+    { method: 'GET' },
     fetchImpl,
   );
 }
