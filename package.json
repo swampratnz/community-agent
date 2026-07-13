@@ -20,6 +20,7 @@
     "test:security:fix": "node scripts/check-security-test-count.mjs --write",
     "changelog:check": "gh pr list --state merged --limit 150 --json number,title,mergedAt,body | node scripts/check-changelog-coverage.mjs",
     "migrate": "tsx src/storage/migrate.ts",
+    "migrate:ci": "CLAUDE_CODE_OAUTH_TOKEN=ci-dummy-token npm run migrate",
     "migrate:prod": "node dist/storage/migrate.js",
     "export:context": "tsx src/context/export.ts",
     "whatsapp:link": "tsx src/platforms/whatsapp/link.ts",

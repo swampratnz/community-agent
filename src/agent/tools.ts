@@ -18,6 +18,7 @@ import {
   clearWarnings,
   countActiveWarnings,
   countRecentDmReportsByReporterAndTarget,
+  countRepliesToUser,
   createAnswerFeedback,
   createContentReport,
   createSuggestion,
@@ -38,6 +39,7 @@ import {
   listDuplicateKnowledge,
   listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
+  listKnowledgeTopics,
   listMemberNotes,
   listMemberWarnings,
   MEMBER_NOTE_MAX_CHARS,
@@ -415,6 +417,25 @@ export function formatKnowledgeSearchResults(
 }
 
 /**
+ * Pure renderer for `list_knowledge_topics` (issue #437): titles in, reply
+ * text out — exported separately from the tool handler so the empty-KB and
+ * truncation-note edge cases are unit-testable without a DB round trip, same
+ * split as `formatKnowledgeSearchResults` above. Titles carry the same trust
+ * level `knowledge_search` already grants them (shown verbatim there too), so
+ * no `untrusted()`-style sanitizing here. `totalCount` is the full match
+ * count `listKnowledgeTopics` returns via `COUNT(*) OVER()` — greater than
+ * `titles.length` only when the cap truncated the page.
+ */
+export function formatKnowledgeTopics(titles: string[], totalCount: number): string {
+  if (titles.length === 0) return 'No knowledge topics have been added yet.';
+  const remaining = totalCount - titles.length;
+  const body = titles.map((t) => `- ${t}`).join('\n');
+  const truncationNote =
+    remaining > 0 ? `\n\n+${remaining} more — ask a specific question and I'll search everything.` : '';
+  return body + truncationNote;
+}
+
+/**
  * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
  * two today; a future third adapter only needs adding here.
  */
@@ -566,20 +587,22 @@ export function parseIsoInstant(value: string): Date | null {
 }
 
 /**
- * Pure formatter for the `usage_stats` tool reply (issue #401), so the
- * added `backgroundCostUsd` line is directly testable without a DB. Byte-
- * identical to before this issue when `backgroundCostUsd === 0` — no line
- * is appended for a deployment with the three background features off (or
- * before any of them has ever produced a billable call).
+ * Pure formatter for the `usage_stats` tool reply (issue #401, broken down
+ * per-job by #438), so the background-jobs line is directly testable
+ * without a DB. Byte-identical to before #401 when `backgroundCostUsd === 0`
+ * — no line is appended for a deployment with the three background features
+ * off (or before any of them has ever produced a billable call).
  */
 export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days: number): string {
+  const byJob = s.backgroundCostByJob
+    .filter((r) => r.costUsd > 0)
+    .map((r) => `${r.job} ~$${r.costUsd.toFixed(2)}`)
+    .join(' · ');
   return (
     `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
-    (s.backgroundCostUsd > 0
-      ? `\nBackground jobs (moderation/digest/refresh): ~$${s.backgroundCostUsd.toFixed(2)}.`
-      : '')
+    (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '')
   );
 }
 
@@ -641,6 +664,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
   '- Ask me for our community guidelines ("what are the rules here?")\n' +
   '- Answer questions from curated community knowledge — just ask\n' +
+  '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
   '- Search back through your own past messages for something said earlier\n' +
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -1670,6 +1694,22 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const listKnowledgeTopicsTool = tool(
+    'list_knowledge_topics',
+    'Browse the titles of what the community knowledge base covers — the proactive counterpart to ' +
+      "knowledge_search for a member who doesn't yet know the right words to search for. Titles only, " +
+      'no arguments, no content — call knowledge_search for an actual answer once you know what to ask.',
+    {},
+    async () => {
+      const { titles, totalCount } = await listKnowledgeTopics(
+        { platform: caller.platform, conversationId: caller.conversationId },
+        config.behaviour.knowledgeTopicsListLimit,
+      );
+      return text(formatKnowledgeTopics(titles, totalCount));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const rememberSearch = tool(
     'remember_search',
     'Search past interactions for relevant context. Members search the current conversation; admins may search conversations they are in; super admins may search everything.',
@@ -1914,9 +1954,10 @@ export function buildToolServer(
   const myData = tool(
     'my_data',
     'Summarize what the bot has stored about the caller: their own message count, replies the bot has ' +
-      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, and ' +
-      'their standing response-style preference. Use this when a member asks what the bot knows about ' +
-      'them, or wants to see what forget_me would erase before deciding to invoke it. Read-only, scoped ' +
+      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, their ' +
+      "standing response-style preference, and where they stand against today's daily reply budget. Use " +
+      'this when a member asks what the bot knows about them, wants to see what forget_me would erase ' +
+      'before deciding to invoke it, or asks how many messages they have left today. Read-only, scoped ' +
       "exactly like forget_me — the caller's own identity plus any identity linked via link_member — so " +
       "it can never see another member's data. Does not cover active warnings (see my_warnings) or the " +
       'status of a specific filed item (see my_submissions), which already have their own tools; also ' +
@@ -1931,9 +1972,26 @@ export function buildToolServer(
         `Content reports you've filed: ${summary.reportsFiled}`,
         `Suggestions you've filed: ${summary.suggestionsFiled}`,
         `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
+      ];
+      // Daily reply budget (issue #444) — reuses the exact function
+      // router.ts's own enforcement calls, so what this reports can never
+      // diverge from what actually gates the caller.
+      const limit = config.behaviour.dailyReplyLimitPerUser;
+      if (caller.role === 'super_admin') {
+        lines.push('Daily reply limit: exempt (super admin).');
+      } else if (limit === 0) {
+        lines.push('Daily reply limit: none configured.');
+      } else {
+        const used = await countRepliesToUser(caller.platform, caller.userId);
+        lines.push(
+          `Replies in the last 24h: ${used} / ${limit}` +
+            (used >= limit ? " — you've reached today's limit." : ''),
+        );
+      }
+      lines.push(
         '',
         'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
-      ];
+      );
       return text(lines.join('\n'));
     },
   );
@@ -2221,10 +2279,10 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    'Perform a moderation action. warn_user sends immediately; timeout/kick/delete require the admin to reply CONFIRM. Admins can only act in conversations they are in.',
+    "Perform a moderation action. warn_user sends immediately; timeout/kick/ban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite, and there is no unban_user counterpart in this bot; use Discord's own UI to unban. Admins can only act in conversations they are in.",
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'delete_message', 'warn_user'])
+        .enum(['timeout_user', 'kick_user', 'ban_user', 'delete_message', 'warn_user'])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
@@ -3630,7 +3688,7 @@ export function buildToolServer(
 
   const moderationHistory = tool(
     'moderation_history',
-    "Show recent moderation actions (warnings, timeouts, kicks, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
+    "Show recent moderation actions (warnings, timeouts, kicks, bans, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
     {
       limit: z.number().optional().describe('Max entries (default 20, max 100)'),
       targetUserId: z.string().optional().describe('Only show actions taken against this member'),
@@ -4616,6 +4674,7 @@ export function buildToolServer(
       checkStatus,
       listEvents,
       knowledgeSearch,
+      listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,
       reportContent,

@@ -22,6 +22,7 @@ const BASE_STATS = {
   topUsers: [],
   costByRole: [],
   backgroundCostUsd: 0,
+  backgroundCostByJob: [],
 };
 
 test('startUsageAlert: USAGE_ALERT_DAILY_REPLIES unset (default) creates no timer', () => {

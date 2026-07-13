@@ -375,6 +375,18 @@ jobs:
         id: fastpath
         env:
           MANIFEST: tests/security-floor.json
+          # Config env for the post-merge re-migrate below: after merging main we
+          # re-apply the schema via `npm run migrate:ci`, because the merge can
+          # bring migrations the PRE-merge migrate didn't have. Without it the
+          # verify agent's DB-backed test:security runs against a stale schema and
+          # fails with a false "column ... does not exist" — the cause of a batch
+          # of PRs escalating needs-human on a non-issue. (migrate:ci supplies the
+          # dummy CLAUDE_CODE_OAUTH_TOKEN config.ts requires; migrate never calls
+          # Claude, so the dummy is safe.)
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
+          DISCORD_BOT_TOKEN: ci-dummy-token
+          DISCORD_GUILD_ID: ci-dummy-guild
+          WHATSAPP_PROVIDER: disabled
         run: |
           set -uo pipefail
           git config user.name 'github-actions[bot]'
@@ -405,6 +417,12 @@ jobs:
           # fallback agent a PRISTINE tip (the invariant this step promises).
           # `git merge --abort` here also covers a genuine multi-file conflict.
           if [ -z "$(git diff --name-only --diff-filter=U)" ] && [ "$(git rev-parse HEAD)" != "$before" ]; then
+            # Re-apply the merged schema: the merge just brought main's code
+            # (and any new migrations) onto this branch, but the DB was migrated
+            # BEFORE the merge, so a DB-backed test would otherwise hit the
+            # pre-merge schema. Idempotent; best-effort (set -e is off) — if it
+            # somehow fails, the verify agent's test:security surfaces it.
+            npm run migrate:ci || echo "::warning::post-merge migrate failed; verify agent's test:security will catch any schema drift"
             echo "resolved=true" >> "$GITHUB_OUTPUT"
             echo "Fast-path: resolved deterministically (no LLM) — security-floor.json regenerated (or a clean merge)."
           else
@@ -504,7 +522,15 @@ jobs:
             3. A pgvector Postgres is available at DATABASE_URL, so run the FULL
                gate and make EVERY check green before pushing:
                npm run typecheck && npm run lint && npm run format:check &&
-               npm run migrate && npm test && npm run build && npm run test:security
+               npm run migrate:ci && npm test && npm run build && npm run test:security
+               `npm run migrate:ci` (NOT a bare `npm run migrate`) is REQUIRED:
+               merging main may have brought new DB migrations, so you MUST
+               re-migrate before the DB-backed tests. `migrate:ci` supplies the
+               dummy CLAUDE_CODE_OAUTH_TOKEN that config.ts requires (it is unset
+               in your shell; migrate never calls Claude, so the dummy is safe) —
+               a bare `npm run migrate` throws before touching the DB. If a DB
+               test errors with `column/relation ... does not exist`, you skipped
+               this step; run it and re-test, do NOT escalate.
             4. Push the resolved branch with EXACTLY this command (nothing else —
                no other push form is permitted): `git push origin HEAD`. NEVER
                force-push and NEVER push any other ref or branch. Do NOT open a

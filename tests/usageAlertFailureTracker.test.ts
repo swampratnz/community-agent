@@ -28,6 +28,7 @@ const BASE_STATS: Omit<UsageStats, 'outbound'> = {
   topUsers: [],
   costByRole: [],
   backgroundCostUsd: 0,
+  backgroundCostByJob: [],
 };
 
 let mode: 'succeed' | 'fail' = 'succeed';

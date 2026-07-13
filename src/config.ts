@@ -469,6 +469,12 @@ const EnvSchema = z.object({
   // matching the KNOWLEDGE_STALE_DAYS opt-in convention above. When set, it
   // must be >= 2 — refined below — so a single rater can never trigger it.
   KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: z.coerce.number().int().nonnegative().default(0),
+  // Cap on how many titles `list_knowledge_topics` (issue #437) returns in
+  // one reply — a member-facing browse tool, unlike KNOWLEDGE_STALE_DAYS'
+  // opt-in-at-0 convention this is always-on with a sane default, matching
+  // EVENTS_LIST_LIMIT's "cap KB growth never produces an unbounded reply"
+  // reasoning but env-configurable per the approved proposal.
+  KNOWLEDGE_TOPICS_LIST_LIMIT: z.coerce.number().int().positive().default(50),
   // Extend the knowledge shortcut above to gated guests (issue #165),
   // restricted to `scope='global'` entries only, before the static "ask an
   // admin" pointer. Reuses KNOWLEDGE_SHORTCUT_THRESHOLD — no separate knob to
@@ -798,6 +804,7 @@ export const config = {
     knowledgeShortcutEnabled: env.KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     knowledgeShortcutThreshold: env.KNOWLEDGE_SHORTCUT_THRESHOLD,
     knowledgeLowRatedCaveatMinUnhelpful: env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL,
+    knowledgeTopicsListLimit: env.KNOWLEDGE_TOPICS_LIST_LIMIT,
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
