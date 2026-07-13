@@ -10,6 +10,11 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-13
+
+### Added
+- **`dev_team_findings` + `dev_team_verify`**: two **super-admin** tools that close the trust loop on a dev-team assessment. `dev_team_findings` lists a completed assessment's individual findings (id + claim) as a numbered pick-list; `dev_team_verify` then dispatches a fresh, skeptical agent to independently re-check ONE finding (by id or claim substring) and DMs the requester the verdict — **CONFIRMED / REFUTED / NEEDS-CONTEXT** plus a one-line rationale — when it lands (~1–2 min), reusing the durable `dev_team_watches` completion-DM poller with a new `verify` mode. Both tools carry the full dev_team_* trust floor: two-layer gating (tier-derived tool list + `assertAtLeast` re-check in the handler), audited, and every model-authored service field (finding claims, verdict, rationale) is quarantined — bracket/newline-neutralized, capped, and token-scrubbed — before it reaches chat or an unprompted DM, since an assessment is generated from the assessed repository's own content (the classic indirect-prompt-injection path). Verify is read-only against the target repo and small-cost, so like `assess` it needs no CONFIRM.
+
 ## 2026-07-12
 
 ### Added
