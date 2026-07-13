@@ -39,6 +39,7 @@ const {
   buildToolServer,
   formatKnowledgeSearchResults,
   formatUsageStats,
+  formatEngagementStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
@@ -91,6 +92,9 @@ const {
   clearAccessRequest,
   countActiveWarnings,
   clearWarnings,
+  markRosterLeave,
+  upsertRosterMember,
+  engagementStats,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -4907,6 +4911,94 @@ test('SECURITY: usage_stats rejects an admin caller — still super-admin-only a
   );
 });
 
+test('formatEngagementStats renders an explicit "no members" message for an empty roster, never a divide error (issue #419)', () => {
+  const out = formatEngagementStats({ total: 0, engaged: 0, percentage: 0, byPlatform: [] });
+  assert.equal(out, 'No currently-present roster members to measure engagement against.');
+});
+
+test('formatEngagementStats renders overall + per-platform counts and percentage (issue #419)', () => {
+  const out = formatEngagementStats({
+    total: 10,
+    engaged: 4,
+    percentage: 40,
+    byPlatform: [
+      { platform: 'discord', total: 8, engaged: 4, percentage: 50 },
+      { platform: 'whatsapp', total: 2, engaged: 0, percentage: 0 },
+    ],
+  });
+  assert.match(out, /4\/10 present members have posted at least once \(40%\)/);
+  assert.match(out, /- discord: 4\/8 \(50%\)/);
+  assert.match(out, /- whatsapp: 0\/2 \(0%\)/);
+});
+
+test(
+  'SECURITY: formatEngagementStats never renders a member user_id or display_name, only aggregate ' +
+    'counts/percentage, even when the underlying roster has both engaged and unengaged known members ' +
+    '(issue #419 acceptance criterion #7)',
+  { skip },
+  async () => {
+    const engagedUser = `${RUN}-engagement-engaged`;
+    const lurkerUser = `${RUN}-engagement-lurker`;
+    const engagedDisplayName = 'Engagement Test Engaged Person';
+    const lurkerDisplayName = 'Engagement Test Lurker Person';
+    const conversationId = `${RUN}-engagement-convo`;
+
+    await upsertRosterMember({
+      platform: 'discord',
+      userId: engagedUser,
+      displayName: engagedDisplayName,
+    });
+    await upsertRosterMember({ platform: 'discord', userId: lurkerUser, displayName: lurkerDisplayName });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: engagedUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello there',
+    });
+
+    try {
+      const stats = await engagementStats('discord');
+      const out = formatEngagementStats(stats);
+
+      assert.doesNotMatch(out, new RegExp(engagedUser), 'SECURITY: no engaged member user_id leaks');
+      assert.doesNotMatch(out, new RegExp(lurkerUser), 'SECURITY: no unengaged member user_id leaks');
+      assert.doesNotMatch(out, new RegExp(engagedDisplayName), 'SECURITY: no engaged display_name leaks');
+      assert.doesNotMatch(out, new RegExp(lurkerDisplayName), 'SECURITY: no unengaged display_name leaks');
+      assert.match(out, /\d+\/\d+ present members have posted at least once \(\d+(\.\d+)?%\)/);
+    } finally {
+      await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[engagedUser, lurkerUser]]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+function engagementStatsHandler(role: 'member' | 'admin' | 'guest' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-engagement-stats-caller`,
+      userName: 'Caller',
+      role,
+      conversationId: `${RUN}-engagement-stats-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: { platform?: string }) => Promise<unknown> }>;
+    }
+  )._registeredTools['engagement_stats'];
+}
+
+test('SECURITY: engagement_stats handler refuses a forged direct call from a non-super-admin caller (assertAtLeast re-check, issue #419) — tool-surface absence for the same roles is covered in tests/rbac.test.ts', async () => {
+  for (const role of ['member', 'admin', 'guest'] as const) {
+    const registeredTool = engagementStatsHandler(role);
+    await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+  }
+});
+
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {
   const hits = [
     fakeHit(KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD - 0.01),
@@ -5802,6 +5894,58 @@ test(
   },
 );
 
+test(
+  'knowledge_search tool handler issues NO low-rated-lookup query and renders byte-identical output when KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is unset/0 (the default) — this file never sets it non-zero (issue #432)',
+  { skip },
+  async (t) => {
+    assert.equal(
+      config.behaviour.knowledgeLowRatedCaveatMinUnhelpful,
+      0,
+      'this test only proves anything with the feature at its off default',
+    );
+    const scope = `${KNOWLEDGE_CONFLICT_HANDLER_SCOPE_PREFIX}-low-rated-disabled`;
+    const { id } = await saveKnowledge({
+      title: `Low-rated-disabled entry ${RUN}`,
+      content: 'This entry checks the low-rated caveat is off by default.',
+      scope,
+    });
+
+    let lowRatedQueryRan = false;
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((sql: unknown, ...rest: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('WHERE knowledge.id = ANY($1)')) {
+        lowRatedQueryRan = true;
+      }
+      return (realQuery as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as typeof pool.query);
+
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-low-rated-disabled-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+    const query = 'This entry checks the low-rated caveat is off by default.';
+    const result = await getKnowledgeSearchHandler(caller).handler({ query });
+    const text = result.content[0]?.text ?? '';
+
+    assert.equal(
+      lowRatedQueryRan,
+      false,
+      'the low-rated lookup query must never run when the feature is disabled',
+    );
+    assert.match(text, /Low-rated-disabled entry/, 'the hit itself still renders normally');
+    assert.doesNotMatch(text, /rate_answer/, 'no caveat may render when the feature is disabled');
+    // formatKnowledgeSearchResults' own lowRatedIds default is an empty Set
+    // (proven byte-identical to omitting the argument entirely by the pure
+    // unit test above) — so a disabled-feature handler call that never even
+    // computes a non-empty set is, by construction, the same pre-#432 shape.
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
 test('formatKnowledgeSearchResults never appends the conflict caveat when there are no relevant hits, even if hasConflict is (incorrectly) passed true (issue #389)', () => {
   assert.equal(
     formatKnowledgeSearchResults([], undefined, undefined, true),
@@ -5843,6 +5987,69 @@ test('SECURITY: formatKnowledgeSearchResults appends the conflict caveat as an E
     withConflict,
     `${withoutConflict}\n\n(${KNOWLEDGE_CONFLICT_CAVEAT_TEXT})`,
     'must be byte-identical to the exported static clause appended once as a trailing line',
+  );
+});
+
+// formatKnowledgeSearchResults' lowRatedIds param (issue #432) — the
+// display-side counterpart to hasConflict above: computed once by the
+// caller (via areKnowledgeEntriesLowRated) and threaded straight through,
+// but checked PER-HIT rather than rendered as a single trailing line.
+test('formatKnowledgeSearchResults with the default (empty) lowRatedIds is byte-identical to omitting the argument entirely (issue #432)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.9,
+    updatedAt: new Date(),
+    autoGenerated: false,
+    sourceUrl: null,
+    sourceTitle: null,
+    verifiedAt: null,
+  };
+  assert.equal(
+    formatKnowledgeSearchResults([a], undefined, undefined, false, new Set()),
+    formatKnowledgeSearchResults([a], undefined, undefined, false),
+  );
+});
+
+test("SECURITY: formatKnowledgeSearchResults appends the low-rated caveat to only the hit whose id is in lowRatedIds — never a sibling hit's line, and never as a result-wide trailing line (issue #432)", () => {
+  const a = {
+    id: 101,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.9,
+    updatedAt: new Date(),
+    autoGenerated: false,
+    sourceUrl: null,
+    sourceTitle: null,
+    verifiedAt: null,
+  };
+  const b = { ...a, id: 202, title: 'B', content: 'Content B', similarity: 0.8 };
+  const out = formatKnowledgeSearchResults([a, b], undefined, undefined, false, new Set([202]));
+  const lines = out.split('\n');
+  const aLine = lines.find((l) => l.includes('Content A'));
+  const bLine = lines.find((l) => l.includes('Content B'));
+  const escapedCaveat = KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.doesNotMatch(aLine ?? '', new RegExp(escapedCaveat), 'hit a (id 101) is not in lowRatedIds');
+  assert.match(bLine ?? '', new RegExp(escapedCaveat), 'hit b (id 202) is in lowRatedIds');
+  assert.equal(
+    (out.match(new RegExp(escapedCaveat, 'g')) ?? []).length,
+    1,
+    'the caveat must appear exactly once, tied to its own hit — never duplicated as a result-wide line',
+  );
+});
+
+test('formatKnowledgeSearchResults never appends the low-rated caveat when there are no relevant hits, even if lowRatedIds (incorrectly) contains an id (issue #432)', () => {
+  const a = {
+    id: 1,
+    title: 'A',
+    content: 'Content A',
+    similarity: 0.01,
+    updatedAt: new Date(),
+  };
+  assert.equal(
+    formatKnowledgeSearchResults([a], undefined, undefined, false, new Set([1])),
+    'No matching knowledge entries.',
   );
 });
 
@@ -9770,5 +9977,123 @@ test(
     assert.equal(calls[0].kind, 'archive_thread');
     assert.equal(calls[0].conversationId, conversationId);
     assert.match(executed ?? '', /^Done: Archived thread/);
+  },
+);
+
+// list_admins (issue #428) — the read-side counterpart to grant_admin/
+// revoke_admin: a super admin's on-demand "who currently holds the tier?"
+// lookup. Read-only like audit_view/usage_stats, so no CONFIRM registration
+// and no admin_audit row, unlike the mutating grant_admin/revoke_admin tests
+// above.
+function listAdminsHandler(caller: { userId: string; adapter: PlatformAdapter }) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId,
+      userName: 'SuperAdmin',
+      role: 'super_admin',
+      conversationId: `${RUN}-list-admins-convo`,
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (
+            args: object,
+          ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['list_admins'];
+}
+
+test(
+  'SECURITY: list_admins is read-only — no CONFIRM is registered and no admin_audit row is written, matching audit_view/usage_stats (issue #428)',
+  { skip },
+  async () => {
+    const actor = `${RUN}-la-actor`;
+    const adapter = stubAdapter(async () => {});
+    const handler = listAdminsHandler({ userId: actor, adapter });
+
+    const result = await handler.handler({});
+    assert.doesNotMatch(result.content[0]?.text ?? '', /CONFIRM/);
+    assert.equal(
+      hasPendingAction('discord', `${RUN}-list-admins-convo`, actor),
+      false,
+      'list_admins must never register a pending CONFIRM action',
+    );
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE actor_user_id = $1 AND action_kind = 'list_admins'`,
+      [actor],
+    );
+    assert.equal(rows[0].n, 0, 'list_admins must never write an admin_audit row');
+  },
+);
+
+test(
+  'SECURITY: list_admins reports leftServer for a departed admin, resolves display names, and never lists env-sourced super admins (issue #428)',
+  { skip },
+  async () => {
+    const departedAdmin = `${RUN}-la-departed`;
+    const presentAdmin = `${RUN}-la-present`;
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [departedAdmin, `${RUN} Departed`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: departedAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    await markRosterLeave('discord', departedAdmin);
+    await upsertMember({
+      platform: 'discord',
+      userId: presentAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Present`,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const handler = listAdminsHandler({ userId: `${RUN}-la-actor2`, adapter });
+
+    try {
+      const result = await handler.handler({});
+      const out = result.content[0]?.text ?? '';
+
+      assert.match(
+        out,
+        new RegExp(`discord: ${RUN} Departed \\(${departedAdmin}\\) — LEFT THE SERVER/GROUP`),
+      );
+      assert.match(out, new RegExp(`discord: ${RUN} Present \\(${presentAdmin}\\)`));
+      assert.doesNotMatch(
+        out.split('\n').find((l) => l.includes(presentAdmin)) ?? '',
+        /LEFT THE SERVER\/GROUP/,
+        'a present admin must not carry the departed marker',
+      );
+      assert.match(
+        out,
+        /Super admins are configured separately/,
+        'reply notes super admins are configured separately, so the list is not mistaken for "everyone with elevated access"',
+      );
+      for (const superAdminId of superAdminIds('discord')) {
+        assert.ok(
+          !out.includes(superAdminId),
+          'env-sourced super admins (never community_users rows) must never appear in list_admins output',
+        );
+      }
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+        [departedAdmin, presentAdmin],
+      ]);
+      await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
+        departedAdmin,
+      ]);
+    }
   },
 );

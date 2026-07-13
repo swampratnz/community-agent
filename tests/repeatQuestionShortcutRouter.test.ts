@@ -423,6 +423,115 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
   );
 });
 
+// --- Standing 'mi' language preference on the repeat-question shortcut (issue #435) ---
+
+test("router (repeat-question shortcut): a caller with a standing 'mi' language preference gets REPEAT_SHORTCUT_NOTICE_MI prefixed onto the unmodified cached reply text", async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      calls++;
+      return { text: `${RUN} the meetup is at 6pm`, ok: true };
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-mi`;
+
+  await trigger(makeMessage({ text: `${RUN} when is the meetup?`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} when is the meetup?`, conversationId }));
+
+  assert.equal(calls, 1);
+  assert.equal(sent.length, 2);
+  assert.equal(
+    sent[1].text,
+    `↩️ I pātai mai koe i tēnei mea i tērā wā — anei anō tāku whakautu:\n\n${RUN} the meetup is at 6pm`,
+    'the mi notice must prefix the byte-identical cached reply text, never a translated payload',
+  );
+});
+
+test("router (repeat-question shortcut): a caller with 'auto' (the default) still gets today's English REPEAT_SHORTCUT_NOTICE, byte-identical", async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      calls++;
+      return { text: `${RUN} the meetup is at 6pm`, ok: true };
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-auto`;
+
+  await trigger(makeMessage({ text: `${RUN} when is the meetup?`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} when is the meetup?`, conversationId }));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].text, `${REPEAT_SHORTCUT_NOTICE}${RUN} the meetup is at 6pm`);
+});
+
+test('SECURITY: a getLanguagePreference failure on the repeat-question shortcut still sends the English default, never throws or drops the reply', async () => {
+  const router = new Router(
+    async () => ({ text: `${RUN} answer under failure`, ok: true }),
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-failsafe`;
+
+  await trigger(makeMessage({ text: `${RUN} failsafe question`, conversationId }));
+  await assert.doesNotReject(trigger(makeMessage({ text: `${RUN} failsafe question`, conversationId })));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].text, `${REPEAT_SHORTCUT_NOTICE}${RUN} answer under failure`);
+});
+
+test('SECURITY: REPEAT_SHORTCUT_NOTICE_MI is a fixed, non-interpolated string — byte-identical regardless of the cached answer or caller', async () => {
+  let calls = 0;
+  const router = new Router(
+    async () => {
+      calls++;
+      return { text: `${RUN} answer #${calls}`, ok: true };
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-mi-fixed`;
+
+  await trigger(makeMessage({ text: `${RUN} varying question`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} varying question`, conversationId }));
+
+  assert.equal(sent.length, 2);
+  assert.match(
+    sent[1].text,
+    /^↩️ I pātai mai koe i tēnei mea i tērā wā — anei anō tāku whakautu:\n\n/,
+    'the notice prefix must be the fixed literal, regardless of the cached (varying) answer',
+  );
+});
+
 // The flag-disabled path ("Default off: unset/false → zero behaviour change,
 // the cache is never read or written") is covered in router.test.ts, which
 // leaves REPEAT_QUESTION_SHORTCUT_ENABLED unset — this file is the ONLY

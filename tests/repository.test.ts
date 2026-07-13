@@ -75,6 +75,7 @@ const {
   markRosterLeave,
   listRoster,
   rosterCounts,
+  engagementStats,
   purgeDepartedRoster,
   addMemberNote,
   listMemberNotes,
@@ -91,6 +92,7 @@ const {
   getMemberRole,
   resolveDisplayName,
   listAdminDisplayNames,
+  listAdminRoster,
   removeMember,
   linkMembers,
   unlinkMember,
@@ -104,6 +106,7 @@ const {
   listAnswerFeedback,
   listKnowledgeFeedbackSummary,
   isKnowledgeLowRated,
+  areKnowledgeEntriesLowRated,
   countLowRatedKnowledge,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
@@ -1256,6 +1259,21 @@ test('SECURITY: repository: hasConflictAmongIds issues zero SQL queries and retu
   assert.equal(await hasConflictAmongIds([]), false);
   assert.equal(await hasConflictAmongIds([1]), false);
   assert.equal(calls.length, 0, 'hasConflictAmongIds must not query the database for fewer than 2 ids');
+});
+
+test('SECURITY: repository: areKnowledgeEntriesLowRated issues zero SQL queries and returns an empty set for an empty ids array (issue #432)', async (t) => {
+  const calls: unknown[] = [];
+  t.mock.method(pool, 'query', (...args: unknown[]) => {
+    calls.push(args);
+    throw new Error('pool.query must not be called for an empty ids array');
+  });
+
+  assert.deepEqual(await areKnowledgeEntriesLowRated([], 2), new Set());
+  assert.equal(
+    calls.length,
+    0,
+    'areKnowledgeEntriesLowRated must not query the database for an empty ids array',
+  );
 });
 
 test(
@@ -4378,6 +4396,98 @@ test(
 );
 
 test(
+  'repository: engagementStats counts only currently-present roster members with a distinct matching ' +
+    'inbound interaction, excludes members who left, and never divides by zero (issue #419)',
+  { skip },
+  async () => {
+    const engaged = `${RUN}-engagement-repo-engaged`;
+    const lurker = `${RUN}-engagement-repo-lurker`;
+    const departed = `${RUN}-engagement-repo-departed`;
+    const conversationId = `${RUN}-engagement-repo-convo`;
+
+    await upsertRosterMember({ platform: 'discord', userId: engaged, displayName: 'Engaged' });
+    await upsertRosterMember({ platform: 'discord', userId: lurker, displayName: 'Lurker' });
+    await upsertRosterMember({ platform: 'discord', userId: departed, displayName: 'Departed' });
+    await markRosterLeave('discord', departed);
+
+    // Two inbound rows for the engaged member — numerator must be a
+    // DISTINCT user_id count, not a raw row count.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: engaged,
+      role: 'member',
+      direction: 'inbound',
+      content: 'first message',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: engaged,
+      role: 'member',
+      direction: 'inbound',
+      content: 'second message',
+    });
+    // An outbound-only row for the departed member must never count them as
+    // engaged even before their left_at exclusion is considered.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: departed,
+      role: 'member',
+      direction: 'outbound',
+      content: 'bot reply',
+    });
+
+    const stats = await engagementStats('discord');
+    const before = stats.byPlatform.find((p) => p.platform === 'discord');
+    assert.ok(before, 'discord breakdown is present since we just upserted discord roster rows');
+
+    assert.ok(
+      before.total >= 2,
+      'total counts present members (engaged + lurker), excluding the departed one',
+    );
+    assert.ok(before.engaged >= 1, 'engaged count includes the distinct engaged member');
+
+    // Re-run scoped strictly to our fixture rows via a direct query, since
+    // a shared DB may carry other engagement fixtures/production data.
+    const { rows } = await pool.query(
+      `SELECT r.user_id, (e.user_id IS NOT NULL) AS is_engaged
+         FROM server_roster r
+         LEFT JOIN (SELECT DISTINCT platform, user_id FROM interactions WHERE direction = 'inbound') e
+           ON e.platform = r.platform AND e.user_id = r.user_id
+        WHERE r.platform = 'discord' AND r.left_at IS NULL AND r.user_id = ANY($1)`,
+      [[engaged, lurker, departed]],
+    );
+    assert.deepEqual(
+      rows
+        .map((r) => ({ userId: r.user_id, isEngaged: r.is_engaged }))
+        .sort((a, b) => (a.userId < b.userId ? -1 : 1)),
+      [
+        { userId: engaged, isEngaged: true },
+        { userId: lurker, isEngaged: false },
+      ].sort((a, b) => (a.userId < b.userId ? -1 : 1)),
+      'exactly the engaged fixture is flagged engaged; the departed member is absent (left_at excluded)',
+    );
+
+    // The returned percentage must always equal the arithmetic derived from
+    // total/engaged directly — no drift between the two, and (since total
+    // is always >= 1 once any roster row exists) no division-by-zero path
+    // taken here. The dedicated zero-roster/divide-by-zero case is covered
+    // by tests/tools.test.ts's formatEngagementStats({ total: 0, ... }) test,
+    // which exercises the exact zero-total input this function can produce.
+    assert.equal(
+      before.percentage,
+      Math.round((before.engaged / before.total) * 1000) / 10,
+      'percentage matches engaged/total arithmetic exactly',
+    );
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[engaged, lurker, departed]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   'SECURITY: repository: roster stores identity metadata only — no content column exists and no roster write touches interactions (issue #47)',
   { skip },
   async () => {
@@ -5186,6 +5296,136 @@ test(
 
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
+    ]);
+  },
+);
+
+test(
+  'listAdminRoster: resolves community_users->server_roster names across both platforms, excludes members, deterministically ordered by community_users.id (issue #428)',
+  { skip },
+  async () => {
+    const adminOwnName = `${RUN}-lar-admin-own`;
+    const adminRosterName = `${RUN}-lar-admin-roster`;
+    const member = `${RUN}-lar-member`;
+    const whatsappAdmin = `${RUN}-lar-admin-whatsapp`;
+
+    await upsertMember({
+      platform: 'discord',
+      userId: adminOwnName,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Roster Own Name`,
+    });
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [adminRosterName, `${RUN} Roster Fallback Name`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: adminRosterName,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    await upsertMember({
+      platform: 'discord',
+      userId: member,
+      role: 'member',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Just A Member`,
+    });
+    await upsertMember({
+      platform: 'whatsapp',
+      userId: whatsappAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} WhatsApp Admin`,
+    });
+
+    const roster = await listAdminRoster();
+    const mine = roster.filter((a) => a.platformUserId.startsWith(RUN));
+
+    assert.deepEqual(
+      mine.map((a) => ({ platform: a.platform, name: a.displayName })),
+      [
+        { platform: 'discord', name: `${RUN} Roster Own Name` },
+        { platform: 'discord', name: `${RUN} Roster Fallback Name` },
+        { platform: 'whatsapp', name: `${RUN} WhatsApp Admin` },
+      ],
+      'community_users own name wins, falls back to server_roster, ordered by community_users.id, spans both platforms',
+    );
+    assert.ok(
+      !mine.some((a) => a.platformUserId === member),
+      'a plain member is never returned by listAdminRoster',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+      [adminOwnName, adminRosterName, member, whatsappAdmin],
+    ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
+      adminRosterName,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: listAdminRoster flags leftServer true only when server_roster.left_at is set — a missing roster row or left_at IS NULL both read as false (issue #428, the departed-but-still-admin visibility gap)',
+  { skip },
+  async () => {
+    const departedAdmin = `${RUN}-lar-sec-departed`;
+    const presentAdmin = `${RUN}-lar-sec-present`;
+    const noRosterAdmin = `${RUN}-lar-sec-noroster`;
+
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [departedAdmin, `${RUN} Departed Admin`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: departedAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+    // onGuildMemberRemove calls markRosterLeave but never touches
+    // community_users.role — this is exactly the gap #428 surfaces.
+    const left = await markRosterLeave('discord', departedAdmin);
+    assert.ok(left, 'fixture setup: markRosterLeave must actually flip left_at');
+
+    await pool.query(
+      `INSERT INTO server_roster (platform, user_id, display_name) VALUES ('discord', $1, $2)`,
+      [presentAdmin, `${RUN} Present Admin`],
+    );
+    await upsertMember({
+      platform: 'discord',
+      userId: presentAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+    });
+
+    // No server_roster row at all — never observed leaving.
+    await upsertMember({
+      platform: 'discord',
+      userId: noRosterAdmin,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} No Roster Admin`,
+    });
+
+    const roster = await listAdminRoster();
+    const byId = (id: string) => roster.find((a) => a.platformUserId === id);
+
+    assert.equal(byId(departedAdmin)?.leftServer, true, 'left_at set must flag leftServer: true');
+    assert.equal(byId(presentAdmin)?.leftServer, false, 'left_at IS NULL must flag leftServer: false');
+    assert.equal(
+      byId(noRosterAdmin)?.leftServer,
+      false,
+      'no matching roster row must flag leftServer: false',
+    );
+
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = ANY($1)`, [
+      [departedAdmin, presentAdmin, noRosterAdmin],
+    ]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [departedAdmin, presentAdmin],
     ]);
   },
 );
@@ -6240,6 +6480,74 @@ test(
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[lowRatedEntryId, otherEntryId]]);
+  },
+);
+
+// areKnowledgeEntriesLowRated (issue #432): the batched sibling of
+// isKnowledgeLowRated above, feeding the display-side caveat on the normal
+// knowledge_search path (as opposed to isKnowledgeLowRated's shortcut-only
+// caller). Same join/threshold semantics, extended to ≥3 entries straddling
+// the threshold in one call.
+test(
+  'SECURITY: repository: areKnowledgeEntriesLowRated returns exactly the subset of ids whose unhelpful count clears the threshold, never a raw count, and short-circuits an empty input without a query',
+  { skip },
+  async () => {
+    const convoA = `${RUN}-c-batch-low-rated-a`;
+    const convoB = `${RUN}-c-batch-low-rated-b`;
+    const { id: lowRatedEntryId } = await saveKnowledge({ content: `${RUN} batch low-rated entry` });
+    const { id: belowThresholdEntryId } = await saveKnowledge({
+      content: `${RUN} batch below-threshold entry`,
+    });
+    const { id: unratedEntryId } = await saveKnowledge({ content: `${RUN} batch unrated entry` });
+
+    async function rate(conversationId: string, entryId: number, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-batch-low-rated-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `knowledge_search answer for ${userId}`,
+        meta: { knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    // lowRatedEntryId: 2 unhelpful across two conversations — clears a
+    // threshold of 2.
+    users.push(await rate(convoA, lowRatedEntryId, 'a1', false));
+    users.push(await rate(convoB, lowRatedEntryId, 'b1', false));
+    // belowThresholdEntryId: only 1 unhelpful — never clears a threshold of 2.
+    users.push(await rate(convoA, belowThresholdEntryId, 'a2', false));
+    // unratedEntryId: no feedback at all.
+
+    const neverServedEntryId = unratedEntryId + 1_000_000;
+
+    const result = await areKnowledgeEntriesLowRated(
+      [lowRatedEntryId, belowThresholdEntryId, unratedEntryId, neverServedEntryId],
+      2,
+    );
+    assert.ok(
+      result instanceof Set,
+      'SECURITY: must cross the boundary as a Set of ids, never a count or map',
+    );
+    assert.deepEqual(
+      [...result].sort((a, b) => a - b),
+      [lowRatedEntryId].sort((a, b) => a - b),
+      'only the id whose unhelpful count clears the threshold is present; below-threshold, unrated, and never-served ids are absent',
+    );
+
+    const emptyResult = await areKnowledgeEntriesLowRated([], 2);
+    assert.deepEqual(emptyResult, new Set(), 'an empty ids array returns an empty set');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [lowRatedEntryId, belowThresholdEntryId, unratedEntryId],
+    ]);
   },
 );
 

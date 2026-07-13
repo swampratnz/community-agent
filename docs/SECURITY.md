@@ -465,6 +465,18 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   scope is excluded from the count entirely, not merely hidden from a
   per-row view (pinned by a `SECURITY:` test); an entry only surfaces once
   its `unhelpfulCount` clears `minUnhelpful` (default 2).
+  `KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL` (off by default, issue #337) is
+  the member-facing counterpart: once an entry's unhelpful count clears this
+  threshold, a served hit gets a fixed, non-interpolated caveat clause
+  (`KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`) nudging the member to `rate_answer`
+  too — the threshold decision crosses the render boundary as a boolean/id-set
+  membership only, never a raw count, so no single rater is inferable. Issue
+  #337 rendered this only on the deterministic knowledge-shortcut path; issue
+  #432 extends it to the `knowledge_search` path too (the dominant case, since
+  the shortcut only fires above a strict 0.9-cosine floor), via a batched,
+  same-shape lookup (`areKnowledgeEntriesLowRated`) that fails safe to no
+  caveat on a lookup error and renders per-hit rather than as one trailing
+  line.
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard
@@ -552,6 +564,27 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `moderation_history`") rather than asserting it, is inert (no query) unless
   `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
   extends — carries only bare integers, never warning content or an identity.
+- **`list_admins`** (super-admin, read-only, no arguments, issue #428):
+  answers "who currently holds bot-admin tier?" as a direct query —
+  `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
+  `server_roster` on `(platform, user_id)`, same display-name precedence as
+  `listAdminDisplayNames`. This closes a real visibility gap: leaving the
+  Discord server/WhatsApp group only clears roster/membership-scope state
+  (`onGuildMemberRemove` → `markRosterLeave`) and never touches
+  `community_users.role`, so a departed admin keeps admin-tier tools via DM
+  until a super admin explicitly calls `revoke_admin` — and today there is no
+  other way to notice that state exists. Each roster line is flagged
+  `leftServer: true` only when the matching `server_roster` row has `left_at
+  IS NOT NULL`; no matching row or `left_at IS NULL` both read as "not known
+  to have left." No CONFIRM, no `admin_audit` row (matches `audit_view`/
+  `usage_stats`, the existing read-only super-admin tools) — it mutates
+  nothing and takes no arguments, so there is no untrusted-input surface.
+  Env-sourced super admins are never `community_users` rows and so never
+  appear in the output, same exclusion as `listAdmins`/`listAdminDisplayNames`;
+  the reply says so explicitly so the list isn't mistaken for "everyone with
+  elevated access." Auto-revoke on departure is deliberately out of scope —
+  visibility first, matching how `grant_admin`/`revoke_admin` keep privilege
+  changes human-decided rather than automatic.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
@@ -562,7 +595,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `admin_digest_sends` (not `community_users`), so it works for a guest in
   open mode too. No row means today's default (`'standard'`) behaviour —
   zero change for anyone who never calls the tool. Purge-coherent:
-  `forget_me`/`purge_user_data` delete the caller's row.
+  `forget_me`/`purge_user_data` delete the caller's row. Extended (issue
+  #430) to the eleven deterministic, non-model fallback/notice constants in
+  `router.ts`/`core.ts`/`upstreamFailure.ts` that already honour a standing
+  `'mi'` `language_preference` (see below) — each gains a fixed,
+  human-authored `_PLAIN` counterpart, selected by the same fail-safe
+  `getResponseStyle` read (degrading to `'standard'` on a lookup failure,
+  never throwing or dropping the reply). **`'mi'` always takes precedence
+  over `'plain'`** when a caller has both set, so this can never regress the
+  already-tested `_MI` behaviour; `PENDING_NOTICE_PLAIN` keeps the literal,
+  untranslated `CONFIRM`/`CANCEL` tokens byte-identical to the English/`_MI`
+  templates, same invariant as `PENDING_NOTICE_MI`.
 - **Standing language preference** (`language_prefs`, issue #189):
   structurally identical to `response_style_prefs` above — a member/guest-tier
   tool, `set_language_preference`, lets any caller opt into always receiving

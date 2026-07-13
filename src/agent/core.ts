@@ -12,6 +12,7 @@ import {
   searchMemory,
   setClaudeSessionId,
   type LanguagePreference,
+  type ResponseStyle,
 } from '../storage/repository.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
@@ -25,6 +26,8 @@ import {
   USAGE_LIMIT_REPLY_ADMIN_NOTIFIED,
   USAGE_LIMIT_REPLY_MI,
   USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI,
+  USAGE_LIMIT_REPLY_PLAIN,
+  USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN,
 } from './upstreamFailure.js';
 
 export interface AgentReply {
@@ -129,6 +132,34 @@ const FALLBACK_REPLY_MI: Readonly<Record<string, string>> = {
   [TURN_FAILED_REPLY]: TURN_FAILED_REPLY_MI,
   [USAGE_LIMIT_REPLY]: USAGE_LIMIT_REPLY_MI,
   [USAGE_LIMIT_REPLY_ADMIN_NOTIFIED]: USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_MI,
+};
+
+// Fixed, human-authored plain-language variants (issue #430) of the same
+// four runAgentTurn failure fallbacks, served instead of the English
+// constant to a caller with a standing 'plain' response-style preference
+// (getResponseStyle, issue #126) whose language preference is NOT 'mi' —
+// 'mi' takes precedence over 'plain' (see FALLBACK_REPLY_PLAIN's use below).
+// Same trust level as the English constants: no model call, no translation,
+// no injection surface.
+export const INTERNAL_ERROR_REPLY_PLAIN = 'Sorry, something went wrong on my end. Please try again.';
+
+export const MAX_TURNS_REPLY_PLAIN =
+  'Sorry, that was too many steps for me to finish in one go. Please split it into smaller questions.';
+
+export const TURN_FAILED_REPLY_PLAIN = 'Sorry, I could not finish that. Please try again.';
+
+/**
+ * Lookup from an English fallback constant to its `_PLAIN` counterpart,
+ * mirroring `FALLBACK_REPLY_MI` exactly (issue #430) — applied only when
+ * `languagePreference !== 'mi'`, so a caller with both preferences set still
+ * gets the `_MI` text (acceptance criterion 3).
+ */
+const FALLBACK_REPLY_PLAIN: Readonly<Record<string, string>> = {
+  [INTERNAL_ERROR_REPLY]: INTERNAL_ERROR_REPLY_PLAIN,
+  [MAX_TURNS_REPLY]: MAX_TURNS_REPLY_PLAIN,
+  [TURN_FAILED_REPLY]: TURN_FAILED_REPLY_PLAIN,
+  [USAGE_LIMIT_REPLY]: USAGE_LIMIT_REPLY_PLAIN,
+  [USAGE_LIMIT_REPLY_ADMIN_NOTIFIED]: USAGE_LIMIT_REPLY_ADMIN_NOTIFIED_PLAIN,
 };
 
 interface TurnOutcome {
@@ -279,7 +310,24 @@ export async function runAgentTurn(
   });
 
   const codeAnswers = await getCodeAnswersPolicy();
-  const responseStyle = await getResponseStyle(caller.platform, caller.userId);
+  // getResponseStyle already fails open internally (degrades to 'standard' on
+  // a DB error, see repository.ts) — this try/catch is a second, independent
+  // backstop for the lookup itself throwing/rejecting (e.g. an injected test
+  // double, or a future caller that removes that internal catch), mirroring
+  // the languagePreference backstop just below (issue #430 acceptance
+  // criterion 5 / #52's fail-open invariant). Unlike languagePreference,
+  // there is no "lookup failed" state to preserve here — responseStyle only
+  // ever gates a substitution, never gets echoed back on `AgentReply` — so it
+  // degrades straight to the 'standard' default rather than staying optional.
+  let responseStyle: ResponseStyle = 'standard';
+  try {
+    responseStyle = await getResponseStyle(caller.platform, caller.userId);
+  } catch (err) {
+    logger.warn(
+      { err, conversationId: caller.conversationId },
+      'Response-style lookup failed; degrading to standard',
+    );
+  }
   // getLanguagePreference already fails open internally (degrades to 'auto'
   // on a DB error, see repository.ts) — this try/catch is a second,
   // independent backstop for the lookup itself throwing/rejecting (e.g. an
@@ -346,18 +394,23 @@ export async function runAgentTurn(
     );
   }
 
-  // Substitute the 'mi' variant for a fixed failure-fallback string (issue
-  // #396). Gated on `outcome.ok === false` — never on matching the text
-  // itself — so a genuine model answer can never be rewritten, even in the
-  // vanishingly unlikely case its text happened to coincide with one of
-  // these constants (the #259 "threaded, not string-matched" discipline).
-  // Falls through unchanged for any text not in the lookup (e.g. English/
-  // 'auto'/undefined preference, or a value that isn't one of the four
-  // fallbacks).
-  const text =
-    !outcome.ok && languagePreference === 'mi'
+  // Substitute the 'mi' or 'plain' variant for a fixed failure-fallback
+  // string (issues #396/#430). Gated on `outcome.ok === false` — never on
+  // matching the text itself — so a genuine model answer can never be
+  // rewritten, even in the vanishingly unlikely case its text happened to
+  // coincide with one of these constants (the #259 "threaded, not
+  // string-matched" discipline). 'mi' takes precedence over 'plain' when a
+  // caller has both preferences set (acceptance criterion 3). Falls through
+  // unchanged for any text not in the lookup (e.g. English/'auto'/undefined
+  // language preference with 'standard' response style, or a value that
+  // isn't one of the four fallbacks).
+  const text = !outcome.ok
+    ? languagePreference === 'mi'
       ? (FALLBACK_REPLY_MI[outcome.text] ?? outcome.text)
-      : outcome.text;
+      : responseStyle === 'plain'
+        ? (FALLBACK_REPLY_PLAIN[outcome.text] ?? outcome.text)
+        : outcome.text
+    : outcome.text;
 
   return {
     text,

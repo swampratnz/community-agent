@@ -321,6 +321,109 @@ test('router (knowledge shortcut): the shortcut path still respects the gated-gu
   assert.match(sent[0].text, /member-only/i);
 });
 
+// --- Standing 'mi' language preference on the knowledge shortcut (issue #435) ---
+
+test("router (knowledge shortcut): a caller with a standing 'mi' language preference gets the reply suffixed with KNOWLEDGE_SHORTCUT_SUFFIX_MI", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    'Be kind and follow the code of conduct.\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.',
+  );
+  assert.match(
+    sent[0].text,
+    /Be kind and follow the code of conduct\./,
+    'the KB hit.content must stay unchanged',
+  );
+});
+
+test("router (knowledge shortcut): a caller with 'auto' (the default) still gets today's English suffix, byte-identical", async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    "Be kind and follow the code of conduct.\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.",
+  );
+});
+
+test('SECURITY: a getLanguagePreference failure on the knowledge shortcut still sends the English default, never throws or drops the reply', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    async () => {
+      throw new Error('language_prefs read boom');
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /From our knowledge base/i);
+});
+
+test('SECURITY: KNOWLEDGE_SHORTCUT_SUFFIX_MI is a fixed, non-interpolated string — byte-identical regardless of the served KB entry or caller', async () => {
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95, { content: 'A completely different knowledge entry.' }),
+    async () => {},
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ userId: 'super-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.match(
+    sent[0].text,
+    /— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai\.$/,
+    'the suffix must be the fixed literal appended after the (varying) KB content',
+  );
+});
+
 // KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL is left unset in this file (see
 // lowRatedCaveatRouter.test.ts, the ONLY file that sets it) — so it must
 // stay at its default-disabled 0, and a hit that would clear a lower
