@@ -31,8 +31,12 @@ const { buildToolServer } = await import('../src/agent/tools.js');
  * backs `.json()` (the media-upload response shape, `{ id }`). A `multipart/form-data`
  * body (the media upload) is captured as its string fields plus the uploaded
  * file's name/type, rather than as the opaque `body` string JSON calls use.
+ * `responses[i].headers` backs `.headers.get(...)` — used to exercise the 429
+ * `Retry-After` retry path.
  */
-function mockFetch(responses: Array<{ ok: boolean; status?: number; json?: unknown }>) {
+function mockFetch(
+  responses: Array<{ ok: boolean; status?: number; json?: unknown; headers?: Record<string, string> }>,
+) {
   const calls: Array<{
     url: string;
     body: string;
@@ -60,11 +64,24 @@ function mockFetch(responses: Array<{ ok: boolean; status?: number; json?: unkno
     return {
       ok: resp.ok,
       status: resp.status ?? (resp.ok ? 200 : 500),
+      headers: new Headers(resp.headers ?? {}),
       text: async () => (resp.ok ? '' : 'graph error'),
       json: async () => resp.json ?? {},
     } as Response;
   };
   return { calls, fetchMock };
+}
+
+/**
+ * Mocks the adapter's private `sleep` so 429-retry tests don't wait on a real
+ * timer — records every requested delay instead of actually waiting.
+ */
+function stubSleep(adapter: InstanceType<typeof WhatsAppCloudAdapter>): number[] {
+  const delays: number[] = [];
+  (adapter as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms: number) => {
+    delays.push(ms);
+  };
+  return delays;
 }
 
 /** Marks `userId` as within the 24h customer-service window without a real webhook round-trip. */
@@ -287,6 +304,314 @@ test('partial-failure semantics: a mid-sequence Graph API failure delivers earli
     globalThis.fetch = originalFetch;
   }
   assert.equal(calls.length, 2, 'the first chunk should have been sent before the second one failed');
+});
+
+// --- 429 rate-limit retry (issue #470) -----
+
+test('429 retry: sendChunk retries once on 429 honoring Retry-After, delivers the message, and does not record a send failure', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  (adapter as unknown as { server: object }).server = {};
+  const delays = stubSleep(adapter);
+  const { calls, fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '2' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', 'kia ora, retried');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2, 'exactly one retry — the initial 429 plus one re-issued call');
+  assert.deepEqual(delays, [2_000], 'the retry must wait the Retry-After value (2s) in ms');
+  assert.equal(adapter.isConnected(), true, 'a 429 that succeeds on retry must never record a send failure');
+});
+
+test('429 retry: uploadMedia retries once on 429 and returns the media id on the successful retry, without recording a send failure', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  (adapter as unknown as { server: object }).server = {};
+  stubSleep(adapter);
+  const { calls, fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '1' } },
+    { ok: true, json: { id: 'media-retry-1' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendImage(
+      '64211234567',
+      { data: Buffer.from('fake-image-bytes'), filename: 'image.png', mimeType: 'image/png' },
+      'a cat wearing a hat',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 3, 'upload attempt + upload retry + the message send');
+  const sendBody = JSON.parse(calls[2].body);
+  assert.equal(
+    sendBody.image.id,
+    'media-retry-1',
+    "the message send must reference the retried upload's media id",
+  );
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'a 429 upload that succeeds on retry must never record a send failure',
+  );
+});
+
+test('429 retry: sendImageMessage retries once on 429 and delivers, without recording a send failure', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  (adapter as unknown as { server: object }).server = {};
+  stubSleep(adapter);
+  const { calls, fetchMock } = mockFetch([
+    { ok: true, json: { id: 'media-2' } },
+    { ok: false, status: 429, headers: { 'retry-after': '1' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendImage('64211234567', {
+      data: Buffer.from('fake-image-bytes'),
+      filename: 'image.png',
+      mimeType: 'image/png',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 3, 'the upload + the message-send attempt + the message-send retry');
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'a 429 send that succeeds on retry must never record a send failure',
+  );
+});
+
+test('429 retry: an absent Retry-After header falls back to the default backoff before retrying', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const delays = stubSleep(adapter);
+  const { fetchMock } = mockFetch([{ ok: false, status: 429 }, { ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', 'no retry-after header');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(delays, [1_000], 'must fall back to SEND_RETRY_DEFAULT_BACKOFF_MS (1000ms), not 0 or NaN');
+});
+
+test('429 retry: an unparseable Retry-After header falls back to the default backoff before retrying', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const delays = stubSleep(adapter);
+  const { fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': 'not-a-number' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', 'garbage retry-after header');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(delays, [1_000], 'an unparseable header must fall back to SEND_RETRY_DEFAULT_BACKOFF_MS');
+});
+
+test('429 retry exhausted: a retry that also returns 429 still calls recordSendFailure() exactly once and throws', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  (adapter as unknown as { server: object }).server = {};
+  stubSleep(adapter);
+  const { calls, fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '0' } },
+    { ok: false, status: 429 },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(
+      () => adapter.sendDirectMessage('64211234567', 'still rate limited'),
+      /WhatsApp Cloud send failed/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2, 'exactly one retry attempt — no second retry');
+  assert.equal(
+    (adapter as unknown as { consecutiveSendFailures: number }).consecutiveSendFailures,
+    1,
+    'a retry that also fails must record exactly one send failure, not one per attempt',
+  );
+});
+
+test('429 retry exhausted: a retry that returns a different non-OK status (500) still calls recordSendFailure() exactly once and throws — byte-identical failure semantics to today', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  (adapter as unknown as { server: object }).server = {};
+  stubSleep(adapter);
+  const { calls, fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '0' } },
+    { ok: false, status: 500 },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(
+      () => adapter.sendDirectMessage('64211234567', 'still failing'),
+      /WhatsApp Cloud send failed: 500/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2);
+  assert.equal(
+    (adapter as unknown as { consecutiveSendFailures: number }).consecutiveSendFailures,
+    1,
+    'exactly one recorded failure once retries are exhausted',
+  );
+});
+
+test('429 retry: a non-429 non-OK response (401) on the first attempt is not retried — immediate failure, exactly one fetch call', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const delays = stubSleep(adapter);
+  const { calls, fetchMock } = mockFetch([{ ok: false, status: 401 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(
+      () => adapter.sendDirectMessage('64211234567', 'unauthorized'),
+      /WhatsApp Cloud send failed: 401/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1, 'no retry — a non-429 failure must not re-issue the fetch');
+  assert.deepEqual(delays, [], 'sleep must never be called for a non-429 failure');
+});
+
+test('429 retry: a non-429 non-OK response (500) on the first attempt is not retried — immediate failure, exactly one fetch call', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(
+      () => adapter.sendDirectMessage('64211234567', 'server error'),
+      /WhatsApp Cloud send failed: 500/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1, 'no retry — a non-429 failure must not re-issue the fetch');
+});
+
+test('SECURITY: sendChunk retry body is byte-identical to the first attempt — no re-filtering or re-derivation on retry', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  stubSleep(adapter);
+  const secret = 'sk-ant-' + 'y'.repeat(30);
+  const { calls, fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '0' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', `secret is ${secret} end`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 2);
+  assert.equal(
+    calls[0].body,
+    calls[1].body,
+    'the retried request body must be byte-identical to the first attempt (already redacted, never re-derived)',
+  );
+  assert.ok(!calls[1].body.includes(secret), 'no raw secret fragment may reach the retried request either');
+});
+
+test('SECURITY: sendImageMessage retry body (including caption) is byte-identical to the first attempt — no re-filtering on retry', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  stubSleep(adapter);
+  const secret = 'sk-ant-' + 'y'.repeat(30);
+  const { calls, fetchMock } = mockFetch([
+    { ok: true, json: { id: 'media-sec-1' } },
+    { ok: false, status: 429, headers: { 'retry-after': '0' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendImage(
+      '64211234567',
+      { data: Buffer.from('fake-image-bytes'), filename: 'image.png', mimeType: 'image/png' },
+      `caption has ${secret} in it`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 3);
+  assert.equal(
+    calls[1].body,
+    calls[2].body,
+    'the retried message-send body (with caption) must be byte-identical to the first attempt',
+  );
+  assert.ok(!calls[2].body.includes(secret), 'no raw secret fragment may reach the retried request either');
+});
+
+test('SECURITY: an extreme Retry-After value is clamped to SEND_RETRY_MAX_BACKOFF_MS (5000ms)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const delays = stubSleep(adapter);
+  const { fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '999999' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', 'extreme retry-after');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(
+    delays,
+    [5_000],
+    'an extreme Retry-After value must be clamped to SEND_RETRY_MAX_BACKOFF_MS',
+  );
+});
+
+test('SECURITY: a malformed Retry-After value never produces a delay above the clamp', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const delays = stubSleep(adapter);
+  const { fetchMock } = mockFetch([
+    { ok: false, status: 429, headers: { 'retry-after': '-999999' } },
+    { ok: true },
+  ]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.sendDirectMessage('64211234567', 'negative retry-after');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.ok(
+    delays.length === 1 && delays[0] <= 5_000,
+    'delay must never exceed the clamp regardless of header value',
+  );
 });
 
 test('sendTypingIndicator: posts the mark-as-read + typing_indicator payload for the inbound wamid', async () => {
