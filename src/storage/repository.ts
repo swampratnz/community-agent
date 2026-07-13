@@ -3270,22 +3270,36 @@ export async function listRoster(
   }));
 }
 
-/** Growth-pulse counts for the roster summary line. */
+/**
+ * Growth-pulse counts for the roster summary line. `notMembers` (issue #460)
+ * is the standing size of the onboarding queue — the same `left_at IS NULL
+ * AND cu.id IS NULL` predicate `listRoster`'s `'not_members'` filter uses
+ * (repository.ts's `listRoster`) — added as one more `FILTER` on this same
+ * single-table scan via a `LEFT JOIN community_users`, reusing that table's
+ * existing `UNIQUE (platform, platform_user_id)` index. Unlike
+ * `joinedThisWeek`, it carries no rolling window: a guest who joined months
+ * ago and was never added stays counted here indefinitely.
+ */
 export async function rosterCounts(
   platform: Platform,
-): Promise<{ total: number; joinedThisWeek: number; leftThisWeek: number }> {
+): Promise<{ total: number; joinedThisWeek: number; leftThisWeek: number; notMembers: number }> {
   const { rows } = await pool.query(
     `SELECT
-       count(*) FILTER (WHERE left_at IS NULL) AS total,
-       count(*) FILTER (WHERE left_at IS NULL AND joined_at > now() - interval '7 days') AS joined_week,
-       count(*) FILTER (WHERE left_at IS NOT NULL AND left_at > now() - interval '7 days') AS left_week
-     FROM server_roster WHERE platform = $1`,
+       count(*) FILTER (WHERE r.left_at IS NULL) AS total,
+       count(*) FILTER (WHERE r.left_at IS NULL AND r.joined_at > now() - interval '7 days') AS joined_week,
+       count(*) FILTER (WHERE r.left_at IS NOT NULL AND r.left_at > now() - interval '7 days') AS left_week,
+       count(*) FILTER (WHERE r.left_at IS NULL AND cu.id IS NULL) AS not_members
+     FROM server_roster r
+     LEFT JOIN community_users cu
+       ON cu.platform = r.platform AND cu.platform_user_id = r.user_id
+     WHERE r.platform = $1`,
     [platform],
   );
   return {
     total: Number(rows[0]?.total ?? 0),
     joinedThisWeek: Number(rows[0]?.joined_week ?? 0),
     leftThisWeek: Number(rows[0]?.left_week ?? 0),
+    notMembers: Number(rows[0]?.not_members ?? 0),
   };
 }
 

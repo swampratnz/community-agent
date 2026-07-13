@@ -4474,6 +4474,36 @@ test(
     assert.ok(counts.total >= 2, 'present count includes the two still-present fixtures');
     assert.ok(counts.joinedThisWeek >= 2, 'this-week join count includes the fixtures');
     assert.ok(counts.leftThisWeek >= 1, 'this-week leave count includes the leaver');
+    assert.ok(counts.notMembers >= 1, 'notMembers includes the still-present non-member lurker (issue #460)');
+
+    await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
+    await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
+  },
+);
+
+test(
+  'repository: rosterCounts.notMembers counts a present non-member, excludes a member and a departed non-member (issue #460)',
+  { skip },
+  async () => {
+    const lurker = `${RUN}-roster-nm-lurker`;
+    const member = `${RUN}-roster-nm-member`;
+    const leaver = `${RUN}-roster-nm-leaver`;
+
+    const before = await rosterCounts('discord');
+
+    await upsertRosterMember({ platform: 'discord', userId: lurker, displayName: 'NM Lurker' });
+    await upsertRosterMember({ platform: 'discord', userId: member, displayName: 'NM Member' });
+    await upsertRosterMember({ platform: 'discord', userId: leaver, displayName: 'NM Leaver' });
+    await upsertMember({ platform: 'discord', userId: member, role: 'member', addedBy: `${RUN}-admin` });
+    await markRosterLeave('discord', leaver);
+
+    const after = await rosterCounts('discord');
+    assert.equal(
+      after.notMembers,
+      before.notMembers + 1,
+      'exactly one net-new not_members row: the still-present, never-added lurker — ' +
+        'the registered member and the departed non-member are both excluded',
+    );
 
     await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
     await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
@@ -4525,6 +4555,10 @@ test(
     );
     assert.ok(counts.joinedThisWeek >= 2, 'this-week join count includes the WhatsApp fixtures');
     assert.ok(counts.leftThisWeek >= 1, 'this-week leave count includes the WhatsApp leaver');
+    assert.ok(
+      counts.notMembers >= 1,
+      'notMembers includes the still-present WhatsApp non-member lurker, same as Discord (issue #460)',
+    );
 
     await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[lurker, member, leaver]]);
     await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [member]);
