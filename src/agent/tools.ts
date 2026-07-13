@@ -103,6 +103,7 @@ import { createIssue } from '../github/issues.js';
 import {
   devTeamField,
   dispatchJob,
+  generateBacklog,
   jobResult,
   jobStatus,
   listJobs,
@@ -4464,7 +4465,8 @@ export function buildToolServer(
   const devTeamDispatch = tool(
     'dev_team_dispatch',
     'Dispatch a job to the remote dev-team build service over the tailnet. mode="assess" runs a read-only ' +
-      'assessment of a repo/task; mode="deliver" actually makes changes and opens a PR, so it requires ' +
+      'assessment of a repo/task (a finished assessment can later be turned into a tracked backlog with ' +
+      'dev_team_backlog); mode="deliver" actually makes changes and opens a PR, so it requires ' +
       "confirmation. Takes ~20 minutes; I'll DM you when it finishes. Super admin only.",
     {
       mode: z
@@ -4606,6 +4608,52 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const devTeamBacklog = tool(
+    'dev_team_backlog',
+    'Turn a previously completed dev-team assessment into a tracked backlog on the dashboard. A cheap, ' +
+      'server-side transform of the existing assessment report on the dispatch service — no repo change, ' +
+      'no model cost. The stories appear on the dashboard Backlog panel. Super admin only.',
+    {
+      job_id: z
+        .string()
+        .min(1)
+        .max(200)
+        .describe('The assessment job id (from dev_team_dispatch/dev_team_status)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'dev_team_backlog');
+      const svc = devTeamEnabledOr();
+      if (!svc.ok) {
+        return text('The dev-team service is not enabled on this server.', true);
+      }
+      const { endpoint, token } = svc;
+      const { success, result } = await audited({
+        actionKind: 'dev_team_backlog',
+        params: { job_id: args.job_id },
+        run: async () => {
+          const r = await generateBacklog(endpoint, token, args.job_id);
+          const noun = r.stories_added === 1 ? 'story' : 'stories';
+          return devTeamScrub(
+            `Created ${r.stories_added} new ${noun} from assessment ${devTeamField(args.job_id)} ` +
+              `(${r.stories_total} total on the board) — view them on the dashboard Backlog panel.`,
+          );
+        },
+      });
+      if (success) return text(result);
+      const scrubbed = devTeamScrub(result);
+      // The contract's 404 means the id never ran (or wasn't an assess) —
+      // point the human at the fix rather than echoing a bare status line.
+      if (scrubbed.includes('no assessment for that job')) {
+        return text(
+          `No assessment exists for that job id — run a dev_team_dispatch assess first. (${scrubbed})`,
+          true,
+        );
+      }
+      return text(`Couldn't create the backlog: ${scrubbed}`, true);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const generateImageTool = tool(
     'generate_image',
     'Generate an image from a text description and post it into the current conversation. Admin only. ' +
@@ -4739,6 +4787,7 @@ export function buildToolServer(
       devTeamDispatch,
       devTeamStatus,
       devTeamResult,
+      devTeamBacklog,
       generateImageTool,
     ],
   });

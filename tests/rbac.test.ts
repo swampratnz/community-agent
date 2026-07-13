@@ -582,6 +582,26 @@ test('SECURITY: dev_team_dispatch / dev_team_status / dev_team_result are super-
   }
 });
 
+test('SECURITY: dev_team_backlog is super-admin only — never reachable by admin/member/guest (drives the dev-team service with its bearer credential, same trust floor as the other dev_team_* tools)', () => {
+  const tool = 'mcp__community__dev_team_backlog';
+  assert.ok(
+    (SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    'dev_team_backlog must be in SUPER_ADMIN_TOOLS',
+  );
+  assert.ok(
+    !(ADMIN_TOOLS as readonly string[]).includes(tool),
+    'dev_team_backlog must not be in ADMIN_TOOLS',
+  );
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'dev_team_backlog must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member', 'admin'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach dev_team_backlog`);
+  }
+  assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach dev_team_backlog');
+});
+
 test('SECURITY: assign_community_role / remove_community_role / list_assignable_roles are admin-only, never members or guests (issue #232)', () => {
   const tools = [
     'mcp__community__assign_community_role',

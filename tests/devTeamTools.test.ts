@@ -32,6 +32,14 @@ after(async () => {
 // bake into the cached import), lazily on first use — same shape as
 // tests/suggestIssue.test.ts.
 const dispatchCalls: Array<{ mode: string; repo: string }> = [];
+const backlogCalls: Array<{ jobId: string }> = [];
+// Reassignable per-test so one cached module mock can serve both the happy
+// path and the 404/error paths of dev_team_backlog.
+let backlogImpl: () => Promise<{
+  job_id: string;
+  stories_added: number;
+  stories_total: number;
+}> = async () => ({ job_id: 'job-mock-1', stories_added: 3, stories_total: 7 });
 // The REAL client module, imported before the mock is registered: client.ts is
 // dependency-free, and passing its genuine devTeamField through the mock means
 // the quarantine SECURITY tests below exercise the real neutralizer, not a
@@ -50,6 +58,10 @@ function tools(t: { mock: { module: (specifier: string, opts: unknown) => void }
         jobStatus: async () => ({ state: 'running' }),
         jobResult: async () => ({ kind: 'assess', success: true }),
         listJobs: async () => ({ jobs: [] }),
+        generateBacklog: async (_endpoint: string, _token: string, jobId: string) => {
+          backlogCalls.push({ jobId });
+          return backlogImpl();
+        },
       },
     });
     toolsPromise = import('../src/agent/tools.js');
@@ -74,12 +86,12 @@ function stubAdapter(): PlatformAdapter {
   };
 }
 
-type Args = { mode?: string; repo?: string; id?: string };
+type Args = { mode?: string; repo?: string; id?: string; job_id?: string };
 type Handler = (args: Args) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 
 async function handlerFor(
   t: Parameters<typeof tools>[0],
-  name: 'dev_team_dispatch' | 'dev_team_status' | 'dev_team_result',
+  name: 'dev_team_dispatch' | 'dev_team_status' | 'dev_team_result' | 'dev_team_backlog',
   role: 'admin' | 'super_admin',
   conversationId: string,
 ): Promise<Handler> {
@@ -144,6 +156,63 @@ test(
     await markDevTeamWatchNotified('job-mock-1');
   },
 );
+
+// --- dev_team_backlog (turn a completed assessment into a tracked backlog) --
+
+test('dev_team_backlog happy path: POSTs the job id to the service via the audited() wrapper and reports the story counts + dashboard pointer', async (t) => {
+  const before = backlogCalls.length;
+  backlogImpl = async () => ({ job_id: 'job-77', stories_added: 3, stories_total: 7 });
+  const handler = await handlerFor(t, 'dev_team_backlog', 'super_admin', 'convo-backlog');
+  const result = await handler({ job_id: 'job-77' });
+  assert.equal(backlogCalls.length, before + 1, 'exactly one backlog call reaches the client');
+  assert.equal(backlogCalls.at(-1)?.jobId, 'job-77');
+  // The success text is built INSIDE audited()'s run and only returned on its
+  // success branch — this reply shape is the audited() path firing.
+  assert.match(result.content[0].text, /Created 3 new stories from assessment job-77/);
+  assert.match(result.content[0].text, /7 total on the board/);
+  assert.match(result.content[0].text, /dashboard Backlog panel/);
+  assert.notEqual(result.isError, true);
+  assert.equal(
+    hasPendingAction('discord', 'convo-backlog', 'super-1'),
+    false,
+    'backlog generation is read-only-shaped (no repo change, no cost) — it must not register a CONFIRM',
+  );
+});
+
+test('SECURITY: dev_team_backlog handler rejects an admin caller even with the feature enabled (assertAtLeast re-check)', async (t) => {
+  const before = backlogCalls.length;
+  const handler = await handlerFor(t, 'dev_team_backlog', 'admin', 'convo-backlog-admin');
+  await assert.rejects(() => handler({ job_id: 'j1' }), /Permission denied/);
+  assert.equal(backlogCalls.length, before, 'a rejected caller must never reach the service');
+});
+
+test('dev_team_backlog maps the contract 404 ("no assessment for that job") to a friendly run-an-assess-first message', async (t) => {
+  backlogImpl = async () => {
+    throw new Error('Dev-team service 404 Not Found: {"error":"no assessment for that job"}');
+  };
+  const handler = await handlerFor(t, 'dev_team_backlog', 'super_admin', 'convo-backlog-404');
+  const result = await handler({ job_id: 'job-gone' });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /run a dev_team_dispatch assess first/i);
+});
+
+test('SECURITY: dev_team_backlog error replies are devTeamScrub-ed — the service bearer token never reaches chat and the text is capped', async (t) => {
+  const { config } = await import('../src/config.js');
+  const token = config.devTeam.authToken!;
+  backlogImpl = async () => {
+    throw new Error(
+      `Dev-team service 409 Conflict: backlog generation needs a dashboard workspace ${token} ${'x'.repeat(5000)}`,
+    );
+  };
+  const handler = await handlerFor(t, 'dev_team_backlog', 'super_admin', 'convo-backlog-409');
+  const result = await handler({ job_id: 'job-9' });
+  assert.equal(result.isError, true);
+  assert.ok(
+    !result.content[0].text.includes(token),
+    'a hostile/echoing service response must not leak the bearer token into chat',
+  );
+  assert.ok(result.content[0].text.length <= 1700, 'service-derived error text must stay capped for chat');
+});
 
 // ---------------------------------------------------------------------------
 // Prompt-injection quarantine on service-derived text (PR #421 review): an

@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchJob, jobResult, jobStatus, listJobs, type FetchImpl } from '../src/devTeam/client.js';
+import {
+  dispatchJob,
+  generateBacklog,
+  jobResult,
+  jobStatus,
+  listJobs,
+  type FetchImpl,
+} from '../src/devTeam/client.js';
 
 // The dev-team client is dependency-free (no config, no DB, no real network):
 // `fetchImpl` is always injected here, mirroring src/status/anthropicStatus.ts.
@@ -118,6 +125,40 @@ test('SECURITY: a non-2xx response throws with the status and a CAPPED (200-char
       assert.match(err.message, /Dev-team service 400 Bad Request:/);
       assert.ok(err.message.includes('x'.repeat(200)), 'the first 200 chars of the body are echoed');
       assert.ok(!err.message.includes('x'.repeat(201)), 'the body must be capped at 200 chars');
+      return true;
+    },
+  );
+});
+
+test('SECURITY: generateBacklog POSTs to /jobs/{id}/backlog (id URL-encoded, no body) with the bearer header and parses the response', async () => {
+  const calls: Recorded[] = [];
+  const res = await generateBacklog(
+    ENDPOINT,
+    TOKEN,
+    'job 42/../x',
+    fakeFetch(200, { job_id: 'job 42/../x', stories_added: 3, stories_total: 7 }, calls),
+  );
+  assert.deepEqual(res, { job_id: 'job 42/../x', stories_added: 3, stories_total: 7 });
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    'http://ubuntudevagent:8738/jobs/job%2042%2F..%2Fx/backlog',
+    'the job id must be URL-encoded so it cannot traverse to another service path',
+  );
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].headers['authorization'], `Bearer ${TOKEN}`, 'bearer header must carry the token');
+  assert.equal(calls[0].body, undefined, 'the backlog contract takes no request body');
+});
+
+test('SECURITY: generateBacklog non-2xx throws with the status and a CAPPED (200-char) body slice, never the bearer token', async () => {
+  const longBody = '{"error":"no assessment for that job"}' + 'y'.repeat(500);
+  await assert.rejects(
+    () => generateBacklog(ENDPOINT, TOKEN, 'job-1', fakeFetch(400, longBody)),
+    (err: Error) => {
+      assert.match(err.message, /Dev-team service 400 Bad Request:/);
+      assert.match(err.message, /no assessment for that job/);
+      assert.ok(!err.message.includes('y'.repeat(201)), 'the body must be capped at 200 chars');
+      assert.ok(!err.message.includes(TOKEN), 'the token must never leak into the error');
       return true;
     },
   );
