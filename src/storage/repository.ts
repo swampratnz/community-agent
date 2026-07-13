@@ -3982,12 +3982,18 @@ export async function countRecentDmReportsByReporterAndTarget(
  * platform identity, since that id `IS DISTINCT FROM` their current-platform
  * id. Omitting it leaves DM-originated reports invisible to a scoped admin,
  * same as before #197 — never widen scope without it.
+ *
+ * `targetUserId`, when present, narrows the result further — same
+ * one-predicate-append technique as recentModerationEntries's `targetUserId`
+ * filter — and is appended AFTER the accused-admin exclusion above, so it can
+ * only intersect an already-scoped result set, never widen it (issue #463).
  */
 export async function listReports(
   conversationIds: readonly string[] | null,
   status?: ContentReportStatus,
   limit = 50,
   viewerUserIds?: readonly string[],
+  targetUserId?: string,
 ): Promise<ContentReport[]> {
   const params: unknown[] = [];
   const filters: string[] = [];
@@ -4006,6 +4012,10 @@ export async function listReports(
   if (status) {
     params.push(status);
     filters.push(`status = $${params.length}`);
+  }
+  if (targetUserId) {
+    params.push(targetUserId);
+    filters.push(`target_user_id = $${params.length}`);
   }
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
   params.push(clampedLimit);

@@ -388,6 +388,11 @@ CREATE INDEX IF NOT EXISTS content_reports_reporter_rate_idx
 -- super-admin-only, matching their original visibility contract).
 ALTER TABLE content_reports ADD COLUMN IF NOT EXISTS is_dm BOOLEAN NOT NULL DEFAULT false;
 
+-- Backs list_reports's optional targetUserId filter (issue #463), mirroring
+-- moderation_history's target filter (#83).
+CREATE INDEX IF NOT EXISTS content_reports_target_idx
+  ON content_reports (target_user_id, created_at DESC);
+
 -- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard for the weekly proactive admin
 -- recurring-questions digest (issue #97): one row per admin identity, so a
