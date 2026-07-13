@@ -18,6 +18,7 @@ import {
   clearWarnings,
   countActiveWarnings,
   countRecentDmReportsByReporterAndTarget,
+  countRepliesToUser,
   createAnswerFeedback,
   createContentReport,
   createSuggestion,
@@ -1953,9 +1954,10 @@ export function buildToolServer(
   const myData = tool(
     'my_data',
     'Summarize what the bot has stored about the caller: their own message count, replies the bot has ' +
-      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, and ' +
-      'their standing response-style preference. Use this when a member asks what the bot knows about ' +
-      'them, or wants to see what forget_me would erase before deciding to invoke it. Read-only, scoped ' +
+      'sent them, knowledge entries sourced from them, content reports and suggestions they filed, their ' +
+      "standing response-style preference, and where they stand against today's daily reply budget. Use " +
+      'this when a member asks what the bot knows about them, wants to see what forget_me would erase ' +
+      'before deciding to invoke it, or asks how many messages they have left today. Read-only, scoped ' +
       "exactly like forget_me — the caller's own identity plus any identity linked via link_member — so " +
       "it can never see another member's data. Does not cover active warnings (see my_warnings) or the " +
       'status of a specific filed item (see my_submissions), which already have their own tools; also ' +
@@ -1970,9 +1972,26 @@ export function buildToolServer(
         `Content reports you've filed: ${summary.reportsFiled}`,
         `Suggestions you've filed: ${summary.suggestionsFiled}`,
         `Response style preference: ${summary.responseStyle === 'plain' ? 'plain' : 'standard (default)'}`,
+      ];
+      // Daily reply budget (issue #444) — reuses the exact function
+      // router.ts's own enforcement calls, so what this reports can never
+      // diverge from what actually gates the caller.
+      const limit = config.behaviour.dailyReplyLimitPerUser;
+      if (caller.role === 'super_admin') {
+        lines.push('Daily reply limit: exempt (super admin).');
+      } else if (limit === 0) {
+        lines.push('Daily reply limit: none configured.');
+      } else {
+        const used = await countRepliesToUser(caller.platform, caller.userId);
+        lines.push(
+          `Replies in the last 24h: ${used} / ${limit}` +
+            (used >= limit ? " — you've reached today's limit." : ''),
+        );
+      }
+      lines.push(
         '',
         'For your active warnings, use my_warnings. For the status of a specific report or suggestion, use my_submissions.',
-      ];
+      );
       return text(lines.join('\n'));
     },
   );

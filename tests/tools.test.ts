@@ -93,6 +93,9 @@ const {
   clearAccessRequest,
   countActiveWarnings,
   clearWarnings,
+  countRepliesToUser,
+  linkMembers,
+  getMyDataSummary,
   markRosterLeave,
   upsertRosterMember,
   engagementStats,
@@ -9680,6 +9683,273 @@ test(
     const result = await myDataHandler(`${MY_DATA_HANDLER_USER}-admin-caller`, 'admin').handler();
     assert.equal(result.isError, false);
     assert.match(result.content[0]?.text ?? '', /Messages you've sent: 0/);
+  },
+);
+
+// my_data's daily reply-budget line (issue #444): reuses the exact
+// countRepliesToUser function router.ts's own enforcement calls, so what
+// this reports can never diverge from what actually gates the caller.
+test(
+  "my_data reports the caller's own reply-budget standing when under the configured daily limit (issue #444)",
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-under`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 5;
+    try {
+      for (let i = 0; i < 2; i++) {
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: 'convo-1',
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `reply ${i}`,
+          meta: { replyToUserId: userId },
+        });
+      }
+
+      const result = await myDataHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+      assert.match(output, /Replies in the last 24h: 2 \/ 5/);
+      assert.doesNotMatch(output, /reached today's limit/);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test(
+  'my_data appends the "reached today\'s limit" trailer once the caller\'s 24h reply count is at/over the configured limit (issue #444)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-over`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 2;
+    try {
+      for (let i = 0; i < 2; i++) {
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: 'convo-1',
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `reply ${i}`,
+          meta: { replyToUserId: userId },
+        });
+      }
+
+      const result = await myDataHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+      assert.match(output, /Replies in the last 24h: 2 \/ 2 — you've reached today's limit\./);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test(
+  'my_data reports a super admin as exempt from the daily reply limit and never shows a used/limit count for them (issue #444)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-super`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: 'convo-1',
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply to a super admin',
+      meta: { replyToUserId: userId },
+    });
+
+    const result = await myDataHandler(userId, 'super_admin').handler();
+    const output = result.content[0]?.text ?? '';
+    assert.match(output, /Daily reply limit: exempt \(super admin\)\./);
+    assert.doesNotMatch(output, /\d+ \/ \d+/, 'a super admin must never see a used/limit count');
+  },
+);
+
+test(
+  'my_data reports "none configured" with no used/limit count when the daily reply limit is disabled (issue #444)',
+  { skip },
+  async () => {
+    const userId = `${MY_DATA_HANDLER_USER}-budget-unlimited`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 0;
+    try {
+      const result = await myDataHandler(userId).handler();
+      const output = result.content[0]?.text ?? '';
+      assert.match(output, /Daily reply limit: none configured\./);
+      assert.doesNotMatch(output, /\d+ \/ \d+/);
+      assert.doesNotMatch(output, /reached today's limit/);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test("my_data's tool description mentions the daily reply budget so the model knows to surface it (issue #444)", () => {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId: 'u1',
+      userName: 'Member',
+      role: 'member',
+      conversationId: 'c1',
+    },
+    stubAdapter(async () => {}),
+  );
+  const description = (
+    server.instance as unknown as { _registeredTools: Record<string, { description?: string }> }
+  )._registeredTools['my_data'].description;
+  assert.match(description ?? '', /reply budget/i);
+});
+
+test(
+  'my_data: getMyDataSummary/MyDataSummary is unchanged by the reply-budget addition — the new line is ' +
+    'computed in the my_data handler only (issue #444)',
+  { skip },
+  async () => {
+    const summary = await getMyDataSummary('whatsapp', `${MY_DATA_HANDLER_USER}-summary-shape`);
+    assert.deepEqual(
+      Object.keys(summary).sort(),
+      [
+        'knowledgeEntries',
+        'ownMessages',
+        'repliesToThem',
+        'reportsFiled',
+        'responseStyle',
+        'suggestionsFiled',
+      ],
+      'MyDataSummary must carry exactly its original six fields — the reply-budget line is not bolted onto it',
+    );
+  },
+);
+
+test(
+  "SECURITY: my_data's reply-budget count is isolated per caller — caller A's reported used count is " +
+    "independent of caller B's reply volume (issue #444)",
+  { skip },
+  async () => {
+    const userA = `${MY_DATA_HANDLER_USER}-budget-isolation-a`;
+    const userB = `${MY_DATA_HANDLER_USER}-budget-isolation-b`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 50;
+    try {
+      await recordInteraction({
+        platform: 'whatsapp',
+        conversationId: 'convo-1',
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply to A',
+        meta: { replyToUserId: userA },
+      });
+      for (let i = 0; i < 3; i++) {
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: 'convo-1',
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `reply to B ${i}`,
+          meta: { replyToUserId: userB },
+        });
+      }
+
+      const resultA = await myDataHandler(userA).handler();
+      const outputA = resultA.content[0]?.text ?? '';
+      assert.match(
+        outputA,
+        /Replies in the last 24h: 1 \/ 50/,
+        "SECURITY: caller A's reported reply count must reflect only their own replies, never caller B's",
+      );
+
+      const resultB = await myDataHandler(userB).handler();
+      const outputB = resultB.content[0]?.text ?? '';
+      assert.match(outputB, /Replies in the last 24h: 3 \/ 50/);
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
+  },
+);
+
+test(
+  "SECURITY: my_data's reply-budget count for a linked-identity caller exactly matches countRepliesToUser " +
+    '— what the tool shows can never diverge from what the router actually enforces (issue #444)',
+  { skip },
+  async () => {
+    const discordUser = `${MY_DATA_HANDLER_USER}-budget-linked-d`;
+    const whatsappUser = `${MY_DATA_HANDLER_USER}-budget-linked-w`;
+    const originalLimit = config.behaviour.dailyReplyLimitPerUser;
+    (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = 50;
+    try {
+      await upsertMember({
+        platform: 'discord',
+        userId: discordUser,
+        role: 'member',
+        addedBy: `${MY_DATA_HANDLER_USER}-budget-linked-admin`,
+      });
+      await upsertMember({
+        platform: 'whatsapp',
+        userId: whatsappUser,
+        role: 'member',
+        addedBy: `${MY_DATA_HANDLER_USER}-budget-linked-admin`,
+      });
+      await recordInteraction({
+        platform: 'discord',
+        conversationId: 'convo-1',
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply on discord',
+        meta: { replyToUserId: discordUser },
+      });
+      await recordInteraction({
+        platform: 'whatsapp',
+        conversationId: 'convo-1',
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: 'reply on whatsapp',
+        meta: { replyToUserId: whatsappUser },
+      });
+
+      await linkMembers('discord', discordUser, 'whatsapp', whatsappUser);
+
+      const expectedUsed = await countRepliesToUser('discord', discordUser);
+      assert.equal(expectedUsed, 2, 'sanity: the linked aggregate the router would enforce against');
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: discordUser,
+          userName: 'Linked Member',
+          role: 'member' as const,
+          conversationId: 'convo-1',
+        },
+        stubAdapter(async () => {}),
+      );
+      const result = await (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: () => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['my_data'].handler();
+      const output = result.content[0]?.text ?? '';
+
+      assert.match(
+        output,
+        new RegExp(`Replies in the last 24h: ${expectedUsed} / 50`),
+        'SECURITY: my_data must report exactly the linked-identity aggregate countRepliesToUser (and hence ' +
+          'the router budget check) would use for this caller',
+      );
+    } finally {
+      (config.behaviour as { dailyReplyLimitPerUser: number }).dailyReplyLimitPerUser = originalLimit;
+    }
   },
 );
 
