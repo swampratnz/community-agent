@@ -375,19 +375,18 @@ jobs:
         id: fastpath
         env:
           MANIFEST: tests/security-floor.json
-          # Same DB + dummy-token env as the deterministic pre-merge migrate
-          # step: after merging main below we re-apply the schema, because the
-          # merge can bring migrations the PRE-merge migrate didn't have. Without
-          # this the verify agent's DB-backed test:security runs against a stale
-          # schema and fails with a false "column ... does not exist" — the exact
-          # cause of a batch of PRs escalating needs-human on a non-issue.
+          # Config env for the post-merge re-migrate below: after merging main we
+          # re-apply the schema via `npm run migrate:ci`, because the merge can
+          # bring migrations the PRE-merge migrate didn't have. Without it the
+          # verify agent's DB-backed test:security runs against a stale schema and
+          # fails with a false "column ... does not exist" — the cause of a batch
+          # of PRs escalating needs-human on a non-issue. (migrate:ci supplies the
+          # dummy CLAUDE_CODE_OAUTH_TOKEN config.ts requires; migrate never calls
+          # Claude, so the dummy is safe.)
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/community_agent_test
           DISCORD_BOT_TOKEN: ci-dummy-token
           DISCORD_GUILD_ID: ci-dummy-guild
           WHATSAPP_PROVIDER: disabled
-          # migrate loads config.ts, which requires this; migrate never calls
-          # Claude, so a dummy satisfies the schema (matches the migrate step above).
-          CLAUDE_CODE_OAUTH_TOKEN: ci-dummy-token
         run: |
           set -uo pipefail
           git config user.name 'github-actions[bot]'
@@ -423,7 +422,7 @@ jobs:
             # BEFORE the merge, so a DB-backed test would otherwise hit the
             # pre-merge schema. Idempotent; best-effort (set -e is off) — if it
             # somehow fails, the verify agent's test:security surfaces it.
-            npm run migrate || echo "::warning::post-merge migrate failed; verify agent's test:security will catch any schema drift"
+            npm run migrate:ci || echo "::warning::post-merge migrate failed; verify agent's test:security will catch any schema drift"
             echo "resolved=true" >> "$GITHUB_OUTPUT"
             echo "Fast-path: resolved deterministically (no LLM) — security-floor.json regenerated (or a clean merge)."
           else
@@ -523,16 +522,15 @@ jobs:
             3. A pgvector Postgres is available at DATABASE_URL, so run the FULL
                gate and make EVERY check green before pushing:
                npm run typecheck && npm run lint && npm run format:check &&
-               CLAUDE_CODE_OAUTH_TOKEN=ci-dummy-token npm run migrate &&
-               npm test && npm run build && npm run test:security
-               The `CLAUDE_CODE_OAUTH_TOKEN=ci-dummy-token` prefix on migrate is
-               REQUIRED and not optional: merging main may have brought new DB
-               migrations, so you MUST re-migrate before the DB-backed tests, and
-               `npm run migrate` loads config.ts which needs that variable (it is
-               unset in your shell). migrate never calls Claude, so the dummy is
-               safe. A bare `npm run migrate` will fail — always use this exact
-               form. If a DB test errors with `column/relation ... does not
-               exist`, you skipped this step; run it and re-test, do NOT escalate.
+               npm run migrate:ci && npm test && npm run build && npm run test:security
+               `npm run migrate:ci` (NOT a bare `npm run migrate`) is REQUIRED:
+               merging main may have brought new DB migrations, so you MUST
+               re-migrate before the DB-backed tests. `migrate:ci` supplies the
+               dummy CLAUDE_CODE_OAUTH_TOKEN that config.ts requires (it is unset
+               in your shell; migrate never calls Claude, so the dummy is safe) —
+               a bare `npm run migrate` throws before touching the DB. If a DB
+               test errors with `column/relation ... does not exist`, you skipped
+               this step; run it and re-test, do NOT escalate.
             4. Push the resolved branch with EXACTLY this command (nothing else —
                no other push form is permitted): `git push origin HEAD`. NEVER
                force-push and NEVER push any other ref or branch. Do NOT open a
@@ -587,7 +585,7 @@ jobs:
           claude_args: |
             --max-turns 200
             --model sonnet
-            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge origin/main),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin main),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(CLAUDE_CODE_OAUTH_TOKEN=ci-dummy-token npm run migrate),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+            --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge origin/main),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin main),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
       - name: Verify the conflict was resolved (else escalate loudly)
         if: always() && steps.precheck.outputs.proceed == 'true'
