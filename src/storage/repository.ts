@@ -1058,6 +1058,50 @@ export async function listKnowledge(
   }));
 }
 
+export interface KnowledgeTopicsResult {
+  titles: string[];
+  totalCount: number;
+}
+
+/**
+ * Titles-only browse of the knowledge base for the member-facing
+ * `list_knowledge_topics` tool (issue #437) — the missing proactive "what's
+ * covered" counterpart to `knowledge_search`'s reactive search. Reuses
+ * `searchKnowledge`/`searchKnowledgeLexical`'s exact scope predicate
+ * (`scope IN ('global', platform, conversationId)`) so a member never sees a
+ * title from a scope they couldn't already reach via `knowledge_search`, plus
+ * the issue #214 apparent-authority boundary (`created_by_role != 'auto'`) —
+ * a quarantined auto-researched entry can't gain apparent authority by
+ * appearing in an official-looking topic index. Null and blank titles are
+ * excluded (some conversation-scoped entries have none, same
+ * `COALESCE(title, '')` case `searchKnowledgeLexical` already works around).
+ *
+ * `COUNT(*) OVER()` returns the full match count alongside the `LIMIT`ed page
+ * in one round trip, so a caller can render an exact "+N more" truncation
+ * note without a second query — keeping this the single deterministic SELECT
+ * the proposal's cost story promises.
+ */
+export async function listKnowledgeTopics(
+  caller: { platform: Platform; conversationId: string },
+  limit: number,
+): Promise<KnowledgeTopicsResult> {
+  const { rows } = await pool.query(
+    `SELECT title, COUNT(*) OVER() AS total_count
+       FROM knowledge
+      WHERE scope IN ('global', $1, $2)
+        AND created_by_role != 'auto'
+        AND title IS NOT NULL
+        AND trim(title) != ''
+      ORDER BY title
+      LIMIT $3`,
+    [caller.platform, caller.conversationId, limit],
+  );
+  return {
+    titles: rows.map((r) => r.title as string),
+    totalCount: rows.length > 0 ? Number(rows[0].total_count) : 0,
+  };
+}
+
 /**
  * Exact count of knowledge entries untouched — neither edited nor retrieved —
  * in the last `days` (issue #199). `GREATEST(updated_at,

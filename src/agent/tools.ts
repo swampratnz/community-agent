@@ -38,6 +38,7 @@ import {
   listDuplicateKnowledge,
   listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
+  listKnowledgeTopics,
   listMemberNotes,
   listMemberWarnings,
   MEMBER_NOTE_MAX_CHARS,
@@ -415,6 +416,25 @@ export function formatKnowledgeSearchResults(
 }
 
 /**
+ * Pure renderer for `list_knowledge_topics` (issue #437): titles in, reply
+ * text out — exported separately from the tool handler so the empty-KB and
+ * truncation-note edge cases are unit-testable without a DB round trip, same
+ * split as `formatKnowledgeSearchResults` above. Titles carry the same trust
+ * level `knowledge_search` already grants them (shown verbatim there too), so
+ * no `untrusted()`-style sanitizing here. `totalCount` is the full match
+ * count `listKnowledgeTopics` returns via `COUNT(*) OVER()` — greater than
+ * `titles.length` only when the cap truncated the page.
+ */
+export function formatKnowledgeTopics(titles: string[], totalCount: number): string {
+  if (titles.length === 0) return 'No knowledge topics have been added yet.';
+  const remaining = totalCount - titles.length;
+  const body = titles.map((t) => `- ${t}`).join('\n');
+  const truncationNote =
+    remaining > 0 ? `\n\n+${remaining} more — ask a specific question and I'll search everything.` : '';
+  return body + truncationNote;
+}
+
+/**
  * Both members of the `Platform` union (`src/platforms/types.ts`) — fixed at
  * two today; a future third adapter only needs adding here.
  */
@@ -643,6 +663,7 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
   '- Ask me for our community guidelines ("what are the rules here?")\n' +
   '- Answer questions from curated community knowledge — just ask\n' +
+  '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
   '- Search back through your own past messages for something said earlier\n' +
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
@@ -1668,6 +1689,22 @@ export function buildToolServer(
           lowRatedIds,
         ),
       );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listKnowledgeTopicsTool = tool(
+    'list_knowledge_topics',
+    'Browse the titles of what the community knowledge base covers — the proactive counterpart to ' +
+      "knowledge_search for a member who doesn't yet know the right words to search for. Titles only, " +
+      'no arguments, no content — call knowledge_search for an actual answer once you know what to ask.',
+    {},
+    async () => {
+      const { titles, totalCount } = await listKnowledgeTopics(
+        { platform: caller.platform, conversationId: caller.conversationId },
+        config.behaviour.knowledgeTopicsListLimit,
+      );
+      return text(formatKnowledgeTopics(titles, totalCount));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4609,6 +4646,7 @@ export function buildToolServer(
       checkStatus,
       listEvents,
       knowledgeSearch,
+      listKnowledgeTopicsTool,
       rememberSearch,
       forgetMe,
       reportContent,
