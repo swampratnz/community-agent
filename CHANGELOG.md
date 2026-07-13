@@ -5,6 +5,11 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/). The agent's
 `whats_new` tool reads this file, so keep entries user-legible and add a new
 `##` dated section (or version) as part of each release.
 
+Dates are the **Pacific/Auckland (New Zealand)** calendar day, not UTC — this
+is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
+for anything after ~noon NZST/NZDT). Get today's date with
+`TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
+
 ## 2026-07-12
 
 ### Added
