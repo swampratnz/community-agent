@@ -2119,7 +2119,13 @@ test('SECURITY: redeploy_bot handler refuses a direct call from an admin caller 
 // mints N tests from one literal silently under-counts the manifest (PR #421
 // review round 4). One helper, three static declarations.
 async function assertDevTeamAdminRejected(
-  toolName: 'dev_team_dispatch' | 'dev_team_status' | 'dev_team_result' | 'dev_team_backlog',
+  toolName:
+    | 'dev_team_dispatch'
+    | 'dev_team_status'
+    | 'dev_team_result'
+    | 'dev_team_backlog'
+    | 'dev_team_findings'
+    | 'dev_team_verify',
 ): Promise<void> {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -2136,7 +2142,7 @@ async function assertDevTeamAdminRejected(
     }
   )._registeredTools[toolName];
   await assert.rejects(
-    () => registeredTool.handler({ id: 'j1', mode: 'assess', repo: 'o/r', job_id: 'j1' }),
+    () => registeredTool.handler({ id: 'j1', mode: 'assess', repo: 'o/r', job_id: 'j1', finding: 'f1' }),
     /Permission denied/,
   );
 }
@@ -2155,6 +2161,14 @@ test('SECURITY: dev_team_result handler refuses a direct call from an admin call
 
 test('SECURITY: dev_team_backlog handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)', async () => {
   await assertDevTeamAdminRejected('dev_team_backlog');
+});
+
+test('SECURITY: dev_team_findings handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)', async () => {
+  await assertDevTeamAdminRejected('dev_team_findings');
+});
+
+test('SECURITY: dev_team_verify handler refuses a direct call from an admin caller (assertAtLeast re-check, runs before the enabled gate)', async () => {
+  await assertDevTeamAdminRejected('dev_team_verify');
 });
 
 test('dev_team_dispatch returns a friendly disabled message (not an error throw) when DEV_TEAM_ENABLED is off', async () => {
@@ -2208,6 +2222,33 @@ test('dev_team_backlog returns a friendly disabled message (not an error throw) 
   const result = await registeredTool.handler({ job_id: 'job-1' });
   assert.match(result.content[0].text, /not enabled/i, 'disabled feature must return a friendly message');
   assert.equal(result.isError, true);
+});
+
+test('dev_team_findings / dev_team_verify return a friendly disabled message (not an error throw) when DEV_TEAM_ENABLED is off', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'super-1',
+    userName: 'SuperAdmin',
+    role: 'super_admin' as const,
+    conversationId: 'convo-devteam-verify-disabled',
+  };
+  assert.equal(config.devTeam.enabled, false, 'precondition: dev-team feature is off in this test process');
+  const server = buildToolServer(caller, adapter);
+  const registeredTools = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools;
+  const findings = await registeredTools['dev_team_findings'].handler({ job_id: 'job-1' });
+  assert.match(findings.content[0].text, /not enabled/i, 'disabled feature must return a friendly message');
+  assert.equal(findings.isError, true);
+  const verify = await registeredTools['dev_team_verify'].handler({ job_id: 'job-1', finding: 'f-1' });
+  assert.match(verify.content[0].text, /not enabled/i, 'disabled feature must return a friendly message');
+  assert.equal(verify.isError, true);
 });
 
 test('SECURITY: update_knowledge registers a pending CONFIRM action instead of overwriting the KB in place (advisory E2)', async () => {
