@@ -1050,6 +1050,15 @@ the automated multi-loop pipeline sessions (see PIPELINE.md). `src/usageAlert.ts
 adds an opt-in proactive check on top of the existing (pull-only, super-admin)
 `usage_stats` tool:
 
+- Beyond interaction-derived cost, `usage_stats` also surfaces spend and
+  savings that never write an `interactions` row: a background-job cost
+  breakdown (moderation/context-builder/knowledge-refresh `query()` calls,
+  issue #438) and a shortcut-hit count (issue #440) — how often the four
+  env-gated turn-skipping shortcuts (ack, knowledge, repeat-question,
+  repeat-max-turns) fired, with a rough dollar estimate of Max-pool spend
+  avoided at the member-tier average reply cost. Both lines are appended only
+  when non-zero, byte-identical to today's output otherwise.
+
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.
 - When set, an hourly check calls `usageStats(1)` (rolling 24h) and compares

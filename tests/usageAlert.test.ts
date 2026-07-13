@@ -22,6 +22,7 @@ const BASE_STATS = {
   topUsers: [],
   costByRole: [],
   backgroundCostUsd: 0,
+  shortcutHits: { total: 0, byKind: [] },
   backgroundCostByJob: [],
 };
 
