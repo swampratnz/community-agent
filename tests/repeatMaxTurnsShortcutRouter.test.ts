@@ -127,6 +127,38 @@ test('router (repeat-max-turns shortcut): the same caller resending the same whi
   );
 });
 
+test('router (repeat-max-turns shortcut): a hit records a shortcut_hits row of kind "repeat_max_turns" (issue #440)', async () => {
+  const calls: string[] = [];
+  const router = new Router(
+    async () => ({ text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }),
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (kind) => {
+      calls.push(kind);
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-shortcut-hit`;
+
+  await trigger(makeMessage({ text: `${RUN} a very long ask`, conversationId }));
+  await trigger(makeMessage({ text: `${RUN} a very long ask`, conversationId }));
+
+  assert.equal(sent.length, 2);
+  assert.deepEqual(
+    calls,
+    ['repeat_max_turns'],
+    'only the second (shortcut) hit records a row, not the first max-turns failure',
+  );
+});
+
 test('router (repeat-max-turns shortcut): a DIFFERENT message from the same caller after a max-turns failure is not short-circuited', async () => {
   let calls = 0;
   const router = new Router(async () => {

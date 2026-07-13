@@ -132,6 +132,34 @@ test('router (knowledge shortcut): a near-exact match (>= threshold) skips runTu
   assert.deepEqual(recorded, [[1]], 'retrieval_count/last_retrieved_at must be bumped for the served entry');
 });
 
+test('router (knowledge shortcut): a hit records a shortcut_hits row of kind "knowledge" (issue #440)', async () => {
+  const calls: string[] = [];
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a near-exact knowledge-shortcut match');
+    },
+    20,
+    undefined,
+    fixedHitSearch(0.95),
+    async () => {},
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (kind) => {
+      calls.push(kind);
+    },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(calls, ['knowledge']);
+});
+
 test('SECURITY: router (knowledge shortcut): an auto-researched near-exact match is NOT direct-served — it falls through to a full turn (where knowledge_search quarantines it)', async () => {
   let ranTurn = false;
   const autoHitSearch: SearchKnowledgeFn = async () => [
