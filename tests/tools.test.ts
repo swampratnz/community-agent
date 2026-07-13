@@ -235,6 +235,10 @@ after(async () => {
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'warn_user' AND actor_user_id LIKE $1`, [
       `${MANUAL_WARN_HANDLER_ADMIN}%`,
     ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}-ban-%`]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id LIKE $1`, [
+      `${RUN}-ban-%`,
+    ]);
   }
   await closeDb();
 });
@@ -2563,7 +2567,7 @@ function moderateHandler(caller: {
         string,
         {
           handler: (args: {
-            action: 'timeout_user' | 'kick_user' | 'delete_message' | 'warn_user';
+            action: 'timeout_user' | 'kick_user' | 'ban_user' | 'delete_message' | 'warn_user';
             targetUserId: string;
             reason: string;
             durationMinutes?: number;
@@ -2896,6 +2900,171 @@ test(
       false,
       'warn_user sends immediately and never queues a CONFIRM',
     );
+  },
+);
+
+test(
+  'SECURITY: moderate refuses ban_user on a platform that does not support it, before any CONFIRM is ' +
+    'queued or performAdminAction is called (issue #445 acceptance criterion #1) — mirrors the existing ' +
+    'adminCapabilities gate every other action already gets',
+  async () => {
+    const conv = `${RUN}-ban-unsupported-platform`;
+    const targetUser = `${conv}-target`;
+    const adapter = moderateAdapter({
+      platform: 'whatsapp',
+      capabilities: ['warn_user', 'kick_user', 'delete_message'],
+    });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: targetUser,
+      reason: 'repeat offender',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /does not support "ban_user"/);
+    assert.equal(hasPendingAction('whatsapp', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test('SECURITY: moderate rejects a member-tier caller for ban_user before any Discord call or audit write (issue #445 acceptance criterion #2)', async () => {
+  const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+  const handler = moderateHandler({ role: 'member', adapter });
+
+  await assert.rejects(
+    () =>
+      handler.handler({
+        action: 'ban_user',
+        targetUserId: 'anyone',
+        reason: 'repeat offender',
+      }),
+    /Permission denied/,
+  );
+  assert.equal(adapter.performCalls.length, 0, 'a refused caller must never reach performAdminAction');
+});
+
+test(
+  'SECURITY: ban_user does not execute until CONFIRM is received — queued only, no performAdminAction ' +
+    'call and no admin_audit row until the admin confirms (issue #445 acceptance criterion #3), mirroring ' +
+    'the existing kick_user/timeout_user CONFIRM behaviour',
+  { skip },
+  async () => {
+    const conv = `${RUN}-ban-confirm-gate`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('discord', conv, targetUser);
+    const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+    const handler = moderateHandler({ conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: targetUser,
+      reason: 'repeat offender',
+    });
+
+    assert.equal(result.isError, false);
+    assert.match(
+      result.content[0]?.text ?? '',
+      new RegExp(`ban_user on ${targetUser} in ${conv} \\(reason:`),
+    );
+    assert.equal(adapter.performCalls.length, 0, 'CONFIRM only queues the action, never runs it');
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), true);
+
+    const { rows: beforeConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id = $1`,
+      [targetUser],
+    );
+    assert.equal(beforeConfirm[0].n, 0, 'no admin_audit row before CONFIRM — a queued action is not audited');
+
+    cancelPendingAction('discord', conv, 'admin-1');
+  },
+);
+
+test(
+  'A successful ban_user writes exactly one admin_audit row with action_kind = ban_user, surfaced by ' +
+    "moderation_history scoped to the admin's own conversations (issue #445 acceptance criteria #5)",
+  { skip },
+  async () => {
+    const conv = `${RUN}-ban-audit`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('discord', conv, targetUser);
+    const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+    const handler = moderateHandler({ conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: targetUser,
+      reason: 'repeat offender',
+    });
+    assert.equal(result.isError, false);
+
+    const pending = takePendingAction('discord', conv, 'admin-1');
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(adapter.performCalls.length, 1);
+    assert.equal(adapter.performCalls[0].kind, 'ban_user');
+    assert.equal(adapter.performCalls[0].targetUserId, targetUser);
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id = $1`,
+      [targetUser],
+    );
+    assert.equal(rows[0].n, 1, 'exactly one admin_audit row for the confirmed ban');
+
+    const modHistoryServer = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: conv,
+      },
+      adapter,
+    );
+    const modHistoryTool = (
+      modHistoryServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { targetUserId?: string; actionKind?: string }) => Promise<{
+              content: Array<{ type: string; text: string }>;
+              isError?: boolean;
+            }>;
+          }
+        >;
+      }
+    )._registeredTools['moderation_history'];
+    const historyResult = await modHistoryTool.handler({ targetUserId: targetUser, actionKind: 'ban_user' });
+    assert.equal(historyResult.isError, false);
+    assert.match(
+      historyResult.content[0]?.text ?? '',
+      new RegExp(`ban_user \\(${targetUser}\\)`),
+      'the ban_user audit row must be surfaced by moderation_history',
+    );
+  },
+);
+
+test(
+  'SECURITY: ban_user against a targetUserId never seen on the platform is refused by the existing ' +
+    'isKnownUser check before any Discord call (issue #445 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-ban-unknown-user`;
+    const adapter = moderateAdapter({ capabilities: ['ban_user'] });
+    const handler = moderateHandler({ conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'ban_user',
+      targetUserId: `${conv}-never-seen`,
+      reason: 'repeat offender',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /has never been seen on discord/);
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), false);
+    assert.equal(adapter.performCalls.length, 0, 'no admin action for a refused, unseen target');
   },
 );
 
