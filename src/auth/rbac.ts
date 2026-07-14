@@ -121,6 +121,11 @@ export const ADMIN_TOOLS = [
   // it reads only admin_audit, never member_warnings (issue #410). Same
   // (platform, userId)-only scope as clear_warnings, not conversation-scoped.
   'mcp__community__list_member_warnings',
+  // Enumerates currently-muted members by identity — the growth path #403
+  // itself named and deferred (issue #487). Same admin-tier, non-
+  // conversation-scoped boundary as clear_warnings/list_member_warnings;
+  // never includes reason/excerpt.
+  'mcp__community__list_muted_members',
   'mcp__community__announce',
   'mcp__community__create_poll',
   // End a running poll early — same admin tier / conversation-scope / audit as

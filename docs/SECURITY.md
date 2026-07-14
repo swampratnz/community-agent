@@ -567,11 +567,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   and excludes the bot's own number/LID; it carries no new opt-in flag,
   reasoning that group participant lists are visible to every member of a
   WhatsApp group, the same "not a secret list" posture already applied to
-  Discord's roster. A known, documented limitation for multi-group WhatsApp
-  deployments: a single `(platform, user_id)` row can't represent per-group
-  presence, so a `remove` from one allowed group marks the row "left" even if
-  the person remains in another — the same coarseness Discord's single-guild
-  model sidesteps by construction. Reads are **admin-tier and guild/group-wide**
+  Discord's roster. A previously-documented limitation for multi-group
+  WhatsApp deployments — a single `(platform, user_id)` row can't represent
+  per-group presence, so a `remove` from one allowed group marked the row
+  "left" even if the person remained in another — is resolved (issue #501):
+  `onGroupParticipantsUpdate` now checks live membership across every other
+  `WHATSAPP_ALLOWED_JIDS` group before writing the leave-mark, reusing the
+  same `groupFetchAllParticipating()` call and phone/LID-tolerant id matching
+  `conversationsForUser`/`backfillRoster` already use; the check's result
+  only gates the existing `markRosterLeave` call and is never itself
+  persisted. See `docs/ARCHITECTURE.md`'s roster section for the two narrow,
+  self-healing residual gaps. Reads are **admin-tier and guild/group-wide**
   (`list_roster` is not conversation-scoped — same precedent as
   `list_access_requests`), display names are wrapped as untrusted data, and
   `forget_me`/`purge_user_data` delete the person's roster row by
@@ -622,6 +628,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `moderation_history`") rather than asserting it, is inert (no query) unless
   `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
   extends — carries only bare integers, never warning content or an identity.
+  Issue #497 (off unless `ADMIN_DIGEST_TRENDS_ENABLED`) added a week-over-week
+  trend suffix on every one of these bare counts, backed by `last_counts`, a
+  JSONB column on `admin_digest_sends`. **No new data class**: `last_counts`
+  carries exactly the same integers the digest already sends that admin every
+  week — never message content, a user/conversation id, or any field beyond
+  the known signal-name set — enforced by a whitelist at the write boundary
+  (`sanitizeDigestCounts` in `repository.ts`) that strips any unexpected key
+  or non-integer value before it reaches the column, so a future call site
+  can never smuggle PII-shaped data into the snapshot by accident. The
+  snapshot write is decoupled from the freshness guard: a quiet week (no DM
+  sent) still updates `last_counts` via a dedicated path that never touches
+  `sent_at`, so a silent week can't be mistaken for a real send nor corrupt
+  next week's delta. `last_counts` is purge-coherent with the rest of the row
+  — `forget_me`/`purge_user_data` remove it alongside `sent_at` for an
+  offboarded admin.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
@@ -762,6 +783,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
+  - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
+    test) enumerates currently-muted members by identity — the growth path
+    #403 named and deferred for the digest's bare `🔇 N` count. It sits at the
+    same admin-tier, non-conversation-scoped boundary `clear_warnings`/
+    `list_member_warnings` already occupy — not a new data-access tier, and no
+    field it returns (user id, strike count, `active`/`stale` status,
+    last-warning timestamp) is new: every one is already reachable by an
+    admin who already knows the target id via `list_member_warnings`. It
+    deliberately never returns `reason`/`excerpt` (message content stays
+    behind `list_member_warnings`, pinned by a `SECURITY:` test), and its
+    `stale` tag — like `countStaleMutedMembers`' own count — is an
+    over-approximation the tool's own output hedges as "may still be muted",
+    never asserted as a confirmed live mute.
   - **Strike accumulation is unbounded by default, and that's now a documented
     choice, not an oversight**: `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset
     by default) lets an admin opt into a rolling window so only strikes newer

@@ -193,7 +193,18 @@ memory**:
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped
    `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`/`list_roster`
-   tools instead.
+   tools instead. Off unless `ADMIN_DIGEST_TRENDS_ENABLED` (issue #497), every
+   one of these bare counts also carries a week-over-week trend suffix — a
+   ` (▲+N since last week)` / ` (▼-N since last week)` fragment appended to a
+   line whose count moved since the prior send, silent when it's unchanged or
+   there's no prior snapshot. The comparison point is `last_counts`, a JSONB
+   snapshot column on `admin_digest_sends` written every run regardless of the
+   flag (so flipping it on is retroactively useful from the very next tick)
+   and whitelist-sanitized at the write boundary to the known signal-name set
+   — the exact same integers the digest already sends, never anything else.
+   A quiet week (no DM sent) still snapshots the current counts via a
+   dedicated write path that deliberately never touches `sent_at`, keeping the
+   trend snapshot fully decoupled from the freshness guard above it.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -261,6 +272,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
+| `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -347,9 +359,18 @@ tier-revoked-mid-TTL "permissions changed" outcome, and the authoritative
 action each pick a fixed `_MI` variant off the same `getLanguagePreference`
 read, with `pending.description` embedded unchanged in both language variants
 and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
-`classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
-outcome/failure strings (`pending.execute()`'s own return value and the
-`Failed: ...` fallback) stay out of scope and English-only. The five opt-in,
+`classifyConfirmReply` keeps matching them. A tenth addition (issue #490)
+closes the one gap #405 named out of scope: the generic `'Failed: '` shell
+that fronts a `requireConfirm` outcome — whether `pending.execute()`'s own
+return value or the router's own catch-block fallback — is now swapped for a
+fixed `FAILED_PREFIX_MI` on a standing `'mi'` preference, leaving the dynamic
+`result`/error text after it byte-identical to the English case; a plain
+string-prefix match at the single existing send site, so it covers every
+`requireConfirm` call site sharing that template without touching
+`agent/tools.ts`. What stays out of scope and English-only: any bespoke,
+non-`Failed:`-templated outcome/description string a `requireConfirm` tool
+authors directly, and the symmetric `'Done: '` success shell (deferred — see
+below). The five opt-in,
 off-by-default shortcut-reply strings `respond()` uses to skip a full agent
 turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
 `GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
@@ -452,11 +473,25 @@ weakening it:
    never added as a member?" (the gated-mode onboarding queue — the exact
    conversion funnel `add_member` serves), and "who left?", with a
    total/joined/left weekly pulse line, for either platform. Rejoins clear
-   `left_at` and bump `rejoined_count`. A WhatsApp caveat not shared by
-   Discord's single-guild model: a `remove` from one group marks the row
-   "left" even if the person remains in another allowed group — a single
-   `(platform, user_id)` row can't represent per-group presence, documented
-   here rather than solved in this first version.
+   `left_at` and bump `rejoined_count`. The WhatsApp multi-group caveat noted
+   in the first version of this feature — a `remove` from one group marking
+   the row "left" even if the person remains in another allowed group — is
+   resolved (issue #501): before marking a `remove` as a leave,
+   `onGroupParticipantsUpdate` checks live membership across every *other*
+   `WHATSAPP_ALLOWED_JIDS` group via `groupFetchAllParticipating()` (the same
+   call `conversationsForUser`/`backfillRoster` already make), matching
+   phone/LID id forms the same tolerant way those two do, and skips the
+   leave-mark if the person is still present anywhere else in scope. A thrown
+   fetch degrades to the old unconditional mark-left (logged as a warning),
+   never a silent skip. Two residual, self-healing gaps remain, both narrower
+   than the original caveat: (1) a person who leaves *every* allowed group in
+   the same tick may be read as still-present for one event if another
+   group's live metadata hasn't yet reflected their departure — the next
+   remove event or the nightly backfill corrects it; (2) a participant removed
+   via a bare `@lid` JID with no resolvable phone number, who is present
+   elsewhere only under a phone-address form Baileys doesn't reciprocally
+   link back to that LID, still can't be matched — the same identity-linking
+   limit already documented above for `lidToPhone`.
 4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
    static "ask a community admin" pointer a gated guest gets on every
    addressed message named no one to ask. `listAdminDisplayNames(platform)`
@@ -890,6 +925,18 @@ enabled (every message is inspected) — treat it like ambient archiving.
   rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
   reads only `admin_audit` and structurally can't surface auto-detected
   strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
+- **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
+  right now", the question `list_member_warnings` structurally can't (it
+  requires an already-known `targetUserId`) and the digest's bare `🔇 N`
+  count (issue #357) was never meant to answer. It unions `countMutedMembers`'
+  and `countStaleMutedMembers`' (issue #403) predicates into one identity
+  list — each row tagged `active` (currently over the windowed strike limit)
+  or `stale` (over the unwindowed limit only — strikes aged out of the
+  window but never explicitly cleared, so the member *may* still be muted;
+  the tool hedges this explicitly, never asserting it as confirmed), with
+  strike count and last-warning timestamp. Never reason/excerpt — that stays
+  behind `list_member_warnings`. Same guild-wide, non-conversation-scoped
+  boundary as `clear_warnings`; capped at 50 rows, newest first.
 
 Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
 see SECURITY.md for the blast-radius and enforcement caveats.
