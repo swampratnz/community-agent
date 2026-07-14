@@ -407,6 +407,12 @@ CREATE TABLE IF NOT EXISTS admin_digest_sends (
   sent_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (platform, platform_user_id)
 );
+-- Week-over-week trend snapshot (issue #497): the exact same bare integers
+-- the digest already sends this admin, nothing more — see
+-- `sanitizeDigestCounts`/`getLastDigestCounts`/`recordAdminDigestSnapshot` in
+-- repository.ts. Deliberately NOT bumped by the snapshot-only write path, so
+-- it stays decoupled from the `sent_at` freshness guard above.
+ALTER TABLE admin_digest_sends ADD COLUMN IF NOT EXISTS last_counts JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- ---------------------------------------------------------------------------
 -- Standing "plain language" response-style preference (issue #126), set by

@@ -549,6 +549,49 @@ export class BaileysAdapter implements PlatformAdapter {
     const inScope =
       config.whatsapp.allowedJids.length === 0 || config.whatsapp.allowedJids.includes(update.id);
     if (inScope && (update.action === 'add' || update.action === 'remove')) {
+      // Issue #501: a `remove` from one allowed group must not mark
+      // `server_roster` "left" for someone who remains in another allowed
+      // group — a single `(platform, user_id)` row can't represent per-group
+      // presence, so check live membership elsewhere before writing. Fetched
+      // ONCE per event (not once per participant), reusing the same
+      // `groupFetchAllParticipating()` call `conversationsForUser` and
+      // `backfillRoster` already make for the same "which allowed groups is
+      // this person in" question. A thrown fetch degrades to today's
+      // unconditional mark-left (logged as a warning), matching those sibling
+      // sites' failure posture — never a silent skip that could lose a
+      // genuine departure.
+      let otherGroups: Awaited<ReturnType<WASocket['groupFetchAllParticipating']>> | undefined;
+      if (update.action === 'remove' && this.sock) {
+        try {
+          otherGroups = await this.sock.groupFetchAllParticipating();
+        } catch (err) {
+          logger.warn(
+            { err, groupId: update.id },
+            'Failed to fetch WhatsApp groups for multi-group roster leave check; defaulting to mark left',
+          );
+        }
+      }
+      // The group the `remove` fired for is excluded from the "other groups"
+      // check — Baileys' own event ordering may or may not have already
+      // dropped the participant from THAT group's live metadata by the time
+      // this runs, so checking it would risk a same-tick false "still here"
+      // read. Matches membership the same phone/LID-tolerant way
+      // `conversationsForUser`/`isGroupAdmin` do, so a still-present member
+      // listed under a different id form in the other group is recognised.
+      const stillInAnotherAllowedGroup = (userId: string): boolean => {
+        if (!otherGroups) return false;
+        for (const [jid, meta] of Object.entries(otherGroups)) {
+          if (jid === update.id) continue;
+          if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(jid)) continue;
+          const inGroup = meta.participants?.some((p) => {
+            const pid = jidLocalPart(p.id);
+            const pn = jidLocalPart((p as { phoneNumber?: string }).phoneNumber);
+            return pid === userId || pn === userId || lidFallbackId(pid) === userId;
+          });
+          if (inGroup) return true;
+        }
+        return false;
+      };
       for (const jid of update.participants) {
         const local = jidLocalPart(jid);
         // Never roster-track the bot's own number/LID.
@@ -557,7 +600,7 @@ export class BaileysAdapter implements PlatformAdapter {
           await upsertRosterMember({ platform: 'whatsapp', userId: local }).catch((err) =>
             logger.warn({ err, jid }, 'WhatsApp roster join record failed'),
           );
-        } else {
+        } else if (!stillInAnotherAllowedGroup(local)) {
           await markRosterLeave('whatsapp', local).catch((err) =>
             logger.warn({ err, jid }, 'WhatsApp roster leave record failed'),
           );

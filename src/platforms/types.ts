@@ -31,6 +31,17 @@ export interface IncomingMessage {
   /** Whether the bot was explicitly addressed (mention / DM / reply). */
   addressedToBot: boolean;
   /**
+   * True when the platform identifies the author as a bot, webhook, or
+   * system account (issue #477's auto-answer loop-prevention). Adapters that
+   * already refuse to construct an `IncomingMessage` for such an author
+   * (Discord's `onDiscordMessage` returns before this point) never need to
+   * set this — it exists as a second, router-level backstop so the
+   * self/bot/webhook exclusion is enforced (and testable) in the router
+   * itself, not only implicitly by an adapter never calling the handler.
+   * Unset/false everywhere else, so this is a no-op for every existing path.
+   */
+  isBotAuthor?: boolean;
+  /**
    * Platform-native message id, when the platform exposes one. Lets stored
    * interactions be deleted/updated when the original message is (ambient
    * archiving, issue #48).
@@ -158,6 +169,19 @@ export interface PlatformAdapter {
 
   /** Send a 1:1 message to a user (used for warnings and super-admin alerts). */
   sendDirectMessage(userId: string, text: string): Promise<void>;
+
+  /**
+   * Create a thread anchored to `messageId` in `conversationId` and return
+   * the new thread's id, so the router's auto-answer mode (issue #477) can
+   * contain its reply in a thread on the originating post rather than
+   * answering bare in the channel. `name` is bot-composed from member text
+   * (a truncated echo of the question) and MUST be run through the same
+   * outbound filter (secret redaction) as any other bot-authored text before
+   * it reaches the platform. Optional — only Discord implements it (this
+   * feature is Discord-only); other adapters simply omit it, mirroring
+   * `sendImage?`/`reactToMessage?`/`canPostTo?`'s convention.
+   */
+  startAutoAnswerThread?(conversationId: string, messageId: string, name: string): Promise<string>;
 
   /**
    * Post an image attachment to a conversation. Optional — adapters with no
