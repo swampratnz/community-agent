@@ -665,8 +665,26 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
-    formatShortcutHitsLine(s.shortcutHits, s.costByRole)
+    formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
+    formatCacheUsageLine(s.cacheUsage)
   );
+}
+
+/**
+ * Renders the prompt-cache hit-rate line (issue #522) — the operator-facing
+ * surface for the `cache_read_input_tokens`/`cache_creation_input_tokens`
+ * telemetry issue #508 added but only ever logged at debug level. Follows
+ * the same "omit the line entirely when there's nothing to show" convention
+ * as `formatShortcutHitsLine`/the background-jobs line above: a deployment
+ * with zero recorded cache activity (pre-#522, or before any turn has
+ * reported usage) gets byte-identical output to today.
+ */
+function formatCacheUsageLine(cacheUsage: Awaited<ReturnType<typeof usageStats>>['cacheUsage']): string {
+  const { readTokens, creationTokens } = cacheUsage;
+  const totalTokens = readTokens + creationTokens;
+  if (totalTokens === 0) return '';
+  const hitRate = Math.round((readTokens / totalTokens) * 100);
+  return `\nPrompt cache: ${hitRate}% hit rate (${readTokens} read / ${creationTokens} new tokens).`;
 }
 
 /**

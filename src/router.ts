@@ -1581,6 +1581,18 @@ export class Router {
           // whenever no `knowledge_search` call in the turn had a hit clear
           // the relevance floor.
           ...(reply.knowledgeEntryId != null ? { knowledgeEntryId: reply.knowledgeEntryId } : {}),
+          // Cache-usage telemetry (issue #522): mirrors the conditional-spread
+          // pattern above, but gated on `> 0` rather than `!= null` — a turn
+          // whose SDK result carried no `usage` at all (undefined) AND a turn
+          // whose `usage` reported all-zero cache counts must both write
+          // neither key (acceptance criterion 2), so a zero here is treated
+          // the same as "nothing to report", not as a real reading.
+          ...(reply.cacheReadTokens != null && reply.cacheReadTokens > 0
+            ? { cacheReadTokens: reply.cacheReadTokens }
+            : {}),
+          ...(reply.cacheCreationTokens != null && reply.cacheCreationTokens > 0
+            ? { cacheCreationTokens: reply.cacheCreationTokens }
+            : {}),
         },
       }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
     } finally {

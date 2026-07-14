@@ -2481,6 +2481,7 @@ export async function usageStats(days = 7): Promise<{
   backgroundCostUsd: number;
   shortcutHits: { total: number; byKind: Array<{ kind: string; count: number }> };
   backgroundCostByJob: Array<{ job: string; costUsd: number }>;
+  cacheUsage: { readTokens: number; creationTokens: number };
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2506,6 +2507,21 @@ export async function usageStats(days = 7): Promise<{
       GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
     [interval],
   );
+  // Cache-hit/-write token telemetry (issue #522): sums the `meta` JSONB
+  // keys `core.ts`/`router.ts` write per outbound row (issue #508's read,
+  // threaded through). Same table/window/direction filter as `byRole` above,
+  // just one more SUM() aggregate over it — same cost class as the existing
+  // `backgroundCostByJob`/`shortcutHits` aggregates it sits beside. Rows that
+  // never got either key (pre-#522, or a turn with no/zero usage) contribute
+  // 0 via `coalesce`, not null.
+  const { rows: cache } = await pool.query(
+    `SELECT
+       coalesce(sum((meta->>'cacheReadTokens')::bigint), 0) AS read_tokens,
+       coalesce(sum((meta->>'cacheCreationTokens')::bigint), 0) AS creation_tokens
+     FROM interactions
+     WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
+    [interval],
+  );
   const background = await sumBackgroundJobCosts(clampedDays);
   const shortcuts = await sumShortcutHits(clampedDays);
   return {
@@ -2517,6 +2533,10 @@ export async function usageStats(days = 7): Promise<{
     backgroundCostUsd: background.total,
     shortcutHits: shortcuts,
     backgroundCostByJob: background.byJob,
+    cacheUsage: {
+      readTokens: Number(cache[0].read_tokens),
+      creationTokens: Number(cache[0].creation_tokens),
+    },
   };
 }
 
