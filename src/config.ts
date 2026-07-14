@@ -530,6 +530,18 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Real-time admin escalation after a max-turns failure (issue #479): when a
+  // turn ends with `reply.maxTurnsExceeded === true`, append a "reply yes to
+  // flag this for a community admin" offer to the fixed MAX_TURNS_REPLY/_MI
+  // fallback and register a matching pending entry (same caller-key/TTL shape
+  // as `lastMaxTurnsFailure` above). A confirmed "yes"/"y"/"āe" within the
+  // window notifies every `listAdmins()` row via `notifyAdmins` — entirely
+  // router-level, never routed through the model. Off by default; see
+  // src/router.ts.
+  ESCALATION_TO_ADMIN_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -839,6 +851,7 @@ export const config = {
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
+    escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {
