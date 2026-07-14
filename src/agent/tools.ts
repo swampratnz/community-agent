@@ -11,6 +11,7 @@ import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
   acceptKnowledgeCandidate,
+  adminActivitySummary,
   addMemberNote,
   addWarning,
   areKnowledgeEntriesLowRated,
@@ -659,6 +660,34 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole)
   );
+}
+
+/**
+ * Pure formatter for the `admin_activity` tool reply (issue #488), mirroring
+ * `formatUsageStats`'s testable-formatter shape. Rows must already carry a
+ * resolved display `name` (the caller resolves it via `resolveDisplayName`,
+ * falling back to the raw platform user id) — this function does no lookup
+ * itself, so it never touches the DB and is directly unit-testable. Never
+ * renders `admin_audit.params` — only actor/count/timestamp fields.
+ */
+export function formatAdminActivity(
+  rows: Array<{
+    name: string;
+    platform: string;
+    actionCount: number;
+    successCount: number;
+    failureCount: number;
+    lastActionAt: Date;
+  }>,
+  days: number,
+): string {
+  if (rows.length === 0) return `No privileged actions recorded in the last ${days} day(s).`;
+  return rows
+    .map(
+      (r) =>
+        `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}`,
+    )
+    .join('\n');
 }
 
 /**
@@ -4419,6 +4448,26 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const adminActivityTool = tool(
+    'admin_activity',
+    'Show a per-admin breakdown of privileged action volume over recent days — who is actually doing ' +
+      'moderation/curation work, not just a flat log of individual actions. Super admin only.',
+    { days: z.number().optional().describe('Window in days (default 30, max 365)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'admin_activity');
+      const days = Math.min(Math.max(Math.trunc(args.days ?? 30) || 30, 1), 365);
+      const rows = await adminActivitySummary(days);
+      const named = await Promise.all(
+        rows.map(async (r) => ({
+          ...r,
+          name: (await resolveDisplayName(r.platform, r.actorUserId)) ?? r.actorUserId,
+        })),
+      );
+      return text(formatAdminActivity(named, days));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const listAdminsTool = tool(
     'list_admins',
     'List everyone who currently holds bot-admin privilege, flagging any who have left the server/group. ' +
@@ -5061,6 +5110,7 @@ export function buildToolServer(
       purgeUserDataTool,
       auditView,
       usageStatsTool,
+      adminActivityTool,
       listAdminsTool,
       engagementStatsTool,
       pauseBot,

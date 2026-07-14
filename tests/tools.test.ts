@@ -40,6 +40,7 @@ const {
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatUsageStats,
+  formatAdminActivity,
   formatEngagementStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
@@ -100,6 +101,8 @@ const {
   markRosterLeave,
   upsertRosterMember,
   engagementStats,
+  adminActivitySummary,
+  recordAdminAction,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -5457,6 +5460,61 @@ test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits th
       'Cost by role: none\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0).',
+  );
+});
+
+test('formatAdminActivity renders the exact empty-window message, not an empty list (issue #488)', () => {
+  const out = formatAdminActivity([], 30);
+  assert.equal(out, 'No privileged actions recorded in the last 30 day(s).');
+});
+
+test('formatAdminActivity renders one line per actor sorted by action count descending (issue #488)', () => {
+  const out = formatAdminActivity(
+    [
+      {
+        name: 'Alice',
+        platform: 'discord',
+        actionCount: 12,
+        successCount: 10,
+        failureCount: 2,
+        lastActionAt: new Date('2026-06-01T12:00:00.000Z'),
+      },
+      {
+        name: 'Bob',
+        platform: 'whatsapp',
+        actionCount: 3,
+        successCount: 3,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-02T08:30:00.000Z'),
+      },
+    ],
+    30,
+  );
+  assert.equal(
+    out,
+    'Alice (discord): 12 actions (10 success / 2 failed), last 2026-06-01T12:00:00.000Z\n' +
+      'Bob (whatsapp): 3 actions (3 success / 0 failed), last 2026-06-02T08:30:00.000Z',
+  );
+});
+
+test('SECURITY: formatAdminActivity never renders admin_audit.params content — only actor/count/timestamp fields (issue #488)', () => {
+  const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN';
+  const out = formatAdminActivity(
+    [
+      {
+        name: 'Alice',
+        platform: 'discord',
+        actionCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T12:00:00.000Z'),
+      },
+    ],
+    30,
+  );
+  assert.ok(
+    !out.includes(sentinel),
+    'formatAdminActivity must never surface admin_audit.params free-text content',
   );
 });
 
@@ -11309,6 +11367,124 @@ test(
       await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
         departedAdmin,
       ]);
+    }
+  },
+);
+
+// admin_activity (issue #488) — the aggregated complement to audit_view: a
+// per-admin action-volume rollup over a trailing window, mirroring
+// usage_stats' shape (super-admin-only, days-windowed, read-only).
+function adminActivityHandler(caller: { userId: string; adapter: PlatformAdapter }) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId,
+      userName: 'SuperAdmin',
+      role: 'super_admin',
+      conversationId: `${RUN}-admin-activity-convo`,
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            days?: number;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['admin_activity'];
+}
+
+test(
+  'SECURITY: admin_activity rejects an admin caller — super-admin-only via the assertAtLeast re-check (issue #488)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord',
+        userId: `${RUN}-aa-admin-caller`,
+        userName: 'Admin',
+        role: 'admin',
+        conversationId: `${RUN}-admin-activity-reject-convo`,
+      },
+      adapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['admin_activity'];
+
+    await assert.rejects(
+      () => registeredTool.handler({}),
+      /admin/i,
+      'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check',
+    );
+  },
+);
+
+test(
+  'admin_activity resolves display names via the community_users->server_roster precedence, falls back to the raw platform user id for an unknown actor, and never renders admin_audit.params content (issue #488)',
+  { skip },
+  async () => {
+    const knownActor = `${RUN}-aa-known-actor`;
+    const unknownActor = `${RUN}-aa-unknown-actor`;
+    const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN-ADMIN-ACTIVITY';
+
+    await upsertMember({
+      platform: 'discord',
+      userId: knownActor,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Known Actor`,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: knownActor,
+      actionKind: 'warn_user',
+      params: { reason: sentinel },
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: unknownActor,
+      actionKind: 'timeout_user',
+      result: 'timed out',
+      success: true,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const handler = adminActivityHandler({ userId: `${RUN}-aa-actor2`, adapter });
+
+    try {
+      const result = await handler.handler({ days: 1 });
+      const out = result.content[0]?.text ?? '';
+
+      assert.match(
+        out,
+        new RegExp(`${RUN} Known Actor \\(discord\\): 1 actions \\(1 success / 0 failed\\)`),
+        'the known actor is rendered with its resolved display name',
+      );
+      assert.match(
+        out,
+        new RegExp(`${unknownActor} \\(discord\\): 1 actions \\(1 success / 0 failed\\)`),
+        'an actor with no resolvable name falls back to the raw platform user id',
+      );
+      assert.ok(!out.includes(sentinel), 'admin_audit.params content must never appear in the reply');
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[knownActor, unknownActor]]);
+      await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [knownActor]);
     }
   },
 );

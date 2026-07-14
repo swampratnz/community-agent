@@ -534,6 +534,20 @@ test('SECURITY: list_admins is super-admin only (who currently holds bot-admin t
   assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach list_admins');
 });
 
+test('SECURITY: admin_activity is super-admin only (per-admin action-volume rollup) — never reachable by admin/member/guest (issue #488)', () => {
+  const tool = 'mcp__community__admin_activity';
+  assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'admin_activity must be in SUPER_ADMIN_TOOLS');
+  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'admin_activity must not be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'admin_activity must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member', 'admin'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach admin_activity`);
+  }
+  assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach admin_activity');
+});
+
 test('SECURITY: engagement_stats is super-admin only (issue #419) — never admin/member/guest', () => {
   const tool = 'mcp__community__engagement_stats';
   assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'engagement_stats must be in SUPER_ADMIN_TOOLS');
