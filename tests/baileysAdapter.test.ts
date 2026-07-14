@@ -2001,8 +2001,8 @@ test(
 
 test(
   'list_events reports the standard unsupported-on-whatsapp reply on the real Baileys adapter, which ' +
-    'implements no scheduled-events primitive — mirrors the sendImage/reactToMessage unsupported-platform ' +
-    'pattern (issue #388)',
+    'implements no scheduled-events primitive — mirrors the sendImage unsupported-platform pattern ' +
+    '(issue #388)',
   async () => {
     const adapter = new BaileysAdapter();
     assert.equal(
@@ -2032,5 +2032,122 @@ test(
     const result = await registeredTool.handler();
     assert.equal(result.isError, true);
     assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
+  },
+);
+
+// --- reactToMessage: native WhatsApp reaction (issue #494, extends #231) --
+
+/** Stubs the socket's sendMessage to capture the native `react` payload reactToMessage builds. */
+function stubSocketForReact(adapter: InstanceType<typeof BaileysAdapter>) {
+  const sent: Array<{
+    jid: string;
+    react: { text: string; key: { remoteJid: string; id: string; fromMe: boolean; participant?: string } };
+  }> = [];
+  (
+    adapter as unknown as {
+      sock: {
+        sendMessage: (
+          jid: string,
+          msg: {
+            react: {
+              text: string;
+              key: { remoteJid: string; id: string; fromMe: boolean; participant?: string };
+            };
+          },
+        ) => Promise<void>;
+      };
+    }
+  ).sock = {
+    sendMessage: async (jid, msg) => {
+      sent.push({ jid, react: msg.react });
+    },
+  };
+  return sent;
+}
+
+test('reactToMessage sends a native WhatsApp reaction for a 1:1 DM, with no participant in the key (issue #494)', async () => {
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForReact(adapter);
+
+  await adapter.reactToMessage('64211234567@s.whatsapp.net', 'dm-msg-1', '👍');
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    jid: '64211234567@s.whatsapp.net',
+    react: {
+      text: '👍',
+      key: {
+        remoteJid: '64211234567@s.whatsapp.net',
+        id: 'dm-msg-1',
+        fromMe: false,
+        participant: undefined,
+      },
+    },
+  });
+});
+
+test(
+  "reactToMessage resolves the group message's author as participant via getInteractionAuthorByMessageId " +
+    '(issue #494, mirrors delete_message key construction)',
+  async (t) => {
+    t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+      if (/SELECT user_id FROM interactions/.test(sql)) {
+        assert.deepEqual(params, ['whatsapp', 'group-1@g.us', 'group-msg-1']);
+        return { rows: [{ user_id: '64299999999' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForReact(adapter);
+
+    await adapter.reactToMessage('group-1@g.us', 'group-msg-1', '🎉');
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].react.text, '🎉');
+    assert.equal(sent[0].react.key.remoteJid, 'group-1@g.us');
+    assert.equal(sent[0].react.key.id, 'group-msg-1');
+    assert.equal(sent[0].react.key.fromMe, false);
+    assert.equal(
+      sent[0].react.key.participant,
+      '64299999999@s.whatsapp.net',
+      "the group reaction's key must carry the resolved author, not the reactor",
+    );
+  },
+);
+
+test(
+  'SECURITY: reactToMessage does not fabricate a participant when a group message author cannot be ' +
+    'resolved — no react is sent at all (issue #494)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForReact(adapter);
+
+    await adapter.reactToMessage('group-1@g.us', 'unknown-msg', '✅');
+
+    assert.equal(
+      sent.length,
+      0,
+      'an unresolvable group author must never be papered over with a guessed/fabricated participant',
+    );
+  },
+);
+
+test(
+  'SECURITY: reactToMessage does not fabricate a participant when the stored author is not a real ' +
+    'phone-number id (e.g. a LID-only fallback) — no react is sent (issue #494)',
+  async (t) => {
+    t.mock.method(pool, 'query', async (sql: string) => {
+      if (/SELECT user_id FROM interactions/.test(sql)) {
+        return { rows: [{ user_id: 'lid:99999' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForReact(adapter);
+
+    await adapter.reactToMessage('group-1@g.us', 'lid-authored-msg', '👀');
+
+    assert.equal(sent.length, 0, 'a non-phone stored author id must never be routed as a participant JID');
   },
 );

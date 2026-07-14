@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
-  hasQueuedCandidateForTopic,
+  candidateTopicAlreadyReviewed,
   insertContextDigest,
   insertKnowledgeCandidate,
   knowledgeCoversTopic,
@@ -35,9 +35,11 @@ import {
  * candidate Q&A when the cluster is one stable, answerable question — no
  * extra model call, so the MAX_SUMMARIES worst case above is unchanged with
  * this on. A candidate is skipped (never inserted) when its digest's topic
- * already has a queued/reviewed knowledge_candidates row or an existing
- * knowledge entry already covers it above the relevance floor — see
- * `hasQueuedCandidateForTopic`/`knowledgeCoversTopic` in repository.ts.
+ * already has a queued/reviewed knowledge_candidates row (exact match OR,
+ * since issue #503, a paraphrase at/above KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD)
+ * or an existing knowledge entry already covers it above the relevance floor
+ * — see `candidateTopicAlreadyReviewed`/`knowledgeCoversTopic` in
+ * repository.ts.
  */
 
 /** Same greedy-clustering similarity bar as recentQuestionClusters. */
@@ -305,14 +307,16 @@ export async function runContextBuilder(
 
       if (config.contextCandidates.enabled && candidate) {
         try {
-          const alreadyQueued = await hasQueuedCandidateForTopic(topic);
-          const alreadyAnswered = !alreadyQueued && (await knowledgeCoversTopic(topic));
+          const { blocked: alreadyQueued, embedding: topicEmbedding } =
+            await candidateTopicAlreadyReviewed(topic);
+          const alreadyAnswered = !alreadyQueued && (await knowledgeCoversTopic(topicEmbedding));
           if (!alreadyQueued && !alreadyAnswered) {
             await insertKnowledgeCandidate({
               digestId,
               topic,
               title: candidate.title,
               content: candidate.content,
+              topicEmbedding,
             });
             candidates += 1;
           }

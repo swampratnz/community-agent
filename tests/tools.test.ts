@@ -90,6 +90,7 @@ const {
   recordInteraction,
   insertContextDigest,
   insertKnowledgeCandidate,
+  listKnowledgeCandidates,
   addWarning,
   addMemberNote,
   upsertMember,
@@ -8739,11 +8740,11 @@ test(
 // conversation), and an in-memory per-day rate cap.
 function reactToMessageHandler(
   adapter: PlatformAdapter,
-  opts: { userId?: string; conversationId?: string; messageId?: string } = {},
+  opts: { userId?: string; conversationId?: string; messageId?: string; platform?: Platform } = {},
 ) {
   const server = buildToolServer(
     {
-      platform: 'discord' as const,
+      platform: opts.platform ?? ('discord' as const),
       userId: opts.userId ?? `${REACT_TO_MESSAGE_HANDLER_CONVO}-user`,
       userName: 'Reacting Member',
       role: 'member' as const,
@@ -8888,7 +8889,54 @@ test(
   },
 );
 
-test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp)', async () => {
+test(
+  'react_to_message reacts on a message id the bot has actually seen in the current conversation on WhatsApp too — target validation is platform-agnostic (issue #494)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-wa-known`;
+    const messageId = `${conv}-msg`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId,
+    });
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      platform: 'whatsapp',
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId });
+
+    assert.equal(result.isError, false);
+    assert.deepEqual(adapter.reactCalls, [{ conversationId: conv, messageId, emoji: '👍' }]);
+  },
+);
+
+test(
+  'SECURITY: react_to_message refuses a WhatsApp message id the bot has never seen in this conversation — same target-validation guarantee as Discord (issue #494)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-wa-unseen`;
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      platform: 'whatsapp',
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: `${conv}-never-seen` });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /never been seen/);
+    assert.equal(adapter.reactCalls.length, 0, 'no reaction call for an unvalidated target on WhatsApp');
+  },
+);
+
+test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp Cloud, unlike Baileys)', async () => {
   const adapter = stubAdapter(async () => {});
   const result = await reactToMessageHandler(adapter, { messageId: 'msg-1' }).handler({ emoji: '👍' });
   assert.equal(result.isError, true);
@@ -9995,6 +10043,97 @@ test(
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: topic_embedding (issue #503) is never present in list_knowledge_candidates/accept_knowledge_candidate/decline_knowledge_candidate response shapes — write-and-compare-only, same non-exposure as knowledge.embedding/knowledge_gaps.embedding',
+  { skip },
+  async () => {
+    // Deliberately no "embedding" substring anywhere in the fixture's own
+    // title/content/topic strings — the assertions below check that the
+    // DB column is never exposed, not that this test's own fixture text
+    // happens to avoid the word.
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-vector-exposure-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-vector-exposure-topic`,
+      title: 'KC vector-exposure fixture title',
+      content: `${RUN} kc vector-exposure fixture content`,
+      topicEmbedding: new Array(384).fill(0).map((_, i) => (i === 0 ? 1 : 0)),
+    });
+
+    const tools = knowledgeCandidateHandlers();
+
+    const listed = await tools['list_knowledge_candidates'].handler({ status: 'pending' });
+    const listedText = listed.content[0]?.text ?? '';
+    assert.match(listedText, /KC vector-exposure fixture title/);
+    assert.doesNotMatch(
+      listedText.toLowerCase(),
+      /embedding/,
+      'list_knowledge_candidates never mentions the embedding column',
+    );
+
+    // Structural check too, not just a text-substring check: the mapped
+    // KnowledgeCandidate object itself carries no embedding-shaped field,
+    // so no future formatting change could accidentally leak it either.
+    const listedRows = await listKnowledgeCandidates('pending', 200);
+    const mine = listedRows.find((c) => c.id === candidateId);
+    assert.ok(mine, 'the fixture candidate is present');
+    assert.ok(
+      !Object.keys(mine as unknown as Record<string, unknown>).some((k) => /embedding/i.test(k)),
+      'the KnowledgeCandidate shape itself has no embedding-named field',
+    );
+
+    const acceptResult = await tools['accept_knowledge_candidate'].handler({ id: candidateId });
+    assert.equal(acceptResult.isError, false);
+    const acceptText = acceptResult.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      acceptText.toLowerCase(),
+      /embedding/,
+      'accept_knowledge_candidate never mentions the embedding column',
+    );
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
+      `${RUN} kc vector-exposure fixture content`,
+    ]);
+    const knowledgeId = Number(knowledgeRows.rows[0].id);
+
+    const digestId2 = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-vector-exposure-topic-2`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const candidateId2 = await insertKnowledgeCandidate({
+      digestId: digestId2,
+      topic: `${RUN}-kc-vector-exposure-topic-2`,
+      title: 'KC vector-exposure fixture title 2',
+      content: `${RUN} kc vector-exposure fixture content 2`,
+      topicEmbedding: new Array(384).fill(0).map((_, i) => (i === 1 ? 1 : 0)),
+    });
+    const declineResult = await tools['decline_knowledge_candidate'].handler({ id: candidateId2 });
+    assert.equal(declineResult.isError, false);
+    const declineText = declineResult.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      declineText.toLowerCase(),
+      /embedding/,
+      'decline_knowledge_candidate never mentions the embedding column',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[candidateId, candidateId2]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = ANY($1)`, [[digestId, digestId2]]);
   },
 );
 
