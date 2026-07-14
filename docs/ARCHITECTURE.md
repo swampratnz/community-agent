@@ -442,11 +442,25 @@ weakening it:
    never added as a member?" (the gated-mode onboarding queue — the exact
    conversion funnel `add_member` serves), and "who left?", with a
    total/joined/left weekly pulse line, for either platform. Rejoins clear
-   `left_at` and bump `rejoined_count`. A WhatsApp caveat not shared by
-   Discord's single-guild model: a `remove` from one group marks the row
-   "left" even if the person remains in another allowed group — a single
-   `(platform, user_id)` row can't represent per-group presence, documented
-   here rather than solved in this first version.
+   `left_at` and bump `rejoined_count`. The WhatsApp multi-group caveat noted
+   in the first version of this feature — a `remove` from one group marking
+   the row "left" even if the person remains in another allowed group — is
+   resolved (issue #501): before marking a `remove` as a leave,
+   `onGroupParticipantsUpdate` checks live membership across every *other*
+   `WHATSAPP_ALLOWED_JIDS` group via `groupFetchAllParticipating()` (the same
+   call `conversationsForUser`/`backfillRoster` already make), matching
+   phone/LID id forms the same tolerant way those two do, and skips the
+   leave-mark if the person is still present anywhere else in scope. A thrown
+   fetch degrades to the old unconditional mark-left (logged as a warning),
+   never a silent skip. Two residual, self-healing gaps remain, both narrower
+   than the original caveat: (1) a person who leaves *every* allowed group in
+   the same tick may be read as still-present for one event if another
+   group's live metadata hasn't yet reflected their departure — the next
+   remove event or the nightly backfill corrects it; (2) a participant removed
+   via a bare `@lid` JID with no resolvable phone number, who is present
+   elsewhere only under a phone-address form Baileys doesn't reciprocally
+   link back to that LID, still can't be matched — the same identity-linking
+   limit already documented above for `lidToPhone`.
 4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
    static "ask a community admin" pointer a gated guest gets on every
    addressed message named no one to ask. `listAdminDisplayNames(platform)`

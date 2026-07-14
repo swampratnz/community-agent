@@ -17,7 +17,7 @@
   "backgroundJobHealth.test.ts": 1,
   "backgroundJobs.test.ts": 8,
   "backgroundJobsDisabled.test.ts": 2,
-  "baileysAdapter.test.ts": 19,
+  "baileysAdapter.test.ts": 21,
   "baileysArchiving.test.ts": 2,
   "budgetCheckFailureRouter.test.ts": 2,
   "classifierModelTieringSet.test.ts": 1,
