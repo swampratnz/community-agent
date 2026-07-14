@@ -1026,6 +1026,54 @@ identically, and never replayed across a different platform, conversation, or
 user. Off by default; an operator opts in independently of the success-repeat
 shortcut.
 
+**Real-time admin escalation after a max-turns failure**
+(`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479): closes the
+"member hits `AGENT_MAX_TURNS` and gets nothing but a static fallback" gap —
+the one deflection failure the bot already detects structurally
+(`reply.maxTurnsExceeded === true`) but never followed up on. The whole flow
+lives in `router.ts`, entirely outside the model/tool layer:
+
+- **Atomic offer.** When the flag is on and a turn (or the repeat-max-turns
+  shortcut replaying one) ends with `maxTurnsExceeded === true`, the router
+  appends one line to `MAX_TURNS_REPLY`/`MAX_TURNS_REPLY_MI` — "Want me to
+  flag this for a community admin? Reply yes within 10 minutes." — and, in
+  the same step, records a pending entry in an in-memory
+  `platform:conversationId:userId -> {query, at}` map
+  (`Router.pendingEscalations`), keyed and swept exactly like
+  `lastMaxTurnsFailure` (issue #306) but on its own 10-minute TTL
+  (`ESCALATION_WINDOW_MS`). The offer line is never shown without a live
+  entry behind it and vice versa (`offerEscalation`) — both call sites that
+  can serve this failure text (a fresh turn in `respond()`, and the
+  repeat-max-turns shortcut's replay of the same text) go through the same
+  helper, closing the "dead offer / orphaned entry" hazard the adversarial
+  review for #479 flagged.
+- **Deterministic confirmation intercept.** A short affirmative
+  (`yes`/`y`/`āe`, case-insensitive, trimmed) from the same caller within the
+  TTL is matched in `handle()` BEFORE the addressed-to-bot check (same
+  positioning as the CONFIRM/CANCEL intercept, so a bare reply works in a
+  group) and before any shortcut/model routing. A match: consumes the
+  pending entry (single-shot — a replayed "yes" finds nothing the second
+  time), reserves a slot against the guild-wide rolling-hour
+  `ESCALATION_RATE_LIMIT_PER_HOUR` cap (default 5, same sliding-window shape
+  as `ANNOUNCE_RATE_LIMIT_PER_HOUR`), and on success calls `notifyAdmins`
+  (`agent/tools.ts`) — the real-time counterpart to `notifyReportFiled`'s
+  `notifySuperAdmins`, but sourced from `listAdmins()` (every
+  `community_users.role = 'admin'` row guild-wide, the same recipient set
+  the weekly digest already uses) across every connected adapter, echoing
+  the member's own truncated original question (`truncateForEcho`, the same
+  helper `notifyReportFiled`/`notifySuggestionResolved` use). A "yes" with no
+  live pending entry (never offered, or past the TTL) falls straight through
+  to the model as an ordinary message. Once the hourly cap is exhausted, a
+  further confirmed "yes" gets a plain "already at the hourly cap" reply
+  instead of a notification.
+- **No new tool, no new privileged data access.** The trigger is the
+  existing structural `maxTurnsExceeded` signal, never a model-callable
+  affordance — a crafted question can't make the *model* trigger an alert,
+  only a genuine max-turns exhaustion followed by the member's own "yes"
+  can. `listAdmins()` and the echoed question text are both already visible
+  to admins via the weekly digest/`list_knowledge_gaps`; this only changes
+  *when* they're seen.
+
 ## Health & monitoring
 
 `Restart=always` (`deploy/community-agent.service`) and the startup

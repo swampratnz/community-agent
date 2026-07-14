@@ -36,6 +36,7 @@
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
+  "escalationRouter.test.ts": 7,
   "gatedNotice.router.test.ts": 2,
   "gatedNotice.test.ts": 4,
   "grokImage.test.ts": 3,
