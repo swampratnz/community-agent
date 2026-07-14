@@ -59,6 +59,7 @@ const {
   countKnowledgeGaps,
   KNOWLEDGE_GAP_DAILY_LIMIT,
   recentModerationEntries,
+  adminActivitySummary,
   usageStats,
   recordBackgroundJobCost,
   sumBackgroundJobCosts,
@@ -2530,6 +2531,164 @@ test(
     );
 
     await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+  },
+);
+
+test(
+  'repository: adminActivitySummary groups by (platform, actor_user_id), computes correct counts/lastActionAt, sorted by actionCount descending, excludes rows outside the window (issue #488)',
+  { skip },
+  async () => {
+    const actorA = `${RUN}-aas-actor-a`;
+    const actorB = `${RUN}-aas-actor-b`;
+
+    // actorA: 3 in-window rows on discord (2 success, 1 failure).
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorA,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorA,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorA,
+      actionKind: 'kick_user',
+      result: 'failed: not found',
+      success: false,
+    });
+    // actorB: 1 in-window row on whatsapp.
+    await recordAdminAction({
+      platform: 'whatsapp',
+      actorUserId: actorB,
+      actionKind: 'timeout_user',
+      result: 'timed out',
+      success: true,
+    });
+    // Outside the 1-day window — must be excluded entirely.
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, result, success, created_at)
+       VALUES ($1,$2,$3,$4,$5, now() - interval '2 days')`,
+      ['discord', actorA, 'ban_user', 'banned', true],
+    );
+
+    const rows = await adminActivitySummary(1);
+    const byActor = new Map(rows.map((r) => [`${r.platform}:${r.actorUserId}`, r]));
+
+    const a = byActor.get(`discord:${actorA}`);
+    assert.ok(a, 'actorA appears in the summary');
+    assert.equal(a?.actionCount, 3, 'the 2-day-old row is excluded from the 1-day window');
+    assert.equal(a?.successCount, 2);
+    assert.equal(a?.failureCount, 1);
+    assert.ok(a?.lastActionAt instanceof Date);
+
+    const b = byActor.get(`whatsapp:${actorB}`);
+    assert.ok(b, 'actorB appears in the summary');
+    assert.equal(b?.actionCount, 1);
+    assert.equal(b?.successCount, 1);
+    assert.equal(b?.failureCount, 0);
+
+    const indexOfA = rows.findIndex((r) => r.actorUserId === actorA);
+    const indexOfB = rows.findIndex((r) => r.actorUserId === actorB);
+    assert.ok(
+      indexOfA < indexOfB,
+      'actorA (3 actions) must sort ahead of actorB (1 action) — actionCount descending',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[actorA, actorB]]);
+  },
+);
+
+test(
+  'repository: adminActivitySummary clamps an out-of-range days window to [1, 365], default 30 (issue #488)',
+  { skip },
+  async () => {
+    const actor = `${RUN}-aas-clamp-actor`;
+
+    const beforeMin = await adminActivitySummary(-3);
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, result, success, created_at)
+       VALUES ($1,$2,$3,$4,$5, now() - interval '2 days')`,
+      ['discord', actor, 'warn_user', 'warned', true],
+    );
+    const afterMin = await adminActivitySummary(-3);
+    const beforeCount = beforeMin.find((r) => r.actorUserId === actor)?.actionCount ?? 0;
+    const afterCount = afterMin.find((r) => r.actorUserId === actor)?.actionCount ?? 0;
+    assert.equal(
+      afterCount - beforeCount,
+      1,
+      'days=-3 clamps to the 1-day floor: only the "now" row is counted, not the 2-day-old row',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+
+    const actorMax = `${RUN}-aas-clamp-max-actor`;
+    const beforeMax = await adminActivitySummary(10_000);
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, result, success, created_at)
+       VALUES ($1,$2,$3,$4,$5, now() - interval '400 days')`,
+      ['discord', actorMax, 'warn_user', 'warned', true],
+    );
+    const afterMax = await adminActivitySummary(10_000);
+    const beforeMaxCount = beforeMax.find((r) => r.actorUserId === actorMax)?.actionCount ?? 0;
+    const afterMaxCount = afterMax.find((r) => r.actorUserId === actorMax)?.actionCount ?? 0;
+    assert.equal(
+      afterMaxCount - beforeMaxCount,
+      0,
+      'days=10_000 clamps to the 365-day ceiling: a 400-day-old row must not become visible',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actorMax]);
+  },
+);
+
+test(
+  'SECURITY: adminActivitySummary is global/unscoped across actors — never silently filtered to a single caller — and never selects admin_audit.params (issue #488)',
+  { skip },
+  async () => {
+    const actor1 = `${RUN}-aas-sec-actor-1`;
+    const actor2 = `${RUN}-aas-sec-actor-2`;
+    const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN-AAS';
+
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor1,
+      actionKind: 'warn_user',
+      params: { reason: sentinel },
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'whatsapp',
+      actorUserId: actor2,
+      actionKind: 'timeout_user',
+      result: 'timed out',
+      success: true,
+    });
+
+    const rows = await adminActivitySummary(1);
+    const ids = rows.map((r) => r.actorUserId);
+    assert.ok(ids.includes(actor1), 'actor1 appears — the aggregation is not scoped to a single caller');
+    assert.ok(ids.includes(actor2), 'actor2 appears — every distinct actor is present, unscoped');
+    assert.ok(
+      !rows.some((r) => Object.values(r).some((v) => typeof v === 'string' && v.includes(sentinel))),
+      'admin_audit.params content must never surface through adminActivitySummary',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[actor1, actor2]]);
   },
 );
 

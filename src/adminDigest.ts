@@ -15,9 +15,11 @@ import {
   countStaleKnowledge,
   countStaleMutedMembers,
   countStalePendingKnowledgeCandidates,
+  getLastDigestCounts,
   listAdmins,
   recentQuestionClusters,
   recordAdminDigestSent,
+  recordAdminDigestSnapshot,
   resolveLinkedIdentities,
   rosterCounts,
   wasAdminDigestSentRecently,
@@ -29,6 +31,22 @@ import type { PlatformAdapter } from './platforms/types.js';
 const FRESHNESS_DAYS = 7;
 const CLUSTER_LIMIT = 5;
 const SNIPPET_MAX_CHARS = 300;
+
+/**
+ * Week-over-week delta suffix for one digest signal (issue #497). Empty
+ * string — never rendered — unless `previous` both exists and has an entry
+ * for `key`; a signal with no prior snapshot value or no change is silent,
+ * so a stable week produces no clutter and a first-ever digest produces no
+ * suffix anywhere. `previous` is `undefined` whenever
+ * `ADMIN_DIGEST_TRENDS_ENABLED` is unset, making the entire mechanism inert
+ * by default (see `runAdminDigestOnce`).
+ */
+function trendSuffix(key: string, current: number, previous: Record<string, number> | undefined): string {
+  if (!previous || !(key in previous)) return '';
+  const diff = current - previous[key];
+  if (diff === 0) return '';
+  return diff > 0 ? ` (▲+${diff} since last week)` : ` (▼${diff} since last week)`;
+}
 
 /**
  * Pure: clusters + pending-queue counts -> DM text, or null to skip.
@@ -88,6 +106,16 @@ const SNIPPET_MAX_CHARS = 300;
  * platform (see `runAdminDigestOnce`), since a `not_members` row there
  * already has full member-tool access and the count would be a meaningless
  * nag. Bare integer only, same privacy convention as every signal above.
+ * `previousCounts` (issue #497, behind `ADMIN_DIGEST_TRENDS_ENABLED`, off by
+ * default) is last week's snapshot of every signal above, keyed by the same
+ * parameter names — `trendSuffix` appends a ` (▲+N since last week)` /
+ * ` (▼-N since last week)` fragment to a render site's line for a signal
+ * whose count moved since that snapshot, and nothing when it's unchanged, has
+ * no snapshot entry, or `previousCounts` itself is `undefined` (flag off, or
+ * this admin's first-ever digest). Purely additive string concatenation onto
+ * each existing template literal — with the flag unset, `previousCounts` is
+ * never even fetched (see `runAdminDigestOnce`) and every `trendSuffix` call
+ * short-circuits to `''`, so output is byte-identical to the pre-#497 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -132,6 +160,12 @@ export function buildAdminDigestMessage(
   // not_members row already has full member-tool access and the count would
   // be a structurally meaningless nag — see `runAdminDigestOnce`.
   notMembersCount: number = 0,
+  // Last week's signal counts, keyed by the same names as the params above
+  // (issue #497) — `undefined` when trends are disabled or this is the
+  // admin's first-ever digest, in which case `trendSuffix` renders nothing
+  // and output is byte-identical to the pre-#497 form. Never fetched unless
+  // `config.adminDigest.trendsEnabled` (see `runAdminDigestOnce`).
+  previousCounts?: Record<string, number>,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -165,13 +199,22 @@ export function buildAdminDigestMessage(
     );
   }
   if (pendingAccessRequests > 0) {
-    sections.push(`⏳ ${pendingAccessRequests} pending access request(s) — run \`list_access_requests\`.`);
+    sections.push(
+      `⏳ ${pendingAccessRequests} pending access request(s) — run \`list_access_requests\`.` +
+        trendSuffix('pendingAccessRequests', pendingAccessRequests, previousCounts),
+    );
   }
   if (openReports > 0) {
-    sections.push(`🚩 ${openReports} open report(s) in your conversations — run \`list_reports\`.`);
+    sections.push(
+      `🚩 ${openReports} open report(s) in your conversations — run \`list_reports\`.` +
+        trendSuffix('openReports', openReports, previousCounts),
+    );
   }
   if (pendingSuggestions > 0) {
-    sections.push(`💡 ${pendingSuggestions} pending suggestion(s) — run \`list_suggestions\`.`);
+    sections.push(
+      `💡 ${pendingSuggestions} pending suggestion(s) — run \`list_suggestions\`.` +
+        trendSuffix('pendingSuggestions', pendingSuggestions, previousCounts),
+    );
   }
   if (staleKnowledgeCount > 0) {
     // Name whichever threshold(s) actually produced the count. `countStaleKnowledge`
@@ -184,14 +227,16 @@ export function buildAdminDigestMessage(
     if (knowledgeStaleMaxAgeDays > 0) thresholds.push(`with content older than ${knowledgeStaleMaxAgeDays}d`);
     sections.push(
       `📚 ${staleKnowledgeCount} knowledge entr${staleKnowledgeCount === 1 ? 'y' : 'ies'} ` +
-        `${thresholds.join(' or ')} — run \`list_knowledge\` to review.`,
+        `${thresholds.join(' or ')} — run \`list_knowledge\` to review.` +
+        trendSuffix('staleKnowledgeCount', staleKnowledgeCount, previousCounts),
     );
   }
   if (knowledgeGapsCount > 0) {
     // Bare integer only — no query_text / user_id ever reaches the DM (#246).
     sections.push(
       `🕳️ ${knowledgeGapsCount} unanswered question(s) in your conversations this week hit no ` +
-        'knowledge — run `list_knowledge_gaps` to see what to document.',
+        'knowledge — run `list_knowledge_gaps` to see what to document.' +
+        trendSuffix('knowledgeGapsCount', knowledgeGapsCount, previousCounts),
     );
   }
   if (pendingKnowledgeCandidates > 0) {
@@ -206,39 +251,55 @@ export function buildAdminDigestMessage(
         : '';
     sections.push(
       `🧩 ${pendingKnowledgeCandidates} pending knowledge candidate(s)${staleFragment} — run ` +
-        '`list_knowledge_candidates`.',
+        '`list_knowledge_candidates`.' +
+        trendSuffix('pendingKnowledgeCandidates', pendingKnowledgeCandidates, previousCounts),
     );
   }
   if (lowRatedKnowledgeCount > 0) {
     // Bare integer only — no entry title/rating content/rater identity ever reaches the DM (#324).
     sections.push(
       `👎 ${lowRatedKnowledgeCount} knowledge entr${lowRatedKnowledgeCount === 1 ? 'y' : 'ies'} with ` +
-        'repeated unhelpful ratings — run `list_low_rated_knowledge` to review.',
+        'repeated unhelpful ratings — run `list_low_rated_knowledge` to review.' +
+        trendSuffix('lowRatedKnowledgeCount', lowRatedKnowledgeCount, previousCounts),
     );
   }
   if (joinedThisWeek > 0 || leftThisWeek > 0) {
     // Bare integers only — no display name/user id/platform id ever reaches the DM (#344).
+    // One trendSuffix call per underlying signal (issue #497) — joined and
+    // left move independently, so each gets its own delta appended right
+    // after its own number.
     const parts: string[] = [];
-    if (joinedThisWeek > 0) parts.push(`${joinedThisWeek} joined`);
-    if (leftThisWeek > 0) parts.push(`${leftThisWeek} left`);
+    if (joinedThisWeek > 0) {
+      parts.push(`${joinedThisWeek} joined${trendSuffix('joinedThisWeek', joinedThisWeek, previousCounts)}`);
+    }
+    if (leftThisWeek > 0) {
+      parts.push(`${leftThisWeek} left${trendSuffix('leftThisWeek', leftThisWeek, previousCounts)}`);
+    }
     sections.push(`📈 ${parts.join(', ')} this week — run \`list_roster\` for detail.`);
   }
   if (notMembersCount > 0) {
     // Bare integer only — no display name, user id, or joined_at ever reaches the DM (#460).
     sections.push(
       `🆕 ${notMembersCount} guest(s) joined but haven't been added as a member yet — run ` +
-        '`list_roster` (filter: not_members) to review.',
+        '`list_roster` (filter: not_members) to review.' +
+        trendSuffix('notMembersCount', notMembersCount, previousCounts),
     );
   }
   if (mutedMembersCount > 0 || staleMutedMembersCount > 0) {
     // Bare integers only — no member_warnings.reason/excerpt/user_id/name ever reaches the DM (#357, #403).
+    // Each of the two independent signals gets its own trendSuffix (#497),
+    // same one-call-per-signal convention as the roster-growth line above.
     const staleClause =
       staleMutedMembersCount > 0
         ? ` (${staleMutedMembersCount} more may still be muted from an earlier strike that's since aged ` +
-          'out — check moderation_history)'
+          'out — check moderation_history' +
+          trendSuffix('staleMutedMembersCount', staleMutedMembersCount, previousCounts) +
+          ')'
         : '';
     sections.push(
-      `🔇 ${mutedMembersCount} member(s) currently muted${staleClause} — run \`moderation_history\` or ` +
+      `🔇 ${mutedMembersCount} member(s) currently muted` +
+        trendSuffix('mutedMembersCount', mutedMembersCount, previousCounts) +
+        `${staleClause} — run \`moderation_history\` or ` +
         '`clear_warnings` to review.',
     );
   }
@@ -246,21 +307,24 @@ export function buildAdminDigestMessage(
     // Bare integer only — no message content, question text, user id, or conversation id ever reaches the DM (#371).
     sections.push(
       `⏱️ ${maxTurnsFailuresCount} repl${maxTurnsFailuresCount === 1 ? 'y' : 'ies'} in your conversations ` +
-        'this week hit the step limit before finishing.',
+        'this week hit the step limit before finishing.' +
+        trendSuffix('maxTurnsFailuresCount', maxTurnsFailuresCount, previousCounts),
     );
   }
   if (duplicateKnowledgeCount > 0) {
     // Bare integer only — no pair id, title, or content ever reaches the DM (#378).
     sections.push(
       `🔀 ${duplicateKnowledgeCount} near-duplicate knowledge pair(s) — run \`list_duplicate_knowledge\` ` +
-        'to review.',
+        'to review.' +
+        trendSuffix('duplicateKnowledgeCount', duplicateKnowledgeCount, previousCounts),
     );
   }
   if (conflictCandidateCount > 0) {
     // Bare integer only — no pair id, title, or content ever reaches the DM (#378).
     sections.push(
       `⚖️ ${conflictCandidateCount} conflict-candidate knowledge pair(s) that may disagree — run ` +
-        '`list_knowledge_conflicts` to review.',
+        '`list_knowledge_conflicts` to review.' +
+        trendSuffix('conflictCandidateCount', conflictCandidateCount, previousCounts),
     );
   }
   return sections.join('\n');
@@ -436,6 +500,32 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
       // (router.ts's guest-vs-member gate), so it's suppressed to 0 (line
       // omitted) rather than nagged (issue #460).
       const notMembersCount = config.rbac.accessMode[admin.platform] === 'gated' ? roster.notMembers : 0;
+      // Every signal that can carry a trend suffix (issue #497) — the exact
+      // same values just computed above, nothing re-derived. Built and
+      // persisted every run regardless of `trendsEnabled`, so flipping the
+      // flag on is immediately useful from the next weekly tick; only the
+      // READ side (fetching `previousCounts` below and passing it into
+      // `buildAdminDigestMessage`) is flag-gated.
+      const currentCounts: Record<string, number> = {
+        pendingAccessRequests,
+        openReports,
+        pendingSuggestions,
+        staleKnowledgeCount,
+        knowledgeGapsCount,
+        pendingKnowledgeCandidates,
+        lowRatedKnowledgeCount,
+        joinedThisWeek: roster.joinedThisWeek,
+        leftThisWeek: roster.leftThisWeek,
+        mutedMembersCount,
+        maxTurnsFailuresCount,
+        duplicateKnowledgeCount,
+        conflictCandidateCount,
+        staleMutedMembersCount,
+        notMembersCount,
+      };
+      const previousCounts = config.adminDigest.trendsEnabled
+        ? ((await getLastDigestCounts(admin.platform, admin.platformUserId)) ?? undefined)
+        : undefined;
       const message = buildAdminDigestMessage(
         clusters,
         pendingAccessRequests,
@@ -457,14 +547,20 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeCandidateStaleDays,
         staleMutedMembersCount,
         notMembersCount,
+        previousCounts,
       );
       if (!message) {
+        // Quiet week — no send, so the freshness row/eligibility window must
+        // stay untouched. `recordAdminDigestSnapshot` writes ONLY
+        // `last_counts`, never `sent_at` (issue #497), so next week's trend
+        // delta is still accurate against real data.
+        await recordAdminDigestSnapshot(admin.platform, admin.platformUserId, currentCounts);
         ok = true;
         continue; // quiet week — no send, freshness row untouched
       }
 
       await adapter.sendDirectMessage(admin.platformUserId, message);
-      await recordAdminDigestSent(admin.platform, admin.platformUserId);
+      await recordAdminDigestSent(admin.platform, admin.platformUserId, currentCounts);
       ok = true;
     } catch (err) {
       logger.warn(
