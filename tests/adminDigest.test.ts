@@ -54,8 +54,9 @@ const {
   getLastDigestCounts,
   recordAdminDigestSnapshot,
 } = await import('../src/storage/repository.js');
-const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
+const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
+const { readFileSync } = await import('node:fs');
 const pgvector = (await import('pgvector/pg')).default;
 const { config } = await import('../src/config.js');
 
@@ -2958,6 +2959,91 @@ test(
   },
 );
 
+// --- issue #499: buildAdminDigestForAdmin, extracted so the weekly push and
+// the on-demand `admin_digest` tool share one gathering implementation.
+
+test(
+  'buildAdminDigestForAdmin: the gathering Promise.all has exactly one call site in adminDigest.ts — ' +
+    'runAdminDigestOnce delegates to the shared helper rather than keeping its own copy (issue #499, no drift)',
+  () => {
+    const source = readFileSync(new URL('../src/adminDigest.ts', import.meta.url), 'utf8');
+    const promiseAllCount = (source.match(/await Promise\.all\(\[/g) ?? []).length;
+    const gatheringCallCount = (source.match(/recentQuestionClusters\(scope/g) ?? []).length;
+    assert.equal(
+      promiseAllCount,
+      1,
+      'exactly one signal-gathering Promise.all in the whole file — a second copy would be the exact drift hazard this extraction exists to prevent',
+    );
+    assert.equal(
+      gatheringCallCount,
+      1,
+      'recentQuestionClusters(scope, ...) — the first gathering call — appears exactly once, confirming runAdminDigestOnce has no inlined duplicate',
+    );
+  },
+);
+
+test(
+  'SECURITY: buildAdminDigestForAdmin (the on-demand pull) never touches recordAdminDigestSent/wasAdminDigestSentRecently — calling it any number of times does not suppress or reset the next scheduled weekly push (issue #499 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-pull-push-admin`;
+    const requesterId = `${RUN}-pull-push-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    // A pending access request (guild-wide) guarantees a non-null message so
+    // the pull path is actually exercised, not short-circuited by a quiet week.
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'guest' });
+
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-pull-push-empty`],
+      sent: [],
+    });
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      false,
+      'no send recorded before any pull',
+    );
+
+    // Pull three times — an admin re-checking their own snapshot repeatedly.
+    // ADMIN_DIGEST_ENABLED is unset for this whole test file (see the top-of-
+    // file comment), so this also pins that the pull works independent of
+    // that flag (issue #499 acceptance criteria).
+    for (let i = 0; i < 3; i++) {
+      const { message } = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(message, 'the pull returns a non-null message (pending access request in scope)');
+      assert.match(message, /⏳ \d+ pending access request\(s\)/);
+    }
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      false,
+      'repeated pulls must never mark the admin as recently sent — the freshness row stays untouched',
+    );
+
+    // The weekly push must still fire normally afterwards, unaffected by the pulls above.
+    const sent: Array<{ userId: string; text: string }> = [];
+    const pushAdapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-pull-push-empty`],
+      sent,
+    });
+    await runAdminDigestOnce([pushAdapter]);
+    assert.equal(sent.length, 1, 'the weekly push still sends on its normal cadence after prior pulls');
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'ONLY the push (not the pulls before it) updates the freshness row',
+    );
+
+    await clearAccessRequest('discord', requesterId);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
 // --- issue #497: week-over-week trend suffix, wired end-to-end through
 // runAdminDigestOnce. openReports is used as the representative signal
 // throughout because it's cheaply and precisely controllable per admin
@@ -3017,6 +3103,66 @@ test(
       adminId,
     ]);
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "SECURITY: buildAdminDigestForAdmin's scoping matches runAdminDigestOnce exactly — conversation-scoped open-report count, with the admin's own linked identity excluded from DM-originated reports (issue #197 parity, issue #499)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-pull-scope-admin`;
+    const inScopeConvo = `${RUN}-c-pull-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-pull-scope-out`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const inScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-pull-scope-reporter`,
+      conversationId: inScopeConvo,
+      reason: 'in-scope open report — must be counted',
+    });
+    const outOfScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-pull-scope-reporter`,
+      conversationId: outOfScopeConvo,
+      reason: 'out-of-scope open report — must NOT be counted',
+    });
+    // DM-originated, filed against the admin's own identity — must be
+    // excluded from their own count (issue #197), exactly like the pushed digest.
+    const dmAgainstSelf = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-pull-scope-reporter`,
+      conversationId: `${RUN}-c-pull-scope-dm-self`,
+      targetUserId: adminId,
+      reason: 'DM report filed against the admin themselves — must be excluded from their own count',
+      isDirect: true,
+    });
+    // DM-originated, filed against someone else — DM broadening still applies (counted).
+    const dmAgainstOther = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-pull-scope-reporter`,
+      conversationId: `${RUN}-c-pull-scope-dm-other`,
+      targetUserId: `${RUN}-pull-scope-someone-else`,
+      reason: 'DM report filed against another user — must still be counted',
+      isDirect: true,
+    });
+    assert.ok(inScope && outOfScope && dmAgainstSelf && dmAgainstOther);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [inScopeConvo], sent: [] });
+    const { message } = await buildAdminDigestForAdmin('discord', adminId, adapter);
+    assert.ok(message);
+    assert.match(
+      message,
+      /🚩 2 open report\(s\)/,
+      'in-scope report + DM-against-other = 2; out-of-scope and DM-against-self must both be excluded',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [
+      [inScope.id, outOfScope.id, dmAgainstSelf.id, dmAgainstOther.id],
+    ]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
   },
 );
 
