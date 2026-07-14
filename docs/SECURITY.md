@@ -554,11 +554,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   and excludes the bot's own number/LID; it carries no new opt-in flag,
   reasoning that group participant lists are visible to every member of a
   WhatsApp group, the same "not a secret list" posture already applied to
-  Discord's roster. A known, documented limitation for multi-group WhatsApp
-  deployments: a single `(platform, user_id)` row can't represent per-group
-  presence, so a `remove` from one allowed group marks the row "left" even if
-  the person remains in another — the same coarseness Discord's single-guild
-  model sidesteps by construction. Reads are **admin-tier and guild/group-wide**
+  Discord's roster. A previously-documented limitation for multi-group
+  WhatsApp deployments — a single `(platform, user_id)` row can't represent
+  per-group presence, so a `remove` from one allowed group marked the row
+  "left" even if the person remained in another — is resolved (issue #501):
+  `onGroupParticipantsUpdate` now checks live membership across every other
+  `WHATSAPP_ALLOWED_JIDS` group before writing the leave-mark, reusing the
+  same `groupFetchAllParticipating()` call and phone/LID-tolerant id matching
+  `conversationsForUser`/`backfillRoster` already use; the check's result
+  only gates the existing `markRosterLeave` call and is never itself
+  persisted. See `docs/ARCHITECTURE.md`'s roster section for the two narrow,
+  self-healing residual gaps. Reads are **admin-tier and guild/group-wide**
   (`list_roster` is not conversation-scoped — same precedent as
   `list_access_requests`), display names are wrapped as untrusted data, and
   `forget_me`/`purge_user_data` delete the person's roster row by
