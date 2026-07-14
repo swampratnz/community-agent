@@ -61,6 +61,28 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
+    // Stub the DB layer so these degradation tests never open a real socket to
+    // the unreachable test DATABASE_URL. pg's connection failures can otherwise
+    // surface as an unhandled rejection that crashes the whole no-DB
+    // security-invariants run (exit 7); a rejecting stub exercises the exact
+    // same '.catch'-guarded degradation path with no socket. Installed BEFORE
+    // the repository import below so its `pool` binding resolves to the stub.
+    t.mock.module('../src/storage/db.js', {
+      namedExports: {
+        pool: {
+          query: async () => {
+            throw new Error('DB unreachable (test stub)');
+          },
+          connect: async () => {
+            throw new Error('DB unreachable (test stub)');
+          },
+          on: () => {},
+          end: async () => {},
+        },
+        healthcheck: async () => {},
+        closeDb: async () => {},
+      },
+    });
     const realRepo = await import('../src/storage/repository.js');
     t.mock.module('../src/storage/repository.js', {
       namedExports: {
