@@ -170,6 +170,10 @@ export const ADMIN_TOOLS = [
   'mcp__community__accept_knowledge_candidate',
   'mcp__community__decline_knowledge_candidate',
   'mcp__community__question_digest',
+  // On-demand pull of the caller's own weekly admin-digest snapshot (issue
+  // #499) — same signals/scoping the ADMIN_DIGEST_ENABLED push already
+  // computes, just available on request instead of waiting up to a week.
+  'mcp__community__admin_digest',
   'mcp__community__list_knowledge_gaps',
   'mcp__community__moderation_history',
   'mcp__community__add_member',

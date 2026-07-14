@@ -447,6 +447,22 @@ test('SECURITY: list_knowledge_gaps is admin-only, conversation-scoped like ques
   }
 });
 
+test('SECURITY: admin_digest is admin-tier — never reachable by member/guest, and not exclusively super-admin (issue #499)', () => {
+  const tool = 'mcp__community__admin_digest';
+  assert.ok(ADMIN_TOOLS.includes(tool), 'admin_digest must be in ADMIN_TOOLS');
+  assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(tool), 'admin_digest must not be in MEMBER_TOOLS');
+  assert.ok(
+    !(SUPER_ADMIN_TOOLS as readonly string[]).includes(tool),
+    'admin_digest must not be exclusively a SUPER_ADMIN_TOOLS entry',
+  );
+  for (const role of ['guest', 'member'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach admin_digest`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach admin_digest`);
+  }
+});
+
 test('SECURITY: create_poll is admin-tier — never reachable by member/guest (issue #228)', () => {
   const tool = 'mcp__community__create_poll';
   assert.ok(ADMIN_TOOLS.includes(tool), 'create_poll must be in ADMIN_TOOLS');

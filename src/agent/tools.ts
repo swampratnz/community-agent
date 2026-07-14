@@ -115,6 +115,7 @@ import {
   type JobStatus,
 } from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
+import { buildAdminDigestForAdmin } from '../adminDigest.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
@@ -777,6 +778,7 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
   "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
+  '- Pull your own admin-digest snapshot on demand, instead of waiting for the weekly DM\n' +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -3743,6 +3745,22 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const adminDigestTool = tool(
+    'admin_digest',
+    'On-demand pull of your OWN admin-digest snapshot — the same recurring-question, pending-access-request, ' +
+      'open-report, pending-suggestion, stale/gap/candidate/low-rated-knowledge, roster, muted-member, ' +
+      'max-turns-failure, duplicate/conflict-knowledge, and onboarding-queue signals the weekly digest DM ' +
+      'would send you right now, without waiting for its cadence. Takes no arguments — always your own scoped ' +
+      "view, never another admin's. Read-only; does not affect when your next weekly digest DM arrives. Admin only.",
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'admin_digest');
+      const message = await buildAdminDigestForAdmin(caller.platform, caller.userId, adapter);
+      return text(message ?? 'Nothing to report right now.');
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const listKnowledgeGaps = tool(
     'list_knowledge_gaps',
     'Show searches (asked >= 2 times) in your conversations over recent days that found no confident answer — ' +
@@ -5002,6 +5020,7 @@ export function buildToolServer(
       acceptKnowledgeCandidateTool,
       declineKnowledgeCandidateTool,
       questionDigest,
+      adminDigestTool,
       listKnowledgeGaps,
       moderationHistory,
       listReportsTool,

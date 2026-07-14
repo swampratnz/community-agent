@@ -194,6 +194,22 @@ memory**:
    the on-demand, all-conversation-scoped
    `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`/`list_roster`
    tools instead.
+   The weekly push above was, until issue #499, the only way to see this
+   picture — an admin who wanted it mid-week had to wait or manually run each
+   underlying `list_*`/`count_*` tool separately. `admin_digest` (admin-tier,
+   no arguments, read-only, no CONFIRM) closes that gap: an on-demand pull of
+   the same signals, scoped to the caller only (it takes no id argument, so
+   an admin can never pull another admin's snapshot), returning the fixed
+   string `Nothing to report right now.` on a quiet week. Both the weekly
+   push and this pull call one shared helper, `buildAdminDigestForAdmin`
+   (extracted from `runAdminDigestOnce`'s per-admin loop) — a single
+   gathering/formatting implementation, so the two paths can never drift
+   apart on scoping or content. The pull deliberately never touches
+   `wasAdminDigestSentRecently`/`recordAdminDigestSent`: pulling any number
+   of times has no effect on when the next weekly DM arrives, and it works
+   identically whether `ADMIN_DIGEST_ENABLED` is on or off (that flag only
+   gates the proactive timer, never the admin's standing authorization to
+   read their own already-scoped counts).
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -258,6 +274,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest into knowledge; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `admin_digest` (on-demand pull of the caller's own weekly admin-digest snapshot; no arguments, no CONFIRM — never affects the weekly push's cadence) | ❌ | ❌ | ✅ *caller only* | ✅ |
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |

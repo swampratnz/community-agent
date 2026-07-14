@@ -92,6 +92,7 @@ const {
   getMemberRole,
   recordAccessRequest,
   clearAccessRequest,
+  countAccessRequests,
   countActiveWarnings,
   clearWarnings,
   countRepliesToUser,
@@ -116,6 +117,7 @@ const {
 } = await import('../src/storage/policies.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { superAdminIds } = await import('../src/auth/roles.js');
+const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -1944,6 +1946,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__accept_knowledge_candidate', /accept a candidate/i],
   ['mcp__community__decline_knowledge_candidate', /decline a candidate/i],
   ['mcp__community__question_digest', /recurring question clusters/i],
+  ['mcp__community__admin_digest', /admin-digest snapshot on demand/i],
   ['mcp__community__list_knowledge_gaps', /knowledge gaps/i],
   ['mcp__community__moderation_history', /moderation history log/i],
   ['mcp__community__add_member', /add a new member/i],
@@ -11145,6 +11148,209 @@ test(
       await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
         departedAdmin,
       ]);
+    }
+  },
+);
+
+// admin_digest (issue #499) — the on-demand pull counterpart to the
+// ADMIN_DIGEST_ENABLED weekly push: same buildAdminDigestForAdmin gathering,
+// caller-scoped only, no CONFIRM (read-only, no state mutation).
+
+test('SECURITY: admin_digest handler refuses a member-tier caller before any DB read (assertAtLeast re-check)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: `${RUN}-admin-digest-member`,
+    userName: 'Member',
+    role: 'member' as const,
+    conversationId: `${RUN}-admin-digest-member-convo`,
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+    }
+  )._registeredTools['admin_digest'];
+
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+});
+
+test('SECURITY: admin_digest handler refuses a guest-tier caller before any DB read (assertAtLeast re-check)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: `${RUN}-admin-digest-guest`,
+    userName: 'Guest',
+    role: 'guest' as const,
+    conversationId: `${RUN}-admin-digest-guest-convo`,
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+    }
+  )._registeredTools['admin_digest'];
+
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+});
+
+test(
+  "admin_digest: returns the fixed 'Nothing to report right now.' text when every signal is zero (issue #499 acceptance criteria)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-admin-digest-quiet`;
+    try {
+      await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+      // countAccessRequests/countPendingSuggestions/countPendingKnowledgeCandidates
+      // etc. are guild-wide, not scoped to this test's unique ids — snapshot
+      // them first so this assertion holds even if another concurrently-running
+      // test file has one of these pending, mirroring the same defensive
+      // pattern tests/adminDigest.test.ts already uses for the quiet-week case.
+      const pendingAccessRequestsBefore = await countAccessRequests();
+
+      const adapter: PlatformAdapter = {
+        platform: 'discord',
+        adminCapabilities: new Set(),
+        async start() {},
+        async stop() {},
+        isConnected: () => true,
+        onMessage() {},
+        async sendMessage() {},
+        async sendDirectMessage() {},
+        async conversationsForUser() {
+          return [`${RUN}-admin-digest-quiet-convo`];
+        },
+        async performAdminAction() {
+          return '';
+        },
+      };
+      const caller = {
+        platform: 'discord' as const,
+        userId: adminId,
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: `${RUN}-admin-digest-quiet-convo`,
+      };
+      const server = buildToolServer(caller, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['admin_digest'];
+
+      const result = await registeredTool.handler({});
+      const out = result.content[0]?.text ?? '';
+
+      if (pendingAccessRequestsBefore === 0) {
+        assert.equal(out, 'Nothing to report right now.');
+      } else {
+        // Extremely rare in practice — a concurrently-running test file has a
+        // pending access request in flight, which legitimately makes this a
+        // non-quiet snapshot (same caveat the runAdminDigestOnce quiet-week
+        // test documents).
+        assert.match(out, /⏳ \d+ pending access request\(s\)/);
+      }
+    } finally {
+      // A stray admin row left behind by a thrown assertion would otherwise
+      // linger in the shared community_users table and could be swept up by
+      // a concurrently-running file's runAdminDigestOnce call — try/finally
+      // guarantees this cleanup runs even on failure.
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+    }
+  },
+);
+
+test(
+  "SECURITY: admin_digest is byte-identical to buildAdminDigestForAdmin's own return, and derives identity solely from caller.platform/caller.userId — an extra id-like argument in the call is never read, so an admin can never pull ANOTHER admin's snapshot (issue #499 acceptance criteria)",
+  { skip },
+  async () => {
+    const adminAId = `${RUN}-admin-digest-caller-a`;
+    const adminBId = `${RUN}-admin-digest-caller-b`;
+    const convoA = `${RUN}-admin-digest-convo-a`;
+    const convoB = `${RUN}-admin-digest-convo-b`;
+    let reportAId: number | undefined;
+    try {
+      await upsertMember({ platform: 'discord', userId: adminAId, role: 'admin', addedBy: `${RUN}-actor` });
+      await upsertMember({ platform: 'discord', userId: adminBId, role: 'admin', addedBy: `${RUN}-actor` });
+
+      // A's own conversation carries an open report; B's does not — a scope map
+      // keyed by userId, so the adapter genuinely resolves scope PER CALLER,
+      // the same way the real conversationsForUser resolves it from caller.userId.
+      const reportA = await createContentReport({
+        platform: 'discord',
+        reporterUserId: `${RUN}-admin-digest-reporter`,
+        conversationId: convoA,
+        reason: 'in scope for admin A only',
+      });
+      assert.ok(reportA);
+      reportAId = reportA.id;
+
+      const scopeByUser: Record<string, string[]> = { [adminAId]: [convoA], [adminBId]: [convoB] };
+      const adapter: PlatformAdapter = {
+        platform: 'discord',
+        adminCapabilities: new Set(),
+        async start() {},
+        async stop() {},
+        isConnected: () => true,
+        onMessage() {},
+        async sendMessage() {},
+        async sendDirectMessage() {},
+        async conversationsForUser(userId) {
+          return scopeByUser[userId] ?? [];
+        },
+        async performAdminAction() {
+          return '';
+        },
+      };
+
+      const callerA = {
+        platform: 'discord' as const,
+        userId: adminAId,
+        userName: 'Admin A',
+        role: 'admin' as const,
+        conversationId: convoA,
+      };
+      const server = buildToolServer(callerA, adapter);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools['admin_digest'];
+
+      // Call with a spoofed id-like argument targeting admin B — the tool
+      // declares no such parameter, so it must be silently ignored; the output
+      // must still reflect caller A's OWN scope, never B's (B's scope has no
+      // report at all, so a leak would show as a "no reports" result instead).
+      const result = await registeredTool.handler({ userId: adminBId, targetUserId: adminBId });
+      const out = result.content[0]?.text ?? '';
+      assert.match(out, /🚩 1 open report\(s\)/, "the reply reflects caller A's own scope, not admin B's");
+
+      const direct = await buildAdminDigestForAdmin('discord', adminAId, adapter);
+      assert.equal(
+        out,
+        direct,
+        'the tool reply is byte-identical to calling buildAdminDigestForAdmin directly for the same caller',
+      );
+    } finally {
+      // try/finally so a leaked admin/report row can never survive a thrown
+      // assertion and get swept up by a concurrently-running file's
+      // runAdminDigestOnce call (the same hazard the quiet-fallback test above guards against).
+      if (reportAId !== undefined) {
+        await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportAId]);
+      }
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+        [[adminAId, adminBId]],
+      );
     }
   },
 );
