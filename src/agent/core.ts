@@ -15,7 +15,7 @@ import {
   type ResponseStyle,
 } from '../storage/repository.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
-import { buildSystemPrompt, renderMemoryContext } from './systemPrompt.js';
+import { buildSystemPrompt, renderMemoryContext, renderRequesterTag } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
 import { buildToolServer, reserveWebSearchSlot, type ToolServerTurnState } from './tools.js';
 import {
@@ -353,8 +353,14 @@ export async function runAgentTurn(
     persona,
   );
   // Recalled messages are untrusted user content: they ride in the user turn
-  // inside a clearly delimited block, never in the system prompt.
-  const prompt = memories.length > 0 ? `${renderMemoryContext(memories)}\n\n${userText}` : userText;
+  // inside a clearly delimited block, never in the system prompt. The
+  // requester's display name rides here too (issue #508, relocated from the
+  // system prompt's `Context:` block): keeping it out of the system prompt
+  // keeps that string byte-identical across different posters of the same
+  // role in the same conversation, which is the real precondition for an
+  // Anthropic prompt-cache hit at the system block's trailing breakpoint.
+  const memoryBlock = memories.length > 0 ? renderMemoryContext(memories) : '';
+  const prompt = [renderRequesterTag(caller.userName), memoryBlock, userText].filter(Boolean).join('\n\n');
 
   // Session hygiene: cap resumed-session length and age so context (and any
   // accumulated injection) can't grow without bound.
@@ -538,6 +544,25 @@ async function execTurn(
           }
           if ('result' in message && typeof message.result === 'string') {
             resultText = message.result;
+          }
+          // Cache-usage telemetry (issue #508): the SDK result message's
+          // `usage` exposes real cache-hit/-write counts, so an operator can
+          // empirically confirm (and quantify) the prompt-cache benefit the
+          // system-prompt relocation above is meant to recover, instead of
+          // taking a code-level proxy on faith.
+          if ('usage' in message && message.usage && typeof message.usage === 'object') {
+            const usage = message.usage as {
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+            logger.debug(
+              {
+                conversationId: caller.conversationId,
+                cacheReadTokens: usage.cache_read_input_tokens,
+                cacheCreationTokens: usage.cache_creation_input_tokens,
+              },
+              'agent turn cache usage',
+            );
           }
           resultSubtype = message.subtype;
           break;

@@ -958,6 +958,35 @@ to pre-#474 behaviour); an operator raises it once they've observed their own
 corpus's `similarity` distribution (visible today via `remember_search`'s
 `(NN% match)` display).
 
+**Requester name relocated out of the system prompt** (issue #508): the system
+prompt's `Context:` block used to include a `- Requester: NAME (role)` line
+built from the per-message sender's platform display name. In a shared
+channel (a Discord channel or WhatsApp group with more than one participant —
+the dominant traffic pattern for a community bot), that line made the whole
+system-prompt string vary on essentially every turn from a different poster,
+which defeats the Agent SDK's prompt cache: caching is breakpoint-delimited,
+matching only when the *entire* content up to the trailing breakpoint is
+byte-identical, so any per-speaker variance inside that one opaque block was a
+guaranteed full-price cache miss regardless of #169's day-granularity date
+work (a prior attempt, #342, tried fixing this by reordering the block instead
+of removing the variance and was rejected for exactly that reason — reordering
+a single opaque string changes nothing about where its one trailing breakpoint
+falls). `buildSystemPrompt` no longer includes `caller.userName` anywhere;
+`runAgentTurn` (`core.ts`) now prepends a sanitized `[Requester: NAME]` tag
+(via `renderRequesterTag`, reusing the same `sanitizeName` the old line used)
+to the **user turn** instead, alongside the existing `renderMemoryContext`
+block — mirroring how #474's memory-relevance fix already treats per-turn
+content as living downstream of the cached prefix. This makes the system
+prompt byte-identical across different speakers of the same role in the same
+conversation on the same day, which is the actual precondition for a cache
+hit; mixed-role channels (e.g. a member turn followed by an admin turn) still
+differ because `ROLE_NOTES[role]` varies, so the benefit is scoped to
+consecutive same-role turns, not every message. No dollar/token saving is
+claimed here — `execTurn` now reads `usage.cache_read_input_tokens` and
+`usage.cache_creation_input_tokens` off the SDK's `result` message (mirroring
+the existing `total_cost_usd` read) and logs them at debug level per turn, so
+the actual hit rate can be measured from real traffic instead of asserted.
+
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
 exact matches — see `src/ackClassifier.ts`) skips the agent turn entirely and
