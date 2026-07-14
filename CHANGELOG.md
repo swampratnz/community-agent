@@ -10,6 +10,29 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-15
+
+### Fixed
+- **Intermittent `security-invariants` CI crash (`tsx --test` exit 7)**: the
+  `security-invariants` gate runs the suite with **no** Postgres, so every
+  `runAgentTurn`-driven test emits a burst of fail-open warn/error logs
+  (`ECONNREFUSED`, degraded-turn fallbacks, …). `pino` buffers those and flushes
+  to stdout asynchronously; under **Node 24** each test file runs in a child
+  process whose stdout is a pipe to the parent runner, and that trailing async
+  flush could land *after* the parent stopped reading — surfacing as
+  `write EPIPE`, an unhandled `'error'` on the stdout `Socket` that aborts the
+  child (exit 7, no failing assertion, output truncated mid-line, and
+  uninterceptable by any JS `uncaughtException`/`unhandledRejection` handler
+  because it is a stream-error abort, not a throw). It was deterministic on
+  Node 24 (reproduced 6/6 locally with a Node diagnostic report) but invisible
+  on Node 22. The `test:security` script now runs with `LOG_LEVEL=silent`
+  (override-able), so no test-run log output is buffered for a racy teardown
+  flush — fixing it for every affected file at once rather than per-file. Adds
+  `silent` as a valid `LOG_LEVEL` (a real `pino` level). The `build` job is
+  unaffected (it runs against a real Postgres, so log volume stays low and no
+  EPIPE occurs). Test/infra-only; no `SECURITY:` tests added or removed, so
+  `tests/security-floor.json` is unchanged.
+
 ## 2026-07-14
 
 ### Added
