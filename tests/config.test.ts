@@ -519,6 +519,109 @@ test('SECURITY: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR rejects a non-positive valu
   assert.match(result.stderr, /AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR/);
 });
 
+test('config: DB pool timeouts default to 15000/15000/10000ms (statement/query/connect, issue #502)', () => {
+  assert.equal(config.db.statementTimeoutMs, 15_000);
+  assert.equal(config.db.queryTimeoutMs, 15_000);
+  assert.equal(config.db.connectTimeoutMs, 10_000);
+});
+
+test('config: DB pool timeouts are sourced from env, not hardcoded literals (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_STATEMENT_TIMEOUT_MS: '12345',
+        DB_QUERY_TIMEOUT_MS: '23456',
+        DB_CONNECT_TIMEOUT_MS: '34567',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'custom DB pool timeout values must load cleanly');
+  const printed = JSON.parse(result.stdout);
+  assert.equal(printed.db.statementTimeoutMs, 12345);
+  assert.equal(printed.db.queryTimeoutMs, 23456);
+  assert.equal(printed.db.connectTimeoutMs, 34567);
+});
+
+test('SECURITY: a non-positive DB_STATEMENT_TIMEOUT_MS fails config validation — fail-fast rather than an unbounded pool at runtime (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_STATEMENT_TIMEOUT_MS: '0',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'DB_STATEMENT_TIMEOUT_MS=0 must fail config validation, not load');
+  assert.match(result.stderr, /DB_STATEMENT_TIMEOUT_MS/);
+});
+
+test('SECURITY: a non-numeric DB_QUERY_TIMEOUT_MS fails config validation (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_QUERY_TIMEOUT_MS: 'not-a-number',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'DB_QUERY_TIMEOUT_MS=not-a-number must fail config validation, not load');
+  assert.match(result.stderr, /DB_QUERY_TIMEOUT_MS/);
+});
+
+test('SECURITY: a negative DB_CONNECT_TIMEOUT_MS fails config validation (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_CONNECT_TIMEOUT_MS: '-1',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'DB_CONNECT_TIMEOUT_MS=-1 must fail config validation, not load');
+  assert.match(result.stderr, /DB_CONNECT_TIMEOUT_MS/);
+});
+
 test('config: dev-team dispatch service is off by default with no endpoint/token and a 1-minute watch poll', () => {
   assert.equal(config.devTeam.enabled, false);
   assert.equal(config.devTeam.endpointUrl, undefined);
