@@ -261,6 +261,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
+| `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -880,6 +881,18 @@ enabled (every message is inspected) — treat it like ambient archiving.
   rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
   reads only `admin_audit` and structurally can't surface auto-detected
   strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
+- **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
+  right now", the question `list_member_warnings` structurally can't (it
+  requires an already-known `targetUserId`) and the digest's bare `🔇 N`
+  count (issue #357) was never meant to answer. It unions `countMutedMembers`'
+  and `countStaleMutedMembers`' (issue #403) predicates into one identity
+  list — each row tagged `active` (currently over the windowed strike limit)
+  or `stale` (over the unwindowed limit only — strikes aged out of the
+  window but never explicitly cleared, so the member *may* still be muted;
+  the tool hedges this explicitly, never asserting it as confirmed), with
+  strike count and last-warning timestamp. Never reason/excerpt — that stays
+  behind `list_member_warnings`. Same guild-wide, non-conversation-scoped
+  boundary as `clear_warnings`; capped at 50 rows, newest first.
 
 Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
 see SECURITY.md for the blast-radius and enforcement caveats.
