@@ -594,7 +594,25 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   `'declined'` — a decline must stick on the very next run, not just until
   the cluster re-summarises to the same topic label) or whose topic an
   existing `knowledge` entry already covers above the relevance floor
-  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`).
+  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`). The topic match itself is two
+  layers (issue #503): a cheap exact (case-insensitive) string comparison
+  first, then — only when that misses — a semantic check against every
+  stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
+  (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
+  declined topic re-drafted under different wording on a later run (the
+  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  gets caught. `candidateTopicAlreadyReviewed` computes the topic's
+  embedding at most once per attempted cluster and reuses that same vector
+  for the semantic check, `knowledgeCoversTopic`, and the candidate insert
+  itself — no added local-embedding cost. Fails open (not blocked) on an
+  embedding error, same posture as `knowledgeCoversTopic`. `topic_embedding`
+  is nullable and **not backfilled** for rows inserted before this column
+  existed — those older rows are still covered by the (unchanged) exact-match
+  path but never surface a semantic match, mirroring this repo's existing
+  non-retroactive precedent (e.g. #197's `is_dm`). The column is
+  write-and-compare-only: never returned by `list_knowledge_candidates`,
+  `accept_knowledge_candidate`, or `decline_knowledge_candidate`, matching
+  `knowledge.embedding`/`knowledge_gaps.embedding`.
 - **Deletion coherence inherits from #51**: a candidate's `topic` is
   denormalized from its source digest at insert time. When a purge
   invalidates a digest, its still-*pending* candidates are deleted with it;

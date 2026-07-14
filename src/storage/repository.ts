@@ -2800,32 +2800,39 @@ function toKnowledgeCandidate(r: {
  * Draft a candidate from the context builder — always 'pending'. `topic` is
  * copied from the source digest at insert time (not just reachable via
  * `digestId`) so dedup/display survive the digest being nulled out by a
- * later purge (see `purgeSingleIdentity` below).
+ * later purge (see `purgeSingleIdentity` below). `topicEmbedding` (issue
+ * #503) is the SAME vector `candidateTopicAlreadyReviewed` already computed
+ * for the dedup check below — passed through rather than re-embedded, and
+ * null whenever that check short-circuited on an exact match or the
+ * embedding itself failed (fail-open; never blocks the insert).
  */
 export async function insertKnowledgeCandidate(input: {
   digestId: number;
   topic: string;
   title: string;
   content: string;
+  topicEmbedding?: number[] | null;
 }): Promise<number> {
   const { rows } = await pool.query(
-    `INSERT INTO knowledge_candidates (digest_id, topic, title, content)
-     VALUES ($1,$2,$3,$4) RETURNING id`,
-    [input.digestId, input.topic, input.title, input.content],
+    `INSERT INTO knowledge_candidates (digest_id, topic, title, content, topic_embedding)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [
+      input.digestId,
+      input.topic,
+      input.title,
+      input.content,
+      input.topicEmbedding ? pgvector.toSql(input.topicEmbedding) : null,
+    ],
   );
   return Number(rows[0].id);
 }
 
 /**
- * Dedup guard for the builder: true if `topic` already has a
- * `knowledge_candidates` row, in ANY status. Matched regardless of status
- * (including 'declined') so an admin's decline sticks — the acceptance
- * criteria (issue #102) requires the builder never re-emit the same topic
- * on its very next run, and a matching cluster re-summarises to the same
- * topic label run over run. `runContextBuilder` also checks
- * `knowledgeCoversTopic` before insert, for the case where the suggestion
- * was accepted instead. Matches case-insensitively since the summariser is
- * free-text.
+ * Exact-match half of the builder's dedup guard: true if `topic` already has
+ * a `knowledge_candidates` row, in ANY status, matched case-insensitively
+ * (the summariser is free-text). Cheap short-circuit — no embedding call —
+ * used by `candidateTopicAlreadyReviewed` below before it falls back to the
+ * semantic check for a paraphrased topic label (issue #503).
  */
 export async function hasQueuedCandidateForTopic(topic: string): Promise<boolean> {
   const { rows } = await pool.query(
@@ -2836,22 +2843,66 @@ export async function hasQueuedCandidateForTopic(topic: string): Promise<boolean
 }
 
 /**
- * True if an existing `knowledge` entry already covers this topic above the
- * #95 relevance floor (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) — the other
- * half of the builder's dedup guard, so the candidate queue doesn't refill
- * with a suggestion an admin already answered. Fails closed (false, i.e.
- * "not covered") on an embedding error so a transient embedding outage can
- * only ever produce an extra candidate for an admin to decline, never
- * silently suppress a genuinely new one.
+ * The builder's full candidate dedup guard (issue #503): exact match (any
+ * status, via `hasQueuedCandidateForTopic` — no embedding needed, a true
+ * short circuit) OR semantic similarity of `topic`'s embedding against any
+ * existing `knowledge_candidates.topic_embedding`, any status, at or above
+ * `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD` (the same 0.92 bar
+ * `saveKnowledge`'s near-duplicate nudge already established for "same
+ * topic, worded differently"). Closes the gap where
+ * `hasQueuedCandidateForTopic`'s own docstring promises "an admin's decline
+ * sticks" but a reworded topic label (a fresh free-text `TOPIC:` summary
+ * every builder run) slipped past exact matching.
+ *
+ * Also returns the computed embedding (or null when the exact match short-
+ * circuited, or embedding failed) so the caller can thread the SAME vector
+ * into `knowledgeCoversTopic` and `insertKnowledgeCandidate` — at most one
+ * `embed()` call per attempted cluster, same cost profile as before this
+ * change. Fails open (`blocked: false`) on an embedding error, matching
+ * `knowledgeCoversTopic`'s existing posture: worst case is one extra
+ * candidate for an admin to decline, never a silently-dropped genuinely new
+ * topic.
  */
-export async function knowledgeCoversTopic(topic: string): Promise<boolean> {
+export async function candidateTopicAlreadyReviewed(
+  topic: string,
+): Promise<{ blocked: boolean; embedding: number[] | null }> {
+  if (await hasQueuedCandidateForTopic(topic)) {
+    return { blocked: true, embedding: null };
+  }
   let vec: number[];
   try {
     vec = await embed(topic);
   } catch (err) {
     logger.warn({ err }, 'Embedding failed for knowledge-candidate dedup check');
-    return false;
+    return { blocked: false, embedding: null };
   }
+  const { rows } = await pool.query(
+    `SELECT 1 - (topic_embedding <=> $1) AS similarity
+       FROM knowledge_candidates
+      WHERE topic_embedding IS NOT NULL
+      ORDER BY topic_embedding <=> $1
+      LIMIT 1`,
+    [pgvector.toSql(vec)],
+  );
+  const top = rows[0];
+  const blocked = !!top && Number(top.similarity) >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD;
+  return { blocked, embedding: vec };
+}
+
+/**
+ * True if an existing `knowledge` entry already covers this topic above the
+ * #95 relevance floor (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) — the other
+ * half of the builder's dedup guard, so the candidate queue doesn't refill
+ * with a suggestion an admin already answered. Takes the topic's already-
+ * computed embedding (issue #503 — reused from `candidateTopicAlreadyReviewed`
+ * rather than re-embedded) instead of embedding it again; a null vector
+ * (exact-match short circuit upstream, or a failed embed) fails open to
+ * false ("not covered") so a transient embedding outage can only ever
+ * produce an extra candidate for an admin to decline, never silently
+ * suppress a genuinely new one.
+ */
+export async function knowledgeCoversTopic(vec: number[] | null): Promise<boolean> {
+  if (!vec) return false;
   const { rows } = await pool.query(
     `SELECT 1 - (embedding <=> $1) AS similarity
        FROM knowledge
