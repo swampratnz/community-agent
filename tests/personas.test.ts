@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { DEFAULT_PERSONA_ID, PERSONAS, getPersona, selectPersona } = await import('../src/agent/personas.js');
 const { buildSystemPrompt } = await import('../src/agent/systemPrompt.js');

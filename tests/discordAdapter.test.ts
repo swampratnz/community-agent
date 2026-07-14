@@ -15,7 +15,7 @@ import type { IncomingMessage } from '../src/platforms/types.js';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';

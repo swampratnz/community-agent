@@ -32,7 +32,7 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 const hasDb = Boolean(process.env.DATABASE_URL);
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1';
 process.env.ACCESS_MODE_DISCORD = 'open';
@@ -201,12 +201,19 @@ test("SECURITY: an auto-answer turn resolves the caller's true tier and is grant
   await trigger(makeMessage({ userId }));
 
   assert.ok(seenRole, 'runTurn must have been invoked');
-  const expectedRole = await resolveRole('discord', userId);
-  assert.equal(
-    seenRole,
-    expectedRole,
-    'the auto-answer path must resolve role via the exact same mechanism as an addressed turn',
-  );
+  // The exact-role comparison reads the DB via resolveRole; only assert it
+  // when a real DB is reachable (matches this file's `hasDb` convention).
+  // The security-relevant ceiling below (exactly MEMBER_TOOLS, never elevated)
+  // is asserted unconditionally, since it must hold regardless of the resolved
+  // tier — even the no-DB default degrades to the same member/guest floor.
+  if (hasDb) {
+    const expectedRole = await resolveRole('discord', userId);
+    assert.equal(
+      seenRole,
+      expectedRole,
+      'the auto-answer path must resolve role via the exact same mechanism as an addressed turn',
+    );
+  }
   const tools = toolsForRole(seenRole);
   assert.deepEqual(tools, [...MEMBER_TOOLS]);
   for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
@@ -278,4 +285,41 @@ test('SECURITY: an auto-answer turn is still subject to the daily reply budget �
     'the budget notice goes to the channel — no thread was created for a shed turn',
   );
   assert.equal(sent[0].text, DAILY_BUDGET_NOTICE_TEXT);
+});
+
+test('SECURITY: an over-budget post never burns a per-channel auto-answer cap slot — a shed turn cannot starve other members (issue #477, AUTO_ANSWER_RATE_LIMIT_PER_HOUR=2)', async () => {
+  let calls = 0;
+  const spammer = `${RUN}-spammer`;
+  // The per-channel cap (2) is reserved only AFTER the pause/rate-limit/daily-
+  // budget checks — so an over-budget member hammering the channel must not
+  // consume any of the shared allowance and lock everyone else out.
+  const router = new Router(
+    async () => {
+      calls += 1;
+      return makeReply('answer');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    async (_platform, userId) => (userId === spammer ? 999 : 0),
+  );
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // Three over-budget posts — enough to exhaust a cap of 2 if the reservation
+  // ran before the budget check. All are shed, none answered.
+  for (let i = 0; i < 3; i++) {
+    await trigger(makeMessage({ userId: spammer, messageId: `spam-${i}`, text: `${RUN} spam ${i}` }));
+  }
+  assert.equal(calls, 0, 'over-budget posts are never answered');
+
+  // The full cap must still be available: two other members both get answered.
+  await trigger(makeMessage({ userId: `${RUN}-legit-a`, messageId: 'la', text: `${RUN} legit a` }));
+  await trigger(makeMessage({ userId: `${RUN}-legit-b`, messageId: 'lb', text: `${RUN} legit b` }));
+  assert.equal(
+    calls,
+    2,
+    'the shed over-budget posts must not have consumed the channel cap and starved legitimate members',
+  );
 });

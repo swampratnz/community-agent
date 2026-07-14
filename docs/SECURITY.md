@@ -1141,7 +1141,47 @@ typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
   from the audio payload); DMs to the bot are always addressed. This does not
   widen who can trigger the bot — the super-admin gate still applies.
 
-### 14. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
+### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
+
+Closes the "member exhausts `AGENT_MAX_TURNS` and gets nothing but a static
+fallback" gap with a member-initiated, real-time admin alert — see
+`docs/ARCHITECTURE.md` for the full flow. Controls:
+
+- **No new tool, no new model-reachable surface.** The trigger is the
+  existing structural `reply.maxTurnsExceeded === true` signal, not free-text
+  or a tool call — the entire offer/confirm/notify flow lives in
+  `router.ts`'s deterministic intercept layer, the same trust tier as the
+  CONFIRM/CANCEL intercept. A crafted question can make the *model* fail,
+  but it cannot make the model itself trigger an alert; only a genuine
+  max-turns exhaustion followed by the member's own subsequent "yes" can.
+- **Member-initiated, not auto-fired.** The offer requires an explicit
+  confirming reply; a max-turns failure alone never notifies anyone.
+- **No new data access.** `notifyAdmins` (mirroring `notifySuperAdmins`)
+  loops `listAdmins()` — the same guild-wide `community_users.role='admin'`
+  recipient set the weekly digest already targets — and echoes only the
+  member's own truncated original question (`truncateForEcho`, the same
+  helper `notifyReportFiled`/`notifySuggestionResolved` use). This changes
+  *when* an admin sees data already visible via the digest, not *what* they
+  can see.
+- **`SECURITY:` — single-shot consumption.** The pending entry is consumed
+  (deleted) the instant a confirming "yes" is matched, before the rate-cap
+  check runs — so a replayed "yes" can never fire a second notification,
+  regardless of whether the first attempt cleared the cap.
+- **`SECURITY:` — no confirmation without a live pending entry.** A "yes"
+  from a caller with no pending escalation (never offered one, or past the
+  10-minute TTL) is passed through to the model as an ordinary message —
+  never mistaken for a confirmation, never calls `notifyAdmins`.
+- **`SECURITY:` — guild-wide rate cap, tier-blind.** `ESCALATION_RATE_LIMIT_PER_HOUR`
+  (default 5) bounds total confirmed-escalation notifications per rolling
+  hour regardless of caller tier or which conversation triggers them —
+  including an open-mode guest, since the cap has no tier branch to bypass.
+  Once exhausted, a further confirmed "yes" gets a plain "already at the
+  hourly cap" reply instead of a notification.
+- **Off by default, byte-identical when unset.** With the flag unset, no
+  offer line is ever appended, no pending entry is ever recorded, and no
+  caller message can call `notifyAdmins` — pinned by a router test.
+
+### 15. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
 
 An operator-curated allowlist of Discord channel ids in which a top-level
 human post that does **not** address the bot (no mention/reply/DM) still gets

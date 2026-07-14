@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-oauth-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-discord-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-cloud-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-cloud-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-cloud-app-secret';

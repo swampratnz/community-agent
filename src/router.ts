@@ -11,7 +11,7 @@ import {
   runAgentTurn,
   type AgentReply,
 } from './agent/core.js';
-import { formatKnowledgeCitationNote } from './agent/tools.js';
+import { formatKnowledgeCitationNote, notifyAdmins, truncateForEcho } from './agent/tools.js';
 import {
   cancelPendingAction,
   classifyConfirmReply,
@@ -168,6 +168,51 @@ const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā
 
 const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
 
+// Real-time admin escalation after a max-turns failure (issue #479). Every
+// piece below is opt-in behind ESCALATION_TO_ADMIN_ENABLED (default off) and
+// lives entirely in this deterministic router layer — never routed through
+// the model — mirroring the CONFIRM/CANCEL intercept's trust level.
+
+/** Appended to MAX_TURNS_REPLY/_MI (and the repeat-max-turns shortcut's replay of it) when the flag is on — see `offerEscalation`. */
+const ESCALATION_OFFER_SUFFIX =
+  '\n\nWant me to flag this for a community admin? Reply yes within 10 minutes.';
+const ESCALATION_OFFER_SUFFIX_MI =
+  '\n\nMe tohu tēnei mō tētahi kaiwhakahaere hapori? Whakahokia mai "āe" i roto i te 10 meneti.';
+
+/** Sent when a "yes"/"y"/"āe" confirms a live pending escalation and a notification slot was available. */
+const ESCALATION_CONFIRMED_TEXT = '👍 Flagged for a community admin — someone will follow up soon.';
+const ESCALATION_CONFIRMED_TEXT_MI =
+  '👍 Kua tohu mō tētahi kaiwhakahaere hapori — ka whai kōrero mai tētahi i muri tata nei.';
+
+/** Sent when a confirmation would otherwise fire but ESCALATION_RATE_LIMIT_PER_HOUR is already exhausted (issue #479 acceptance criterion 6). */
+const ESCALATION_RATE_LIMITED_TEXT =
+  'Already flagged the max I can this hour, sorry — please try again later or contact an admin directly.';
+const ESCALATION_RATE_LIMITED_TEXT_MI =
+  'Kua tae ki te tepe mō tēnei haora, aroha mai — tēnā koa whakamātauria anō ā muri ake, ' +
+  'whakapā tika rānei ki tētahi kaiwhakahaere.';
+
+/**
+ * How long a pending escalation offer stays live (issue #479's "reply yes
+ * within 10 minutes") — a separate, longer window from
+ * REPEAT_SHORTCUT_WINDOW_MS, since a member deciding whether to loop in an
+ * admin plausibly takes longer than a double-tap resend.
+ */
+const ESCALATION_WINDOW_MS = 600_000; // 10 minutes
+
+/**
+ * Guild-wide rolling-hour cap on confirmed escalation notifications
+ * (acceptance criterion 6) — same shape and default as
+ * `ANNOUNCE_RATE_LIMIT_PER_HOUR` (`agent/tools.ts`), exported so tests can
+ * exhaust it by exact count rather than a magic-number loop.
+ */
+export const ESCALATION_RATE_LIMIT_PER_HOUR = 5;
+
+/** Short affirmatives that confirm a pending escalation offer — case-insensitive, trimmed only (no fuzzy matching), matching `classifyConfirmReply`'s discipline. */
+function classifyEscalationConfirm(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === 'yes' || t === 'y' || t === 'āe';
+}
+
 /** The subset of a KnowledgeSearchHit the shortcut path carries through — just enough to render `formatKnowledgeCitationNote` (issue #214). */
 interface KnowledgeShortcutHit {
   id: number;
@@ -191,6 +236,9 @@ interface KnowledgeShortcutHit {
  *    stored either way
  *  - intercept CONFIRM/CANCEL replies for pending destructive actions —
  *    executed deterministically, never through the model
+ *  - optionally offer, and intercept the confirmation of, a real-time admin
+ *    escalation after a max-turns failure — same non-model trust tier as
+ *    CONFIRM/CANCEL
  *  - respect the paused policy (super admins only while paused; everyone else
  *    gets a debounced notice instead of silence)
  *  - persist member+ messages (audit + learning) regardless of reply
@@ -235,6 +283,36 @@ export class Router {
    * REPEAT_MAX_TURNS_SHORTCUT_ENABLED short-circuit in `handle()`.
    */
   private readonly lastMaxTurnsFailure = new Map<string, { normalizedText: string; at: number }>();
+  /**
+   * `platform:conversationId:userId` -> the live escalation offer for that
+   * exact caller (issue #479) — created atomically with the offer line
+   * appended to a max-turns failure reply (`offerEscalation`, called from
+   * both `respond()` and `sendRepeatMaxTurnsShortcut`), so the offer is never
+   * shown without a matching entry here and vice versa. `query` is the
+   * caller's own original (unnormalized) message text, echoed (truncated) to
+   * admins on confirmation. Single-shot: consumed (deleted) the moment a
+   * confirming "yes" is matched in `handle()`, so a replayed "yes" can never
+   * fire a second notification. Swept on the same TTL as every other pending
+   * map here.
+   */
+  private readonly pendingEscalations = new Map<string, { query: string; at: number }>();
+  /** Timestamps of confirmed escalation notifications, for the guild-wide rolling-hour cap (ESCALATION_RATE_LIMIT_PER_HOUR). */
+  private readonly escalationTimestamps: number[] = [];
+  /**
+   * Auto-answer thread id -> parent channel id (+ creation time), issue #477.
+   * A CONFIRM/CANCEL or escalation-confirmation the member types INSIDE an
+   * auto-answer thread arrives with the thread's own id as its
+   * `conversationId`, but the pending action / escalation offer was registered
+   * against the PARENT channel (where the original post lived, and where the
+   * agent turn's `caller.conversationId` pointed). This map translates a
+   * confirming reply arriving inside a known auto-answer thread back to that
+   * parent for the pending-LOOKUP only — registration is unchanged — so a
+   * `forget_me`/destructive CONFIRM (or an escalation "yes") typed exactly
+   * where the bot's notice appeared still resolves instead of being silently
+   * swallowed. Pruned in `sweep()` on the escalation window (the longer of the
+   * two confirm TTLs it has to outlive).
+   */
+  private readonly autoAnswerThreadParents = new Map<string, { parent: string; at: number }>();
 
   private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
@@ -261,6 +339,9 @@ export class Router {
    * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
    * defaults to the real DB-backed shortcut-hit recorder (issue #440),
    * fired at each of the four member-facing shortcut short-circuits.
+   * `notifyAdminsFn` defaults to the real `listAdmins()`-backed admin alert
+   * (issue #479), fired from the escalation-confirmation intercept in
+   * `handle()`; overridable so tests can assert on it without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -274,6 +355,7 @@ export class Router {
     private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
     private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
     private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
+    private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -301,6 +383,12 @@ export class Router {
     }
     for (const [key, entry] of this.lastMaxTurnsFailure) {
       if (now - entry.at > this.REPEAT_SHORTCUT_WINDOW_MS) this.lastMaxTurnsFailure.delete(key);
+    }
+    for (const [key, entry] of this.pendingEscalations) {
+      if (now - entry.at > ESCALATION_WINDOW_MS) this.pendingEscalations.delete(key);
+    }
+    for (const [key, entry] of this.autoAnswerThreadParents) {
+      if (now - entry.at > ESCALATION_WINDOW_MS) this.autoAnswerThreadParents.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -382,6 +470,41 @@ export class Router {
     }
     recent.push(now);
     this.autoAnswerHits.set(conversationId, recent);
+    return true;
+  }
+
+  /**
+   * Appends the escalation offer to a max-turns failure reply AND, in the
+   * same step, records the live pending entry behind it (issue #479
+   * acceptance criterion 2) — called from both the fresh-failure path
+   * (`respond()`) and the repeat-max-turns shortcut replay
+   * (`sendRepeatMaxTurnsShortcut`), which also serves this same failure text
+   * and would otherwise show a "reply yes" offer with no pending entry to
+   * back it (the adversarial review's named hazard). Each call re-arms a
+   * fresh `ESCALATION_WINDOW_MS` TTL, overwriting any still-live prior entry
+   * for this caller — a repeat failure genuinely re-offers escalation, it
+   * doesn't extend a stale one.
+   */
+  private offerEscalation(msg: IncomingMessage, failureText: string, isMi: boolean): string {
+    this.pendingEscalations.set(this.callerKey(msg), { query: msg.text, at: Date.now() });
+    return `${failureText}${isMi ? ESCALATION_OFFER_SUFFIX_MI : ESCALATION_OFFER_SUFFIX}`;
+  }
+
+  /**
+   * Reserve one guild-wide escalation-notification slot against the rolling
+   * hourly cap (issue #479 acceptance criterion 6) — same sliding-window
+   * shape as `reserveAnnounceSlot`/`reservePollSlot` in `agent/tools.ts`, but
+   * a single shared window (not per-conversation): the cap bounds total
+   * admin-notification volume regardless of which conversation or caller
+   * tier triggers it.
+   */
+  private reserveEscalationSlot(limit: number): boolean {
+    const now = Date.now();
+    const recent = this.escalationTimestamps.filter((t) => now - t < 3_600_000);
+    this.escalationTimestamps.length = 0;
+    this.escalationTimestamps.push(...recent);
+    if (this.escalationTimestamps.length >= limit) return false;
+    this.escalationTimestamps.push(now);
     return true;
   }
 
@@ -578,17 +701,24 @@ export class Router {
     // actor has a pending action in this conversation, so it never steals
     // normal messages. Never reaches the model: injection can request, only
     // a human can confirm.
+    // A CONFIRM/CANCEL typed inside an auto-answer thread (issue #477) carries
+    // the thread's id, but the action was registered against the parent
+    // channel — resolve back to it for the lookup so the confirm the bot's own
+    // notice asked for isn't silently dropped. Non-thread messages pass through
+    // unchanged.
+    const pendingConversationId =
+      this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId;
     const verdict = classifyConfirmReply(msg.text);
-    if (verdict && hasPendingAction(msg.platform, msg.conversationId, msg.userId)) {
+    if (verdict && hasPendingAction(msg.platform, pendingConversationId, msg.userId)) {
       if (verdict === 'cancel') {
-        cancelPendingAction(msg.platform, msg.conversationId, msg.userId);
+        cancelPendingAction(msg.platform, pendingConversationId, msg.userId);
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
         await this.send(adapter, msg.conversationId, lang === 'mi' ? CANCEL_TEXT_MI : CANCEL_TEXT).catch(
           () => {},
         );
         return;
       }
-      const pending = takePendingAction(msg.platform, msg.conversationId, msg.userId);
+      const pending = takePendingAction(msg.platform, pendingConversationId, msg.userId);
       if (pending) {
         let outcome: string;
         // Re-check the actor's CURRENT tier: a role revoked inside the
@@ -615,6 +745,54 @@ export class Router {
       }
     }
 
+    // Deterministic escalation-confirmation intercept (issue #479). Sibling
+    // of the CONFIRM/CANCEL intercept above: runs BEFORE the addressed check
+    // (so a bare "yes" works in a group where a plain reply isn't
+    // "addressed"), entirely in the router, and never reaches the model.
+    // `pendingEscalations` is ONLY ever populated atomically alongside the
+    // offer text itself (`offerEscalation`, called from `respond()` and
+    // `sendRepeatMaxTurnsShortcut`), so a live entry here always means the
+    // caller was actually shown the offer. Deleting the entry BEFORE
+    // checking the rate cap makes consumption single-shot regardless of
+    // outcome: a replayed "yes" can never find the entry again, whether or
+    // not the first attempt cleared the cap (acceptance criteria 4 + 6).
+    // Absence here (never offered, or past the 10-minute TTL) falls straight
+    // through — the text is passed to the model as an ordinary message,
+    // never mistaken for a confirmation.
+    if (config.behaviour.escalationToAdminEnabled && classifyEscalationConfirm(msg.text)) {
+      // Same auto-answer-thread translation as the CONFIRM/CANCEL intercept
+      // above: an escalation "yes" typed inside the thread resolves back to the
+      // parent channel the offer was registered against (issue #477 × #479).
+      const escalationConversationId =
+        this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId;
+      const escalationKey = `${msg.platform}:${escalationConversationId}:${msg.userId}`;
+      const pendingEscalation = this.pendingEscalations.get(escalationKey);
+      if (pendingEscalation && Date.now() - pendingEscalation.at < ESCALATION_WINDOW_MS) {
+        this.pendingEscalations.delete(escalationKey);
+        const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+          await this.notifyAdminsFn(
+            (platform) => this.adapters.get(platform),
+            `${msg.userName} asked for help and hit my step limit on ${msg.platform} ` +
+              `(conversation ${msg.conversationId}): "${truncateForEcho(pendingEscalation.query)}"`,
+            msg.userId,
+          ).catch((err) => logger.warn({ err }, 'Escalation admin notification failed'));
+          await this.send(
+            adapter,
+            msg.conversationId,
+            lang === 'mi' ? ESCALATION_CONFIRMED_TEXT_MI : ESCALATION_CONFIRMED_TEXT,
+          ).catch(() => {});
+        } else {
+          await this.send(
+            adapter,
+            msg.conversationId,
+            lang === 'mi' ? ESCALATION_RATE_LIMITED_TEXT_MI : ESCALATION_RATE_LIMITED_TEXT,
+          ).catch(() => {});
+        }
+        return;
+      }
+    }
+
     // Auto-answer (issue #477): an operator-allowlisted Discord channel
     // (AUTO_ANSWER_CHANNEL_IDS) gets an answer for a plain top-level human
     // post too, not just one that mentions/replies to the bot — this only
@@ -636,11 +814,6 @@ export class Router {
     // or an auto-answer candidate.
     if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return;
     if (!msg.text.trim()) return;
-
-    // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
-    // of this new untrusted-input path. Never applied to an addressed/mention
-    // reply in the same channel, only to auto-answered ones.
-    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(msg.conversationId)) return;
 
     // Paused: only super admins get through (so they can resume it). Everyone
     // else gets a debounced notice instead of silence (issue #128, mirroring
@@ -731,6 +904,14 @@ export class Router {
       }
     }
 
+    // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
+    // of this new untrusted-input path. Reserved HERE, only once pause, the
+    // per-user rate limit, and the daily budget have all passed, so a message
+    // those checks would shed never burns a slot from the shared per-channel
+    // allowance and starves other members' auto-answers. Never applied to an
+    // addressed/mention reply in the same channel, only to auto-answered ones.
+    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(msg.conversationId)) return;
+
     // If we ARE replying, make sure this message is in memory before the
     // agent turn runs (so recall can see it and ordering stays sane).
     await recorded;
@@ -750,6 +931,15 @@ export class Router {
         );
         return undefined;
       });
+      // Record the thread -> parent mapping so a CONFIRM/CANCEL or escalation
+      // "yes" the member types inside this thread resolves back to the parent
+      // channel the pending action/offer was registered against (issue #477).
+      if (replyConversationId) {
+        this.autoAnswerThreadParents.set(replyConversationId, {
+          parent: msg.conversationId,
+          at: Date.now(),
+        });
+      }
     }
 
     const key = this.convoKey(msg);
@@ -1029,7 +1219,11 @@ export class Router {
    * Sends the canned max-turns message for a repeat-max-turns shortcut hit
    * (issue #306) without spawning a second full agent turn, and records it
    * like a normal outbound reply — mirroring `sendRepeatShortcut`'s
-   * precedent (#259).
+   * precedent (#259). Also re-offers escalation (issue #479) when the flag
+   * is on: this replay serves the exact same failure text `respond()` would
+   * have appended the offer to, so it must carry its own live pending entry
+   * rather than a dead "reply yes" left over from — or absent entirely
+   * despite — the original failure.
    */
   private async sendRepeatMaxTurnsShortcut(
     msg: IncomingMessage,
@@ -1040,7 +1234,9 @@ export class Router {
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const notice = lang === 'mi' ? REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI : REPEAT_MAX_TURNS_SHORTCUT_NOTICE;
     const failure = lang === 'mi' ? MAX_TURNS_REPLY_MI : MAX_TURNS_REPLY;
-    const replyText = `${notice}${failure}`;
+    const replyText = config.behaviour.escalationToAdminEnabled
+      ? `${notice}${this.offerEscalation(msg, failure, lang === 'mi')}`
+      : `${notice}${failure}`;
     await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
@@ -1113,6 +1309,17 @@ export class Router {
         reply = { text: INTERNAL_ERROR_REPLY, ok: false };
       }
 
+      // Real-time admin escalation (issue #479): append the "reply yes"
+      // offer and atomically register its live pending entry (see
+      // `offerEscalation`'s doc comment) ONLY for a genuine max-turns
+      // failure — `reply.ok`/other failure modes are untouched. Threaded
+      // into `outboundText` (not `reply.text` itself) so the caches below
+      // that key off `reply.text`/`reply.ok` stay exactly as before.
+      const outboundText =
+        config.behaviour.escalationToAdminEnabled && reply.maxTurnsExceeded === true
+          ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
+          : reply.text;
+
       // This call site (the real-agent-turn main reply, issue #339), the
       // gated notice (#363), and cancel/permissions-changed/pending-notice
       // (#405) all thread the caller's language preference into the send.
@@ -1120,7 +1327,7 @@ export class Router {
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
       // those are out of scope.
-      await this.send(adapter, target, reply.text, reply.languagePreference === 'mi' ? 'mi' : undefined);
+      await this.send(adapter, target, outboundText, reply.languagePreference === 'mi' ? 'mi' : undefined);
 
       // If the turn registered a NEW pending destructive action, the model
       // composed the reply above and could have hidden or misrepresented the
@@ -1179,7 +1386,7 @@ export class Router {
         userName: 'CommunityAgent',
         role: 'member',
         direction: 'outbound',
-        content: reply.text,
+        content: outboundText,
         costUsd: reply.costUsd,
         meta: {
           replyToUserId: msg.userId,
