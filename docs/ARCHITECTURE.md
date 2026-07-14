@@ -912,6 +912,48 @@ platforms.
   what a single `forget_me` call erases) and the tests that pin both
   invariants.
 
+## Auto-answer mode (Discord, opt-in)
+
+`AUTO_ANSWER_CHANNEL_IDS` (issue #477) lets an operator allowlist specific
+Discord channels (typically help/forum channels) where a top-level human post
+gets an answer even when it doesn't mention/reply to the bot. Unset/empty is
+the default and is byte-identical to today's behaviour — the router's summon
+gate (`!msg.addressedToBot && !msg.isDirect`) only relaxes for a message whose
+`conversationId` is in the allowlist, is on Discord, and isn't
+bot/webhook-authored (`IncomingMessage.isBotAuthor`, a router-level backstop
+alongside the adapter never constructing a message for one in the first
+place).
+
+Everything downstream of that one relaxed check is reused verbatim — role
+resolution (`resolveRole`), the gated-guest exclusion (evaluated earlier in
+`handle()`, so it applies to auto-answer for free), the tier-derived tool
+surface (`toolsForRole`), the per-user rate limit, the daily reply budget, and
+the repeat-question/repeat-max-turns shortcuts. Two things are genuinely new:
+
+- **A per-channel rolling-hour cap** (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`,
+  default 10), a sliding-window limiter local to `Router` mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot` shape but operator-tunable, since
+  an allowlisted channel's traffic is far less predictable than the
+  admin-only `announce` tool's.
+- **Threaded replies.** The router asks the adapter
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only, optional — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action) to open a thread anchored to the origin
+  post, then redirects every send for that turn (including a shortcut hit)
+  into the new thread via an optional `replyConversationId` parameter threaded
+  through `respond()`/`sendKnowledgeShortcut()`/`sendRepeatShortcut()`/
+  `sendRepeatMaxTurnsShortcut()`. Caching keys (`convoKey`/`callerKey`, and
+  therefore the repeat-question shortcut and per-user rate limit) stay keyed
+  on the **parent channel**, not the newly created thread — each auto-answered
+  post gets its own thread, but "the same member asking the same thing again
+  in this channel" still needs to match across threads for the shortcut to
+  fire. A thread-creation failure degrades to answering directly in the
+  channel rather than dropping the reply.
+
+Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
+ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for
+the full security posture and its test references.
+
 ## Concurrency model
 
 - The router **serialises turns per conversation** (a promise chain keyed by
