@@ -206,9 +206,25 @@ const [, ...testScriptArgs] = scripts.test.trim().split(/\s+/);
 const runnerFlags = testScriptArgs.filter((arg) => !arg.startsWith('tests/'));
 
 const tsxBin = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
+// Run the SECURITY: gate serially (`--test-concurrency=1`). This job runs with
+// NO Postgres (DATABASE_URL unset — see .github/workflows/ci.yml), so the
+// DB-degradation tests deliberately drive code against an unreachable DB. Under
+// the default per-CPU file concurrency, pg's connection failures race the test
+// runner's teardown across the parallel file workers and can abort the whole
+// run with exit code 7 and NO failing assertion — an intermittent,
+// timing/load-dependent flake with nothing to do with the change under test.
+// Serialising the file workers shrinks that race window. The SECURITY: subset
+// is small enough that the wall-clock cost is minor, and the DB-backed `test`
+// job (which HAS Postgres, so no connection failures) keeps full concurrency.
 const result = spawnSync(
   tsxBin,
-  [...runnerFlags, '--test-reporter=tap', '--test-name-pattern=^SECURITY:', ...testFiles],
+  [
+    ...runnerFlags,
+    '--test-concurrency=1',
+    '--test-reporter=tap',
+    '--test-name-pattern=^SECURITY:',
+    ...testFiles,
+  ],
   { cwd: repoRoot, encoding: 'utf8' },
 );
 
