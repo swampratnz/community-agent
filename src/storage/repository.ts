@@ -2429,6 +2429,49 @@ export async function recentModerationEntries(
   }));
 }
 
+/**
+ * Per-actor rollup of `admin_audit` over a trailing window (issue #488), the
+ * aggregated complement to `recentAuditEntries`'s flat log — answers "who is
+ * actually doing moderation/curation work" instead of requiring a super admin
+ * to hand-tally raw log lines. Global/unscoped, same as `recentAuditEntries`
+ * (a super admin can already read every row via `audit_view`). Reuses
+ * `admin_audit_actor_idx (platform, actor_user_id, created_at DESC)` for the
+ * `GROUP BY`. Never selects `params` (may carry free-text reasons) — only
+ * counts and timestamps. Days clamp mirrors `usageStats`' own shape.
+ */
+export async function adminActivitySummary(days = 30): Promise<
+  Array<{
+    platform: Platform;
+    actorUserId: string;
+    actionCount: number;
+    successCount: number;
+    failureCount: number;
+    lastActionAt: Date;
+  }>
+> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 30, 1), 365);
+  const { rows } = await pool.query(
+    `SELECT platform, actor_user_id,
+            count(*) AS action_count,
+            count(*) FILTER (WHERE success) AS success_count,
+            count(*) FILTER (WHERE NOT success) AS failure_count,
+            max(created_at) AS last_action_at
+       FROM admin_audit
+      WHERE created_at >= now() - $1::interval
+      GROUP BY platform, actor_user_id
+      ORDER BY count(*) DESC`,
+    [`${clampedDays} days`],
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    actorUserId: r.actor_user_id as string,
+    actionCount: Number(r.action_count),
+    successCount: Number(r.success_count),
+    failureCount: Number(r.failure_count),
+    lastActionAt: r.last_action_at as Date,
+  }));
+}
+
 export async function usageStats(days = 7): Promise<{
   inbound: number;
   outbound: number;

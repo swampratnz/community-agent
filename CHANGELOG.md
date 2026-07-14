@@ -13,6 +13,23 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-14
 
 ### Added
+- **`appeal_moderation`** (#496): a member/guest could already see their own
+  moderation status (`my_warnings`, #184) but had zero in-bot way to ask for
+  a review — their only recourse was finding an admin's personal contact
+  outside the bot entirely. `appeal_moderation` closes that gap: a
+  self-scoped tool (eligibility read from `caller.platform`/`caller.userId`
+  only, exactly like `my_warnings`, never a model-supplied id) that refuses
+  cleanly ("no active warnings to appeal") unless the caller has at least
+  one active warning, so it can't become a generic side channel to message
+  admins — `suggest_improvement`/`report_content` already cover that. An
+  eligible caller may attach one optional, sanitized, length-capped reason
+  (same bound as `report_content`'s), which proactively DMs super admins via
+  the existing `notifySuperAdmins` fan-out (`notifyAppealFiled`, reusing
+  `notifyReportFiled`/`notifyReportWithdrawn`'s exact mechanism — no new
+  conversation-scoped push helper). Rate-capped per caller (not per
+  conversation) at one per `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h),
+  in-memory/best-effort — no new table, no auto-unmute; `clear_warnings`
+  remains the only way an admin lifts a mute.
 - **Help-channel auto-answer mode** (`AUTO_ANSWER_CHANNEL_IDS`, Discord-only, #477): closes the gap where a member who posts a question in a help channel without mentioning the bot got nothing — the summon gate only ever fired for people who already knew the bot existed. An operator can now allowlist specific channels (e.g. a `#help` forum) where a top-level, non-addressed human post still gets an answer, contained in a new thread anchored to that post rather than posted bare into the channel. Unset/empty is the default and is byte-identical to today. Every existing control is reused unchanged — role resolution, the gated-mode guest exclusion, the tier-derived tool surface (member/guest only, never elevated), the per-user rate limit, the daily reply budget, and the repeat-question shortcut — plus two new guards: a configurable per-channel rolling-hour cap (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, mirroring the existing `announce` rate limiter) and an explicit self/bot/webhook loop-prevention check. See docs/ARCHITECTURE.md and docs/SECURITY.md §14.
 - **`MEMORY_RELEVANCE_THRESHOLD`** (#474): automatic per-turn memory recall and
   the `remember_search` tool both search past interactions via `searchMemory`,

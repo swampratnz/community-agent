@@ -11,6 +11,7 @@ import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
   acceptKnowledgeCandidate,
+  adminActivitySummary,
   addMemberNote,
   addWarning,
   areKnowledgeEntriesLowRated,
@@ -616,6 +617,13 @@ export const EVENT_DESCRIPTION_MAX_CHARS = 1000;
 export const EVENT_LOCATION_MAX_CHARS = 100;
 
 /**
+ * appeal_moderation's optional free-text `reason` (issue #496) — same
+ * bound treatment as `report_content`'s `reason`, since both are a short,
+ * member-supplied explanation destined for an outbound admin DM.
+ */
+export const APPEAL_MODERATION_REASON_MAX_CHARS = 500;
+
+/**
  * cancel_event's audit-only `reason` (issue #424) has no Discord field to
  * bound it against — same shape as report_content's `reason`, so the same
  * 500-char cap.
@@ -659,6 +667,34 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole)
   );
+}
+
+/**
+ * Pure formatter for the `admin_activity` tool reply (issue #488), mirroring
+ * `formatUsageStats`'s testable-formatter shape. Rows must already carry a
+ * resolved display `name` (the caller resolves it via `resolveDisplayName`,
+ * falling back to the raw platform user id) — this function does no lookup
+ * itself, so it never touches the DB and is directly unit-testable. Never
+ * renders `admin_audit.params` — only actor/count/timestamp fields.
+ */
+export function formatAdminActivity(
+  rows: Array<{
+    name: string;
+    platform: string;
+    actionCount: number;
+    successCount: number;
+    failureCount: number;
+    lastActionAt: Date;
+  }>,
+  days: number,
+): string {
+  if (rows.length === 0) return `No privileged actions recorded in the last ${days} day(s).`;
+  return rows
+    .map(
+      (r) =>
+        `${r.name} (${r.platform}): ${r.actionCount} actions (${r.successCount} success / ${r.failureCount} failed), last ${r.lastActionAt.toISOString()}`,
+    )
+    .join('\n');
 }
 
 /**
@@ -745,6 +781,7 @@ const MEMBER_CAPABILITIES_TEXT =
   'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
   "Here's what you can ask me to do:\n" +
   '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
+  '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
   '- Ask me for our community guidelines ("what are the rules here?")\n' +
   '- Answer questions from curated community knowledge — just ask\n' +
   '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
@@ -1039,6 +1076,35 @@ export async function notifyReportWithdrawn(
 }
 
 /**
+ * Proactive super-admin alert fired when a member appeals their own active
+ * moderation warning(s)/mute (issue #496) — reuses `notifySuperAdmins`, the
+ * exact fan-out `notifyReportFiled`/`notifyReportWithdrawn` already use, per
+ * the adversarial review's correction to stay within one PR (no new
+ * conversation-scoped push helper). Exposes no new data: the caller's active
+ * warning count is already readable by admins via `list_member_warnings`;
+ * this only changes when it's proactively surfaced. Exported for unit
+ * testing without the MCP tool-call transport, same convention as
+ * notifyReportFiled/notifyReportWithdrawn.
+ */
+export async function notifyAppealFiled(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  appeal: {
+    callerUserId: string;
+    callerName: string | null;
+    activeWarnings: number;
+    strikeLimit: number;
+    reason?: string;
+  },
+): Promise<void> {
+  const lines = [
+    `${appeal.callerName ?? appeal.callerUserId} is appealing their own moderation status ` +
+      `(${appeal.activeWarnings}/${appeal.strikeLimit} active warnings).`,
+    `Reason given: ${appeal.reason ? `"${appeal.reason}"` : 'no reason given'}`,
+  ];
+  await notifySuperAdmins(adapterFor, lines.join('\n'), appeal.callerUserId);
+}
+
+/**
  * After a role change (grant_admin/revoke_admin) commits, reset the target's
  * active-conversation sessions so their new tier takes effect on the very next
  * message rather than being shadowed by stale in-session context until the
@@ -1237,6 +1303,36 @@ export function reserveWebSearchSlot(conversationId: string, limit: number): boo
   return true;
 }
 
+/**
+ * WhatsApp voice-note transcription timestamps per SENDER (issue #507), for
+ * `config.whatsapp.voice.rateLimitPerHour`. Per-sender rather than
+ * per-conversation (unlike `reserveWebSearchSlot`) since WhatsApp DMs are
+ * 1:1 anyway and this bounds one person's own audio volume, not a shared
+ * conversation. Same sliding-window shape as `reserveWebSearchSlot`.
+ */
+const voiceTranscriptionTimestampsBySender = new Map<string, number[]>();
+
+/**
+ * Reserve one voice-transcription slot for `senderId` against a rolling
+ * hourly cap. Returns false without reserving if the sender already hit
+ * `limit` within the last hour. Called from `BaileysAdapter` BEFORE any
+ * media download, so a refused slot never triggers a download/decode/model
+ * run. Callers must skip this entirely when `limit` is 0 (unlimited) so the
+ * default configuration does no bookkeeping.
+ */
+export function reserveVoiceTranscriptionSlot(senderId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (voiceTranscriptionTimestampsBySender.get(senderId) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= limit) {
+    voiceTranscriptionTimestampsBySender.set(senderId, recent);
+    return false;
+  }
+  recent.push(now);
+  voiceTranscriptionTimestampsBySender.set(senderId, recent);
+  return true;
+}
+
 /** warn_user timestamps per conversation, for the rolling-hour cap (WARN_USER_RATE_LIMIT_PER_HOUR). */
 const warnTimestampsByConversation = new Map<string, number[]>();
 
@@ -1327,6 +1423,31 @@ function reserveAnnounceSlot(conversationId: string, limit: number): boolean {
   }
   recent.push(now);
   announceTimestampsByConversation.set(conversationId, recent);
+  return true;
+}
+
+/**
+ * appeal_moderation last-fired timestamp per CALLER (`platform:userId`), for
+ * its per-caller cooldown (`MODERATION_APPEAL_COOLDOWN_HOURS`, issue #496).
+ * Scoped to the caller rather than the conversation — unlike every
+ * `reserve*Slot` cap above — since an appeal is inherently about one
+ * person's own status. In-memory/best-effort for the MVP (no new table): a
+ * restart merely permits one extra appeal DM, harmless for a non-destructive
+ * notification.
+ */
+const appealModerationLastAt = new Map<string, number>();
+
+/**
+ * Reserve one appeal_moderation slot for `key` against a rolling per-caller
+ * cooldown. Returns false without reserving if `key` already appealed within
+ * `cooldownHours`.
+ */
+function reserveAppealSlot(key: string, cooldownHours: number): boolean {
+  const now = Date.now();
+  const windowMs = cooldownHours * 60 * 60 * 1000;
+  const last = appealModerationLastAt.get(key);
+  if (last !== undefined && now - last < windowMs) return false;
+  appealModerationLastAt.set(key, now);
   return true;
 }
 
@@ -2031,6 +2152,52 @@ export function buildToolServer(
         }
       }
       return text(msg);
+    },
+  );
+
+  const appealModeration = tool(
+    'appeal_moderation',
+    "Ask the admins to review the caller's OWN active auto-moderation warning(s) — use when a member believes " +
+      'a warning (or being at/over the warning limit) was a false positive and wants a human to double-check. ' +
+      'NOT a general way to message admins — refuses cleanly with no active warnings (see suggest_improvement/' +
+      "report_content for other admin-notification paths). Always scoped to the caller's own platform/user id, " +
+      'never a model-supplied identifier — same self-scoping as my_warnings. Does not itself change any ' +
+      "warning or mute state — only an admin's clear_warnings can do that.",
+    {
+      reason: z
+        .string()
+        .max(APPEAL_MODERATION_REASON_MAX_CHARS)
+        .optional()
+        .describe(
+          "Optional short explanation of why the warning should be reviewed, in the member's own words " +
+            `(max ${APPEAL_MODERATION_REASON_MAX_CHARS} characters). Only pass through what they actually ` +
+            'said — never invent one.',
+        ),
+    },
+    async (args) => {
+      // Self-scoped, exactly like my_warnings: the eligibility gate reads
+      // ONLY caller.platform/caller.userId — there is no argument a model
+      // could supply to check or appeal on behalf of another user.
+      const active = await countActiveWarnings(caller.platform, caller.userId);
+      if (active === 0) {
+        return text("You don't currently have any active warnings to appeal.", true);
+      }
+      const cooldownHours = config.moderation.appealCooldownHours;
+      if (!reserveAppealSlot(`${caller.platform}:${caller.userId}`, cooldownHours)) {
+        return text(
+          `You've already asked for a review recently — please wait before appealing again ` +
+            `(once per ${cooldownHours}h).`,
+          true,
+        );
+      }
+      void notifyAppealFiled(adapterFor, {
+        callerUserId: caller.userId,
+        callerName: caller.userName,
+        activeWarnings: active,
+        strikeLimit: config.moderation.strikeLimit,
+        reason: args.reason,
+      });
+      return text("Your appeal has been sent to the admins for review. They'll follow up if needed.");
     },
   );
 
@@ -4419,6 +4586,26 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const adminActivityTool = tool(
+    'admin_activity',
+    'Show a per-admin breakdown of privileged action volume over recent days — who is actually doing ' +
+      'moderation/curation work, not just a flat log of individual actions. Super admin only.',
+    { days: z.number().optional().describe('Window in days (default 30, max 365)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'super_admin', 'admin_activity');
+      const days = Math.min(Math.max(Math.trunc(args.days ?? 30) || 30, 1), 365);
+      const rows = await adminActivitySummary(days);
+      const named = await Promise.all(
+        rows.map(async (r) => ({
+          ...r,
+          name: (await resolveDisplayName(r.platform, r.actorUserId)) ?? r.actorUserId,
+        })),
+      );
+      return text(formatAdminActivity(named, days));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const listAdminsTool = tool(
     'list_admins',
     'List everyone who currently holds bot-admin privilege, flagging any who have left the server/group. ' +
@@ -5003,6 +5190,7 @@ export function buildToolServer(
       withdrawReport,
       mySubmissions,
       myWarnings,
+      appealModeration,
       myData,
       suggestImprovement,
       rateAnswer,
@@ -5061,6 +5249,7 @@ export function buildToolServer(
       purgeUserDataTool,
       auditView,
       usageStatsTool,
+      adminActivityTool,
       listAdminsTool,
       engagementStatsTool,
       pauseBot,
