@@ -1,6 +1,6 @@
 {
   "ackShortcutRouter.test.ts": 3,
-  "adminDigest.test.ts": 25,
+  "adminDigest.test.ts": 26,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreFailureFallbacksPlain.test.ts": 3,
   "agentCoreKnowledgeEntryId.test.ts": 2,
@@ -36,7 +36,7 @@
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
-  "escalationRouter.test.ts": 7,
+  "escalationRouter.test.ts": 9,
   "gatedNotice.router.test.ts": 2,
   "gatedNotice.test.ts": 4,
   "grokImage.test.ts": 3,

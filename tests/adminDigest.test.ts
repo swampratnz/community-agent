@@ -913,6 +913,158 @@ test('SECURITY: the onboarding-queue line is a deterministic function of notMemb
   );
 });
 
+test('buildAdminDigestMessage: escalated-knowledge-gap line appears only when escalatedKnowledgeGapsCount > 0, nested under the existing knowledge-gaps line, and is absent even when the base gap count is > 0 (issue #514)', () => {
+  // Base knowledge-gaps line present, escalated sub-count 0 (default,
+  // omitted) — output must be byte-identical to the pre-#514 form.
+  const withoutEscalated = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 5);
+  assert.ok(withoutEscalated);
+  assert.ok(withoutEscalated.includes('🕳️'), 'sanity: base knowledge-gaps line present');
+  assert.ok(
+    !withoutEscalated.includes('🆘'),
+    'no escalated line when escalatedKnowledgeGapsCount is 0/omitted',
+  );
+
+  // Base gap count 5, escalated sub-count 2 -> both lines present, escalated
+  // phrased as a subset ("N of those").
+  const withEscalated = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+  );
+  assert.ok(withEscalated);
+  const escalatedLine = withEscalated.split('\n').find((l) => l.includes('🆘'));
+  assert.match(
+    escalatedLine!,
+    /^🆘 2 of those were member-flagged \(asked a human directly\) — start here\.$/,
+  );
+
+  // Escalated count alone (base gap count 0) must never surface the
+  // escalated line on its own — it only ever renders nested under the base
+  // gap line, since it is always a strict subset of it in real usage.
+  const escalatedWithoutBase = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+  );
+  assert.ok(
+    !escalatedWithoutBase || !escalatedWithoutBase.includes('🆘'),
+    'the escalated line never appears without the base knowledge-gaps line being present',
+  );
+});
+
+test('buildAdminDigestMessage: escalatedKnowledgeGapsCount omitted (default 0) -> output is byte-identical to the pre-#514 form (issue #514)', () => {
+  const before = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  const after = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  assert.equal(
+    after,
+    before,
+    'escalatedKnowledgeGapsCount defaulting to 0 must not change any existing call site output',
+  );
+});
+
+test('SECURITY: the escalated-knowledge-gap line is a deterministic function of escalatedKnowledgeGapsCount only, and never carries query_text or user id (issue #514)', () => {
+  const secretQuery = 'a very identifiable escalated query mentioning a secret';
+  const secretUserId = 'discord-user-1234567890';
+
+  const a = buildAdminDigestMessage(
+    [{ representative: secretQuery, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: secretUserId, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+  );
+  assert.ok(a && b);
+  const escalatedLine = (m: string) => m.split('\n').find((l) => l.includes('🆘'));
+  assert.equal(
+    escalatedLine(a),
+    escalatedLine(b),
+    'the escalated line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    escalatedLine(a)!,
+    /^🆘 3 of those were member-flagged \(asked a human directly\) — start here\.$/,
+  );
+  assert.ok(
+    !escalatedLine(a)!.includes(secretQuery) && !escalatedLine(a)!.includes(secretUserId),
+    'SECURITY: no query_text or user id ever appears in the escalated-gap line — bare count only',
+  );
+});
+
 function fakeAdapter(opts: {
   platform: 'discord' | 'whatsapp';
   conversationIds: string[];

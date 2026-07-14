@@ -1073,6 +1073,22 @@ lives in `router.ts`, entirely outside the model/tool layer:
   can. `listAdmins()` and the echoed question text are both already visible
   to admins via the weekly digest/`list_knowledge_gaps`; this only changes
   *when* they're seen.
+- **Linked into `knowledge_gaps` (issue #514).** A confirmed escalation
+  (the same `reserveEscalationSlot` success branch that fires
+  `notifyAdmins`) also fire-and-forget calls `recordEscalatedKnowledgeGap`
+  (`storage/repository.ts`), a sibling insert to the passive
+  below-floor-`knowledge_search`-miss recorder (`recordKnowledgeGap`, issue
+  #208) but writing `escalated = true` and, deliberately, **not** gated by
+  `KNOWLEDGE_GAP_DAILY_LIMIT` — that per-user cap bounds passive noise, while
+  an escalated write is already independently bounded by the guild-wide
+  `ESCALATION_RATE_LIMIT_PER_HOUR` at the point it's called. This turns "a
+  member asked a human directly" into the curation queue's strongest
+  prioritization signal: `countEscalatedKnowledgeGaps` (mirroring
+  `countKnowledgeGaps` exactly, conversation-scoped and `resolved_at IS
+  NULL`) surfaces the escalated subset in the weekly admin digest, nested
+  under the existing knowledge-gaps line and shown only when `> 0`. A
+  rate-limited "yes" (no notification sent) writes nothing, matching the
+  existing rate-cap's all-or-nothing shape.
 
 ## Health & monitoring
 

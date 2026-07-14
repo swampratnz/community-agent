@@ -4,6 +4,7 @@ import { startTrackedJob } from './backgroundJobs.js';
 import {
   countAccessRequests,
   countDuplicateKnowledge,
+  countEscalatedKnowledgeGaps,
   countKnowledgeConflictCandidates,
   countKnowledgeGaps,
   countLowRatedKnowledge,
@@ -88,6 +89,13 @@ const SNIPPET_MAX_CHARS = 300;
  * platform (see `runAdminDigestOnce`), since a `not_members` row there
  * already has full member-tool access and the count would be a meaningless
  * nag. Bare integer only, same privacy convention as every signal above.
+ * `escalatedKnowledgeGapsCount` (issue #514) comes from
+ * `countEscalatedKnowledgeGaps`, conversation-scoped and windowed
+ * identically to `knowledgeGapsCount` — the subset of it written by a
+ * CONFIRMED member escalation (issue #479) rather than a passive
+ * below-floor `knowledge_search` miss. Only rendered (as a second line
+ * nested under the existing gap line) when `> 0`; bare integer only, same
+ * privacy convention as every signal above.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -132,6 +140,14 @@ export function buildAdminDigestMessage(
   // not_members row already has full member-tool access and the count would
   // be a structurally meaningless nag — see `runAdminDigestOnce`.
   notMembersCount: number = 0,
+  // Sub-count of `knowledgeGapsCount` written by a CONFIRMED member
+  // escalation (issue #479) rather than a passive below-floor
+  // `knowledge_search` miss — the strongest curation-priority signal
+  // (issue #514). Always a subset of `knowledgeGapsCount`, so — like
+  // `pendingKnowledgeCandidatesStaleCount` above — it never needs its own
+  // entry in the all-signals-zero gate below; at `0` the digest is
+  // byte-identical to its pre-#514 form.
+  escalatedKnowledgeGapsCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -193,6 +209,13 @@ export function buildAdminDigestMessage(
       `🕳️ ${knowledgeGapsCount} unanswered question(s) in your conversations this week hit no ` +
         'knowledge — run `list_knowledge_gaps` to see what to document.',
     );
+    if (escalatedKnowledgeGapsCount > 0) {
+      // Bare integer only — no query_text / user_id ever reaches the DM,
+      // same privacy shape as the line above (#514).
+      sections.push(
+        `🆘 ${escalatedKnowledgeGapsCount} of those were member-flagged (asked a human directly) — start here.`,
+      );
+    }
   }
   if (pendingKnowledgeCandidates > 0) {
     // Bare integers only — no candidate title/content/topic ever reaches the
@@ -309,7 +332,10 @@ export function buildAdminDigestMessage(
  * `strikeWindowDays` is unset (the default).
  * `countMaxTurnsFailures(scope, ...)` is conversation-scoped by `scope`
  * (`interactions` has a `conversation_id`), same as `countKnowledgeGaps`
- * (issue #371). `countDuplicateKnowledge()`/`countKnowledgeConflictCandidates()`
+ * (issue #371). `countEscalatedKnowledgeGaps(scope, ...)` is likewise
+ * conversation-scoped and windowed identically to `countKnowledgeGaps` — the
+ * confirmed-escalation subset of that same count (issue #514).
+ * `countDuplicateKnowledge()`/`countKnowledgeConflictCandidates()`
  * are guild-wide, unscoped calls (issue #378) — matching `countStaleKnowledge`/
  * `countPendingKnowledgeCandidates`, since the pair self-joins carry no
  * conversation scope either. The freshness guard
@@ -380,6 +406,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         duplicateKnowledgeCount,
         conflictCandidateCount,
         pendingKnowledgeCandidatesStaleCount,
+        escalatedKnowledgeGapsCount,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -430,6 +457,10 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeCandidateStaleDays > 0
           ? countStalePendingKnowledgeCandidates(knowledgeCandidateStaleDays)
           : Promise.resolve(0),
+        // Conversation-scoped like knowledgeGapsCount (same table/column),
+        // over the same freshness window — the confirmed-escalation subset
+        // of that count (issue #514).
+        countEscalatedKnowledgeGaps(scope, FRESHNESS_DAYS),
       ]);
       // Onboarding-queue count only means anything in 'gated' mode — an
       // 'open'-mode not_members row already has full member-tool access
@@ -457,6 +488,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeCandidateStaleDays,
         staleMutedMembersCount,
         notMembersCount,
+        escalatedKnowledgeGapsCount,
       );
       if (!message) {
         ok = true;
