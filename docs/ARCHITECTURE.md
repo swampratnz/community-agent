@@ -977,7 +977,12 @@ enabled (every message is inspected) — treat it like ambient archiving.
 - **Admin channel**: the bot creates a private `mod-alerts` channel on demand
   (denied to `@everyone`, allowed to the bot + configured super admins;
   Discord Administrators see it regardless) and posts every warning and block
-  there.
+  there — up to a guild-wide rolling-hour cap (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`,
+  default 30, issue #517): once exhausted, further alerts from `scan()`
+  collapse into one summary line reporting the exact suppressed count instead
+  of one message per hit, so a raid/flood can't bury the channel in
+  near-duplicate posts. Enforcement (the warning DM, mute, and audit trail)
+  is never gated by this cap — only the admin notification throttles.
 - **Clearing**: the admin-tier `clear_warnings(targetUserId)` tool clears all
   of a member's active warnings (stamping who/when) and lifts the mute (a new
   `unmute_user` adapter action removing the role). It's lenient/reversible so

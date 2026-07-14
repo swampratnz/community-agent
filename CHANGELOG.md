@@ -10,6 +10,23 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-15
+
+### Added
+- **Mod-alerts rate cap** (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`, #517):
+  every other admin-notification path (escalation DMs, access-request
+  alerts, auto-answer, `warn_user`) already had a rolling-hour cap — the
+  private `mod-alerts` channel, whose entire purpose is carrying moderation
+  signal, was the sole exception, so a raid/flood could bury the one alert
+  admins most need during exactly that incident. A guild-wide rolling-hour
+  counter now gates `Moderator.scan()`'s admin-channel notifications only
+  (default 30/hour, generous enough that normal traffic never engages it);
+  once exhausted, overflow collapses into a single summary line reporting
+  the exact suppressed count instead of a wall of near-duplicate alerts.
+  Enforcement — warning DMs, mutes, and the `member_warnings` audit trail —
+  is never gated by this cap, only the notification is. See
+  docs/ARCHITECTURE.md and docs/SECURITY.md's auto-moderation sections.
+
 ## 2026-07-14
 
 ### Added

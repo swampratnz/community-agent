@@ -819,6 +819,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - **Stage 2 (LLM abuse) is opt-in** (`MODERATION_LLM_ABUSE_ENABLED`, off):
     only wordlist-clean messages escalate, one Claude call each on the shared
     Max pool — deliberately gated so it can't silently run up cost/scan volume.
+  - **Mod-alerts is rate-capped, not enforcement** (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`,
+    issue #517, default 30/hour): every other admin-notification path
+    (escalation DMs, access-request alerts, auto-answer, `warn_user`) already
+    had a rolling-hour cap; the private `mod-alerts` channel — the one whose
+    entire purpose is carrying moderation signal — was the sole exception, so
+    a raid/flood could bury the one alert admins most need during exactly
+    that incident. A guild-wide, shared rolling-hour counter (mirroring
+    `ESCALATION_RATE_LIMIT_PER_HOUR`'s `reserveEscalationSlot` shape, pinned by
+    a `SECURITY:` test) gates `Moderator.scan()`'s `postAdminAlert` calls
+    only; overflow collapses into a single summary line reporting the exact
+    suppressed count. **This is the load-bearing invariant**: `addWarning`
+    (the audit trail), `muteUser`/`unmuteUser`, `warnUser` (member DM), and
+    `warnInChannel` (public in-channel notice) all keep firing on every
+    flagged message regardless of the alert cap — only the admin-channel
+    *notification* throttles, enforcement never does (pinned by a
+    `SECURITY:` test). The cap is guild-wide, not per-user, so a
+    multi-account raid can't buy extra alert slots by spreading hits across
+    identities (also pinned by a `SECURITY:` test). It gates only the two
+    `scan()` call sites — `postAdminAlert`'s other, non-moderation callers
+    (e.g. the manual `warn_user` mute alert) are unaffected.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
