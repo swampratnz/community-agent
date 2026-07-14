@@ -1089,6 +1089,37 @@ the repeat-question/repeat-max-turns shortcuts. Two things are genuinely new:
   fire. A thread-creation failure degrades to answering directly in the
   channel rather than dropping the reply.
 
+**Thread follow-ups (issue #519).** The summon gate above only ever matched
+the *channel* a message was posted in, so a member's own follow-up typed
+inside the auto-answer thread it just opened — "what about X", "that didn't
+work" — reported the thread's own id as `conversationId`, never a member of
+`autoAnswerChannelIds`, and silently reverted to mention-required one message
+into the exact back-and-forth the feature exists for. The router closes this
+by also treating a message as an auto-answer candidate when its
+`conversationId` is a live entry in `autoAnswerThreadParents` — the same
+thread → parent-channel map, and the same creation-anchored
+`ESCALATION_WINDOW_MS` (10 min) TTL, the CONFIRM/CANCEL and escalation
+intercepts already consult to resolve a thread reply back to its parent. Two
+follow-on adjustments keep this correct, not just permissive:
+
+- A follow-up reply is sent **into the existing thread** (`replyConversationId
+  = msg.conversationId`) — `startAutoAnswerThread` is only called for the
+  origin post in the parent channel, never for a message already inside a
+  known thread, so a live back-and-forth never spawns a second thread.
+- The per-channel rolling-hour cap (`reserveAutoAnswerSlot`) is reserved
+  against the **parent** channel id, not the thread id, for a thread
+  follow-up exactly as for the origin post — the thread id has never had a
+  slot reserved against it, so keying on it would open an uncapped
+  side-channel around `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`.
+
+The TTL is **not refreshed** by a follow-up — it is set once, at thread
+creation, and only counted down from there. A back-and-forth that outlives
+the 10-minute window from the thread's creation reverts to mention-required,
+same as any other expired entry in this map; there is no indefinitely
+auto-answerable thread. This is a deliberate scope limit for the smallest
+viable version, not a defect — a longer or refreshing TTL is a named growth
+path if it proves too tight in practice.
+
 Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
 ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for
 the full security posture and its test references.
