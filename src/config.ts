@@ -97,6 +97,22 @@ const EnvSchema = z.object({
   // own: a role's permission bitfield is re-checked live at assign time
   // (src/platforms/discord/adapter.ts), since it can change after curation.
   DISCORD_ASSIGNABLE_ROLES: z.string().optional(),
+  // Auto-answer mode (issue #477): operator-curated allowlist of Discord
+  // channel ids where a top-level human post that does NOT address the bot
+  // still gets an answer, contained in a thread on that post — the router's
+  // summon gate (`!addressedToBot && !isDirect`) is relaxed for exactly these
+  // channels, nothing else. Unset/empty = feature fully off, byte-identical
+  // to today (no post that isn't addressed/direct ever produces a reply).
+  // Discord-only by design (WhatsApp/Baileys auto-answer carries separate
+  // ToS/ban risk — a different proposal, see docs/SECURITY.md).
+  AUTO_ANSWER_CHANNEL_IDS: z.string().optional(),
+  // Per-channel rolling-hour cap on auto-answers (sliding window, mirroring
+  // agent/tools.ts's reserveAnnounceSlot/ANNOUNCE_RATE_LIMIT_PER_HOUR shape)
+  // — bounds the flood/cost risk of this new untrusted-input path. Unlike
+  // ANNOUNCE_RATE_LIMIT_PER_HOUR this is operator-tunable: an allowlisted
+  // channel's traffic varies far more than the admin-only announce tool's.
+  // Never applies to an addressed/mention reply in the same channel.
+  AUTO_ANSWER_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
   // Auto-moderation (Discord): scan every message for bad language / abuse,
   // warn the member, and after MODERATION_STRIKE_LIMIT active strikes assign a
   // muted role that blocks posting until an admin clears their warnings. Off by
@@ -446,6 +462,16 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Week-over-week trend suffix on every digest count (issue #497). Off by
+  // default: when unset, `getLastDigestCounts` is never called and no digest
+  // line ever gains a trend suffix — output stays byte-identical to today.
+  // The `last_counts` snapshot itself is still written every run regardless
+  // of this flag (see adminDigest.ts), so flipping it on is retroactively
+  // useful from the very next weekly tick.
+  ADMIN_DIGEST_TRENDS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Fifth admin-digest signal (issue #199): nudge admins toward knowledge
   // entries neither edited nor retrieved in this many days. Unset/0 =
   // disabled (no extra query, no behaviour change on upgrade), matching the
@@ -721,6 +747,8 @@ export const config = {
     },
     archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
     assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
+    autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),
+    autoAnswerRateLimitPerHour: env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR,
   },
   moderation: {
     enabled: env.DISCORD_MODERATION_ENABLED ?? false,
@@ -826,6 +854,7 @@ export const config = {
   },
   adminDigest: {
     enabled: env.ADMIN_DIGEST_ENABLED ?? false,
+    trendsEnabled: env.ADMIN_DIGEST_TRENDS_ENABLED ?? false,
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
     knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
     knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,

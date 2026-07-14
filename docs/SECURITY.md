@@ -554,11 +554,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   and excludes the bot's own number/LID; it carries no new opt-in flag,
   reasoning that group participant lists are visible to every member of a
   WhatsApp group, the same "not a secret list" posture already applied to
-  Discord's roster. A known, documented limitation for multi-group WhatsApp
-  deployments: a single `(platform, user_id)` row can't represent per-group
-  presence, so a `remove` from one allowed group marks the row "left" even if
-  the person remains in another — the same coarseness Discord's single-guild
-  model sidesteps by construction. Reads are **admin-tier and guild/group-wide**
+  Discord's roster. A previously-documented limitation for multi-group
+  WhatsApp deployments — a single `(platform, user_id)` row can't represent
+  per-group presence, so a `remove` from one allowed group marked the row
+  "left" even if the person remained in another — is resolved (issue #501):
+  `onGroupParticipantsUpdate` now checks live membership across every other
+  `WHATSAPP_ALLOWED_JIDS` group before writing the leave-mark, reusing the
+  same `groupFetchAllParticipating()` call and phone/LID-tolerant id matching
+  `conversationsForUser`/`backfillRoster` already use; the check's result
+  only gates the existing `markRosterLeave` call and is never itself
+  persisted. See `docs/ARCHITECTURE.md`'s roster section for the two narrow,
+  self-healing residual gaps. Reads are **admin-tier and guild/group-wide**
   (`list_roster` is not conversation-scoped — same precedent as
   `list_access_requests`), display names are wrapped as untrusted data, and
   `forget_me`/`purge_user_data` delete the person's roster row by
@@ -609,6 +615,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `moderation_history`") rather than asserting it, is inert (no query) unless
   `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
   extends — carries only bare integers, never warning content or an identity.
+  Issue #497 (off unless `ADMIN_DIGEST_TRENDS_ENABLED`) added a week-over-week
+  trend suffix on every one of these bare counts, backed by `last_counts`, a
+  JSONB column on `admin_digest_sends`. **No new data class**: `last_counts`
+  carries exactly the same integers the digest already sends that admin every
+  week — never message content, a user/conversation id, or any field beyond
+  the known signal-name set — enforced by a whitelist at the write boundary
+  (`sanitizeDigestCounts` in `repository.ts`) that strips any unexpected key
+  or non-integer value before it reaches the column, so a future call site
+  can never smuggle PII-shaped data into the snapshot by accident. The
+  snapshot write is decoupled from the freshness guard: a quiet week (no DM
+  sent) still updates `last_counts` via a dedicated path that never touches
+  `sent_at`, so a silent week can't be mistaken for a real send nor corrupt
+  next week's delta. `last_counts` is purge-coherent with the rest of the row
+  — `forget_me`/`purge_user_data` remove it alongside `sent_at` for an
+  offboarded admin.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
@@ -749,6 +770,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
+  - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
+    test) enumerates currently-muted members by identity — the growth path
+    #403 named and deferred for the digest's bare `🔇 N` count. It sits at the
+    same admin-tier, non-conversation-scoped boundary `clear_warnings`/
+    `list_member_warnings` already occupy — not a new data-access tier, and no
+    field it returns (user id, strike count, `active`/`stale` status,
+    last-warning timestamp) is new: every one is already reachable by an
+    admin who already knows the target id via `list_member_warnings`. It
+    deliberately never returns `reason`/`excerpt` (message content stays
+    behind `list_member_warnings`, pinned by a `SECURITY:` test), and its
+    `stale` tag — like `countStaleMutedMembers`' own count — is an
+    over-approximation the tool's own output hedges as "may still be muted",
+    never asserted as a confirmed live mute.
   - **Strike accumulation is unbounded by default, and that's now a documented
     choice, not an oversight**: `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset
     by default) lets an admin opt into a rolling window so only strikes newer
@@ -1216,6 +1250,73 @@ fallback" gap with a member-initiated, real-time admin alert — see
 - **Off by default, byte-identical when unset.** With the flag unset, no
   offer line is ever appended, no pending entry is ever recorded, and no
   caller message can call `notifyAdmins` — pinned by a router test.
+
+### 15. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
+
+An operator-curated allowlist of Discord channel ids in which a top-level
+human post that does **not** address the bot (no mention/reply/DM) still gets
+an answer, contained in a thread anchored to that post. This is the one
+deliberate widening of the summon gate (`router.ts`'s
+`!msg.addressedToBot && !msg.isDirect`) in the whole codebase — every other
+control downstream of it is reused completely unchanged:
+
+- **Off by default, byte-identical.** Unset/empty `AUTO_ANSWER_CHANNEL_IDS`
+  means no post that isn't addressed/direct ever produces a reply — pinned by
+  a router test. Enabling it is a per-channel operator decision (the channel's
+  own stated purpose — a help/forum channel — is the consent boundary), not a
+  global posture change.
+- **No new untrusted-input path in substance, only in trigger.** The router
+  already classifies and stores every non-addressed message as `kind:
+  'ambient'` (issue #48/#103); this only adds a reply branch at the summon
+  gate. No new ingestion, no new retention, no schema change.
+- **Tool surface is the existing floor, never escalated.** An auto-answered
+  turn resolves the poster's tier via the exact same `resolveRole` call an
+  addressed turn uses, and `toolsForRole` is invoked with that same value —
+  no new code path computes or overrides the tool list. In gated mode, an
+  unregistered guest is already excluded further up the function (the
+  gated-guest branch returns before the auto-answer gate is ever evaluated),
+  so it inherits that exclusion for free; in open mode a guest is answered at
+  guest tier, which is already the same tool surface as member (`MEMBER_TOOLS`
+  is what `toolsForRole`'s default branch returns). Pinned by `SECURITY:`
+  router tests in both modes.
+- **Self/bot/webhook loop prevention.** `IncomingMessage.isBotAuthor` is a
+  second, router-level backstop (in addition to the Discord adapter never
+  constructing an `IncomingMessage` for a bot- or webhook-authored message in
+  the first place): the auto-answer gate refuses any post carrying it. Pinned
+  by a `SECURITY:` router test.
+- **Existing cost levers apply unchanged, no new bypass.** Per-user rate
+  limit, the daily reply budget, `AGENT_MODEL_MEMBER`/`AGENT_MAX_TURNS_MEMBER`,
+  and the repeat-question shortcut all still gate an auto-answer turn exactly
+  as they gate an addressed one — none of that logic was touched, only the
+  summon gate above it. Pinned by `SECURITY:` router tests (over-budget shed,
+  repeat-question shortcut hit).
+- **Per-channel rolling-hour cap.** A new, separate sliding-window limiter
+  (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, default 10), mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot`/`ANNOUNCE_RATE_LIMIT_PER_HOUR`
+  shape but operator-tunable — bounds the flood/cost risk of a channel that
+  turns out busier than expected. Never applies to an addressed/mention reply
+  in the same channel. Pinned by a router test.
+- **Threaded, not bare-channel.** The reply is contained in a new Discord
+  thread anchored to the origin post
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action, just router-driven rather than
+  model-requested) rather than posted directly into the channel. The thread's
+  name is a truncated echo of the question and is routed through the same
+  outbound filter (secret redaction) as every other bot-composed string
+  reaching Discord, since a highly-visible channel/thread title is a worse
+  exposure surface than an ordinary reply for a member who pastes a secret
+  into their question. If thread creation fails (a transient Discord API
+  error), the router falls back to replying directly in the channel rather
+  than silently dropping the answer. Pinned by adapter + router tests
+  (including a `SECURITY:` redaction test end-to-end through thread creation
+  and the reply send).
+- **Discord-only.** `PlatformAdapter.startAutoAnswerThread` is optional,
+  mirroring `sendImage?`/`reactToMessage?`/`canPostTo?`'s convention; the
+  WhatsApp adapters simply don't implement it, and the auto-answer gate
+  itself is additionally hard-restricted to `msg.platform === 'discord'`.
+  WhatsApp/Baileys auto-answer carries separate ToS/ban risk and is
+  deliberately out of scope for this feature — a different proposal.
 
 ## Platform-specific notes
 

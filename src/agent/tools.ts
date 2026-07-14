@@ -42,6 +42,7 @@ import {
   listKnowledgeTopics,
   listMemberNotes,
   listMemberWarnings,
+  listMutedMembers,
   MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
   isKnownMessage,
@@ -771,7 +772,7 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, or pull one member's full warning history with reasons\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, pull one member's full warning history with reasons, or list everyone who's currently muted\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -2600,6 +2601,43 @@ export function buildToolServer(
             const reasonText = `\n  ${untrusted('reason', r.reason)}`;
             const excerptText = r.excerpt != null ? `\n  ${untrusted('excerpt', r.excerpt)}` : '';
             return `[${r.createdAt.toISOString()}] ${r.source}${issuer}${cleared}:${reasonText}${excerptText}`;
+          })
+          .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listMutedMembersTool = tool(
+    'list_muted_members',
+    "Enumerate currently muted members by identity — the growth path the digest's bare " +
+      '`🔇 N member(s) currently muted` count (issue #357) was never meant to provide on its own (issue ' +
+      '#487). Each row is user id, strike count, status (`active`/`stale`), and last-warning timestamp — ' +
+      'never a reason or excerpt (that stays behind list_member_warnings, one level deeper). `stale` rows ' +
+      'are an over-approximation: their strikes aged out of the configured window but they were never ' +
+      'explicitly unmuted via clear_warnings, so they may still be muted — never treat a stale row as a ' +
+      'confirmed live mute. Admin only, guild-wide (not conversation-scoped, same as clear_warnings), ' +
+      'capped at 50 rows, newest warning first.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'list_muted_members');
+      const rows = await listMutedMembers(
+        caller.platform,
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      if (rows.length === 0) return text('No members are currently muted.');
+      return text(
+        rows
+          .map((r) => {
+            const hedge =
+              r.status === 'stale'
+                ? ' (may still be muted — strikes aged out of the window, never explicitly cleared)'
+                : '';
+            return (
+              `${r.userId}: ${r.strikeCount} strike(s), ${r.status}${hedge}, ` +
+              `last warning ${r.lastWarningAt.toISOString()}`
+            );
           })
           .join('\n'),
       );
@@ -5007,6 +5045,7 @@ export function buildToolServer(
       moderate,
       clearWarningsTool,
       listMemberWarningsTool,
+      listMutedMembersTool,
       announce,
       createPoll,
       endPoll,

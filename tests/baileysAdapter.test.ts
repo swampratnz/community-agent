@@ -23,6 +23,7 @@ const {
 } = await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
+const { logger } = await import('../src/logger.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
 const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
@@ -797,8 +798,10 @@ test('group-participants.update "remove" marks the participant left in server_ro
   await adapter.conversationsForUser('64211111111');
   assert.equal(
     fetchCalls.groupFetch,
-    2,
-    'the existing membership-cache invalidation (issue #286) still fires alongside the new roster leave-mark, not replaced by it',
+    3,
+    'the existing membership-cache invalidation (issue #286) still fires alongside the new roster leave-mark, ' +
+      'not replaced by it — one fetch primed the cache, one is the issue #501 multi-group membership check on ' +
+      'the remove event itself, one is the post-invalidation re-fetch',
   );
 });
 
@@ -888,6 +891,279 @@ test('SECURITY: neither the add nor the remove roster path ever writes to intera
   const interactionWrites = calls.filter((c) => c.sql.includes('interactions'));
   assert.equal(interactionWrites.length, 0, 'no roster code path ever opens a message-content write path');
 });
+
+// --- Multi-group roster leave (issue #501) ----------------------------------
+
+/**
+ * Stubs the socket's groupFetchAllParticipating for the multi-group roster
+ * leave check, allowing participants to carry an optional `phoneNumber`
+ * field — the same lid<->phone bridge `conversationsForUser`/`isGroupAdmin`
+ * already read via an `as { phoneNumber?: string }` cast.
+ */
+function stubMultiGroupSocket(
+  adapter: InstanceType<typeof BaileysAdapter>,
+  groups: Record<string, { participants: { id: string; phoneNumber?: string }[] }>,
+) {
+  const calls = { groupFetch: 0 };
+  (
+    adapter as unknown as {
+      sock: {
+        groupFetchAllParticipating: () => Promise<
+          Record<string, { participants: { id: string; phoneNumber?: string }[] }>
+        >;
+      };
+    }
+  ).sock = {
+    groupFetchAllParticipating: async () => {
+      calls.groupFetch += 1;
+      return groups;
+    },
+  };
+  return calls;
+}
+
+test(
+  'SECURITY: group-participants.update "remove" does NOT mark left when the participant remains in ' +
+    'another allowed group, even under a different id form (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501@g.us', 'group-b-501@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        // Same person, listed under a DIFFERENT id form (bare @lid) with
+        // their phone number resolved on that entry — a naive `p.id ===
+        // local` compare would miss this and wrongly mark them left; only
+        // the `pn === userId` branch of the shared matcher catches it.
+        'group-b-501@g.us': {
+          participants: [{ id: '9999@lid', phoneNumber: '64211111111' }],
+        },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      0,
+      'still present in another allowed group under a different id form, so left_at must be untouched',
+    );
+  },
+);
+
+test(
+  'issue #501: membership-cache invalidation (issue #286) still fires on "remove" even when the roster ' +
+    'leave-mark is skipped because the participant remains in another allowed group',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-cache@g.us', 'group-b-501-cache@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      const fetchCalls = stubMultiGroupSocket(adapter, {
+        'group-a-501-cache@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        'group-b-501-cache@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      });
+
+      await adapter.conversationsForUser('64211111111');
+      assert.equal(fetchCalls.groupFetch, 1, 'precondition: first lookup is a cache miss');
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-cache@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+
+      const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+      assert.equal(leaveWrites.length, 0, 'precondition: retained elsewhere, so no leave-mark fired');
+
+      await adapter.conversationsForUser('64211111111');
+      assert.equal(
+        fetchCalls.groupFetch,
+        3,
+        'the "retained" branch must still invalidate the membership cache, so the next lookup re-fetches ' +
+          'live rather than returning a stale cached list',
+      );
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+  },
+);
+
+test(
+  'group-participants.update "remove" still marks left when the participant is not present in any OTHER ' +
+    'allowed group — single-group and last-group-left regression (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-last@g.us', 'group-b-501-last@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501-last@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        'group-b-501-last@g.us': { participants: [{ id: '64222222222@s.whatsapp.net' }] },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-last@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      1,
+      'not present in any other allowed group, so the leave-mark must still fire exactly once',
+    );
+    assert.deepEqual(leaveWrites[0].params, ['whatsapp', '64211111111']);
+  },
+);
+
+test(
+  'group-participants.update "remove" degrades to today\'s mark-left behavior AND logs a warning when ' +
+    'groupFetchAllParticipating throws during the multi-group membership check (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const warn = t.mock.method(logger, 'warn');
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-throw@g.us', 'group-b-501-throw@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      (adapter as unknown as { sock: { groupFetchAllParticipating: () => Promise<never> } }).sock = {
+        groupFetchAllParticipating: async () => {
+          throw new Error('simulated fetch failure');
+        },
+      };
+
+      await assert.doesNotReject(() =>
+        fireGroupJoin(adapter, {
+          id: 'group-a-501-throw@g.us',
+          participants: ['64211111111@s.whatsapp.net'],
+          action: 'remove',
+        }),
+      );
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      1,
+      "a thrown fetch degrades to today's unconditional mark-left, never a silent skip that could lose a genuine departure",
+    );
+    assert.ok(warn.mock.calls.length >= 1, 'the fetch failure must be logged as a warning, not swallowed');
+  },
+);
+
+test(
+  'group-participants.update "remove" still marks left when the participant remains only in a group ' +
+    'OUTSIDE WHATSAPP_ALLOWED_JIDS — scope gate honoured (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-scope@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501-scope@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        // Out-of-scope group the participant remains in — must NOT count as
+        // a retention, or an operator's WHATSAPP_ALLOWED_JIDS scoping is
+        // silently widened by this check.
+        'out-of-scope-501@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-scope@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      1,
+      'presence in a group outside WHATSAPP_ALLOWED_JIDS must not retain the roster row',
+    );
+  },
+);
+
+test(
+  'SECURITY: the issue #501 multi-group membership check stores no new data — its ' +
+    'groupFetchAllParticipating result only gates the existing markRosterLeave call and is never ' +
+    'persisted, written to interactions, or otherwise exposed',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-nodata@g.us', 'group-b-501-nodata@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501-nodata@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        'group-b-501-nodata@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-nodata@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    assert.equal(
+      calls.filter((c) => c.sql.includes('interactions')).length,
+      0,
+      'the membership-check fetch result must never reach the interactions table',
+    );
+    assert.equal(
+      calls.filter((c) => c.sql.includes('server_roster')).length,
+      0,
+      'the retained case writes nothing to server_roster beyond the (skipped) existing markRosterLeave call',
+    );
+    assert.equal(
+      calls.length,
+      0,
+      'the membership-check fetch result is consumed only to gate the (skipped) markRosterLeave call — ' +
+        'no DB call of any kind results from it, and no new tool surface reads or returns it',
+    );
+  },
+);
 
 /** Reaches the private backfillRoster handler directly. */
 function fireBackfillRoster(adapter: InstanceType<typeof BaileysAdapter>): Promise<void> {
@@ -1363,8 +1639,9 @@ test(
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      2,
-      "a 'remove' event for this participant must invalidate the cache so the next lookup re-fetches live",
+      3,
+      "a 'remove' event for this participant must invalidate the cache so the next lookup re-fetches live " +
+        '(one fetch is the issue #501 multi-group membership check the remove event itself now triggers)',
     );
   },
 );
@@ -1389,8 +1666,9 @@ test(
     await adapter.conversationsForUser('64222222222');
     assert.equal(
       calls.groupFetch,
-      2,
-      "the other participant's still-live cache entry must be untouched — zero additional fetches",
+      3,
+      "the other participant's still-live cache entry must be untouched — zero ADDITIONAL fetches beyond the " +
+        'issue #501 multi-group membership check the remove event itself triggers',
     );
   },
 );
@@ -1416,8 +1694,9 @@ test(
     await adapter.conversationsForUser('6421111111');
     assert.equal(
       calls.groupFetch,
-      1,
-      'a removal for a different, similarly-shaped id must not evict an unrelated cache entry',
+      2,
+      'a removal for a different, similarly-shaped id must not evict an unrelated cache entry (the second ' +
+        'fetch is the issue #501 multi-group membership check the remove event itself triggers)',
     );
   },
 );
@@ -1467,8 +1746,9 @@ test(
     await adapter.conversationsForUser('lid:9999');
     assert.equal(
       calls.groupFetch,
-      2,
-      "a 'remove' event carrying this participant's @lid JID must invalidate the lid-keyed cache entry",
+      3,
+      "a 'remove' event carrying this participant's @lid JID must invalidate the lid-keyed cache entry (one " +
+        'fetch is the issue #501 multi-group membership check the remove event itself triggers)',
     );
   },
 );
@@ -1497,12 +1777,17 @@ test(
     });
 
     await adapter.conversationsForUser('lid:9999');
-    assert.equal(calls.groupFetch, 3, 'the lid-keyed entry is invalidated as expected');
+    assert.equal(
+      calls.groupFetch,
+      4,
+      'the lid-keyed entry is invalidated as expected (one fetch is the issue #501 multi-group membership ' +
+        'check the remove event itself triggers)',
+    );
 
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      3,
+      4,
       'the phone-number-keyed entry for the same person must NOT be invalidated by an @lid-only removal ' +
         'event when no prior message ever taught the mapping — this is the narrowed, still-documented gap',
     );
@@ -1565,12 +1850,17 @@ test(
     });
 
     await adapter.conversationsForUser('lid:9999');
-    assert.equal(calls.groupFetch, 3, 'the lid-keyed entry is invalidated as before');
+    assert.equal(
+      calls.groupFetch,
+      4,
+      'the lid-keyed entry is invalidated as before (one fetch is the issue #501 multi-group membership ' +
+        'check the remove event itself triggers)',
+    );
 
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      4,
+      5,
       'the phone-number-keyed entry for the same person is now ALSO invalidated by the @lid-only removal, ' +
         'because a prior message taught the LID->phone mapping',
     );
@@ -1607,9 +1897,10 @@ test(
     await adapter.conversationsForUser('64222222222');
     assert.equal(
       calls.groupFetch,
-      2,
+      3,
       "B's phone-keyed entry must survive — B's lid was never taught a mapping, and A's mapping must not " +
-        'be misapplied to an unrelated removal',
+        'be misapplied to an unrelated removal (one fetch is the issue #501 multi-group membership check ' +
+        'the remove event itself triggers)',
     );
 
     // A's own mapping must still be intact and usable afterwards — proving
@@ -1622,7 +1913,7 @@ test(
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      3,
+      5,
       "A's phone-keyed entry is invalidated once A's own removal event fires, proving A's mapping " +
         "survived B's unrelated removal untouched",
     );
@@ -1654,7 +1945,12 @@ test(
 
     // Re-cache a FRESH entry for the same phone number after the invalidation above.
     await adapter.conversationsForUser('64211111111');
-    assert.equal(calls.groupFetch, 2, 'the mapping consumed above invalidated the entry; this re-fetches it');
+    assert.equal(
+      calls.groupFetch,
+      3,
+      'the mapping consumed above invalidated the entry; this re-fetches it (one fetch is the issue #501 ' +
+        'multi-group membership check the remove event itself triggers)',
+    );
 
     // A second, identical removal event for the same (already-departed) participant.
     await fireGroupJoin(adapter, {
@@ -1666,9 +1962,10 @@ test(
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      2,
+      4,
       'the freshly re-cached entry must survive the duplicate removal — the mapping was already consumed ' +
-        'by the first removal, so there is nothing left to (mis-)invalidate a second time',
+        'by the first removal, so there is nothing left to (mis-)invalidate a second time (the count still ' +
+        "advances by one for the second remove event's own issue #501 membership-check fetch)",
     );
   },
 );
