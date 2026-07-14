@@ -326,7 +326,17 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken. These three deterministic, non-agent
+of them read as the bot being broken. A push-side complement to the hard
+cutoff above (issue #511, opt-in via `DAILY_REPLY_BUDGET_WARN_ENABLED`,
+default off): once a non-super-admin caller's remaining daily replies fall to
+`DAILY_REPLY_BUDGET_WARN_REMAINING` (default 5) or fewer, the router appends
+one fixed line naming the remaining count to the real reply's text — never a
+separate send, never replacing the model's answer, mirroring `offerEscalation`
+(#479)'s append-only shape. It reuses the `used`/`limit` pair the daily-budget
+check above already reads (no new query), is debounced to once per rolling
+24h per caller (`budgetWarned`, same window and sweep cadence as
+`budgetNotified`), and honours the caller's standing `'mi'`/`'plain'`
+preference the same way the other fixed notices do. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's

@@ -721,3 +721,60 @@ test('SECURITY: DEV_TEAM_ENABLED=true with an endpoint but NO token still fails 
   );
   assert.match(result.stderr, /DEV_TEAM_ENDPOINT_URL and DEV_TEAM_AUTH_TOKEN are both required/);
 });
+
+test('config: DAILY_REPLY_BUDGET_WARN_ENABLED unset (default) is disabled, DAILY_REPLY_BUDGET_WARN_REMAINING defaults to 5 (issue #511)', () => {
+  assert.equal(config.behaviour.dailyReplyBudgetWarnEnabled, false);
+  assert.equal(config.behaviour.dailyReplyBudgetWarnRemaining, 5);
+});
+
+test('SECURITY: DAILY_REPLY_BUDGET_WARN_REMAINING=0 fails config validation — the warning window must be a positive count', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DAILY_REPLY_BUDGET_WARN_REMAINING: '0',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'DAILY_REPLY_BUDGET_WARN_REMAINING=0 must fail config validation, not load',
+  );
+});
+
+test('SECURITY: DAILY_REPLY_BUDGET_WARN_REMAINING=-1 fails config validation', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DAILY_REPLY_BUDGET_WARN_REMAINING: '-1',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'DAILY_REPLY_BUDGET_WARN_REMAINING=-1 must fail config validation, not load',
+  );
+});
