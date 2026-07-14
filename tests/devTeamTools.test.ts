@@ -11,7 +11,7 @@ import type { PlatformAdapter } from '../src/platforms/types.js';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // 'super-cap' is a second super admin used only by the daily-cap test below, so
 // it can exhaust its OWN per-identity quota without starving the other tests

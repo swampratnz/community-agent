@@ -17,7 +17,7 @@ import type { CallerContext } from '../src/auth/rbac.js';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { buildSystemPrompt, renderMemoryContext } = await import('../src/agent/systemPrompt.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
