@@ -10,7 +10,7 @@ import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 process.env.STATUS_CHECK_ENABLED = 'true';

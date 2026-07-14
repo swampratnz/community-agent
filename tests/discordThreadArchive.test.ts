@@ -14,7 +14,7 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID = 'guild-thr';
 process.env.DISCORD_ALLOWED_CHANNEL_IDS = 'parent-allowed';
 process.env.DISCORD_ARCHIVE_ALL_MESSAGES = 'true';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { DiscordAdapter } = await import('../src/platforms/discord/adapter.js');
 const { pool } = await import('../src/storage/db.js');

@@ -49,6 +49,7 @@ import {
   isKnowledgeStale,
   linkMembers,
   listAccessRequests,
+  listAdmins,
   listAdminRoster,
   listAnswerFeedback,
   listContextDigests,
@@ -485,6 +486,41 @@ async function notifySuperAdmins(
 }
 
 /**
+ * Real-time counterpart to `notifySuperAdmins` above (issue #479's admin
+ * escalation), sourced from `listAdmins()` — every `community_users.role =
+ * 'admin'` row guild-wide, the same recipient set the weekly digest already
+ * uses — instead of `superAdminIds()`. Called directly from the router's
+ * deterministic "yes"-confirmation intercept, never from a model-callable
+ * tool: there is no new privileged data access here, only a change in WHEN an
+ * admin sees data already visible via the digest. Best-effort throughout: a
+ * `listAdmins()` failure or a single admin's DM failure is logged and never
+ * prevents alerting the rest.
+ */
+export async function notifyAdmins(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  message: string,
+  excludeUserId: string,
+): Promise<void> {
+  let admins: Awaited<ReturnType<typeof listAdmins>>;
+  try {
+    admins = await listAdmins();
+  } catch (err) {
+    logger.warn({ err }, 'listAdmins failed; escalation admin alert skipped');
+    return;
+  }
+  for (const admin of admins) {
+    if (admin.platformUserId === excludeUserId) continue;
+    const target = adapterFor(admin.platform);
+    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    target
+      .sendDirectMessage(admin.platformUserId, `🔔 ${message}`)
+      .catch((err) =>
+        logger.warn({ err, id: admin.platformUserId, platform: admin.platform }, 'Admin alert failed'),
+      );
+  }
+}
+
+/**
  * Cap on stored community guidelines text (issue #212). Bounded by Discord's
  * hard 2000-character message limit — guidelines are appended to the static
  * welcome message and sent unchunked (`member.send`/channel fallback), so an
@@ -829,7 +865,7 @@ export const EVENTS_LIST_LIMIT = 10;
 /** Truncation length for the suggestion text echoed back in a resolution DM. */
 const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
 
-function truncateForEcho(content: string): string {
+export function truncateForEcho(content: string): string {
   return content.length > SUGGESTION_RESOLUTION_ECHO_CHARS
     ? `${content.slice(0, SUGGESTION_RESOLUTION_ECHO_CHARS)}...`
     : content;
