@@ -110,7 +110,14 @@ export function startHealthServer(adapters: readonly PlatformAdapter[]): Promise
   });
 }
 
-async function handleHealthz(adapters: readonly PlatformAdapter[], res: ServerResponse): Promise<void> {
+// Exported (not just used via startHealthServer's HTTP listener) so tests can
+// drive it directly against a fake ServerResponse — e.g. proving a hung
+// healthcheck() still resolves within a bounded time (issue #502) without
+// standing up a real HTTP server/port per test.
+export async function handleHealthz(
+  adapters: readonly PlatformAdapter[],
+  res: ServerResponse,
+): Promise<void> {
   let dbOk = true;
   try {
     await healthcheck();
@@ -126,7 +133,7 @@ async function handleHealthz(adapters: readonly PlatformAdapter[], res: ServerRe
     .end(JSON.stringify(payload));
 }
 
-async function handleReadyz(res: ServerResponse): Promise<void> {
+export async function handleReadyz(res: ServerResponse): Promise<void> {
   let dbOk = true;
   try {
     await healthcheck();

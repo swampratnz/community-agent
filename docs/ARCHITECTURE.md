@@ -1250,6 +1250,35 @@ a reply (issue #52). That degradation is per-request only — a *persistent*
 DB outage still fails `healthcheck()` at startup and flips `db: false` on
 `/healthz`, so it is never masked from monitoring.
 
+**Pool-level query/connection bounds** (issue #502) close a gap #52 never
+covered: every one of #52's safeguards is a `.catch()`, which only ever fires
+on a *rejected* query — a query that never resolves or rejects (a lock wait,
+a stalled network round-trip, slow autovacuum, disk pressure) hangs the
+connection indefinitely instead. With the shared `pool` (`src/storage/db.ts`)
+capped at `max: 10`, a handful of stuck connections exhausts it, and every
+subsequent turn — including `/healthz`'s own `healthcheck()`, which runs on
+the same pool — queues forever behind them. `pool` is now constructed with
+three config-driven bounds, all on by default (pure safety hardening, no
+happy-path behaviour change for any query that completes normally):
+
+- `DB_STATEMENT_TIMEOUT_MS` (default `15000`) → `statement_timeout`,
+  enforced **server-side** by Postgres itself; covers the dominant cases
+  (lock waits, slow autovacuum, disk pressure, a runaway query).
+- `DB_QUERY_TIMEOUT_MS` (default `15000`) → `query_timeout`, the
+  **client-side** mirror — bounds an in-flight query even in the one case
+  `statement_timeout` alone can't reach: a stalled network round-trip where
+  the packet never reaches Postgres (so the server-side timer never starts)
+  or the response never returns.
+- `DB_CONNECT_TIMEOUT_MS` (default `10000`) → `connectionTimeoutMillis` —
+  bounds how long a caller waits to acquire/establish a connection, so it
+  fails fast instead of queuing forever when the pool is saturated.
+
+A timeout firing surfaces as an ordinary query rejection through the exact
+same `.catch()` degrade-gracefully paths #52 already built — this doesn't
+add new failure-handling logic, it just guarantees a hang eventually becomes
+the rejection that logic already handles safely (never echoing the raw
+Postgres error text to a member).
+
 ## Usage & shared Max-pool alerting
 
 The bot authenticates against a Claude **subscription** (see SECURITY.md

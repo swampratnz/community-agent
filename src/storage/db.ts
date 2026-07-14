@@ -9,6 +9,12 @@ export const pool = new Pool({
   connectionString: config.db.url,
   max: 10,
   idleTimeoutMillis: 30_000,
+  // Bound every query/connection on the pool (issue #502) so a stuck lock
+  // wait, stalled network round-trip, or slow autovacuum can't wedge every
+  // connection forever — see config.ts for the rationale behind each knob.
+  statement_timeout: config.db.statementTimeoutMs,
+  query_timeout: config.db.queryTimeoutMs,
+  connectionTimeoutMillis: config.db.connectTimeoutMs,
 });
 
 pool.on('error', (err) => {
