@@ -22,7 +22,7 @@
   "budgetCheckFailureRouter.test.ts": 2,
   "classifierModelTieringSet.test.ts": 1,
   "config.test.ts": 11,
-  "confirmCancelMi.router.test.ts": 8,
+  "confirmCancelMi.router.test.ts": 10,
   "contextBuilder.test.ts": 2,
   "contextExport.test.ts": 4,
   "createThreadModerationGuard.test.ts": 2,
