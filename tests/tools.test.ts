@@ -8739,11 +8739,11 @@ test(
 // conversation), and an in-memory per-day rate cap.
 function reactToMessageHandler(
   adapter: PlatformAdapter,
-  opts: { userId?: string; conversationId?: string; messageId?: string } = {},
+  opts: { userId?: string; conversationId?: string; messageId?: string; platform?: Platform } = {},
 ) {
   const server = buildToolServer(
     {
-      platform: 'discord' as const,
+      platform: opts.platform ?? ('discord' as const),
       userId: opts.userId ?? `${REACT_TO_MESSAGE_HANDLER_CONVO}-user`,
       userName: 'Reacting Member',
       role: 'member' as const,
@@ -8888,7 +8888,54 @@ test(
   },
 );
 
-test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp)', async () => {
+test(
+  'react_to_message reacts on a message id the bot has actually seen in the current conversation on WhatsApp too — target validation is platform-agnostic (issue #494)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-wa-known`;
+    const messageId = `${conv}-msg`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId,
+    });
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      platform: 'whatsapp',
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId });
+
+    assert.equal(result.isError, false);
+    assert.deepEqual(adapter.reactCalls, [{ conversationId: conv, messageId, emoji: '👍' }]);
+  },
+);
+
+test(
+  'SECURITY: react_to_message refuses a WhatsApp message id the bot has never seen in this conversation — same target-validation guarantee as Discord (issue #494)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-wa-unseen`;
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      platform: 'whatsapp',
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: `${conv}-never-seen` });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /never been seen/);
+    assert.equal(adapter.reactCalls.length, 0, 'no reaction call for an unvalidated target on WhatsApp');
+  },
+);
+
+test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp Cloud, unlike Baileys)', async () => {
   const adapter = stubAdapter(async () => {});
   const result = await reactToMessageHandler(adapter, { messageId: 'msg-1' }).handler({ emoji: '👍' });
   assert.equal(result.isError, true);
