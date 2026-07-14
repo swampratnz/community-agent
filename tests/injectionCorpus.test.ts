@@ -118,11 +118,19 @@ test('SECURITY: every malicious display name is neutralised in the user-turn req
     // sanitised; plain role-elevation text with no such characters is left
     // as-is (its neutralisation is the guideline text in GUIDELINES, not
     // stripping — role always comes from caller.role, never from the tag).
-    if (/[<>\r\n]/.test(name) || name.length > 100) {
+    if (/[<>[\]\r\n]/.test(name) || name.length > 100) {
       assert.ok(!tag.includes(name), `a tag/newline/over-length name must never survive verbatim: ${name}`);
     }
     if (tag) {
       assert.equal(tag.split('\n').length, 1, `requester tag must collapse to one line: ${tag}`);
+      // The tag's own `[Requester: ...]` delimiters must be the ONLY square
+      // brackets — a hostile `]` in the display name can no longer close the
+      // tag early and forge "outside the tag" content (issue #508 review).
+      assert.equal(
+        (tag.match(/[[\]]/g) ?? []).length,
+        2,
+        `only the tag's own delimiters may be square brackets: ${tag}`,
+      );
     }
   }
 });

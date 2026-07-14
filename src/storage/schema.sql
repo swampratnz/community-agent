@@ -407,6 +407,12 @@ CREATE TABLE IF NOT EXISTS admin_digest_sends (
   sent_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (platform, platform_user_id)
 );
+-- Week-over-week trend snapshot (issue #497): the exact same bare integers
+-- the digest already sends this admin, nothing more — see
+-- `sanitizeDigestCounts`/`getLastDigestCounts`/`recordAdminDigestSnapshot` in
+-- repository.ts. Deliberately NOT bumped by the snapshot-only write path, so
+-- it stays decoupled from the `sent_at` freshness guard above.
+ALTER TABLE admin_digest_sends ADD COLUMN IF NOT EXISTS last_counts JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- ---------------------------------------------------------------------------
 -- Standing "plain language" response-style preference (issue #126), set by
@@ -658,3 +664,16 @@ CREATE TABLE IF NOT EXISTS shortcut_hits (
 
 CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
   ON shortcut_hits (created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Semantic half of the knowledge_candidates dedup guard (issue #503).
+-- hasQueuedCandidateForTopic's exact (case-insensitive) string match doesn't
+-- catch a paraphrased topic label — the offline builder's free-text `TOPIC:`
+-- summary for the same recurring question can drift in wording run over run,
+-- so an admin's decline of "Wellington meetup schedule" didn't stop
+-- "when's the next Wellington meetup?" from resurfacing later. Nullable, no
+-- backfill for rows inserted before this column existed (non-retroactive —
+-- see docs/ARCHITECTURE.md); those rows simply never match on the semantic
+-- path but remain covered by the untouched exact-match fast path.
+-- ---------------------------------------------------------------------------
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS topic_embedding VECTOR(:EMBEDDING_DIM);
