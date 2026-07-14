@@ -82,6 +82,25 @@ for `protocolMessage` events in archived groups. Archiving is receive-side
 only — no new outbound/send behaviour, so it adds no new Baileys ToS/ban-risk
 surface (see SECURITY.md's Baileys section).
 
+## WhatsApp voice-note transcription
+
+`WHATSAPP_VOICE_ENABLED` (Baileys only; **off by default**) transcribes a
+voice note locally (transformers.js Whisper, `WHATSAPP_VOICE_MODEL`, default
+`Xenova/whisper-base.en` — **English-only**, a known and disclosed
+transcription-quality caveat for te reo Māori and other non-English speech)
+and actions the transcript through the exact same pipeline a typed message
+would use — RBAC, tool gating, and CONFIRM are all untouched.
+`WHATSAPP_VOICE_MIN_ROLE` (issue #507) sets the minimum tier eligible to use
+voice, defaulting to `'super_admin'` — byte-identical to the original
+super-admin-only rollout, since the gate stays a pure `isSuperAdmin` env check
+with no DB call at that default. Lowering it to `'admin'`, `'member'`, or
+`'guest'` reuses the same `resolveRole`/`atLeast` primitives every other
+tier-gated surface uses, enforced *before* any media is downloaded.
+`WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR` (default `0` = unlimited) adds a
+per-sender rolling-hour cap once an operator opts into a wider population —
+see SECURITY.md §13 for the full posture and the residual-risk note about
+leaving the rate limit unset while lowering `minRole`.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),

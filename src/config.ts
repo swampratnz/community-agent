@@ -237,6 +237,18 @@ const EnvSchema = z.object({
   // Voice notes longer than this are ignored WITHOUT downloading — bounds the
   // per-note CPU/latency of local transcription.
   WHATSAPP_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
+  // Minimum tier eligible for voice transcription (issue #507). Defaults to
+  // 'super_admin' — byte-identical to the original super-admin-only gate,
+  // which stays a pure isSuperAdmin env check with no DB call. Lowering this
+  // opens on-demand local Whisper inference to a larger, less-trusted
+  // population; pair with WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR (see
+  // docs/SECURITY.md §13).
+  WHATSAPP_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Rolling hourly cap on transcribed voice notes per sender (0 = unlimited,
+  // matching this repo's "0/unset = off" convention). Only bites once an
+  // operator lowers WHATSAPP_VOICE_MIN_ROLE below 'super_admin' — bounds the
+  // resource-exhaustion surface a much larger population could otherwise hit.
+  WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
 
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
@@ -752,6 +764,8 @@ export const config = {
       enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
       model: env.WHATSAPP_VOICE_MODEL,
       maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
+      minRole: env.WHATSAPP_VOICE_MIN_ROLE,
+      rateLimitPerHour: env.WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR,
     },
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
