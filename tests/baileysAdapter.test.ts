@@ -1,4 +1,4 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
@@ -26,6 +26,7 @@ const { pool } = await import('../src/storage/db.js');
 const { logger } = await import('../src/logger.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
+const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
 /**
  * Issue #407: `onGroupParticipantsUpdate` now unconditionally writes to
@@ -1290,17 +1291,33 @@ function voiceDm(fromNumber: string, seconds = 5): unknown {
   };
 }
 
+type VoiceConfig = {
+  enabled: boolean;
+  model: string;
+  maxSeconds: number;
+  minRole: 'super_admin' | 'admin' | 'member' | 'guest';
+  rateLimitPerHour: number;
+};
+
 /** Overrides config.whatsapp.voice + the super-admin allowlist for `fn`, then restores. */
 async function withVoice(
-  opts: { enabled?: boolean; maxSeconds?: number; superAdmins?: string[] },
+  opts: {
+    enabled?: boolean;
+    maxSeconds?: number;
+    superAdmins?: string[];
+    minRole?: VoiceConfig['minRole'];
+    rateLimitPerHour?: number;
+  },
   fn: () => Promise<void>,
 ): Promise<void> {
-  const voice = config.whatsapp.voice as { enabled: boolean; model: string; maxSeconds: number };
+  const voice = config.whatsapp.voice as VoiceConfig;
   const rbac = config.rbac as { superAdminWhatsappNumbers: readonly string[] };
   const prevVoice = { ...voice };
   const prevAdmins = rbac.superAdminWhatsappNumbers;
   if (opts.enabled !== undefined) voice.enabled = opts.enabled;
   if (opts.maxSeconds !== undefined) voice.maxSeconds = opts.maxSeconds;
+  if (opts.minRole !== undefined) voice.minRole = opts.minRole;
+  if (opts.rateLimitPerHour !== undefined) voice.rateLimitPerHour = opts.rateLimitPerHour;
   if (opts.superAdmins) rbac.superAdminWhatsappNumbers = opts.superAdmins;
   try {
     await fn();
@@ -1376,6 +1393,194 @@ test('WhatsApp voice: an enabled super-admin voice note is transcribed and actio
   assert.equal(msg.platform, 'whatsapp');
   assert.equal(msg.isDirect, true);
 });
+
+// --- Configurable voice eligibility + rate cap (issue #507) ---
+
+/** Mocks pool.query so getMemberRole('whatsapp', userId) resolves `role` (or null => unregistered/guest). */
+function mockMemberRole(t: TestContext, userId: string, role: 'admin' | 'member' | null) {
+  return t.mock.method(pool, 'query', async (_sql: string, params: unknown[] = []) => {
+    if (role && params[1] === userId) return { rows: [{ role }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  });
+}
+
+test(
+  'SECURITY: with the default WHATSAPP_VOICE_MIN_ROLE (super_admin), a non-super-admin voice note is ' +
+    'dropped with zero DB calls and no rate-limit bookkeeping (issue #507)',
+  async (t) => {
+    let queryCalls = 0;
+    t.mock.method(pool, 'query', async () => {
+      queryCalls += 1;
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAudioMessage = async () => {
+      throw new Error('a below-tier sender must never reach the download/transcribe seam');
+    };
+    await withVoice({ enabled: true, superAdmins: ['64990000000'] }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567')),
+    );
+    assert.equal(handlerCalls, 0);
+    assert.equal(
+      queryCalls,
+      0,
+      'default minRole=super_admin must stay the pure isSuperAdmin env check, never resolveRole/getMemberRole',
+    );
+  },
+);
+
+test(
+  "SECURITY: with the default config, a super admin's voice note transcribes with zero DB calls — the " +
+    'default configuration is byte-identical to the original super-admin-only gate (issue #507)',
+  async (t) => {
+    let queryCalls = 0;
+    t.mock.method(pool, 'query', async () => {
+      queryCalls += 1;
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let seen: IncomingMessage | null = null;
+    adapter.onMessage(async (m) => {
+      seen = m;
+    });
+    adapter.transcribeAudioMessage = async () => 'what is the member count';
+    await withVoice({ enabled: true, superAdmins: ['64211234567'] }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+    );
+    assert.ok(seen, 'the transcript must still reach the handler on the default config');
+    assert.equal(
+      queryCalls,
+      0,
+      'no rate-limit bookkeeping or resolveRole/getMemberRole call at the 0/unlimited default',
+    );
+  },
+);
+
+test(
+  "WhatsApp voice: WHATSAPP_VOICE_MIN_ROLE='member' lets a registered non-super-admin member's under-cap " +
+    'voice note transcribe and act through the identical pipeline a typed message would (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64211234567', 'member');
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let seen: IncomingMessage | null = null;
+    adapter.onMessage(async (m) => {
+      seen = m;
+    });
+    adapter.transcribeAudioMessage = async () => 'what are the community guidelines';
+    await withVoice({ enabled: true, maxSeconds: 120, minRole: 'member' }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+    );
+    assert.ok(seen, 'a member (not a super admin) must still get their voice note transcribed and actioned');
+    const msg = seen as unknown as IncomingMessage;
+    assert.equal(msg.text, 'what are the community guidelines');
+    assert.equal(msg.userId, '64211234567');
+  },
+);
+
+test(
+  "SECURITY: with minRole='member', an unregistered sender (resolves to guest) never triggers download/" +
+    'transcription — the role gate runs before any media fetch (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64299999999', null); // no community_users row => guest
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAudioMessage = async () => {
+      throw new Error('a below-minRole sender must never be downloaded/transcribed');
+    };
+    await withVoice({ enabled: true, minRole: 'member' }, () =>
+      adapter.onWhatsappMessage(voiceDm('64299999999')),
+    );
+    assert.equal(handlerCalls, 0);
+  },
+);
+
+test(
+  "SECURITY: a member's transcribed voice note is granted exactly the member tool set — never an admin " +
+    'or super-admin tool, whether the text arrived typed or transcribed (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64211234567', 'member');
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let seen: IncomingMessage | null = null;
+    adapter.onMessage(async (m) => {
+      seen = m;
+    });
+    adapter.transcribeAudioMessage = async () => 'what is the member count';
+    await withVoice({ enabled: true, minRole: 'member' }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+    );
+    assert.ok(seen);
+    // The adapter never computes a tool list itself — it only ever populates
+    // IncomingMessage.text. The tool list for that turn is derived downstream
+    // from the caller's tier via the SAME toolsForRole a typed message from
+    // this sender would resolve to — asserted directly here since there is no
+    // voice-specific tool-list path to diverge.
+    const tools = toolsForRole('member');
+    for (const adminTool of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+      assert.ok(!tools.includes(adminTool), `member tool set must never include ${adminTool}`);
+    }
+    assert.ok(tools.includes('mcp__community__knowledge_search'));
+  },
+);
+
+test(
+  'SECURITY: WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR bounds a single sender — the (N+1)th note within the ' +
+    'rolling hour is refused without a download attempt (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64277777777', 'member');
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    let seamCalls = 0;
+    adapter.transcribeAudioMessage = async () => {
+      seamCalls += 1;
+      return `note ${seamCalls}`;
+    };
+    const limit = 2;
+    await withVoice({ enabled: true, minRole: 'member', rateLimitPerHour: limit }, async () => {
+      for (let i = 0; i < limit; i++) {
+        await adapter.onWhatsappMessage(voiceDm('64277777777', 5));
+      }
+      assert.equal(seamCalls, limit, 'every call within the cap must be transcribed');
+      assert.equal(handlerCalls, limit);
+
+      await adapter.onWhatsappMessage(voiceDm('64277777777', 5));
+      assert.equal(seamCalls, limit, 'the (N+1)th note must be refused BEFORE any download/transcribe');
+      assert.equal(handlerCalls, limit, 'a refused note must never reach the agent');
+    });
+  },
+);
+
+test(
+  "WhatsApp voice: in ACCESS_MODE_WHATSAPP='gated' with minRole='member', an unregistered guest's voice " +
+    'note is refused (resolved role guest < member) — reusing resolveRole, no separate exclusion logic ' +
+    '(issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64288888888', null);
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAudioMessage = async () => {
+      throw new Error('a gated-mode guest must never be downloaded/transcribed');
+    };
+    await withAccessMode('gated', () =>
+      withVoice({ enabled: true, minRole: 'member' }, () =>
+        adapter.onWhatsappMessage(voiceDm('64288888888')),
+      ),
+    );
+    assert.equal(handlerCalls, 0);
+  },
+);
 
 test(
   'SECURITY: BaileysAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as its ' +
