@@ -326,7 +326,17 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken. These three deterministic, non-agent
+of them read as the bot being broken. A push-side complement to the hard
+cutoff above (issue #511, opt-in via `DAILY_REPLY_BUDGET_WARN_ENABLED`,
+default off): once a non-super-admin caller's remaining daily replies fall to
+`DAILY_REPLY_BUDGET_WARN_REMAINING` (default 5) or fewer, the router appends
+one fixed line naming the remaining count to the real reply's text — never a
+separate send, never replacing the model's answer, mirroring `offerEscalation`
+(#479)'s append-only shape. It reuses the `used`/`limit` pair the daily-budget
+check above already reads (no new query), is debounced to once per rolling
+24h per caller (`budgetWarned`, same window and sweep cadence as
+`budgetNotified`), and honours the caller's standing `'mi'`/`'plain'`
+preference the same way the other fixed notices do. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
@@ -619,7 +629,25 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   `'declined'` — a decline must stick on the very next run, not just until
   the cluster re-summarises to the same topic label) or whose topic an
   existing `knowledge` entry already covers above the relevance floor
-  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`).
+  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`). The topic match itself is two
+  layers (issue #503): a cheap exact (case-insensitive) string comparison
+  first, then — only when that misses — a semantic check against every
+  stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
+  (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
+  declined topic re-drafted under different wording on a later run (the
+  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  gets caught. `candidateTopicAlreadyReviewed` computes the topic's
+  embedding at most once per attempted cluster and reuses that same vector
+  for the semantic check, `knowledgeCoversTopic`, and the candidate insert
+  itself — no added local-embedding cost. Fails open (not blocked) on an
+  embedding error, same posture as `knowledgeCoversTopic`. `topic_embedding`
+  is nullable and **not backfilled** for rows inserted before this column
+  existed — those older rows are still covered by the (unchanged) exact-match
+  path but never surface a semantic match, mirroring this repo's existing
+  non-retroactive precedent (e.g. #197's `is_dm`). The column is
+  write-and-compare-only: never returned by `list_knowledge_candidates`,
+  `accept_knowledge_candidate`, or `decline_knowledge_candidate`, matching
+  `knowledge.embedding`/`knowledge_gaps.embedding`.
 - **Deletion coherence inherits from #51**: a candidate's `topic` is
   denormalized from its source digest at insert time. When a purge
   invalidates a digest, its still-*pending* candidates are deleted with it;

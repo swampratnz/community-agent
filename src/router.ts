@@ -51,6 +51,11 @@ import {
   DAILY_BUDGET_NOTICE_TEXT_MI,
   DAILY_BUDGET_NOTICE_TEXT_PLAIN,
 } from './dailyBudgetNotice.js';
+import {
+  DAILY_REPLY_BUDGET_WARNING_TEXT,
+  DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
+  DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
+} from './dailyReplyBudgetWarning.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 
@@ -310,6 +315,15 @@ export class Router {
   private readonly RATE_WINDOW_MS = 60_000; // per minute
   /** userKey -> when they were last told they hit the budget (rolling 24h, matching the budget window). */
   private readonly budgetNotified = new Map<string, number>();
+  /**
+   * userKey -> when they were last warned they're approaching the daily
+   * budget (issue #511) — the pre-cutoff sibling of `budgetNotified` above,
+   * same key shape and same rolling-24h window, so a caller sitting inside
+   * the warning threshold for several messages in a row is warned once, not
+   * on every message. Only written when DAILY_REPLY_BUDGET_WARN_ENABLED is
+   * on (see `respond()`).
+   */
+  private readonly budgetWarned = new Map<string, number>();
   /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
   private readonly rateLimitNotified = new Map<string, number>();
   /** userKey -> when they were last told the bot is paused (debounced to PAUSE_NOTIFY_WINDOW_MS). */
@@ -455,6 +469,9 @@ export class Router {
     }
     for (const [key, at] of this.budgetNotified) {
       if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
+    }
+    for (const [key, at] of this.budgetWarned) {
+      if (now - at > 24 * 3_600_000) this.budgetWarned.delete(key);
     }
     for (const [key, at] of this.rateLimitNotified) {
       if (now - at > this.RATE_WINDOW_MS) this.rateLimitNotified.delete(key);
@@ -991,8 +1008,14 @@ export class Router {
       return;
     }
 
-    // Daily reply budget (super admins exempt).
+    // Daily reply budget (super admins exempt). `replyBudget` is hoisted out
+    // of this block (issue #511) so the already-fetched `used`/`limit` pair
+    // can be threaded into `respond()` below for the approaching-budget
+    // warning, instead of being discarded once the `used < limit` check
+    // passes — no new DB query, reusing the exact read this block already
+    // makes.
     const limit = config.behaviour.dailyReplyLimitPerUser;
+    let replyBudget: { used: number; limit: number } | undefined;
     if (limit > 0 && role !== 'super_admin') {
       const used = await this.countReplies(msg.platform, msg.userId).catch((err) => {
         logger.error({ err, platform: msg.platform }, 'daily_reply_budget_check_failed');
@@ -1028,6 +1051,7 @@ export class Router {
         }
         return;
       }
+      replyBudget = { used, limit };
     }
 
     // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
@@ -1170,7 +1194,9 @@ export class Router {
     }
 
     // Serialise per conversation so session resume stays consistent.
-    await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter, replyConversationId));
+    await this.enqueue(key, 'respond', () =>
+      this.respond(msg, role, adapter, replyBudget, replyConversationId),
+    );
   }
 
   /**
@@ -1382,6 +1408,7 @@ export class Router {
     msg: IncomingMessage,
     role: Tier,
     adapter: PlatformAdapter,
+    replyBudget?: { used: number; limit: number },
     replyConversationId?: string,
   ): Promise<void> {
     const target = replyConversationId ?? msg.conversationId;
@@ -1441,10 +1468,39 @@ export class Router {
       // failure — `reply.ok`/other failure modes are untouched. Threaded
       // into `outboundText` (not `reply.text` itself) so the caches below
       // that key off `reply.text`/`reply.ok` stay exactly as before.
-      const outboundText =
+      let outboundText =
         config.behaviour.escalationToAdminEnabled && reply.maxTurnsExceeded === true
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
+
+      // Approaching-daily-budget warning (issue #511): append-only, same
+      // shape as `offerEscalation` above — never replaces `outboundText`, so
+      // the caches below (keyed off `reply.text`/`reply.ok`, not
+      // `outboundText`) stay exactly as before. `replyBudget` is only ever
+      // set for a non-super-admin caller under a positive limit (see
+      // `handle()`), so no separate role check is needed here. `remaining`
+      // is the count AFTER this reply is sent/counted, matching the
+      // acceptance criterion's `limit - (used + 1)`.
+      if (config.behaviour.dailyReplyBudgetWarnEnabled && replyBudget) {
+        const remaining = replyBudget.limit - (replyBudget.used + 1);
+        if (remaining >= 0 && remaining <= config.behaviour.dailyReplyBudgetWarnRemaining) {
+          const userKey = `${msg.platform}:${msg.userId}`;
+          const lastWarned = this.budgetWarned.get(userKey) ?? 0;
+          if (Date.now() - lastWarned > 24 * 3_600_000) {
+            this.budgetWarned.set(userKey, Date.now());
+            let warningText = DAILY_REPLY_BUDGET_WARNING_TEXT(remaining);
+            if (reply.languagePreference === 'mi') {
+              warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_MI(remaining);
+            } else {
+              const style = await this.getRespStyle(msg.platform, msg.userId).catch(
+                () => 'standard' as const,
+              );
+              if (style === 'plain') warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN(remaining);
+            }
+            outboundText += warningText;
+          }
+        }
+      }
 
       // This call site (the real-agent-turn main reply, issue #339), the
       // gated notice (#363), and cancel/permissions-changed/pending-notice

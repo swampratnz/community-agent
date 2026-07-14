@@ -616,6 +616,21 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Push-side complement to #444's pull-only `my_data` budget figure (issue
+  // #511): once a non-super-admin caller's remaining daily replies fall to
+  // DAILY_REPLY_BUDGET_WARN_REMAINING or fewer, append one fixed line to the
+  // real reply naming the remaining count, debounced to once per rolling 24h
+  // (mirrors budgetNotified's window). Off by default: with it unset, the
+  // reply is byte-identical to today's for every used/limit combination. See
+  // src/router.ts.
+  DAILY_REPLY_BUDGET_WARN_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // How many replies remain (inclusive) before the warning above fires.
+  // Always a positive count — unlike the "0 disabled" knobs above, disabling
+  // this feature is DAILY_REPLY_BUDGET_WARN_ENABLED=false, not a 0 here.
+  DAILY_REPLY_BUDGET_WARN_REMAINING: z.coerce.number().int().positive().default(5),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -938,6 +953,8 @@ export const config = {
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
     escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
+    dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
+    dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {

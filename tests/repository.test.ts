@@ -52,6 +52,7 @@ const {
   countStalePendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
+  candidateTopicAlreadyReviewed,
   recordAdminAction,
   recentQuestionClusters,
   recentKnowledgeGapClusters,
@@ -1720,20 +1721,93 @@ test(
       content: 'Zyquavexolorpin onboarding: register on the portal and verify your email address.',
       scope: 'global',
     });
+    // knowledgeCoversTopic (issue #503) now takes the already-computed
+    // embedding rather than re-embedding internally — mirrors how the
+    // builder threads candidateTopicAlreadyReviewed's vector through.
     assert.equal(
-      await knowledgeCoversTopic('zyquavexolorpin onboarding steps'),
+      await knowledgeCoversTopic(await embed('zyquavexolorpin onboarding steps')),
       true,
       'an existing knowledge entry above the relevance floor counts as already answered',
     );
     assert.equal(
-      await knowledgeCoversTopic('qzxvbfrobnicator gloopington snorlaxian doorknob'),
+      await knowledgeCoversTopic(await embed('qzxvbfrobnicator gloopington snorlaxian doorknob')),
       false,
       'an unrelated (and lexically unrelated) topic is not flagged as already covered',
     );
+    assert.equal(await knowledgeCoversTopic(null), false, 'a null vector fails open to "not covered"');
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  "SECURITY: candidateTopicAlreadyReviewed's semantic half blocks a reworded topic that is NOT an exact string match but is >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD similar to an existing (even declined) candidate's topic_embedding — and does NOT block a genuinely dissimilar topic (issue #503, AC2/AC3)",
+  { skip },
+  async () => {
+    const newTopic = `${RUN} when does the community meetup usually happen`;
+    // The exact vector candidateTopicAlreadyReviewed will itself compute for
+    // newTopic — used as the anchor for controlled-similarity fixtures below
+    // (Gram-Schmidt technique, same as memoryAtCosineSimilarity's other
+    // uses in this file), so this test lands precisely on either side of the
+    // 0.92 threshold regardless of what the real model thinks these
+    // deliberately-different label strings mean.
+    const anchor = await embed(newTopic);
+
+    const priorDigestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN} unrelated-string topic label`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const similarCandidateId = await insertKnowledgeCandidate({
+      digestId: priorDigestId,
+      // Deliberately NOT an exact match to newTopic, so hasQueuedCandidateForTopic misses.
+      topic: `${RUN} unrelated-string topic label`,
+      title: 't',
+      content: 'c',
+    });
+    await declineKnowledgeCandidate(similarCandidateId, 'admin-1');
+    await pool.query(`UPDATE knowledge_candidates SET topic_embedding = $2 WHERE id = $1`, [
+      similarCandidateId,
+      pgvector.toSql(memoryAtCosineSimilarity(anchor, 0.95)),
+    ]);
+
+    const semanticResult = await candidateTopicAlreadyReviewed(newTopic);
+    assert.equal(
+      semanticResult.blocked,
+      true,
+      'a >=0.92-similar declined topic blocks re-emission even without an exact string match',
+    );
+    assert.ok(
+      Array.isArray(semanticResult.embedding) && semanticResult.embedding.length === anchor.length,
+      'the computed embedding is returned for reuse by knowledgeCoversTopic/insertKnowledgeCandidate',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [similarCandidateId]);
+
+    // A genuinely dissimilar topic (0.5 similarity, well under the 0.92 floor) must NOT be blocked.
+    const dissimilarCandidateId = await insertKnowledgeCandidate({
+      digestId: priorDigestId,
+      topic: `${RUN} another unrelated label`,
+      title: 't2',
+      content: 'c2',
+    });
+    await declineKnowledgeCandidate(dissimilarCandidateId, 'admin-1');
+    await pool.query(`UPDATE knowledge_candidates SET topic_embedding = $2 WHERE id = $1`, [
+      dissimilarCandidateId,
+      pgvector.toSql(memoryAtCosineSimilarity(anchor, 0.5)),
+    ]);
+
+    const noFalsePositive = await candidateTopicAlreadyReviewed(newTopic);
+    assert.equal(noFalsePositive.blocked, false, 'a dissimilar topic (below the 0.92 floor) is not blocked');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [dissimilarCandidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [priorDigestId]);
   },
 );
 
