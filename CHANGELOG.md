@@ -13,6 +13,23 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-14
 
 ### Added
+- **`appeal_moderation`** (#496): a member/guest could already see their own
+  moderation status (`my_warnings`, #184) but had zero in-bot way to ask for
+  a review — their only recourse was finding an admin's personal contact
+  outside the bot entirely. `appeal_moderation` closes that gap: a
+  self-scoped tool (eligibility read from `caller.platform`/`caller.userId`
+  only, exactly like `my_warnings`, never a model-supplied id) that refuses
+  cleanly ("no active warnings to appeal") unless the caller has at least
+  one active warning, so it can't become a generic side channel to message
+  admins — `suggest_improvement`/`report_content` already cover that. An
+  eligible caller may attach one optional, sanitized, length-capped reason
+  (same bound as `report_content`'s), which proactively DMs super admins via
+  the existing `notifySuperAdmins` fan-out (`notifyAppealFiled`, reusing
+  `notifyReportFiled`/`notifyReportWithdrawn`'s exact mechanism — no new
+  conversation-scoped push helper). Rate-capped per caller (not per
+  conversation) at one per `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h),
+  in-memory/best-effort — no new table, no auto-unmute; `clear_warnings`
+  remains the only way an admin lifts a mute.
 - **`MEMORY_RELEVANCE_THRESHOLD`** (#474): automatic per-turn memory recall and
   the `remember_search` tool both search past interactions via `searchMemory`,
   which previously had no relevance floor at all — every configured

@@ -36,6 +36,7 @@ const {
   notifyReportResolved,
   notifyReportFiled,
   notifyReportWithdrawn,
+  notifyAppealFiled,
   buildToolServer,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
@@ -69,7 +70,9 @@ const {
   WARN_USER_RATE_LIMIT_PER_HOUR,
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
+  APPEAL_MODERATION_REASON_MAX_CHARS,
 } = await import('../src/agent/tools.js');
+const { filterOutbound } = await import('../src/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,
   saveKnowledge,
@@ -143,6 +146,7 @@ const WARN_RATE_HANDLER_ADMIN = `${RUN}-warn-rate-handler-admin`;
 const WARN_RATE_HANDLER_TARGET = `${RUN}-warn-rate-handler-target`;
 const ANNOUNCE_RATE_HANDLER_ADMIN = `${RUN}-announce-rate-handler-admin`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
+const APPEAL_MODERATION_HANDLER_USER = `${RUN}-appeal-moderation-handler`;
 const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
 const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
 const REACT_TO_MESSAGE_HANDLER_CONVO = `${RUN}-react-to-message-handler`;
@@ -961,6 +965,90 @@ test('notifyReportWithdrawn reaches every configured super admin across ALL regi
   assert.equal(whatsappCalls.length, 2, 'both whatsapp-configured super admins are alerted');
   assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
   assert.equal(discordCalls.length, 0, 'no discord super admins are configured');
+});
+
+// notifyAppealFiled (issue #496): the appeal_moderation counterpart to
+// notifyReportFiled/notifyReportWithdrawn above — same notifySuperAdmins
+// fan-out, reused as-is per the adversarial review's correction rather than
+// inventing a new conversation-scoped push helper.
+test('notifyAppealFiled DMs every configured super admin with the appeal details', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  await notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+    callerUserId: 'caller-1',
+    callerName: 'Appealing Member',
+    activeWarnings: 2,
+    strikeLimit: 3,
+    reason: 'the warning was a misunderstanding',
+  });
+
+  assert.equal(calls.length, 2, 'both configured super admins are DMed');
+  assert.deepEqual(calls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  for (const [, message] of calls) {
+    assert.match(message, /Appealing Member/, 'includes the caller');
+    assert.match(message, /2\/3 active warnings/, 'includes the active-warning count vs. the limit');
+    assert.match(message, /Reason given: "the warning was a misunderstanding"/);
+  }
+});
+
+test('notifyAppealFiled reports "no reason given" when no reason was passed', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+    callerUserId: 'caller-1',
+    callerName: 'Appealing Member',
+    activeWarnings: 1,
+    strikeLimit: 3,
+  });
+
+  for (const message of calls) {
+    assert.match(
+      message,
+      /Reason given: no reason given/,
+      'an omitted reason must be reported explicitly, never invented',
+    );
+  }
+});
+
+test('notifyAppealFiled excludes the appealing caller from the alert (matches notifySuperAdmins convention)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (userId) => {
+    calls.push(userId);
+  });
+
+  await notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+    callerUserId: 'super-1',
+    callerName: 'Appealing Super Admin',
+    activeWarnings: 1,
+    strikeLimit: 3,
+  });
+
+  assert.deepEqual(
+    calls,
+    ['super-2'],
+    "the caller's own id is excluded even though it is a configured super admin",
+  );
+});
+
+test('notifyAppealFiled swallows a DM failure rather than throwing', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(
+    notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+      callerUserId: 'caller-1',
+      callerName: 'Appealing Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    }),
+  );
 });
 
 /**
@@ -1820,6 +1908,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__forget_me', /forget/i],
   ['mcp__community__report_content', /report/i],
   ['mcp__community__withdraw_report', /withdraw/i],
+  ['mcp__community__appeal_moderation', /appeal my warning/i],
   ['mcp__community__my_submissions', /filed suggestions\/reports/i],
   ['mcp__community__my_warnings', /active warnings/i],
   ['mcp__community__my_data', /what I've stored about you/i],
@@ -1883,6 +1972,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
     "Here's what you can ask me to do:\n" +
     '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
+    '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
     '- Answer questions from curated community knowledge — just ask\n' +
     '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
@@ -1901,7 +1991,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     memberReply,
     expectedMemberCapabilitiesText,
     'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
-      'list_events line, issue #437 added the list_knowledge_topics line; otherwise unchanged since #367)',
+      'list_events line, issue #437 added the list_knowledge_topics line, issue #496 added the ' +
+      'appeal_moderation line; otherwise unchanged since #367)',
   );
 });
 
@@ -10018,6 +10109,261 @@ test(
       /no active warnings/i,
       "SECURITY: my_warnings must reflect only the real caller's own count, never another user's warnings",
     );
+  },
+);
+
+// appeal_moderation (issue #496): a member-tier, self-scoped notification
+// trigger — the action counterpart to my_warnings' read-only visibility.
+// Exercises the handler's wiring on top of repository.test.ts's coverage of
+// countActiveWarnings/addWarning; notifyAppealFiled itself is unit-tested
+// above without the MCP transport, same convention as notifyReportFiled.
+function appealModerationHandler(
+  adapter: PlatformAdapter,
+  userId = APPEAL_MODERATION_HANDLER_USER,
+  role: 'member' | 'admin' | 'super_admin' = 'member',
+) {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Appealing Member',
+      role,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['appeal_moderation'];
+}
+
+test(
+  'appeal_moderation refuses cleanly with no active warnings and sends no admin notification (issue #496)',
+  { skip },
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-clean`;
+
+    const result = await appealModerationHandler(adapter, userId).handler({});
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /active warnings to appeal/i);
+    assert.equal(calls.length, 0, 'an ineligible caller must not trigger any admin DM');
+  },
+);
+
+test(
+  'appeal_moderation notifies admins exactly once (per configured super admin) with the warning count, limit, and reason for an eligible caller (issue #496)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-eligible`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (uid, message) => {
+      calls.push([uid, message]);
+    });
+
+    const result = await appealModerationHandler(adapter, userId).handler({
+      reason: 'I was not actually spamming',
+    });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /sent to the admins/i);
+    assert.equal(calls.length, 2, 'both configured super admins are alerted');
+    for (const [, message] of calls) {
+      assert.match(message, /Appealing Member/);
+      assert.match(message, /1\/3 active warnings/);
+      assert.match(message, /I was not actually spamming/);
+    }
+  },
+);
+
+test(
+  'appeal_moderation reports "no reason given" to admins when the caller passes no reason (issue #496)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-no-reason`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_uid, message) => {
+      calls.push(message);
+    });
+
+    await appealModerationHandler(adapter, userId).handler({});
+
+    assert.equal(calls.length, 2);
+    for (const message of calls) {
+      assert.match(message, /Reason given: no reason given/);
+    }
+  },
+);
+
+test(
+  "SECURITY: appeal_moderation resolves the caller's own warning status from caller.platform/caller.userId only, never a tool-argument-supplied id (issue #496)",
+  { skip },
+  async () => {
+    const caller = `${APPEAL_MODERATION_HANDLER_USER}-identity-caller`;
+    const otherUser = `${APPEAL_MODERATION_HANDLER_USER}-identity-other`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: 'whatsapp',
+        userId: otherUser,
+        reason: 'test',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // The tool's only argument is a free-text `reason` — there is no
+    // identifier field a model could supply to redirect the eligibility
+    // check or the notification onto otherUser's heavily-warned record.
+    const result = await appealModerationHandler(adapter, caller).handler({});
+
+    assert.match(
+      result.content[0]?.text ?? '',
+      /active warnings to appeal/i,
+      "SECURITY: appeal_moderation must reflect only the real caller's own count, never another user's warnings",
+    );
+    assert.equal(calls.length, 0, 'SECURITY: a caller with no warnings of their own must not trigger any DM');
+  },
+);
+
+test(
+  "SECURITY: appeal_moderation's reason is length-capped and passes through outbound secret redaction before reaching the admin DM (issue #496)",
+  { skip },
+  async () => {
+    const boundUser = `${APPEAL_MODERATION_HANDLER_USER}-bound`;
+    const handler = appealModerationHandler(
+      stubAdapter(async () => {}),
+      boundUser,
+    );
+    assert.equal(
+      handler.inputSchema.safeParse({ reason: 'x'.repeat(APPEAL_MODERATION_REASON_MAX_CHARS) }).success,
+      true,
+    );
+    assert.equal(
+      handler.inputSchema.safeParse({ reason: 'x'.repeat(APPEAL_MODERATION_REASON_MAX_CHARS + 1) }).success,
+      false,
+      'an oversized reason must be rejected at the schema boundary, same bound treatment as report_content/rate_answer',
+    );
+
+    // Realistic stub: applies the SAME outbound filter every real adapter's
+    // sendDirectMessage runs (e.g. discordAdapter.ts's `filtered()`), so this
+    // proves the reason is redacted on the actual send path, not merely that
+    // redactSecrets works in isolation.
+    const secret = 'sk-ant-' + 'y'.repeat(30);
+    const sent: string[] = [];
+    const redactingAdapter = stubAdapter(async (_userId, message) => {
+      sent.push(filterOutbound(message, 'full'));
+    });
+
+    const secretUser = `${APPEAL_MODERATION_HANDLER_USER}-redaction-secret`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId: secretUser,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await appealModerationHandler(redactingAdapter, secretUser).handler({
+      reason: `please review: ${secret}`,
+    });
+
+    assert.equal(sent.length, 2);
+    for (const message of sent) {
+      assert.ok(!message.includes(secret), 'no raw secret fragment may reach the admin DM');
+      assert.ok(message.includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
+    }
+  },
+);
+
+test(
+  'appeal_moderation enforces a per-caller cooldown — a repeat call within the window is refused with no second notification (issue #496)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-cooldown`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (uid) => {
+      calls.push(uid);
+    });
+
+    const first = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(first.isError, false);
+    assert.equal(calls.length, 2);
+
+    calls.length = 0;
+    const second = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(second.isError, true);
+    assert.match(second.content[0]?.text ?? '', /already asked for a review recently/i);
+    assert.equal(calls.length, 0, 'a cooldown-refused appeal must not send a second notification');
+  },
+);
+
+test(
+  "appeal_moderation does not itself change the caller's warning count or mute state (issue #496)",
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-no-side-effects`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const before = await countActiveWarnings('whatsapp', userId);
+    const adapter = stubAdapter(async () => {});
+    await appealModerationHandler(adapter, userId).handler({ reason: 'please check' });
+    const after = await countActiveWarnings('whatsapp', userId);
+
+    assert.equal(after, before, "appeal_moderation must not alter the caller's own warning count");
   },
 );
 

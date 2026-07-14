@@ -1397,6 +1397,31 @@ base, unlike the other two's fixed-format extraction.
   still has the narrower limitation this closed for suggestions/reports: it
   has no cross-turn adapter lookup at all, since its callers don't know a
   target platform to look up.
+- **`appeal_moderation` (issue #496)** gives a member/guest a way to ask
+  admins to double-check their own active warning(s)/mute — the missing
+  action counterpart to `my_warnings`' read-only visibility. Self-scoped
+  exactly like `my_warnings`: eligibility is `countActiveWarnings(caller.
+  platform, caller.userId) > 0`, read from the resolved caller identity only,
+  never a tool-argument-supplied id, so it can never be used to check or
+  appeal on behalf of another member. It intentionally does **not** assert a
+  live Discord mute (the bot can't read that role state, issue #182) — only
+  the caller's own count vs. `MODERATION_STRIKE_LIMIT`, same caveat as
+  `my_warnings`. Reuses `notifySuperAdmins` as-is (`notifyAppealFiled`) — the
+  same fan-out `notifyReportFiled`/`notifyReportWithdrawn` already use — so no
+  new conversation-scoped push helper was introduced; the optional free-text
+  `reason` is length-capped at the zod schema boundary (same bound as
+  `report_content`'s `reason`) and, like every outbound DM, is redacted by
+  the adapter's own `sendDirectMessage` before it ever reaches an admin.
+  Rate-capped **per caller** (an appeal is about one person's own status, not
+  a shared conversation resource) at one per
+  `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) via an in-memory,
+  best-effort map — deliberately no new table for the MVP, so a restart at
+  worst permits one extra appeal DM, harmless for a non-destructive
+  notification. Never itself mutates `member_warnings`/mute state — no
+  auto-unmute; `clear_warnings` remains the only way an admin lifts a mute.
+  Worst-case abuse from a hijacked/injected member turn: one unwanted admin
+  DM per cooldown window naming the real, self-identified caller — the same
+  residual bound every other non-CONFIRM member-notification tool carries.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.

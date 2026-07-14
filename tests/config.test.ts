@@ -52,6 +52,10 @@ test('config: MODERATION_STRIKE_WINDOW_DAYS unset (default) is undefined — unb
   assert.equal(config.moderation.strikeWindowDays, undefined);
 });
 
+test('config: MODERATION_APPEAL_COOLDOWN_HOURS unset (default) is 24 hours (issue #496)', () => {
+  assert.equal(config.moderation.appealCooldownHours, 24);
+});
+
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
   assert.equal(config.whatsapp.welcome.enabled, false);
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);
