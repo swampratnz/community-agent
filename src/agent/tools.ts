@@ -3964,7 +3964,14 @@ export function buildToolServer(
       // `runAdminDigestOnce`, so an on-demand pull never advances the
       // week-over-week trend baseline (issue #499 / #497).
       const { message } = await buildAdminDigestForAdmin(caller.platform, caller.userId, adapter);
-      return text(message ?? 'Nothing to report right now.');
+      if (message == null) return text('Nothing to report right now.');
+      // Unlike the weekly DM push (plain text straight to a human, never
+      // re-parsed), this tool result re-enters the model's context — and the
+      // cluster section embeds raw member-submitted question text
+      // (recentQuestionClusters). Quarantine the whole message the same way
+      // question_digest quarantines the identical cluster data above (issue
+      // #499 review).
+      return text(untrusted('Admin digest', message));
     },
     { annotations: { readOnlyHint: true } },
   );
