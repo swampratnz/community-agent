@@ -162,6 +162,28 @@ test('SECURITY: my_warnings is member+ and strictly narrower than the admin-only
   }
 });
 
+test('SECURITY: appeal_moderation is member+ and strictly narrower than the admin-only moderation tools (clear_warnings/list_member_warnings) — issue #496', () => {
+  const tool = 'mcp__community__appeal_moderation';
+  const adminOnlyModerationTools = ['mcp__community__clear_warnings', 'mcp__community__list_member_warnings'];
+
+  assert.ok(MEMBER_TOOLS.includes(tool), 'appeal_moderation must be in MEMBER_TOOLS');
+  for (const t of adminOnlyModerationTools) {
+    assert.ok(
+      !(MEMBER_TOOLS as readonly string[]).includes(t),
+      `${t} must never be in MEMBER_TOOLS even though appeal_moderation is`,
+    );
+  }
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(tool), `${role} must reach appeal_moderation`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of adminOnlyModerationTools) {
+      assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+    }
+  }
+});
+
 test('SECURITY: my_data is member+ and strictly narrower than admin-only data tools (list_member_notes, purge_user_data) — issue #188', () => {
   const tool = 'mcp__community__my_data';
   const adminOrHigherOnlyTools = [
@@ -548,6 +570,20 @@ test('SECURITY: list_admins is super-admin only (who currently holds bot-admin t
     assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach list_admins`);
   }
   assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach list_admins');
+});
+
+test('SECURITY: admin_activity is super-admin only (per-admin action-volume rollup) — never reachable by admin/member/guest (issue #488)', () => {
+  const tool = 'mcp__community__admin_activity';
+  assert.ok(SUPER_ADMIN_TOOLS.includes(tool), 'admin_activity must be in SUPER_ADMIN_TOOLS');
+  assert.ok(!(ADMIN_TOOLS as readonly string[]).includes(tool), 'admin_activity must not be in ADMIN_TOOLS');
+  assert.ok(
+    !(MEMBER_TOOLS as readonly string[]).includes(tool),
+    'admin_activity must not be in MEMBER_TOOLS',
+  );
+  for (const role of ['guest', 'member', 'admin'] as const) {
+    assert.ok(!toolsForRole(role).includes(tool), `${role} must not reach admin_activity`);
+  }
+  assert.ok(toolsForRole('super_admin').includes(tool), 'super_admin must reach admin_activity');
 });
 
 test('SECURITY: engagement_stats is super-admin only (issue #419) — never admin/member/guest', () => {

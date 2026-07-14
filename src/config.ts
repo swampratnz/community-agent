@@ -97,6 +97,22 @@ const EnvSchema = z.object({
   // own: a role's permission bitfield is re-checked live at assign time
   // (src/platforms/discord/adapter.ts), since it can change after curation.
   DISCORD_ASSIGNABLE_ROLES: z.string().optional(),
+  // Auto-answer mode (issue #477): operator-curated allowlist of Discord
+  // channel ids where a top-level human post that does NOT address the bot
+  // still gets an answer, contained in a thread on that post — the router's
+  // summon gate (`!addressedToBot && !isDirect`) is relaxed for exactly these
+  // channels, nothing else. Unset/empty = feature fully off, byte-identical
+  // to today (no post that isn't addressed/direct ever produces a reply).
+  // Discord-only by design (WhatsApp/Baileys auto-answer carries separate
+  // ToS/ban risk — a different proposal, see docs/SECURITY.md).
+  AUTO_ANSWER_CHANNEL_IDS: z.string().optional(),
+  // Per-channel rolling-hour cap on auto-answers (sliding window, mirroring
+  // agent/tools.ts's reserveAnnounceSlot/ANNOUNCE_RATE_LIMIT_PER_HOUR shape)
+  // — bounds the flood/cost risk of this new untrusted-input path. Unlike
+  // ANNOUNCE_RATE_LIMIT_PER_HOUR this is operator-tunable: an allowlisted
+  // channel's traffic varies far more than the admin-only announce tool's.
+  // Never applies to an addressed/mention reply in the same channel.
+  AUTO_ANSWER_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
   // Auto-moderation (Discord): scan every message for bad language / abuse,
   // warn the member, and after MODERATION_STRIKE_LIMIT active strikes assign a
   // muted role that blocks posting until an admin clears their warnings. Off by
@@ -135,6 +151,12 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Per-caller cooldown (hours) on appeal_moderation (issue #496) — a member
+  // with an active warning/mute can ask admins to double-check it, at most
+  // once per window. In-memory/best-effort for the MVP (no new table): a
+  // restart merely permits one extra appeal DM, harmless for a non-
+  // destructive notification.
+  MODERATION_APPEAL_COOLDOWN_HOURS: z.coerce.number().int().positive().default(24),
   // Image generation via the host Grok Build CLI (uses its SuperGrok
   // subscription login — no API key). OFF by default; admin/super-admin only.
   IMAGE_GEN_ENABLED: z
@@ -237,6 +259,18 @@ const EnvSchema = z.object({
   // Voice notes longer than this are ignored WITHOUT downloading — bounds the
   // per-note CPU/latency of local transcription.
   WHATSAPP_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
+  // Minimum tier eligible for voice transcription (issue #507). Defaults to
+  // 'super_admin' — byte-identical to the original super-admin-only gate,
+  // which stays a pure isSuperAdmin env check with no DB call. Lowering this
+  // opens on-demand local Whisper inference to a larger, less-trusted
+  // population; pair with WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR (see
+  // docs/SECURITY.md §13).
+  WHATSAPP_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Rolling hourly cap on transcribed voice notes per sender (0 = unlimited,
+  // matching this repo's "0/unset = off" convention). Only bites once an
+  // operator lowers WHATSAPP_VOICE_MIN_ROLE below 'super_admin' — bounds the
+  // resource-exhaustion surface a much larger population could otherwise hit.
+  WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
 
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
@@ -263,6 +297,26 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   EMBEDDING_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
   EMBEDDING_DIM: z.coerce.number().int().positive().default(384),
+  // Pool-level query/connection bounds (issue #502): `pg`'s own default for
+  // all three is "wait forever," so a stuck lock wait, stalled network
+  // round-trip, or slow autovacuum on the single shared `pool` (every hot
+  // path, including /healthz's own `healthcheck()`) can wedge every
+  // connection with no ceiling. On by default (not opt-in) — these are pure
+  // safety hardening with no happy-path behaviour change, sized well above
+  // any legitimate query this codebase runs. STATEMENT_TIMEOUT is enforced
+  // server-side (a session parameter Postgres itself cancels the query on);
+  // QUERY_TIMEOUT is the client-side mirror (bounds an in-flight query even
+  // if the server-side timer never starts, e.g. a stalled network
+  // round-trip); CONNECT_TIMEOUT bounds how long a caller waits to
+  // acquire/establish a connection before failing instead of queuing
+  // forever. A timeout firing surfaces as an ordinary rejection through the
+  // exact same #52 degrade-gracefully `.catch()` paths already in
+  // storage/repository.ts — this doesn't touch that logic, it just makes
+  // sure a hang eventually becomes the rejection that logic already
+  // handles.
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 
   // Behaviour
   MEMORY_TOP_K: z.coerce.number().int().nonnegative().default(6),
@@ -431,6 +485,16 @@ const EnvSchema = z.object({
   // queries). Recipients are `community_users` admins only; super admins keep
   // the on-demand tool instead (see storage/repository.ts:listAdmins).
   ADMIN_DIGEST_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Week-over-week trend suffix on every digest count (issue #497). Off by
+  // default: when unset, `getLastDigestCounts` is never called and no digest
+  // line ever gains a trend suffix — output stays byte-identical to today.
+  // The `last_counts` snapshot itself is still written every run regardless
+  // of this flag (see adminDigest.ts), so flipping it on is retroactively
+  // useful from the very next weekly tick.
+  ADMIN_DIGEST_TRENDS_ENABLED: z
     .string()
     .optional()
     .transform((v) => v === 'true'),
@@ -709,6 +773,8 @@ export const config = {
     },
     archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
     assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
+    autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),
+    autoAnswerRateLimitPerHour: env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR,
   },
   moderation: {
     enabled: env.DISCORD_MODERATION_ENABLED ?? false,
@@ -718,6 +784,7 @@ export const config = {
     mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
+    appealCooldownHours: env.MODERATION_APPEAL_COOLDOWN_HOURS,
   },
   github: {
     enabled: env.GITHUB_ISSUE_ENABLED ?? false,
@@ -752,6 +819,8 @@ export const config = {
       enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
       model: env.WHATSAPP_VOICE_MODEL,
       maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
+      minRole: env.WHATSAPP_VOICE_MIN_ROLE,
+      rateLimitPerHour: env.WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR,
     },
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
@@ -766,6 +835,9 @@ export const config = {
     url: env.DATABASE_URL,
     embeddingModel: env.EMBEDDING_MODEL,
     embeddingDim: env.EMBEDDING_DIM,
+    statementTimeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
+    queryTimeoutMs: env.DB_QUERY_TIMEOUT_MS,
+    connectTimeoutMs: env.DB_CONNECT_TIMEOUT_MS,
   },
   rbac: {
     superAdminDiscordIds: csv(env.SUPER_ADMIN_DISCORD_IDS),
@@ -812,6 +884,7 @@ export const config = {
   },
   adminDigest: {
     enabled: env.ADMIN_DIGEST_ENABLED ?? false,
+    trendsEnabled: env.ADMIN_DIGEST_TRENDS_ENABLED ?? false,
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
     knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
     knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,

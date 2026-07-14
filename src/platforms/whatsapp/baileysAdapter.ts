@@ -12,9 +12,10 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { config } from '../../config.js';
-import { logger } from '../../logger.js';
+import { logger, hashId } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
+import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
   deleteInteractionByMessageId,
@@ -23,7 +24,8 @@ import {
   updateInteractionByMessageId,
   upsertRosterMember,
 } from '../../storage/repository.js';
-import { isSuperAdmin } from '../../auth/roles.js';
+import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
+import { atLeast } from '../../auth/rbac.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
 import {
   extractAudio,
@@ -319,12 +321,13 @@ export class BaileysAdapter implements PlatformAdapter {
     // phone JID by warn/kick (see performAdminAction's isPhoneUserId guard).
     const senderId = this.resolveSenderId(msg, isGroup, remoteJid);
 
-    // Voice notes (super-admin only, issue: WA voice): a message with no text
-    // but a voice note is transcribed locally and the transcript becomes the
-    // message text — the rest of the pipeline (RBAC, tools, CONFIRM) is
-    // untouched. The super-admin + feature-flag gate lives inside
-    // maybeTranscribeVoiceNote and runs BEFORE any media download, so a
-    // non-super-admin voice note is dropped exactly like an unhandled type.
+    // Voice notes (min-tier configurable via WHATSAPP_VOICE_MIN_ROLE, default
+    // super_admin, issue #507): a message with no text but a voice note is
+    // transcribed locally and the transcript becomes the message text — the
+    // rest of the pipeline (RBAC, tools, CONFIRM) is untouched. The tier +
+    // feature-flag + rate-cap gate lives inside maybeTranscribeVoiceNote and
+    // runs BEFORE any media download, so a below-tier or rate-capped voice
+    // note is dropped exactly like an unhandled type.
     if (!text && audio) {
       text = await this.maybeTranscribeVoiceNote(msg, audio, senderId);
     }
@@ -347,20 +350,31 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   /**
-   * Transcribe a super admin's WhatsApp voice note to text, or return '' to
-   * drop it. This is the SINGLE gate for the voice feature:
+   * Transcribe a WhatsApp voice note to text, or return '' to drop it. This
+   * is the SINGLE gate for the voice feature:
    *   1. WHATSAPP_VOICE_ENABLED must be on (off by default);
-   *   2. the sender must be a configured super admin — `isSuperAdmin` is a pure
-   *      env check (SUPER_ADMIN_WHATSAPP_NUMBERS), never the DB — enforced
-   *      BEFORE any media is downloaded, so a non-super-admin's audio is never
-   *      fetched or transcribed;
+   *   2. the sender's resolved tier must meet WHATSAPP_VOICE_MIN_ROLE
+   *      (default 'super_admin'). At the default, this stays the original
+   *      pure `isSuperAdmin` env check (SUPER_ADMIN_WHATSAPP_NUMBERS) — never
+   *      the DB — so the default configuration makes no new DB call. Only
+   *      when an operator has lowered `minRole` does this call the same
+   *      `resolveRole`/`atLeast` primitives every other tier-gated surface
+   *      uses. Either way this is enforced BEFORE any media is downloaded, so
+   *      a below-tier sender's audio is never fetched or transcribed;
    *   3. notes longer than WHATSAPP_VOICE_MAX_SECONDS are ignored WITHOUT
-   *      downloading, bounding per-note transcription cost.
+   *      downloading, bounding per-note transcription cost;
+   *   4. once WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR is set (non-zero), a sender
+   *      who already hit the cap within the rolling hour is refused WITHOUT
+   *      downloading — bounds the resource-exhaustion surface a widened,
+   *      less-trusted population could otherwise hit. Skipped entirely at
+   *      the default (0 = unlimited), so it adds no bookkeeping unless an
+   *      operator opts in.
    * Any download/decode/model failure is logged and swallowed (returns '') so a
    * bad note is dropped rather than crashing the loop or leaking internals. The
    * transcript is returned verbatim; every downstream gate still applies — a
    * mis-heard destructive command cannot fire without the (spoken or typed)
-   * CONFIRM the tool layer already demands.
+   * CONFIRM the tool layer already demands, and the transcript is granted
+   * exactly the caller's own tier's tool set, never more.
    */
   private async maybeTranscribeVoiceNote(
     msg: WAMessage,
@@ -368,12 +382,26 @@ export class BaileysAdapter implements PlatformAdapter {
     senderId: string,
   ): Promise<string> {
     if (!config.whatsapp.voice.enabled) return '';
-    if (!isSuperAdmin('whatsapp', senderId)) return '';
+    const minRole = config.whatsapp.voice.minRole;
+    if (minRole === 'super_admin') {
+      if (!isSuperAdmin('whatsapp', senderId)) return '';
+    } else {
+      const role = await resolveRole('whatsapp', senderId);
+      if (!atLeast(role, minRole)) return '';
+    }
     const seconds = Number(audio.seconds ?? 0);
     if (seconds > config.whatsapp.voice.maxSeconds) {
       logger.info(
         { seconds, cap: config.whatsapp.voice.maxSeconds },
         'Voice note over the length cap — ignored without downloading',
+      );
+      return '';
+    }
+    const rateLimit = config.whatsapp.voice.rateLimitPerHour;
+    if (rateLimit > 0 && !reserveVoiceTranscriptionSlot(senderId, rateLimit)) {
+      logger.info(
+        { sender: hashId(senderId), limit: rateLimit },
+        'Voice note refused — sender hit the hourly transcription cap',
       );
       return '';
     }
@@ -390,8 +418,8 @@ export class BaileysAdapter implements PlatformAdapter {
    * Split out from the gate above as the single seam that touches the network
    * and the Whisper model — overridden in tests so the gate logic can be
    * exercised without a real media fetch or model download. Never called for a
-   * non-super-admin, a disabled feature, or an over-length note (the gate
-   * returns first).
+   * below-tier sender, a disabled feature, a rate-capped sender, or an
+   * over-length note (the gate returns first).
    */
   private async transcribeAudioMessage(msg: WAMessage, seconds: number): Promise<string> {
     if (!this.sock) return '';
@@ -402,7 +430,7 @@ export class BaileysAdapter implements PlatformAdapter {
       { logger, reuploadRequest: this.sock.updateMediaMessage },
     );
     const transcript = await transcribeVoiceNote(buffer);
-    logger.info({ chars: transcript.length, seconds }, 'Transcribed super-admin voice note');
+    logger.info({ chars: transcript.length, seconds }, 'Transcribed voice note');
     return transcript;
   }
 
@@ -549,6 +577,49 @@ export class BaileysAdapter implements PlatformAdapter {
     const inScope =
       config.whatsapp.allowedJids.length === 0 || config.whatsapp.allowedJids.includes(update.id);
     if (inScope && (update.action === 'add' || update.action === 'remove')) {
+      // Issue #501: a `remove` from one allowed group must not mark
+      // `server_roster` "left" for someone who remains in another allowed
+      // group — a single `(platform, user_id)` row can't represent per-group
+      // presence, so check live membership elsewhere before writing. Fetched
+      // ONCE per event (not once per participant), reusing the same
+      // `groupFetchAllParticipating()` call `conversationsForUser` and
+      // `backfillRoster` already make for the same "which allowed groups is
+      // this person in" question. A thrown fetch degrades to today's
+      // unconditional mark-left (logged as a warning), matching those sibling
+      // sites' failure posture — never a silent skip that could lose a
+      // genuine departure.
+      let otherGroups: Awaited<ReturnType<WASocket['groupFetchAllParticipating']>> | undefined;
+      if (update.action === 'remove' && this.sock) {
+        try {
+          otherGroups = await this.sock.groupFetchAllParticipating();
+        } catch (err) {
+          logger.warn(
+            { err, groupId: update.id },
+            'Failed to fetch WhatsApp groups for multi-group roster leave check; defaulting to mark left',
+          );
+        }
+      }
+      // The group the `remove` fired for is excluded from the "other groups"
+      // check — Baileys' own event ordering may or may not have already
+      // dropped the participant from THAT group's live metadata by the time
+      // this runs, so checking it would risk a same-tick false "still here"
+      // read. Matches membership the same phone/LID-tolerant way
+      // `conversationsForUser`/`isGroupAdmin` do, so a still-present member
+      // listed under a different id form in the other group is recognised.
+      const stillInAnotherAllowedGroup = (userId: string): boolean => {
+        if (!otherGroups) return false;
+        for (const [jid, meta] of Object.entries(otherGroups)) {
+          if (jid === update.id) continue;
+          if (config.whatsapp.allowedJids.length > 0 && !config.whatsapp.allowedJids.includes(jid)) continue;
+          const inGroup = meta.participants?.some((p) => {
+            const pid = jidLocalPart(p.id);
+            const pn = jidLocalPart((p as { phoneNumber?: string }).phoneNumber);
+            return pid === userId || pn === userId || lidFallbackId(pid) === userId;
+          });
+          if (inGroup) return true;
+        }
+        return false;
+      };
       for (const jid of update.participants) {
         const local = jidLocalPart(jid);
         // Never roster-track the bot's own number/LID.
@@ -557,7 +628,7 @@ export class BaileysAdapter implements PlatformAdapter {
           await upsertRosterMember({ platform: 'whatsapp', userId: local }).catch((err) =>
             logger.warn({ err, jid }, 'WhatsApp roster join record failed'),
           );
-        } else {
+        } else if (!stillInAnotherAllowedGroup(local)) {
           await markRosterLeave('whatsapp', local).catch((err) =>
             logger.warn({ err, jid }, 'WhatsApp roster leave record failed'),
           );

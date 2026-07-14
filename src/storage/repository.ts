@@ -2429,6 +2429,49 @@ export async function recentModerationEntries(
   }));
 }
 
+/**
+ * Per-actor rollup of `admin_audit` over a trailing window (issue #488), the
+ * aggregated complement to `recentAuditEntries`'s flat log — answers "who is
+ * actually doing moderation/curation work" instead of requiring a super admin
+ * to hand-tally raw log lines. Global/unscoped, same as `recentAuditEntries`
+ * (a super admin can already read every row via `audit_view`). Reuses
+ * `admin_audit_actor_idx (platform, actor_user_id, created_at DESC)` for the
+ * `GROUP BY`. Never selects `params` (may carry free-text reasons) — only
+ * counts and timestamps. Days clamp mirrors `usageStats`' own shape.
+ */
+export async function adminActivitySummary(days = 30): Promise<
+  Array<{
+    platform: Platform;
+    actorUserId: string;
+    actionCount: number;
+    successCount: number;
+    failureCount: number;
+    lastActionAt: Date;
+  }>
+> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 30, 1), 365);
+  const { rows } = await pool.query(
+    `SELECT platform, actor_user_id,
+            count(*) AS action_count,
+            count(*) FILTER (WHERE success) AS success_count,
+            count(*) FILTER (WHERE NOT success) AS failure_count,
+            max(created_at) AS last_action_at
+       FROM admin_audit
+      WHERE created_at >= now() - $1::interval
+      GROUP BY platform, actor_user_id
+      ORDER BY count(*) DESC`,
+    [`${clampedDays} days`],
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    actorUserId: r.actor_user_id as string,
+    actionCount: Number(r.action_count),
+    successCount: Number(r.success_count),
+    failureCount: Number(r.failure_count),
+    lastActionAt: r.last_action_at as Date,
+  }));
+}
+
 export async function usageStats(days = 7): Promise<{
   inbound: number;
   outbound: number;
@@ -3605,14 +3648,105 @@ export async function wasAdminDigestSentRecently(
   return rows.length > 0;
 }
 
-/** Record that the weekly admin digest was just sent to this identity. */
-export async function recordAdminDigestSent(platform: Platform, platformUserId: string): Promise<void> {
+// --- Admin digest trend snapshot (issue #497) -------------------------------
+
+/**
+ * The only signal names ever allowed into `last_counts` — every one of
+ * `buildAdminDigestMessage`'s bare-count parameters (see adminDigest.ts),
+ * nothing else. `sanitizeDigestCounts` enforces this at the write boundary
+ * so a future call site can never smuggle PII-shaped data (a user id, a
+ * title) into the snapshot via an unexpected field name.
+ */
+const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
+  'pendingAccessRequests',
+  'openReports',
+  'pendingSuggestions',
+  'staleKnowledgeCount',
+  'knowledgeGapsCount',
+  'pendingKnowledgeCandidates',
+  'lowRatedKnowledgeCount',
+  'joinedThisWeek',
+  'leftThisWeek',
+  'mutedMembersCount',
+  'maxTurnsFailuresCount',
+  'duplicateKnowledgeCount',
+  'conflictCandidateCount',
+  'staleMutedMembersCount',
+  'notMembersCount',
+]);
+
+/** Strips any key outside `ADMIN_DIGEST_SIGNAL_KEYS` and any non-integer value. */
+function sanitizeDigestCounts(counts: Record<string, number>): Record<string, number> {
+  const sanitized: Record<string, number> = {};
+  for (const [key, value] of Object.entries(counts)) {
+    if (ADMIN_DIGEST_SIGNAL_KEYS.has(key) && Number.isInteger(value)) {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
+/**
+ * Record that the weekly admin digest was just sent to this identity.
+ * `counts`, when passed, is sanitized (see above) and persisted as this
+ * admin's `last_counts` trend snapshot alongside the freshness timestamp —
+ * existing call sites that omit it leave `last_counts` untouched, matching
+ * pre-#497 behaviour exactly.
+ */
+export async function recordAdminDigestSent(
+  platform: Platform,
+  platformUserId: string,
+  counts?: Record<string, number>,
+): Promise<void> {
+  const sanitized = counts ? JSON.stringify(sanitizeDigestCounts(counts)) : null;
   await pool.query(
-    `INSERT INTO admin_digest_sends (platform, platform_user_id, sent_at)
-     VALUES ($1, $2, now())
-     ON CONFLICT (platform, platform_user_id) DO UPDATE SET sent_at = now()`,
+    `INSERT INTO admin_digest_sends (platform, platform_user_id, sent_at, last_counts)
+     VALUES ($1, $2, now(), COALESCE($3::jsonb, '{}'::jsonb))
+     ON CONFLICT (platform, platform_user_id) DO UPDATE SET
+       sent_at = now(),
+       last_counts = COALESCE($3::jsonb, admin_digest_sends.last_counts)`,
+    [platform, platformUserId, sanitized],
+  );
+}
+
+/**
+ * Snapshot-only write for a "quiet week" (`buildAdminDigestMessage` returned
+ * null, nothing sent) — updates `last_counts` so next week's trend delta is
+ * still accurate, WITHOUT touching `sent_at`/the freshness-guard eligibility
+ * window (issue #497 acceptance criterion 6). A brand-new row (this admin's
+ * very first quiet week) is inserted with `sent_at` pinned to `-infinity` so
+ * it can never register as "sent recently" — only a real
+ * `recordAdminDigestSent` call may advance that clock.
+ */
+export async function recordAdminDigestSnapshot(
+  platform: Platform,
+  platformUserId: string,
+  counts: Record<string, number>,
+): Promise<void> {
+  const sanitized = JSON.stringify(sanitizeDigestCounts(counts));
+  await pool.query(
+    `INSERT INTO admin_digest_sends (platform, platform_user_id, sent_at, last_counts)
+     VALUES ($1, $2, TIMESTAMPTZ '-infinity', $3::jsonb)
+     ON CONFLICT (platform, platform_user_id) DO UPDATE SET last_counts = EXCLUDED.last_counts`,
+    [platform, platformUserId, sanitized],
+  );
+}
+
+/**
+ * Last week's digest signal counts for this admin, or null when they have no
+ * prior `admin_digest_sends` row at all (first-ever digest) — the read half
+ * of the trend snapshot (issue #497). Only called when
+ * `config.adminDigest.trendsEnabled`; see `runAdminDigestOnce`.
+ */
+export async function getLastDigestCounts(
+  platform: Platform,
+  platformUserId: string,
+): Promise<Record<string, number> | null> {
+  const { rows } = await pool.query<{ last_counts: Record<string, number> }>(
+    `SELECT last_counts FROM admin_digest_sends WHERE platform = $1 AND platform_user_id = $2`,
     [platform, platformUserId],
   );
+  return rows.length > 0 ? rows[0].last_counts : null;
 }
 
 // --- Standing response-style preference (issue #126) ------------------------
@@ -3807,6 +3941,76 @@ export async function countStaleMutedMembers(
     [platform, strikeLimit, windowDays],
   );
   return rows[0]?.n ?? 0;
+}
+
+export interface MutedMemberRow {
+  userId: string;
+  status: 'active' | 'stale';
+  strikeCount: number;
+  lastWarningAt: Date;
+}
+
+/**
+ * Enumerate the members `countMutedMembers` and `countStaleMutedMembers`
+ * would each count, by identity rather than a bare number (issue #487, the
+ * growth path #403 explicitly named and deferred) — the "who" a digest's
+ * `🔇 N member(s) currently muted` count can't answer on its own.
+ *
+ * One query computes both the windowed and unwindowed active-strike count
+ * per user with the exact same predicates those two count functions use, and
+ * a row is tagged `'active'` when the windowed count (or the unwindowed
+ * count, when `windowDays` is `undefined` — identical by construction, same
+ * short-circuit `countStaleMutedMembers` relies on) is `>= strikeLimit`,
+ * else `'stale'` when only the unwindowed count is. Because `'active'` is
+ * decided first and `'stale'` only applies to rows the HAVING clause let
+ * through on the unwindowed branch, the two tags are mutually exclusive by
+ * construction — never both, never neither, for a row that appears at all.
+ *
+ * `strikeCount` reports whichever count decided the tag (windowed for
+ * `'active'`, unwindowed for `'stale'`), so an admin sees the number that
+ * actually explains why the row is here. Ordered newest-warning-first,
+ * capped at `limit`. Bound parameters only, same injection posture as
+ * `countMutedMembers`/`countStaleMutedMembers`.
+ *
+ * Deliberately excludes `reason`/`excerpt` (message content) — those stay
+ * behind `listMemberWarnings`, one level deeper, same boundary `clear_warnings`/
+ * `list_member_warnings` already draw.
+ */
+export async function listMutedMembers(
+  platform: string,
+  strikeLimit: number,
+  windowDays?: number,
+  limit = 50,
+): Promise<MutedMemberRow[]> {
+  const { rows } = await pool.query(
+    `SELECT user_id,
+            MAX(created_at) AS last_warning_at,
+            COUNT(*) FILTER (
+              WHERE $3::int IS NULL OR created_at >= now() - make_interval(days => $3::int)
+            ) AS windowed_count,
+            COUNT(*) AS unwindowed_count
+       FROM member_warnings
+      WHERE platform = $1 AND cleared_at IS NULL
+      GROUP BY user_id
+     HAVING COUNT(*) FILTER (
+              WHERE $3::int IS NULL OR created_at >= now() - make_interval(days => $3::int)
+            ) >= $2
+         OR COUNT(*) >= $2
+      ORDER BY MAX(created_at) DESC
+      LIMIT $4`,
+    [platform, strikeLimit, windowDays ?? null, limit],
+  );
+  return rows.map((r) => {
+    const windowedCount = Number(r.windowed_count);
+    const unwindowedCount = Number(r.unwindowed_count);
+    const active = windowedCount >= strikeLimit;
+    return {
+      userId: r.user_id,
+      status: active ? ('active' as const) : ('stale' as const),
+      strikeCount: active ? windowedCount : unwindowedCount,
+      lastWarningAt: r.last_warning_at,
+    };
+  });
 }
 
 /**
