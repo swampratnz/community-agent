@@ -609,6 +609,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `moderation_history`") rather than asserting it, is inert (no query) unless
   `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
   extends — carries only bare integers, never warning content or an identity.
+  Issue #497 (off unless `ADMIN_DIGEST_TRENDS_ENABLED`) added a week-over-week
+  trend suffix on every one of these bare counts, backed by `last_counts`, a
+  JSONB column on `admin_digest_sends`. **No new data class**: `last_counts`
+  carries exactly the same integers the digest already sends that admin every
+  week — never message content, a user/conversation id, or any field beyond
+  the known signal-name set — enforced by a whitelist at the write boundary
+  (`sanitizeDigestCounts` in `repository.ts`) that strips any unexpected key
+  or non-integer value before it reaches the column, so a future call site
+  can never smuggle PII-shaped data into the snapshot by accident. The
+  snapshot write is decoupled from the freshness guard: a quiet week (no DM
+  sent) still updates `last_counts` via a dedicated path that never touches
+  `sent_at`, so a silent week can't be mistaken for a real send nor corrupt
+  next week's delta. `last_counts` is purge-coherent with the rest of the row
+  — `forget_me`/`purge_user_data` remove it alongside `sent_at` for an
+  offboarded admin.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
