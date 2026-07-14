@@ -1303,6 +1303,36 @@ export function reserveWebSearchSlot(conversationId: string, limit: number): boo
   return true;
 }
 
+/**
+ * WhatsApp voice-note transcription timestamps per SENDER (issue #507), for
+ * `config.whatsapp.voice.rateLimitPerHour`. Per-sender rather than
+ * per-conversation (unlike `reserveWebSearchSlot`) since WhatsApp DMs are
+ * 1:1 anyway and this bounds one person's own audio volume, not a shared
+ * conversation. Same sliding-window shape as `reserveWebSearchSlot`.
+ */
+const voiceTranscriptionTimestampsBySender = new Map<string, number[]>();
+
+/**
+ * Reserve one voice-transcription slot for `senderId` against a rolling
+ * hourly cap. Returns false without reserving if the sender already hit
+ * `limit` within the last hour. Called from `BaileysAdapter` BEFORE any
+ * media download, so a refused slot never triggers a download/decode/model
+ * run. Callers must skip this entirely when `limit` is 0 (unlimited) so the
+ * default configuration does no bookkeeping.
+ */
+export function reserveVoiceTranscriptionSlot(senderId: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = (voiceTranscriptionTimestampsBySender.get(senderId) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= limit) {
+    voiceTranscriptionTimestampsBySender.set(senderId, recent);
+    return false;
+  }
+  recent.push(now);
+  voiceTranscriptionTimestampsBySender.set(senderId, recent);
+  return true;
+}
+
 /** warn_user timestamps per conversation, for the rolling-hour cap (WARN_USER_RATE_LIMIT_PER_HOUR). */
 const warnTimestampsByConversation = new Map<string, number[]>();
 

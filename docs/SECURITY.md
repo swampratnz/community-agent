@@ -1148,37 +1148,73 @@ deliberately narrow:
   first non-Anthropic/Discord/WhatsApp destination; noted with the residual-risk
   egress item below. Off by default (`GITHUB_ISSUE_ENABLED`).
 
-### 13. WhatsApp voice-note transcription (super-admin only, opt-in)
+### 13. WhatsApp voice-note transcription (configurable min tier, opt-in)
 
-When `WHATSAPP_VOICE_ENABLED=true`, a **super admin's** WhatsApp voice note is
+When `WHATSAPP_VOICE_ENABLED=true`, an eligible caller's WhatsApp voice note is
 transcribed to text locally and then flows through the *identical* pipeline as a
-typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
+typed message — RBAC, tool gating, and CONFIRM are untouched. Eligibility is
+governed by `WHATSAPP_VOICE_MIN_ROLE` (issue #507), which **defaults to
+`'super_admin'`** — byte-identical to the original super-admin-only feature.
+The controls:
 
-- **Super-admin gate before any download.** The gate
-  (`maybeTranscribeVoiceNote`) checks `isSuperAdmin('whatsapp', senderId)` — a
-  pure env check against `SUPER_ADMIN_WHATSAPP_NUMBERS`, never the DB — *before*
-  fetching the media. A non-super-admin's audio is never downloaded, never
-  transcribed, and dropped exactly like any unhandled message type. Identity is
-  the platform envelope (phone JID / resolved LID), never the audio content, so
-  it can't be spoofed by what's said. Pinned by three `SECURITY:` tests.
+- **Tier gate before any download.** The gate (`maybeTranscribeVoiceNote`)
+  enforces `WHATSAPP_VOICE_MIN_ROLE` *before* fetching the media. At the
+  default (`'super_admin'`), this stays the original pure
+  `isSuperAdmin('whatsapp', senderId)` env check against
+  `SUPER_ADMIN_WHATSAPP_NUMBERS` — **never the DB**, so the default
+  configuration makes no new DB call and no operator sees any behaviour
+  change on upgrade. Only when an operator explicitly lowers `minRole` to
+  `'admin'`, `'member'`, or `'guest'` does the gate call `resolveRole('whatsapp',
+  senderId)` (the same env-then-DB resolution every other tier-gated surface
+  uses) and compare with `atLeast(role, minRole)` — the identical primitive,
+  no new comparison logic. A below-tier sender's audio is never downloaded,
+  never transcribed, and dropped exactly like any unhandled message type.
+  Identity is always the platform envelope (phone JID / resolved LID), never
+  the audio content, so it can't be spoofed by what's said. Pinned by
+  `SECURITY:` tests, including a zero-DB-call assertion at the default.
 - **Off by default.** With the flag unset, even a super admin's voice note is
   dropped (pinned) — enabling is a deliberate operator action.
+- **Per-sender rate cap, opt-in.** `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`
+  (default `0` = unlimited, matching this repo's "0/unset = off" convention)
+  caps transcriptions per sender within a rolling hour, checked *before* any
+  download, once it is set to a non-zero value. **Residual risk, stated
+  plainly**: lowering `WHATSAPP_VOICE_MIN_ROLE` opens on-demand local Whisper
+  inference (download → ffmpeg decode → model run) to a larger, less-trusted
+  population; with the rate limit left at its `0` default, a single sender's
+  transcription volume is bounded *only* by `WHATSAPP_VOICE_MAX_SECONDS` per
+  note, not by how many notes they can send per hour. **Operators lowering
+  `minRole` should also set a non-zero `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`.**
+  Pinned by a `SECURITY:` test.
 - **Local transcription, no new egress or key.** Uses transformers.js Whisper —
   the same "download the model once, run locally, no external API, no extra key"
   pattern as text embeddings. Audio never leaves the host; the
   subscription-only auth posture and egress surface are unchanged. (Requires
-  `ffmpeg` on the host to decode Opus → PCM.)
+  `ffmpeg` on the host to decode Opus → PCM.) The model
+  (`WHATSAPP_VOICE_MODEL`, default `Xenova/whisper-base.en`) is **English-only**
+  — a te reo Māori or other non-English voice note will transcribe poorly or
+  garbled. This is a known, disclosed limitation carried over unchanged from
+  the original feature, not a regression introduced by widening eligibility; a
+  multilingual checkpoint is already a free-text operator config choice
+  (`WHATSAPP_VOICE_MODEL`), not a code change.
 - **Bounded cost.** Notes longer than `WHATSAPP_VOICE_MAX_SECONDS` (default 120)
   are ignored without downloading. Any decode/model failure is swallowed and the
   note dropped — never surfaced or crash-inducing.
-- **No new authority.** Transcription only *populates the message text*; it
-  grants nothing. A mis-heard destructive command still can't fire without the
-  (spoken or typed) CONFIRM the tool layer already demands, and the transcript
-  is subject to the same super-admin tool set it always was.
+- **No new authority, no privilege escalation via transcript.** Transcription
+  only *populates the message text*; it grants nothing. A mis-heard
+  destructive command still can't fire without the (spoken or typed) CONFIRM
+  the tool layer already demands, and the transcript is granted **exactly**
+  the caller's own tier's tool set — never more — whether that text arrived
+  typed or transcribed, since there is no voice-specific tool-list path to
+  diverge. Pinned by a `SECURITY:` test.
+- **Gated-mode consistency, for free.** Because the gate reuses `resolveRole`,
+  an unregistered guest in `ACCESS_MODE_WHATSAPP=gated` still resolves to
+  `'guest'`; unless an operator explicitly sets `minRole` to `'guest'`, their
+  voice notes are refused before download exactly as their typed messages
+  already are — no separate exclusion logic needed.
 - **Group scope.** Voice notes can't carry an @-mention, so in groups only a
   voice note that *replies to the bot* is addressed (its `contextInfo` is read
   from the audio payload); DMs to the bot are always addressed. This does not
-  widen who can trigger the bot — the super-admin gate still applies.
+  widen who can trigger the bot — the tier gate still applies.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 
