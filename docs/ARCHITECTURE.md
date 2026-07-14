@@ -82,6 +82,25 @@ for `protocolMessage` events in archived groups. Archiving is receive-side
 only — no new outbound/send behaviour, so it adds no new Baileys ToS/ban-risk
 surface (see SECURITY.md's Baileys section).
 
+## WhatsApp voice-note transcription
+
+`WHATSAPP_VOICE_ENABLED` (Baileys only; **off by default**) transcribes a
+voice note locally (transformers.js Whisper, `WHATSAPP_VOICE_MODEL`, default
+`Xenova/whisper-base.en` — **English-only**, a known and disclosed
+transcription-quality caveat for te reo Māori and other non-English speech)
+and actions the transcript through the exact same pipeline a typed message
+would use — RBAC, tool gating, and CONFIRM are all untouched.
+`WHATSAPP_VOICE_MIN_ROLE` (issue #507) sets the minimum tier eligible to use
+voice, defaulting to `'super_admin'` — byte-identical to the original
+super-admin-only rollout, since the gate stays a pure `isSuperAdmin` env check
+with no DB call at that default. Lowering it to `'admin'`, `'member'`, or
+`'guest'` reuses the same `resolveRole`/`atLeast` primitives every other
+tier-gated surface uses, enforced *before* any media is downloaded.
+`WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR` (default `0` = unlimited) adds a
+per-sender rolling-hour cap once an operator opts into a wider population —
+see SECURITY.md §13 for the full posture and the residual-risk note about
+leaving the rate limit unset while lowering `minRole`.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
@@ -249,6 +268,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
+| `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -280,6 +300,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
+| `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
@@ -925,6 +946,24 @@ enabled (every message is inspected) — treat it like ambient archiving.
   rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
   reads only `admin_audit` and structurally can't surface auto-detected
   strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
+- **Appeal**: `my_warnings` gave a member visibility into their own
+  moderation status but no way to act on it — `appeal_moderation` (issue
+  #496) is that missing action, a member/guest-tier tool with the same
+  self-scoping discipline as `my_warnings`: it reads the caller's own
+  `countActiveWarnings(caller.platform, caller.userId)` only (never a
+  tool-argument-supplied id) and refuses cleanly ("no active warnings to
+  appeal") when it's zero, so it can't become a generic side channel to
+  message admins — `suggest_improvement`/`report_content` already cover that.
+  An eligible caller may attach one optional, sanitized, length-capped free-
+  text reason (same bound as `report_content`'s `reason`); calling it
+  proactively DMs super admins via the SAME `notifySuperAdmins` fan-out
+  `notifyReportFiled`/`notifyReportWithdrawn` already use (`notifyAppealFiled`)
+  — no new conversation-scoped push helper. Rate-capped **per caller**, not
+  per-conversation (an appeal is about one person's own status), one per
+  `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) — an in-memory,
+  best-effort cap, deliberately no new table for the MVP. Never itself
+  changes a warning count or mute state: resolution stays exactly
+  `clear_warnings`.
 - **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
   right now", the question `list_member_warnings` structurally can't (it
   requires an already-known `targetUserId`) and the digest's bare `🔇 N`
@@ -1239,6 +1278,35 @@ session) and the router's pre-send backstop guarantees the member still gets
 a reply (issue #52). That degradation is per-request only — a *persistent*
 DB outage still fails `healthcheck()` at startup and flips `db: false` on
 `/healthz`, so it is never masked from monitoring.
+
+**Pool-level query/connection bounds** (issue #502) close a gap #52 never
+covered: every one of #52's safeguards is a `.catch()`, which only ever fires
+on a *rejected* query — a query that never resolves or rejects (a lock wait,
+a stalled network round-trip, slow autovacuum, disk pressure) hangs the
+connection indefinitely instead. With the shared `pool` (`src/storage/db.ts`)
+capped at `max: 10`, a handful of stuck connections exhausts it, and every
+subsequent turn — including `/healthz`'s own `healthcheck()`, which runs on
+the same pool — queues forever behind them. `pool` is now constructed with
+three config-driven bounds, all on by default (pure safety hardening, no
+happy-path behaviour change for any query that completes normally):
+
+- `DB_STATEMENT_TIMEOUT_MS` (default `15000`) → `statement_timeout`,
+  enforced **server-side** by Postgres itself; covers the dominant cases
+  (lock waits, slow autovacuum, disk pressure, a runaway query).
+- `DB_QUERY_TIMEOUT_MS` (default `15000`) → `query_timeout`, the
+  **client-side** mirror — bounds an in-flight query even in the one case
+  `statement_timeout` alone can't reach: a stalled network round-trip where
+  the packet never reaches Postgres (so the server-side timer never starts)
+  or the response never returns.
+- `DB_CONNECT_TIMEOUT_MS` (default `10000`) → `connectionTimeoutMillis` —
+  bounds how long a caller waits to acquire/establish a connection, so it
+  fails fast instead of queuing forever when the pool is saturated.
+
+A timeout firing surfaces as an ordinary query rejection through the exact
+same `.catch()` degrade-gracefully paths #52 already built — this doesn't
+add new failure-handling logic, it just guarantees a hang eventually becomes
+the rejection that logic already handles safely (never echoing the raw
+Postgres error text to a member).
 
 ## Usage & shared Max-pool alerting
 

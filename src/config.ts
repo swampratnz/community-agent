@@ -151,6 +151,12 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Per-caller cooldown (hours) on appeal_moderation (issue #496) — a member
+  // with an active warning/mute can ask admins to double-check it, at most
+  // once per window. In-memory/best-effort for the MVP (no new table): a
+  // restart merely permits one extra appeal DM, harmless for a non-
+  // destructive notification.
+  MODERATION_APPEAL_COOLDOWN_HOURS: z.coerce.number().int().positive().default(24),
   // Image generation via the host Grok Build CLI (uses its SuperGrok
   // subscription login — no API key). OFF by default; admin/super-admin only.
   IMAGE_GEN_ENABLED: z
@@ -253,6 +259,18 @@ const EnvSchema = z.object({
   // Voice notes longer than this are ignored WITHOUT downloading — bounds the
   // per-note CPU/latency of local transcription.
   WHATSAPP_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
+  // Minimum tier eligible for voice transcription (issue #507). Defaults to
+  // 'super_admin' — byte-identical to the original super-admin-only gate,
+  // which stays a pure isSuperAdmin env check with no DB call. Lowering this
+  // opens on-demand local Whisper inference to a larger, less-trusted
+  // population; pair with WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR (see
+  // docs/SECURITY.md §13).
+  WHATSAPP_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Rolling hourly cap on transcribed voice notes per sender (0 = unlimited,
+  // matching this repo's "0/unset = off" convention). Only bites once an
+  // operator lowers WHATSAPP_VOICE_MIN_ROLE below 'super_admin' — bounds the
+  // resource-exhaustion surface a much larger population could otherwise hit.
+  WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
 
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
@@ -279,6 +297,26 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   EMBEDDING_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
   EMBEDDING_DIM: z.coerce.number().int().positive().default(384),
+  // Pool-level query/connection bounds (issue #502): `pg`'s own default for
+  // all three is "wait forever," so a stuck lock wait, stalled network
+  // round-trip, or slow autovacuum on the single shared `pool` (every hot
+  // path, including /healthz's own `healthcheck()`) can wedge every
+  // connection with no ceiling. On by default (not opt-in) — these are pure
+  // safety hardening with no happy-path behaviour change, sized well above
+  // any legitimate query this codebase runs. STATEMENT_TIMEOUT is enforced
+  // server-side (a session parameter Postgres itself cancels the query on);
+  // QUERY_TIMEOUT is the client-side mirror (bounds an in-flight query even
+  // if the server-side timer never starts, e.g. a stalled network
+  // round-trip); CONNECT_TIMEOUT bounds how long a caller waits to
+  // acquire/establish a connection before failing instead of queuing
+  // forever. A timeout firing surfaces as an ordinary rejection through the
+  // exact same #52 degrade-gracefully `.catch()` paths already in
+  // storage/repository.ts — this doesn't touch that logic, it just makes
+  // sure a hang eventually becomes the rejection that logic already
+  // handles.
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 
   // Behaviour
   MEMORY_TOP_K: z.coerce.number().int().nonnegative().default(6),
@@ -761,6 +799,7 @@ export const config = {
     mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
+    appealCooldownHours: env.MODERATION_APPEAL_COOLDOWN_HOURS,
   },
   github: {
     enabled: env.GITHUB_ISSUE_ENABLED ?? false,
@@ -795,6 +834,8 @@ export const config = {
       enabled: env.WHATSAPP_VOICE_ENABLED ?? false,
       model: env.WHATSAPP_VOICE_MODEL,
       maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
+      minRole: env.WHATSAPP_VOICE_MIN_ROLE,
+      rateLimitPerHour: env.WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR,
     },
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
@@ -809,6 +850,9 @@ export const config = {
     url: env.DATABASE_URL,
     embeddingModel: env.EMBEDDING_MODEL,
     embeddingDim: env.EMBEDDING_DIM,
+    statementTimeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
+    queryTimeoutMs: env.DB_QUERY_TIMEOUT_MS,
+    connectTimeoutMs: env.DB_CONNECT_TIMEOUT_MS,
   },
   rbac: {
     superAdminDiscordIds: csv(env.SUPER_ADMIN_DISCORD_IDS),

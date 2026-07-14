@@ -182,6 +182,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - Every privileged action is written to the append-only `admin_audit` table
   (who, what, target, params, result, success, timestamp).
 - Admin actions are gated on platform-native admin identity.
+- `admin_activity` (super-admin only, issue #488) gives a per-admin
+  action-volume rollup over a trailing window — a `GROUP BY` aggregation over
+  the same already-audited `admin_audit` rows `audit_view` exposes flat, never
+  `params` (which may carry free-text reasons) and never scoped to fewer
+  actors than a super admin could already reconstruct by hand from the log.
 
 ### 5. Host compromise / blast radius
 **Controls**
@@ -1156,37 +1161,73 @@ deliberately narrow:
   first non-Anthropic/Discord/WhatsApp destination; noted with the residual-risk
   egress item below. Off by default (`GITHUB_ISSUE_ENABLED`).
 
-### 13. WhatsApp voice-note transcription (super-admin only, opt-in)
+### 13. WhatsApp voice-note transcription (configurable min tier, opt-in)
 
-When `WHATSAPP_VOICE_ENABLED=true`, a **super admin's** WhatsApp voice note is
+When `WHATSAPP_VOICE_ENABLED=true`, an eligible caller's WhatsApp voice note is
 transcribed to text locally and then flows through the *identical* pipeline as a
-typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
+typed message — RBAC, tool gating, and CONFIRM are untouched. Eligibility is
+governed by `WHATSAPP_VOICE_MIN_ROLE` (issue #507), which **defaults to
+`'super_admin'`** — byte-identical to the original super-admin-only feature.
+The controls:
 
-- **Super-admin gate before any download.** The gate
-  (`maybeTranscribeVoiceNote`) checks `isSuperAdmin('whatsapp', senderId)` — a
-  pure env check against `SUPER_ADMIN_WHATSAPP_NUMBERS`, never the DB — *before*
-  fetching the media. A non-super-admin's audio is never downloaded, never
-  transcribed, and dropped exactly like any unhandled message type. Identity is
-  the platform envelope (phone JID / resolved LID), never the audio content, so
-  it can't be spoofed by what's said. Pinned by three `SECURITY:` tests.
+- **Tier gate before any download.** The gate (`maybeTranscribeVoiceNote`)
+  enforces `WHATSAPP_VOICE_MIN_ROLE` *before* fetching the media. At the
+  default (`'super_admin'`), this stays the original pure
+  `isSuperAdmin('whatsapp', senderId)` env check against
+  `SUPER_ADMIN_WHATSAPP_NUMBERS` — **never the DB**, so the default
+  configuration makes no new DB call and no operator sees any behaviour
+  change on upgrade. Only when an operator explicitly lowers `minRole` to
+  `'admin'`, `'member'`, or `'guest'` does the gate call `resolveRole('whatsapp',
+  senderId)` (the same env-then-DB resolution every other tier-gated surface
+  uses) and compare with `atLeast(role, minRole)` — the identical primitive,
+  no new comparison logic. A below-tier sender's audio is never downloaded,
+  never transcribed, and dropped exactly like any unhandled message type.
+  Identity is always the platform envelope (phone JID / resolved LID), never
+  the audio content, so it can't be spoofed by what's said. Pinned by
+  `SECURITY:` tests, including a zero-DB-call assertion at the default.
 - **Off by default.** With the flag unset, even a super admin's voice note is
   dropped (pinned) — enabling is a deliberate operator action.
+- **Per-sender rate cap, opt-in.** `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`
+  (default `0` = unlimited, matching this repo's "0/unset = off" convention)
+  caps transcriptions per sender within a rolling hour, checked *before* any
+  download, once it is set to a non-zero value. **Residual risk, stated
+  plainly**: lowering `WHATSAPP_VOICE_MIN_ROLE` opens on-demand local Whisper
+  inference (download → ffmpeg decode → model run) to a larger, less-trusted
+  population; with the rate limit left at its `0` default, a single sender's
+  transcription volume is bounded *only* by `WHATSAPP_VOICE_MAX_SECONDS` per
+  note, not by how many notes they can send per hour. **Operators lowering
+  `minRole` should also set a non-zero `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`.**
+  Pinned by a `SECURITY:` test.
 - **Local transcription, no new egress or key.** Uses transformers.js Whisper —
   the same "download the model once, run locally, no external API, no extra key"
   pattern as text embeddings. Audio never leaves the host; the
   subscription-only auth posture and egress surface are unchanged. (Requires
-  `ffmpeg` on the host to decode Opus → PCM.)
+  `ffmpeg` on the host to decode Opus → PCM.) The model
+  (`WHATSAPP_VOICE_MODEL`, default `Xenova/whisper-base.en`) is **English-only**
+  — a te reo Māori or other non-English voice note will transcribe poorly or
+  garbled. This is a known, disclosed limitation carried over unchanged from
+  the original feature, not a regression introduced by widening eligibility; a
+  multilingual checkpoint is already a free-text operator config choice
+  (`WHATSAPP_VOICE_MODEL`), not a code change.
 - **Bounded cost.** Notes longer than `WHATSAPP_VOICE_MAX_SECONDS` (default 120)
   are ignored without downloading. Any decode/model failure is swallowed and the
   note dropped — never surfaced or crash-inducing.
-- **No new authority.** Transcription only *populates the message text*; it
-  grants nothing. A mis-heard destructive command still can't fire without the
-  (spoken or typed) CONFIRM the tool layer already demands, and the transcript
-  is subject to the same super-admin tool set it always was.
+- **No new authority, no privilege escalation via transcript.** Transcription
+  only *populates the message text*; it grants nothing. A mis-heard
+  destructive command still can't fire without the (spoken or typed) CONFIRM
+  the tool layer already demands, and the transcript is granted **exactly**
+  the caller's own tier's tool set — never more — whether that text arrived
+  typed or transcribed, since there is no voice-specific tool-list path to
+  diverge. Pinned by a `SECURITY:` test.
+- **Gated-mode consistency, for free.** Because the gate reuses `resolveRole`,
+  an unregistered guest in `ACCESS_MODE_WHATSAPP=gated` still resolves to
+  `'guest'`; unless an operator explicitly sets `minRole` to `'guest'`, their
+  voice notes are refused before download exactly as their typed messages
+  already are — no separate exclusion logic needed.
 - **Group scope.** Voice notes can't carry an @-mention, so in groups only a
   voice note that *replies to the bot* is addressed (its `contextInfo` is read
   from the audio payload); DMs to the bot are always addressed. This does not
-  widen who can trigger the bot — the super-admin gate still applies.
+  widen who can trigger the bot — the tier gate still applies.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 
@@ -1551,6 +1592,31 @@ base, unlike the other two's fixed-format extraction.
   still has the narrower limitation this closed for suggestions/reports: it
   has no cross-turn adapter lookup at all, since its callers don't know a
   target platform to look up.
+- **`appeal_moderation` (issue #496)** gives a member/guest a way to ask
+  admins to double-check their own active warning(s)/mute — the missing
+  action counterpart to `my_warnings`' read-only visibility. Self-scoped
+  exactly like `my_warnings`: eligibility is `countActiveWarnings(caller.
+  platform, caller.userId) > 0`, read from the resolved caller identity only,
+  never a tool-argument-supplied id, so it can never be used to check or
+  appeal on behalf of another member. It intentionally does **not** assert a
+  live Discord mute (the bot can't read that role state, issue #182) — only
+  the caller's own count vs. `MODERATION_STRIKE_LIMIT`, same caveat as
+  `my_warnings`. Reuses `notifySuperAdmins` as-is (`notifyAppealFiled`) — the
+  same fan-out `notifyReportFiled`/`notifyReportWithdrawn` already use — so no
+  new conversation-scoped push helper was introduced; the optional free-text
+  `reason` is length-capped at the zod schema boundary (same bound as
+  `report_content`'s `reason`) and, like every outbound DM, is redacted by
+  the adapter's own `sendDirectMessage` before it ever reaches an admin.
+  Rate-capped **per caller** (an appeal is about one person's own status, not
+  a shared conversation resource) at one per
+  `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) via an in-memory,
+  best-effort map — deliberately no new table for the MVP, so a restart at
+  worst permits one extra appeal DM, harmless for a non-destructive
+  notification. Never itself mutates `member_warnings`/mute state — no
+  auto-unmute; `clear_warnings` remains the only way an admin lifts a mute.
+  Worst-case abuse from a hijacked/injected member turn: one unwanted admin
+  DM per cooldown window naming the real, self-identified caller — the same
+  residual bound every other non-CONFIRM member-notification tool carries.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.
