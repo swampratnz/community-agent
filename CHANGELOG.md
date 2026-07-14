@@ -10,6 +10,27 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-15
+
+### Fixed
+- **Intermittent `security-invariants` CI crash (exit 7)**: the four
+  `agentCoreFailureFallbacks*` test files drove the real `runAgentTurn`, whose
+  memory-recall step (`searchMemory` → `embed`) loads the `onnxruntime-node`
+  embedding model. In the no-Postgres `security-invariants` job, under
+  full-suite CPU load, that native inference session's teardown could race the
+  child test process's exit and abort it via Node's fatal-error path —
+  `tsx --test` exit 7, no failing assertion, output truncated mid-flush, and
+  (confirmed) uninterceptable by any JS `unhandledRejection`/`uncaughtException`
+  handler, even a `prependListener`'d one. The four files now mock
+  `searchMemory` so the embedding model never loads (they never assert on
+  recalled memory — `query()` is mocked, so prompt content is moot), removing
+  the fault entirely. They additionally stub `src/storage/db.js`'s `pool` with
+  a resolve-empty double (installed before the `repository.js` import so the
+  binding is fixed at module-evaluation time) so the remaining light DB reads
+  open no socket and emit no `ECONNREFUSED` noise. Test-only change; no
+  `SECURITY:` tests added or removed, so `tests/security-floor.json` is
+  unchanged.
+
 ## 2026-07-14
 
 ### Added

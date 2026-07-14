@@ -59,10 +59,45 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
   if (!corePromise) {
     const realSdk = await import('@anthropic-ai/claude-agent-sdk');
     t.mock.module('@anthropic-ai/claude-agent-sdk', { namedExports: { ...realSdk, query: mockQuery } });
+    // These are pure unit tests for runAgentTurn's failure-fallback
+    // substitution; they must do no real I/O. Two isolations, both required to
+    // keep the security-invariants CI job (which runs with NO Postgres) stable:
+    //
+    // 1. Mock searchMemory (below) so embed()/onnxruntime-node never loads. Its
+    //    native inference-session teardown, racing the child test process's
+    //    exit under full-suite CPU load, was the real cause of the intermittent
+    //    `tsx --test` exit-7 crash — a fatal-path abort with no failing
+    //    assertion, output truncated mid-flush, that NO JS unhandledRejection
+    //    / uncaughtException handler can intercept (confirmed: even a
+    //    prependListener'd handler never fired). Not loading the model at all
+    //    removes the fault entirely, and these tests never assert on recalled
+    //    memory anyway (query() is mocked, so the prompt content is moot).
+    // 2. Stub db.js's pool (resolve-empty) so the remaining light DB reads
+    //    (getCodeAnswersPolicy, getClaudeSession, setClaudeSessionId, ...) open
+    //    no socket: this file forces a dummy DATABASE_URL to satisfy config.ts's
+    //    import-time validation, which would otherwise make repository.ts create
+    //    a real pg.Pool. Installed BEFORE the realRepo import below so
+    //    repository.ts binds this stub `pool` at module-evaluation time; it must
+    //    RESOLVE (never throw) so no rejection can ever surface from it.
+    const emptyResult = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] };
+    t.mock.module('../src/storage/db.js', {
+      namedExports: {
+        pool: {
+          query: async () => emptyResult,
+          connect: async () => ({ query: async () => emptyResult, release: () => {} }),
+          on: () => {},
+          end: async () => {},
+        },
+        healthcheck: async () => {},
+        closeDb: async () => {},
+      },
+    });
     const realRepo = await import('../src/storage/repository.js');
     t.mock.module('../src/storage/repository.js', {
       namedExports: {
         ...realRepo,
+        // Never load embed()/onnxruntime (see the isolation note above).
+        searchMemory: async () => [],
         getLanguagePreference: async () => {
           if (langBehavior.mode === 'throw') throw new Error('language-preference lookup exploded');
           return langBehavior.value;
