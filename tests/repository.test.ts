@@ -76,6 +76,7 @@ const {
   REPORT_RATE_LIMIT_PER_DAY,
   recordAccessRequest,
   countAccessRequests,
+  oldestAccessRequestAgeDays,
   clearAccessRequest,
   upsertRosterMember,
   markRosterLeave,
@@ -3770,6 +3771,56 @@ test(
       before,
       'clearing every inserted request restores the prior count',
     );
+  },
+);
+
+test(
+  'repository: oldestAccessRequestAgeDays returns the whole-day age of the oldest row (MIN(first_requested_at)), not the most recently inserted one (issue #515)',
+  { skip },
+  async () => {
+    const recentUser = `${RUN}-oldestage-recent`;
+    const oldUser = `${RUN}-oldestage-old`;
+    await recordAccessRequest({ platform: 'discord', userId: recentUser, userName: 'tester' });
+    await recordAccessRequest({ platform: 'discord', userId: oldUser, userName: 'tester' });
+    // Backdate oldUser far enough into the past that no concurrently-running
+    // test file's freshly-inserted row (first_requested_at always defaults to
+    // now() — nothing else in the codebase ever sets it directly) could
+    // plausibly be older, so MIN(first_requested_at) is deterministically
+    // this row regardless of what else is in the table right now.
+    await pool.query(
+      `UPDATE access_requests SET first_requested_at = now() - interval '500 days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [oldUser],
+    );
+
+    assert.equal(
+      await oldestAccessRequestAgeDays(),
+      500,
+      'the oldest row by first_requested_at determines the age, not the most recently inserted row',
+    );
+
+    await clearAccessRequest('discord', recentUser);
+    await clearAccessRequest('discord', oldUser);
+  },
+);
+
+test(
+  'SECURITY: oldestAccessRequestAgeDays returns null (never 0 or NaN) for an empty access_requests table, and a real non-negative integer otherwise (issue #515)',
+  { skip },
+  async () => {
+    const countBefore = await countAccessRequests();
+    const age = await oldestAccessRequestAgeDays();
+    if (countBefore === 0) {
+      assert.equal(age, null, 'an empty table must return null, never 0 or a throw');
+    } else {
+      // A concurrently-running test file may have a pending row at this
+      // instant — still must never come back as anything other than null or
+      // a well-formed non-negative integer (never NaN/undefined/negative).
+      assert.ok(
+        age === null || (Number.isInteger(age) && age >= 0),
+        'a non-empty table must yield null or a non-negative integer day count, never NaN',
+      );
+    }
   },
 );
 

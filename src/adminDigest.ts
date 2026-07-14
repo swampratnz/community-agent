@@ -17,6 +17,7 @@ import {
   countStalePendingKnowledgeCandidates,
   getLastDigestCounts,
   listAdmins,
+  oldestAccessRequestAgeDays,
   recentQuestionClusters,
   recordAdminDigestSent,
   recordAdminDigestSnapshot,
@@ -116,6 +117,16 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * each existing template literal — with the flag unset, `previousCounts` is
  * never even fetched (see `runAdminDigestOnce`) and every `trendSuffix` call
  * short-circuits to `''`, so output is byte-identical to the pre-#497 form.
+ * `oldestAccessRequestAgeDays` (issue #515) is the whole-day age of the
+ * OLDEST pending row in `access_requests` (`MIN(first_requested_at)`,
+ * `repository.ts`'s `oldestAccessRequestAgeDays`) — the same oldest-age
+ * mechanic issue #450 uses for reports/suggestions. It only ever appends to
+ * the existing `pendingAccessRequests > 0` line above, and only when it
+ * resolved to a real day count (never when `null`, the empty-table case), so
+ * the quiet case (`pendingAccessRequests === 0`) and every caller that
+ * hasn't wired the new trailing param through are byte-identical to the
+ * pre-#515 form. Bare integer only, same privacy convention as every signal
+ * above.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -166,6 +177,14 @@ export function buildAdminDigestMessage(
   // and output is byte-identical to the pre-#497 form. Never fetched unless
   // `config.adminDigest.trendsEnabled` (see `runAdminDigestOnce`).
   previousCounts?: Record<string, number>,
+  // Whole-day age of the oldest pending access request
+  // (`oldestAccessRequestAgeDays`, issue #515) — append-only trailing param,
+  // `null` by default so every existing call site is unaffected. Only ever
+  // rendered alongside the existing `pendingAccessRequests > 0` line below,
+  // and only when non-null (an empty `access_requests` table has no
+  // meaningful age), so the quiet case (`pendingAccessRequests === 0`) is
+  // byte-identical to its pre-#515 form regardless of what's passed here.
+  oldestAccessRequestAgeDays: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -199,8 +218,13 @@ export function buildAdminDigestMessage(
     );
   }
   if (pendingAccessRequests > 0) {
+    // Oldest-age fragment only when the aggregate resolved to a real day
+    // count — an empty table (or a caller that hasn't wired the new param
+    // through) renders the line exactly as before #515 (issue #515).
+    const ageFragment =
+      oldestAccessRequestAgeDays !== null ? `, oldest waiting ${oldestAccessRequestAgeDays}d` : '';
     sections.push(
-      `⏳ ${pendingAccessRequests} pending access request(s) — run \`list_access_requests\`.` +
+      `⏳ ${pendingAccessRequests} pending access request(s)${ageFragment} — run \`list_access_requests\`.` +
         trendSuffix('pendingAccessRequests', pendingAccessRequests, previousCounts),
     );
   }
@@ -352,7 +376,10 @@ export function buildAdminDigestMessage(
  * `list_knowledge`/`list_knowledge_candidates`'s own unscoped behaviour —
  * none of those tables have a conversation/channel column), so every
  * enrolled admin sees the same pending-guest, pending-suggestion,
- * stale-knowledge, and pending-candidate counts. `countStaleKnowledge` only runs when
+ * stale-knowledge, and pending-candidate counts. `oldestAccessRequestAgeDays`
+ * (issue #515) is fetched alongside `countAccessRequests` and is guild-wide
+ * for the same reason, so every enrolled admin sees the same
+ * oldest-pending-request age too. `countStaleKnowledge` only runs when
  * `KNOWLEDGE_STALE_DAYS` is configured (`> 0`) — otherwise the signal stays
  * `0` and the digest is byte-for-byte unchanged from before issue #199.
  * `rosterCounts(admin.platform)` is likewise guild-wide by platform — same
@@ -444,6 +471,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         duplicateKnowledgeCount,
         conflictCandidateCount,
         pendingKnowledgeCandidatesStaleCount,
+        oldestAccessRequestAge,
       ] = await Promise.all([
         recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
         countAccessRequests(),
@@ -494,6 +522,10 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         knowledgeCandidateStaleDays > 0
           ? countStalePendingKnowledgeCandidates(knowledgeCandidateStaleDays)
           : Promise.resolve(0),
+        // Guild-wide, unscoped like countAccessRequests above — the same
+        // MIN(first_requested_at) oldest-age mechanic issue #450 applies to
+        // reports/suggestions, applied to access_requests (issue #515).
+        oldestAccessRequestAgeDays(),
       ]);
       // Onboarding-queue count only means anything in 'gated' mode — an
       // 'open'-mode not_members row already has full member-tool access
@@ -548,6 +580,7 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         staleMutedMembersCount,
         notMembersCount,
         previousCounts,
+        oldestAccessRequestAge,
       );
       if (!message) {
         // Quiet week — no send, so the freshness row/eligibility window must
@@ -586,10 +619,11 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
  * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
  * knowledge-pair, conflict-candidate-knowledge-pair, and (in `'gated'`
- * access mode) onboarding-queue counts (issue #21's deferred proactive
- * follow-up, extended by issue #133, issue #193, issue #199, issue #284,
- * issue #324, issue #344, issue #357, issue #378, issue #403, and issue
- * #460) — the same signals
+ * access mode) onboarding-queue counts, plus (when at least one request is
+ * pending) the oldest pending access request's age in days (issue #21's
+ * deferred proactive follow-up, extended by issue #133, issue #193, issue
+ * #199, issue #284, issue #324, issue #344, issue #357, issue #378, issue
+ * #403, issue #460, and issue #515) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/

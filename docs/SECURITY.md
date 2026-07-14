@@ -647,7 +647,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `sent_at`, so a silent week can't be mistaken for a real send nor corrupt
   next week's delta. `last_counts` is purge-coherent with the rest of the row
   — `forget_me`/`purge_user_data` remove it alongside `sent_at` for an
-  offboarded admin.
+  offboarded admin. Issue #515 added one more bare-count-adjacent signal on
+  the existing pending-access-request line: the age in days of the OLDEST
+  pending row, from `oldestAccessRequestAgeDays()` (`MIN(first_requested_at)`
+  over `access_requests`, the same table `pendingAccessRequests` already
+  counts and `list_access_requests` already reads unrestricted). **No new
+  data-access scope**: `first_requested_at` is already stored (set once at
+  insert, never updated) and already read by `list_access_requests` for every
+  row it returns — this only adds a second aggregate read (`MIN` instead of
+  `COUNT`) of a column that was already fully admin-visible. The line is
+  omitted entirely when the table is empty (`null`, never `0`) and otherwise
+  carries only the bare day-count integer, never a request's identity.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against

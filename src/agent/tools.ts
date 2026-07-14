@@ -3563,10 +3563,18 @@ export function buildToolServer(
         untrusted(
           'Access requests',
           rows
-            .map(
-              (r) =>
-                `${r.platform} ${r.userName ? sanitizeName(r.userName) : r.userId} (${r.userId}) — ${r.requestCount} request(s), last ${r.lastRequestedAt.toISOString()}`,
-            )
+            .map((r) => {
+              // firstRequestedAt is always the DB-stored insert timestamp for
+              // this (platform, user_id) row (repository.ts's
+              // listAccessRequests) — never sourced from a tool argument, so
+              // it can't be spoofed by a caller-supplied value (issue #515).
+              const waitingDays = Math.floor((Date.now() - r.firstRequestedAt.getTime()) / 86_400_000);
+              return (
+                `${r.platform} ${r.userName ? sanitizeName(r.userName) : r.userId} (${r.userId}) — ` +
+                `${r.requestCount} request(s), first ${r.firstRequestedAt.toISOString()} (waiting ${waitingDays}d), ` +
+                `last ${r.lastRequestedAt.toISOString()}`
+              );
+            })
             .join('\n'),
         ),
       );
