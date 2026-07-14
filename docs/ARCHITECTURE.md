@@ -193,7 +193,18 @@ memory**:
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped
    `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`/`list_roster`
-   tools instead.
+   tools instead. Off unless `ADMIN_DIGEST_TRENDS_ENABLED` (issue #497), every
+   one of these bare counts also carries a week-over-week trend suffix — a
+   ` (▲+N since last week)` / ` (▼-N since last week)` fragment appended to a
+   line whose count moved since the prior send, silent when it's unchanged or
+   there's no prior snapshot. The comparison point is `last_counts`, a JSONB
+   snapshot column on `admin_digest_sends` written every run regardless of the
+   flag (so flipping it on is retroactively useful from the very next tick)
+   and whitelist-sanitized at the write boundary to the known signal-name set
+   — the exact same integers the digest already sends, never anything else.
+   A quiet week (no DM sent) still snapshots the current counts via a
+   dedicated write path that deliberately never touches `sent_at`, keeping the
+   trend snapshot fully decoupled from the freshness guard above it.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and

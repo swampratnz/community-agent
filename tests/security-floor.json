@@ -1,6 +1,6 @@
 {
   "ackShortcutRouter.test.ts": 3,
-  "adminDigest.test.ts": 25,
+  "adminDigest.test.ts": 28,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreFailureFallbacksPlain.test.ts": 3,
   "agentCoreKnowledgeEntryId.test.ts": 2,

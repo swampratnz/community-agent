@@ -434,6 +434,16 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Week-over-week trend suffix on every digest count (issue #497). Off by
+  // default: when unset, `getLastDigestCounts` is never called and no digest
+  // line ever gains a trend suffix — output stays byte-identical to today.
+  // The `last_counts` snapshot itself is still written every run regardless
+  // of this flag (see adminDigest.ts), so flipping it on is retroactively
+  // useful from the very next weekly tick.
+  ADMIN_DIGEST_TRENDS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Fifth admin-digest signal (issue #199): nudge admins toward knowledge
   // entries neither edited nor retrieved in this many days. Unset/0 =
   // disabled (no extra query, no behaviour change on upgrade), matching the
@@ -800,6 +810,7 @@ export const config = {
   },
   adminDigest: {
     enabled: env.ADMIN_DIGEST_ENABLED ?? false,
+    trendsEnabled: env.ADMIN_DIGEST_TRENDS_ENABLED ?? false,
     knowledgeStaleDays: env.KNOWLEDGE_STALE_DAYS,
     knowledgeStaleMaxAgeDays: env.KNOWLEDGE_STALE_MAX_AGE_DAYS,
     knowledgeCandidateStaleDays: env.KNOWLEDGE_CANDIDATE_STALE_DAYS,
