@@ -69,6 +69,12 @@ export const MEMBER_TOOLS = [
   // configured limit — never a warning's reason/excerpt (admin-only context,
   // see list_member_warnings) and never another member's warnings.
   'mcp__community__my_warnings',
+  // Self-scoped: asks admins to double-check the caller's OWN active
+  // warning(s)/mute (issue #496) — refuses cleanly with no active warning,
+  // so it can't become a generic side channel to message admins (that's
+  // already what suggest_improvement is for). Resolves eligibility from
+  // caller.platform/caller.userId only, exactly like my_warnings.
+  'mcp__community__appeal_moderation',
   // Self-scoped, read-only summary of what's stored about the caller —
   // counts mirroring exactly what forget_me/purge_user_data would delete,
   // scoped the same way (own identity + linked identities). Never queries
@@ -121,6 +127,11 @@ export const ADMIN_TOOLS = [
   // it reads only admin_audit, never member_warnings (issue #410). Same
   // (platform, userId)-only scope as clear_warnings, not conversation-scoped.
   'mcp__community__list_member_warnings',
+  // Enumerates currently-muted members by identity — the growth path #403
+  // itself named and deferred (issue #487). Same admin-tier, non-
+  // conversation-scoped boundary as clear_warnings/list_member_warnings;
+  // never includes reason/excerpt.
+  'mcp__community__list_muted_members',
   'mcp__community__announce',
   'mcp__community__create_poll',
   // End a running poll early — same admin tier / conversation-scope / audit as
@@ -196,6 +207,7 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__purge_user_data',
   'mcp__community__audit_view',
   'mcp__community__usage_stats',
+  'mcp__community__admin_activity',
   'mcp__community__list_admins',
   'mcp__community__engagement_stats',
   'mcp__community__pause_bot',

@@ -52,6 +52,7 @@ const {
   countStalePendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
+  candidateTopicAlreadyReviewed,
   recordAdminAction,
   recentQuestionClusters,
   recentKnowledgeGapClusters,
@@ -62,6 +63,7 @@ const {
   KNOWLEDGE_GAP_DAILY_LIMIT,
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
   recentModerationEntries,
+  adminActivitySummary,
   usageStats,
   recordBackgroundJobCost,
   sumBackgroundJobCosts,
@@ -1722,20 +1724,93 @@ test(
       content: 'Zyquavexolorpin onboarding: register on the portal and verify your email address.',
       scope: 'global',
     });
+    // knowledgeCoversTopic (issue #503) now takes the already-computed
+    // embedding rather than re-embedding internally — mirrors how the
+    // builder threads candidateTopicAlreadyReviewed's vector through.
     assert.equal(
-      await knowledgeCoversTopic('zyquavexolorpin onboarding steps'),
+      await knowledgeCoversTopic(await embed('zyquavexolorpin onboarding steps')),
       true,
       'an existing knowledge entry above the relevance floor counts as already answered',
     );
     assert.equal(
-      await knowledgeCoversTopic('qzxvbfrobnicator gloopington snorlaxian doorknob'),
+      await knowledgeCoversTopic(await embed('qzxvbfrobnicator gloopington snorlaxian doorknob')),
       false,
       'an unrelated (and lexically unrelated) topic is not flagged as already covered',
     );
+    assert.equal(await knowledgeCoversTopic(null), false, 'a null vector fails open to "not covered"');
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  "SECURITY: candidateTopicAlreadyReviewed's semantic half blocks a reworded topic that is NOT an exact string match but is >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD similar to an existing (even declined) candidate's topic_embedding — and does NOT block a genuinely dissimilar topic (issue #503, AC2/AC3)",
+  { skip },
+  async () => {
+    const newTopic = `${RUN} when does the community meetup usually happen`;
+    // The exact vector candidateTopicAlreadyReviewed will itself compute for
+    // newTopic — used as the anchor for controlled-similarity fixtures below
+    // (Gram-Schmidt technique, same as memoryAtCosineSimilarity's other
+    // uses in this file), so this test lands precisely on either side of the
+    // 0.92 threshold regardless of what the real model thinks these
+    // deliberately-different label strings mean.
+    const anchor = await embed(newTopic);
+
+    const priorDigestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN} unrelated-string topic label`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const similarCandidateId = await insertKnowledgeCandidate({
+      digestId: priorDigestId,
+      // Deliberately NOT an exact match to newTopic, so hasQueuedCandidateForTopic misses.
+      topic: `${RUN} unrelated-string topic label`,
+      title: 't',
+      content: 'c',
+    });
+    await declineKnowledgeCandidate(similarCandidateId, 'admin-1');
+    await pool.query(`UPDATE knowledge_candidates SET topic_embedding = $2 WHERE id = $1`, [
+      similarCandidateId,
+      pgvector.toSql(memoryAtCosineSimilarity(anchor, 0.95)),
+    ]);
+
+    const semanticResult = await candidateTopicAlreadyReviewed(newTopic);
+    assert.equal(
+      semanticResult.blocked,
+      true,
+      'a >=0.92-similar declined topic blocks re-emission even without an exact string match',
+    );
+    assert.ok(
+      Array.isArray(semanticResult.embedding) && semanticResult.embedding.length === anchor.length,
+      'the computed embedding is returned for reuse by knowledgeCoversTopic/insertKnowledgeCandidate',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [similarCandidateId]);
+
+    // A genuinely dissimilar topic (0.5 similarity, well under the 0.92 floor) must NOT be blocked.
+    const dissimilarCandidateId = await insertKnowledgeCandidate({
+      digestId: priorDigestId,
+      topic: `${RUN} another unrelated label`,
+      title: 't2',
+      content: 'c2',
+    });
+    await declineKnowledgeCandidate(dissimilarCandidateId, 'admin-1');
+    await pool.query(`UPDATE knowledge_candidates SET topic_embedding = $2 WHERE id = $1`, [
+      dissimilarCandidateId,
+      pgvector.toSql(memoryAtCosineSimilarity(anchor, 0.5)),
+    ]);
+
+    const noFalsePositive = await candidateTopicAlreadyReviewed(newTopic);
+    assert.equal(noFalsePositive.blocked, false, 'a dissimilar topic (below the 0.92 floor) is not blocked');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [dissimilarCandidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [priorDigestId]);
   },
 );
 
@@ -2658,6 +2733,164 @@ test(
     );
 
     await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+  },
+);
+
+test(
+  'repository: adminActivitySummary groups by (platform, actor_user_id), computes correct counts/lastActionAt, sorted by actionCount descending, excludes rows outside the window (issue #488)',
+  { skip },
+  async () => {
+    const actorA = `${RUN}-aas-actor-a`;
+    const actorB = `${RUN}-aas-actor-b`;
+
+    // actorA: 3 in-window rows on discord (2 success, 1 failure).
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorA,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorA,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actorA,
+      actionKind: 'kick_user',
+      result: 'failed: not found',
+      success: false,
+    });
+    // actorB: 1 in-window row on whatsapp.
+    await recordAdminAction({
+      platform: 'whatsapp',
+      actorUserId: actorB,
+      actionKind: 'timeout_user',
+      result: 'timed out',
+      success: true,
+    });
+    // Outside the 1-day window — must be excluded entirely.
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, result, success, created_at)
+       VALUES ($1,$2,$3,$4,$5, now() - interval '2 days')`,
+      ['discord', actorA, 'ban_user', 'banned', true],
+    );
+
+    const rows = await adminActivitySummary(1);
+    const byActor = new Map(rows.map((r) => [`${r.platform}:${r.actorUserId}`, r]));
+
+    const a = byActor.get(`discord:${actorA}`);
+    assert.ok(a, 'actorA appears in the summary');
+    assert.equal(a?.actionCount, 3, 'the 2-day-old row is excluded from the 1-day window');
+    assert.equal(a?.successCount, 2);
+    assert.equal(a?.failureCount, 1);
+    assert.ok(a?.lastActionAt instanceof Date);
+
+    const b = byActor.get(`whatsapp:${actorB}`);
+    assert.ok(b, 'actorB appears in the summary');
+    assert.equal(b?.actionCount, 1);
+    assert.equal(b?.successCount, 1);
+    assert.equal(b?.failureCount, 0);
+
+    const indexOfA = rows.findIndex((r) => r.actorUserId === actorA);
+    const indexOfB = rows.findIndex((r) => r.actorUserId === actorB);
+    assert.ok(
+      indexOfA < indexOfB,
+      'actorA (3 actions) must sort ahead of actorB (1 action) — actionCount descending',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[actorA, actorB]]);
+  },
+);
+
+test(
+  'repository: adminActivitySummary clamps an out-of-range days window to [1, 365], default 30 (issue #488)',
+  { skip },
+  async () => {
+    const actor = `${RUN}-aas-clamp-actor`;
+
+    const beforeMin = await adminActivitySummary(-3);
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, result, success, created_at)
+       VALUES ($1,$2,$3,$4,$5, now() - interval '2 days')`,
+      ['discord', actor, 'warn_user', 'warned', true],
+    );
+    const afterMin = await adminActivitySummary(-3);
+    const beforeCount = beforeMin.find((r) => r.actorUserId === actor)?.actionCount ?? 0;
+    const afterCount = afterMin.find((r) => r.actorUserId === actor)?.actionCount ?? 0;
+    assert.equal(
+      afterCount - beforeCount,
+      1,
+      'days=-3 clamps to the 1-day floor: only the "now" row is counted, not the 2-day-old row',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actor]);
+
+    const actorMax = `${RUN}-aas-clamp-max-actor`;
+    const beforeMax = await adminActivitySummary(10_000);
+    await pool.query(
+      `INSERT INTO admin_audit (platform, actor_user_id, action_kind, result, success, created_at)
+       VALUES ($1,$2,$3,$4,$5, now() - interval '400 days')`,
+      ['discord', actorMax, 'warn_user', 'warned', true],
+    );
+    const afterMax = await adminActivitySummary(10_000);
+    const beforeMaxCount = beforeMax.find((r) => r.actorUserId === actorMax)?.actionCount ?? 0;
+    const afterMaxCount = afterMax.find((r) => r.actorUserId === actorMax)?.actionCount ?? 0;
+    assert.equal(
+      afterMaxCount - beforeMaxCount,
+      0,
+      'days=10_000 clamps to the 365-day ceiling: a 400-day-old row must not become visible',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [actorMax]);
+  },
+);
+
+test(
+  'SECURITY: adminActivitySummary is global/unscoped across actors — never silently filtered to a single caller — and never selects admin_audit.params (issue #488)',
+  { skip },
+  async () => {
+    const actor1 = `${RUN}-aas-sec-actor-1`;
+    const actor2 = `${RUN}-aas-sec-actor-2`;
+    const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN-AAS';
+
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: actor1,
+      actionKind: 'warn_user',
+      params: { reason: sentinel },
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'whatsapp',
+      actorUserId: actor2,
+      actionKind: 'timeout_user',
+      result: 'timed out',
+      success: true,
+    });
+
+    const rows = await adminActivitySummary(1);
+    const ids = rows.map((r) => r.actorUserId);
+    assert.ok(ids.includes(actor1), 'actor1 appears — the aggregation is not scoped to a single caller');
+    assert.ok(ids.includes(actor2), 'actor2 appears — every distinct actor is present, unscoped');
+    assert.ok(
+      !rows.some((r) => Object.values(r).some((v) => typeof v === 'string' && v.includes(sentinel))),
+      'admin_audit.params content must never surface through adminActivitySummary',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[actor1, actor2]]);
   },
 );
 
@@ -3665,6 +3898,48 @@ test(
       before,
       'clearing every inserted request restores the prior count',
     );
+  },
+);
+
+test(
+  'repository: recordAccessRequest reports insert-vs-update via the RETURNING (xmax = 0) trick — true on a fresh ' +
+    'row, false on a repeat upsert, true again after the row is cleared (issue #480)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-recordaccessreq-inserted`;
+    await clearAccessRequest('discord', userId); // in case a previous failed run left a row behind
+
+    const firstInsert = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      firstInsert,
+      true,
+      'the first-ever request for this (platform, user_id) must report a fresh insert',
+    );
+
+    const repeat = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      repeat,
+      false,
+      'a second request from the same still-pending user must report NOT a fresh insert',
+    );
+
+    const repeatAgain = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      repeatAgain,
+      false,
+      'every subsequent repeat must keep reporting false, not just the second one',
+    );
+
+    await clearAccessRequest('discord', userId);
+
+    const afterClear = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      afterClear,
+      true,
+      'after clearAccessRequest removes the row, the next request is a fresh insert again',
+    );
+
+    await clearAccessRequest('discord', userId);
   },
 );
 

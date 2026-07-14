@@ -31,6 +31,7 @@ const {
   PENDING_NOTICE,
   PENDING_NOTICE_MI,
   PENDING_NOTICE_PLAIN,
+  FAILED_PREFIX_MI,
 } = await import('../src/router.js');
 const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
   await import('../src/agent/pendingActions.js');
@@ -411,10 +412,12 @@ test("router (CONFIRM): pending.execute()'s own outcome string stays byte-identi
   assert.equal(sent[0].text, 'Updated knowledge entry #5.');
 });
 
-test("router (CONFIRM): a thrown execute()'s Failed: ... message stays byte-identical regardless of language preference", async () => {
+// --- issue #490: the 'Failed: ' shell now honours 'mi', the dynamic tail never does ---
+
+test("router (CONFIRM): a thrown execute()'s 'Failed: ' shell is replaced with FAILED_PREFIX_MI for a standing 'mi' preference, with the dynamic tail byte-identical to the English case", async () => {
   const conversationId = nextConvo();
   registerPendingAction('discord', conversationId, 'super-1', {
-    description: `${RUN} failure-scope`,
+    description: `${RUN} failure-scope-mi`,
     minTier: 'guest',
     execute: async () => {
       throw new Error('boom');
@@ -437,6 +440,38 @@ test("router (CONFIRM): a thrown execute()'s Failed: ... message stays byte-iden
   await trigger(makeMessage({ conversationId, text: 'CONFIRM' }));
 
   assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, `${FAILED_PREFIX_MI}boom`);
+  // The dynamic tail after the shell must be byte-identical to what the
+  // English case emits after its own 'Failed: ' shell.
+  assert.equal(sent[0].text.slice(FAILED_PREFIX_MI.length), 'Failed: boom'.slice('Failed: '.length));
+});
+
+test("router (CONFIRM): a thrown execute()'s Failed: ... message stays byte-identical to today for a non-'mi' (auto) preference", async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'super-1', {
+    description: `${RUN} failure-scope-auto`,
+    minTier: 'guest',
+    execute: async () => {
+      throw new Error('boom');
+    },
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, text: 'CONFIRM' }));
+
+  assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'Failed: boom');
 });
 
@@ -450,6 +485,102 @@ test('SECURITY: CANCEL_TEXT_MI and PERMISSIONS_CHANGED_TEXT_MI are fixed, non-in
     PERMISSIONS_CHANGED_TEXT_MI,
     'Kāore i whakahaerehia: kua rerekē ō mana whakaaetanga mai i te wā i tonoa ai tēnei mahi.',
   );
+});
+
+test('SECURITY: FAILED_PREFIX_MI is a fixed, non-interpolated string — pinned so a future edit cannot silently make it depend on caller-controlled input (issue #490)', () => {
+  assert.equal(typeof FAILED_PREFIX_MI, 'string');
+  assert.equal(FAILED_PREFIX_MI, 'I hapa: ');
+});
+
+test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, and cancellation) is unchanged by issue #490 — only the outcome TEXT varies by language, never the behaviour', async () => {
+  // 1. CONFIRM with a standing tier still executes the pending action,
+  // regardless of language preference — the 'mi' shell swap must never
+  // suppress or alter which action runs.
+  let executed = 0;
+  const execConvo = nextConvo();
+  registerPendingAction('discord', execConvo, 'super-1', {
+    description: `${RUN} behaviour-execute`,
+    minTier: 'guest',
+    execute: async () => {
+      executed += 1;
+      return 'done thing';
+    },
+  });
+  const execRouter = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter: execAdapter, sent: execSent, trigger: execTrigger } = makeAdapter();
+  execRouter.register(execAdapter);
+  await execTrigger(makeMessage({ conversationId: execConvo, text: 'CONFIRM' }));
+  assert.equal(executed, 1);
+  assert.equal(execSent[0].text, 'done thing');
+  assert.equal(hasPendingAction('discord', execConvo, 'super-1'), false);
+
+  // 2. A tier revoked inside the confirm TTL must still block execution —
+  // regardless of language preference — and never run pending.execute().
+  let tierExecuted = 0;
+  const tierConvo = nextConvo();
+  registerPendingAction('discord', tierConvo, 'guest-1', {
+    description: `${RUN} behaviour-tier`,
+    minTier: 'member',
+    execute: async () => {
+      tierExecuted += 1;
+      throw new Error('execute must never run once the tier re-check fails');
+    },
+  });
+  const tierRouter = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter: tierAdapter, sent: tierSent, trigger: tierTrigger } = makeAdapter();
+  tierRouter.register(tierAdapter);
+  await tierTrigger(makeMessage({ conversationId: tierConvo, userId: 'guest-1', text: 'CONFIRM' }));
+  assert.equal(tierExecuted, 0);
+  assert.equal(tierSent[0].text, PERMISSIONS_CHANGED_TEXT_MI);
+
+  // 3. CANCEL still cancels (never executes), regardless of language pref.
+  let cancelExecuted = 0;
+  const cancelConvo = nextConvo();
+  registerPendingAction('discord', cancelConvo, 'super-1', {
+    description: `${RUN} behaviour-cancel`,
+    minTier: 'guest',
+    execute: async () => {
+      cancelExecuted += 1;
+      return 'should never run';
+    },
+  });
+  const cancelRouter = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter: cancelAdapter, sent: cancelSent, trigger: cancelTrigger } = makeAdapter();
+  cancelRouter.register(cancelAdapter);
+  await cancelTrigger(makeMessage({ conversationId: cancelConvo, text: 'CANCEL' }));
+  assert.equal(cancelExecuted, 0);
+  assert.equal(cancelSent[0].text, CANCEL_TEXT_MI);
+  assert.equal(hasPendingAction('discord', cancelConvo, 'super-1'), false);
 });
 
 test('SECURITY: PENDING_NOTICE_MI interpolates ONLY the pending.description placeholder — every other part of the template is fixed regardless of input', () => {

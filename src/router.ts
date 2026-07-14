@@ -3,7 +3,8 @@ import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
-import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
+import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
+import { sanitizeName } from './agent/systemPrompt.js';
 import {
   INTERNAL_ERROR_REPLY,
   MAX_TURNS_REPLY,
@@ -26,6 +27,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  listAdmins,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
   recordInteraction,
@@ -50,6 +52,11 @@ import {
   DAILY_BUDGET_NOTICE_TEXT_MI,
   DAILY_BUDGET_NOTICE_TEXT_PLAIN,
 } from './dailyBudgetNotice.js';
+import {
+  DAILY_REPLY_BUDGET_WARNING_TEXT,
+  DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
+  DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
+} from './dailyReplyBudgetWarning.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 
@@ -90,6 +97,20 @@ export const PERMISSIONS_CHANGED_TEXT_MI =
 // short, direct statement. Same trust level as the English constant.
 export const PERMISSIONS_CHANGED_TEXT_PLAIN =
   'I did not do this. Your permission level changed after you asked, so I can no longer do it.';
+
+// Fixed, human-authored te reo Māori substitute for the literal `'Failed: '`
+// shell prefix a CONFIRM-gated `requireConfirm` outcome falls back to on a
+// thrown execute() (issue #490 — closing the one gap #405 named out of
+// scope: "the per-tool requireConfirm outcome/failure strings ... stay out
+// of scope and English-only"). Only this fixed shell is translated; the
+// dynamic `result`/error text after it is untouched, same "translate the
+// shell, not the payload" discipline as CODE_TRUNCATED_NOTE_MI (#339) and
+// every other constant in this file. Deliberately no `Done: ` counterpart
+// here — ARCHITECTURE.md doesn't name that shell as an open gap, and several
+// requireConfirm tools return fully bespoke (non-`Done:`) success strings, so
+// translating only the `Done:`-templated subset would read unevenly; left as
+// a named follow-up.
+export const FAILED_PREFIX_MI = 'I hapa: ';
 
 // Wrapper around the deterministic pending-action notice (issue #405),
 // mirroring the "translate the shell, leave the dynamic payload alone"
@@ -168,6 +189,43 @@ const GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI =
 const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā wā — anei anō tāku whakautu:\n\n';
 
 const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
+
+/**
+ * Real-time admin alert fired the moment a gated guest's FIRST-EVER addressed
+ * message creates a fresh `access_requests` row (issue #480) — the discrete-
+ * event complement to the weekly digest's passive `pendingAccessRequests`
+ * count, mirroring `notifyReportFiled`'s "push what was pullable" precedent
+ * (#90). Called directly off `recordAccessRequest`'s insert-vs-update
+ * `RETURNING` value in `handle()` below — never routed through the agent/
+ * model loop, so a guest's own message content cannot reach this at all: only
+ * their platform + display name are threaded through, matching
+ * `access_requests`' own "identity + counts only" storage contract.
+ * Guild-wide `listAdmins()` audience (the same recipients the weekly digest's
+ * `pendingAccessRequests` count already reaches), not `superAdminIds()` — an
+ * access request is routine admin business, not a super-admin-tier concern.
+ * The guest's display name is sanitised the same way `list_access_requests`
+ * already renders it (`sanitizeName`), so a hostile name can't fake a fresh
+ * instruction line in front of the human admin reading the DM. Best-effort
+ * per admin/platform: a failed DM to one admin never blocks the others,
+ * matching `notifySuperAdmins`'s own fire-and-forget-per-recipient shape.
+ */
+export async function notifyAccessRequest(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  guest: { platform: Platform; userId: string; userName?: string },
+  listAdminsFn: typeof listAdmins = listAdmins,
+): Promise<void> {
+  const admins = await listAdminsFn();
+  if (admins.length === 0) return;
+  const name = guest.userName ? sanitizeName(guest.userName) : '';
+  const message = `🔔 New access request from ${name || guest.userId} on ${guest.platform}. Use add_member to let them in.`;
+  for (const admin of admins) {
+    const target = adapterFor(admin.platform);
+    if (!target || !target.isConnected()) continue;
+    target
+      .sendDirectMessage(admin.platformUserId, message)
+      .catch((err) => logger.warn({ err, platform: admin.platform }, 'Access-request alert failed'));
+  }
+}
 
 // Real-time admin escalation after a max-turns failure (issue #479). Every
 // piece below is opt-in behind ESCALATION_TO_ADMIN_ENABLED (default off) and
@@ -251,11 +309,22 @@ export class Router {
   private readonly adapters = new Map<string, PlatformAdapter>();
   private readonly chains = new Map<string, Promise<void>>();
   private readonly userHits = new Map<string, number[]>();
+  /** conversationId -> auto-answer timestamps, for the per-channel rolling-hour cap (issue #477, AUTO_ANSWER_RATE_LIMIT_PER_HOUR). */
+  private readonly autoAnswerHits = new Map<string, number[]>();
 
   private readonly RATE_LIMIT = 8; // messages
   private readonly RATE_WINDOW_MS = 60_000; // per minute
   /** userKey -> when they were last told they hit the budget (rolling 24h, matching the budget window). */
   private readonly budgetNotified = new Map<string, number>();
+  /**
+   * userKey -> when they were last warned they're approaching the daily
+   * budget (issue #511) — the pre-cutoff sibling of `budgetNotified` above,
+   * same key shape and same rolling-24h window, so a caller sitting inside
+   * the warning threshold for several messages in a row is warned once, not
+   * on every message. Only written when DAILY_REPLY_BUDGET_WARN_ENABLED is
+   * on (see `respond()`).
+   */
+  private readonly budgetWarned = new Map<string, number>();
   /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
   private readonly rateLimitNotified = new Map<string, number>();
   /** userKey -> when they were last told the bot is paused (debounced to PAUSE_NOTIFY_WINDOW_MS). */
@@ -297,6 +366,21 @@ export class Router {
   private readonly pendingEscalations = new Map<string, { query: string; at: number }>();
   /** Timestamps of confirmed escalation notifications, for the guild-wide rolling-hour cap (ESCALATION_RATE_LIMIT_PER_HOUR). */
   private readonly escalationTimestamps: number[] = [];
+  /**
+   * Auto-answer thread id -> parent channel id (+ creation time), issue #477.
+   * A CONFIRM/CANCEL or escalation-confirmation the member types INSIDE an
+   * auto-answer thread arrives with the thread's own id as its
+   * `conversationId`, but the pending action / escalation offer was registered
+   * against the PARENT channel (where the original post lived, and where the
+   * agent turn's `caller.conversationId` pointed). This map translates a
+   * confirming reply arriving inside a known auto-answer thread back to that
+   * parent for the pending-LOOKUP only — registration is unchanged — so a
+   * `forget_me`/destructive CONFIRM (or an escalation "yes") typed exactly
+   * where the bot's notice appeared still resolves instead of being silently
+   * swallowed. Pruned in `sweep()` on the escalation window (the longer of the
+   * two confirm TTLs it has to outlive).
+   */
+  private readonly autoAnswerThreadParents = new Map<string, { parent: string; at: number }>();
 
   private readonly PAUSE_NOTIFY_WINDOW_MS = 3_600_000; // 1 hour — a pause is typically longer-lived than a rate-limit burst
   private readonly BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS = 900_000; // 15 minutes — a DB recording failure is a systemic condition, not per-user
@@ -323,6 +407,13 @@ export class Router {
    * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
    * defaults to the real DB-backed shortcut-hit recorder (issue #440),
    * fired at each of the four member-facing shortcut short-circuits.
+   * `notifyAccessRequestFn` defaults to the real `notifyAccessRequest`
+   * (issue #480), consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on
+   * and `recordAccessRequest` reports a fresh insert — overridable so tests
+   * can assert the alert fired/didn't without a live DB or adapter.
+   * `recordAccessRequestFn` defaults to the real DB-backed upsert; overridable
+   * (like every other DB read/write above) so its insert-vs-update return
+   * value can be controlled in tests without a live Postgres.
    * `notifyAdminsFn` defaults to the real `listAdmins()`-backed admin alert
    * (issue #479), fired from the escalation-confirmation intercept in
    * `handle()`; overridable so tests can assert on it without a live DB.
@@ -342,10 +433,34 @@ export class Router {
     private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
     private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
     private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
+    private readonly recordAccessRequestFn: typeof recordAccessRequest = recordAccessRequest,
+    private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
     private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
+  }
+
+  /** Rolling-hour timestamps for `ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR` (issue #480) — guild-wide, not per-conversation, since the alert audience (`listAdmins()`) is guild-wide too. */
+  private readonly accessRequestAlertTimestamps: number[] = [];
+
+  /**
+   * Reserve one access-request-alert slot against a rolling hourly cap, same
+   * sliding-window shape as `tools.ts`'s `reserveAnnounceSlot`/
+   * `reservePollSlot` — but keyless/guild-wide rather than per-conversation,
+   * matching this alert's guild-wide `listAdmins()` audience. Returns false
+   * without reserving if the guild already hit `limit` within the last hour;
+   * the request is still recorded by the caller either way (issue #480).
+   */
+  private reserveAccessRequestAlertSlot(limit: number): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = this.accessRequestAlertTimestamps.filter((t) => now - t < windowMs);
+    this.accessRequestAlertTimestamps.length = 0;
+    this.accessRequestAlertTimestamps.push(...recent);
+    if (recent.length >= limit) return false;
+    this.accessRequestAlertTimestamps.push(now);
+    return true;
   }
 
   private sweep(): void {
@@ -353,8 +468,15 @@ export class Router {
     for (const [key, hits] of this.userHits) {
       if (hits.every((t) => now - t >= this.RATE_WINDOW_MS)) this.userHits.delete(key);
     }
+    const autoAnswerWindowMs = 60 * 60 * 1000;
+    for (const [key, hits] of this.autoAnswerHits) {
+      if (hits.every((t) => now - t >= autoAnswerWindowMs)) this.autoAnswerHits.delete(key);
+    }
     for (const [key, at] of this.budgetNotified) {
       if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
+    }
+    for (const [key, at] of this.budgetWarned) {
+      if (now - at > 24 * 3_600_000) this.budgetWarned.delete(key);
     }
     for (const [key, at] of this.rateLimitNotified) {
       if (now - at > this.RATE_WINDOW_MS) this.rateLimitNotified.delete(key);
@@ -370,6 +492,9 @@ export class Router {
     }
     for (const [key, entry] of this.pendingEscalations) {
       if (now - entry.at > ESCALATION_WINDOW_MS) this.pendingEscalations.delete(key);
+    }
+    for (const [key, entry] of this.autoAnswerThreadParents) {
+      if (now - entry.at > ESCALATION_WINDOW_MS) this.autoAnswerThreadParents.delete(key);
     }
     sweepExpiredPendingActions();
   }
@@ -433,6 +558,28 @@ export class Router {
   }
 
   /**
+   * Reserve one auto-answer slot for `conversationId` against a rolling
+   * hourly cap (issue #477), same sliding-window shape as agent/tools.ts's
+   * `reserveAnnounceSlot` — kept as its own instance-scoped map here rather
+   * than reused from tools.ts since auto-answer is router-driven, not a
+   * model-invoked tool. Backed by the configurable
+   * `AUTO_ANSWER_RATE_LIMIT_PER_HOUR` rather than a fixed constant. Never
+   * called for an addressed/mention reply — only the auto-answer path.
+   */
+  private reserveAutoAnswerSlot(conversationId: string): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = (this.autoAnswerHits.get(conversationId) ?? []).filter((t) => now - t < windowMs);
+    if (recent.length >= config.discord.autoAnswerRateLimitPerHour) {
+      this.autoAnswerHits.set(conversationId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.autoAnswerHits.set(conversationId, recent);
+    return true;
+  }
+
+  /**
    * Appends the escalation offer to a max-turns failure reply AND, in the
    * same step, records the live pending entry behind it (issue #479
    * acceptance criterion 2) — called from both the fresh-failure path
@@ -465,6 +612,21 @@ export class Router {
     if (this.escalationTimestamps.length >= limit) return false;
     this.escalationTimestamps.push(now);
     return true;
+  }
+
+  /**
+   * Creates the Discord thread an auto-answer reply is contained in (issue
+   * #477), anchored to the origin post via its native message id. Throws if
+   * the adapter doesn't support it (only Discord does; callers only reach
+   * here when `msg.platform === 'discord'`) or has no message id, or if the
+   * platform call itself fails — either way the caller falls back to
+   * replying directly in the channel rather than losing the answer.
+   */
+  private async startAutoAnswerThread(msg: IncomingMessage, adapter: PlatformAdapter): Promise<string> {
+    if (!adapter.startAutoAnswerThread) throw new Error('Adapter does not support auto-answer threads');
+    if (!msg.messageId) throw new Error('Auto-answer requires a message id to anchor the thread to');
+    const name = msg.text.trim().slice(0, 90) || 'Question';
+    return adapter.startAutoAnswerThread(msg.conversationId, msg.messageId, name);
   }
 
   /**
@@ -565,9 +727,39 @@ export class Router {
       }
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
-        recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch(
-          (err) => logger.warn({ err }, 'Failed to record access request'),
-        );
+        // Real-time admin alert (issue #480): fires ONLY on a fresh
+        // `access_requests` row — a repeat ping from the same still-pending
+        // guest (`inserted === false`) never notifies again, the upsert's own
+        // dedup is the entire debounce.
+        //
+        // The insert-vs-update result is only needed WHEN the alert is enabled,
+        // so it's only awaited then. Flag off/unset keeps the record upsert
+        // fire-and-forget exactly as before #480 — the gated guest's reply path
+        // (the raid-exposed hot path) never blocks on the DB round trip, so
+        // behaviour is genuinely byte-identical when the feature is off.
+        if (config.accessRequestAlert.enabled) {
+          const inserted = await this.recordAccessRequestFn({
+            platform: msg.platform,
+            userId: msg.userId,
+            userName: msg.userName,
+          }).catch((err) => {
+            logger.warn({ err }, 'Failed to record access request');
+            return false;
+          });
+          if (inserted && this.reserveAccessRequestAlertSlot(config.accessRequestAlert.rateLimitPerHour)) {
+            this.notifyAccessRequestFn((platform) => this.adapters.get(platform), {
+              platform: msg.platform,
+              userId: msg.userId,
+              userName: msg.userName,
+            }).catch((err) => logger.warn({ err }, 'Failed to fire access-request alert'));
+          }
+        } else {
+          void this.recordAccessRequestFn({
+            platform: msg.platform,
+            userId: msg.userId,
+            userName: msg.userName,
+          }).catch((err) => logger.warn({ err }, 'Failed to record access request'));
+        }
         if (!this.rateLimited(userKey)) {
           // Guest knowledge shortcut (issue #165): before the static "ask an
           // admin" pointer, try a global-only near-exact FAQ match — same
@@ -645,17 +837,24 @@ export class Router {
     // actor has a pending action in this conversation, so it never steals
     // normal messages. Never reaches the model: injection can request, only
     // a human can confirm.
+    // A CONFIRM/CANCEL typed inside an auto-answer thread (issue #477) carries
+    // the thread's id, but the action was registered against the parent
+    // channel — resolve back to it for the lookup so the confirm the bot's own
+    // notice asked for isn't silently dropped. Non-thread messages pass through
+    // unchanged.
+    const pendingConversationId =
+      this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId;
     const verdict = classifyConfirmReply(msg.text);
-    if (verdict && hasPendingAction(msg.platform, msg.conversationId, msg.userId)) {
+    if (verdict && hasPendingAction(msg.platform, pendingConversationId, msg.userId)) {
       if (verdict === 'cancel') {
-        cancelPendingAction(msg.platform, msg.conversationId, msg.userId);
+        cancelPendingAction(msg.platform, pendingConversationId, msg.userId);
         const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
         await this.send(adapter, msg.conversationId, lang === 'mi' ? CANCEL_TEXT_MI : CANCEL_TEXT).catch(
           () => {},
         );
         return;
       }
-      const pending = takePendingAction(msg.platform, msg.conversationId, msg.userId);
+      const pending = takePendingAction(msg.platform, pendingConversationId, msg.userId);
       if (pending) {
         let outcome: string;
         // Re-check the actor's CURRENT tier: a role revoked inside the
@@ -673,6 +872,18 @@ export class Router {
             outcome = await pending.execute();
           } catch (err) {
             outcome = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
+          // Translate only the generic `Failed: ` shell (issue #490) — covers
+          // both the catch-block fallback above and any requireConfirm tool
+          // that returns its own `Failed: ${result}`-shaped string, without
+          // touching agent/tools.ts. Bespoke, non-templated outcome strings
+          // some tools author directly stay English-only, matching #405's
+          // scope boundary exactly (just closing the `Failed: ` half of it).
+          if (outcome.startsWith('Failed: ')) {
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            if (lang === 'mi') {
+              outcome = FAILED_PREFIX_MI + outcome.slice('Failed: '.length);
+            }
           }
         }
         await this.send(adapter, msg.conversationId, outcome).catch((err) =>
@@ -697,7 +908,12 @@ export class Router {
     // through — the text is passed to the model as an ordinary message,
     // never mistaken for a confirmation.
     if (config.behaviour.escalationToAdminEnabled && classifyEscalationConfirm(msg.text)) {
-      const escalationKey = this.callerKey(msg);
+      // Same auto-answer-thread translation as the CONFIRM/CANCEL intercept
+      // above: an escalation "yes" typed inside the thread resolves back to the
+      // parent channel the offer was registered against (issue #477 × #479).
+      const escalationConversationId =
+        this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId;
+      const escalationKey = `${msg.platform}:${escalationConversationId}:${msg.userId}`;
       const pendingEscalation = this.pendingEscalations.get(escalationKey);
       if (pendingEscalation && Date.now() - pendingEscalation.at < ESCALATION_WINDOW_MS) {
         this.pendingEscalations.delete(escalationKey);
@@ -735,8 +951,26 @@ export class Router {
       }
     }
 
-    // Only respond when addressed (mention/reply) or in a direct conversation.
-    if (!msg.addressedToBot && !msg.isDirect) return;
+    // Auto-answer (issue #477): an operator-allowlisted Discord channel
+    // (AUTO_ANSWER_CHANNEL_IDS) gets an answer for a plain top-level human
+    // post too, not just one that mentions/replies to the bot — this only
+    // relaxes the summon gate immediately below for exactly that case.
+    // Everything else — CONFIRM intercept above, pause/rate-limit/budget
+    // below, and the role-derived tool surface via resolveRole/toolsForRole
+    // — applies completely unchanged; this widens WHICH posts reach them,
+    // never what a post is allowed to do once there. `isBotAuthor` is a
+    // second, router-level backstop against a self/bot/webhook loop, on top
+    // of the adapter already never constructing an IncomingMessage for one.
+    const isAutoAnswerCandidate =
+      !msg.addressedToBot &&
+      !msg.isDirect &&
+      !msg.isBotAuthor &&
+      msg.platform === 'discord' &&
+      config.discord.autoAnswerChannelIds.includes(msg.conversationId);
+
+    // Only respond when addressed (mention/reply), in a direct conversation,
+    // or an auto-answer candidate.
+    if (!msg.addressedToBot && !msg.isDirect && !isAutoAnswerCandidate) return;
     if (!msg.text.trim()) return;
 
     // Paused: only super admins get through (so they can resume it). Everyone
@@ -789,8 +1023,14 @@ export class Router {
       return;
     }
 
-    // Daily reply budget (super admins exempt).
+    // Daily reply budget (super admins exempt). `replyBudget` is hoisted out
+    // of this block (issue #511) so the already-fetched `used`/`limit` pair
+    // can be threaded into `respond()` below for the approaching-budget
+    // warning, instead of being discarded once the `used < limit` check
+    // passes — no new DB query, reusing the exact read this block already
+    // makes.
     const limit = config.behaviour.dailyReplyLimitPerUser;
+    let replyBudget: { used: number; limit: number } | undefined;
     if (limit > 0 && role !== 'super_admin') {
       const used = await this.countReplies(msg.platform, msg.userId).catch((err) => {
         logger.error({ err, platform: msg.platform }, 'daily_reply_budget_check_failed');
@@ -826,11 +1066,46 @@ export class Router {
         }
         return;
       }
+      replyBudget = { used, limit };
     }
+
+    // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
+    // of this new untrusted-input path. Reserved HERE, only once pause, the
+    // per-user rate limit, and the daily budget have all passed, so a message
+    // those checks would shed never burns a slot from the shared per-channel
+    // allowance and starves other members' auto-answers. Never applied to an
+    // addressed/mention reply in the same channel, only to auto-answered ones.
+    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(msg.conversationId)) return;
 
     // If we ARE replying, make sure this message is in memory before the
     // agent turn runs (so recall can see it and ordering stays sane).
     await recorded;
+
+    // Auto-answer replies are contained in a new Discord thread anchored to
+    // the origin post (issue #477), never sent bare into the channel — every
+    // shortcut/respond send below is redirected through `replyConversationId`.
+    // A thread-creation failure (e.g. a transient Discord API error) degrades
+    // to answering directly in the channel rather than silently dropping the
+    // reply.
+    let replyConversationId: string | undefined;
+    if (isAutoAnswerCandidate) {
+      replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
+        logger.warn(
+          { err, conversationId: msg.conversationId },
+          'Auto-answer thread creation failed; replying in channel',
+        );
+        return undefined;
+      });
+      // Record the thread -> parent mapping so a CONFIRM/CANCEL or escalation
+      // "yes" the member types inside this thread resolves back to the parent
+      // channel the pending action/offer was registered against (issue #477).
+      if (replyConversationId) {
+        this.autoAnswerThreadParents.set(replyConversationId, {
+          parent: msg.conversationId,
+          at: Date.now(),
+        });
+      }
+    }
 
     const key = this.convoKey(msg);
 
@@ -848,7 +1123,11 @@ export class Router {
       this.recordShortcutHit('ack').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
       const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
       await this.enqueue(key, 'ack reply', () =>
-        this.send(adapter, msg.conversationId, lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT),
+        this.send(
+          adapter,
+          replyConversationId ?? msg.conversationId,
+          lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT,
+        ),
       );
       return;
     }
@@ -866,7 +1145,7 @@ export class Router {
       const hit = await this.tryKnowledgeShortcut(msg);
       if (hit) {
         await this.enqueue(key, 'knowledge shortcut reply', () =>
-          this.sendKnowledgeShortcut(msg, adapter, hit),
+          this.sendKnowledgeShortcut(msg, adapter, hit, replyConversationId),
         );
         return;
       }
@@ -896,7 +1175,7 @@ export class Router {
           logger.warn({ err }, 'shortcut_hit_record_failed'),
         );
         await this.enqueue(key, 'repeat-question shortcut reply', () =>
-          this.sendRepeatShortcut(msg, adapter, cached.replyText),
+          this.sendRepeatShortcut(msg, adapter, cached.replyText, replyConversationId),
         );
         return;
       }
@@ -923,14 +1202,16 @@ export class Router {
           logger.warn({ err }, 'shortcut_hit_record_failed'),
         );
         await this.enqueue(key, 'repeat-max-turns shortcut reply', () =>
-          this.sendRepeatMaxTurnsShortcut(msg, adapter),
+          this.sendRepeatMaxTurnsShortcut(msg, adapter, replyConversationId),
         );
         return;
       }
     }
 
     // Serialise per conversation so session resume stays consistent.
-    await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter));
+    await this.enqueue(key, 'respond', () =>
+      this.respond(msg, role, adapter, replyBudget, replyConversationId),
+    );
   }
 
   /**
@@ -993,7 +1274,9 @@ export class Router {
     msg: IncomingMessage,
     adapter: PlatformAdapter,
     hit: KnowledgeShortcutHit,
+    replyConversationId?: string,
   ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     logger.debug({ platform: msg.platform, conversationId: msg.conversationId }, 'knowledge_shortcut_hit');
     this.recordShortcutHit('knowledge').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
     // Member-facing low-rated-answer caveat (issue #337) — opt-in, and
@@ -1018,13 +1301,13 @@ export class Router {
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
     const replyText = `${hit.content}${note}${suffix}`;
-    await this.send(adapter, msg.conversationId, replyText);
+    await this.send(adapter, target, replyText);
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),
     );
     await recordInteraction({
       platform: msg.platform,
-      conversationId: msg.conversationId,
+      conversationId: target,
       userId: 'bot',
       userName: 'CommunityAgent',
       role: 'member',
@@ -1077,17 +1360,19 @@ export class Router {
     msg: IncomingMessage,
     adapter: PlatformAdapter,
     cachedReplyText: string,
+    replyConversationId?: string,
   ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     // Only the fixed wrapper is translated — `cachedReplyText` is the
     // original (already-served) answer's language, left untouched (issue
     // #339/#405's "translate the shell, not the dynamic payload" discipline).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const notice = lang === 'mi' ? REPEAT_SHORTCUT_NOTICE_MI : REPEAT_SHORTCUT_NOTICE;
     const replyText = `${notice}${cachedReplyText}`;
-    await this.send(adapter, msg.conversationId, replyText);
+    await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
-      conversationId: msg.conversationId,
+      conversationId: target,
       userId: 'bot',
       userName: 'CommunityAgent',
       role: 'member',
@@ -1107,17 +1392,22 @@ export class Router {
    * rather than a dead "reply yes" left over from — or absent entirely
    * despite — the original failure.
    */
-  private async sendRepeatMaxTurnsShortcut(msg: IncomingMessage, adapter: PlatformAdapter): Promise<void> {
+  private async sendRepeatMaxTurnsShortcut(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     const notice = lang === 'mi' ? REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI : REPEAT_MAX_TURNS_SHORTCUT_NOTICE;
     const failure = lang === 'mi' ? MAX_TURNS_REPLY_MI : MAX_TURNS_REPLY;
     const replyText = config.behaviour.escalationToAdminEnabled
       ? `${notice}${this.offerEscalation(msg, failure, lang === 'mi')}`
       : `${notice}${failure}`;
-    await this.send(adapter, msg.conversationId, replyText);
+    await this.send(adapter, target, replyText);
     await recordInteraction({
       platform: msg.platform,
-      conversationId: msg.conversationId,
+      conversationId: target,
       userId: 'bot',
       userName: 'CommunityAgent',
       role: 'member',
@@ -1129,7 +1419,14 @@ export class Router {
     );
   }
 
-  private async respond(msg: IncomingMessage, role: Tier, adapter: PlatformAdapter): Promise<void> {
+  private async respond(
+    msg: IncomingMessage,
+    role: Tier,
+    adapter: PlatformAdapter,
+    replyBudget?: { used: number; limit: number },
+    replyConversationId?: string,
+  ): Promise<void> {
+    const target = replyConversationId ?? msg.conversationId;
     const caller: CallerContext = {
       platform: msg.platform,
       userId: msg.userId,
@@ -1186,10 +1483,39 @@ export class Router {
       // failure — `reply.ok`/other failure modes are untouched. Threaded
       // into `outboundText` (not `reply.text` itself) so the caches below
       // that key off `reply.text`/`reply.ok` stay exactly as before.
-      const outboundText =
+      let outboundText =
         config.behaviour.escalationToAdminEnabled && reply.maxTurnsExceeded === true
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
+
+      // Approaching-daily-budget warning (issue #511): append-only, same
+      // shape as `offerEscalation` above — never replaces `outboundText`, so
+      // the caches below (keyed off `reply.text`/`reply.ok`, not
+      // `outboundText`) stay exactly as before. `replyBudget` is only ever
+      // set for a non-super-admin caller under a positive limit (see
+      // `handle()`), so no separate role check is needed here. `remaining`
+      // is the count AFTER this reply is sent/counted, matching the
+      // acceptance criterion's `limit - (used + 1)`.
+      if (config.behaviour.dailyReplyBudgetWarnEnabled && replyBudget) {
+        const remaining = replyBudget.limit - (replyBudget.used + 1);
+        if (remaining >= 0 && remaining <= config.behaviour.dailyReplyBudgetWarnRemaining) {
+          const userKey = `${msg.platform}:${msg.userId}`;
+          const lastWarned = this.budgetWarned.get(userKey) ?? 0;
+          if (Date.now() - lastWarned > 24 * 3_600_000) {
+            this.budgetWarned.set(userKey, Date.now());
+            let warningText = DAILY_REPLY_BUDGET_WARNING_TEXT(remaining);
+            if (reply.languagePreference === 'mi') {
+              warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_MI(remaining);
+            } else {
+              const style = await this.getRespStyle(msg.platform, msg.userId).catch(
+                () => 'standard' as const,
+              );
+              if (style === 'plain') warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN(remaining);
+            }
+            outboundText += warningText;
+          }
+        }
+      }
 
       // This call site (the real-agent-turn main reply, issue #339), the
       // gated notice (#363), and cancel/permissions-changed/pending-notice
@@ -1198,12 +1524,7 @@ export class Router {
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
       // those are out of scope.
-      await this.send(
-        adapter,
-        msg.conversationId,
-        outboundText,
-        reply.languagePreference === 'mi' ? 'mi' : undefined,
-      );
+      await this.send(adapter, target, outboundText, reply.languagePreference === 'mi' ? 'mi' : undefined);
 
       // If the turn registered a NEW pending destructive action, the model
       // composed the reply above and could have hidden or misrepresented the
@@ -1225,7 +1546,7 @@ export class Router {
               ? PENDING_NOTICE_PLAIN(pending.description)
               : PENDING_NOTICE(pending.description);
         }
-        await this.send(adapter, msg.conversationId, pendingText).catch((err) =>
+        await this.send(adapter, target, pendingText).catch((err) =>
           logger.warn({ err }, 'Failed to send deterministic pending notice'),
         );
       }
@@ -1257,7 +1578,7 @@ export class Router {
 
       await recordInteraction({
         platform: msg.platform,
-        conversationId: msg.conversationId,
+        conversationId: target,
         userId: 'bot',
         userName: 'CommunityAgent',
         role: 'member',

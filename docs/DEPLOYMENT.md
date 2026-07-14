@@ -148,23 +148,26 @@ Restart the service. Verify by DMing the bot as a super admin ("file an issue:
 …") and confirming with CONFIRM. Revoke the PAT to disable instantly. See
 docs/SECURITY.md §12 for why the token is scoped this narrowly.
 
-## 10. (Optional) Enable super-admin WhatsApp voice notes
-Lets a **super admin** send the bot a WhatsApp voice message; it's transcribed
-locally and actioned as if typed. Off by default, Baileys only, and never
-reachable by non-super-admins (the gate runs before any download — see
-docs/SECURITY.md §13). Prerequisite: `ffmpeg` on the host.
+## 10. (Optional) Enable WhatsApp voice notes
+Lets an eligible caller send the bot a WhatsApp voice message; it's transcribed
+locally and actioned as if typed. Off by default, Baileys only. Eligibility is
+`WHATSAPP_VOICE_MIN_ROLE`, defaulting to `super_admin` — never reachable by a
+non-super-admin unless you deliberately lower it (the tier gate runs before any
+download — see docs/SECURITY.md §13). Prerequisite: `ffmpeg` on the host.
 ```bash
 sudo apt install -y ffmpeg                 # one-time, decodes voice-note Opus
 # in .env:
 WHATSAPP_VOICE_ENABLED=true
 # WHATSAPP_VOICE_MODEL=Xenova/whisper-base.en   # default; whisper-small.en is more accurate/slower
 # WHATSAPP_VOICE_MAX_SECONDS=120                # longer notes are ignored without downloading
+# WHATSAPP_VOICE_MIN_ROLE=super_admin           # default; lower to admin/member/guest to widen eligibility
+# WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR=0          # 0=unlimited; set non-zero if you lower minRole
 ```
 Restart the service. The Whisper model downloads once on first use to the
 transformers cache (same as the embedding model) — the **first** voice note
 after enabling is slow while it downloads; subsequent ones are a few seconds on
-CPU. Verify by sending the bot a short voice note from a super-admin number and
-watching for `Transcribed super-admin voice note` in the logs. Set
+CPU. Verify by sending the bot a short voice note from an eligible number and
+watching for `Transcribed voice note` in the logs. Set
 `WHATSAPP_VOICE_ENABLED=false` (or remove it) and restart to disable.
 
 ## Upgrades

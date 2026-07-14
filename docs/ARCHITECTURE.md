@@ -82,6 +82,25 @@ for `protocolMessage` events in archived groups. Archiving is receive-side
 only — no new outbound/send behaviour, so it adds no new Baileys ToS/ban-risk
 surface (see SECURITY.md's Baileys section).
 
+## WhatsApp voice-note transcription
+
+`WHATSAPP_VOICE_ENABLED` (Baileys only; **off by default**) transcribes a
+voice note locally (transformers.js Whisper, `WHATSAPP_VOICE_MODEL`, default
+`Xenova/whisper-base.en` — **English-only**, a known and disclosed
+transcription-quality caveat for te reo Māori and other non-English speech)
+and actions the transcript through the exact same pipeline a typed message
+would use — RBAC, tool gating, and CONFIRM are all untouched.
+`WHATSAPP_VOICE_MIN_ROLE` (issue #507) sets the minimum tier eligible to use
+voice, defaulting to `'super_admin'` — byte-identical to the original
+super-admin-only rollout, since the gate stays a pure `isSuperAdmin` env check
+with no DB call at that default. Lowering it to `'admin'`, `'member'`, or
+`'guest'` reuses the same `resolveRole`/`atLeast` primitives every other
+tier-gated surface uses, enforced *before* any media is downloaded.
+`WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR` (default `0` = unlimited) adds a
+per-sender rolling-hour cap once an operator opts into a wider population —
+see SECURITY.md §13 for the full posture and the residual-risk note about
+leaving the rate limit unset while lowering `minRole`.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
@@ -193,7 +212,18 @@ memory**:
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped
    `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`/`list_roster`
-   tools instead.
+   tools instead. Off unless `ADMIN_DIGEST_TRENDS_ENABLED` (issue #497), every
+   one of these bare counts also carries a week-over-week trend suffix — a
+   ` (▲+N since last week)` / ` (▼-N since last week)` fragment appended to a
+   line whose count moved since the prior send, silent when it's unchanged or
+   there's no prior snapshot. The comparison point is `last_counts`, a JSONB
+   snapshot column on `admin_digest_sends` written every run regardless of the
+   flag (so flipping it on is retroactively useful from the very next tick)
+   and whitelist-sanitized at the write boundary to the known signal-name set
+   — the exact same integers the digest already sends, never anything else.
+   A quiet week (no DM sent) still snapshots the current counts via a
+   dedicated write path that deliberately never touches `sent_at`, keeping the
+   trend snapshot fully decoupled from the freshness guard above it.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -238,6 +268,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
+| `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -261,6 +292,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
+| `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -268,6 +300,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Web search & summarise (`WebSearch`; `WebFetch` never) | ❌ | ❌ | ✅ | ✅ |
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
+| `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
@@ -293,7 +326,17 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken. These three deterministic, non-agent
+of them read as the bot being broken. A push-side complement to the hard
+cutoff above (issue #511, opt-in via `DAILY_REPLY_BUDGET_WARN_ENABLED`,
+default off): once a non-super-admin caller's remaining daily replies fall to
+`DAILY_REPLY_BUDGET_WARN_REMAINING` (default 5) or fewer, the router appends
+one fixed line naming the remaining count to the real reply's text — never a
+separate send, never replacing the model's answer, mirroring `offerEscalation`
+(#479)'s append-only shape. It reuses the `used`/`limit` pair the daily-budget
+check above already reads (no new query), is debounced to once per rolling
+24h per caller (`budgetWarned`, same window and sweep cadence as
+`budgetNotified`), and honours the caller's standing `'mi'`/`'plain'`
+preference the same way the other fixed notices do. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
@@ -337,9 +380,18 @@ tier-revoked-mid-TTL "permissions changed" outcome, and the authoritative
 action each pick a fixed `_MI` variant off the same `getLanguagePreference`
 read, with `pending.description` embedded unchanged in both language variants
 and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
-`classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
-outcome/failure strings (`pending.execute()`'s own return value and the
-`Failed: ...` fallback) stay out of scope and English-only. The five opt-in,
+`classifyConfirmReply` keeps matching them. A tenth addition (issue #490)
+closes the one gap #405 named out of scope: the generic `'Failed: '` shell
+that fronts a `requireConfirm` outcome — whether `pending.execute()`'s own
+return value or the router's own catch-block fallback — is now swapped for a
+fixed `FAILED_PREFIX_MI` on a standing `'mi'` preference, leaving the dynamic
+`result`/error text after it byte-identical to the English case; a plain
+string-prefix match at the single existing send site, so it covers every
+`requireConfirm` call site sharing that template without touching
+`agent/tools.ts`. What stays out of scope and English-only: any bespoke,
+non-`Failed:`-templated outcome/description string a `requireConfirm` tool
+authors directly, and the symmetric `'Done: '` success shell (deferred — see
+below). The five opt-in,
 off-by-default shortcut-reply strings `respond()` uses to skip a full agent
 turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
 `GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
@@ -442,11 +494,25 @@ weakening it:
    never added as a member?" (the gated-mode onboarding queue — the exact
    conversion funnel `add_member` serves), and "who left?", with a
    total/joined/left weekly pulse line, for either platform. Rejoins clear
-   `left_at` and bump `rejoined_count`. A WhatsApp caveat not shared by
-   Discord's single-guild model: a `remove` from one group marks the row
-   "left" even if the person remains in another allowed group — a single
-   `(platform, user_id)` row can't represent per-group presence, documented
-   here rather than solved in this first version.
+   `left_at` and bump `rejoined_count`. The WhatsApp multi-group caveat noted
+   in the first version of this feature — a `remove` from one group marking
+   the row "left" even if the person remains in another allowed group — is
+   resolved (issue #501): before marking a `remove` as a leave,
+   `onGroupParticipantsUpdate` checks live membership across every *other*
+   `WHATSAPP_ALLOWED_JIDS` group via `groupFetchAllParticipating()` (the same
+   call `conversationsForUser`/`backfillRoster` already make), matching
+   phone/LID id forms the same tolerant way those two do, and skips the
+   leave-mark if the person is still present anywhere else in scope. A thrown
+   fetch degrades to the old unconditional mark-left (logged as a warning),
+   never a silent skip. Two residual, self-healing gaps remain, both narrower
+   than the original caveat: (1) a person who leaves *every* allowed group in
+   the same tick may be read as still-present for one event if another
+   group's live metadata hasn't yet reflected their departure — the next
+   remove event or the nightly backfill corrects it; (2) a participant removed
+   via a bare `@lid` JID with no resolvable phone number, who is present
+   elsewhere only under a phone-address form Baileys doesn't reciprocally
+   link back to that LID, still can't be matched — the same identity-linking
+   limit already documented above for `lidToPhone`.
 4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
    static "ask a community admin" pointer a gated guest gets on every
    addressed message named no one to ask. `listAdminDisplayNames(platform)`
@@ -469,7 +535,32 @@ weakening it:
    from a Discord nickname has no length or newline limit an admin couldn't
    abuse to forge Markdown link syntax or a fake system message. A name that
    sanitizes to empty is omitted, not shown blank.
-5. **`community_info` names every tool the caller actually has.** The
+5. **Real-time access-request alert** (issue #480, off unless
+   `ACCESS_REQUEST_ALERT_ENABLED=true`). The pending-access queue above is
+   pull-only (`list_access_requests`) plus a passive weekly digest count
+   (issue #133) — this closes the gap with a push notification the moment a
+   gated guest's addressed message creates a FRESH `access_requests` row.
+   `recordAccessRequest` reports insert-vs-update via Postgres's own
+   `xmax = 0` trick on its `RETURNING` clause — no new column or query shape —
+   and `router.ts` fires `notifyAccessRequest` only when that read reports
+   `inserted === true`; a repeat ping from the same still-pending guest
+   (`inserted === false`) never notifies again, so the upsert's own dedup IS
+   the debounce. Guild-wide `listAdmins()` audience, same recipients the
+   weekly digest's `pendingAccessRequests` count already reaches — not
+   `superAdminIds()`, since this is routine admin business. The DM names only
+   the guest's platform and (`sanitizeName`-cleaned) display name, never
+   message content, matching `access_requests`' own storage contract. A
+   guild-wide rolling-hour cap (`ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`,
+   default 10) bounds worst-case DM volume under a raid; once exhausted, later
+   first-time requests in that hour are still recorded (so nothing is lost —
+   `list_access_requests`/the digest still see them) but do not notify, and a
+   fresh hour resumes notifying. Never routed through the agent/model loop —
+   this is a router-level side effect off an existing DB upsert's return
+   value, so it adds no new prompt-injection surface. `add_member`'s existing
+   `clearAccessRequest` call means the next gated address from that same user
+   after being added (and later, if regated) is treated as a fresh insert and
+   notifies once more.
+6. **`community_info` names every tool the caller actually has.** The
    `community_info` tool (issue #92) answers "what can you do?" with
    `MEMBER_CAPABILITIES_TEXT`, a plain-language line for every `MEMBER_TOOLS`
    entry, pinned against drift by an anti-drift coverage test (issue #311).
@@ -538,7 +629,25 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   `'declined'` — a decline must stick on the very next run, not just until
   the cluster re-summarises to the same topic label) or whose topic an
   existing `knowledge` entry already covers above the relevance floor
-  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`).
+  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`). The topic match itself is two
+  layers (issue #503): a cheap exact (case-insensitive) string comparison
+  first, then — only when that misses — a semantic check against every
+  stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
+  (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
+  declined topic re-drafted under different wording on a later run (the
+  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  gets caught. `candidateTopicAlreadyReviewed` computes the topic's
+  embedding at most once per attempted cluster and reuses that same vector
+  for the semantic check, `knowledgeCoversTopic`, and the candidate insert
+  itself — no added local-embedding cost. Fails open (not blocked) on an
+  embedding error, same posture as `knowledgeCoversTopic`. `topic_embedding`
+  is nullable and **not backfilled** for rows inserted before this column
+  existed — those older rows are still covered by the (unchanged) exact-match
+  path but never surface a semantic match, mirroring this repo's existing
+  non-retroactive precedent (e.g. #197's `is_dm`). The column is
+  write-and-compare-only: never returned by `list_knowledge_candidates`,
+  `accept_knowledge_candidate`, or `decline_knowledge_candidate`, matching
+  `knowledge.embedding`/`knowledge_gaps.embedding`.
 - **Deletion coherence inherits from #51**: a candidate's `topic` is
   denormalized from its source digest at insert time. When a purge
   invalidates a digest, its still-*pending* candidates are deleted with it;
@@ -880,6 +989,36 @@ enabled (every message is inspected) — treat it like ambient archiving.
   rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
   reads only `admin_audit` and structurally can't surface auto-detected
   strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
+- **Appeal**: `my_warnings` gave a member visibility into their own
+  moderation status but no way to act on it — `appeal_moderation` (issue
+  #496) is that missing action, a member/guest-tier tool with the same
+  self-scoping discipline as `my_warnings`: it reads the caller's own
+  `countActiveWarnings(caller.platform, caller.userId)` only (never a
+  tool-argument-supplied id) and refuses cleanly ("no active warnings to
+  appeal") when it's zero, so it can't become a generic side channel to
+  message admins — `suggest_improvement`/`report_content` already cover that.
+  An eligible caller may attach one optional, sanitized, length-capped free-
+  text reason (same bound as `report_content`'s `reason`); calling it
+  proactively DMs super admins via the SAME `notifySuperAdmins` fan-out
+  `notifyReportFiled`/`notifyReportWithdrawn` already use (`notifyAppealFiled`)
+  — no new conversation-scoped push helper. Rate-capped **per caller**, not
+  per-conversation (an appeal is about one person's own status), one per
+  `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) — an in-memory,
+  best-effort cap, deliberately no new table for the MVP. Never itself
+  changes a warning count or mute state: resolution stays exactly
+  `clear_warnings`.
+- **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
+  right now", the question `list_member_warnings` structurally can't (it
+  requires an already-known `targetUserId`) and the digest's bare `🔇 N`
+  count (issue #357) was never meant to answer. It unions `countMutedMembers`'
+  and `countStaleMutedMembers`' (issue #403) predicates into one identity
+  list — each row tagged `active` (currently over the windowed strike limit)
+  or `stale` (over the unwindowed limit only — strikes aged out of the
+  window but never explicitly cleared, so the member *may* still be muted;
+  the tool hedges this explicitly, never asserting it as confirmed), with
+  strike count and last-warning timestamp. Never reason/excerpt — that stays
+  behind `list_member_warnings`. Same guild-wide, non-conversation-scoped
+  boundary as `clear_warnings`; capped at 50 rows, newest first.
 
 Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
 see SECURITY.md for the blast-radius and enforcement caveats.
@@ -911,6 +1050,48 @@ platforms.
   for the accepted blast-radius trade-off this design makes (linking expands
   what a single `forget_me` call erases) and the tests that pin both
   invariants.
+
+## Auto-answer mode (Discord, opt-in)
+
+`AUTO_ANSWER_CHANNEL_IDS` (issue #477) lets an operator allowlist specific
+Discord channels (typically help/forum channels) where a top-level human post
+gets an answer even when it doesn't mention/reply to the bot. Unset/empty is
+the default and is byte-identical to today's behaviour — the router's summon
+gate (`!msg.addressedToBot && !msg.isDirect`) only relaxes for a message whose
+`conversationId` is in the allowlist, is on Discord, and isn't
+bot/webhook-authored (`IncomingMessage.isBotAuthor`, a router-level backstop
+alongside the adapter never constructing a message for one in the first
+place).
+
+Everything downstream of that one relaxed check is reused verbatim — role
+resolution (`resolveRole`), the gated-guest exclusion (evaluated earlier in
+`handle()`, so it applies to auto-answer for free), the tier-derived tool
+surface (`toolsForRole`), the per-user rate limit, the daily reply budget, and
+the repeat-question/repeat-max-turns shortcuts. Two things are genuinely new:
+
+- **A per-channel rolling-hour cap** (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`,
+  default 10), a sliding-window limiter local to `Router` mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot` shape but operator-tunable, since
+  an allowlisted channel's traffic is far less predictable than the
+  admin-only `announce` tool's.
+- **Threaded replies.** The router asks the adapter
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only, optional — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action) to open a thread anchored to the origin
+  post, then redirects every send for that turn (including a shortcut hit)
+  into the new thread via an optional `replyConversationId` parameter threaded
+  through `respond()`/`sendKnowledgeShortcut()`/`sendRepeatShortcut()`/
+  `sendRepeatMaxTurnsShortcut()`. Caching keys (`convoKey`/`callerKey`, and
+  therefore the repeat-question shortcut and per-user rate limit) stay keyed
+  on the **parent channel**, not the newly created thread — each auto-answered
+  post gets its own thread, but "the same member asking the same thing again
+  in this channel" still needs to match across threads for the shortcut to
+  fire. A thread-creation failure degrades to answering directly in the
+  channel rather than dropping the reply.
+
+Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
+ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for
+the full security posture and its test references.
 
 ## Concurrency model
 
@@ -957,6 +1138,35 @@ conversational message embeddings. Default `0` is a true no-op (byte-identical
 to pre-#474 behaviour); an operator raises it once they've observed their own
 corpus's `similarity` distribution (visible today via `remember_search`'s
 `(NN% match)` display).
+
+**Requester name relocated out of the system prompt** (issue #508): the system
+prompt's `Context:` block used to include a `- Requester: NAME (role)` line
+built from the per-message sender's platform display name. In a shared
+channel (a Discord channel or WhatsApp group with more than one participant —
+the dominant traffic pattern for a community bot), that line made the whole
+system-prompt string vary on essentially every turn from a different poster,
+which defeats the Agent SDK's prompt cache: caching is breakpoint-delimited,
+matching only when the *entire* content up to the trailing breakpoint is
+byte-identical, so any per-speaker variance inside that one opaque block was a
+guaranteed full-price cache miss regardless of #169's day-granularity date
+work (a prior attempt, #342, tried fixing this by reordering the block instead
+of removing the variance and was rejected for exactly that reason — reordering
+a single opaque string changes nothing about where its one trailing breakpoint
+falls). `buildSystemPrompt` no longer includes `caller.userName` anywhere;
+`runAgentTurn` (`core.ts`) now prepends a sanitized `[Requester: NAME]` tag
+(via `renderRequesterTag`, reusing the same `sanitizeName` the old line used)
+to the **user turn** instead, alongside the existing `renderMemoryContext`
+block — mirroring how #474's memory-relevance fix already treats per-turn
+content as living downstream of the cached prefix. This makes the system
+prompt byte-identical across different speakers of the same role in the same
+conversation on the same day, which is the actual precondition for a cache
+hit; mixed-role channels (e.g. a member turn followed by an admin turn) still
+differ because `ROLE_NOTES[role]` varies, so the benefit is scoped to
+consecutive same-role turns, not every message. No dollar/token saving is
+claimed here — `execTurn` now reads `usage.cache_read_input_tokens` and
+`usage.cache_creation_input_tokens` off the SDK's `result` message (mirroring
+the existing `total_cost_usd` read) and logs them at debug level per turn, so
+the actual hit rate can be measured from real traffic instead of asserted.
 
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
@@ -1156,6 +1366,35 @@ session) and the router's pre-send backstop guarantees the member still gets
 a reply (issue #52). That degradation is per-request only — a *persistent*
 DB outage still fails `healthcheck()` at startup and flips `db: false` on
 `/healthz`, so it is never masked from monitoring.
+
+**Pool-level query/connection bounds** (issue #502) close a gap #52 never
+covered: every one of #52's safeguards is a `.catch()`, which only ever fires
+on a *rejected* query — a query that never resolves or rejects (a lock wait,
+a stalled network round-trip, slow autovacuum, disk pressure) hangs the
+connection indefinitely instead. With the shared `pool` (`src/storage/db.ts`)
+capped at `max: 10`, a handful of stuck connections exhausts it, and every
+subsequent turn — including `/healthz`'s own `healthcheck()`, which runs on
+the same pool — queues forever behind them. `pool` is now constructed with
+three config-driven bounds, all on by default (pure safety hardening, no
+happy-path behaviour change for any query that completes normally):
+
+- `DB_STATEMENT_TIMEOUT_MS` (default `15000`) → `statement_timeout`,
+  enforced **server-side** by Postgres itself; covers the dominant cases
+  (lock waits, slow autovacuum, disk pressure, a runaway query).
+- `DB_QUERY_TIMEOUT_MS` (default `15000`) → `query_timeout`, the
+  **client-side** mirror — bounds an in-flight query even in the one case
+  `statement_timeout` alone can't reach: a stalled network round-trip where
+  the packet never reaches Postgres (so the server-side timer never starts)
+  or the response never returns.
+- `DB_CONNECT_TIMEOUT_MS` (default `10000`) → `connectionTimeoutMillis` —
+  bounds how long a caller waits to acquire/establish a connection, so it
+  fails fast instead of queuing forever when the pool is saturated.
+
+A timeout firing surfaces as an ordinary query rejection through the exact
+same `.catch()` degrade-gracefully paths #52 already built — this doesn't
+add new failure-handling logic, it just guarantees a hang eventually becomes
+the rejection that logic already handles safely (never echoing the raw
+Postgres error text to a member).
 
 ## Usage & shared Max-pool alerting
 

@@ -19,7 +19,8 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= 'ci-dummy-guild';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { buildSystemPrompt, renderMemoryContext } = await import('../src/agent/systemPrompt.js');
+const { buildSystemPrompt, renderMemoryContext, renderRequesterTag } =
+  await import('../src/agent/systemPrompt.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
 
 interface InjectionCorpus {
@@ -97,25 +98,38 @@ test('SECURITY: every knowledge-poisoning payload is neutralised when it arrives
   }
 });
 
-test('SECURITY: every malicious display name is neutralised in the system-prompt requester line (issue #227)', () => {
+test('SECURITY: every malicious display name is absent from the system prompt entirely (issue #508 — relocated from the old requester line, issue #227)', () => {
+  // The requester name no longer appears in the system prompt at all (issue
+  // #508) — it now rides the USER turn instead (see the renderRequesterTag
+  // corpus test below). A malicious display name therefore has nothing to
+  // inject into the system prompt: it's simply never interpolated there.
+  const baseline = buildSystemPrompt({ ...caller, userName: 'Chris', role: 'member' }, policy);
   for (const name of corpus.maliciousDisplayNames) {
     const prompt = buildSystemPrompt({ ...caller, userName: name, role: 'member' }, policy);
-    const requesterLine = prompt.split('\n').find((l) => l.startsWith('- Requester:'));
-    assert.ok(requesterLine, 'requester line must be present on its own line');
-    assert.ok(
-      !/[<>]/.test(requesterLine ?? ''),
-      `requester line must have angle brackets stripped: ${requesterLine}`,
-    );
-    // A name claiming a higher tier ("role-elevation" entries) can never
-    // change the resolved role tag — that comes only from caller.role.
-    assert.match(requesterLine ?? '', /\(member\)$/);
+    assert.equal(prompt, baseline, `a malicious display name must never change the system prompt: ${name}`);
+  }
+});
+
+test('SECURITY: every malicious display name is neutralised in the user-turn requester tag (issue #508, relocated from #227)', () => {
+  for (const name of corpus.maliciousDisplayNames) {
+    const tag = renderRequesterTag(name);
+    assert.ok(!/[<>]/.test(tag), `requester tag must have angle brackets stripped: ${tag}`);
     // Tag-escape / newline-injection entries must not survive verbatim once
     // sanitised; plain role-elevation text with no such characters is left
-    // as-is (its neutralisation is the guideline text, not stripping).
-    if (/[<>\r\n]/.test(name) || name.length > 100) {
-      assert.ok(
-        !prompt.includes(name),
-        `a tag/newline/over-length name must never survive verbatim: ${name}`,
+    // as-is (its neutralisation is the guideline text in GUIDELINES, not
+    // stripping — role always comes from caller.role, never from the tag).
+    if (/[<>[\]\r\n]/.test(name) || name.length > 100) {
+      assert.ok(!tag.includes(name), `a tag/newline/over-length name must never survive verbatim: ${name}`);
+    }
+    if (tag) {
+      assert.equal(tag.split('\n').length, 1, `requester tag must collapse to one line: ${tag}`);
+      // The tag's own `[Requester: ...]` delimiters must be the ONLY square
+      // brackets — a hostile `]` in the display name can no longer close the
+      // tag early and forge "outside the tag" content (issue #508 review).
+      assert.equal(
+        (tag.match(/[[\]]/g) ?? []).length,
+        2,
+        `only the tag's own delimiters may be square brackets: ${tag}`,
       );
     }
   }
