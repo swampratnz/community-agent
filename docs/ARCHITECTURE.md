@@ -261,6 +261,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
+| `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -881,6 +882,18 @@ enabled (every message is inspected) — treat it like ambient archiving.
   rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
   reads only `admin_audit` and structurally can't surface auto-detected
   strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
+- **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
+  right now", the question `list_member_warnings` structurally can't (it
+  requires an already-known `targetUserId`) and the digest's bare `🔇 N`
+  count (issue #357) was never meant to answer. It unions `countMutedMembers`'
+  and `countStaleMutedMembers`' (issue #403) predicates into one identity
+  list — each row tagged `active` (currently over the windowed strike limit)
+  or `stale` (over the unwindowed limit only — strikes aged out of the
+  window but never explicitly cleared, so the member *may* still be muted;
+  the tool hedges this explicitly, never asserting it as confirmed), with
+  strike count and last-warning timestamp. Never reason/excerpt — that stays
+  behind `list_member_warnings`. Same guild-wide, non-conversation-scoped
+  boundary as `clear_warnings`; capped at 50 rows, newest first.
 
 Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
 see SECURITY.md for the blast-radius and enforcement caveats.
@@ -912,6 +925,48 @@ platforms.
   for the accepted blast-radius trade-off this design makes (linking expands
   what a single `forget_me` call erases) and the tests that pin both
   invariants.
+
+## Auto-answer mode (Discord, opt-in)
+
+`AUTO_ANSWER_CHANNEL_IDS` (issue #477) lets an operator allowlist specific
+Discord channels (typically help/forum channels) where a top-level human post
+gets an answer even when it doesn't mention/reply to the bot. Unset/empty is
+the default and is byte-identical to today's behaviour — the router's summon
+gate (`!msg.addressedToBot && !msg.isDirect`) only relaxes for a message whose
+`conversationId` is in the allowlist, is on Discord, and isn't
+bot/webhook-authored (`IncomingMessage.isBotAuthor`, a router-level backstop
+alongside the adapter never constructing a message for one in the first
+place).
+
+Everything downstream of that one relaxed check is reused verbatim — role
+resolution (`resolveRole`), the gated-guest exclusion (evaluated earlier in
+`handle()`, so it applies to auto-answer for free), the tier-derived tool
+surface (`toolsForRole`), the per-user rate limit, the daily reply budget, and
+the repeat-question/repeat-max-turns shortcuts. Two things are genuinely new:
+
+- **A per-channel rolling-hour cap** (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`,
+  default 10), a sliding-window limiter local to `Router` mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot` shape but operator-tunable, since
+  an allowlisted channel's traffic is far less predictable than the
+  admin-only `announce` tool's.
+- **Threaded replies.** The router asks the adapter
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only, optional — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action) to open a thread anchored to the origin
+  post, then redirects every send for that turn (including a shortcut hit)
+  into the new thread via an optional `replyConversationId` parameter threaded
+  through `respond()`/`sendKnowledgeShortcut()`/`sendRepeatShortcut()`/
+  `sendRepeatMaxTurnsShortcut()`. Caching keys (`convoKey`/`callerKey`, and
+  therefore the repeat-question shortcut and per-user rate limit) stay keyed
+  on the **parent channel**, not the newly created thread — each auto-answered
+  post gets its own thread, but "the same member asking the same thing again
+  in this channel" still needs to match across threads for the shortcut to
+  fire. A thread-creation failure degrades to answering directly in the
+  channel rather than dropping the reply.
+
+Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
+ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for
+the full security posture and its test references.
 
 ## Concurrency model
 
@@ -1026,6 +1081,54 @@ is cached only when `AgentReply.maxTurnsExceeded === true`, keyed and swept
 identically, and never replayed across a different platform, conversation, or
 user. Off by default; an operator opts in independently of the success-repeat
 shortcut.
+
+**Real-time admin escalation after a max-turns failure**
+(`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479): closes the
+"member hits `AGENT_MAX_TURNS` and gets nothing but a static fallback" gap —
+the one deflection failure the bot already detects structurally
+(`reply.maxTurnsExceeded === true`) but never followed up on. The whole flow
+lives in `router.ts`, entirely outside the model/tool layer:
+
+- **Atomic offer.** When the flag is on and a turn (or the repeat-max-turns
+  shortcut replaying one) ends with `maxTurnsExceeded === true`, the router
+  appends one line to `MAX_TURNS_REPLY`/`MAX_TURNS_REPLY_MI` — "Want me to
+  flag this for a community admin? Reply yes within 10 minutes." — and, in
+  the same step, records a pending entry in an in-memory
+  `platform:conversationId:userId -> {query, at}` map
+  (`Router.pendingEscalations`), keyed and swept exactly like
+  `lastMaxTurnsFailure` (issue #306) but on its own 10-minute TTL
+  (`ESCALATION_WINDOW_MS`). The offer line is never shown without a live
+  entry behind it and vice versa (`offerEscalation`) — both call sites that
+  can serve this failure text (a fresh turn in `respond()`, and the
+  repeat-max-turns shortcut's replay of the same text) go through the same
+  helper, closing the "dead offer / orphaned entry" hazard the adversarial
+  review for #479 flagged.
+- **Deterministic confirmation intercept.** A short affirmative
+  (`yes`/`y`/`āe`, case-insensitive, trimmed) from the same caller within the
+  TTL is matched in `handle()` BEFORE the addressed-to-bot check (same
+  positioning as the CONFIRM/CANCEL intercept, so a bare reply works in a
+  group) and before any shortcut/model routing. A match: consumes the
+  pending entry (single-shot — a replayed "yes" finds nothing the second
+  time), reserves a slot against the guild-wide rolling-hour
+  `ESCALATION_RATE_LIMIT_PER_HOUR` cap (default 5, same sliding-window shape
+  as `ANNOUNCE_RATE_LIMIT_PER_HOUR`), and on success calls `notifyAdmins`
+  (`agent/tools.ts`) — the real-time counterpart to `notifyReportFiled`'s
+  `notifySuperAdmins`, but sourced from `listAdmins()` (every
+  `community_users.role = 'admin'` row guild-wide, the same recipient set
+  the weekly digest already uses) across every connected adapter, echoing
+  the member's own truncated original question (`truncateForEcho`, the same
+  helper `notifyReportFiled`/`notifySuggestionResolved` use). A "yes" with no
+  live pending entry (never offered, or past the TTL) falls straight through
+  to the model as an ordinary message. Once the hourly cap is exhausted, a
+  further confirmed "yes" gets a plain "already at the hourly cap" reply
+  instead of a notification.
+- **No new tool, no new privileged data access.** The trigger is the
+  existing structural `maxTurnsExceeded` signal, never a model-callable
+  affordance — a crafted question can't make the *model* trigger an alert,
+  only a genuine max-turns exhaustion followed by the member's own "yes"
+  can. `listAdmins()` and the echoed question text are both already visible
+  to admins via the weekly digest/`list_knowledge_gaps`; this only changes
+  *when* they're seen.
 
 ## Health & monitoring
 

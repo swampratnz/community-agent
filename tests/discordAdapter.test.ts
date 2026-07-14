@@ -15,7 +15,7 @@ import type { IncomingMessage } from '../src/platforms/types.js';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.DISCORD_MODERATION_ENABLED ??= 'true';
 // Fixed allowlist for the assign/remove_community_role tests below (issue #232).
 process.env.DISCORD_ASSIGNABLE_ROLES ??= 'role-cosmetic-1,role-cosmetic-2';
@@ -2256,6 +2256,54 @@ test('performAdminAction("archive_thread") throws when the target channel is not
     () => adapter.performAdminAction({ kind: 'archive_thread', conversationId: 'chan-1', params: {} }),
     /is not a thread/,
   );
+});
+
+// startAutoAnswerThread (issue #477's auto-answer mode) — the router-driven
+// counterpart to performAdminAction('create_thread'): same underlying
+// `channel.threads.create({ name, startMessage })` primitive, reused via
+// stubClientForThreadCreate above, just invoked deterministically rather
+// than model-requested.
+test('startAutoAnswerThread creates a thread anchored to the given message id and returns its id (issue #477)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubClientForThreadCreate(adapter);
+  const threadId = await adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', 'How do I use tool use?');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].startMessage, 'origin-msg-1', 'the thread must be anchored to the origin post');
+  assert.equal(calls[0].name, 'How do I use tool use?');
+  assert.equal(threadId, 'thread-new-1');
+});
+
+test('startAutoAnswerThread throws on a channel type that does not support threads (issue #477)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForThreadCreate(adapter, ChannelType.GuildVoice);
+  await assert.rejects(
+    () => adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', 'Question'),
+    /does not support threads/,
+  );
+});
+
+test('SECURITY: startAutoAnswerThread routes the thread name through filterOutbound — a secret pasted into the question cannot reach the (highly visible) thread title unredacted (issue #477)', async () => {
+  const adapter = new DiscordAdapter();
+  const calls = stubClientForThreadCreate(adapter);
+  const secret = 'sk-ant-' + 'z'.repeat(30);
+  await adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', `question about ${secret} end`);
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].name.includes('sk-ant-'), 'no raw secret fragment may reach the thread title');
+  assert.ok(calls[0].name.includes('[redacted]'), 'the secret must be redacted, not silently dropped');
+});
+
+test('SECURITY: an auto-answer reply is redacted end-to-end — thread creation, then sendMessage into the new thread, both filtered (issue #477)', async () => {
+  const adapter = new DiscordAdapter();
+  stubClientForThreadCreate(adapter);
+  const threadId = await adapter.startAutoAnswerThread('chan-1', 'origin-msg-1', 'Question');
+  assert.equal(threadId, 'thread-new-1');
+
+  const sent = stubClient(adapter);
+  const secret = 'sk-ant-' + 'q'.repeat(30);
+  await adapter.sendMessage({ conversationId: threadId, text: `here is the answer: ${secret}` });
+  assert.equal(sent.length, 1);
+  assert.ok(!sent[0].includes('sk-ant-'), 'no raw secret fragment may reach the thread reply');
+  assert.ok(sent[0].includes('[redacted]'), 'the secret must be redacted, not silently dropped');
 });
 
 // canPostTo (issue #270): a fallback reachability check used by announce/

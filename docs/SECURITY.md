@@ -754,6 +754,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
+  - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
+    test) enumerates currently-muted members by identity — the growth path
+    #403 named and deferred for the digest's bare `🔇 N` count. It sits at the
+    same admin-tier, non-conversation-scoped boundary `clear_warnings`/
+    `list_member_warnings` already occupy — not a new data-access tier, and no
+    field it returns (user id, strike count, `active`/`stale` status,
+    last-warning timestamp) is new: every one is already reachable by an
+    admin who already knows the target id via `list_member_warnings`. It
+    deliberately never returns `reason`/`excerpt` (message content stays
+    behind `list_member_warnings`, pinned by a `SECURITY:` test), and its
+    `stale` tag — like `countStaleMutedMembers`' own count — is an
+    over-approximation the tool's own output hedges as "may still be muted",
+    never asserted as a confirmed live mute.
   - **Strike accumulation is unbounded by default, and that's now a documented
     choice, not an oversight**: `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset
     by default) lets an admin opt into a rolling window so only strikes newer
@@ -1145,6 +1158,113 @@ typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
   voice note that *replies to the bot* is addressed (its `contextInfo` is read
   from the audio payload); DMs to the bot are always addressed. This does not
   widen who can trigger the bot — the super-admin gate still applies.
+
+### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
+
+Closes the "member exhausts `AGENT_MAX_TURNS` and gets nothing but a static
+fallback" gap with a member-initiated, real-time admin alert — see
+`docs/ARCHITECTURE.md` for the full flow. Controls:
+
+- **No new tool, no new model-reachable surface.** The trigger is the
+  existing structural `reply.maxTurnsExceeded === true` signal, not free-text
+  or a tool call — the entire offer/confirm/notify flow lives in
+  `router.ts`'s deterministic intercept layer, the same trust tier as the
+  CONFIRM/CANCEL intercept. A crafted question can make the *model* fail,
+  but it cannot make the model itself trigger an alert; only a genuine
+  max-turns exhaustion followed by the member's own subsequent "yes" can.
+- **Member-initiated, not auto-fired.** The offer requires an explicit
+  confirming reply; a max-turns failure alone never notifies anyone.
+- **No new data access.** `notifyAdmins` (mirroring `notifySuperAdmins`)
+  loops `listAdmins()` — the same guild-wide `community_users.role='admin'`
+  recipient set the weekly digest already targets — and echoes only the
+  member's own truncated original question (`truncateForEcho`, the same
+  helper `notifyReportFiled`/`notifySuggestionResolved` use). This changes
+  *when* an admin sees data already visible via the digest, not *what* they
+  can see.
+- **`SECURITY:` — single-shot consumption.** The pending entry is consumed
+  (deleted) the instant a confirming "yes" is matched, before the rate-cap
+  check runs — so a replayed "yes" can never fire a second notification,
+  regardless of whether the first attempt cleared the cap.
+- **`SECURITY:` — no confirmation without a live pending entry.** A "yes"
+  from a caller with no pending escalation (never offered one, or past the
+  10-minute TTL) is passed through to the model as an ordinary message —
+  never mistaken for a confirmation, never calls `notifyAdmins`.
+- **`SECURITY:` — guild-wide rate cap, tier-blind.** `ESCALATION_RATE_LIMIT_PER_HOUR`
+  (default 5) bounds total confirmed-escalation notifications per rolling
+  hour regardless of caller tier or which conversation triggers them —
+  including an open-mode guest, since the cap has no tier branch to bypass.
+  Once exhausted, a further confirmed "yes" gets a plain "already at the
+  hourly cap" reply instead of a notification.
+- **Off by default, byte-identical when unset.** With the flag unset, no
+  offer line is ever appended, no pending entry is ever recorded, and no
+  caller message can call `notifyAdmins` — pinned by a router test.
+
+### 15. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
+
+An operator-curated allowlist of Discord channel ids in which a top-level
+human post that does **not** address the bot (no mention/reply/DM) still gets
+an answer, contained in a thread anchored to that post. This is the one
+deliberate widening of the summon gate (`router.ts`'s
+`!msg.addressedToBot && !msg.isDirect`) in the whole codebase — every other
+control downstream of it is reused completely unchanged:
+
+- **Off by default, byte-identical.** Unset/empty `AUTO_ANSWER_CHANNEL_IDS`
+  means no post that isn't addressed/direct ever produces a reply — pinned by
+  a router test. Enabling it is a per-channel operator decision (the channel's
+  own stated purpose — a help/forum channel — is the consent boundary), not a
+  global posture change.
+- **No new untrusted-input path in substance, only in trigger.** The router
+  already classifies and stores every non-addressed message as `kind:
+  'ambient'` (issue #48/#103); this only adds a reply branch at the summon
+  gate. No new ingestion, no new retention, no schema change.
+- **Tool surface is the existing floor, never escalated.** An auto-answered
+  turn resolves the poster's tier via the exact same `resolveRole` call an
+  addressed turn uses, and `toolsForRole` is invoked with that same value —
+  no new code path computes or overrides the tool list. In gated mode, an
+  unregistered guest is already excluded further up the function (the
+  gated-guest branch returns before the auto-answer gate is ever evaluated),
+  so it inherits that exclusion for free; in open mode a guest is answered at
+  guest tier, which is already the same tool surface as member (`MEMBER_TOOLS`
+  is what `toolsForRole`'s default branch returns). Pinned by `SECURITY:`
+  router tests in both modes.
+- **Self/bot/webhook loop prevention.** `IncomingMessage.isBotAuthor` is a
+  second, router-level backstop (in addition to the Discord adapter never
+  constructing an `IncomingMessage` for a bot- or webhook-authored message in
+  the first place): the auto-answer gate refuses any post carrying it. Pinned
+  by a `SECURITY:` router test.
+- **Existing cost levers apply unchanged, no new bypass.** Per-user rate
+  limit, the daily reply budget, `AGENT_MODEL_MEMBER`/`AGENT_MAX_TURNS_MEMBER`,
+  and the repeat-question shortcut all still gate an auto-answer turn exactly
+  as they gate an addressed one — none of that logic was touched, only the
+  summon gate above it. Pinned by `SECURITY:` router tests (over-budget shed,
+  repeat-question shortcut hit).
+- **Per-channel rolling-hour cap.** A new, separate sliding-window limiter
+  (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, default 10), mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot`/`ANNOUNCE_RATE_LIMIT_PER_HOUR`
+  shape but operator-tunable — bounds the flood/cost risk of a channel that
+  turns out busier than expected. Never applies to an addressed/mention reply
+  in the same channel. Pinned by a router test.
+- **Threaded, not bare-channel.** The reply is contained in a new Discord
+  thread anchored to the origin post
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action, just router-driven rather than
+  model-requested) rather than posted directly into the channel. The thread's
+  name is a truncated echo of the question and is routed through the same
+  outbound filter (secret redaction) as every other bot-composed string
+  reaching Discord, since a highly-visible channel/thread title is a worse
+  exposure surface than an ordinary reply for a member who pastes a secret
+  into their question. If thread creation fails (a transient Discord API
+  error), the router falls back to replying directly in the channel rather
+  than silently dropping the answer. Pinned by adapter + router tests
+  (including a `SECURITY:` redaction test end-to-end through thread creation
+  and the reply send).
+- **Discord-only.** `PlatformAdapter.startAutoAnswerThread` is optional,
+  mirroring `sendImage?`/`reactToMessage?`/`canPostTo?`'s convention; the
+  WhatsApp adapters simply don't implement it, and the auto-answer gate
+  itself is additionally hard-restricted to `msg.platform === 'discord'`.
+  WhatsApp/Baileys auto-answer carries separate ToS/ban risk and is
+  deliberately out of scope for this feature — a different proposal.
 
 ## Platform-specific notes
 
