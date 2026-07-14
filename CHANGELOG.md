@@ -13,6 +13,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-15
 
 ### Fixed
+- **`build` CI failure — `community_info` admin reply over its char cap**: the
+  admin capabilities text had grown 18 chars past its intentional 2800-char cap
+  (the `community_info: admin reply stays under a hard char cap` test, issue
+  #367), failing the `build` job deterministically on `main`. Trimmed two
+  non-load-bearing clarifiers (`" with reasons"`, `" (questions I couldn't
+  answer)"`) from `ADMIN_CAPABILITIES_TEXT` — neither is referenced by the
+  anti-drift coverage map, so every admin tool stays covered and the reply is
+  back under the cap. Honours the test's "keep it tight, don't grow into a wall
+  of text" discipline rather than bumping the cap.
 - **Intermittent `security-invariants` CI crash (`tsx --test` exit 7)**: the
   `security-invariants` gate runs the suite with **no** Postgres, so every
   `runAgentTurn`-driven test emits a burst of fail-open warn/error logs
