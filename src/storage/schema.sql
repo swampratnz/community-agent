@@ -658,3 +658,16 @@ CREATE TABLE IF NOT EXISTS shortcut_hits (
 
 CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
   ON shortcut_hits (created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Semantic half of the knowledge_candidates dedup guard (issue #503).
+-- hasQueuedCandidateForTopic's exact (case-insensitive) string match doesn't
+-- catch a paraphrased topic label — the offline builder's free-text `TOPIC:`
+-- summary for the same recurring question can drift in wording run over run,
+-- so an admin's decline of "Wellington meetup schedule" didn't stop
+-- "when's the next Wellington meetup?" from resurfacing later. Nullable, no
+-- backfill for rows inserted before this column existed (non-retroactive —
+-- see docs/ARCHITECTURE.md); those rows simply never match on the semantic
+-- path but remain covered by the untouched exact-match fast path.
+-- ---------------------------------------------------------------------------
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS topic_embedding VECTOR(:EMBEDDING_DIM);
