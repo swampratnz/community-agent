@@ -12,7 +12,7 @@ import type { CloudInboundMessage } from '../src/platforms/whatsapp/cloudWire.js
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER = 'cloud';
 process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID ??= 'test-phone-id';
 process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';

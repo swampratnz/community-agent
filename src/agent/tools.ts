@@ -42,6 +42,7 @@ import {
   listKnowledgeTopics,
   listMemberNotes,
   listMemberWarnings,
+  listMutedMembers,
   MEMBER_NOTE_MAX_CHARS,
   isKnownConversation,
   isKnownMessage,
@@ -49,6 +50,7 @@ import {
   isKnowledgeStale,
   linkMembers,
   listAccessRequests,
+  listAdmins,
   listAdminRoster,
   listAnswerFeedback,
   listContextDigests,
@@ -485,6 +487,41 @@ async function notifySuperAdmins(
 }
 
 /**
+ * Real-time counterpart to `notifySuperAdmins` above (issue #479's admin
+ * escalation), sourced from `listAdmins()` — every `community_users.role =
+ * 'admin'` row guild-wide, the same recipient set the weekly digest already
+ * uses — instead of `superAdminIds()`. Called directly from the router's
+ * deterministic "yes"-confirmation intercept, never from a model-callable
+ * tool: there is no new privileged data access here, only a change in WHEN an
+ * admin sees data already visible via the digest. Best-effort throughout: a
+ * `listAdmins()` failure or a single admin's DM failure is logged and never
+ * prevents alerting the rest.
+ */
+export async function notifyAdmins(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  message: string,
+  excludeUserId: string,
+): Promise<void> {
+  let admins: Awaited<ReturnType<typeof listAdmins>>;
+  try {
+    admins = await listAdmins();
+  } catch (err) {
+    logger.warn({ err }, 'listAdmins failed; escalation admin alert skipped');
+    return;
+  }
+  for (const admin of admins) {
+    if (admin.platformUserId === excludeUserId) continue;
+    const target = adapterFor(admin.platform);
+    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    target
+      .sendDirectMessage(admin.platformUserId, `🔔 ${message}`)
+      .catch((err) =>
+        logger.warn({ err, id: admin.platformUserId, platform: admin.platform }, 'Admin alert failed'),
+      );
+  }
+}
+
+/**
  * Cap on stored community guidelines text (issue #212). Bounded by Discord's
  * hard 2000-character message limit — guidelines are appended to the static
  * welcome message and sent unchunked (`member.send`/channel fallback), so an
@@ -743,7 +780,7 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, or pull one member's full warning history with reasons\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, pull one member's full warning history with reasons, or list everyone who's currently muted\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -837,7 +874,7 @@ export const EVENTS_LIST_LIMIT = 10;
 /** Truncation length for the suggestion text echoed back in a resolution DM. */
 const SUGGESTION_RESOLUTION_ECHO_CHARS = 120;
 
-function truncateForEcho(content: string): string {
+export function truncateForEcho(content: string): string {
   return content.length > SUGGESTION_RESOLUTION_ECHO_CHARS
     ? `${content.slice(0, SUGGESTION_RESOLUTION_ECHO_CHARS)}...`
     : content;
@@ -2642,6 +2679,43 @@ export function buildToolServer(
             const reasonText = `\n  ${untrusted('reason', r.reason)}`;
             const excerptText = r.excerpt != null ? `\n  ${untrusted('excerpt', r.excerpt)}` : '';
             return `[${r.createdAt.toISOString()}] ${r.source}${issuer}${cleared}:${reasonText}${excerptText}`;
+          })
+          .join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const listMutedMembersTool = tool(
+    'list_muted_members',
+    "Enumerate currently muted members by identity — the growth path the digest's bare " +
+      '`🔇 N member(s) currently muted` count (issue #357) was never meant to provide on its own (issue ' +
+      '#487). Each row is user id, strike count, status (`active`/`stale`), and last-warning timestamp — ' +
+      'never a reason or excerpt (that stays behind list_member_warnings, one level deeper). `stale` rows ' +
+      'are an over-approximation: their strikes aged out of the configured window but they were never ' +
+      'explicitly unmuted via clear_warnings, so they may still be muted — never treat a stale row as a ' +
+      'confirmed live mute. Admin only, guild-wide (not conversation-scoped, same as clear_warnings), ' +
+      'capped at 50 rows, newest warning first.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'list_muted_members');
+      const rows = await listMutedMembers(
+        caller.platform,
+        config.moderation.strikeLimit,
+        config.moderation.strikeWindowDays,
+      );
+      if (rows.length === 0) return text('No members are currently muted.');
+      return text(
+        rows
+          .map((r) => {
+            const hedge =
+              r.status === 'stale'
+                ? ' (may still be muted — strikes aged out of the window, never explicitly cleared)'
+                : '';
+            return (
+              `${r.userId}: ${r.strikeCount} strike(s), ${r.status}${hedge}, ` +
+              `last warning ${r.lastWarningAt.toISOString()}`
+            );
           })
           .join('\n'),
       );
@@ -5050,6 +5124,7 @@ export function buildToolServer(
       moderate,
       clearWarningsTool,
       listMemberWarningsTool,
+      listMutedMembersTool,
       announce,
       createPoll,
       endPoll,

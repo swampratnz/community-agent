@@ -193,7 +193,18 @@ memory**:
    weekly tick until it's cleared. Super admins are not enrolled; they keep
    the on-demand, all-conversation-scoped
    `question_digest`/`list_access_requests`/`list_reports`/`list_suggestions`/`list_knowledge`/`list_roster`
-   tools instead.
+   tools instead. Off unless `ADMIN_DIGEST_TRENDS_ENABLED` (issue #497), every
+   one of these bare counts also carries a week-over-week trend suffix — a
+   ` (▲+N since last week)` / ` (▼-N since last week)` fragment appended to a
+   line whose count moved since the prior send, silent when it's unchanged or
+   there's no prior snapshot. The comparison point is `last_counts`, a JSONB
+   snapshot column on `admin_digest_sends` written every run regardless of the
+   flag (so flipping it on is retroactively useful from the very next tick)
+   and whitelist-sanitized at the write boundary to the known signal-name set
+   — the exact same integers the digest already sends, never anything else.
+   A quiet week (no DM sent) still snapshots the current counts via a
+   dedicated write path that deliberately never touches `sent_at`, keeping the
+   trend snapshot fully decoupled from the freshness guard above it.
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -262,6 +273,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
+| `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -338,9 +350,18 @@ tier-revoked-mid-TTL "permissions changed" outcome, and the authoritative
 action each pick a fixed `_MI` variant off the same `getLanguagePreference`
 read, with `pending.description` embedded unchanged in both language variants
 and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
-`classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
-outcome/failure strings (`pending.execute()`'s own return value and the
-`Failed: ...` fallback) stay out of scope and English-only. The five opt-in,
+`classifyConfirmReply` keeps matching them. A tenth addition (issue #490)
+closes the one gap #405 named out of scope: the generic `'Failed: '` shell
+that fronts a `requireConfirm` outcome — whether `pending.execute()`'s own
+return value or the router's own catch-block fallback — is now swapped for a
+fixed `FAILED_PREFIX_MI` on a standing `'mi'` preference, leaving the dynamic
+`result`/error text after it byte-identical to the English case; a plain
+string-prefix match at the single existing send site, so it covers every
+`requireConfirm` call site sharing that template without touching
+`agent/tools.ts`. What stays out of scope and English-only: any bespoke,
+non-`Failed:`-templated outcome/description string a `requireConfirm` tool
+authors directly, and the symmetric `'Done: '` success shell (deferred — see
+below). The five opt-in,
 off-by-default shortcut-reply strings `respond()` uses to skip a full agent
 turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
 `GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
@@ -443,11 +464,25 @@ weakening it:
    never added as a member?" (the gated-mode onboarding queue — the exact
    conversion funnel `add_member` serves), and "who left?", with a
    total/joined/left weekly pulse line, for either platform. Rejoins clear
-   `left_at` and bump `rejoined_count`. A WhatsApp caveat not shared by
-   Discord's single-guild model: a `remove` from one group marks the row
-   "left" even if the person remains in another allowed group — a single
-   `(platform, user_id)` row can't represent per-group presence, documented
-   here rather than solved in this first version.
+   `left_at` and bump `rejoined_count`. The WhatsApp multi-group caveat noted
+   in the first version of this feature — a `remove` from one group marking
+   the row "left" even if the person remains in another allowed group — is
+   resolved (issue #501): before marking a `remove` as a leave,
+   `onGroupParticipantsUpdate` checks live membership across every *other*
+   `WHATSAPP_ALLOWED_JIDS` group via `groupFetchAllParticipating()` (the same
+   call `conversationsForUser`/`backfillRoster` already make), matching
+   phone/LID id forms the same tolerant way those two do, and skips the
+   leave-mark if the person is still present anywhere else in scope. A thrown
+   fetch degrades to the old unconditional mark-left (logged as a warning),
+   never a silent skip. Two residual, self-healing gaps remain, both narrower
+   than the original caveat: (1) a person who leaves *every* allowed group in
+   the same tick may be read as still-present for one event if another
+   group's live metadata hasn't yet reflected their departure — the next
+   remove event or the nightly backfill corrects it; (2) a participant removed
+   via a bare `@lid` JID with no resolvable phone number, who is present
+   elsewhere only under a phone-address form Baileys doesn't reciprocally
+   link back to that LID, still can't be matched — the same identity-linking
+   limit already documented above for `lidToPhone`.
 4. **Gated notice names an admin** (`src/gatedNotice.ts`, issue #360). The
    static "ask a community admin" pointer a gated guest gets on every
    addressed message named no one to ask. `listAdminDisplayNames(platform)`
@@ -899,6 +934,18 @@ enabled (every message is inspected) — treat it like ambient archiving.
   best-effort cap, deliberately no new table for the MVP. Never itself
   changes a warning count or mute state: resolution stays exactly
   `clear_warnings`.
+- **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
+  right now", the question `list_member_warnings` structurally can't (it
+  requires an already-known `targetUserId`) and the digest's bare `🔇 N`
+  count (issue #357) was never meant to answer. It unions `countMutedMembers`'
+  and `countStaleMutedMembers`' (issue #403) predicates into one identity
+  list — each row tagged `active` (currently over the windowed strike limit)
+  or `stale` (over the unwindowed limit only — strikes aged out of the
+  window but never explicitly cleared, so the member *may* still be muted;
+  the tool hedges this explicitly, never asserting it as confirmed), with
+  strike count and last-warning timestamp. Never reason/excerpt — that stays
+  behind `list_member_warnings`. Same guild-wide, non-conversation-scoped
+  boundary as `clear_warnings`; capped at 50 rows, newest first.
 
 Enabling requires the bot to hold **Manage Roles** and **Manage Channels** —
 see SECURITY.md for the blast-radius and enforcement caveats.
@@ -930,6 +977,48 @@ platforms.
   for the accepted blast-radius trade-off this design makes (linking expands
   what a single `forget_me` call erases) and the tests that pin both
   invariants.
+
+## Auto-answer mode (Discord, opt-in)
+
+`AUTO_ANSWER_CHANNEL_IDS` (issue #477) lets an operator allowlist specific
+Discord channels (typically help/forum channels) where a top-level human post
+gets an answer even when it doesn't mention/reply to the bot. Unset/empty is
+the default and is byte-identical to today's behaviour — the router's summon
+gate (`!msg.addressedToBot && !msg.isDirect`) only relaxes for a message whose
+`conversationId` is in the allowlist, is on Discord, and isn't
+bot/webhook-authored (`IncomingMessage.isBotAuthor`, a router-level backstop
+alongside the adapter never constructing a message for one in the first
+place).
+
+Everything downstream of that one relaxed check is reused verbatim — role
+resolution (`resolveRole`), the gated-guest exclusion (evaluated earlier in
+`handle()`, so it applies to auto-answer for free), the tier-derived tool
+surface (`toolsForRole`), the per-user rate limit, the daily reply budget, and
+the repeat-question/repeat-max-turns shortcuts. Two things are genuinely new:
+
+- **A per-channel rolling-hour cap** (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`,
+  default 10), a sliding-window limiter local to `Router` mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot` shape but operator-tunable, since
+  an allowlisted channel's traffic is far less predictable than the
+  admin-only `announce` tool's.
+- **Threaded replies.** The router asks the adapter
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only, optional — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action) to open a thread anchored to the origin
+  post, then redirects every send for that turn (including a shortcut hit)
+  into the new thread via an optional `replyConversationId` parameter threaded
+  through `respond()`/`sendKnowledgeShortcut()`/`sendRepeatShortcut()`/
+  `sendRepeatMaxTurnsShortcut()`. Caching keys (`convoKey`/`callerKey`, and
+  therefore the repeat-question shortcut and per-user rate limit) stay keyed
+  on the **parent channel**, not the newly created thread — each auto-answered
+  post gets its own thread, but "the same member asking the same thing again
+  in this channel" still needs to match across threads for the shortcut to
+  fire. A thread-creation failure degrades to answering directly in the
+  channel rather than dropping the reply.
+
+Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
+ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for
+the full security posture and its test references.
 
 ## Concurrency model
 
@@ -1044,6 +1133,54 @@ is cached only when `AgentReply.maxTurnsExceeded === true`, keyed and swept
 identically, and never replayed across a different platform, conversation, or
 user. Off by default; an operator opts in independently of the success-repeat
 shortcut.
+
+**Real-time admin escalation after a max-turns failure**
+(`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479): closes the
+"member hits `AGENT_MAX_TURNS` and gets nothing but a static fallback" gap —
+the one deflection failure the bot already detects structurally
+(`reply.maxTurnsExceeded === true`) but never followed up on. The whole flow
+lives in `router.ts`, entirely outside the model/tool layer:
+
+- **Atomic offer.** When the flag is on and a turn (or the repeat-max-turns
+  shortcut replaying one) ends with `maxTurnsExceeded === true`, the router
+  appends one line to `MAX_TURNS_REPLY`/`MAX_TURNS_REPLY_MI` — "Want me to
+  flag this for a community admin? Reply yes within 10 minutes." — and, in
+  the same step, records a pending entry in an in-memory
+  `platform:conversationId:userId -> {query, at}` map
+  (`Router.pendingEscalations`), keyed and swept exactly like
+  `lastMaxTurnsFailure` (issue #306) but on its own 10-minute TTL
+  (`ESCALATION_WINDOW_MS`). The offer line is never shown without a live
+  entry behind it and vice versa (`offerEscalation`) — both call sites that
+  can serve this failure text (a fresh turn in `respond()`, and the
+  repeat-max-turns shortcut's replay of the same text) go through the same
+  helper, closing the "dead offer / orphaned entry" hazard the adversarial
+  review for #479 flagged.
+- **Deterministic confirmation intercept.** A short affirmative
+  (`yes`/`y`/`āe`, case-insensitive, trimmed) from the same caller within the
+  TTL is matched in `handle()` BEFORE the addressed-to-bot check (same
+  positioning as the CONFIRM/CANCEL intercept, so a bare reply works in a
+  group) and before any shortcut/model routing. A match: consumes the
+  pending entry (single-shot — a replayed "yes" finds nothing the second
+  time), reserves a slot against the guild-wide rolling-hour
+  `ESCALATION_RATE_LIMIT_PER_HOUR` cap (default 5, same sliding-window shape
+  as `ANNOUNCE_RATE_LIMIT_PER_HOUR`), and on success calls `notifyAdmins`
+  (`agent/tools.ts`) — the real-time counterpart to `notifyReportFiled`'s
+  `notifySuperAdmins`, but sourced from `listAdmins()` (every
+  `community_users.role = 'admin'` row guild-wide, the same recipient set
+  the weekly digest already uses) across every connected adapter, echoing
+  the member's own truncated original question (`truncateForEcho`, the same
+  helper `notifyReportFiled`/`notifySuggestionResolved` use). A "yes" with no
+  live pending entry (never offered, or past the TTL) falls straight through
+  to the model as an ordinary message. Once the hourly cap is exhausted, a
+  further confirmed "yes" gets a plain "already at the hourly cap" reply
+  instead of a notification.
+- **No new tool, no new privileged data access.** The trigger is the
+  existing structural `maxTurnsExceeded` signal, never a model-callable
+  affordance — a crafted question can't make the *model* trigger an alert,
+  only a genuine max-turns exhaustion followed by the member's own "yes"
+  can. `listAdmins()` and the echoed question text are both already visible
+  to admins via the weekly digest/`list_knowledge_gaps`; this only changes
+  *when* they're seen.
 
 ## Health & monitoring
 

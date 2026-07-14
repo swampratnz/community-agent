@@ -12,7 +12,7 @@ const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // Scoped to whatsapp (not discord) so it never interferes with this file's
 // many discord-caller admin-action tests, which assert exact DM counts
 // assuming zero configured discord super admins.
@@ -2010,6 +2010,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__moderate', /warn, mute, kick/i],
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
   ['mcp__community__list_member_warnings', /full warning history/i],
+  ['mcp__community__list_muted_members', /list everyone who's currently muted/i],
   ['mcp__community__announce', /make an announcement/i],
   ['mcp__community__create_poll', /create a poll/i],
   ['mcp__community__end_poll', /end one poll early/i],
@@ -3677,6 +3678,169 @@ test(
     )._registeredTools['my_warnings'].description;
     assert.match(description ?? '', /list_member_warnings/);
     assert.doesNotMatch(description ?? '', /moderation_history/);
+  },
+);
+
+// list_muted_members (issue #487): enumerates currently-muted members by
+// identity — the growth path #403 named and deferred for the digest's bare
+// count. Uses a run-scoped fake platform (see tests/moderationRepo.test.ts'
+// LIST_PLATFORM convention) so it never collides with any other test file's
+// 'discord'/'whatsapp' fixtures on the shared guild-wide query.
+const LIST_MUTED_PLATFORM = `${RUN}-list-muted-tool`;
+
+function listMutedMembersHandler(role: 'member' | 'admin', platform: Platform = 'discord') {
+  const server = buildToolServer(
+    {
+      platform,
+      userId: 'admin-list-muted-members',
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-list-muted-members',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: () => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_muted_members'];
+}
+
+test(
+  'list_muted_members renders an active row and a stale row, each with its strike count, status, and last ' +
+    "warning timestamp, and hedges the stale row as 'may still be muted' without hedging the active row " +
+    '(issue #487 acceptance criteria #7)',
+  { skip },
+  async () => {
+    const active = `${RUN}-tool-active`;
+    const stale = `${RUN}-tool-stale`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_MUTED_PLATFORM,
+        userId: active,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_MUTED_PLATFORM,
+        userId: stale,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '31 days'
+        WHERE platform = $1 AND user_id = $2`,
+      [LIST_MUTED_PLATFORM, stale],
+    );
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    config.moderation.strikeWindowDays = 30;
+    try {
+      const result = await listMutedMembersHandler(
+        'admin',
+        LIST_MUTED_PLATFORM as unknown as Platform,
+      ).handler();
+      assert.notEqual(result.isError, true);
+      const text = result.content[0]?.text ?? '';
+
+      const activeLine = text.split('\n').find((l) => l.includes(active));
+      const staleLine = text.split('\n').find((l) => l.includes(stale));
+      assert.ok(activeLine, 'the active member has a rendered row');
+      assert.ok(staleLine, 'the stale member has a rendered row');
+      assert.match(activeLine ?? '', /active/);
+      assert.doesNotMatch(activeLine ?? '', /may still be muted/, 'an active row is never hedged');
+      assert.match(staleLine ?? '', /stale/);
+      assert.match(
+        staleLine ?? '',
+        /may still be muted/,
+        'a stale row is explicitly hedged, never presented as a confirmed live mute',
+      );
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_MUTED_PLATFORM]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_muted_members never includes a reason or excerpt, even when the underlying rows have ' +
+    'distinctive non-null values for both (issue #487 acceptance criteria #5)',
+  { skip },
+  async () => {
+    const user = `${RUN}-tool-content-leak`;
+    const distinctiveReason = 'zzz-distinctive-reason-marker-9182';
+    const distinctiveExcerpt = 'zzz-distinctive-excerpt-marker-4471';
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_MUTED_PLATFORM,
+        userId: user,
+        reason: distinctiveReason,
+        excerpt: distinctiveExcerpt,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.strikeLimit = 3;
+    try {
+      const result = await listMutedMembersHandler(
+        'admin',
+        LIST_MUTED_PLATFORM as unknown as Platform,
+      ).handler();
+      const text = result.content[0]?.text ?? '';
+      assert.match(text, new RegExp(user));
+      assert.doesNotMatch(text, new RegExp(distinctiveReason), 'the reason never reaches the output');
+      assert.doesNotMatch(text, new RegExp(distinctiveExcerpt), 'the excerpt never reaches the output');
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_MUTED_PLATFORM]);
+    }
+  },
+);
+
+test('SECURITY: list_muted_members rejects a caller below admin tier (issue #487)', async () => {
+  const registeredTool = listMutedMembersHandler('member');
+  await assert.rejects(() => registeredTool.handler(), /Permission denied/);
+});
+
+test(
+  'list_muted_members reports "No members are currently muted." when nothing qualifies (issue #487)',
+  { skip },
+  async () => {
+    const originalLimit = config.moderation.strikeLimit;
+    // A strikeLimit no fixture in this run could ever reach keeps this
+    // deterministic regardless of any other concurrently-running platform.
+    config.moderation.strikeLimit = 1_000_000;
+    try {
+      const result = await listMutedMembersHandler(
+        'admin',
+        `${RUN}-list-muted-empty` as unknown as Platform,
+      ).handler();
+      assert.equal(result.content[0]?.text, 'No members are currently muted.');
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+    }
   },
 );
 
