@@ -1215,7 +1215,7 @@ export class Router {
       // acceptance criterion's `limit - (used + 1)`.
       if (config.behaviour.dailyReplyBudgetWarnEnabled && replyBudget) {
         const remaining = replyBudget.limit - (replyBudget.used + 1);
-        if (remaining >= 1 && remaining <= config.behaviour.dailyReplyBudgetWarnRemaining) {
+        if (remaining >= 0 && remaining <= config.behaviour.dailyReplyBudgetWarnRemaining) {
           const userKey = `${msg.platform}:${msg.userId}`;
           const lastWarned = this.budgetWarned.get(userKey) ?? 0;
           if (Date.now() - lastWarned > 24 * 3_600_000) {

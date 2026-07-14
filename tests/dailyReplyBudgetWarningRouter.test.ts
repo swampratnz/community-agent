@@ -151,6 +151,28 @@ test('router (daily budget warning): the boundary remaining=DAILY_REPLY_BUDGET_W
   assert.equal(sent[0].text, `${RUN} boundary answer${DAILY_REPLY_BUDGET_WARNING_TEXT(5)}`);
 });
 
+test('router (daily budget warning): the boundary remaining=0 (last reply before the hard cutoff) still warns (inclusive lower bound)', async () => {
+  const router = new Router(
+    async () => makeReply(`${RUN} last reply before cutoff`),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    countRepliesReturning(49), // remaining = 50 - (49 + 1) = 0 — the most urgent warning case
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    `${RUN} last reply before cutoff${DAILY_REPLY_BUDGET_WARNING_TEXT(0)}`,
+    'the very last reply before the hard cutoff must still carry the warning',
+  );
+});
+
 test('router (daily budget warning): no warning outside the window (remaining > 5)', async () => {
   const router = new Router(
     async () => makeReply(`${RUN} plenty left`),
