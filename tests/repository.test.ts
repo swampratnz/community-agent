@@ -3774,6 +3774,48 @@ test(
 );
 
 test(
+  'repository: recordAccessRequest reports insert-vs-update via the RETURNING (xmax = 0) trick — true on a fresh ' +
+    'row, false on a repeat upsert, true again after the row is cleared (issue #480)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-recordaccessreq-inserted`;
+    await clearAccessRequest('discord', userId); // in case a previous failed run left a row behind
+
+    const firstInsert = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      firstInsert,
+      true,
+      'the first-ever request for this (platform, user_id) must report a fresh insert',
+    );
+
+    const repeat = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      repeat,
+      false,
+      'a second request from the same still-pending user must report NOT a fresh insert',
+    );
+
+    const repeatAgain = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      repeatAgain,
+      false,
+      'every subsequent repeat must keep reporting false, not just the second one',
+    );
+
+    await clearAccessRequest('discord', userId);
+
+    const afterClear = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+    assert.equal(
+      afterClear,
+      true,
+      'after clearAccessRequest removes the row, the next request is a fresh insert again',
+    );
+
+    await clearAccessRequest('discord', userId);
+  },
+);
+
+test(
   'repository: countStaleKnowledge judges staleness by whichever of edit or retrieval is more recent (issue #199)',
   { skip },
   async () => {

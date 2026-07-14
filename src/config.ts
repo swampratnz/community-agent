@@ -365,6 +365,26 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Real-time admin alert (issue #480) fired the moment a gated guest's
+  // FIRST-EVER addressed message creates a fresh `access_requests` row — the
+  // discrete-event complement to the weekly digest's passive
+  // `pendingAccessRequests` count, same "push what was pullable" precedent as
+  // `notifyReportFiled` (#90). Router-only side effect off
+  // `recordAccessRequest`'s insert-vs-update `RETURNING` value; never routed
+  // through the agent/model loop. Off by default, consistent with this repo's
+  // convention for new proactive DMs.
+  ACCESS_REQUEST_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
+  // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
+  // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
+  // under a raid or a channel getting linked somewhere. Once exhausted within
+  // the trailing hour, further first-time requests are still recorded in
+  // `access_requests` (visible via list_access_requests/the digest) but do
+  // not notify; a fresh hour resumes notifying.
+  ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
   // Offline context builder (issue #51): distills stored interactions into
   // durable context_digests on a ~daily cadence. Off by default; when on,
   // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
@@ -906,6 +926,10 @@ export const config = {
   },
   departedAdminAlert: {
     enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
+  },
+  accessRequestAlert: {
+    enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
+    rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

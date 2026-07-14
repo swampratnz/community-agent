@@ -1,4 +1,6 @@
 {
+  "accessRequestAlert.router.test.ts": 3,
+  "accessRequestAlert.test.ts": 2,
   "ackShortcutRouter.test.ts": 3,
   "adminDigest.test.ts": 28,
   "agentCoreFailureFallbacksMi.test.ts": 2,
@@ -71,7 +73,7 @@
   "repeatMaxTurnsShortcutRouter.test.ts": 3,
   "repeatQuestionShortcutRouter.test.ts": 4,
   "repository.test.ts": 63,
-  "router.test.ts": 5,
+  "router.test.ts": 6,
   "secrets.test.ts": 3,
   "securityGateCanary.test.ts": 1,
   "securityGateWrite.test.ts": 5,

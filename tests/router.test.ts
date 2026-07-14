@@ -487,6 +487,47 @@ test('SECURITY: router (gated guest): a getLanguagePreference failure on the gat
   assert.match(sent[0].text, /member-only/i);
 });
 
+// --- Real-time access-request alert, flag OFF (default) (issue #480) -------
+
+test('config: ACCESS_REQUEST_ALERT_ENABLED defaults to false when unset', () => {
+  assert.equal(config.accessRequestAlert.enabled, false);
+});
+
+test(
+  'SECURITY: router (gated guest): with ACCESS_REQUEST_ALERT_ENABLED unset/false, a fresh access request never ' +
+    "fires notifyAccessRequest — recordAccessRequest's new return value is computed but never acted on (issue #480)",
+  async () => {
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => true, // recordAccessRequestFn: reports a fresh insert
+      async () => {
+        throw new Error('notifyAccessRequest must never fire while ACCESS_REQUEST_ALERT_ENABLED is off');
+      },
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await assert.doesNotReject(
+      trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true })),
+    );
+
+    assert.equal(sent.length, 1, 'the guest still gets the gated notice, byte-identical to before #480');
+    assert.match(sent[0].text, /member-only/i);
+  },
+);
+
 test('config: ACK_SHORTCUT_ENABLED defaults to false when unset', () => {
   assert.equal(config.behaviour.ackShortcutEnabled, false);
 });

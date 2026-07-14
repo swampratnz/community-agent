@@ -2621,21 +2621,31 @@ export async function recordAdminAction(input: {
  * Record that a gated guest addressed the bot. Identity + counts only — the
  * caller must never pass message content. Upserts so repeat pings from the
  * same user dedup into one row instead of growing unbounded.
+ *
+ * Returns whether this call created a FRESH row (`true`) or updated an
+ * existing still-pending one (`false`), via Postgres's own `xmax = 0` trick
+ * on `RETURNING` — distinguishing "first insert" from "repeat upsert" needs
+ * no extra query or column, just reading what the upsert already tells us
+ * (issue #480). This is the debounce signal `notifyAccessRequest`'s
+ * first-time-only real-time alert relies on: a repeat ping from the same
+ * still-pending guest returns `false` and must not notify again.
  */
 export async function recordAccessRequest(input: {
   platform: Platform;
   userId: string;
   userName?: string;
-}): Promise<void> {
-  await pool.query(
+}): Promise<boolean> {
+  const { rows } = await pool.query(
     `INSERT INTO access_requests (platform, user_id, user_name)
      VALUES ($1,$2,$3)
      ON CONFLICT (platform, user_id) DO UPDATE
        SET last_requested_at = now(),
            request_count = access_requests.request_count + 1,
-           user_name = COALESCE(EXCLUDED.user_name, access_requests.user_name)`,
+           user_name = COALESCE(EXCLUDED.user_name, access_requests.user_name)
+     RETURNING (xmax = 0) AS inserted`,
     [input.platform, input.userId, input.userName ?? null],
   );
+  return rows[0]?.inserted === true;
 }
 
 export interface AccessRequest {
