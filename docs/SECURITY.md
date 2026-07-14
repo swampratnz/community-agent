@@ -163,6 +163,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   (never user-supplied text), and both the member reply and the admin DM
   are always one of a small set of fixed strings — the raw error is never
   echoed.
+- Optional member-facing approaching-daily-budget warning
+  (`DAILY_REPLY_BUDGET_WARN_ENABLED`, off by default, issue #511): a push
+  complement to the hard `DAILY_REPLY_LIMIT_PER_USER` cutoff above, so the
+  cutoff itself isn't the first sign a limit exists. Reuses the `used`/`limit`
+  pair the daily-budget check already reads — no new DB query, no new tool,
+  no new privileged data access — and only ever discloses a caller's own
+  remaining count to that same caller (never cross-user), gated by the same
+  `role !== 'super_admin'` condition the budget check itself uses. The
+  warning text is fixed (with `_MI`/`_PLAIN` variants, `src/dailyReplyBudgetWarning.ts`),
+  never model-generated, never derived from message content — same trust
+  tier as the existing budget-exhausted notice. Debounced to once per rolling
+  24h per caller (`budgetWarned`, mirroring `budgetNotified`'s shape), and
+  append-only to the real reply, never a separate outbound send.
 
 ### 4. Moderation misuse / accountability
 **Controls**
