@@ -16,7 +16,7 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --experimental-test-module-mocks --test tests/*.test.ts",
-    "test:security": "node scripts/check-security-test-count.mjs",
+    "test:security": "LOG_LEVEL=${LOG_LEVEL:-silent} node scripts/check-security-test-count.mjs",
     "test:security:fix": "node scripts/check-security-test-count.mjs --write",
     "changelog:check": "gh pr list --state merged --limit 150 --json number,title,mergedAt,body | node scripts/check-changelog-coverage.mjs",
     "migrate": "tsx src/storage/migrate.ts",

@@ -809,12 +809,12 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, pull one member's full warning history with reasons, or list everyone who's currently muted\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
-  "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
+  '- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps, recurring question clusters, and raw context digests\n' +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
