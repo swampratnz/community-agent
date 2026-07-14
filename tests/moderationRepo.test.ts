@@ -9,7 +9,7 @@ const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const skip = hasDb
@@ -23,6 +23,7 @@ const {
   countStaleMutedMembers,
   clearWarnings,
   listMemberWarnings,
+  listMutedMembers,
   purgeUserData,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
@@ -621,5 +622,248 @@ test(
       [user],
     );
     assert.equal(rows[0].n, 0, 'purge_user_data removed all warning rows for the user');
+  },
+);
+
+// listMutedMembers (issue #487): enumerates the union of countMutedMembers'
+// and countStaleMutedMembers' cohorts by identity. These tests use a
+// run-scoped fake `platform` value (never 'discord'/'whatsapp') so the guild-
+// wide query is fully isolated from any concurrently-running test file's own
+// fixtures — no delta-based counting needed, unlike the count-function tests
+// above which share the real 'discord' platform.
+const LIST_PLATFORM = `${RUN}-list-muted`;
+
+test(
+  'listMutedMembers: returns exactly the members countMutedMembers (active) and countStaleMutedMembers ' +
+    '(stale) would each count, tagged accordingly, excluding a genuinely-clear member (issue #487 ' +
+    'acceptance criteria #1)',
+  { skip },
+  async () => {
+    const overLimit = `${RUN}-lm-over`;
+    const agedOutStale = `${RUN}-lm-stale`;
+    const belowLimit = `${RUN}-lm-below`;
+
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: overLimit,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: agedOutStale,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '31 days'
+        WHERE platform = $1 AND user_id = $2`,
+      [LIST_PLATFORM, agedOutStale],
+    );
+    await addWarning({
+      platform: LIST_PLATFORM,
+      userId: belowLimit,
+      reason: 'x',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const [rows, mutedCount, staleCount] = await Promise.all([
+      listMutedMembers(LIST_PLATFORM, 3, 30),
+      countMutedMembers(LIST_PLATFORM, 3, 30),
+      countStaleMutedMembers(LIST_PLATFORM, 3, 30),
+    ]);
+
+    assert.equal(mutedCount, 1, 'sanity: countMutedMembers sees exactly the over-limit user');
+    assert.equal(staleCount, 1, 'sanity: countStaleMutedMembers sees exactly the aged-out user');
+    assert.equal(rows.length, 2, 'the below-limit user is excluded entirely');
+
+    const byUser = new Map(rows.map((r) => [r.userId, r]));
+    assert.equal(byUser.get(overLimit)?.status, 'active', 'the currently over-limit user is tagged active');
+    assert.equal(
+      byUser.get(agedOutStale)?.status,
+      'stale',
+      'the aged-out-but-still-over-unwindowed-limit user is tagged stale',
+    );
+    assert.equal(byUser.has(belowLimit), false, 'the genuinely-clear user never appears');
+
+    await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_PLATFORM]);
+  },
+);
+
+test(
+  'listMutedMembers: active and stale tags are mutually exclusive — a user over both the windowed and ' +
+    'unwindowed limit appears exactly once, tagged active (issue #487 acceptance criteria #2)',
+  { skip },
+  async () => {
+    const user = `${RUN}-lm-mutex`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: user,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const rows = await listMutedMembers(LIST_PLATFORM, 3, 30);
+    const matches = rows.filter((r) => r.userId === user);
+    assert.equal(matches.length, 1, 'the user appears exactly once, never double-counted as both tags');
+    assert.equal(matches[0]?.status, 'active');
+
+    await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_PLATFORM]);
+  },
+);
+
+test(
+  'listMutedMembers: with windowDays unset (default), every returned row is tagged active and the stale ' +
+    'cohort is always empty (issue #487 acceptance criteria #3, regression)',
+  { skip },
+  async () => {
+    const user = `${RUN}-lm-no-window`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: user,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '400 days'
+        WHERE platform = $1 AND user_id = $2`,
+      [LIST_PLATFORM, user],
+    );
+
+    const rows = await listMutedMembers(LIST_PLATFORM, 3);
+    assert.equal(rows.length, 1, 'the unwindowed count still qualifies the user');
+    assert.equal(rows[0]?.status, 'active', 'with no window configured, every row is tagged active');
+    assert.equal(
+      rows.filter((r) => r.status === 'stale').length,
+      0,
+      'the stale cohort is always empty when windowDays is undefined',
+    );
+
+    await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_PLATFORM]);
+  },
+);
+
+test(
+  'listMutedMembers: caps output at the given limit, ordered newest-warning-first (issue #487 acceptance ' +
+    'criteria #6)',
+  { skip },
+  async () => {
+    const users = Array.from({ length: 5 }, (_, i) => `${RUN}-lm-cap-${i}`);
+    for (const user of users) {
+      for (let i = 0; i < 3; i++) {
+        await addWarning({
+          platform: LIST_PLATFORM,
+          userId: user,
+          reason: `strike-${i}`,
+          excerpt: null,
+          source: 'auto',
+          issuedBy: null,
+        });
+      }
+      // Space out last_warning_at so ordering is deterministic — later users
+      // in the array get a strictly more recent timestamp.
+      await pool.query(
+        `UPDATE member_warnings SET created_at = now() - make_interval(secs => $2)
+          WHERE platform = $1 AND user_id = $3`,
+        [LIST_PLATFORM, (users.length - users.indexOf(user)) * 10, user],
+      );
+    }
+
+    const rows = await listMutedMembers(LIST_PLATFORM, 3, undefined, 3);
+    assert.equal(rows.length, 3, 'output is capped at the given limit even though 5 users qualify');
+    assert.deepEqual(
+      rows.map((r) => r.userId),
+      [users[4], users[3], users[2]],
+      'the 3 most-recently-warned qualifying users are returned, newest first',
+    );
+
+    await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_PLATFORM]);
+  },
+);
+
+test(
+  'listMutedMembers: the default cap is 50 rows even when more than 50 members qualify (issue #487 ' +
+    'acceptance criteria #6)',
+  { skip },
+  async () => {
+    for (let i = 0; i < 55; i++) {
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: `${RUN}-lm-default-cap-${i}`,
+        reason: 'x',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: `${RUN}-lm-default-cap-${i}`,
+        reason: 'y',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+      await addWarning({
+        platform: LIST_PLATFORM,
+        userId: `${RUN}-lm-default-cap-${i}`,
+        reason: 'z',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const rows = await listMutedMembers(LIST_PLATFORM, 3);
+    assert.equal(rows.length, 50, 'the default limit caps output at 50 even with 55 qualifying members');
+
+    await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_PLATFORM]);
+  },
+);
+
+test(
+  "SECURITY: listMutedMembers's platform/strikeLimit/windowDays/limit are bound query parameters, never " +
+    "string-interpolated — a hostile non-numeric windowDays can't alter the query shape",
+  { skip },
+  async () => {
+    const user = `${RUN}-lm-hostile`;
+    await addWarning({
+      platform: LIST_PLATFORM,
+      userId: user,
+      reason: 'x',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const hostile = '1); DROP TABLE member_warnings; --';
+    await assert.rejects(
+      listMutedMembers(LIST_PLATFORM, 3, hostile as unknown as number),
+      /invalid input syntax for type integer/,
+      'a non-numeric windowDays is rejected by the bound ::int cast, proving the query text never changes shape',
+    );
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM member_warnings WHERE platform = $1 AND user_id = $2`,
+      [LIST_PLATFORM, user],
+    );
+    assert.equal(rows[0]?.n, 1, 'the member_warnings table and row are untouched — no injection occurred');
+
+    await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_PLATFORM]);
   },
 );

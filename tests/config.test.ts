@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // Reproduce the shipped .env.example: blank optional numeric vars.
 process.env.HEALTH_PORT = '';
 process.env.WHATSAPP_CLOUD_WEBHOOK_PORT = '';
@@ -52,6 +52,10 @@ test('config: MODERATION_STRIKE_WINDOW_DAYS unset (default) is undefined — unb
   assert.equal(config.moderation.strikeWindowDays, undefined);
 });
 
+test('config: MODERATION_APPEAL_COOLDOWN_HOURS unset (default) is 24 hours (issue #496)', () => {
+  assert.equal(config.moderation.appealCooldownHours, 24);
+});
+
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
   assert.equal(config.whatsapp.welcome.enabled, false);
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);
@@ -76,7 +80,7 @@ test('SECURITY: STATUS_CHECK_API_URL must be https — a non-https override fail
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         STATUS_CHECK_API_URL: 'http://status.claude.com/api/v2/summary.json',
       },
@@ -118,7 +122,7 @@ test('SECURITY: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=1 fails config validati
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: '1',
       },
@@ -152,7 +156,7 @@ test('SECURITY: AGENT_MAX_TURNS_MEMBER rejects a non-positive value — validate
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         AGENT_MAX_TURNS_MEMBER: '0',
       },
@@ -179,7 +183,7 @@ test('config: AGENT_MODEL_MEMBER empty string resolves to undefined, same as uns
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         AGENT_MODEL_MEMBER: '',
       },
@@ -203,7 +207,7 @@ test("config: AGENT_MODEL_MEMBER set to a non-empty string resolves to that exac
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         AGENT_MODEL_MEMBER: 'claude-haiku-4-5-20251001',
       },
@@ -231,7 +235,7 @@ test('config: AGENT_MODEL_CLASSIFIER empty string resolves to undefined, same as
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         AGENT_MODEL_CLASSIFIER: '',
       },
@@ -255,7 +259,7 @@ test("config: AGENT_MODEL_CLASSIFIER set to a non-empty string resolves to that 
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         AGENT_MODEL_CLASSIFIER: 'claude-haiku-4-5-20251001',
       },
@@ -279,7 +283,7 @@ test('config: KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL=2 (the refined minimum) l
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL: '2',
       },
@@ -305,7 +309,7 @@ test('SECURITY: KNOWLEDGE_STALE_MAX_AGE_DAYS=50 fails config validation — belo
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_STALE_MAX_AGE_DAYS: '50',
       },
@@ -328,7 +332,7 @@ test('SECURITY: KNOWLEDGE_STALE_MAX_AGE_DAYS smaller than a nonzero KNOWLEDGE_ST
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_STALE_DAYS: '100',
         KNOWLEDGE_STALE_MAX_AGE_DAYS: '90',
@@ -359,7 +363,7 @@ test('config: KNOWLEDGE_STALE_MAX_AGE_DAYS=90 (the floor) loads cleanly', () => 
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_STALE_MAX_AGE_DAYS: '90',
       },
@@ -385,7 +389,7 @@ test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS=0 loads cleanly (explicit disable, 
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_CANDIDATE_STALE_DAYS: '0',
       },
@@ -407,7 +411,7 @@ test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS=14 (the floor) loads cleanly (issue
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_CANDIDATE_STALE_DAYS: '14',
       },
@@ -429,7 +433,7 @@ test('config: KNOWLEDGE_CANDIDATE_STALE_DAYS=90 (well above the floor) loads cle
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_CANDIDATE_STALE_DAYS: '90',
       },
@@ -451,7 +455,7 @@ test('SECURITY: KNOWLEDGE_CANDIDATE_STALE_DAYS=13 fails config validation — be
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_CANDIDATE_STALE_DAYS: '13',
       },
@@ -478,7 +482,7 @@ test('SECURITY: KNOWLEDGE_CANDIDATE_STALE_DAYS=1 fails config validation — bel
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         KNOWLEDGE_CANDIDATE_STALE_DAYS: '1',
       },
@@ -505,7 +509,7 @@ test('SECURITY: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR rejects a non-positive valu
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR: '0',
       },
@@ -517,6 +521,109 @@ test('SECURITY: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR rejects a non-positive valu
     'AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR=0 must fail config validation, not load',
   );
   assert.match(result.stderr, /AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR/);
+});
+
+test('config: DB pool timeouts default to 15000/15000/10000ms (statement/query/connect, issue #502)', () => {
+  assert.equal(config.db.statementTimeoutMs, 15_000);
+  assert.equal(config.db.queryTimeoutMs, 15_000);
+  assert.equal(config.db.connectTimeoutMs, 10_000);
+});
+
+test('config: DB pool timeouts are sourced from env, not hardcoded literals (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_STATEMENT_TIMEOUT_MS: '12345',
+        DB_QUERY_TIMEOUT_MS: '23456',
+        DB_CONNECT_TIMEOUT_MS: '34567',
+      },
+    },
+  );
+  assert.equal(result.status, 0, 'custom DB pool timeout values must load cleanly');
+  const printed = JSON.parse(result.stdout);
+  assert.equal(printed.db.statementTimeoutMs, 12345);
+  assert.equal(printed.db.queryTimeoutMs, 23456);
+  assert.equal(printed.db.connectTimeoutMs, 34567);
+});
+
+test('SECURITY: a non-positive DB_STATEMENT_TIMEOUT_MS fails config validation — fail-fast rather than an unbounded pool at runtime (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_STATEMENT_TIMEOUT_MS: '0',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'DB_STATEMENT_TIMEOUT_MS=0 must fail config validation, not load');
+  assert.match(result.stderr, /DB_STATEMENT_TIMEOUT_MS/);
+});
+
+test('SECURITY: a non-numeric DB_QUERY_TIMEOUT_MS fails config validation (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_QUERY_TIMEOUT_MS: 'not-a-number',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'DB_QUERY_TIMEOUT_MS=not-a-number must fail config validation, not load');
+  assert.match(result.stderr, /DB_QUERY_TIMEOUT_MS/);
+});
+
+test('SECURITY: a negative DB_CONNECT_TIMEOUT_MS fails config validation (issue #502)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DB_CONNECT_TIMEOUT_MS: '-1',
+      },
+    },
+  );
+  assert.notEqual(result.status, 0, 'DB_CONNECT_TIMEOUT_MS=-1 must fail config validation, not load');
+  assert.match(result.stderr, /DB_CONNECT_TIMEOUT_MS/);
 });
 
 test('config: dev-team dispatch service is off by default with no endpoint/token and a 1-minute watch poll', () => {
@@ -539,7 +646,7 @@ test('config: DEV_TEAM_* env vars parse — enabled, an http:// tailnet endpoint
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         DEV_TEAM_ENABLED: 'true',
         DEV_TEAM_ENDPOINT_URL: 'http://ubuntudevagent:8738',
@@ -573,7 +680,7 @@ test('SECURITY: DEV_TEAM_ENABLED=true without an endpoint URL and token fails co
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         DEV_TEAM_ENABLED: 'true',
       },
@@ -600,7 +707,7 @@ test('SECURITY: DEV_TEAM_ENABLED=true with an endpoint but NO token still fails 
         CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
         DISCORD_BOT_TOKEN: 'test-token',
         DISCORD_GUILD_ID: '1',
-        DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
         WHATSAPP_PROVIDER: 'disabled',
         DEV_TEAM_ENABLED: 'true',
         DEV_TEAM_ENDPOINT_URL: 'http://ubuntudevagent:8738',
@@ -613,4 +720,61 @@ test('SECURITY: DEV_TEAM_ENABLED=true with an endpoint but NO token still fails 
     'DEV_TEAM_ENABLED=true with a url but no token must fail config validation',
   );
   assert.match(result.stderr, /DEV_TEAM_ENDPOINT_URL and DEV_TEAM_AUTH_TOKEN are both required/);
+});
+
+test('config: DAILY_REPLY_BUDGET_WARN_ENABLED unset (default) is disabled, DAILY_REPLY_BUDGET_WARN_REMAINING defaults to 5 (issue #511)', () => {
+  assert.equal(config.behaviour.dailyReplyBudgetWarnEnabled, false);
+  assert.equal(config.behaviour.dailyReplyBudgetWarnRemaining, 5);
+});
+
+test('SECURITY: DAILY_REPLY_BUDGET_WARN_REMAINING=0 fails config validation — the warning window must be a positive count', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DAILY_REPLY_BUDGET_WARN_REMAINING: '0',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'DAILY_REPLY_BUDGET_WARN_REMAINING=0 must fail config validation, not load',
+  );
+});
+
+test('SECURITY: DAILY_REPLY_BUDGET_WARN_REMAINING=-1 fails config validation', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        DAILY_REPLY_BUDGET_WARN_REMAINING: '-1',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'DAILY_REPLY_BUDGET_WARN_REMAINING=-1 must fail config validation, not load',
+  );
 });

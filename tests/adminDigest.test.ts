@@ -13,7 +13,7 @@ const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
 const skip = hasDb
@@ -51,6 +51,8 @@ const {
   addWarning,
   countMutedMembers,
   countStaleMutedMembers,
+  getLastDigestCounts,
+  recordAdminDigestSnapshot,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -913,6 +915,142 @@ test('SECURITY: the onboarding-queue line is a deterministic function of notMemb
   );
 });
 
+test('SECURITY: buildAdminDigestMessage: previousCounts omitted -> byte-identical to the pre-#497 form, no trend suffix anywhere even with several non-zero signals (issue #497 acceptance criteria 1, 7)', () => {
+  const before = buildAdminDigestMessage([], 3, 5, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 2, 0);
+  const after = buildAdminDigestMessage(
+    [],
+    3,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    4,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+    0,
+    undefined,
+  );
+  assert.ok(before && after);
+  assert.equal(
+    after,
+    before,
+    'an explicit `undefined` previousCounts must render identically to omitting it',
+  );
+  assert.ok(
+    !/▲|▼|since last week/.test(after),
+    'SECURITY: with no previousCounts, no line ever gains a trend suffix',
+  );
+});
+
+test('buildAdminDigestMessage: a signal whose count increased since previousCounts renders exactly the ▲+N suffix (issue #497 acceptance criterion 2)', () => {
+  const message = buildAdminDigestMessage([], 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {
+    openReports: 2,
+  });
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🚩'));
+  assert.equal(
+    line,
+    '🚩 5 open report(s) in your conversations — run `list_reports`. (▲+3 since last week)',
+    'the line ends with exactly the arithmetic difference, ▲-prefixed',
+  );
+});
+
+test('buildAdminDigestMessage: a signal whose count decreased since previousCounts renders exactly the ▼-N suffix (issue #497 acceptance criterion 3)', () => {
+  const message = buildAdminDigestMessage([], 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {
+    openReports: 8,
+  });
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🚩'));
+  assert.equal(
+    line,
+    '🚩 5 open report(s) in your conversations — run `list_reports`. (▼-3 since last week)',
+    'the line ends with exactly the arithmetic difference, ▼-prefixed',
+  );
+});
+
+test('buildAdminDigestMessage: a signal whose count is unchanged since previousCounts renders no suffix, independent of another signal that DID change (issue #497 acceptance criterion 4)', () => {
+  const message = buildAdminDigestMessage([], 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {
+    openReports: 5,
+    pendingAccessRequests: 1,
+  });
+  assert.ok(message);
+  const reportLine = message.split('\n').find((l) => l.includes('🚩'));
+  const requestLine = message.split('\n').find((l) => l.includes('⏳'));
+  assert.equal(
+    reportLine,
+    '🚩 5 open report(s) in your conversations — run `list_reports`.',
+    'openReports is unchanged (5 -> 5) — no suffix, no clutter',
+  );
+  assert.equal(
+    requestLine,
+    '⏳ 4 pending access request(s) — run `list_access_requests`. (▲+3 since last week)',
+    'pendingAccessRequests changed independently — its own suffix still renders',
+  );
+});
+
+test('buildAdminDigestMessage: a signal absent from a partial previousCounts snapshot renders no suffix for that signal only (issue #497 acceptance criterion 5)', () => {
+  // previousCounts has an entry for openReports but none for
+  // pendingAccessRequests — e.g. a snapshot taken before a newer signal
+  // existed. The missing key must render as "no trend", not throw or
+  // fall back to some other value.
+  const message = buildAdminDigestMessage([], 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {
+    openReports: 2,
+  });
+  assert.ok(message);
+  const reportLine = message.split('\n').find((l) => l.includes('🚩'));
+  const requestLine = message.split('\n').find((l) => l.includes('⏳'));
+  assert.equal(
+    reportLine,
+    '🚩 5 open report(s) in your conversations — run `list_reports`. (▲+3 since last week)',
+    'openReports has a snapshot entry — its suffix renders',
+  );
+  assert.equal(
+    requestLine,
+    '⏳ 4 pending access request(s) — run `list_access_requests`.',
+    'pendingAccessRequests has no snapshot entry — no suffix, not an error',
+  );
+});
+
+test('buildAdminDigestMessage: the roster-growth line trends joinedThisWeek and leftThisWeek independently (issue #497)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, {
+    joinedThisWeek: 1,
+    leftThisWeek: 5,
+  });
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    line,
+    '📈 4 joined (▲+3 since last week), 2 left (▼-3 since last week) this week — run `list_roster` for detail.',
+    'each of the two independent signals gets its own trend suffix, placed right after its own number',
+  );
+});
+
+test('buildAdminDigestMessage: the muted-member line trends mutedMembersCount and staleMutedMembersCount independently (issue #497)', () => {
+  const message = buildAdminDigestMessage([], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 2, 0, {
+    mutedMembersCount: 1,
+    staleMutedMembersCount: 0,
+  });
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🔇'));
+  assert.equal(
+    line,
+    '🔇 3 member(s) currently muted (▲+2 since last week) (2 more may still be muted from an earlier ' +
+      "strike that's since aged out — check moderation_history (▲+2 since last week)) — run " +
+      '`moderation_history` or `clear_warnings` to review.',
+    'both the base muted count and the stale hedge clause get their own independent trend suffix',
+  );
+});
+
 function fakeAdapter(opts: {
   platform: 'discord' | 'whatsapp';
   conversationIds: string[];
@@ -1093,6 +1231,156 @@ test(
     );
 
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'repository: getLastDigestCounts returns null when the admin has no prior admin_digest_sends row (issue #497)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-trend-nosnapshot-admin`;
+    assert.equal(
+      await getLastDigestCounts('discord', adminId),
+      null,
+      'a first-ever digest has no prior row at all — null, not an empty object',
+    );
+  },
+);
+
+test(
+  'repository: recordAdminDigestSent(..., counts) persists a sanitized last_counts snapshot alongside the freshness timestamp (issue #497)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-trend-recordsent-admin`;
+
+    await recordAdminDigestSent('discord', adminId, { openReports: 3, pendingAccessRequests: 1 });
+
+    assert.deepEqual(
+      await getLastDigestCounts('discord', adminId),
+      { openReports: 3, pendingAccessRequests: 1 },
+      'the exact counts passed in are persisted',
+    );
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'passing counts must not change the existing freshness-timestamp behaviour',
+    );
+
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'repository: recordAdminDigestSent without counts leaves an existing last_counts snapshot untouched, while still renewing the freshness timestamp (issue #497)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-trend-omitcounts-admin`;
+
+    await recordAdminDigestSent('discord', adminId, { openReports: 5 });
+    await pool.query(
+      `UPDATE admin_digest_sends SET sent_at = now() - interval '8 days'
+        WHERE platform = $1 AND platform_user_id = $2`,
+      ['discord', adminId],
+    );
+
+    await recordAdminDigestSent('discord', adminId); // legacy call site — no counts argument
+
+    assert.deepEqual(
+      await getLastDigestCounts('discord', adminId),
+      { openReports: 5 },
+      'omitting counts must leave a prior snapshot exactly as it was',
+    );
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness timestamp is still renewed even when no counts are passed',
+    );
+
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'repository: recordAdminDigestSnapshot on a brand-new admin writes last_counts but never advances the freshness guard (issue #497 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-trend-snapshot-fresh-admin`;
+
+    await recordAdminDigestSnapshot('discord', adminId, { openReports: 2 });
+
+    assert.deepEqual(await getLastDigestCounts('discord', adminId), { openReports: 2 });
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      false,
+      'a snapshot-only write for a brand-new admin must never register as "sent recently"',
+    );
+
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'repository: recordAdminDigestSnapshot on an admin with a real prior send updates last_counts WITHOUT disturbing sent_at (issue #497 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-trend-snapshot-existing-admin`;
+
+    await recordAdminDigestSent('discord', adminId, { openReports: 1 });
+    const { rows: before } = await pool.query<{ sent_at: string }>(
+      `SELECT sent_at FROM admin_digest_sends WHERE platform = 'discord' AND platform_user_id = $1`,
+      [adminId],
+    );
+
+    await recordAdminDigestSnapshot('discord', adminId, { openReports: 9 });
+
+    const { rows: after } = await pool.query<{ sent_at: string }>(
+      `SELECT sent_at FROM admin_digest_sends WHERE platform = 'discord' AND platform_user_id = $1`,
+      [adminId],
+    );
+    assert.deepEqual(await getLastDigestCounts('discord', adminId), { openReports: 9 });
+    assert.equal(
+      new Date(before[0].sent_at).getTime(),
+      new Date(after[0].sent_at).getTime(),
+      'a snapshot-only write must not change sent_at on an existing row either',
+    );
+
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: repository: recordAdminDigestSent/recordAdminDigestSnapshot never persist a key outside the known digest signal set or a non-integer value into last_counts (issue #497 acceptance criterion 8)',
+  { skip },
+  async () => {
+    const adminId1 = `${RUN}-trend-sanitize-sent-admin`;
+    const adminId2 = `${RUN}-trend-sanitize-snapshot-admin`;
+    // Cast past the compile-time Record<string, number> shape to simulate a
+    // future call site that accidentally passes an unexpected field (a user
+    // id) or a non-integer value — exactly what the whitelist must catch at
+    // runtime, since TypeScript can't enforce this against a bad caller.
+    const badCounts = {
+      openReports: 2,
+      secretUserId: 'discord-user-1234567890',
+      fractionalNoise: 3.5,
+    } as unknown as Record<string, number>;
+
+    await recordAdminDigestSent('discord', adminId1, badCounts);
+    assert.deepEqual(
+      await getLastDigestCounts('discord', adminId1),
+      { openReports: 2 },
+      'SECURITY: only the known, integer-valued openReports key survives — no secretUserId, no fractionalNoise',
+    );
+
+    await recordAdminDigestSnapshot('discord', adminId2, badCounts);
+    assert.deepEqual(
+      await getLastDigestCounts('discord', adminId2),
+      { openReports: 2 },
+      'SECURITY: the snapshot-only write path enforces the identical whitelist',
+    );
+
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [adminId1, adminId2],
+    ]);
   },
 );
 
@@ -2667,5 +2955,339 @@ test(
     await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
       [admin1Id, admin2Id],
     ]);
+  },
+);
+
+// --- issue #497: week-over-week trend suffix, wired end-to-end through
+// runAdminDigestOnce. openReports is used as the representative signal
+// throughout because it's cheaply and precisely controllable per admin
+// (createContentReport, scoped to the admin's own conversation), unlike the
+// guild-wide counts.
+
+test(
+  'SECURITY: runAdminDigestOnce: ADMIN_DIGEST_TRENDS_ENABLED unset (default) never reads last_counts and renders no trend suffix, even when a prior snapshot with a different count exists (issue #497 acceptance criteria 1, 7)',
+  { skip },
+  async (t) => {
+    const adminId = `${RUN}-run-trendsoff-admin`;
+    const conversationId = `${RUN}-c-run-trendsoff`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    // Seed a prior snapshot with a DIFFERENT openReports count so a trend
+    // suffix would be non-empty if the read path were ever exercised.
+    await recordAdminDigestSent('discord', adminId, { openReports: 0 });
+    await pool.query(
+      `UPDATE admin_digest_sends SET sent_at = now() - interval '8 days'
+        WHERE platform = 'discord' AND platform_user_id = $1`,
+      [adminId],
+    );
+
+    const report = await createContentReport({
+      platform: 'discord',
+      reporterUserId: `${RUN}-run-trendsoff-reporter`,
+      conversationId,
+      reason: 'trends-off open report',
+    });
+    assert.ok(report);
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = false;
+    const querySpy = t.mock.method(pool, 'query');
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    assert.equal(sent.length, 1);
+    assert.ok(
+      !/▲|▼|since last week/.test(sent[0].text),
+      'flag off -> no trend suffix anywhere, even though a differing prior snapshot exists',
+    );
+    assert.ok(
+      !querySpy.mock.calls.some((c) => String(c.arguments[0]).includes('SELECT last_counts')),
+      'SECURITY: getLastDigestCounts must never be invoked while ADMIN_DIGEST_TRENDS_ENABLED is unset',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = $1`, [report.id]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: flag ON with a prior last_counts snapshot -> an increased signal renders exactly the ▲+N suffix, and the new counts are re-snapshotted (issue #497 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-trendup-admin`;
+    const conversationId = `${RUN}-c-run-trendup`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    await recordAdminDigestSent('discord', adminId, { openReports: 2 });
+    await pool.query(
+      `UPDATE admin_digest_sends SET sent_at = now() - interval '8 days'
+        WHERE platform = 'discord' AND platform_user_id = $1`,
+      [adminId],
+    );
+
+    const reports = await Promise.all(
+      [1, 2, 3, 4, 5].map((n) =>
+        createContentReport({
+          platform: 'discord',
+          reporterUserId: `${RUN}-run-trendup-reporter-${n}`,
+          conversationId,
+          reason: `trend-up open report ${n}`,
+        }),
+      ),
+    );
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    assert.equal(sent.length, 1);
+    const line = sent[0].text.split('\n').find((l) => l.includes('🚩'));
+    assert.equal(
+      line,
+      '🚩 5 open report(s) in your conversations — run `list_reports`. (▲+3 since last week)',
+      'previous 2 -> current 5 renders exactly ▲+3',
+    );
+
+    const snapshot = await getLastDigestCounts('discord', adminId);
+    assert.ok(snapshot);
+    assert.equal(
+      snapshot.openReports,
+      5,
+      "this week's send re-snapshots the new count for next week's delta",
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [reports.map((r) => r!.id)]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: flag ON with a prior last_counts snapshot -> a decreased signal renders exactly the ▼-N suffix (issue #497 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-trenddown-admin`;
+    const conversationId = `${RUN}-c-run-trenddown`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    await recordAdminDigestSent('discord', adminId, { openReports: 8 });
+    await pool.query(
+      `UPDATE admin_digest_sends SET sent_at = now() - interval '8 days'
+        WHERE platform = 'discord' AND platform_user_id = $1`,
+      [adminId],
+    );
+
+    const reports = await Promise.all(
+      [1, 2].map((n) =>
+        createContentReport({
+          platform: 'discord',
+          reporterUserId: `${RUN}-run-trenddown-reporter-${n}`,
+          conversationId,
+          reason: `trend-down open report ${n}`,
+        }),
+      ),
+    );
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    assert.equal(sent.length, 1);
+    const line = sent[0].text.split('\n').find((l) => l.includes('🚩'));
+    assert.equal(
+      line,
+      '🚩 2 open report(s) in your conversations — run `list_reports`. (▼-6 since last week)',
+      'previous 8 -> current 2 renders exactly ▼-6',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [reports.map((r) => r!.id)]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: flag ON with a signal unchanged since the prior snapshot renders no suffix on that line (issue #497 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-trendsame-admin`;
+    const conversationId = `${RUN}-c-run-trendsame`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    await recordAdminDigestSent('discord', adminId, { openReports: 2 });
+    await pool.query(
+      `UPDATE admin_digest_sends SET sent_at = now() - interval '8 days'
+        WHERE platform = 'discord' AND platform_user_id = $1`,
+      [adminId],
+    );
+
+    const reports = await Promise.all(
+      [1, 2].map((n) =>
+        createContentReport({
+          platform: 'discord',
+          reporterUserId: `${RUN}-run-trendsame-reporter-${n}`,
+          conversationId,
+          reason: `trend-same open report ${n}`,
+        }),
+      ),
+    );
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    assert.equal(sent.length, 1);
+    const line = sent[0].text.split('\n').find((l) => l.includes('🚩'));
+    assert.equal(
+      line,
+      '🚩 2 open report(s) in your conversations — run `list_reports`.',
+      'previous 2 -> current 2 is unchanged — no suffix, no clutter',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [reports.map((r) => r!.id)]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "runAdminDigestOnce: flag ON on an admin's first-ever digest -> no trend suffix anywhere, and a snapshot is written for next week (issue #497 acceptance criterion 5)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-trendfirst-admin`;
+    const conversationId = `${RUN}-c-run-trendfirst`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const reports = await Promise.all(
+      [1, 2, 3].map((n) =>
+        createContentReport({
+          platform: 'discord',
+          reporterUserId: `${RUN}-run-trendfirst-reporter-${n}`,
+          conversationId,
+          reason: `trend-first open report ${n}`,
+        }),
+      ),
+    );
+
+    assert.equal(
+      await getLastDigestCounts('discord', adminId),
+      null,
+      'sanity check: this admin genuinely has no prior admin_digest_sends row',
+    );
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    assert.equal(sent.length, 1);
+    assert.ok(
+      !/▲|▼|since last week/.test(sent[0].text),
+      'a first-ever digest has no snapshot to diff against — no suffix anywhere',
+    );
+
+    const snapshot = await getLastDigestCounts('discord', adminId);
+    assert.ok(snapshot, "a snapshot is written after the very first digest, for next week's delta");
+    assert.equal(snapshot.openReports, 3);
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [reports.map((r) => r!.id)]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: a quiet week (no message sent) still snapshots last_counts, but does NOT advance the freshness guard (issue #497 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-quiettrend-admin`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-quiettrend-empty`],
+      sent,
+    });
+    // Guild-wide signals (see the analogous #133/#193 quiet-week test above)
+    // aren't test-isolated — snapshot them first so the assertion holds even
+    // if another concurrently-running test file has one in flight.
+    const pendingAccessRequestsBefore = await countAccessRequests();
+    const pendingSuggestionsBefore = await countPendingSuggestions();
+    const pendingCandidatesBefore = await countPendingKnowledgeCandidates();
+
+    await runAdminDigestOnce([adapter]);
+
+    if (
+      pendingAccessRequestsBefore === 0 &&
+      pendingSuggestionsBefore === 0 &&
+      pendingCandidatesBefore === 0
+    ) {
+      assert.equal(sent.length, 0, 'a genuinely quiet week sends nothing');
+      assert.equal(
+        await wasAdminDigestSentRecently('discord', adminId, 7),
+        false,
+        'a quiet-week snapshot write must never advance the freshness guard',
+      );
+      const snapshot = await getLastDigestCounts('discord', adminId);
+      assert.ok(snapshot, "a quiet week still records a last_counts snapshot for next week's delta");
+      assert.equal(snapshot.openReports, 0, 'this admin has zero in-scope open reports in the snapshot');
+    } else {
+      assert.equal(
+        sent.length,
+        1,
+        'a pre-existing guild-wide pending signal legitimately makes this a non-quiet week',
+      );
+    }
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
   },
 );

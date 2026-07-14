@@ -354,6 +354,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       text: this.cleanContent(message.content),
       isDirect: isDM,
       addressedToBot: mentioned || repliedToBot,
+      // Belt-and-braces alongside the early `message.author.bot` return above
+      // (issue #477): a webhook-posted message doesn't always set
+      // `author.bot`, so this is checked independently rather than assumed
+      // covered by that guard.
+      isBotAuthor: message.author.bot || message.webhookId != null,
       messageId: message.id,
       timestamp: message.createdTimestamp,
       raw: message,
@@ -697,6 +702,28 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         flags: MessageFlags.SuppressEmbeds,
       });
     }
+  }
+
+  /**
+   * Router-driven counterpart to `performAdminAction('create_thread')`
+   * (issue #477's auto-answer mode) — same underlying primitive
+   * (`channel.threads.create({ name, startMessage })`), just invoked
+   * deterministically by the router rather than requested by the model, and
+   * anchored to the originating post so the reply never lands bare in the
+   * channel. Same channel-type restriction as `create_thread` (text/
+   * announcement channels only) and the same outbound-filtered name.
+   */
+  async startAutoAnswerThread(conversationId: string, messageId: string, name: string): Promise<string> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (
+      !channel ||
+      (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)
+    ) {
+      throw new Error(`Discord channel ${conversationId} does not support threads`);
+    }
+    const filteredName = await this.filtered(name);
+    const thread = await channel.threads.create({ name: filteredName, startMessage: messageId });
+    return thread.id;
   }
 
   /**

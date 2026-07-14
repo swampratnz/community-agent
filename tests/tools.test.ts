@@ -12,7 +12,7 @@ const hasDb = Boolean(process.env.DATABASE_URL);
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 // Scoped to whatsapp (not discord) so it never interferes with this file's
 // many discord-caller admin-action tests, which assert exact DM counts
 // assuming zero configured discord super admins.
@@ -36,10 +36,12 @@ const {
   notifyReportResolved,
   notifyReportFiled,
   notifyReportWithdrawn,
+  notifyAppealFiled,
   buildToolServer,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
   formatUsageStats,
+  formatAdminActivity,
   formatEngagementStats,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
@@ -69,7 +71,9 @@ const {
   WARN_USER_RATE_LIMIT_PER_HOUR,
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
+  APPEAL_MODERATION_REASON_MAX_CHARS,
 } = await import('../src/agent/tools.js');
+const { filterOutbound } = await import('../src/agent/outbound.js');
 const {
   MODERATION_ACTION_KINDS,
   saveKnowledge,
@@ -86,6 +90,7 @@ const {
   recordInteraction,
   insertContextDigest,
   insertKnowledgeCandidate,
+  listKnowledgeCandidates,
   addWarning,
   addMemberNote,
   upsertMember,
@@ -100,6 +105,8 @@ const {
   markRosterLeave,
   upsertRosterMember,
   engagementStats,
+  adminActivitySummary,
+  recordAdminAction,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -143,6 +150,7 @@ const WARN_RATE_HANDLER_ADMIN = `${RUN}-warn-rate-handler-admin`;
 const WARN_RATE_HANDLER_TARGET = `${RUN}-warn-rate-handler-target`;
 const ANNOUNCE_RATE_HANDLER_ADMIN = `${RUN}-announce-rate-handler-admin`;
 const MY_WARNINGS_HANDLER_USER = `${RUN}-my-warnings-handler`;
+const APPEAL_MODERATION_HANDLER_USER = `${RUN}-appeal-moderation-handler`;
 const MY_DATA_HANDLER_USER = `${RUN}-my-data-handler`;
 const COMMUNITY_ROLE_HANDLER_USER = `${RUN}-community-role-handler`;
 const REACT_TO_MESSAGE_HANDLER_CONVO = `${RUN}-react-to-message-handler`;
@@ -961,6 +969,90 @@ test('notifyReportWithdrawn reaches every configured super admin across ALL regi
   assert.equal(whatsappCalls.length, 2, 'both whatsapp-configured super admins are alerted');
   assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
   assert.equal(discordCalls.length, 0, 'no discord super admins are configured');
+});
+
+// notifyAppealFiled (issue #496): the appeal_moderation counterpart to
+// notifyReportFiled/notifyReportWithdrawn above — same notifySuperAdmins
+// fan-out, reused as-is per the adversarial review's correction rather than
+// inventing a new conversation-scoped push helper.
+test('notifyAppealFiled DMs every configured super admin with the appeal details', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, message) => {
+    calls.push([userId, message]);
+  });
+
+  await notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+    callerUserId: 'caller-1',
+    callerName: 'Appealing Member',
+    activeWarnings: 2,
+    strikeLimit: 3,
+    reason: 'the warning was a misunderstanding',
+  });
+
+  assert.equal(calls.length, 2, 'both configured super admins are DMed');
+  assert.deepEqual(calls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
+  for (const [, message] of calls) {
+    assert.match(message, /Appealing Member/, 'includes the caller');
+    assert.match(message, /2\/3 active warnings/, 'includes the active-warning count vs. the limit');
+    assert.match(message, /Reason given: "the warning was a misunderstanding"/);
+  }
+});
+
+test('notifyAppealFiled reports "no reason given" when no reason was passed', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+    callerUserId: 'caller-1',
+    callerName: 'Appealing Member',
+    activeWarnings: 1,
+    strikeLimit: 3,
+  });
+
+  for (const message of calls) {
+    assert.match(
+      message,
+      /Reason given: no reason given/,
+      'an omitted reason must be reported explicitly, never invented',
+    );
+  }
+});
+
+test('notifyAppealFiled excludes the appealing caller from the alert (matches notifySuperAdmins convention)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (userId) => {
+    calls.push(userId);
+  });
+
+  await notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+    callerUserId: 'super-1',
+    callerName: 'Appealing Super Admin',
+    activeWarnings: 1,
+    strikeLimit: 3,
+  });
+
+  assert.deepEqual(
+    calls,
+    ['super-2'],
+    "the caller's own id is excluded even though it is a configured super admin",
+  );
+});
+
+test('notifyAppealFiled swallows a DM failure rather than throwing', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(
+    notifyAppealFiled(whatsappOnlyAdapterFor(adapter), {
+      callerUserId: 'caller-1',
+      callerName: 'Appealing Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    }),
+  );
 });
 
 /**
@@ -1820,6 +1912,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__forget_me', /forget/i],
   ['mcp__community__report_content', /report/i],
   ['mcp__community__withdraw_report', /withdraw/i],
+  ['mcp__community__appeal_moderation', /appeal my warning/i],
   ['mcp__community__my_submissions', /filed suggestions\/reports/i],
   ['mcp__community__my_warnings', /active warnings/i],
   ['mcp__community__my_data', /what I've stored about you/i],
@@ -1883,6 +1976,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'NZ Claude Community — a New Zealand group building with Claude and the Anthropic API. ' +
     "Here's what you can ask me to do:\n" +
     '- Flag harassment, spam, or a rule violation to admins ("report this"), or withdraw one filed by mistake\n' +
+    '- Ask admins to review a warning you think was a mistake ("appeal my warning")\n' +
     '- Ask me for our community guidelines ("what are the rules here?")\n' +
     '- Answer questions from curated community knowledge — just ask\n' +
     '- Browse the topics our knowledge base covers, if you\'re not sure what to ask ("what do you know about?")\n' +
@@ -1901,7 +1995,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     memberReply,
     expectedMemberCapabilitiesText,
     'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
-      'list_events line, issue #437 added the list_knowledge_topics line; otherwise unchanged since #367)',
+      'list_events line, issue #437 added the list_knowledge_topics line, issue #496 added the ' +
+      'appeal_moderation line; otherwise unchanged since #367)',
   );
 });
 
@@ -1919,6 +2014,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__moderate', /warn, mute, kick/i],
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
   ['mcp__community__list_member_warnings', /full warning history/i],
+  ['mcp__community__list_muted_members', /list everyone who's currently muted/i],
   ['mcp__community__announce', /make an announcement/i],
   ['mcp__community__create_poll', /create a poll/i],
   ['mcp__community__end_poll', /end one poll early/i],
@@ -3586,6 +3682,169 @@ test(
     )._registeredTools['my_warnings'].description;
     assert.match(description ?? '', /list_member_warnings/);
     assert.doesNotMatch(description ?? '', /moderation_history/);
+  },
+);
+
+// list_muted_members (issue #487): enumerates currently-muted members by
+// identity — the growth path #403 named and deferred for the digest's bare
+// count. Uses a run-scoped fake platform (see tests/moderationRepo.test.ts'
+// LIST_PLATFORM convention) so it never collides with any other test file's
+// 'discord'/'whatsapp' fixtures on the shared guild-wide query.
+const LIST_MUTED_PLATFORM = `${RUN}-list-muted-tool`;
+
+function listMutedMembersHandler(role: 'member' | 'admin', platform: Platform = 'discord') {
+  const server = buildToolServer(
+    {
+      platform,
+      userId: 'admin-list-muted-members',
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-list-muted-members',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: () => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_muted_members'];
+}
+
+test(
+  'list_muted_members renders an active row and a stale row, each with its strike count, status, and last ' +
+    "warning timestamp, and hedges the stale row as 'may still be muted' without hedging the active row " +
+    '(issue #487 acceptance criteria #7)',
+  { skip },
+  async () => {
+    const active = `${RUN}-tool-active`;
+    const stale = `${RUN}-tool-stale`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_MUTED_PLATFORM,
+        userId: active,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_MUTED_PLATFORM,
+        userId: stale,
+        reason: `strike-${i}`,
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+    await pool.query(
+      `UPDATE member_warnings SET created_at = now() - interval '31 days'
+        WHERE platform = $1 AND user_id = $2`,
+      [LIST_MUTED_PLATFORM, stale],
+    );
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    const originalWindow = config.moderation.strikeWindowDays;
+    config.moderation.strikeLimit = 3;
+    config.moderation.strikeWindowDays = 30;
+    try {
+      const result = await listMutedMembersHandler(
+        'admin',
+        LIST_MUTED_PLATFORM as unknown as Platform,
+      ).handler();
+      assert.notEqual(result.isError, true);
+      const text = result.content[0]?.text ?? '';
+
+      const activeLine = text.split('\n').find((l) => l.includes(active));
+      const staleLine = text.split('\n').find((l) => l.includes(stale));
+      assert.ok(activeLine, 'the active member has a rendered row');
+      assert.ok(staleLine, 'the stale member has a rendered row');
+      assert.match(activeLine ?? '', /active/);
+      assert.doesNotMatch(activeLine ?? '', /may still be muted/, 'an active row is never hedged');
+      assert.match(staleLine ?? '', /stale/);
+      assert.match(
+        staleLine ?? '',
+        /may still be muted/,
+        'a stale row is explicitly hedged, never presented as a confirmed live mute',
+      );
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+      config.moderation.strikeWindowDays = originalWindow;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_MUTED_PLATFORM]);
+    }
+  },
+);
+
+test(
+  'SECURITY: list_muted_members never includes a reason or excerpt, even when the underlying rows have ' +
+    'distinctive non-null values for both (issue #487 acceptance criteria #5)',
+  { skip },
+  async () => {
+    const user = `${RUN}-tool-content-leak`;
+    const distinctiveReason = 'zzz-distinctive-reason-marker-9182';
+    const distinctiveExcerpt = 'zzz-distinctive-excerpt-marker-4471';
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: LIST_MUTED_PLATFORM,
+        userId: user,
+        reason: distinctiveReason,
+        excerpt: distinctiveExcerpt,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.strikeLimit = 3;
+    try {
+      const result = await listMutedMembersHandler(
+        'admin',
+        LIST_MUTED_PLATFORM as unknown as Platform,
+      ).handler();
+      const text = result.content[0]?.text ?? '';
+      assert.match(text, new RegExp(user));
+      assert.doesNotMatch(text, new RegExp(distinctiveReason), 'the reason never reaches the output');
+      assert.doesNotMatch(text, new RegExp(distinctiveExcerpt), 'the excerpt never reaches the output');
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+      await pool.query(`DELETE FROM member_warnings WHERE platform = $1`, [LIST_MUTED_PLATFORM]);
+    }
+  },
+);
+
+test('SECURITY: list_muted_members rejects a caller below admin tier (issue #487)', async () => {
+  const registeredTool = listMutedMembersHandler('member');
+  await assert.rejects(() => registeredTool.handler(), /Permission denied/);
+});
+
+test(
+  'list_muted_members reports "No members are currently muted." when nothing qualifies (issue #487)',
+  { skip },
+  async () => {
+    const originalLimit = config.moderation.strikeLimit;
+    // A strikeLimit no fixture in this run could ever reach keeps this
+    // deterministic regardless of any other concurrently-running platform.
+    config.moderation.strikeLimit = 1_000_000;
+    try {
+      const result = await listMutedMembersHandler(
+        'admin',
+        `${RUN}-list-muted-empty` as unknown as Platform,
+      ).handler();
+      assert.equal(result.content[0]?.text, 'No members are currently muted.');
+    } finally {
+      config.moderation.strikeLimit = originalLimit;
+    }
   },
 );
 
@@ -5293,6 +5552,61 @@ test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits th
       'Cost by role: none\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0).',
+  );
+});
+
+test('formatAdminActivity renders the exact empty-window message, not an empty list (issue #488)', () => {
+  const out = formatAdminActivity([], 30);
+  assert.equal(out, 'No privileged actions recorded in the last 30 day(s).');
+});
+
+test('formatAdminActivity renders one line per actor sorted by action count descending (issue #488)', () => {
+  const out = formatAdminActivity(
+    [
+      {
+        name: 'Alice',
+        platform: 'discord',
+        actionCount: 12,
+        successCount: 10,
+        failureCount: 2,
+        lastActionAt: new Date('2026-06-01T12:00:00.000Z'),
+      },
+      {
+        name: 'Bob',
+        platform: 'whatsapp',
+        actionCount: 3,
+        successCount: 3,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-02T08:30:00.000Z'),
+      },
+    ],
+    30,
+  );
+  assert.equal(
+    out,
+    'Alice (discord): 12 actions (10 success / 2 failed), last 2026-06-01T12:00:00.000Z\n' +
+      'Bob (whatsapp): 3 actions (3 success / 0 failed), last 2026-06-02T08:30:00.000Z',
+  );
+});
+
+test('SECURITY: formatAdminActivity never renders admin_audit.params content — only actor/count/timestamp fields (issue #488)', () => {
+  const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN';
+  const out = formatAdminActivity(
+    [
+      {
+        name: 'Alice',
+        platform: 'discord',
+        actionCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        lastActionAt: new Date('2026-06-01T12:00:00.000Z'),
+      },
+    ],
+    30,
+  );
+  assert.ok(
+    !out.includes(sentinel),
+    'formatAdminActivity must never surface admin_audit.params free-text content',
   );
 });
 
@@ -8426,11 +8740,11 @@ test(
 // conversation), and an in-memory per-day rate cap.
 function reactToMessageHandler(
   adapter: PlatformAdapter,
-  opts: { userId?: string; conversationId?: string; messageId?: string } = {},
+  opts: { userId?: string; conversationId?: string; messageId?: string; platform?: Platform } = {},
 ) {
   const server = buildToolServer(
     {
-      platform: 'discord' as const,
+      platform: opts.platform ?? ('discord' as const),
       userId: opts.userId ?? `${REACT_TO_MESSAGE_HANDLER_CONVO}-user`,
       userName: 'Reacting Member',
       role: 'member' as const,
@@ -8575,7 +8889,54 @@ test(
   },
 );
 
-test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp)', async () => {
+test(
+  'react_to_message reacts on a message id the bot has actually seen in the current conversation on WhatsApp too — target validation is platform-agnostic (issue #494)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-wa-known`;
+    const messageId = `${conv}-msg`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'react to this',
+      messageId,
+    });
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      platform: 'whatsapp',
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId });
+
+    assert.equal(result.isError, false);
+    assert.deepEqual(adapter.reactCalls, [{ conversationId: conv, messageId, emoji: '👍' }]);
+  },
+);
+
+test(
+  'SECURITY: react_to_message refuses a WhatsApp message id the bot has never seen in this conversation — same target-validation guarantee as Discord (issue #494)',
+  { skip },
+  async () => {
+    const conv = `${REACT_TO_MESSAGE_HANDLER_CONVO}-wa-unseen`;
+    const adapter = stubReactAdapter();
+
+    const result = await reactToMessageHandler(adapter, {
+      platform: 'whatsapp',
+      userId: `${conv}-caller`,
+      conversationId: conv,
+    }).handler({ emoji: '👍', messageId: `${conv}-never-seen` });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /never been seen/);
+    assert.equal(adapter.reactCalls.length, 0, 'no reaction call for an unvalidated target on WhatsApp');
+  },
+);
+
+test('react_to_message reports plainly when the adapter has no reaction capability (e.g. WhatsApp Cloud, unlike Baileys)', async () => {
   const adapter = stubAdapter(async () => {});
   const result = await reactToMessageHandler(adapter, { messageId: 'msg-1' }).handler({ emoji: '👍' });
   assert.equal(result.isError, true);
@@ -9686,6 +10047,97 @@ test(
 );
 
 test(
+  'SECURITY: topic_embedding (issue #503) is never present in list_knowledge_candidates/accept_knowledge_candidate/decline_knowledge_candidate response shapes — write-and-compare-only, same non-exposure as knowledge.embedding/knowledge_gaps.embedding',
+  { skip },
+  async () => {
+    // Deliberately no "embedding" substring anywhere in the fixture's own
+    // title/content/topic strings — the assertions below check that the
+    // DB column is never exposed, not that this test's own fixture text
+    // happens to avoid the word.
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-vector-exposure-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const candidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-vector-exposure-topic`,
+      title: 'KC vector-exposure fixture title',
+      content: `${RUN} kc vector-exposure fixture content`,
+      topicEmbedding: new Array(384).fill(0).map((_, i) => (i === 0 ? 1 : 0)),
+    });
+
+    const tools = knowledgeCandidateHandlers();
+
+    const listed = await tools['list_knowledge_candidates'].handler({ status: 'pending' });
+    const listedText = listed.content[0]?.text ?? '';
+    assert.match(listedText, /KC vector-exposure fixture title/);
+    assert.doesNotMatch(
+      listedText.toLowerCase(),
+      /embedding/,
+      'list_knowledge_candidates never mentions the embedding column',
+    );
+
+    // Structural check too, not just a text-substring check: the mapped
+    // KnowledgeCandidate object itself carries no embedding-shaped field,
+    // so no future formatting change could accidentally leak it either.
+    const listedRows = await listKnowledgeCandidates('pending', 200);
+    const mine = listedRows.find((c) => c.id === candidateId);
+    assert.ok(mine, 'the fixture candidate is present');
+    assert.ok(
+      !Object.keys(mine as unknown as Record<string, unknown>).some((k) => /embedding/i.test(k)),
+      'the KnowledgeCandidate shape itself has no embedding-named field',
+    );
+
+    const acceptResult = await tools['accept_knowledge_candidate'].handler({ id: candidateId });
+    assert.equal(acceptResult.isError, false);
+    const acceptText = acceptResult.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      acceptText.toLowerCase(),
+      /embedding/,
+      'accept_knowledge_candidate never mentions the embedding column',
+    );
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
+      `${RUN} kc vector-exposure fixture content`,
+    ]);
+    const knowledgeId = Number(knowledgeRows.rows[0].id);
+
+    const digestId2 = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-vector-exposure-topic-2`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const candidateId2 = await insertKnowledgeCandidate({
+      digestId: digestId2,
+      topic: `${RUN}-kc-vector-exposure-topic-2`,
+      title: 'KC vector-exposure fixture title 2',
+      content: `${RUN} kc vector-exposure fixture content 2`,
+      topicEmbedding: new Array(384).fill(0).map((_, i) => (i === 1 ? 1 : 0)),
+    });
+    const declineResult = await tools['decline_knowledge_candidate'].handler({ id: candidateId2 });
+    assert.equal(declineResult.isError, false);
+    const declineText = declineResult.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      declineText.toLowerCase(),
+      /embedding/,
+      'decline_knowledge_candidate never mentions the embedding column',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[candidateId, candidateId2]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = ANY($1)`, [[digestId, digestId2]]);
+  },
+);
+
+test(
   'list_knowledge_candidates: oldestFirst orders the queue by created_at ascending instead of the default newest-first (issue #398)',
   { skip },
   async () => {
@@ -10018,6 +10470,261 @@ test(
       /no active warnings/i,
       "SECURITY: my_warnings must reflect only the real caller's own count, never another user's warnings",
     );
+  },
+);
+
+// appeal_moderation (issue #496): a member-tier, self-scoped notification
+// trigger — the action counterpart to my_warnings' read-only visibility.
+// Exercises the handler's wiring on top of repository.test.ts's coverage of
+// countActiveWarnings/addWarning; notifyAppealFiled itself is unit-tested
+// above without the MCP transport, same convention as notifyReportFiled.
+function appealModerationHandler(
+  adapter: PlatformAdapter,
+  userId = APPEAL_MODERATION_HANDLER_USER,
+  role: 'member' | 'admin' | 'super_admin' = 'member',
+) {
+  const server = buildToolServer(
+    {
+      platform: 'whatsapp' as const,
+      userId,
+      userName: 'Appealing Member',
+      role,
+      conversationId: 'convo-1',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            reason?: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+        }
+      >;
+    }
+  )._registeredTools['appeal_moderation'];
+}
+
+test(
+  'appeal_moderation refuses cleanly with no active warnings and sends no admin notification (issue #496)',
+  { skip },
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-clean`;
+
+    const result = await appealModerationHandler(adapter, userId).handler({});
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /active warnings to appeal/i);
+    assert.equal(calls.length, 0, 'an ineligible caller must not trigger any admin DM');
+  },
+);
+
+test(
+  'appeal_moderation notifies admins exactly once (per configured super admin) with the warning count, limit, and reason for an eligible caller (issue #496)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-eligible`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (uid, message) => {
+      calls.push([uid, message]);
+    });
+
+    const result = await appealModerationHandler(adapter, userId).handler({
+      reason: 'I was not actually spamming',
+    });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /sent to the admins/i);
+    assert.equal(calls.length, 2, 'both configured super admins are alerted');
+    for (const [, message] of calls) {
+      assert.match(message, /Appealing Member/);
+      assert.match(message, /1\/3 active warnings/);
+      assert.match(message, /I was not actually spamming/);
+    }
+  },
+);
+
+test(
+  'appeal_moderation reports "no reason given" to admins when the caller passes no reason (issue #496)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-no-reason`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_uid, message) => {
+      calls.push(message);
+    });
+
+    await appealModerationHandler(adapter, userId).handler({});
+
+    assert.equal(calls.length, 2);
+    for (const message of calls) {
+      assert.match(message, /Reason given: no reason given/);
+    }
+  },
+);
+
+test(
+  "SECURITY: appeal_moderation resolves the caller's own warning status from caller.platform/caller.userId only, never a tool-argument-supplied id (issue #496)",
+  { skip },
+  async () => {
+    const caller = `${APPEAL_MODERATION_HANDLER_USER}-identity-caller`;
+    const otherUser = `${APPEAL_MODERATION_HANDLER_USER}-identity-other`;
+    for (let i = 0; i < 3; i++) {
+      await addWarning({
+        platform: 'whatsapp',
+        userId: otherUser,
+        reason: 'test',
+        excerpt: null,
+        source: 'auto',
+        issuedBy: null,
+      });
+    }
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // The tool's only argument is a free-text `reason` — there is no
+    // identifier field a model could supply to redirect the eligibility
+    // check or the notification onto otherUser's heavily-warned record.
+    const result = await appealModerationHandler(adapter, caller).handler({});
+
+    assert.match(
+      result.content[0]?.text ?? '',
+      /active warnings to appeal/i,
+      "SECURITY: appeal_moderation must reflect only the real caller's own count, never another user's warnings",
+    );
+    assert.equal(calls.length, 0, 'SECURITY: a caller with no warnings of their own must not trigger any DM');
+  },
+);
+
+test(
+  "SECURITY: appeal_moderation's reason is length-capped and passes through outbound secret redaction before reaching the admin DM (issue #496)",
+  { skip },
+  async () => {
+    const boundUser = `${APPEAL_MODERATION_HANDLER_USER}-bound`;
+    const handler = appealModerationHandler(
+      stubAdapter(async () => {}),
+      boundUser,
+    );
+    assert.equal(
+      handler.inputSchema.safeParse({ reason: 'x'.repeat(APPEAL_MODERATION_REASON_MAX_CHARS) }).success,
+      true,
+    );
+    assert.equal(
+      handler.inputSchema.safeParse({ reason: 'x'.repeat(APPEAL_MODERATION_REASON_MAX_CHARS + 1) }).success,
+      false,
+      'an oversized reason must be rejected at the schema boundary, same bound treatment as report_content/rate_answer',
+    );
+
+    // Realistic stub: applies the SAME outbound filter every real adapter's
+    // sendDirectMessage runs (e.g. discordAdapter.ts's `filtered()`), so this
+    // proves the reason is redacted on the actual send path, not merely that
+    // redactSecrets works in isolation.
+    const secret = 'sk-ant-' + 'y'.repeat(30);
+    const sent: string[] = [];
+    const redactingAdapter = stubAdapter(async (_userId, message) => {
+      sent.push(filterOutbound(message, 'full'));
+    });
+
+    const secretUser = `${APPEAL_MODERATION_HANDLER_USER}-redaction-secret`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId: secretUser,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    await appealModerationHandler(redactingAdapter, secretUser).handler({
+      reason: `please review: ${secret}`,
+    });
+
+    assert.equal(sent.length, 2);
+    for (const message of sent) {
+      assert.ok(!message.includes(secret), 'no raw secret fragment may reach the admin DM');
+      assert.ok(message.includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
+    }
+  },
+);
+
+test(
+  'appeal_moderation enforces a per-caller cooldown — a repeat call within the window is refused with no second notification (issue #496)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-cooldown`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (uid) => {
+      calls.push(uid);
+    });
+
+    const first = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(first.isError, false);
+    assert.equal(calls.length, 2);
+
+    calls.length = 0;
+    const second = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(second.isError, true);
+    assert.match(second.content[0]?.text ?? '', /already asked for a review recently/i);
+    assert.equal(calls.length, 0, 'a cooldown-refused appeal must not send a second notification');
+  },
+);
+
+test(
+  "appeal_moderation does not itself change the caller's warning count or mute state (issue #496)",
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-no-side-effects`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const before = await countActiveWarnings('whatsapp', userId);
+    const adapter = stubAdapter(async () => {});
+    await appealModerationHandler(adapter, userId).handler({ reason: 'please check' });
+    const after = await countActiveWarnings('whatsapp', userId);
+
+    assert.equal(after, before, "appeal_moderation must not alter the caller's own warning count");
   },
 );
 
@@ -11145,6 +11852,124 @@ test(
       await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [
         departedAdmin,
       ]);
+    }
+  },
+);
+
+// admin_activity (issue #488) — the aggregated complement to audit_view: a
+// per-admin action-volume rollup over a trailing window, mirroring
+// usage_stats' shape (super-admin-only, days-windowed, read-only).
+function adminActivityHandler(caller: { userId: string; adapter: PlatformAdapter }) {
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: caller.userId,
+      userName: 'SuperAdmin',
+      role: 'super_admin',
+      conversationId: `${RUN}-admin-activity-convo`,
+    },
+    caller.adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            days?: number;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['admin_activity'];
+}
+
+test(
+  'SECURITY: admin_activity rejects an admin caller — super-admin-only via the assertAtLeast re-check (issue #488)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord',
+        userId: `${RUN}-aa-admin-caller`,
+        userName: 'Admin',
+        role: 'admin',
+        conversationId: `${RUN}-admin-activity-reject-convo`,
+      },
+      adapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['admin_activity'];
+
+    await assert.rejects(
+      () => registeredTool.handler({}),
+      /admin/i,
+      'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check',
+    );
+  },
+);
+
+test(
+  'admin_activity resolves display names via the community_users->server_roster precedence, falls back to the raw platform user id for an unknown actor, and never renders admin_audit.params content (issue #488)',
+  { skip },
+  async () => {
+    const knownActor = `${RUN}-aa-known-actor`;
+    const unknownActor = `${RUN}-aa-unknown-actor`;
+    const sentinel = 'SENTINEL-FREE-TEXT-REASON-NEVER-SHOWN-ADMIN-ACTIVITY';
+
+    await upsertMember({
+      platform: 'discord',
+      userId: knownActor,
+      role: 'admin',
+      addedBy: `${RUN}-actor`,
+      displayName: `${RUN} Known Actor`,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: knownActor,
+      actionKind: 'warn_user',
+      params: { reason: sentinel },
+      result: 'warned',
+      success: true,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: unknownActor,
+      actionKind: 'timeout_user',
+      result: 'timed out',
+      success: true,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const handler = adminActivityHandler({ userId: `${RUN}-aa-actor2`, adapter });
+
+    try {
+      const result = await handler.handler({ days: 1 });
+      const out = result.content[0]?.text ?? '';
+
+      assert.match(
+        out,
+        new RegExp(`${RUN} Known Actor \\(discord\\): 1 actions \\(1 success / 0 failed\\)`),
+        'the known actor is rendered with its resolved display name',
+      );
+      assert.match(
+        out,
+        new RegExp(`${unknownActor} \\(discord\\): 1 actions \\(1 success / 0 failed\\)`),
+        'an actor with no resolvable name falls back to the raw platform user id',
+      );
+      assert.ok(!out.includes(sentinel), 'admin_audit.params content must never appear in the reply');
+    } finally {
+      await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[knownActor, unknownActor]]);
+      await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [knownActor]);
     }
   },
 );

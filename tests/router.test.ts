@@ -12,7 +12,7 @@ import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/p
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // This user bypasses the paused/daily-budget DB reads entirely (see
 // src/router.ts), so the "happy path" tests below never depend on
@@ -487,6 +487,47 @@ test('SECURITY: router (gated guest): a getLanguagePreference failure on the gat
   assert.match(sent[0].text, /member-only/i);
 });
 
+// --- Real-time access-request alert, flag OFF (default) (issue #480) -------
+
+test('config: ACCESS_REQUEST_ALERT_ENABLED defaults to false when unset', () => {
+  assert.equal(config.accessRequestAlert.enabled, false);
+});
+
+test(
+  'SECURITY: router (gated guest): with ACCESS_REQUEST_ALERT_ENABLED unset/false, a fresh access request never ' +
+    "fires notifyAccessRequest — recordAccessRequest's new return value is computed but never acted on (issue #480)",
+  async () => {
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated-out guest');
+      },
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => true, // recordAccessRequestFn: reports a fresh insert
+      async () => {
+        throw new Error('notifyAccessRequest must never fire while ACCESS_REQUEST_ALERT_ENABLED is off');
+      },
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await assert.doesNotReject(
+      trigger(makeMessage({ userId: 'unknown-guest-1', isDirect: false, addressedToBot: true })),
+    );
+
+    assert.equal(sent.length, 1, 'the guest still gets the gated notice, byte-identical to before #480');
+    assert.match(sent[0].text, /member-only/i);
+  },
+);
+
 test('config: ACK_SHORTCUT_ENABLED defaults to false when unset', () => {
   assert.equal(config.behaviour.ackShortcutEnabled, false);
 });
@@ -525,6 +566,31 @@ test('router: KNOWLEDGE_SHORTCUT_ENABLED default (off) — a near-exact knowledg
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'real answer', 'with the flag off, the shortcut lookup must not even run');
+});
+
+test('config: AUTO_ANSWER_CHANNEL_IDS defaults to empty when unset', () => {
+  assert.deepEqual(config.discord.autoAnswerChannelIds, []);
+});
+
+test('SECURITY: router: AUTO_ANSWER_CHANNEL_IDS unset means byte-identical behaviour — a top-level, non-addressed post produces zero agent invocation and zero send (issue #477)', async () => {
+  let calls = 0;
+  const router = new Router(async () => {
+    calls += 1;
+    return makeReply('should never be sent');
+  }, 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(
+    makeMessage({ conversationId: 'some-channel', addressedToBot: false, isDirect: false, messageId: 'm-1' }),
+  );
+
+  assert.equal(
+    calls,
+    0,
+    'an ambient (non-addressed) post must never reach the agent while auto-answer is off',
+  );
+  assert.equal(sent.length, 0);
 });
 
 test('config: SHUTDOWN_DRAIN_TIMEOUT_MS defaults to 20000ms when unset', () => {

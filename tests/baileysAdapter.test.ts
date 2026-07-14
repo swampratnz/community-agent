@@ -1,4 +1,4 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
@@ -12,7 +12,7 @@ import type { IncomingMessage } from '../src/platforms/types.js';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
-process.env.DATABASE_URL ??= 'postgres://test:test@localhost:5432/test';
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const {
   BaileysAdapter,
@@ -23,8 +23,10 @@ const {
 } = await import('../src/platforms/whatsapp/baileysAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
+const { logger } = await import('../src/logger.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { buildToolServer } = await import('../src/agent/tools.js');
+const { toolsForRole, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 
 /**
  * Issue #407: `onGroupParticipantsUpdate` now unconditionally writes to
@@ -796,8 +798,10 @@ test('group-participants.update "remove" marks the participant left in server_ro
   await adapter.conversationsForUser('64211111111');
   assert.equal(
     fetchCalls.groupFetch,
-    2,
-    'the existing membership-cache invalidation (issue #286) still fires alongside the new roster leave-mark, not replaced by it',
+    3,
+    'the existing membership-cache invalidation (issue #286) still fires alongside the new roster leave-mark, ' +
+      'not replaced by it — one fetch primed the cache, one is the issue #501 multi-group membership check on ' +
+      'the remove event itself, one is the post-invalidation re-fetch',
   );
 });
 
@@ -887,6 +891,279 @@ test('SECURITY: neither the add nor the remove roster path ever writes to intera
   const interactionWrites = calls.filter((c) => c.sql.includes('interactions'));
   assert.equal(interactionWrites.length, 0, 'no roster code path ever opens a message-content write path');
 });
+
+// --- Multi-group roster leave (issue #501) ----------------------------------
+
+/**
+ * Stubs the socket's groupFetchAllParticipating for the multi-group roster
+ * leave check, allowing participants to carry an optional `phoneNumber`
+ * field — the same lid<->phone bridge `conversationsForUser`/`isGroupAdmin`
+ * already read via an `as { phoneNumber?: string }` cast.
+ */
+function stubMultiGroupSocket(
+  adapter: InstanceType<typeof BaileysAdapter>,
+  groups: Record<string, { participants: { id: string; phoneNumber?: string }[] }>,
+) {
+  const calls = { groupFetch: 0 };
+  (
+    adapter as unknown as {
+      sock: {
+        groupFetchAllParticipating: () => Promise<
+          Record<string, { participants: { id: string; phoneNumber?: string }[] }>
+        >;
+      };
+    }
+  ).sock = {
+    groupFetchAllParticipating: async () => {
+      calls.groupFetch += 1;
+      return groups;
+    },
+  };
+  return calls;
+}
+
+test(
+  'SECURITY: group-participants.update "remove" does NOT mark left when the participant remains in ' +
+    'another allowed group, even under a different id form (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501@g.us', 'group-b-501@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        // Same person, listed under a DIFFERENT id form (bare @lid) with
+        // their phone number resolved on that entry — a naive `p.id ===
+        // local` compare would miss this and wrongly mark them left; only
+        // the `pn === userId` branch of the shared matcher catches it.
+        'group-b-501@g.us': {
+          participants: [{ id: '9999@lid', phoneNumber: '64211111111' }],
+        },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      0,
+      'still present in another allowed group under a different id form, so left_at must be untouched',
+    );
+  },
+);
+
+test(
+  'issue #501: membership-cache invalidation (issue #286) still fires on "remove" even when the roster ' +
+    'leave-mark is skipped because the participant remains in another allowed group',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-cache@g.us', 'group-b-501-cache@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      const fetchCalls = stubMultiGroupSocket(adapter, {
+        'group-a-501-cache@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        'group-b-501-cache@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      });
+
+      await adapter.conversationsForUser('64211111111');
+      assert.equal(fetchCalls.groupFetch, 1, 'precondition: first lookup is a cache miss');
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-cache@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+
+      const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+      assert.equal(leaveWrites.length, 0, 'precondition: retained elsewhere, so no leave-mark fired');
+
+      await adapter.conversationsForUser('64211111111');
+      assert.equal(
+        fetchCalls.groupFetch,
+        3,
+        'the "retained" branch must still invalidate the membership cache, so the next lookup re-fetches ' +
+          'live rather than returning a stale cached list',
+      );
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+  },
+);
+
+test(
+  'group-participants.update "remove" still marks left when the participant is not present in any OTHER ' +
+    'allowed group — single-group and last-group-left regression (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-last@g.us', 'group-b-501-last@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501-last@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        'group-b-501-last@g.us': { participants: [{ id: '64222222222@s.whatsapp.net' }] },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-last@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      1,
+      'not present in any other allowed group, so the leave-mark must still fire exactly once',
+    );
+    assert.deepEqual(leaveWrites[0].params, ['whatsapp', '64211111111']);
+  },
+);
+
+test(
+  'group-participants.update "remove" degrades to today\'s mark-left behavior AND logs a warning when ' +
+    'groupFetchAllParticipating throws during the multi-group membership check (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const warn = t.mock.method(logger, 'warn');
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-throw@g.us', 'group-b-501-throw@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      (adapter as unknown as { sock: { groupFetchAllParticipating: () => Promise<never> } }).sock = {
+        groupFetchAllParticipating: async () => {
+          throw new Error('simulated fetch failure');
+        },
+      };
+
+      await assert.doesNotReject(() =>
+        fireGroupJoin(adapter, {
+          id: 'group-a-501-throw@g.us',
+          participants: ['64211111111@s.whatsapp.net'],
+          action: 'remove',
+        }),
+      );
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      1,
+      "a thrown fetch degrades to today's unconditional mark-left, never a silent skip that could lose a genuine departure",
+    );
+    assert.ok(warn.mock.calls.length >= 1, 'the fetch failure must be logged as a warning, not swallowed');
+  },
+);
+
+test(
+  'group-participants.update "remove" still marks left when the participant remains only in a group ' +
+    'OUTSIDE WHATSAPP_ALLOWED_JIDS — scope gate honoured (issue #501)',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-scope@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501-scope@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        // Out-of-scope group the participant remains in — must NOT count as
+        // a retention, or an operator's WHATSAPP_ALLOWED_JIDS scoping is
+        // silently widened by this check.
+        'out-of-scope-501@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-scope@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    const leaveWrites = calls.filter((c) => c.sql.includes('UPDATE server_roster'));
+    assert.equal(
+      leaveWrites.length,
+      1,
+      'presence in a group outside WHATSAPP_ALLOWED_JIDS must not retain the roster row',
+    );
+  },
+);
+
+test(
+  'SECURITY: the issue #501 multi-group membership check stores no new data — its ' +
+    'groupFetchAllParticipating result only gates the existing markRosterLeave call and is never ' +
+    'persisted, written to interactions, or otherwise exposed',
+  async (t) => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    t.mock.method(pool, 'query', rosterQueryRecorder(calls));
+    const allowedJids = config.whatsapp as unknown as { allowedJids: string[] };
+    const prevJids = allowedJids.allowedJids;
+    allowedJids.allowedJids = ['group-a-501-nodata@g.us', 'group-b-501-nodata@g.us'];
+
+    try {
+      const adapter = new BaileysAdapter();
+      stubMultiGroupSocket(adapter, {
+        'group-a-501-nodata@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+        'group-b-501-nodata@g.us': { participants: [{ id: '64211111111@s.whatsapp.net' }] },
+      });
+
+      await fireGroupJoin(adapter, {
+        id: 'group-a-501-nodata@g.us',
+        participants: ['64211111111@s.whatsapp.net'],
+        action: 'remove',
+      });
+    } finally {
+      allowedJids.allowedJids = prevJids;
+    }
+
+    assert.equal(
+      calls.filter((c) => c.sql.includes('interactions')).length,
+      0,
+      'the membership-check fetch result must never reach the interactions table',
+    );
+    assert.equal(
+      calls.filter((c) => c.sql.includes('server_roster')).length,
+      0,
+      'the retained case writes nothing to server_roster beyond the (skipped) existing markRosterLeave call',
+    );
+    assert.equal(
+      calls.length,
+      0,
+      'the membership-check fetch result is consumed only to gate the (skipped) markRosterLeave call — ' +
+        'no DB call of any kind results from it, and no new tool surface reads or returns it',
+    );
+  },
+);
 
 /** Reaches the private backfillRoster handler directly. */
 function fireBackfillRoster(adapter: InstanceType<typeof BaileysAdapter>): Promise<void> {
@@ -1014,17 +1291,33 @@ function voiceDm(fromNumber: string, seconds = 5): unknown {
   };
 }
 
+type VoiceConfig = {
+  enabled: boolean;
+  model: string;
+  maxSeconds: number;
+  minRole: 'super_admin' | 'admin' | 'member' | 'guest';
+  rateLimitPerHour: number;
+};
+
 /** Overrides config.whatsapp.voice + the super-admin allowlist for `fn`, then restores. */
 async function withVoice(
-  opts: { enabled?: boolean; maxSeconds?: number; superAdmins?: string[] },
+  opts: {
+    enabled?: boolean;
+    maxSeconds?: number;
+    superAdmins?: string[];
+    minRole?: VoiceConfig['minRole'];
+    rateLimitPerHour?: number;
+  },
   fn: () => Promise<void>,
 ): Promise<void> {
-  const voice = config.whatsapp.voice as { enabled: boolean; model: string; maxSeconds: number };
+  const voice = config.whatsapp.voice as VoiceConfig;
   const rbac = config.rbac as { superAdminWhatsappNumbers: readonly string[] };
   const prevVoice = { ...voice };
   const prevAdmins = rbac.superAdminWhatsappNumbers;
   if (opts.enabled !== undefined) voice.enabled = opts.enabled;
   if (opts.maxSeconds !== undefined) voice.maxSeconds = opts.maxSeconds;
+  if (opts.minRole !== undefined) voice.minRole = opts.minRole;
+  if (opts.rateLimitPerHour !== undefined) voice.rateLimitPerHour = opts.rateLimitPerHour;
   if (opts.superAdmins) rbac.superAdminWhatsappNumbers = opts.superAdmins;
   try {
     await fn();
@@ -1101,6 +1394,194 @@ test('WhatsApp voice: an enabled super-admin voice note is transcribed and actio
   assert.equal(msg.isDirect, true);
 });
 
+// --- Configurable voice eligibility + rate cap (issue #507) ---
+
+/** Mocks pool.query so getMemberRole('whatsapp', userId) resolves `role` (or null => unregistered/guest). */
+function mockMemberRole(t: TestContext, userId: string, role: 'admin' | 'member' | null) {
+  return t.mock.method(pool, 'query', async (_sql: string, params: unknown[] = []) => {
+    if (role && params[1] === userId) return { rows: [{ role }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  });
+}
+
+test(
+  'SECURITY: with the default WHATSAPP_VOICE_MIN_ROLE (super_admin), a non-super-admin voice note is ' +
+    'dropped with zero DB calls and no rate-limit bookkeeping (issue #507)',
+  async (t) => {
+    let queryCalls = 0;
+    t.mock.method(pool, 'query', async () => {
+      queryCalls += 1;
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAudioMessage = async () => {
+      throw new Error('a below-tier sender must never reach the download/transcribe seam');
+    };
+    await withVoice({ enabled: true, superAdmins: ['64990000000'] }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567')),
+    );
+    assert.equal(handlerCalls, 0);
+    assert.equal(
+      queryCalls,
+      0,
+      'default minRole=super_admin must stay the pure isSuperAdmin env check, never resolveRole/getMemberRole',
+    );
+  },
+);
+
+test(
+  "SECURITY: with the default config, a super admin's voice note transcribes with zero DB calls — the " +
+    'default configuration is byte-identical to the original super-admin-only gate (issue #507)',
+  async (t) => {
+    let queryCalls = 0;
+    t.mock.method(pool, 'query', async () => {
+      queryCalls += 1;
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let seen: IncomingMessage | null = null;
+    adapter.onMessage(async (m) => {
+      seen = m;
+    });
+    adapter.transcribeAudioMessage = async () => 'what is the member count';
+    await withVoice({ enabled: true, superAdmins: ['64211234567'] }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+    );
+    assert.ok(seen, 'the transcript must still reach the handler on the default config');
+    assert.equal(
+      queryCalls,
+      0,
+      'no rate-limit bookkeeping or resolveRole/getMemberRole call at the 0/unlimited default',
+    );
+  },
+);
+
+test(
+  "WhatsApp voice: WHATSAPP_VOICE_MIN_ROLE='member' lets a registered non-super-admin member's under-cap " +
+    'voice note transcribe and act through the identical pipeline a typed message would (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64211234567', 'member');
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let seen: IncomingMessage | null = null;
+    adapter.onMessage(async (m) => {
+      seen = m;
+    });
+    adapter.transcribeAudioMessage = async () => 'what are the community guidelines';
+    await withVoice({ enabled: true, maxSeconds: 120, minRole: 'member' }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+    );
+    assert.ok(seen, 'a member (not a super admin) must still get their voice note transcribed and actioned');
+    const msg = seen as unknown as IncomingMessage;
+    assert.equal(msg.text, 'what are the community guidelines');
+    assert.equal(msg.userId, '64211234567');
+  },
+);
+
+test(
+  "SECURITY: with minRole='member', an unregistered sender (resolves to guest) never triggers download/" +
+    'transcription — the role gate runs before any media fetch (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64299999999', null); // no community_users row => guest
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAudioMessage = async () => {
+      throw new Error('a below-minRole sender must never be downloaded/transcribed');
+    };
+    await withVoice({ enabled: true, minRole: 'member' }, () =>
+      adapter.onWhatsappMessage(voiceDm('64299999999')),
+    );
+    assert.equal(handlerCalls, 0);
+  },
+);
+
+test(
+  "SECURITY: a member's transcribed voice note is granted exactly the member tool set — never an admin " +
+    'or super-admin tool, whether the text arrived typed or transcribed (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64211234567', 'member');
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let seen: IncomingMessage | null = null;
+    adapter.onMessage(async (m) => {
+      seen = m;
+    });
+    adapter.transcribeAudioMessage = async () => 'what is the member count';
+    await withVoice({ enabled: true, minRole: 'member' }, () =>
+      adapter.onWhatsappMessage(voiceDm('64211234567', 8)),
+    );
+    assert.ok(seen);
+    // The adapter never computes a tool list itself — it only ever populates
+    // IncomingMessage.text. The tool list for that turn is derived downstream
+    // from the caller's tier via the SAME toolsForRole a typed message from
+    // this sender would resolve to — asserted directly here since there is no
+    // voice-specific tool-list path to diverge.
+    const tools = toolsForRole('member');
+    for (const adminTool of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+      assert.ok(!tools.includes(adminTool), `member tool set must never include ${adminTool}`);
+    }
+    assert.ok(tools.includes('mcp__community__knowledge_search'));
+  },
+);
+
+test(
+  'SECURITY: WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR bounds a single sender — the (N+1)th note within the ' +
+    'rolling hour is refused without a download attempt (issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64277777777', 'member');
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    let seamCalls = 0;
+    adapter.transcribeAudioMessage = async () => {
+      seamCalls += 1;
+      return `note ${seamCalls}`;
+    };
+    const limit = 2;
+    await withVoice({ enabled: true, minRole: 'member', rateLimitPerHour: limit }, async () => {
+      for (let i = 0; i < limit; i++) {
+        await adapter.onWhatsappMessage(voiceDm('64277777777', 5));
+      }
+      assert.equal(seamCalls, limit, 'every call within the cap must be transcribed');
+      assert.equal(handlerCalls, limit);
+
+      await adapter.onWhatsappMessage(voiceDm('64277777777', 5));
+      assert.equal(seamCalls, limit, 'the (N+1)th note must be refused BEFORE any download/transcribe');
+      assert.equal(handlerCalls, limit, 'a refused note must never reach the agent');
+    });
+  },
+);
+
+test(
+  "WhatsApp voice: in ACCESS_MODE_WHATSAPP='gated' with minRole='member', an unregistered guest's voice " +
+    'note is refused (resolved role guest < member) — reusing resolveRole, no separate exclusion logic ' +
+    '(issue #507)',
+  async (t) => {
+    mockMemberRole(t, '64288888888', null);
+    const adapter = new BaileysAdapter() as VoiceAdapter;
+    let handlerCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAudioMessage = async () => {
+      throw new Error('a gated-mode guest must never be downloaded/transcribed');
+    };
+    await withAccessMode('gated', () =>
+      withVoice({ enabled: true, minRole: 'member' }, () =>
+        adapter.onWhatsappMessage(voiceDm('64288888888')),
+      ),
+    );
+    assert.equal(handlerCalls, 0);
+  },
+);
+
 test(
   'SECURITY: BaileysAdapter does not implement canPostTo — WhatsApp keeps isKnownConversation as its ' +
     'sole reachability gate, since any phone number is dialable (issue #270)',
@@ -1158,8 +1639,9 @@ test(
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      2,
-      "a 'remove' event for this participant must invalidate the cache so the next lookup re-fetches live",
+      3,
+      "a 'remove' event for this participant must invalidate the cache so the next lookup re-fetches live " +
+        '(one fetch is the issue #501 multi-group membership check the remove event itself now triggers)',
     );
   },
 );
@@ -1184,8 +1666,9 @@ test(
     await adapter.conversationsForUser('64222222222');
     assert.equal(
       calls.groupFetch,
-      2,
-      "the other participant's still-live cache entry must be untouched — zero additional fetches",
+      3,
+      "the other participant's still-live cache entry must be untouched — zero ADDITIONAL fetches beyond the " +
+        'issue #501 multi-group membership check the remove event itself triggers',
     );
   },
 );
@@ -1211,8 +1694,9 @@ test(
     await adapter.conversationsForUser('6421111111');
     assert.equal(
       calls.groupFetch,
-      1,
-      'a removal for a different, similarly-shaped id must not evict an unrelated cache entry',
+      2,
+      'a removal for a different, similarly-shaped id must not evict an unrelated cache entry (the second ' +
+        'fetch is the issue #501 multi-group membership check the remove event itself triggers)',
     );
   },
 );
@@ -1262,8 +1746,9 @@ test(
     await adapter.conversationsForUser('lid:9999');
     assert.equal(
       calls.groupFetch,
-      2,
-      "a 'remove' event carrying this participant's @lid JID must invalidate the lid-keyed cache entry",
+      3,
+      "a 'remove' event carrying this participant's @lid JID must invalidate the lid-keyed cache entry (one " +
+        'fetch is the issue #501 multi-group membership check the remove event itself triggers)',
     );
   },
 );
@@ -1292,12 +1777,17 @@ test(
     });
 
     await adapter.conversationsForUser('lid:9999');
-    assert.equal(calls.groupFetch, 3, 'the lid-keyed entry is invalidated as expected');
+    assert.equal(
+      calls.groupFetch,
+      4,
+      'the lid-keyed entry is invalidated as expected (one fetch is the issue #501 multi-group membership ' +
+        'check the remove event itself triggers)',
+    );
 
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      3,
+      4,
       'the phone-number-keyed entry for the same person must NOT be invalidated by an @lid-only removal ' +
         'event when no prior message ever taught the mapping — this is the narrowed, still-documented gap',
     );
@@ -1360,12 +1850,17 @@ test(
     });
 
     await adapter.conversationsForUser('lid:9999');
-    assert.equal(calls.groupFetch, 3, 'the lid-keyed entry is invalidated as before');
+    assert.equal(
+      calls.groupFetch,
+      4,
+      'the lid-keyed entry is invalidated as before (one fetch is the issue #501 multi-group membership ' +
+        'check the remove event itself triggers)',
+    );
 
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      4,
+      5,
       'the phone-number-keyed entry for the same person is now ALSO invalidated by the @lid-only removal, ' +
         'because a prior message taught the LID->phone mapping',
     );
@@ -1402,9 +1897,10 @@ test(
     await adapter.conversationsForUser('64222222222');
     assert.equal(
       calls.groupFetch,
-      2,
+      3,
       "B's phone-keyed entry must survive — B's lid was never taught a mapping, and A's mapping must not " +
-        'be misapplied to an unrelated removal',
+        'be misapplied to an unrelated removal (one fetch is the issue #501 multi-group membership check ' +
+        'the remove event itself triggers)',
     );
 
     // A's own mapping must still be intact and usable afterwards — proving
@@ -1417,7 +1913,7 @@ test(
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      3,
+      5,
       "A's phone-keyed entry is invalidated once A's own removal event fires, proving A's mapping " +
         "survived B's unrelated removal untouched",
     );
@@ -1449,7 +1945,12 @@ test(
 
     // Re-cache a FRESH entry for the same phone number after the invalidation above.
     await adapter.conversationsForUser('64211111111');
-    assert.equal(calls.groupFetch, 2, 'the mapping consumed above invalidated the entry; this re-fetches it');
+    assert.equal(
+      calls.groupFetch,
+      3,
+      'the mapping consumed above invalidated the entry; this re-fetches it (one fetch is the issue #501 ' +
+        'multi-group membership check the remove event itself triggers)',
+    );
 
     // A second, identical removal event for the same (already-departed) participant.
     await fireGroupJoin(adapter, {
@@ -1461,9 +1962,10 @@ test(
     await adapter.conversationsForUser('64211111111');
     assert.equal(
       calls.groupFetch,
-      2,
+      4,
       'the freshly re-cached entry must survive the duplicate removal — the mapping was already consumed ' +
-        'by the first removal, so there is nothing left to (mis-)invalidate a second time',
+        'by the first removal, so there is nothing left to (mis-)invalidate a second time (the count still ' +
+        "advances by one for the second remove event's own issue #501 membership-check fetch)",
     );
   },
 );
@@ -1499,8 +2001,8 @@ test(
 
 test(
   'list_events reports the standard unsupported-on-whatsapp reply on the real Baileys adapter, which ' +
-    'implements no scheduled-events primitive — mirrors the sendImage/reactToMessage unsupported-platform ' +
-    'pattern (issue #388)',
+    'implements no scheduled-events primitive — mirrors the sendImage unsupported-platform pattern ' +
+    '(issue #388)',
   async () => {
     const adapter = new BaileysAdapter();
     assert.equal(
@@ -1530,5 +2032,122 @@ test(
     const result = await registeredTool.handler();
     assert.equal(result.isError, true);
     assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
+  },
+);
+
+// --- reactToMessage: native WhatsApp reaction (issue #494, extends #231) --
+
+/** Stubs the socket's sendMessage to capture the native `react` payload reactToMessage builds. */
+function stubSocketForReact(adapter: InstanceType<typeof BaileysAdapter>) {
+  const sent: Array<{
+    jid: string;
+    react: { text: string; key: { remoteJid: string; id: string; fromMe: boolean; participant?: string } };
+  }> = [];
+  (
+    adapter as unknown as {
+      sock: {
+        sendMessage: (
+          jid: string,
+          msg: {
+            react: {
+              text: string;
+              key: { remoteJid: string; id: string; fromMe: boolean; participant?: string };
+            };
+          },
+        ) => Promise<void>;
+      };
+    }
+  ).sock = {
+    sendMessage: async (jid, msg) => {
+      sent.push({ jid, react: msg.react });
+    },
+  };
+  return sent;
+}
+
+test('reactToMessage sends a native WhatsApp reaction for a 1:1 DM, with no participant in the key (issue #494)', async () => {
+  const adapter = new BaileysAdapter();
+  const sent = stubSocketForReact(adapter);
+
+  await adapter.reactToMessage('64211234567@s.whatsapp.net', 'dm-msg-1', '👍');
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    jid: '64211234567@s.whatsapp.net',
+    react: {
+      text: '👍',
+      key: {
+        remoteJid: '64211234567@s.whatsapp.net',
+        id: 'dm-msg-1',
+        fromMe: false,
+        participant: undefined,
+      },
+    },
+  });
+});
+
+test(
+  "reactToMessage resolves the group message's author as participant via getInteractionAuthorByMessageId " +
+    '(issue #494, mirrors delete_message key construction)',
+  async (t) => {
+    t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+      if (/SELECT user_id FROM interactions/.test(sql)) {
+        assert.deepEqual(params, ['whatsapp', 'group-1@g.us', 'group-msg-1']);
+        return { rows: [{ user_id: '64299999999' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForReact(adapter);
+
+    await adapter.reactToMessage('group-1@g.us', 'group-msg-1', '🎉');
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].react.text, '🎉');
+    assert.equal(sent[0].react.key.remoteJid, 'group-1@g.us');
+    assert.equal(sent[0].react.key.id, 'group-msg-1');
+    assert.equal(sent[0].react.key.fromMe, false);
+    assert.equal(
+      sent[0].react.key.participant,
+      '64299999999@s.whatsapp.net',
+      "the group reaction's key must carry the resolved author, not the reactor",
+    );
+  },
+);
+
+test(
+  'SECURITY: reactToMessage does not fabricate a participant when a group message author cannot be ' +
+    'resolved — no react is sent at all (issue #494)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForReact(adapter);
+
+    await adapter.reactToMessage('group-1@g.us', 'unknown-msg', '✅');
+
+    assert.equal(
+      sent.length,
+      0,
+      'an unresolvable group author must never be papered over with a guessed/fabricated participant',
+    );
+  },
+);
+
+test(
+  'SECURITY: reactToMessage does not fabricate a participant when the stored author is not a real ' +
+    'phone-number id (e.g. a LID-only fallback) — no react is sent (issue #494)',
+  async (t) => {
+    t.mock.method(pool, 'query', async (sql: string) => {
+      if (/SELECT user_id FROM interactions/.test(sql)) {
+        return { rows: [{ user_id: 'lid:99999' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const adapter = new BaileysAdapter();
+    const sent = stubSocketForReact(adapter);
+
+    await adapter.reactToMessage('group-1@g.us', 'lid-authored-msg', '👀');
+
+    assert.equal(sent.length, 0, 'a non-phone stored author id must never be routed as a participant JID');
   },
 );

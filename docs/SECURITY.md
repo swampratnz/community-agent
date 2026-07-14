@@ -163,12 +163,30 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   (never user-supplied text), and both the member reply and the admin DM
   are always one of a small set of fixed strings — the raw error is never
   echoed.
+- Optional member-facing approaching-daily-budget warning
+  (`DAILY_REPLY_BUDGET_WARN_ENABLED`, off by default, issue #511): a push
+  complement to the hard `DAILY_REPLY_LIMIT_PER_USER` cutoff above, so the
+  cutoff itself isn't the first sign a limit exists. Reuses the `used`/`limit`
+  pair the daily-budget check already reads — no new DB query, no new tool,
+  no new privileged data access — and only ever discloses a caller's own
+  remaining count to that same caller (never cross-user), gated by the same
+  `role !== 'super_admin'` condition the budget check itself uses. The
+  warning text is fixed (with `_MI`/`_PLAIN` variants, `src/dailyReplyBudgetWarning.ts`),
+  never model-generated, never derived from message content — same trust
+  tier as the existing budget-exhausted notice. Debounced to once per rolling
+  24h per caller (`budgetWarned`, mirroring `budgetNotified`'s shape), and
+  append-only to the real reply, never a separate outbound send.
 
 ### 4. Moderation misuse / accountability
 **Controls**
 - Every privileged action is written to the append-only `admin_audit` table
   (who, what, target, params, result, success, timestamp).
 - Admin actions are gated on platform-native admin identity.
+- `admin_activity` (super-admin only, issue #488) gives a per-admin
+  action-volume rollup over a trailing window — a `GROUP BY` aggregation over
+  the same already-audited `admin_audit` rows `audit_view` exposes flat, never
+  `params` (which may carry free-text reasons) and never scoped to fewer
+  actors than a super admin could already reconstruct by hand from the log.
 
 ### 5. Host compromise / blast radius
 **Controls**
@@ -554,11 +572,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   and excludes the bot's own number/LID; it carries no new opt-in flag,
   reasoning that group participant lists are visible to every member of a
   WhatsApp group, the same "not a secret list" posture already applied to
-  Discord's roster. A known, documented limitation for multi-group WhatsApp
-  deployments: a single `(platform, user_id)` row can't represent per-group
-  presence, so a `remove` from one allowed group marks the row "left" even if
-  the person remains in another — the same coarseness Discord's single-guild
-  model sidesteps by construction. Reads are **admin-tier and guild/group-wide**
+  Discord's roster. A previously-documented limitation for multi-group
+  WhatsApp deployments — a single `(platform, user_id)` row can't represent
+  per-group presence, so a `remove` from one allowed group marked the row
+  "left" even if the person remained in another — is resolved (issue #501):
+  `onGroupParticipantsUpdate` now checks live membership across every other
+  `WHATSAPP_ALLOWED_JIDS` group before writing the leave-mark, reusing the
+  same `groupFetchAllParticipating()` call and phone/LID-tolerant id matching
+  `conversationsForUser`/`backfillRoster` already use; the check's result
+  only gates the existing `markRosterLeave` call and is never itself
+  persisted. See `docs/ARCHITECTURE.md`'s roster section for the two narrow,
+  self-healing residual gaps. Reads are **admin-tier and guild/group-wide**
   (`list_roster` is not conversation-scoped — same precedent as
   `list_access_requests`), display names are wrapped as untrusted data, and
   `forget_me`/`purge_user_data` delete the person's roster row by
@@ -609,6 +633,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `moderation_history`") rather than asserting it, is inert (no query) unless
   `MODERATION_STRIKE_WINDOW_DAYS` is configured, and — like the count it
   extends — carries only bare integers, never warning content or an identity.
+  Issue #497 (off unless `ADMIN_DIGEST_TRENDS_ENABLED`) added a week-over-week
+  trend suffix on every one of these bare counts, backed by `last_counts`, a
+  JSONB column on `admin_digest_sends`. **No new data class**: `last_counts`
+  carries exactly the same integers the digest already sends that admin every
+  week — never message content, a user/conversation id, or any field beyond
+  the known signal-name set — enforced by a whitelist at the write boundary
+  (`sanitizeDigestCounts` in `repository.ts`) that strips any unexpected key
+  or non-integer value before it reaches the column, so a future call site
+  can never smuggle PII-shaped data into the snapshot by accident. The
+  snapshot write is decoupled from the freshness guard: a quiet week (no DM
+  sent) still updates `last_counts` via a dedicated path that never touches
+  `sent_at`, so a silent week can't be mistaken for a real send nor corrupt
+  next week's delta. `last_counts` is purge-coherent with the rest of the row
+  — `forget_me`/`purge_user_data` remove it alongside `sent_at` for an
+  offboarded admin.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
@@ -651,6 +690,40 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the already-proven `startTrackedJob`/`alertSuperAdmins` machinery. Like
   `list_admins`, auto-revoke on departure remains deliberately out of
   scope — this is visibility, not action.
+- **Real-time access-request alert** (`notifyAccessRequest` in `router.ts`,
+  off unless `ACCESS_REQUEST_ALERT_ENABLED`, issue #480): the discrete-event
+  push complement to the pull-only `list_access_requests` tool and the
+  passive weekly-digest `pendingAccessRequests` count (issue #133) — same
+  "push what was pullable" precedent as `notifyReportFiled` (#90). It is a
+  **router-level side effect only**, never a model-callable tool and never
+  routed through the agent/model loop, so it adds no new prompt-injection
+  surface: `recordAccessRequest` (`storage/repository.ts`) now returns
+  whether its upsert was a fresh INSERT (`RETURNING (xmax = 0) AS inserted`,
+  Postgres's own free signal — no new column, no new query) or a repeat
+  UPDATE of an already-pending row, and the router fires the alert only when
+  `inserted === true`. A second, third, etc. addressed message from the same
+  still-pending (uncleared) guest reports `inserted === false` and triggers
+  **zero** additional notifications — the upsert's own dedup is the entire
+  debounce, no new state to track. Recipients are the same guild-wide
+  `listAdmins()` roster the weekly digest already reaches (`community_users
+  WHERE role = 'admin'`), **not** `superAdminIds()` — an access request is
+  routine admin business, matching the digest's own audience choice for the
+  identical `pendingAccessRequests` signal. The DM payload is built from only
+  the guest's `platform` and `userName` (run through `sanitizeName`, the same
+  hostile-display-name neutralisation `list_access_requests` already applies)
+  — it is constructed independently of the inbound message and never has
+  access to `msg.text`, so message content cannot leak into it even in
+  principle. A guild-wide (not per-conversation, matching the guild-wide
+  audience) rolling-hour cap, `ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`
+  (default 10, same sliding-window shape as `tools.ts`'s
+  `reserveAnnounceSlot`), bounds worst-case DM volume under a raid or a
+  channel getting linked somewhere; once exhausted, later first-time requests
+  within that hour are still written to `access_requests` (still visible via
+  `list_access_requests`/the digest — nothing is lost) but do not notify, and
+  a fresh hour resumes notifying. With the flag unset/false, behaviour is
+  byte-identical to before #480: `recordAccessRequest`'s new return value is
+  computed but the alert branch never reads it, so no admin DM is ever sent
+  and no rate-limit state is ever touched.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
@@ -749,6 +822,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
+  - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
+    test) enumerates currently-muted members by identity — the growth path
+    #403 named and deferred for the digest's bare `🔇 N` count. It sits at the
+    same admin-tier, non-conversation-scoped boundary `clear_warnings`/
+    `list_member_warnings` already occupy — not a new data-access tier, and no
+    field it returns (user id, strike count, `active`/`stale` status,
+    last-warning timestamp) is new: every one is already reachable by an
+    admin who already knows the target id via `list_member_warnings`. It
+    deliberately never returns `reason`/`excerpt` (message content stays
+    behind `list_member_warnings`, pinned by a `SECURITY:` test), and its
+    `stale` tag — like `countStaleMutedMembers`' own count — is an
+    over-approximation the tool's own output hedges as "may still be muted",
+    never asserted as a confirmed live mute.
   - **Strike accumulation is unbounded by default, and that's now a documented
     choice, not an oversight**: `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset
     by default) lets an admin opt into a rolling window so only strikes newer
@@ -1109,37 +1195,180 @@ deliberately narrow:
   first non-Anthropic/Discord/WhatsApp destination; noted with the residual-risk
   egress item below. Off by default (`GITHUB_ISSUE_ENABLED`).
 
-### 13. WhatsApp voice-note transcription (super-admin only, opt-in)
+### 13. WhatsApp voice-note transcription (configurable min tier, opt-in)
 
-When `WHATSAPP_VOICE_ENABLED=true`, a **super admin's** WhatsApp voice note is
+When `WHATSAPP_VOICE_ENABLED=true`, an eligible caller's WhatsApp voice note is
 transcribed to text locally and then flows through the *identical* pipeline as a
-typed message — RBAC, tool gating, and CONFIRM are untouched. The controls:
+typed message — RBAC, tool gating, and CONFIRM are untouched. Eligibility is
+governed by `WHATSAPP_VOICE_MIN_ROLE` (issue #507), which **defaults to
+`'super_admin'`** — byte-identical to the original super-admin-only feature.
+The controls:
 
-- **Super-admin gate before any download.** The gate
-  (`maybeTranscribeVoiceNote`) checks `isSuperAdmin('whatsapp', senderId)` — a
-  pure env check against `SUPER_ADMIN_WHATSAPP_NUMBERS`, never the DB — *before*
-  fetching the media. A non-super-admin's audio is never downloaded, never
-  transcribed, and dropped exactly like any unhandled message type. Identity is
-  the platform envelope (phone JID / resolved LID), never the audio content, so
-  it can't be spoofed by what's said. Pinned by three `SECURITY:` tests.
+- **Tier gate before any download.** The gate (`maybeTranscribeVoiceNote`)
+  enforces `WHATSAPP_VOICE_MIN_ROLE` *before* fetching the media. At the
+  default (`'super_admin'`), this stays the original pure
+  `isSuperAdmin('whatsapp', senderId)` env check against
+  `SUPER_ADMIN_WHATSAPP_NUMBERS` — **never the DB**, so the default
+  configuration makes no new DB call and no operator sees any behaviour
+  change on upgrade. Only when an operator explicitly lowers `minRole` to
+  `'admin'`, `'member'`, or `'guest'` does the gate call `resolveRole('whatsapp',
+  senderId)` (the same env-then-DB resolution every other tier-gated surface
+  uses) and compare with `atLeast(role, minRole)` — the identical primitive,
+  no new comparison logic. A below-tier sender's audio is never downloaded,
+  never transcribed, and dropped exactly like any unhandled message type.
+  Identity is always the platform envelope (phone JID / resolved LID), never
+  the audio content, so it can't be spoofed by what's said. Pinned by
+  `SECURITY:` tests, including a zero-DB-call assertion at the default.
 - **Off by default.** With the flag unset, even a super admin's voice note is
   dropped (pinned) — enabling is a deliberate operator action.
+- **Per-sender rate cap, opt-in.** `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`
+  (default `0` = unlimited, matching this repo's "0/unset = off" convention)
+  caps transcriptions per sender within a rolling hour, checked *before* any
+  download, once it is set to a non-zero value. **Residual risk, stated
+  plainly**: lowering `WHATSAPP_VOICE_MIN_ROLE` opens on-demand local Whisper
+  inference (download → ffmpeg decode → model run) to a larger, less-trusted
+  population; with the rate limit left at its `0` default, a single sender's
+  transcription volume is bounded *only* by `WHATSAPP_VOICE_MAX_SECONDS` per
+  note, not by how many notes they can send per hour. **Operators lowering
+  `minRole` should also set a non-zero `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`.**
+  Pinned by a `SECURITY:` test.
 - **Local transcription, no new egress or key.** Uses transformers.js Whisper —
   the same "download the model once, run locally, no external API, no extra key"
   pattern as text embeddings. Audio never leaves the host; the
   subscription-only auth posture and egress surface are unchanged. (Requires
-  `ffmpeg` on the host to decode Opus → PCM.)
+  `ffmpeg` on the host to decode Opus → PCM.) The model
+  (`WHATSAPP_VOICE_MODEL`, default `Xenova/whisper-base.en`) is **English-only**
+  — a te reo Māori or other non-English voice note will transcribe poorly or
+  garbled. This is a known, disclosed limitation carried over unchanged from
+  the original feature, not a regression introduced by widening eligibility; a
+  multilingual checkpoint is already a free-text operator config choice
+  (`WHATSAPP_VOICE_MODEL`), not a code change.
 - **Bounded cost.** Notes longer than `WHATSAPP_VOICE_MAX_SECONDS` (default 120)
   are ignored without downloading. Any decode/model failure is swallowed and the
   note dropped — never surfaced or crash-inducing.
-- **No new authority.** Transcription only *populates the message text*; it
-  grants nothing. A mis-heard destructive command still can't fire without the
-  (spoken or typed) CONFIRM the tool layer already demands, and the transcript
-  is subject to the same super-admin tool set it always was.
+- **No new authority, no privilege escalation via transcript.** Transcription
+  only *populates the message text*; it grants nothing. A mis-heard
+  destructive command still can't fire without the (spoken or typed) CONFIRM
+  the tool layer already demands, and the transcript is granted **exactly**
+  the caller's own tier's tool set — never more — whether that text arrived
+  typed or transcribed, since there is no voice-specific tool-list path to
+  diverge. Pinned by a `SECURITY:` test.
+- **Gated-mode consistency, for free.** Because the gate reuses `resolveRole`,
+  an unregistered guest in `ACCESS_MODE_WHATSAPP=gated` still resolves to
+  `'guest'`; unless an operator explicitly sets `minRole` to `'guest'`, their
+  voice notes are refused before download exactly as their typed messages
+  already are — no separate exclusion logic needed.
 - **Group scope.** Voice notes can't carry an @-mention, so in groups only a
   voice note that *replies to the bot* is addressed (its `contextInfo` is read
   from the audio payload); DMs to the bot are always addressed. This does not
-  widen who can trigger the bot — the super-admin gate still applies.
+  widen who can trigger the bot — the tier gate still applies.
+
+### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
+
+Closes the "member exhausts `AGENT_MAX_TURNS` and gets nothing but a static
+fallback" gap with a member-initiated, real-time admin alert — see
+`docs/ARCHITECTURE.md` for the full flow. Controls:
+
+- **No new tool, no new model-reachable surface.** The trigger is the
+  existing structural `reply.maxTurnsExceeded === true` signal, not free-text
+  or a tool call — the entire offer/confirm/notify flow lives in
+  `router.ts`'s deterministic intercept layer, the same trust tier as the
+  CONFIRM/CANCEL intercept. A crafted question can make the *model* fail,
+  but it cannot make the model itself trigger an alert; only a genuine
+  max-turns exhaustion followed by the member's own subsequent "yes" can.
+- **Member-initiated, not auto-fired.** The offer requires an explicit
+  confirming reply; a max-turns failure alone never notifies anyone.
+- **No new data access.** `notifyAdmins` (mirroring `notifySuperAdmins`)
+  loops `listAdmins()` — the same guild-wide `community_users.role='admin'`
+  recipient set the weekly digest already targets — and echoes only the
+  member's own truncated original question (`truncateForEcho`, the same
+  helper `notifyReportFiled`/`notifySuggestionResolved` use). This changes
+  *when* an admin sees data already visible via the digest, not *what* they
+  can see.
+- **`SECURITY:` — single-shot consumption.** The pending entry is consumed
+  (deleted) the instant a confirming "yes" is matched, before the rate-cap
+  check runs — so a replayed "yes" can never fire a second notification,
+  regardless of whether the first attempt cleared the cap.
+- **`SECURITY:` — no confirmation without a live pending entry.** A "yes"
+  from a caller with no pending escalation (never offered one, or past the
+  10-minute TTL) is passed through to the model as an ordinary message —
+  never mistaken for a confirmation, never calls `notifyAdmins`.
+- **`SECURITY:` — guild-wide rate cap, tier-blind.** `ESCALATION_RATE_LIMIT_PER_HOUR`
+  (default 5) bounds total confirmed-escalation notifications per rolling
+  hour regardless of caller tier or which conversation triggers them —
+  including an open-mode guest, since the cap has no tier branch to bypass.
+  Once exhausted, a further confirmed "yes" gets a plain "already at the
+  hourly cap" reply instead of a notification.
+- **Off by default, byte-identical when unset.** With the flag unset, no
+  offer line is ever appended, no pending entry is ever recorded, and no
+  caller message can call `notifyAdmins` — pinned by a router test.
+
+### 15. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
+
+An operator-curated allowlist of Discord channel ids in which a top-level
+human post that does **not** address the bot (no mention/reply/DM) still gets
+an answer, contained in a thread anchored to that post. This is the one
+deliberate widening of the summon gate (`router.ts`'s
+`!msg.addressedToBot && !msg.isDirect`) in the whole codebase — every other
+control downstream of it is reused completely unchanged:
+
+- **Off by default, byte-identical.** Unset/empty `AUTO_ANSWER_CHANNEL_IDS`
+  means no post that isn't addressed/direct ever produces a reply — pinned by
+  a router test. Enabling it is a per-channel operator decision (the channel's
+  own stated purpose — a help/forum channel — is the consent boundary), not a
+  global posture change.
+- **No new untrusted-input path in substance, only in trigger.** The router
+  already classifies and stores every non-addressed message as `kind:
+  'ambient'` (issue #48/#103); this only adds a reply branch at the summon
+  gate. No new ingestion, no new retention, no schema change.
+- **Tool surface is the existing floor, never escalated.** An auto-answered
+  turn resolves the poster's tier via the exact same `resolveRole` call an
+  addressed turn uses, and `toolsForRole` is invoked with that same value —
+  no new code path computes or overrides the tool list. In gated mode, an
+  unregistered guest is already excluded further up the function (the
+  gated-guest branch returns before the auto-answer gate is ever evaluated),
+  so it inherits that exclusion for free; in open mode a guest is answered at
+  guest tier, which is already the same tool surface as member (`MEMBER_TOOLS`
+  is what `toolsForRole`'s default branch returns). Pinned by `SECURITY:`
+  router tests in both modes.
+- **Self/bot/webhook loop prevention.** `IncomingMessage.isBotAuthor` is a
+  second, router-level backstop (in addition to the Discord adapter never
+  constructing an `IncomingMessage` for a bot- or webhook-authored message in
+  the first place): the auto-answer gate refuses any post carrying it. Pinned
+  by a `SECURITY:` router test.
+- **Existing cost levers apply unchanged, no new bypass.** Per-user rate
+  limit, the daily reply budget, `AGENT_MODEL_MEMBER`/`AGENT_MAX_TURNS_MEMBER`,
+  and the repeat-question shortcut all still gate an auto-answer turn exactly
+  as they gate an addressed one — none of that logic was touched, only the
+  summon gate above it. Pinned by `SECURITY:` router tests (over-budget shed,
+  repeat-question shortcut hit).
+- **Per-channel rolling-hour cap.** A new, separate sliding-window limiter
+  (`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, default 10), mirroring
+  `agent/tools.ts`'s `reserveAnnounceSlot`/`ANNOUNCE_RATE_LIMIT_PER_HOUR`
+  shape but operator-tunable — bounds the flood/cost risk of a channel that
+  turns out busier than expected. Never applies to an addressed/mention reply
+  in the same channel. Pinned by a router test.
+- **Threaded, not bare-channel.** The reply is contained in a new Discord
+  thread anchored to the origin post
+  (`PlatformAdapter.startAutoAnswerThread`, Discord-only — same
+  `channel.threads.create({ name, startMessage })` primitive as
+  `create_thread`'s admin action, just router-driven rather than
+  model-requested) rather than posted directly into the channel. The thread's
+  name is a truncated echo of the question and is routed through the same
+  outbound filter (secret redaction) as every other bot-composed string
+  reaching Discord, since a highly-visible channel/thread title is a worse
+  exposure surface than an ordinary reply for a member who pastes a secret
+  into their question. If thread creation fails (a transient Discord API
+  error), the router falls back to replying directly in the channel rather
+  than silently dropping the answer. Pinned by adapter + router tests
+  (including a `SECURITY:` redaction test end-to-end through thread creation
+  and the reply send).
+- **Discord-only.** `PlatformAdapter.startAutoAnswerThread` is optional,
+  mirroring `sendImage?`/`reactToMessage?`/`canPostTo?`'s convention; the
+  WhatsApp adapters simply don't implement it, and the auto-answer gate
+  itself is additionally hard-restricted to `msg.platform === 'discord'`.
+  WhatsApp/Baileys auto-answer carries separate ToS/ban risk and is
+  deliberately out of scope for this feature — a different proposal.
 
 ## Platform-specific notes
 
@@ -1397,6 +1626,31 @@ base, unlike the other two's fixed-format extraction.
   still has the narrower limitation this closed for suggestions/reports: it
   has no cross-turn adapter lookup at all, since its callers don't know a
   target platform to look up.
+- **`appeal_moderation` (issue #496)** gives a member/guest a way to ask
+  admins to double-check their own active warning(s)/mute — the missing
+  action counterpart to `my_warnings`' read-only visibility. Self-scoped
+  exactly like `my_warnings`: eligibility is `countActiveWarnings(caller.
+  platform, caller.userId) > 0`, read from the resolved caller identity only,
+  never a tool-argument-supplied id, so it can never be used to check or
+  appeal on behalf of another member. It intentionally does **not** assert a
+  live Discord mute (the bot can't read that role state, issue #182) — only
+  the caller's own count vs. `MODERATION_STRIKE_LIMIT`, same caveat as
+  `my_warnings`. Reuses `notifySuperAdmins` as-is (`notifyAppealFiled`) — the
+  same fan-out `notifyReportFiled`/`notifyReportWithdrawn` already use — so no
+  new conversation-scoped push helper was introduced; the optional free-text
+  `reason` is length-capped at the zod schema boundary (same bound as
+  `report_content`'s `reason`) and, like every outbound DM, is redacted by
+  the adapter's own `sendDirectMessage` before it ever reaches an admin.
+  Rate-capped **per caller** (an appeal is about one person's own status, not
+  a shared conversation resource) at one per
+  `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) via an in-memory,
+  best-effort map — deliberately no new table for the MVP, so a restart at
+  worst permits one extra appeal DM, harmless for a non-destructive
+  notification. Never itself mutates `member_warnings`/mute state — no
+  auto-unmute; `clear_warnings` remains the only way an admin lifts a mute.
+  Worst-case abuse from a hijacked/injected member turn: one unwanted admin
+  DM per cooldown window naming the real, self-identified caller — the same
+  residual bound every other non-CONFIRM member-notification tool carries.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.
