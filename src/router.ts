@@ -3,7 +3,8 @@ import { logger } from './logger.js';
 import { isPureAcknowledgement } from './ackClassifier.js';
 import { atLeast, type CallerContext, type Tier } from './auth/rbac.js';
 import { resolveRole, superAdminIds } from './auth/roles.js';
-import type { IncomingMessage, PlatformAdapter } from './platforms/types.js';
+import type { IncomingMessage, Platform, PlatformAdapter } from './platforms/types.js';
+import { sanitizeName } from './agent/systemPrompt.js';
 import {
   INTERNAL_ERROR_REPLY,
   MAX_TURNS_REPLY,
@@ -26,6 +27,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  listAdmins,
   recordAccessRequest,
   recordInteraction,
   recordKnowledgeRetrieval,
@@ -49,6 +51,11 @@ import {
   DAILY_BUDGET_NOTICE_TEXT_MI,
   DAILY_BUDGET_NOTICE_TEXT_PLAIN,
 } from './dailyBudgetNotice.js';
+import {
+  DAILY_REPLY_BUDGET_WARNING_TEXT,
+  DAILY_REPLY_BUDGET_WARNING_TEXT_MI,
+  DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
+} from './dailyReplyBudgetWarning.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
 import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
 
@@ -182,6 +189,43 @@ const REPEAT_SHORTCUT_NOTICE_MI = '↩️ I pātai mai koe i tēnei mea i tērā
 
 const REPEAT_MAX_TURNS_SHORTCUT_NOTICE_MI = '↩️ He rite tonu ki tō tono o mua tata nei — me wāwāhi tonu:\n\n';
 
+/**
+ * Real-time admin alert fired the moment a gated guest's FIRST-EVER addressed
+ * message creates a fresh `access_requests` row (issue #480) — the discrete-
+ * event complement to the weekly digest's passive `pendingAccessRequests`
+ * count, mirroring `notifyReportFiled`'s "push what was pullable" precedent
+ * (#90). Called directly off `recordAccessRequest`'s insert-vs-update
+ * `RETURNING` value in `handle()` below — never routed through the agent/
+ * model loop, so a guest's own message content cannot reach this at all: only
+ * their platform + display name are threaded through, matching
+ * `access_requests`' own "identity + counts only" storage contract.
+ * Guild-wide `listAdmins()` audience (the same recipients the weekly digest's
+ * `pendingAccessRequests` count already reaches), not `superAdminIds()` — an
+ * access request is routine admin business, not a super-admin-tier concern.
+ * The guest's display name is sanitised the same way `list_access_requests`
+ * already renders it (`sanitizeName`), so a hostile name can't fake a fresh
+ * instruction line in front of the human admin reading the DM. Best-effort
+ * per admin/platform: a failed DM to one admin never blocks the others,
+ * matching `notifySuperAdmins`'s own fire-and-forget-per-recipient shape.
+ */
+export async function notifyAccessRequest(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  guest: { platform: Platform; userId: string; userName?: string },
+  listAdminsFn: typeof listAdmins = listAdmins,
+): Promise<void> {
+  const admins = await listAdminsFn();
+  if (admins.length === 0) return;
+  const name = guest.userName ? sanitizeName(guest.userName) : '';
+  const message = `🔔 New access request from ${name || guest.userId} on ${guest.platform}. Use add_member to let them in.`;
+  for (const admin of admins) {
+    const target = adapterFor(admin.platform);
+    if (!target || !target.isConnected()) continue;
+    target
+      .sendDirectMessage(admin.platformUserId, message)
+      .catch((err) => logger.warn({ err, platform: admin.platform }, 'Access-request alert failed'));
+  }
+}
+
 // Real-time admin escalation after a max-turns failure (issue #479). Every
 // piece below is opt-in behind ESCALATION_TO_ADMIN_ENABLED (default off) and
 // lives entirely in this deterministic router layer — never routed through
@@ -271,6 +315,15 @@ export class Router {
   private readonly RATE_WINDOW_MS = 60_000; // per minute
   /** userKey -> when they were last told they hit the budget (rolling 24h, matching the budget window). */
   private readonly budgetNotified = new Map<string, number>();
+  /**
+   * userKey -> when they were last warned they're approaching the daily
+   * budget (issue #511) — the pre-cutoff sibling of `budgetNotified` above,
+   * same key shape and same rolling-24h window, so a caller sitting inside
+   * the warning threshold for several messages in a row is warned once, not
+   * on every message. Only written when DAILY_REPLY_BUDGET_WARN_ENABLED is
+   * on (see `respond()`).
+   */
+  private readonly budgetWarned = new Map<string, number>();
   /** userKey -> when they were last told they're rate-limited (debounced to the rate-limit window). */
   private readonly rateLimitNotified = new Map<string, number>();
   /** userKey -> when they were last told the bot is paused (debounced to PAUSE_NOTIFY_WINDOW_MS). */
@@ -353,6 +406,13 @@ export class Router {
    * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
    * defaults to the real DB-backed shortcut-hit recorder (issue #440),
    * fired at each of the four member-facing shortcut short-circuits.
+   * `notifyAccessRequestFn` defaults to the real `notifyAccessRequest`
+   * (issue #480), consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on
+   * and `recordAccessRequest` reports a fresh insert — overridable so tests
+   * can assert the alert fired/didn't without a live DB or adapter.
+   * `recordAccessRequestFn` defaults to the real DB-backed upsert; overridable
+   * (like every other DB read/write above) so its insert-vs-update return
+   * value can be controlled in tests without a live Postgres.
    * `notifyAdminsFn` defaults to the real `listAdmins()`-backed admin alert
    * (issue #479), fired from the escalation-confirmation intercept in
    * `handle()`; overridable so tests can assert on it without a live DB.
@@ -369,9 +429,33 @@ export class Router {
     private readonly getGatedNotice: typeof buildGatedNotice = buildGatedNotice,
     private readonly getRespStyle: typeof getResponseStyle = getResponseStyle,
     private readonly recordShortcutHit: typeof recordShortcutHitDefault = recordShortcutHitDefault,
+    private readonly recordAccessRequestFn: typeof recordAccessRequest = recordAccessRequest,
+    private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
+  }
+
+  /** Rolling-hour timestamps for `ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR` (issue #480) — guild-wide, not per-conversation, since the alert audience (`listAdmins()`) is guild-wide too. */
+  private readonly accessRequestAlertTimestamps: number[] = [];
+
+  /**
+   * Reserve one access-request-alert slot against a rolling hourly cap, same
+   * sliding-window shape as `tools.ts`'s `reserveAnnounceSlot`/
+   * `reservePollSlot` — but keyless/guild-wide rather than per-conversation,
+   * matching this alert's guild-wide `listAdmins()` audience. Returns false
+   * without reserving if the guild already hit `limit` within the last hour;
+   * the request is still recorded by the caller either way (issue #480).
+   */
+  private reserveAccessRequestAlertSlot(limit: number): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = this.accessRequestAlertTimestamps.filter((t) => now - t < windowMs);
+    this.accessRequestAlertTimestamps.length = 0;
+    this.accessRequestAlertTimestamps.push(...recent);
+    if (recent.length >= limit) return false;
+    this.accessRequestAlertTimestamps.push(now);
+    return true;
   }
 
   private sweep(): void {
@@ -385,6 +469,9 @@ export class Router {
     }
     for (const [key, at] of this.budgetNotified) {
       if (now - at > 24 * 3_600_000) this.budgetNotified.delete(key);
+    }
+    for (const [key, at] of this.budgetWarned) {
+      if (now - at > 24 * 3_600_000) this.budgetWarned.delete(key);
     }
     for (const [key, at] of this.rateLimitNotified) {
       if (now - at > this.RATE_WINDOW_MS) this.rateLimitNotified.delete(key);
@@ -635,9 +722,39 @@ export class Router {
       }
       if ((msg.addressedToBot || msg.isDirect) && msg.text.trim()) {
         const userKey = `${msg.platform}:${msg.userId}`;
-        recordAccessRequest({ platform: msg.platform, userId: msg.userId, userName: msg.userName }).catch(
-          (err) => logger.warn({ err }, 'Failed to record access request'),
-        );
+        // Real-time admin alert (issue #480): fires ONLY on a fresh
+        // `access_requests` row — a repeat ping from the same still-pending
+        // guest (`inserted === false`) never notifies again, the upsert's own
+        // dedup is the entire debounce.
+        //
+        // The insert-vs-update result is only needed WHEN the alert is enabled,
+        // so it's only awaited then. Flag off/unset keeps the record upsert
+        // fire-and-forget exactly as before #480 — the gated guest's reply path
+        // (the raid-exposed hot path) never blocks on the DB round trip, so
+        // behaviour is genuinely byte-identical when the feature is off.
+        if (config.accessRequestAlert.enabled) {
+          const inserted = await this.recordAccessRequestFn({
+            platform: msg.platform,
+            userId: msg.userId,
+            userName: msg.userName,
+          }).catch((err) => {
+            logger.warn({ err }, 'Failed to record access request');
+            return false;
+          });
+          if (inserted && this.reserveAccessRequestAlertSlot(config.accessRequestAlert.rateLimitPerHour)) {
+            this.notifyAccessRequestFn((platform) => this.adapters.get(platform), {
+              platform: msg.platform,
+              userId: msg.userId,
+              userName: msg.userName,
+            }).catch((err) => logger.warn({ err }, 'Failed to fire access-request alert'));
+          }
+        } else {
+          void this.recordAccessRequestFn({
+            platform: msg.platform,
+            userId: msg.userId,
+            userName: msg.userName,
+          }).catch((err) => logger.warn({ err }, 'Failed to record access request'));
+        }
         if (!this.rateLimited(userKey)) {
           // Guest knowledge shortcut (issue #165): before the static "ask an
           // admin" pointer, try a global-only near-exact FAQ match — same
@@ -891,8 +1008,14 @@ export class Router {
       return;
     }
 
-    // Daily reply budget (super admins exempt).
+    // Daily reply budget (super admins exempt). `replyBudget` is hoisted out
+    // of this block (issue #511) so the already-fetched `used`/`limit` pair
+    // can be threaded into `respond()` below for the approaching-budget
+    // warning, instead of being discarded once the `used < limit` check
+    // passes — no new DB query, reusing the exact read this block already
+    // makes.
     const limit = config.behaviour.dailyReplyLimitPerUser;
+    let replyBudget: { used: number; limit: number } | undefined;
     if (limit > 0 && role !== 'super_admin') {
       const used = await this.countReplies(msg.platform, msg.userId).catch((err) => {
         logger.error({ err, platform: msg.platform }, 'daily_reply_budget_check_failed');
@@ -928,6 +1051,7 @@ export class Router {
         }
         return;
       }
+      replyBudget = { used, limit };
     }
 
     // Per-channel rolling-hour cap (issue #477) — bounds the flood/cost risk
@@ -1070,7 +1194,9 @@ export class Router {
     }
 
     // Serialise per conversation so session resume stays consistent.
-    await this.enqueue(key, 'respond', () => this.respond(msg, role, adapter, replyConversationId));
+    await this.enqueue(key, 'respond', () =>
+      this.respond(msg, role, adapter, replyBudget, replyConversationId),
+    );
   }
 
   /**
@@ -1282,6 +1408,7 @@ export class Router {
     msg: IncomingMessage,
     role: Tier,
     adapter: PlatformAdapter,
+    replyBudget?: { used: number; limit: number },
     replyConversationId?: string,
   ): Promise<void> {
     const target = replyConversationId ?? msg.conversationId;
@@ -1341,10 +1468,39 @@ export class Router {
       // failure — `reply.ok`/other failure modes are untouched. Threaded
       // into `outboundText` (not `reply.text` itself) so the caches below
       // that key off `reply.text`/`reply.ok` stay exactly as before.
-      const outboundText =
+      let outboundText =
         config.behaviour.escalationToAdminEnabled && reply.maxTurnsExceeded === true
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
+
+      // Approaching-daily-budget warning (issue #511): append-only, same
+      // shape as `offerEscalation` above — never replaces `outboundText`, so
+      // the caches below (keyed off `reply.text`/`reply.ok`, not
+      // `outboundText`) stay exactly as before. `replyBudget` is only ever
+      // set for a non-super-admin caller under a positive limit (see
+      // `handle()`), so no separate role check is needed here. `remaining`
+      // is the count AFTER this reply is sent/counted, matching the
+      // acceptance criterion's `limit - (used + 1)`.
+      if (config.behaviour.dailyReplyBudgetWarnEnabled && replyBudget) {
+        const remaining = replyBudget.limit - (replyBudget.used + 1);
+        if (remaining >= 0 && remaining <= config.behaviour.dailyReplyBudgetWarnRemaining) {
+          const userKey = `${msg.platform}:${msg.userId}`;
+          const lastWarned = this.budgetWarned.get(userKey) ?? 0;
+          if (Date.now() - lastWarned > 24 * 3_600_000) {
+            this.budgetWarned.set(userKey, Date.now());
+            let warningText = DAILY_REPLY_BUDGET_WARNING_TEXT(remaining);
+            if (reply.languagePreference === 'mi') {
+              warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_MI(remaining);
+            } else {
+              const style = await this.getRespStyle(msg.platform, msg.userId).catch(
+                () => 'standard' as const,
+              );
+              if (style === 'plain') warningText = DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN(remaining);
+            }
+            outboundText += warningText;
+          }
+        }
+      }
 
       // This call site (the real-agent-turn main reply, issue #339), the
       // gated notice (#363), and cancel/permissions-changed/pending-notice

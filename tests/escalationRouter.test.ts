@@ -104,12 +104,14 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
 }
 
 /**
- * Builds a Router with a stub notifyAdminsFn (12th constructor arg) that
- * records every call, and a stub runTurn. `getLangPref` defaults to
- * undefined (the real DB-backed lookup, which fails safe to 'auto' against
- * the unreachable dummy DB) — pass an override for a 'mi' scenario, since the
- * escalation-confirm intercept's own language lookup is independent of
- * whatever `reply.languagePreference` the stub `runTurn` returns.
+ * Builds a Router with a stub notifyAdminsFn (14th constructor arg — after
+ * the recordAccessRequestFn/notifyAccessRequestFn pair issue #480 inserted
+ * ahead of it) that records every call, and a stub runTurn. `getLangPref`
+ * defaults to undefined (the real DB-backed lookup, which fails safe to
+ * 'auto' against the unreachable dummy DB) — pass an override for a 'mi'
+ * scenario, since the escalation-confirm intercept's own language lookup is
+ * independent of whatever `reply.languagePreference` the stub `runTurn`
+ * returns.
  */
 function makeRouterWithNotifySpy(
   runTurn: Parameters<typeof Router>[0],
@@ -124,6 +126,8 @@ function makeRouterWithNotifySpy(
     undefined,
     undefined,
     getLangPref,
+    undefined,
+    undefined,
     undefined,
     undefined,
     undefined,

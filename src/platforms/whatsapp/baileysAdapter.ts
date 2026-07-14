@@ -884,6 +884,51 @@ export class BaileysAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * React to an existing message with an emoji (issue #494, extending #231's
+   * Discord-only `react_to_message` to WhatsApp). `emoji` is already validated
+   * against a closed allowlist by the caller (`react_to_message`) — this
+   * method trusts it and just forwards to Baileys' native `react` send type,
+   * same division of responsibility as `performAdminAction`'s `delete_message`
+   * case, whose key-construction pattern this mirrors.
+   *
+   * A group reaction's key requires the target message's author as
+   * `participant` (Baileys/WhatsApp addresses a group message by
+   * `remoteJid` + author, not `remoteJid` + id alone); a DM has no
+   * `participant`. The author comes from `getInteractionAuthorByMessageId`,
+   * the same stored-authorship lookup the revoke/edit authorship check uses.
+   * If a group message's author can't be resolved to a real phone-number id,
+   * this silently no-ops rather than sending a react keyed to a
+   * fabricated/guessed participant — the same fail-safe posture as the
+   * revoke/edit authorship check's "can't confirm, so skip" rule.
+   */
+  async reactToMessage(conversationId: string, messageId: string, emoji: string): Promise<void> {
+    if (!this.sock) throw new Error('WhatsApp socket not connected');
+    let participant: string | undefined;
+    if (conversationId.endsWith('@g.us')) {
+      const authorId = await getInteractionAuthorByMessageId('whatsapp', conversationId, messageId);
+      if (!authorId || !isPhoneUserId(authorId)) {
+        logger.warn(
+          { conversationId, messageId },
+          'Cannot resolve group message author for reaction — skipping',
+        );
+        return;
+      }
+      participant = this.targetJid(authorId);
+    }
+    await this.sock.sendMessage(conversationId, {
+      react: {
+        text: emoji,
+        key: {
+          remoteJid: conversationId,
+          id: messageId,
+          fromMe: false,
+          participant,
+        },
+      },
+    });
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     this.connected = false;

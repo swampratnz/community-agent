@@ -343,7 +343,17 @@ conditions stay silent: hitting the rate limit, the daily budget, or (issue
 #128) a super-admin `pause_bot` all send the member a static, debounced notice
 instead of nothing — once per window per user (`src/rateLimitNotice.ts`, the
 inline `budgetNotified` check, and `src/pauseNotice.ts` respectively), so none
-of them read as the bot being broken. These three deterministic, non-agent
+of them read as the bot being broken. A push-side complement to the hard
+cutoff above (issue #511, opt-in via `DAILY_REPLY_BUDGET_WARN_ENABLED`,
+default off): once a non-super-admin caller's remaining daily replies fall to
+`DAILY_REPLY_BUDGET_WARN_REMAINING` (default 5) or fewer, the router appends
+one fixed line naming the remaining count to the real reply's text — never a
+separate send, never replacing the model's answer, mirroring `offerEscalation`
+(#479)'s append-only shape. It reuses the `used`/`limit` pair the daily-budget
+check above already reads (no new query), is debounced to once per rolling
+24h per caller (`budgetWarned`, same window and sweep cadence as
+`budgetNotified`), and honours the caller's standing `'mi'`/`'plain'`
+preference the same way the other fixed notices do. These three deterministic, non-agent
 notices (issue #300) also honour a standing `'mi'` `language_preference`,
 same as `community_guidelines` (#266): the debounced send reads
 `getLanguagePreference` once per notified window and picks each notice's
@@ -542,7 +552,32 @@ weakening it:
    from a Discord nickname has no length or newline limit an admin couldn't
    abuse to forge Markdown link syntax or a fake system message. A name that
    sanitizes to empty is omitted, not shown blank.
-5. **`community_info` names every tool the caller actually has.** The
+5. **Real-time access-request alert** (issue #480, off unless
+   `ACCESS_REQUEST_ALERT_ENABLED=true`). The pending-access queue above is
+   pull-only (`list_access_requests`) plus a passive weekly digest count
+   (issue #133) — this closes the gap with a push notification the moment a
+   gated guest's addressed message creates a FRESH `access_requests` row.
+   `recordAccessRequest` reports insert-vs-update via Postgres's own
+   `xmax = 0` trick on its `RETURNING` clause — no new column or query shape —
+   and `router.ts` fires `notifyAccessRequest` only when that read reports
+   `inserted === true`; a repeat ping from the same still-pending guest
+   (`inserted === false`) never notifies again, so the upsert's own dedup IS
+   the debounce. Guild-wide `listAdmins()` audience, same recipients the
+   weekly digest's `pendingAccessRequests` count already reaches — not
+   `superAdminIds()`, since this is routine admin business. The DM names only
+   the guest's platform and (`sanitizeName`-cleaned) display name, never
+   message content, matching `access_requests`' own storage contract. A
+   guild-wide rolling-hour cap (`ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR`,
+   default 10) bounds worst-case DM volume under a raid; once exhausted, later
+   first-time requests in that hour are still recorded (so nothing is lost —
+   `list_access_requests`/the digest still see them) but do not notify, and a
+   fresh hour resumes notifying. Never routed through the agent/model loop —
+   this is a router-level side effect off an existing DB upsert's return
+   value, so it adds no new prompt-injection surface. `add_member`'s existing
+   `clearAccessRequest` call means the next gated address from that same user
+   after being added (and later, if regated) is treated as a fresh insert and
+   notifies once more.
+6. **`community_info` names every tool the caller actually has.** The
    `community_info` tool (issue #92) answers "what can you do?" with
    `MEMBER_CAPABILITIES_TEXT`, a plain-language line for every `MEMBER_TOOLS`
    entry, pinned against drift by an anti-drift coverage test (issue #311).
@@ -611,7 +646,25 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   `'declined'` — a decline must stick on the very next run, not just until
   the cluster re-summarises to the same topic label) or whose topic an
   existing `knowledge` entry already covers above the relevance floor
-  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`).
+  (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`). The topic match itself is two
+  layers (issue #503): a cheap exact (case-insensitive) string comparison
+  first, then — only when that misses — a semantic check against every
+  stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
+  (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
+  declined topic re-drafted under different wording on a later run (the
+  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  gets caught. `candidateTopicAlreadyReviewed` computes the topic's
+  embedding at most once per attempted cluster and reuses that same vector
+  for the semantic check, `knowledgeCoversTopic`, and the candidate insert
+  itself — no added local-embedding cost. Fails open (not blocked) on an
+  embedding error, same posture as `knowledgeCoversTopic`. `topic_embedding`
+  is nullable and **not backfilled** for rows inserted before this column
+  existed — those older rows are still covered by the (unchanged) exact-match
+  path but never surface a semantic match, mirroring this repo's existing
+  non-retroactive precedent (e.g. #197's `is_dm`). The column is
+  write-and-compare-only: never returned by `list_knowledge_candidates`,
+  `accept_knowledge_candidate`, or `decline_knowledge_candidate`, matching
+  `knowledge.embedding`/`knowledge_gaps.embedding`.
 - **Deletion coherence inherits from #51**: a candidate's `topic` is
   denormalized from its source digest at insert time. When a purge
   invalidates a digest, its still-*pending* candidates are deleted with it;
@@ -1102,6 +1155,35 @@ conversational message embeddings. Default `0` is a true no-op (byte-identical
 to pre-#474 behaviour); an operator raises it once they've observed their own
 corpus's `similarity` distribution (visible today via `remember_search`'s
 `(NN% match)` display).
+
+**Requester name relocated out of the system prompt** (issue #508): the system
+prompt's `Context:` block used to include a `- Requester: NAME (role)` line
+built from the per-message sender's platform display name. In a shared
+channel (a Discord channel or WhatsApp group with more than one participant —
+the dominant traffic pattern for a community bot), that line made the whole
+system-prompt string vary on essentially every turn from a different poster,
+which defeats the Agent SDK's prompt cache: caching is breakpoint-delimited,
+matching only when the *entire* content up to the trailing breakpoint is
+byte-identical, so any per-speaker variance inside that one opaque block was a
+guaranteed full-price cache miss regardless of #169's day-granularity date
+work (a prior attempt, #342, tried fixing this by reordering the block instead
+of removing the variance and was rejected for exactly that reason — reordering
+a single opaque string changes nothing about where its one trailing breakpoint
+falls). `buildSystemPrompt` no longer includes `caller.userName` anywhere;
+`runAgentTurn` (`core.ts`) now prepends a sanitized `[Requester: NAME]` tag
+(via `renderRequesterTag`, reusing the same `sanitizeName` the old line used)
+to the **user turn** instead, alongside the existing `renderMemoryContext`
+block — mirroring how #474's memory-relevance fix already treats per-turn
+content as living downstream of the cached prefix. This makes the system
+prompt byte-identical across different speakers of the same role in the same
+conversation on the same day, which is the actual precondition for a cache
+hit; mixed-role channels (e.g. a member turn followed by an admin turn) still
+differ because `ROLE_NOTES[role]` varies, so the benefit is scoped to
+consecutive same-role turns, not every message. No dollar/token saving is
+claimed here — `execTurn` now reads `usage.cache_read_input_tokens` and
+`usage.cache_creation_input_tokens` off the SDK's `result` message (mirroring
+the existing `total_cost_usd` read) and logs them at debug level per turn, so
+the actual hit rate can be measured from real traffic instead of asserted.
 
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other

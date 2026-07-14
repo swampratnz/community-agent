@@ -365,6 +365,26 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Real-time admin alert (issue #480) fired the moment a gated guest's
+  // FIRST-EVER addressed message creates a fresh `access_requests` row — the
+  // discrete-event complement to the weekly digest's passive
+  // `pendingAccessRequests` count, same "push what was pullable" precedent as
+  // `notifyReportFiled` (#90). Router-only side effect off
+  // `recordAccessRequest`'s insert-vs-update `RETURNING` value; never routed
+  // through the agent/model loop. Off by default, consistent with this repo's
+  // convention for new proactive DMs.
+  ACCESS_REQUEST_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
+  // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
+  // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
+  // under a raid or a channel getting linked somewhere. Once exhausted within
+  // the trailing hour, further first-time requests are still recorded in
+  // `access_requests` (visible via list_access_requests/the digest) but do
+  // not notify; a fresh hour resumes notifying.
+  ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
   // Offline context builder (issue #51): distills stored interactions into
   // durable context_digests on a ~daily cadence. Off by default; when on,
   // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
@@ -596,6 +616,21 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Push-side complement to #444's pull-only `my_data` budget figure (issue
+  // #511): once a non-super-admin caller's remaining daily replies fall to
+  // DAILY_REPLY_BUDGET_WARN_REMAINING or fewer, append one fixed line to the
+  // real reply naming the remaining count, debounced to once per rolling 24h
+  // (mirrors budgetNotified's window). Off by default: with it unset, the
+  // reply is byte-identical to today's for every used/limit combination. See
+  // src/router.ts.
+  DAILY_REPLY_BUDGET_WARN_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // How many replies remain (inclusive) before the warning above fires.
+  // Always a positive count — unlike the "0 disabled" knobs above, disabling
+  // this feature is DAILY_REPLY_BUDGET_WARN_ENABLED=false, not a 0 here.
+  DAILY_REPLY_BUDGET_WARN_REMAINING: z.coerce.number().int().positive().default(5),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -892,6 +927,10 @@ export const config = {
   departedAdminAlert: {
     enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
   },
+  accessRequestAlert: {
+    enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
+    rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
+  },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,
     memoryRelevanceThreshold: env.MEMORY_RELEVANCE_THRESHOLD,
@@ -914,6 +953,8 @@ export const config = {
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
     escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
+    dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
+    dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {
