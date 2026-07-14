@@ -249,6 +249,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
+| `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -916,6 +917,24 @@ enabled (every message is inspected) — treat it like ambient archiving.
   rows (both `source: 'auto'` and `source: 'admin'`), since `moderation_history`
   reads only `admin_audit` and structurally can't surface auto-detected
   strikes. Same `(platform, userId)`-only scope as `clear_warnings`.
+- **Appeal**: `my_warnings` gave a member visibility into their own
+  moderation status but no way to act on it — `appeal_moderation` (issue
+  #496) is that missing action, a member/guest-tier tool with the same
+  self-scoping discipline as `my_warnings`: it reads the caller's own
+  `countActiveWarnings(caller.platform, caller.userId)` only (never a
+  tool-argument-supplied id) and refuses cleanly ("no active warnings to
+  appeal") when it's zero, so it can't become a generic side channel to
+  message admins — `suggest_improvement`/`report_content` already cover that.
+  An eligible caller may attach one optional, sanitized, length-capped free-
+  text reason (same bound as `report_content`'s `reason`); calling it
+  proactively DMs super admins via the SAME `notifySuperAdmins` fan-out
+  `notifyReportFiled`/`notifyReportWithdrawn` already use (`notifyAppealFiled`)
+  — no new conversation-scoped push helper. Rate-capped **per caller**, not
+  per-conversation (an appeal is about one person's own status), one per
+  `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) — an in-memory,
+  best-effort cap, deliberately no new table for the MVP. Never itself
+  changes a warning count or mute state: resolution stays exactly
+  `clear_warnings`.
 - **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
   right now", the question `list_member_warnings` structurally can't (it
   requires an already-known `targetUserId`) and the digest's bare `🔇 N`

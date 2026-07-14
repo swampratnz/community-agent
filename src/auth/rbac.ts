@@ -69,6 +69,12 @@ export const MEMBER_TOOLS = [
   // configured limit — never a warning's reason/excerpt (admin-only context,
   // see list_member_warnings) and never another member's warnings.
   'mcp__community__my_warnings',
+  // Self-scoped: asks admins to double-check the caller's OWN active
+  // warning(s)/mute (issue #496) — refuses cleanly with no active warning,
+  // so it can't become a generic side channel to message admins (that's
+  // already what suggest_improvement is for). Resolves eligibility from
+  // caller.platform/caller.userId only, exactly like my_warnings.
+  'mcp__community__appeal_moderation',
   // Self-scoped, read-only summary of what's stored about the caller —
   // counts mirroring exactly what forget_me/purge_user_data would delete,
   // scoped the same way (own identity + linked identities). Never queries

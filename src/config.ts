@@ -151,6 +151,12 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Per-caller cooldown (hours) on appeal_moderation (issue #496) — a member
+  // with an active warning/mute can ask admins to double-check it, at most
+  // once per window. In-memory/best-effort for the MVP (no new table): a
+  // restart merely permits one extra appeal DM, harmless for a non-
+  // destructive notification.
+  MODERATION_APPEAL_COOLDOWN_HOURS: z.coerce.number().int().positive().default(24),
   // Image generation via the host Grok Build CLI (uses its SuperGrok
   // subscription login — no API key). OFF by default; admin/super-admin only.
   IMAGE_GEN_ENABLED: z
@@ -746,6 +752,7 @@ export const config = {
     mutedRoleName: env.MODERATION_MUTED_ROLE_NAME,
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
+    appealCooldownHours: env.MODERATION_APPEAL_COOLDOWN_HOURS,
   },
   github: {
     enabled: env.GITHUB_ISSUE_ENABLED ?? false,
