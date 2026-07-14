@@ -338,9 +338,18 @@ tier-revoked-mid-TTL "permissions changed" outcome, and the authoritative
 action each pick a fixed `_MI` variant off the same `getLanguagePreference`
 read, with `pending.description` embedded unchanged in both language variants
 and the `CONFIRM`/`CANCEL` reply tokens left untranslated so
-`classifyConfirmReply` keeps matching them. The per-tool `requireConfirm`
-outcome/failure strings (`pending.execute()`'s own return value and the
-`Failed: ...` fallback) stay out of scope and English-only. The five opt-in,
+`classifyConfirmReply` keeps matching them. A tenth addition (issue #490)
+closes the one gap #405 named out of scope: the generic `'Failed: '` shell
+that fronts a `requireConfirm` outcome — whether `pending.execute()`'s own
+return value or the router's own catch-block fallback — is now swapped for a
+fixed `FAILED_PREFIX_MI` on a standing `'mi'` preference, leaving the dynamic
+`result`/error text after it byte-identical to the English case; a plain
+string-prefix match at the single existing send site, so it covers every
+`requireConfirm` call site sharing that template without touching
+`agent/tools.ts`. What stays out of scope and English-only: any bespoke,
+non-`Failed:`-templated outcome/description string a `requireConfirm` tool
+authors directly, and the symmetric `'Done: '` success shell (deferred — see
+below). The five opt-in,
 off-by-default shortcut-reply strings `respond()` uses to skip a full agent
 turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
 `GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and

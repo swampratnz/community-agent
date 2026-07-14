@@ -90,6 +90,20 @@ export const PERMISSIONS_CHANGED_TEXT_MI =
 export const PERMISSIONS_CHANGED_TEXT_PLAIN =
   'I did not do this. Your permission level changed after you asked, so I can no longer do it.';
 
+// Fixed, human-authored te reo Māori substitute for the literal `'Failed: '`
+// shell prefix a CONFIRM-gated `requireConfirm` outcome falls back to on a
+// thrown execute() (issue #490 — closing the one gap #405 named out of
+// scope: "the per-tool requireConfirm outcome/failure strings ... stay out
+// of scope and English-only"). Only this fixed shell is translated; the
+// dynamic `result`/error text after it is untouched, same "translate the
+// shell, not the payload" discipline as CODE_TRUNCATED_NOTE_MI (#339) and
+// every other constant in this file. Deliberately no `Done: ` counterpart
+// here — ARCHITECTURE.md doesn't name that shell as an open gap, and several
+// requireConfirm tools return fully bespoke (non-`Done:`) success strings, so
+// translating only the `Done:`-templated subset would read unevenly; left as
+// a named follow-up.
+export const FAILED_PREFIX_MI = 'I hapa: ';
+
 // Wrapper around the deterministic pending-action notice (issue #405),
 // mirroring the "translate the shell, leave the dynamic payload alone"
 // pattern `agent/outbound.ts`'s CODE_TRUNCATED_NOTE_MI already established
@@ -736,6 +750,18 @@ export class Router {
             outcome = await pending.execute();
           } catch (err) {
             outcome = `Failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
+          // Translate only the generic `Failed: ` shell (issue #490) — covers
+          // both the catch-block fallback above and any requireConfirm tool
+          // that returns its own `Failed: ${result}`-shaped string, without
+          // touching agent/tools.ts. Bespoke, non-templated outcome strings
+          // some tools author directly stay English-only, matching #405's
+          // scope boundary exactly (just closing the `Failed: ` half of it).
+          if (outcome.startsWith('Failed: ')) {
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            if (lang === 'mi') {
+              outcome = FAILED_PREFIX_MI + outcome.slice('Failed: '.length);
+            }
           }
         }
         await this.send(adapter, msg.conversationId, outcome).catch((err) =>
