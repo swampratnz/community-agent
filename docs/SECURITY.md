@@ -169,6 +169,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 - Every privileged action is written to the append-only `admin_audit` table
   (who, what, target, params, result, success, timestamp).
 - Admin actions are gated on platform-native admin identity.
+- `admin_activity` (super-admin only, issue #488) gives a per-admin
+  action-volume rollup over a trailing window — a `GROUP BY` aggregation over
+  the same already-audited `admin_audit` rows `audit_view` exposes flat, never
+  `params` (which may carry free-text reasons) and never scoped to fewer
+  actors than a super admin could already reconstruct by hand from the log.
 
 ### 5. Host compromise / blast radius
 **Controls**
