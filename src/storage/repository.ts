@@ -3809,6 +3809,76 @@ export async function countStaleMutedMembers(
   return rows[0]?.n ?? 0;
 }
 
+export interface MutedMemberRow {
+  userId: string;
+  status: 'active' | 'stale';
+  strikeCount: number;
+  lastWarningAt: Date;
+}
+
+/**
+ * Enumerate the members `countMutedMembers` and `countStaleMutedMembers`
+ * would each count, by identity rather than a bare number (issue #487, the
+ * growth path #403 explicitly named and deferred) — the "who" a digest's
+ * `🔇 N member(s) currently muted` count can't answer on its own.
+ *
+ * One query computes both the windowed and unwindowed active-strike count
+ * per user with the exact same predicates those two count functions use, and
+ * a row is tagged `'active'` when the windowed count (or the unwindowed
+ * count, when `windowDays` is `undefined` — identical by construction, same
+ * short-circuit `countStaleMutedMembers` relies on) is `>= strikeLimit`,
+ * else `'stale'` when only the unwindowed count is. Because `'active'` is
+ * decided first and `'stale'` only applies to rows the HAVING clause let
+ * through on the unwindowed branch, the two tags are mutually exclusive by
+ * construction — never both, never neither, for a row that appears at all.
+ *
+ * `strikeCount` reports whichever count decided the tag (windowed for
+ * `'active'`, unwindowed for `'stale'`), so an admin sees the number that
+ * actually explains why the row is here. Ordered newest-warning-first,
+ * capped at `limit`. Bound parameters only, same injection posture as
+ * `countMutedMembers`/`countStaleMutedMembers`.
+ *
+ * Deliberately excludes `reason`/`excerpt` (message content) — those stay
+ * behind `listMemberWarnings`, one level deeper, same boundary `clear_warnings`/
+ * `list_member_warnings` already draw.
+ */
+export async function listMutedMembers(
+  platform: string,
+  strikeLimit: number,
+  windowDays?: number,
+  limit = 50,
+): Promise<MutedMemberRow[]> {
+  const { rows } = await pool.query(
+    `SELECT user_id,
+            MAX(created_at) AS last_warning_at,
+            COUNT(*) FILTER (
+              WHERE $3::int IS NULL OR created_at >= now() - make_interval(days => $3::int)
+            ) AS windowed_count,
+            COUNT(*) AS unwindowed_count
+       FROM member_warnings
+      WHERE platform = $1 AND cleared_at IS NULL
+      GROUP BY user_id
+     HAVING COUNT(*) FILTER (
+              WHERE $3::int IS NULL OR created_at >= now() - make_interval(days => $3::int)
+            ) >= $2
+         OR COUNT(*) >= $2
+      ORDER BY MAX(created_at) DESC
+      LIMIT $4`,
+    [platform, strikeLimit, windowDays ?? null, limit],
+  );
+  return rows.map((r) => {
+    const windowedCount = Number(r.windowed_count);
+    const unwindowedCount = Number(r.unwindowed_count);
+    const active = windowedCount >= strikeLimit;
+    return {
+      userId: r.user_id,
+      status: active ? ('active' as const) : ('stale' as const),
+      strikeCount: active ? windowedCount : unwindowedCount,
+      lastWarningAt: r.last_warning_at,
+    };
+  });
+}
+
 /**
  * Clear all of a member's active warnings (an admin action), stamping who
  * cleared them and when. Returns the number of strikes cleared, so the caller

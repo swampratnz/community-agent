@@ -749,6 +749,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
+  - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
+    test) enumerates currently-muted members by identity — the growth path
+    #403 named and deferred for the digest's bare `🔇 N` count. It sits at the
+    same admin-tier, non-conversation-scoped boundary `clear_warnings`/
+    `list_member_warnings` already occupy — not a new data-access tier, and no
+    field it returns (user id, strike count, `active`/`stale` status,
+    last-warning timestamp) is new: every one is already reachable by an
+    admin who already knows the target id via `list_member_warnings`. It
+    deliberately never returns `reason`/`excerpt` (message content stays
+    behind `list_member_warnings`, pinned by a `SECURITY:` test), and its
+    `stale` tag — like `countStaleMutedMembers`' own count — is an
+    over-approximation the tool's own output hedges as "may still be muted",
+    never asserted as a confirmed live mute.
   - **Strike accumulation is unbounded by default, and that's now a documented
     choice, not an oversight**: `MODERATION_STRIKE_WINDOW_DAYS` (optional, unset
     by default) lets an admin opt into a rolling window so only strikes newer

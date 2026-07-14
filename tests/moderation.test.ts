@@ -470,3 +470,11 @@ test('SECURITY: list_member_warnings is admin-tier only — absent from the memb
   assert.ok(!toolsForRole('member').includes(tool), 'members must not have list_member_warnings');
   assert.ok(!toolsForRole('guest').includes(tool), 'guests must not have list_member_warnings');
 });
+
+test('SECURITY: list_muted_members is admin-tier only — absent from the member/guest surface (issue #487)', () => {
+  const tool = 'mcp__community__list_muted_members';
+  assert.ok(toolsForRole('admin').includes(tool), 'admins have list_muted_members');
+  assert.ok(toolsForRole('super_admin').includes(tool), 'super admins have list_muted_members');
+  assert.ok(!toolsForRole('member').includes(tool), 'members must not have list_muted_members');
+  assert.ok(!toolsForRole('guest').includes(tool), 'guests must not have list_muted_members');
+});
