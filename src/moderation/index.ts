@@ -14,6 +14,7 @@ export function createModerator(enforcer: ModerationEnforcer): Moderator {
     enabled: config.moderation.enabled,
     strikeLimit: config.moderation.strikeLimit,
     strikeWindowDays: config.moderation.strikeWindowDays,
+    alertRateLimitPerHour: config.moderation.alertRateLimitPerHour,
     classify: makeClassifier({
       badWords: config.moderation.badWords,
       llmAbuseEnabled: config.moderation.llmAbuseEnabled,

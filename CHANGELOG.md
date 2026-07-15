@@ -12,6 +12,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-15
 
+### Added
+- **Mod-alerts rate cap** (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`, #517):
+  every other admin-notification path (escalation DMs, access-request
+  alerts, auto-answer, `warn_user`) already had a rolling-hour cap — the
+  private `mod-alerts` channel, whose entire purpose is carrying moderation
+  signal, was the sole exception, so a raid/flood could bury the one alert
+  admins most need during exactly that incident. A guild-wide rolling-hour
+  counter now gates `Moderator.scan()`'s admin-channel notifications only
+  (default 30/hour, generous enough that normal traffic never engages it);
+  once exhausted, overflow collapses into a single summary line reporting
+  the exact suppressed count instead of a wall of near-duplicate alerts.
+  Enforcement — warning DMs, mutes, and the `member_warnings` audit trail —
+  is never gated by this cap, only the notification is. See
+  docs/ARCHITECTURE.md and docs/SECURITY.md's auto-moderation sections.
 ### Fixed
 - **`build` CI failure — `community_info` admin reply over its char cap**: the
   admin capabilities text had grown 18 chars past its intentional 2800-char cap

@@ -157,6 +157,16 @@ const EnvSchema = z.object({
   // restart merely permits one extra appeal DM, harmless for a non-
   // destructive notification.
   MODERATION_APPEAL_COOLDOWN_HOURS: z.coerce.number().int().positive().default(24),
+  // Guild-wide rolling-hour cap on postAdminAlert calls from Moderator.scan()
+  // (issue #517) — every other admin-notification path already has one
+  // (ESCALATION_RATE_LIMIT_PER_HOUR, ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
+  // AUTO_ANSWER_RATE_LIMIT_PER_HOUR, WARN_USER_RATE_LIMIT_PER_HOUR); mod-alerts
+  // was the sole exception, so a raid/flood could bury the one alert channel
+  // whose entire purpose is carrying moderation signal. Default generous
+  // enough that normal traffic never engages it. Never gates enforcement
+  // (addWarning/muteUser/warnUser/warnInChannel) — only the admin-channel
+  // notification, see src/moderation/moderator.ts.
+  MODERATION_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(30),
   // Image generation via the host Grok Build CLI (uses its SuperGrok
   // subscription login — no API key). OFF by default; admin/super-admin only.
   IMAGE_GEN_ENABLED: z
@@ -820,6 +830,7 @@ export const config = {
     adminChannelName: env.MODERATION_ADMIN_CHANNEL_NAME,
     llmAbuseEnabled: env.MODERATION_LLM_ABUSE_ENABLED ?? false,
     appealCooldownHours: env.MODERATION_APPEAL_COOLDOWN_HOURS,
+    alertRateLimitPerHour: env.MODERATION_ALERT_RATE_LIMIT_PER_HOUR,
   },
   github: {
     enabled: env.GITHUB_ISSUE_ENABLED ?? false,

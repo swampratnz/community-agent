@@ -63,7 +63,7 @@
   "knowledgeShortcutRouter.test.ts": 3,
   "linkCheck.test.ts": 6,
   "lowRatedCaveatRouter.test.ts": 1,
-  "moderation.test.ts": 10,
+  "moderation.test.ts": 12,
   "moderationRepo.test.ts": 4,
   "outbound.test.ts": 4,
   "pauseNotice.router.test.ts": 2,
