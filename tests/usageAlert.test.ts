@@ -24,6 +24,7 @@ const BASE_STATS = {
   backgroundCostUsd: 0,
   shortcutHits: { total: 0, byKind: [] },
   backgroundCostByJob: [],
+  cacheUsage: { readTokens: 0, creationTokens: 0 },
 };
 
 test('startUsageAlert: USAGE_ALERT_DAILY_REPLIES unset (default) creates no timer', () => {

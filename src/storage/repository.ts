@@ -2481,6 +2481,7 @@ export async function usageStats(days = 7): Promise<{
   backgroundCostUsd: number;
   shortcutHits: { total: number; byKind: Array<{ kind: string; count: number }> };
   backgroundCostByJob: Array<{ job: string; costUsd: number }>;
+  cacheUsage: { readTokens: number; creationTokens: number };
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2506,6 +2507,21 @@ export async function usageStats(days = 7): Promise<{
       GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
     [interval],
   );
+  // Cache-hit/-write token telemetry (issue #522): sums the `meta` JSONB
+  // keys `core.ts`/`router.ts` write per outbound row (issue #508's read,
+  // threaded through). Same table/window/direction filter as `byRole` above,
+  // just one more SUM() aggregate over it — same cost class as the existing
+  // `backgroundCostByJob`/`shortcutHits` aggregates it sits beside. Rows that
+  // never got either key (pre-#522, or a turn with no/zero usage) contribute
+  // 0 via `coalesce`, not null.
+  const { rows: cache } = await pool.query(
+    `SELECT
+       coalesce(sum((meta->>'cacheReadTokens')::bigint), 0) AS read_tokens,
+       coalesce(sum((meta->>'cacheCreationTokens')::bigint), 0) AS creation_tokens
+     FROM interactions
+     WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
+    [interval],
+  );
   const background = await sumBackgroundJobCosts(clampedDays);
   const shortcuts = await sumShortcutHits(clampedDays);
   return {
@@ -2517,6 +2533,10 @@ export async function usageStats(days = 7): Promise<{
     backgroundCostUsd: background.total,
     shortcutHits: shortcuts,
     backgroundCostByJob: background.byJob,
+    cacheUsage: {
+      readTokens: Number(cache[0].read_tokens),
+      creationTokens: Number(cache[0].creation_tokens),
+    },
   };
 }
 
@@ -2688,6 +2708,25 @@ export async function clearAccessRequest(platform: Platform, userId: string): Pr
 export async function countAccessRequests(): Promise<number> {
   const { rows } = await pool.query(`SELECT count(*) AS n FROM access_requests`);
   return Number(rows[0].n);
+}
+
+/**
+ * Whole-day age of the oldest still-pending access request — the same
+ * `MIN(first_requested_at)` oldest-age mechanic issue #450 applies to
+ * reports/suggestions, applied here to `access_requests` (issue #515).
+ * `first_requested_at` is set once at insert and never updated
+ * (`recordAccessRequest`), and `clearAccessRequest` deletes the row on
+ * `add_member`, so by construction every remaining row is unresolved
+ * backlog and `MIN` over an empty table is `null`, never `0` — returned
+ * as-is rather than coerced, so an admin/digest reader can never mistake
+ * "no pending requests" for "a request that just arrived".
+ */
+export async function oldestAccessRequestAgeDays(): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(DAY FROM now() - MIN(first_requested_at))::int AS age_days FROM access_requests`,
+  );
+  const ageDays = rows[0]?.age_days;
+  return ageDays === null || ageDays === undefined ? null : Number(ageDays);
 }
 
 // --- Context digests (offline builder output, issue #51) ---------------------

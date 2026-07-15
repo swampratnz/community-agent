@@ -79,6 +79,7 @@ const {
   REPORT_RATE_LIMIT_PER_DAY,
   recordAccessRequest,
   countAccessRequests,
+  oldestAccessRequestAgeDays,
   clearAccessRequest,
   upsertRosterMember,
   markRosterLeave,
@@ -3279,6 +3280,92 @@ test(
 );
 
 test(
+  'repository: usageStats().cacheUsage sums meta.cacheReadTokens/cacheCreationTokens over outbound rows in the window, across other meta shapes and outside the window (issue #522, acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-cache-usage`;
+    const days = 1;
+    const before = await usageStats(days);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 1',
+      meta: { cacheReadTokens: 1000, cacheCreationTokens: 40 },
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 2',
+      meta: { cacheReadTokens: 234, cacheCreationTokens: 6, knowledgeEntryId: 99 },
+    });
+    // No cache-usage keys at all — must contribute 0, not throw or null-poison the SUM.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 3',
+      meta: { replyToUserId: 'someone' },
+    });
+    // Inbound rows must never contribute — cacheUsage is direction = 'outbound' only.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'someone',
+      role: 'member',
+      direction: 'inbound',
+      content: 'a member question',
+      meta: { cacheReadTokens: 999999, cacheCreationTokens: 999999 },
+    });
+    // Outside the 1-day window — must not appear in the sum.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'old reply',
+               '{"cacheReadTokens": 5000, "cacheCreationTokens": 500}'::jsonb, now() - interval '2 days')`,
+      [conversationId],
+    );
+
+    const after = await usageStats(days);
+
+    assert.equal(
+      after.cacheUsage.readTokens - before.cacheUsage.readTokens,
+      1234,
+      'readTokens sums only the two in-window outbound rows that carried the key (1000 + 234)',
+    );
+    assert.equal(
+      after.cacheUsage.creationTokens - before.cacheUsage.creationTokens,
+      46,
+      'creationTokens sums only the two in-window outbound rows that carried the key (40 + 6)',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: usageStats().cacheUsage reflects zero delta when no interaction is recorded in between two reads (empty-window case, issue #522)',
+  { skip },
+  async () => {
+    const before = await usageStats(1);
+    const after = await usageStats(1);
+    assert.deepEqual(
+      after.cacheUsage,
+      before.cacheUsage,
+      'no interactions recorded in between — the window contributes nothing new',
+    );
+  },
+);
+
+test(
   'SECURITY: repository: shortcut_hits stores only the fixed kind enum and a timestamp — no user id, conversation id, platform, or free text (issue #440)',
   { skip },
   async () => {
@@ -3898,6 +3985,56 @@ test(
       before,
       'clearing every inserted request restores the prior count',
     );
+  },
+);
+
+test(
+  'repository: oldestAccessRequestAgeDays returns the whole-day age of the oldest row (MIN(first_requested_at)), not the most recently inserted one (issue #515)',
+  { skip },
+  async () => {
+    const recentUser = `${RUN}-oldestage-recent`;
+    const oldUser = `${RUN}-oldestage-old`;
+    await recordAccessRequest({ platform: 'discord', userId: recentUser, userName: 'tester' });
+    await recordAccessRequest({ platform: 'discord', userId: oldUser, userName: 'tester' });
+    // Backdate oldUser far enough into the past that no concurrently-running
+    // test file's freshly-inserted row (first_requested_at always defaults to
+    // now() — nothing else in the codebase ever sets it directly) could
+    // plausibly be older, so MIN(first_requested_at) is deterministically
+    // this row regardless of what else is in the table right now.
+    await pool.query(
+      `UPDATE access_requests SET first_requested_at = now() - interval '500 days'
+        WHERE platform = 'discord' AND user_id = $1`,
+      [oldUser],
+    );
+
+    assert.equal(
+      await oldestAccessRequestAgeDays(),
+      500,
+      'the oldest row by first_requested_at determines the age, not the most recently inserted row',
+    );
+
+    await clearAccessRequest('discord', recentUser);
+    await clearAccessRequest('discord', oldUser);
+  },
+);
+
+test(
+  'SECURITY: oldestAccessRequestAgeDays returns null (never 0 or NaN) for an empty access_requests table, and a real non-negative integer otherwise (issue #515)',
+  { skip },
+  async () => {
+    const countBefore = await countAccessRequests();
+    const age = await oldestAccessRequestAgeDays();
+    if (countBefore === 0) {
+      assert.equal(age, null, 'an empty table must return null, never 0 or a throw');
+    } else {
+      // A concurrently-running test file may have a pending row at this
+      // instant — still must never come back as anything other than null or
+      // a well-formed non-negative integer (never NaN/undefined/negative).
+      assert.ok(
+        age === null || (Number.isInteger(age) && age >= 0),
+        'a non-empty table must yield null or a non-negative integer day count, never NaN',
+      );
+    }
   },
 );
 

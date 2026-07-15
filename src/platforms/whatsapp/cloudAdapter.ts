@@ -627,6 +627,51 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * React to a message with an emoji (issue #528) — Cloud parity with
+   * Discord's/Baileys' `reactToMessage`. A reaction is a native free-form
+   * Cloud API message type (no template requirement of its own), so it's
+   * gated by the same 24h customer-service window as `sendText`/`sendImage`
+   * and posted to the same `/messages` endpoint with `type: 'reaction'`.
+   */
+  async reactToMessage(conversationId: string, messageId: string, emoji: string): Promise<void> {
+    const { phoneNumberId, accessToken } = config.whatsapp.cloud;
+    if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
+    this.assertWithinCustomerServiceWindow(conversationId);
+
+    let res: Response;
+    try {
+      res = await this.fetchWithRetry(
+        `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: conversationId,
+            type: 'reaction',
+            reaction: { message_id: messageId, emoji },
+          }),
+        },
+      );
+    } catch (err) {
+      // Same rationale as sendChunk/sendImageMessage: a rejected fetch is as
+      // much a send failure as a non-OK response, and must count toward
+      // isConnected().
+      this.recordSendFailure();
+      throw err instanceof Error ? err : new Error(`WhatsApp Cloud reaction failed: ${String(err)}`);
+    }
+    if (!res.ok) {
+      this.recordSendFailure();
+      const detail = await res.text().catch(() => '');
+      throw new Error(`WhatsApp Cloud reaction failed: ${res.status} ${detail}`);
+    }
+    this.consecutiveSendFailures = 0;
+  }
+
   /** No groups on the Cloud API — a user's only conversation is their 1:1 with the bot. */
   async conversationsForUser(userId: string): Promise<string[]> {
     return [userId];

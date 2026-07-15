@@ -10,6 +10,77 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-15
+
+### Added
+- **Mod-alerts rate cap** (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`, #517):
+  every other admin-notification path (escalation DMs, access-request
+  alerts, auto-answer, `warn_user`) already had a rolling-hour cap — the
+  private `mod-alerts` channel, whose entire purpose is carrying moderation
+  signal, was the sole exception, so a raid/flood could bury the one alert
+  admins most need during exactly that incident. A guild-wide rolling-hour
+  counter now gates `Moderator.scan()`'s admin-channel notifications only
+  (default 30/hour, generous enough that normal traffic never engages it);
+  once exhausted, overflow collapses into a single summary line reporting
+  the exact suppressed count instead of a wall of near-duplicate alerts.
+  Enforcement — warning DMs, mutes, and the `member_warnings` audit trail —
+  is never gated by this cap, only the notification is. See
+  docs/ARCHITECTURE.md and docs/SECURITY.md's auto-moderation sections.
+- **`react_to_message` on the WhatsApp Cloud API adapter** (#528): the docs'
+  own recommended production WhatsApp path was the one remaining platform
+  where `react_to_message` silently no-op'd — #494 extended it from
+  Discord-only to Baileys WhatsApp and explicitly deferred the Cloud-adapter
+  follow-up. `WhatsAppCloudAdapter.reactToMessage` closes that gap, reusing
+  the adapter's existing 24h customer-service-window check, retry wrapper,
+  and send-failure tracking verbatim — no new tool, RBAC tier, config knob,
+  or schema change. Also fixes `ackReportedMessage`, the deterministic 👀 ack
+  fired after a `report_content` submission, which previously silently
+  no-op'd for any Cloud-adapter member filing a report.
+- **Confirmed escalations now feed `knowledge_gaps` for curation priority**
+  (#514): a member who confirms a real-time escalation (issue #479) has
+  asked a human directly — the single strongest signal that documentation is
+  missing — but that confirmation only ever DM'd admins and left no trace in
+  the curation backlog. `recordEscalatedKnowledgeGap` now writes the question
+  into `knowledge_gaps` with a new `escalated = true` column (added
+  idempotently, defaulting every pre-existing row to `false`), fired
+  alongside the existing admin notification and, unlike the passive
+  below-floor `knowledge_search` miss, not gated by the per-user daily cap.
+  The weekly admin digest surfaces the escalated subset as a nested count
+  under its existing knowledge-gap line ("N of those were member-flagged —
+  start here"), so curators triage the questions members cared enough to
+  escalate first. Bare integers only reach the DM — no question text or
+  member id — and `forget_me`/`purge_user_data` already delete these rows by
+  `user_id`. See docs/ARCHITECTURE.md and docs/SECURITY.md.
+### Fixed
+- **`build` CI failure — `community_info` admin reply over its char cap**: the
+  admin capabilities text had grown 18 chars past its intentional 2800-char cap
+  (the `community_info: admin reply stays under a hard char cap` test, issue
+  #367), failing the `build` job deterministically on `main`. Trimmed two
+  non-load-bearing clarifiers (`" with reasons"`, `" (questions I couldn't
+  answer)"`) from `ADMIN_CAPABILITIES_TEXT` — neither is referenced by the
+  anti-drift coverage map, so every admin tool stays covered and the reply is
+  back under the cap. Honours the test's "keep it tight, don't grow into a wall
+  of text" discipline rather than bumping the cap.
+- **Intermittent `security-invariants` CI crash (`tsx --test` exit 7)**: the
+  `security-invariants` gate runs the suite with **no** Postgres, so every
+  `runAgentTurn`-driven test emits a burst of fail-open warn/error logs
+  (`ECONNREFUSED`, degraded-turn fallbacks, …). `pino` buffers those and flushes
+  to stdout asynchronously; under **Node 24** each test file runs in a child
+  process whose stdout is a pipe to the parent runner, and that trailing async
+  flush could land *after* the parent stopped reading — surfacing as
+  `write EPIPE`, an unhandled `'error'` on the stdout `Socket` that aborts the
+  child (exit 7, no failing assertion, output truncated mid-line, and
+  uninterceptable by any JS `uncaughtException`/`unhandledRejection` handler
+  because it is a stream-error abort, not a throw). It was deterministic on
+  Node 24 (reproduced 6/6 locally with a Node diagnostic report) but invisible
+  on Node 22. The `test:security` script now runs with `LOG_LEVEL=silent`
+  (override-able), so no test-run log output is buffered for a racy teardown
+  flush — fixing it for every affected file at once rather than per-file. Adds
+  `silent` as a valid `LOG_LEVEL` (a real `pino` level). The `build` job is
+  unaffected (it runs against a real Postgres, so log volume stays low and no
+  EPIPE occurs). Test/infra-only; no `SECURITY:` tests added or removed, so
+  `tests/security-floor.json` is unchanged.
+
 ## 2026-07-14
 
 ### Added
@@ -49,6 +120,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
 - **`react_to_message` now works on WhatsApp too** (#494): closes the follow-up #231 itself named and deferred — reactions were Discord-only, so `ackReportedMessage`'s 👀 acknowledgement after a `report_content` filing silently no-op'd on WhatsApp, and every member had to get a full text reply instead of a low-noise emoji ack. `BaileysAdapter` now implements `reactToMessage`, sending a native WhatsApp reaction (for a group message, keyed to the original author's resolved JID, mirroring `delete_message`'s key construction; a group reaction whose author can't be resolved is skipped rather than sent with a guessed participant). No new tool, RBAC tier, or stored data — reuses `react_to_message`'s existing closed emoji allowlist and `isKnownMessage` target validation verbatim. `WhatsAppCloudAdapter` remains out of scope, pending its own 24h-window/template scoping pass.
 - **Real-time admin escalation after a max-turns failure** (`ESCALATION_TO_ADMIN_ENABLED`, #479): closes the "member exhausts `AGENT_MAX_TURNS` and gets nothing but a static fallback, with zero follow-up" gap named by unaddressed community-feedback #478. Off by default; when on, a max-turns failure gets one appended line — "Want me to flag this for a community admin? Reply yes within 10 minutes." — and a matching pending entry, created atomically together so neither can exist without the other. A confirming "yes"/"y"/"āe" from that same caller within the window is handled entirely in the router (never the model): it's consumed single-shot, reserves a slot against a guild-wide, tier-blind `ESCALATION_RATE_LIMIT_PER_HOUR` (default 5), and DMs every `listAdmins()` admin with the member's own truncated question — the same recipient set the weekly digest already targets, just seen sooner. No new tool, no new privileged data access, no schema change.
 - **Speaker-invariant system prompt for shared channels, plus cache-usage telemetry** (#508): the system prompt's `- Requester: NAME (role)` line varied on every turn from a different poster in a shared Discord channel or WhatsApp group, defeating the Agent SDK's prompt cache for the dominant multi-speaker traffic pattern (a prior fix attempt, #342, reordered the same line instead of removing it and was rejected for not addressing the root cause). The requester's display name now rides the user turn instead (a sanitized `[Requester: NAME]` tag, same sanitizer as before), so the system prompt is byte-identical across different same-role speakers in the same conversation. `execTurn` also now logs `cache_read_input_tokens`/`cache_creation_input_tokens` from the SDK result at debug level, so the actual cache-hit rate can be measured from real traffic rather than assumed. No new tool, config knob, or RBAC change; no dollar/token saving is claimed here — that's for the new telemetry to show.
+- **`admin_activity`** (#492): a super-admin-only tool answering "who on the admin team is actually doing moderation/curation work" — the aggregated complement to `audit_view`'s flat, per-event log. Reports each admin's action count (split success/failure) and last-action timestamp over a configurable day window (default 30), busiest-first; never surfaces the underlying audit entries' free-text params.
+- **`list_muted_members`** (#489): an admin tool closing the growth path #403 named and deferred — the weekly digest's "N member(s) currently muted" count had no in-bot path to the actual identities. Lists each muted member's id, strike count, status, and last-warning timestamp (never the reason/excerpt, which stay behind `list_member_warnings`), tagging a member whose strikes aged out of the window as `stale` with an explicit "may still be muted" hedge rather than a confirmed live mute.
+- **Members are now warned before they hit the daily reply budget** (`DAILY_REPLY_BUDGET_WARN_ENABLED`, #512): previously the hard `DAILY_REPLY_LIMIT_PER_USER` cutoff was the first and only sign a limit existed. Off by default; once on, a caller whose remaining daily replies fall to `DAILY_REPLY_BUDGET_WARN_REMAINING` (default 5) or fewer gets one fixed line appended to their reply naming the remaining count — debounced to once per rolling 24h, never shown to super admins, and appended only to the live reply, never the cached copy the repeat-question shortcut replays later.
+
+### Changed
+- **WhatsApp voice-note transcription eligibility is now configurable** (`WHATSAPP_VOICE_MIN_ROLE`, #513): voice notes (#258) were hard-coded super-admin-only, silently dropping any member or guest's voice note with no reply at all — worse than any other unsupported-input path in the bot, and a real barrier for anyone more comfortable speaking than typing. An operator can now lower the eligibility floor to admin/member/guest; at the default (`super_admin`) the gate stays byte-identical to today, with no extra DB call. A new `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR` (default unlimited) caps per-sender volume once a wider population is opted in.
+- **te reo Māori parity on the CONFIRM-outcome failure shell** (#493): the fixed `Failed: ` prefix on a `requireConfirm` outcome — the last deterministic send site the #266/#405 sweep still left in English — now renders as `I hapa: ` for a caller with a standing `'mi'` preference. Only the fixed shell is translated; the dynamic error text after it is untouched.
+
+### Fixed
+- **WhatsApp roster no longer wrongly marks a multi-group member "left"** (#505): in a deployment with more than one group in `WHATSAPP_ALLOWED_JIDS`, a member removed from one group had their roster row marked "left" even if they remained a participant of another — a documented gap from #407. The adapter now checks live membership across every other allowed group before writing the leave-mark, so `list_roster` and the admin digest's join/leave pulse no longer read a still-present member as departed.
+- **A knowledge-candidate dedup guard could resurface a topic an admin already declined** (#509): the guard only ever did an exact string match, but the context builder's topic labels are freshly LLM-generated each run with no wording stability across runs — a declined topic could silently reappear as a new pending candidate the moment its wording drifted. It now falls back to a semantic (embedding-similarity) check when the exact match misses, reusing the same near-duplicate threshold the knowledge table itself uses, so a declined topic stays declined even under reworded phrasing.
+- **Database queries can no longer hang the bot indefinitely** (#504): the Postgres pool had no statement, query, or connection timeout, so a single stuck query (a lock wait, a stalled network round-trip, disk pressure) could exhaust the connection pool and wedge every subsequent turn — including `/healthz`'s own health check, defeating the very monitoring meant to catch it. Query/connection timeouts are now on by default (15s/15s/10s), sized well above any normal query, so a hang now surfaces as an ordinary, already-handled failure instead of an indefinite wedge.
 
 ## 2026-07-13
 

@@ -55,6 +55,13 @@ export interface ModeratorDeps {
   strikeLimit: number;
   /** Optional rolling window (days) — see countActiveWarnings. Unset = unbounded. */
   strikeWindowDays?: number;
+  /**
+   * Guild-wide rolling-hour cap on postAdminAlert calls from scan() (issue
+   * #517's MODERATION_ALERT_RATE_LIMIT_PER_HOUR). Gates only the two scan()
+   * call sites below — never addWarning/muteUser/warnUser/warnInChannel, and
+   * never postAdminAlert's other, non-moderation callers.
+   */
+  alertRateLimitPerHour: number;
   classify: Classifier;
   /** True for admins/super admins, who are never warned or muted. */
   isExempt: (platform: Platform, userId: string) => Promise<boolean>;
@@ -152,6 +159,31 @@ export function manualWarnBlockedAlertText(
 }
 
 /**
+ * Collapsed admin-channel notice for the alert flood suppressed once
+ * MODERATION_ALERT_RATE_LIMIT_PER_HOUR is exhausted (issue #517) — one
+ * deterministic line reporting the exact count, instead of a wall of
+ * near-duplicate per-hit alerts. The audit trail (addWarning) still has the
+ * full record regardless of this cap; `moderation_history` is the admin
+ * tool that reads it.
+ */
+export function moderationAlertSummaryText(suppressedCount: number): string {
+  const noun = suppressedCount === 1 ? 'warning/block' : 'warnings/blocks';
+  return (
+    `📋 ${suppressedCount} further ${noun} in the last hour — mod-alerts rate cap reached. ` +
+    `See \`moderation_history\` for the full record.`
+  );
+}
+
+/**
+ * Short debounce so a synchronous flood of suppressed alerts collapses into
+ * one summary post (issue #517) instead of firing on the very first
+ * over-cap hit with an undercount. Internal batching detail, not a policy
+ * knob — not env-configurable, matching MODERATION_CLASSIFY_CACHE_TTL_MS's
+ * precedent below.
+ */
+const MODERATION_ALERT_SUMMARY_DEBOUNCE_MS = 10_000;
+
+/**
  * Scans a message, records a warning when flagged, and escalates: a warning
  * DM + admin-channel notice under the limit, and a mute + block notice once the
  * active-strike count reaches it. Admins/super admins are never touched.
@@ -161,6 +193,12 @@ export function manualWarnBlockedAlertText(
  */
 export class Moderator {
   constructor(private readonly deps: ModeratorDeps) {}
+
+  /** Timestamps of posted admin alerts, for the guild-wide rolling-hour cap (issue #517). */
+  private readonly alertTimestamps: number[] = [];
+  /** Alerts suppressed since the last summary flush, in the current debounce cycle. */
+  private suppressedAlerts = 0;
+  private summaryFlushTimer: NodeJS.Timeout | null = null;
 
   async scan(ctx: ScanContext): Promise<void> {
     if (!this.deps.enabled) return;
@@ -210,10 +248,7 @@ export class Moderator {
         () => this.deps.enforcer.warnUser(ctx.userId, lang === 'mi' ? blockedDmTextMi() : blockedDmText()),
         'block-dm',
       );
-      await this.safe(
-        () => this.deps.enforcer.postAdminAlert(blockedAlertText(ctx, active, hit)),
-        'block-alert',
-      );
+      await this.safe(() => this.postAlert(blockedAlertText(ctx, active, hit)), 'block-alert');
     } else {
       await this.safe(
         () =>
@@ -234,7 +269,7 @@ export class Moderator {
         'warn-dm',
       );
       await this.safe(
-        () => this.deps.enforcer.postAdminAlert(warnAlertText(ctx, active, this.deps.strikeLimit, hit)),
+        () => this.postAlert(warnAlertText(ctx, active, this.deps.strikeLimit, hit)),
         'warn-alert',
       );
     }
@@ -246,6 +281,50 @@ export class Moderator {
     } catch (err) {
       logger.warn({ err, label }, 'Moderation enforcement step failed');
     }
+  }
+
+  /**
+   * Rolling-hour cap on admin alerts (issue #517), mirroring
+   * `reserveEscalationSlot` in router.ts exactly: filter timestamps older
+   * than an hour, push the new one, compare against the limit. Guild-wide
+   * (not per-user/per-channel) — a multi-account raid can't buy extra slots
+   * by spreading hits across identities.
+   */
+  private reserveAlertSlot(): boolean {
+    const now = Date.now();
+    const recent = this.alertTimestamps.filter((t) => now - t < 3_600_000);
+    this.alertTimestamps.length = 0;
+    this.alertTimestamps.push(...recent);
+    if (this.alertTimestamps.length >= this.deps.alertRateLimitPerHour) return false;
+    this.alertTimestamps.push(now);
+    return true;
+  }
+
+  /**
+   * Posts an individual admin alert while a rolling-hour slot is available.
+   * Once exhausted, further alerts are tallied and collapsed into a single
+   * summary line (`moderationAlertSummaryText`) sent after a short debounce
+   * — batching a flood into one notice instead of one message per hit. Only
+   * this call site (both scan() branches) is gated; postAdminAlert's other,
+   * non-moderation callers never go through here.
+   */
+  private async postAlert(text: string): Promise<void> {
+    if (this.reserveAlertSlot()) {
+      await this.deps.enforcer.postAdminAlert(text);
+      return;
+    }
+    this.suppressedAlerts += 1;
+    if (this.summaryFlushTimer) return;
+    this.summaryFlushTimer = setTimeout(() => {
+      this.summaryFlushTimer = null;
+      const count = this.suppressedAlerts;
+      this.suppressedAlerts = 0;
+      if (count <= 0) return;
+      this.deps.enforcer.postAdminAlert(moderationAlertSummaryText(count)).catch((err) => {
+        logger.warn({ err, label: 'alert-summary' }, 'Moderation enforcement step failed');
+      });
+    }, MODERATION_ALERT_SUMMARY_DEBOUNCE_MS);
+    this.summaryFlushTimer.unref?.();
   }
 }
 

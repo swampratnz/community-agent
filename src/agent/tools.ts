@@ -117,6 +117,7 @@ import {
   type JobStatus,
 } from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
+import { buildAdminDigestForAdmin } from '../adminDigest.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
@@ -665,8 +666,26 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
-    formatShortcutHitsLine(s.shortcutHits, s.costByRole)
+    formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
+    formatCacheUsageLine(s.cacheUsage)
   );
+}
+
+/**
+ * Renders the prompt-cache hit-rate line (issue #522) — the operator-facing
+ * surface for the `cache_read_input_tokens`/`cache_creation_input_tokens`
+ * telemetry issue #508 added but only ever logged at debug level. Follows
+ * the same "omit the line entirely when there's nothing to show" convention
+ * as `formatShortcutHitsLine`/the background-jobs line above: a deployment
+ * with zero recorded cache activity (pre-#522, or before any turn has
+ * reported usage) gets byte-identical output to today.
+ */
+function formatCacheUsageLine(cacheUsage: Awaited<ReturnType<typeof usageStats>>['cacheUsage']): string {
+  const { readTokens, creationTokens } = cacheUsage;
+  const totalTokens = readTokens + creationTokens;
+  if (totalTokens === 0) return '';
+  const hitRate = Math.round((readTokens / totalTokens) * 100);
+  return `\nPrompt cache: ${hitRate}% hit rate (${readTokens} read / ${creationTokens} new tokens).`;
 }
 
 /**
@@ -809,12 +828,12 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, pull one member's full warning history with reasons, or list everyone who's currently muted\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
-  "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
+  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -2429,7 +2448,7 @@ export function buildToolServer(
     'React to a message with an emoji instead of replying with text — a lightweight, low-noise ' +
       `acknowledgement ("got it", "noted", "seen"). Only ${ALLOWED_REACTION_EMOJI.join(' ')} are allowed; ` +
       'no other emoji, custom, or Nitro emoji can be used. Defaults to the message that triggered this ' +
-      'turn when messageId is omitted. Works on Discord and WhatsApp (Baileys).',
+      'turn when messageId is omitted. Works on Discord and WhatsApp (both Baileys and Cloud API).',
     {
       emoji: z
         .enum(ALLOWED_REACTION_EMOJI)
@@ -3563,10 +3582,18 @@ export function buildToolServer(
         untrusted(
           'Access requests',
           rows
-            .map(
-              (r) =>
-                `${r.platform} ${r.userName ? sanitizeName(r.userName) : r.userId} (${r.userId}) — ${r.requestCount} request(s), last ${r.lastRequestedAt.toISOString()}`,
-            )
+            .map((r) => {
+              // firstRequestedAt is always the DB-stored insert timestamp for
+              // this (platform, user_id) row (repository.ts's
+              // listAccessRequests) — never sourced from a tool argument, so
+              // it can't be spoofed by a caller-supplied value (issue #515).
+              const waitingDays = Math.floor((Date.now() - r.firstRequestedAt.getTime()) / 86_400_000);
+              return (
+                `${r.platform} ${r.userName ? sanitizeName(r.userName) : r.userId} (${r.userId}) — ` +
+                `${r.requestCount} request(s), first ${r.firstRequestedAt.toISOString()} (waiting ${waitingDays}d), ` +
+                `last ${r.lastRequestedAt.toISOString()}`
+              );
+            })
             .join('\n'),
         ),
       );
@@ -3944,6 +3971,33 @@ export function buildToolServer(
           clusters.map((c, i) => `${i + 1}. (${c.count}x) ${c.representative.slice(0, 300)}`).join('\n'),
         ),
       );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const adminDigestTool = tool(
+    'admin_digest',
+    'On-demand pull of your OWN admin-digest snapshot — the same recurring-question, pending-access-request, ' +
+      'open-report, pending-suggestion, stale/gap/candidate/low-rated-knowledge, roster, muted-member, ' +
+      'max-turns-failure, duplicate/conflict-knowledge, and onboarding-queue signals the weekly digest DM ' +
+      'would send you right now, without waiting for its cadence. Takes no arguments — always your own scoped ' +
+      "view, never another admin's. Read-only; does not affect when your next weekly digest DM arrives. Admin only.",
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'admin_digest');
+      // Read-only pull: take only the rendered message. Deliberately ignore
+      // `currentCounts` — snapshotting is exclusive to the scheduled
+      // `runAdminDigestOnce`, so an on-demand pull never advances the
+      // week-over-week trend baseline (issue #499 / #497).
+      const { message } = await buildAdminDigestForAdmin(caller.platform, caller.userId, adapter);
+      if (message == null) return text('Nothing to report right now.');
+      // Unlike the weekly DM push (plain text straight to a human, never
+      // re-parsed), this tool result re-enters the model's context — and the
+      // cluster section embeds raw member-submitted question text
+      // (recentQuestionClusters). Quarantine the whole message the same way
+      // question_digest quarantines the identical cluster data above (issue
+      // #499 review).
+      return text(untrusted('Admin digest', message));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -5229,6 +5283,7 @@ export function buildToolServer(
       acceptKnowledgeCandidateTool,
       declineKnowledgeCandidateTool,
       questionDigest,
+      adminDigestTool,
       listKnowledgeGaps,
       moderationHistory,
       listReportsTool,

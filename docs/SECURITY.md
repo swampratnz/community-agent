@@ -647,7 +647,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `sent_at`, so a silent week can't be mistaken for a real send nor corrupt
   next week's delta. `last_counts` is purge-coherent with the rest of the row
   — `forget_me`/`purge_user_data` remove it alongside `sent_at` for an
-  offboarded admin.
+  offboarded admin. Issue #515 added one more bare-count-adjacent signal on
+  the existing pending-access-request line: the age in days of the OLDEST
+  pending row, from `oldestAccessRequestAgeDays()` (`MIN(first_requested_at)`
+  over `access_requests`, the same table `pendingAccessRequests` already
+  counts and `list_access_requests` already reads unrestricted). **No new
+  data-access scope**: `first_requested_at` is already stored (set once at
+  insert, never updated) and already read by `list_access_requests` for every
+  row it returns — this only adds a second aggregate read (`MIN` instead of
+  `COUNT`) of a column that was already fully admin-visible. The line is
+  omitted entirely when the table is empty (`null`, never `0`) and otherwise
+  carries only the bare day-count integer, never a request's identity.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against
@@ -819,6 +829,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   - **Stage 2 (LLM abuse) is opt-in** (`MODERATION_LLM_ABUSE_ENABLED`, off):
     only wordlist-clean messages escalate, one Claude call each on the shared
     Max pool — deliberately gated so it can't silently run up cost/scan volume.
+  - **Mod-alerts is rate-capped, not enforcement** (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`,
+    issue #517, default 30/hour): every other admin-notification path
+    (escalation DMs, access-request alerts, auto-answer, `warn_user`) already
+    had a rolling-hour cap; the private `mod-alerts` channel — the one whose
+    entire purpose is carrying moderation signal — was the sole exception, so
+    a raid/flood could bury the one alert admins most need during exactly
+    that incident. A guild-wide, shared rolling-hour counter (mirroring
+    `ESCALATION_RATE_LIMIT_PER_HOUR`'s `reserveEscalationSlot` shape, pinned by
+    a `SECURITY:` test) gates `Moderator.scan()`'s `postAdminAlert` calls
+    only; overflow collapses into a single summary line reporting the exact
+    suppressed count. **This is the load-bearing invariant**: `addWarning`
+    (the audit trail), `muteUser`/`unmuteUser`, `warnUser` (member DM), and
+    `warnInChannel` (public in-channel notice) all keep firing on every
+    flagged message regardless of the alert cap — only the admin-channel
+    *notification* throttles, enforcement never does (pinned by a
+    `SECURITY:` test). The cap is guild-wide, not per-user, so a
+    multi-account raid can't buy extra alert slots by spreading hits across
+    identities (also pinned by a `SECURITY:` test). It gates only the two
+    `scan()` call sites — `postAdminAlert`'s other, non-moderation callers
+    (e.g. the manual `warn_user` mute alert) are unaffected.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
     isn't CONFIRM-gated, and any admin may clear anyone's.
@@ -1388,6 +1418,37 @@ control downstream of it is reused completely unchanged:
   itself is additionally hard-restricted to `msg.platform === 'discord'`.
   WhatsApp/Baileys auto-answer carries separate ToS/ban risk and is
   deliberately out of scope for this feature — a different proposal.
+- **Thread follow-ups match the same widened gate, nothing more (issue
+  #519).** A message posted inside a thread the bot itself opened for an
+  auto-answer reports the thread's own id as `conversationId`, which is never
+  in `AUTO_ANSWER_CHANNEL_IDS` — without a follow-up-aware gate, the very next
+  message in the exact back-and-forth this feature exists for silently
+  reverted to mention-required. The router additionally matches when
+  `conversationId` is a live entry in `autoAnswerThreadParents` (populated
+  only at thread creation, keyed by the bot's own thread id — not
+  attacker-forgeable via message content) — this widens *which* conversation
+  ids can match the existing gate, never what a matched post is allowed to
+  do: tier resolution, tool surface, the per-user rate limit, the daily
+  budget, and `isBotAuthor` loop prevention all apply to a thread follow-up
+  exactly as to the origin post, unconditionally. Pinned by `SECURITY:`
+  router tests.
+  - **No second thread.** `startAutoAnswerThread` is only called for the
+    origin post in the parent channel; a follow-up already inside a known
+    thread replies in place. Pinned by a router test.
+  - **Rate cap still keyed on the parent channel.** A thread follow-up
+    reserves `AUTO_ANSWER_RATE_LIMIT_PER_HOUR` against the **parent** channel
+    id via the same `autoAnswerThreadParents` lookup, not the thread id — the
+    thread id has never had a slot reserved against it, so keying on it would
+    let a single busy thread bypass the per-channel cap entirely. Pinned by a
+    `SECURITY:` router test that exhausts the parent cap via top-level posts,
+    then asserts an in-thread follow-up is dropped in the same window.
+  - **TTL is creation-anchored, not refreshed.** The `at` timestamp is set
+    once, when the thread is created, and a follow-up never extends it —
+    matching the existing CONFIRM/CANCEL and escalation intercepts' use of
+    the same map. A follow-up more than `ESCALATION_WINDOW_MS` (10 min) after
+    thread creation, once swept, reverts to mention-required rather than
+    remaining auto-answerable indefinitely. Pinned by a router test that
+    advances past the TTL.
 
 ## Platform-specific notes
 

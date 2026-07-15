@@ -16,6 +16,7 @@ const { logger } = await import('../src/logger.js');
 
 type UsageBehavior = {
   usage: { cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | null;
+  subtype?: string;
 };
 let behavior: UsageBehavior = { usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
 
@@ -23,7 +24,7 @@ function mockQuery() {
   return (async function* () {
     yield {
       type: 'result',
-      subtype: 'success',
+      subtype: behavior.subtype ?? 'success',
       result: 'ok',
       session_id: 'sess-1',
       total_cost_usd: 0,
@@ -108,4 +109,41 @@ test('runAgentTurn: no cache-usage debug log when the result message carries no 
     (c) => typeof c.arguments[1] === 'string' && c.arguments[1] === 'agent turn cache usage',
   );
   assert.equal(call, undefined, 'no cache-usage log should fire when usage is absent');
+});
+
+test('runAgentTurn: a successful turn threads cache_read_input_tokens/cache_creation_input_tokens onto AgentReply.cacheReadTokens/cacheCreationTokens (issue #522, acceptance criterion 3)', async (t) => {
+  const { runAgentTurn } = await core(t);
+  behavior = { usage: { cache_read_input_tokens: 1234, cache_creation_input_tokens: 56 } };
+
+  const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
+
+  assert.equal(reply.ok, true);
+  assert.equal(reply.cacheReadTokens, 1234);
+  assert.equal(reply.cacheCreationTokens, 56);
+});
+
+test('runAgentTurn: a max-turns (non-success) result still threads cache tokens onto AgentReply, mirroring costUsd (issue #522, acceptance criterion 3)', async (t) => {
+  const { runAgentTurn } = await core(t);
+  behavior = {
+    usage: { cache_read_input_tokens: 789, cache_creation_input_tokens: 12 },
+    subtype: 'error_max_turns',
+  };
+
+  const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
+
+  assert.equal(reply.ok, false);
+  assert.equal(reply.maxTurnsExceeded, true);
+  assert.equal(reply.cacheReadTokens, 789);
+  assert.equal(reply.cacheCreationTokens, 12);
+});
+
+test('runAgentTurn: no usage field leaves AgentReply.cacheReadTokens/cacheCreationTokens strictly undefined', async (t) => {
+  const { runAgentTurn } = await core(t);
+  behavior = { usage: null };
+
+  const reply = await runAgentTurn(makeCaller(), 'hello', makeAdapter().adapter);
+
+  assert.equal(reply.ok, true);
+  assert.equal(reply.cacheReadTokens, undefined);
+  assert.equal(reply.cacheCreationTokens, undefined);
 });

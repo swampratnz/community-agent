@@ -18,6 +18,7 @@ import {
   countStalePendingKnowledgeCandidates,
   getLastDigestCounts,
   listAdmins,
+  oldestAccessRequestAgeDays,
   recentQuestionClusters,
   recordAdminDigestSent,
   recordAdminDigestSnapshot,
@@ -26,7 +27,7 @@ import {
   wasAdminDigestSentRecently,
   type QuestionCluster,
 } from './storage/repository.js';
-import type { PlatformAdapter } from './platforms/types.js';
+import type { Platform, PlatformAdapter } from './platforms/types.js';
 
 /** Freshness window and cluster window/limit — mirrors `question_digest`'s own defaults (tools.ts). */
 const FRESHNESS_DAYS = 7;
@@ -124,6 +125,16 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * each existing template literal — with the flag unset, `previousCounts` is
  * never even fetched (see `runAdminDigestOnce`) and every `trendSuffix` call
  * short-circuits to `''`, so output is byte-identical to the pre-#497 form.
+ * `oldestAccessRequestAgeDays` (issue #515) is the whole-day age of the
+ * OLDEST pending row in `access_requests` (`MIN(first_requested_at)`,
+ * `repository.ts`'s `oldestAccessRequestAgeDays`) — the same oldest-age
+ * mechanic issue #450 uses for reports/suggestions. It only ever appends to
+ * the existing `pendingAccessRequests > 0` line above, and only when it
+ * resolved to a real day count (never when `null`, the empty-table case), so
+ * the quiet case (`pendingAccessRequests === 0`) and every caller that
+ * hasn't wired the new trailing param through are byte-identical to the
+ * pre-#515 form. Bare integer only, same privacy convention as every signal
+ * above.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -182,6 +193,14 @@ export function buildAdminDigestMessage(
   // and output is byte-identical to the pre-#497 form. Never fetched unless
   // `config.adminDigest.trendsEnabled` (see `runAdminDigestOnce`).
   previousCounts?: Record<string, number>,
+  // Whole-day age of the oldest pending access request
+  // (`oldestAccessRequestAgeDays`, issue #515) — append-only trailing param,
+  // `null` by default so every existing call site is unaffected. Only ever
+  // rendered alongside the existing `pendingAccessRequests > 0` line below,
+  // and only when non-null (an empty `access_requests` table has no
+  // meaningful age), so the quiet case (`pendingAccessRequests === 0`) is
+  // byte-identical to its pre-#515 form regardless of what's passed here.
+  oldestAccessRequestAgeDays: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -215,8 +234,13 @@ export function buildAdminDigestMessage(
     );
   }
   if (pendingAccessRequests > 0) {
+    // Oldest-age fragment only when the aggregate resolved to a real day
+    // count — an empty table (or a caller that hasn't wired the new param
+    // through) renders the line exactly as before #515 (issue #515).
+    const ageFragment =
+      oldestAccessRequestAgeDays !== null ? `, oldest waiting ${oldestAccessRequestAgeDays}d` : '';
     sections.push(
-      `⏳ ${pendingAccessRequests} pending access request(s) — run \`list_access_requests\`.` +
+      `⏳ ${pendingAccessRequests} pending access request(s)${ageFragment} — run \`list_access_requests\`.` +
         trendSuffix('pendingAccessRequests', pendingAccessRequests, previousCounts),
     );
   }
@@ -355,6 +379,172 @@ export function buildAdminDigestMessage(
 }
 
 /**
+ * Gathers every digest signal for ONE admin and renders them via
+ * {@link buildAdminDigestMessage}. Returns both `message` — the exact text
+ * `runAdminDigestOnce` would DM that admin at this instant, or `null` on a
+ * quiet week — and `currentCounts`, the trend-snapshot signal map (issue #497),
+ * which is populated on every path (quiet week included) so the scheduled push
+ * can persist it via `recordAdminDigestSnapshot`/`recordAdminDigestSent`
+ * regardless of the send outcome. The week-over-week trend suffixes are only
+ * READ (and only when `config.adminDigest.trendsEnabled`), never written, here.
+ * Extracted (issue #499) so the weekly push and an on-demand pull (the
+ * `admin_digest` tool) share one gathering implementation instead of a second,
+ * driftable copy — every scoping/exclusion comment on the inlined block this
+ * replaced (see `runAdminDigestOnce`'s own doc comment below) still applies
+ * verbatim.
+ *
+ * Deliberately excludes the freshness/cadence bookkeeping
+ * (`wasAdminDigestSentRecently`/`recordAdminDigestSent`) and the actual
+ * `sendDirectMessage` — those stay exclusive to `runAdminDigestOnce`'s
+ * per-admin loop, so a caller of this helper (the on-demand pull) can never
+ * suppress or reset the next scheduled weekly push.
+ */
+export async function buildAdminDigestForAdmin(
+  platform: Platform,
+  platformUserId: string,
+  adapter: PlatformAdapter,
+): Promise<{ message: string | null; currentCounts: Record<string, number> }> {
+  const scope = await adapter.conversationsForUser(platformUserId);
+  // Exclude reports filed against ANY of this admin's linked identities from
+  // their own open-report count, matching list_reports (issue #197).
+  const viewerIds = (await resolveLinkedIdentities(platform, platformUserId)).map((i) => i.userId);
+  const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
+  const knowledgeStaleMaxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays;
+  const knowledgeCandidateStaleDays = config.adminDigest.knowledgeCandidateStaleDays;
+  const [
+    clusters,
+    pendingAccessRequests,
+    openReports,
+    pendingSuggestions,
+    staleKnowledgeCount,
+    knowledgeGapsCount,
+    pendingKnowledgeCandidates,
+    lowRatedKnowledgeCount,
+    roster,
+    mutedMembersCount,
+    staleMutedMembersCount,
+    maxTurnsFailuresCount,
+    duplicateKnowledgeCount,
+    conflictCandidateCount,
+    pendingKnowledgeCandidatesStaleCount,
+    oldestAccessRequestAge,
+    escalatedKnowledgeGapsCount,
+  ] = await Promise.all([
+    recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
+    countAccessRequests(),
+    countOpenReports(scope, viewerIds),
+    countPendingSuggestions(),
+    // The ceiling can be set on its own (KNOWLEDGE_STALE_DAYS=0,
+    // KNOWLEDGE_STALE_MAX_AGE_DAYS>0 is a valid config combo) — gate on
+    // either being on, so an operator running ceiling-only mode isn't
+    // silently skipped here the way this whole issue is about (#380).
+    knowledgeStaleDays > 0 || knowledgeStaleMaxAgeDays > 0
+      ? countStaleKnowledge(knowledgeStaleDays, knowledgeStaleMaxAgeDays)
+      : Promise.resolve(0),
+    // Conversation-scoped like openReports (knowledge_gaps has a
+    // conversation_id), over the same freshness window (#246).
+    countKnowledgeGaps(scope, FRESHNESS_DAYS),
+    countPendingKnowledgeCandidates(),
+    // Conversation-scoped like knowledgeGapsCount (answer_feedback has a
+    // conversation_id); cumulative, no freshness window — matches the
+    // linked tool's own cumulative unhelpfulCount (#324).
+    countLowRatedKnowledge(scope),
+    // Guild-wide by platform, mirroring list_roster's own summary line
+    // (#47, #344). server_roster is Discord-only, so a WhatsApp admin's
+    // rosterCounts('whatsapp') is always zeros — quiet, no error.
+    rosterCounts(platform),
+    // Guild-wide by platform like rosterCounts (member_warnings has no
+    // conversation/channel column); reuses config.moderation.strikeLimit/
+    // strikeWindowDays verbatim so "muted" here can never disagree with
+    // the actual mute trigger in moderator.ts (issue #357).
+    countMutedMembers(platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays),
+    // Same platform/strikeLimit/strikeWindowDays as countMutedMembers just
+    // above — the disjoint, aged-out-but-still-over-the-unwindowed-limit
+    // cohort that count's windowed definition necessarily excludes (#403).
+    countStaleMutedMembers(platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays),
+    // Conversation-scoped like knowledgeGapsCount (interactions.conversation_id),
+    // over the same freshness window (#371).
+    countMaxTurnsFailures(scope, FRESHNESS_DAYS),
+    // Guild-wide, unscoped — matching countStaleKnowledge/
+    // countPendingKnowledgeCandidates (issue #378).
+    countDuplicateKnowledge(),
+    countKnowledgeConflictCandidates(),
+    // Guild-wide, unscoped like countPendingKnowledgeCandidates (issue
+    // #398); only runs the extra COUNT(*) when the knob is configured,
+    // matching countStaleKnowledge's own opt-in gating above.
+    knowledgeCandidateStaleDays > 0
+      ? countStalePendingKnowledgeCandidates(knowledgeCandidateStaleDays)
+      : Promise.resolve(0),
+    // Guild-wide, unscoped like countAccessRequests above — the same
+    // MIN(first_requested_at) oldest-age mechanic issue #450 applies to
+    // reports/suggestions, applied to access_requests (issue #515).
+    oldestAccessRequestAgeDays(),
+    // Conversation-scoped like knowledgeGapsCount (same table/column), over
+    // the same freshness window — the confirmed-escalation subset of that
+    // count (issue #514).
+    countEscalatedKnowledgeGaps(scope, FRESHNESS_DAYS),
+  ]);
+  // Onboarding-queue count only means anything in 'gated' mode — an
+  // 'open'-mode not_members row already has full member-tool access
+  // (router.ts's guest-vs-member gate), so it's suppressed to 0 (line
+  // omitted) rather than nagged (issue #460).
+  const notMembersCount = config.rbac.accessMode[platform] === 'gated' ? roster.notMembers : 0;
+  // Every signal that can carry a trend suffix (issue #497) — the exact same
+  // values just computed above, nothing re-derived. Returned to the caller on
+  // every code path (including a quiet week where `message` is null) so the
+  // scheduled `runAdminDigestOnce` can persist them regardless of `trendsEnabled`;
+  // only the READ side (fetching `previousCounts` here and passing it into
+  // `buildAdminDigestMessage`) is flag-gated.
+  const currentCounts: Record<string, number> = {
+    pendingAccessRequests,
+    openReports,
+    pendingSuggestions,
+    staleKnowledgeCount,
+    knowledgeGapsCount,
+    pendingKnowledgeCandidates,
+    lowRatedKnowledgeCount,
+    joinedThisWeek: roster.joinedThisWeek,
+    leftThisWeek: roster.leftThisWeek,
+    mutedMembersCount,
+    maxTurnsFailuresCount,
+    duplicateKnowledgeCount,
+    conflictCandidateCount,
+    staleMutedMembersCount,
+    notMembersCount,
+    escalatedKnowledgeGapsCount,
+  };
+  const previousCounts = config.adminDigest.trendsEnabled
+    ? ((await getLastDigestCounts(platform, platformUserId)) ?? undefined)
+    : undefined;
+  const message = buildAdminDigestMessage(
+    clusters,
+    pendingAccessRequests,
+    openReports,
+    pendingSuggestions,
+    staleKnowledgeCount,
+    knowledgeStaleDays,
+    knowledgeGapsCount,
+    pendingKnowledgeCandidates,
+    lowRatedKnowledgeCount,
+    roster.joinedThisWeek,
+    roster.leftThisWeek,
+    mutedMembersCount,
+    maxTurnsFailuresCount,
+    duplicateKnowledgeCount,
+    conflictCandidateCount,
+    knowledgeStaleMaxAgeDays,
+    pendingKnowledgeCandidatesStaleCount,
+    knowledgeCandidateStaleDays,
+    staleMutedMembersCount,
+    notMembersCount,
+    escalatedKnowledgeGapsCount,
+    previousCounts,
+    oldestAccessRequestAge,
+  );
+  return { message, currentCounts };
+}
+
+/**
  * One pass over every `community_users` admin, DMing each at most once per
  * `FRESHNESS_DAYS` window. Exported (rather than inlined in the timer
  * closure) so tests can await a single run directly instead of racing a
@@ -376,7 +566,10 @@ export function buildAdminDigestMessage(
  * `list_knowledge`/`list_knowledge_candidates`'s own unscoped behaviour —
  * none of those tables have a conversation/channel column), so every
  * enrolled admin sees the same pending-guest, pending-suggestion,
- * stale-knowledge, and pending-candidate counts. `countStaleKnowledge` only runs when
+ * stale-knowledge, and pending-candidate counts. `oldestAccessRequestAgeDays`
+ * (issue #515) is fetched alongside `countAccessRequests` and is guild-wide
+ * for the same reason, so every enrolled admin sees the same
+ * oldest-pending-request age too. `countStaleKnowledge` only runs when
  * `KNOWLEDGE_STALE_DAYS` is configured (`> 0`) — otherwise the signal stays
  * `0` and the digest is byte-for-byte unchanged from before issue #199.
  * `rosterCounts(admin.platform)` is likewise guild-wide by platform — same
@@ -446,142 +639,10 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
         continue;
       }
 
-      const scope = await adapter.conversationsForUser(admin.platformUserId);
-      // Exclude reports filed against ANY of this admin's linked identities
-      // from their own open-report count, matching list_reports (issue #197).
-      const viewerIds = (await resolveLinkedIdentities(admin.platform, admin.platformUserId)).map(
-        (i) => i.userId,
-      );
-      const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
-      const knowledgeStaleMaxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays;
-      const knowledgeCandidateStaleDays = config.adminDigest.knowledgeCandidateStaleDays;
-      const [
-        clusters,
-        pendingAccessRequests,
-        openReports,
-        pendingSuggestions,
-        staleKnowledgeCount,
-        knowledgeGapsCount,
-        pendingKnowledgeCandidates,
-        lowRatedKnowledgeCount,
-        roster,
-        mutedMembersCount,
-        staleMutedMembersCount,
-        maxTurnsFailuresCount,
-        duplicateKnowledgeCount,
-        conflictCandidateCount,
-        pendingKnowledgeCandidatesStaleCount,
-        escalatedKnowledgeGapsCount,
-      ] = await Promise.all([
-        recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
-        countAccessRequests(),
-        countOpenReports(scope, viewerIds),
-        countPendingSuggestions(),
-        // The ceiling can be set on its own (KNOWLEDGE_STALE_DAYS=0,
-        // KNOWLEDGE_STALE_MAX_AGE_DAYS>0 is a valid config combo) — gate on
-        // either being on, so an operator running ceiling-only mode isn't
-        // silently skipped here the way this whole issue is about (#380).
-        knowledgeStaleDays > 0 || knowledgeStaleMaxAgeDays > 0
-          ? countStaleKnowledge(knowledgeStaleDays, knowledgeStaleMaxAgeDays)
-          : Promise.resolve(0),
-        // Conversation-scoped like openReports (knowledge_gaps has a
-        // conversation_id), over the same freshness window (#246).
-        countKnowledgeGaps(scope, FRESHNESS_DAYS),
-        countPendingKnowledgeCandidates(),
-        // Conversation-scoped like knowledgeGapsCount (answer_feedback has a
-        // conversation_id); cumulative, no freshness window — matches the
-        // linked tool's own cumulative unhelpfulCount (#324).
-        countLowRatedKnowledge(scope),
-        // Guild-wide by platform, mirroring list_roster's own summary line
-        // (#47, #344). server_roster is Discord-only, so a WhatsApp admin's
-        // rosterCounts('whatsapp') is always zeros — quiet, no error.
-        rosterCounts(admin.platform),
-        // Guild-wide by platform like rosterCounts (member_warnings has no
-        // conversation/channel column); reuses config.moderation.strikeLimit/
-        // strikeWindowDays verbatim so "muted" here can never disagree with
-        // the actual mute trigger in moderator.ts (issue #357).
-        countMutedMembers(admin.platform, config.moderation.strikeLimit, config.moderation.strikeWindowDays),
-        // Same platform/strikeLimit/strikeWindowDays as countMutedMembers just
-        // above — the disjoint, aged-out-but-still-over-the-unwindowed-limit
-        // cohort that count's windowed definition necessarily excludes (#403).
-        countStaleMutedMembers(
-          admin.platform,
-          config.moderation.strikeLimit,
-          config.moderation.strikeWindowDays,
-        ),
-        // Conversation-scoped like knowledgeGapsCount (interactions.conversation_id),
-        // over the same freshness window (#371).
-        countMaxTurnsFailures(scope, FRESHNESS_DAYS),
-        // Guild-wide, unscoped — matching countStaleKnowledge/
-        // countPendingKnowledgeCandidates (issue #378).
-        countDuplicateKnowledge(),
-        countKnowledgeConflictCandidates(),
-        // Guild-wide, unscoped like countPendingKnowledgeCandidates (issue
-        // #398); only runs the extra COUNT(*) when the knob is configured,
-        // matching countStaleKnowledge's own opt-in gating above.
-        knowledgeCandidateStaleDays > 0
-          ? countStalePendingKnowledgeCandidates(knowledgeCandidateStaleDays)
-          : Promise.resolve(0),
-        // Conversation-scoped like knowledgeGapsCount (same table/column),
-        // over the same freshness window — the confirmed-escalation subset
-        // of that count (issue #514).
-        countEscalatedKnowledgeGaps(scope, FRESHNESS_DAYS),
-      ]);
-      // Onboarding-queue count only means anything in 'gated' mode — an
-      // 'open'-mode not_members row already has full member-tool access
-      // (router.ts's guest-vs-member gate), so it's suppressed to 0 (line
-      // omitted) rather than nagged (issue #460).
-      const notMembersCount = config.rbac.accessMode[admin.platform] === 'gated' ? roster.notMembers : 0;
-      // Every signal that can carry a trend suffix (issue #497) — the exact
-      // same values just computed above, nothing re-derived. Built and
-      // persisted every run regardless of `trendsEnabled`, so flipping the
-      // flag on is immediately useful from the next weekly tick; only the
-      // READ side (fetching `previousCounts` below and passing it into
-      // `buildAdminDigestMessage`) is flag-gated.
-      const currentCounts: Record<string, number> = {
-        pendingAccessRequests,
-        openReports,
-        pendingSuggestions,
-        staleKnowledgeCount,
-        knowledgeGapsCount,
-        pendingKnowledgeCandidates,
-        lowRatedKnowledgeCount,
-        joinedThisWeek: roster.joinedThisWeek,
-        leftThisWeek: roster.leftThisWeek,
-        mutedMembersCount,
-        maxTurnsFailuresCount,
-        duplicateKnowledgeCount,
-        conflictCandidateCount,
-        staleMutedMembersCount,
-        notMembersCount,
-        escalatedKnowledgeGapsCount,
-      };
-      const previousCounts = config.adminDigest.trendsEnabled
-        ? ((await getLastDigestCounts(admin.platform, admin.platformUserId)) ?? undefined)
-        : undefined;
-      const message = buildAdminDigestMessage(
-        clusters,
-        pendingAccessRequests,
-        openReports,
-        pendingSuggestions,
-        staleKnowledgeCount,
-        knowledgeStaleDays,
-        knowledgeGapsCount,
-        pendingKnowledgeCandidates,
-        lowRatedKnowledgeCount,
-        roster.joinedThisWeek,
-        roster.leftThisWeek,
-        mutedMembersCount,
-        maxTurnsFailuresCount,
-        duplicateKnowledgeCount,
-        conflictCandidateCount,
-        knowledgeStaleMaxAgeDays,
-        pendingKnowledgeCandidatesStaleCount,
-        knowledgeCandidateStaleDays,
-        staleMutedMembersCount,
-        notMembersCount,
-        escalatedKnowledgeGapsCount,
-        previousCounts,
+      const { message, currentCounts } = await buildAdminDigestForAdmin(
+        admin.platform,
+        admin.platformUserId,
+        adapter,
       );
       if (!message) {
         // Quiet week — no send, so the freshness row/eligibility window must
@@ -620,10 +681,11 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
  * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
  * knowledge-pair, conflict-candidate-knowledge-pair, and (in `'gated'`
- * access mode) onboarding-queue counts (issue #21's deferred proactive
- * follow-up, extended by issue #133, issue #193, issue #199, issue #284,
- * issue #324, issue #344, issue #357, issue #378, issue #403, and issue
- * #460) — the same signals
+ * access mode) onboarding-queue counts, plus (when at least one request is
+ * pending) the oldest pending access request's age in days (issue #21's
+ * deferred proactive follow-up, extended by issue #133, issue #193, issue
+ * #199, issue #284, issue #324, issue #344, issue #357, issue #378, issue
+ * #403, issue #460, and issue #515) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/

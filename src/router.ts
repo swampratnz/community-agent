@@ -961,12 +961,24 @@ export class Router {
     // never what a post is allowed to do once there. `isBotAuthor` is a
     // second, router-level backstop against a self/bot/webhook loop, on top
     // of the adapter already never constructing an IncomingMessage for one.
+    //
+    // A follow-up posted INSIDE a thread the bot itself opened for an
+    // auto-answer (issue #519) also qualifies: `msg.conversationId` there is
+    // the thread's own id, which is never in `autoAnswerChannelIds` (that
+    // list only ever holds parent channel ids), so without this lookup the
+    // very next message in the same back-and-forth would silently revert to
+    // mention-required. Same map, same creation-anchored (non-refreshed)
+    // `ESCALATION_WINDOW_MS` TTL the CONFIRM/escalation intercepts above
+    // already trust — presence here means "live", sweep() prunes expired
+    // entries on its own tick.
+    const autoAnswerThreadParent = this.autoAnswerThreadParents.get(msg.conversationId)?.parent;
     const isAutoAnswerCandidate =
       !msg.addressedToBot &&
       !msg.isDirect &&
       !msg.isBotAuthor &&
       msg.platform === 'discord' &&
-      config.discord.autoAnswerChannelIds.includes(msg.conversationId);
+      (config.discord.autoAnswerChannelIds.includes(msg.conversationId) ||
+        autoAnswerThreadParent !== undefined);
 
     // Only respond when addressed (mention/reply), in a direct conversation,
     // or an auto-answer candidate.
@@ -1075,7 +1087,13 @@ export class Router {
     // those checks would shed never burns a slot from the shared per-channel
     // allowance and starves other members' auto-answers. Never applied to an
     // addressed/mention reply in the same channel, only to auto-answered ones.
-    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(msg.conversationId)) return;
+    // SECURITY (issue #519): a thread-follow-up reserves against the PARENT
+    // channel id, not the thread id — the thread id has never had a slot
+    // reserved against it, so keying on it would open an uncapped
+    // side-channel around AUTO_ANSWER_RATE_LIMIT_PER_HOUR the moment a
+    // member replies inside a busy auto-answer thread.
+    if (isAutoAnswerCandidate && !this.reserveAutoAnswerSlot(autoAnswerThreadParent ?? msg.conversationId))
+      return;
 
     // If we ARE replying, make sure this message is in memory before the
     // agent turn runs (so recall can see it and ordering stays sane).
@@ -1089,21 +1107,28 @@ export class Router {
     // reply.
     let replyConversationId: string | undefined;
     if (isAutoAnswerCandidate) {
-      replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
-        logger.warn(
-          { err, conversationId: msg.conversationId },
-          'Auto-answer thread creation failed; replying in channel',
-        );
-        return undefined;
-      });
-      // Record the thread -> parent mapping so a CONFIRM/CANCEL or escalation
-      // "yes" the member types inside this thread resolves back to the parent
-      // channel the pending action/offer was registered against (issue #477).
-      if (replyConversationId) {
-        this.autoAnswerThreadParents.set(replyConversationId, {
-          parent: msg.conversationId,
-          at: Date.now(),
+      if (autoAnswerThreadParent !== undefined) {
+        // Already inside a bot-opened auto-answer thread (issue #519) — this
+        // is a follow-up, not an origin post, so reply in place rather than
+        // opening a second thread anchored to the follow-up message.
+        replyConversationId = msg.conversationId;
+      } else {
+        replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
+          logger.warn(
+            { err, conversationId: msg.conversationId },
+            'Auto-answer thread creation failed; replying in channel',
+          );
+          return undefined;
         });
+        // Record the thread -> parent mapping so a CONFIRM/CANCEL or escalation
+        // "yes" the member types inside this thread resolves back to the parent
+        // channel the pending action/offer was registered against (issue #477).
+        if (replyConversationId) {
+          this.autoAnswerThreadParents.set(replyConversationId, {
+            parent: msg.conversationId,
+            at: Date.now(),
+          });
+        }
       }
     }
 
@@ -1596,6 +1621,18 @@ export class Router {
           // whenever no `knowledge_search` call in the turn had a hit clear
           // the relevance floor.
           ...(reply.knowledgeEntryId != null ? { knowledgeEntryId: reply.knowledgeEntryId } : {}),
+          // Cache-usage telemetry (issue #522): mirrors the conditional-spread
+          // pattern above, but gated on `> 0` rather than `!= null` — a turn
+          // whose SDK result carried no `usage` at all (undefined) AND a turn
+          // whose `usage` reported all-zero cache counts must both write
+          // neither key (acceptance criterion 2), so a zero here is treated
+          // the same as "nothing to report", not as a real reading.
+          ...(reply.cacheReadTokens != null && reply.cacheReadTokens > 0
+            ? { cacheReadTokens: reply.cacheReadTokens }
+            : {}),
+          ...(reply.cacheCreationTokens != null && reply.cacheCreationTokens > 0
+            ? { cacheCreationTokens: reply.cacheCreationTokens }
+            : {}),
         },
       }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
     } finally {

@@ -56,6 +56,34 @@ test('config: MODERATION_APPEAL_COOLDOWN_HOURS unset (default) is 24 hours (issu
   assert.equal(config.moderation.appealCooldownHours, 24);
 });
 
+test('config: MODERATION_ALERT_RATE_LIMIT_PER_HOUR unset (default) is 30 (issue #517)', () => {
+  assert.equal(config.moderation.alertRateLimitPerHour, 30);
+});
+
+test('config: MODERATION_ALERT_RATE_LIMIT_PER_HOUR env override is parsed to the integer (issue #517)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        MODERATION_ALERT_RATE_LIMIT_PER_HOUR: '5',
+      },
+    },
+  );
+  assert.equal(result.status, 0, `loadConfig.ts must succeed; stderr: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.moderation.alertRateLimitPerHour, 5);
+});
+
 test('config: WhatsApp group welcome is off by default with a sensible cooldown', () => {
   assert.equal(config.whatsapp.welcome.enabled, false);
   assert.equal(config.whatsapp.welcome.cooldownMinutes, 180);

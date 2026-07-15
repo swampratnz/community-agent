@@ -21,6 +21,7 @@ const {
   blockedDmText,
   warnDmTextMi,
   blockedDmTextMi,
+  moderationAlertSummaryText,
 } = await import('../src/moderation/moderator.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 
@@ -95,6 +96,7 @@ function makeModerator(opts: {
   enabled?: boolean;
   strikeLimit?: number;
   strikeWindowDays?: number;
+  alertRateLimitPerHour?: number;
   isExempt?: (p: string, u: string) => Promise<boolean>;
   getLanguagePreference?: (p: string, u: string) => Promise<'auto' | 'en' | 'mi'>;
   classify?: Classifier;
@@ -112,6 +114,10 @@ function makeModerator(opts: {
     enabled: opts.enabled ?? true,
     strikeLimit: opts.strikeLimit ?? 3,
     strikeWindowDays: opts.strikeWindowDays,
+    // Matches the production default (config.moderation.alertRateLimitPerHour
+    // = 30) so existing tests below the cap stay byte-identical unless a test
+    // opts into a smaller cap to exercise the alert-cap behaviour itself.
+    alertRateLimitPerHour: opts.alertRateLimitPerHour ?? 30,
     classify: opts.classify ?? (async (t) => detect(t)),
     isExempt: opts.isExempt ?? (async () => false),
     getLanguagePreference: opts.getLanguagePreference ?? (async () => 'auto'),
@@ -451,6 +457,115 @@ test('SECURITY: with llmAbuseEnabled off, the classifier never touches the LLM/c
   await classify('some subtle harassment the wordlist misses', s);
   await classify('some subtle harassment the wordlist misses', s);
   assert.equal(calls.length, 0, 'disabled means the LLM (and therefore its cache) is never reached');
+});
+
+// --- mod-alerts rolling-hour cap (issue #517) --------------------------------
+// A raid/flood must never drown the mod-alerts channel: below the cap
+// behaviour is unchanged; at/over the cap, overflow collapses into one
+// deterministic summary; enforcement is never gated by the cap; and the
+// window is shared across identities so a multi-account raid can't buy extra
+// slots. Must match the internal, non-exported debounce in moderator.ts.
+const ALERT_SUMMARY_DEBOUNCE_MS = 10_000;
+
+// postAlert's summary flush is fire-and-forget (`.catch(...)`, no await) once
+// its debounce timer fires — same technique as tests/devTeamWatchAlert.test.ts:
+// give the microtask queue a turn after ticking the mocked timer.
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test('the alert cap: below the cap, behaviour is byte-identical to today — one individual alert per flagged message, no summary', async () => {
+  const cap = 5;
+  const enforcer = makeEnforcer();
+  const { moderator } = makeModerator({ strikeLimit: 1000, alertRateLimitPerHour: cap, enforcer });
+  for (let i = 0; i < cap - 1; i++) {
+    await moderator.scan(msg(`you asshole ${i}`, `u${i}`));
+  }
+  assert.equal(enforcer.calls.postAdminAlert.length, cap - 1, 'exactly one alert per flagged message');
+  for (const text of enforcer.calls.postAdminAlert) {
+    assert.doesNotMatch(text, /further warning|rate cap reached/i, 'no summary text below the cap');
+  }
+});
+
+test('at/over the cap, overflow collapses into exactly one summary notice reporting the exact suppressed count', async (t) => {
+  const cap = 3;
+  const K = 4; // suppressed count — must be >= 2 to prove accumulation, not just "first overflow"
+  const enforcer = makeEnforcer();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { moderator } = makeModerator({ strikeLimit: 1000, alertRateLimitPerHour: cap, enforcer });
+
+  for (let i = 0; i < cap + K; i++) {
+    await moderator.scan(msg(`you asshole ${i}`, `u${i}`));
+  }
+  assert.equal(
+    enforcer.calls.postAdminAlert.length,
+    cap,
+    'exactly cap individual alerts, nothing posted yet for the overflow',
+  );
+
+  t.mock.timers.tick(ALERT_SUMMARY_DEBOUNCE_MS);
+  await flush();
+
+  assert.equal(
+    enforcer.calls.postAdminAlert.length,
+    cap + 1,
+    'exactly one additional call — the collapsed summary — no further per-hit alerts',
+  );
+  assert.equal(
+    enforcer.calls.postAdminAlert.at(-1),
+    moderationAlertSummaryText(K),
+    'the summary reports the exact suppressed count (K)',
+  );
+});
+
+test('SECURITY: enforcement (addWarning/muteUser/warnUser/warnInChannel) fires on every flagged message even once the alert cap is exhausted', async (t) => {
+  const cap = 2;
+  const strikeLimit = 3;
+  const enforcer = makeEnforcer();
+  const store = makeStore();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { moderator } = makeModerator({ strikeLimit, alertRateLimitPerHour: cap, enforcer, store });
+
+  const burstSize = 10; // well past the alert cap
+  const userId = 'raider-1';
+  for (let i = 0; i < burstSize; i++) {
+    await moderator.scan(msg(`you asshole ${i}`, userId));
+  }
+
+  assert.equal(store.added.length, burstSize, 'addWarning (the audit trail) fires for every flagged message');
+  assert.equal(enforcer.calls.warnUser.length, burstSize, 'warnUser fires for every flagged message');
+  assert.equal(
+    enforcer.calls.warnInChannel.length,
+    burstSize,
+    'warnInChannel fires for every flagged message',
+  );
+  assert.equal(
+    enforcer.calls.muteUser.length,
+    burstSize - (strikeLimit - 1),
+    'muteUser fires on every post once the strike limit is crossed',
+  );
+  assert.ok(
+    enforcer.calls.postAdminAlert.length < burstSize,
+    'sanity: the alert cap actually suppressed some postAdminAlert calls',
+  );
+});
+
+test('SECURITY: the alert cap is one shared guild-wide window — a multi-account raid cannot buy extra alert slots by spreading across identities', async (t) => {
+  const cap = 3;
+  const enforcer = makeEnforcer();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { moderator } = makeModerator({ strikeLimit: 1000, alertRateLimitPerHour: cap, enforcer });
+
+  const identities = 6; // more distinct users/channels than the cap
+  for (let i = 0; i < identities; i++) {
+    await moderator.scan({ ...msg(`you asshole ${i}`, `raider-${i}`), channelId: `chan-${i}` });
+  }
+
+  assert.equal(
+    enforcer.calls.postAdminAlert.length,
+    cap,
+    'individual alerts capped at the shared limit regardless of how many distinct identities/channels posted',
+  );
 });
 
 // --- RBAC surface ------------------------------------------------------------

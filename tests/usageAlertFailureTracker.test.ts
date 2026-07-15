@@ -30,6 +30,7 @@ const BASE_STATS: Omit<UsageStats, 'outbound'> = {
   backgroundCostUsd: 0,
   shortcutHits: { total: 0, byKind: [] },
   backgroundCostByJob: [],
+  cacheUsage: { readTokens: 0, creationTokens: 0 },
 };
 
 let mode: 'succeed' | 'fail' = 'succeed';

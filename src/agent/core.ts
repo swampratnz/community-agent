@@ -33,6 +33,17 @@ import {
 export interface AgentReply {
   text: string;
   costUsd?: number;
+  /**
+   * Cache-hit/-write token counts read from the SDK `result` message's
+   * `usage` field (issue #508 added the read; issue #522 threads it here so
+   * `usage_stats` can surface it instead of it only ever reaching a debug
+   * log). Mirrors `costUsd` exactly: set on both the success return and the
+   * non-success/max-turns return (a max-turns turn still spends real,
+   * cacheable input tokens), left `undefined` on the thrown-error catch path
+   * (which has no `usage`) and whenever the SDK reports no `usage` at all.
+   */
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   sessionId?: string;
   /**
    * Whether this reply is a genuine answer (`TurnOutcome.ok`), as opposed to
@@ -167,6 +178,8 @@ interface TurnOutcome {
   resumeFailed: boolean;
   text: string;
   costUsd?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   sessionId?: string;
   maxTurnsExceeded?: boolean;
   knowledgeEntryId?: number;
@@ -421,6 +434,8 @@ export async function runAgentTurn(
   return {
     text,
     costUsd: outcome.costUsd,
+    cacheReadTokens: outcome.cacheReadTokens,
+    cacheCreationTokens: outcome.cacheCreationTokens,
     sessionId: outcome.sessionId,
     ok: outcome.ok,
     maxTurnsExceeded: outcome.maxTurnsExceeded,
@@ -507,6 +522,8 @@ async function execTurn(
   let resultText = '';
   let resultSubtype: string | undefined;
   let costUsd: number | undefined;
+  let cacheReadTokens: number | undefined;
+  let cacheCreationTokens: number | undefined;
   let sessionId: string | undefined;
 
   try {
@@ -555,6 +572,8 @@ async function execTurn(
               cache_read_input_tokens?: number;
               cache_creation_input_tokens?: number;
             };
+            cacheReadTokens = usage.cache_read_input_tokens;
+            cacheCreationTokens = usage.cache_creation_input_tokens;
             logger.debug(
               {
                 conversationId: caller.conversationId,
@@ -610,6 +629,8 @@ async function execTurn(
       resumeFailed: false,
       text: resultSubtype === 'error_max_turns' ? MAX_TURNS_REPLY : TURN_FAILED_REPLY,
       costUsd,
+      cacheReadTokens,
+      cacheCreationTokens,
       sessionId,
       maxTurnsExceeded: resultSubtype === 'error_max_turns' ? true : undefined,
     };
@@ -622,6 +643,8 @@ async function execTurn(
     resumeFailed: false,
     text,
     costUsd,
+    cacheReadTokens,
+    cacheCreationTokens,
     sessionId,
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
   };

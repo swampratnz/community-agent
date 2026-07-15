@@ -224,6 +224,22 @@ memory**:
    A quiet week (no DM sent) still snapshots the current counts via a
    dedicated write path that deliberately never touches `sent_at`, keeping the
    trend snapshot fully decoupled from the freshness guard above it.
+   The weekly push above was, until issue #499, the only way to see this
+   picture — an admin who wanted it mid-week had to wait or manually run each
+   underlying `list_*`/`count_*` tool separately. `admin_digest` (admin-tier,
+   no arguments, read-only, no CONFIRM) closes that gap: an on-demand pull of
+   the same signals, scoped to the caller only (it takes no id argument, so
+   an admin can never pull another admin's snapshot), returning the fixed
+   string `Nothing to report right now.` on a quiet week. Both the weekly
+   push and this pull call one shared helper, `buildAdminDigestForAdmin`
+   (extracted from `runAdminDigestOnce`'s per-admin loop) — a single
+   gathering/formatting implementation, so the two paths can never drift
+   apart on scoping or content. The pull deliberately never touches
+   `wasAdminDigestSentRecently`/`recordAdminDigestSent`: pulling any number
+   of times has no effect on when the next weekly DM arrives, and it works
+   identically whether `ADMIN_DIGEST_ENABLED` is on or off (that flag only
+   gates the proactive timer, never the admin's standing authorization to
+   read their own already-scoped counts).
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -289,6 +305,7 @@ and every privileged action is audited and alerted to super admins by DM.
 | `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest into knowledge; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
+| `admin_digest` (on-demand pull of the caller's own weekly admin-digest snapshot; no arguments, no CONFIRM — never affects the weekly push's cadence) | ❌ | ❌ | ✅ *caller only* | ✅ |
 | `list_knowledge_gaps` (recurring below-floor knowledge_search misses — the miss-specific complement to `question_digest`) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
@@ -474,7 +491,12 @@ weakening it:
    their message content, preserving the existing no-storage invariant for
    guests. Admins call `list_access_requests` to see who's waiting instead of
    relying on informal pings; `add_member` clears the row for that user once
-   actioned.
+   actioned. `list_access_requests` (issue #515) additionally renders each
+   row's `first_requested_at` (ISO timestamp plus a derived "waiting Nd"
+   figure) so an admin can distinguish a fresh request from stale backlog at
+   a glance, and the weekly admin digest's pending-request line gains the
+   same age for the single OLDEST row (`oldestAccessRequestAgeDays()`,
+   `MIN(first_requested_at)`) — see the admin-digest entry in SECURITY.md.
 3. **Server roster** (issue #47, extended to WhatsApp by issue #407). The
    Discord adapter records every `guildMemberAdd`/`guildMemberRemove` into
    `server_roster` (identity metadata only — see SECURITY.md) and
@@ -977,7 +999,12 @@ enabled (every message is inspected) — treat it like ambient archiving.
 - **Admin channel**: the bot creates a private `mod-alerts` channel on demand
   (denied to `@everyone`, allowed to the bot + configured super admins;
   Discord Administrators see it regardless) and posts every warning and block
-  there.
+  there — up to a guild-wide rolling-hour cap (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`,
+  default 30, issue #517): once exhausted, further alerts from `scan()`
+  collapse into one summary line reporting the exact suppressed count instead
+  of one message per hit, so a raid/flood can't bury the channel in
+  near-duplicate posts. Enforcement (the warning DM, mute, and audit trail)
+  is never gated by this cap — only the admin notification throttles.
 - **Clearing**: the admin-tier `clear_warnings(targetUserId)` tool clears all
   of a member's active warnings (stamping who/when) and lifts the mute (a new
   `unmute_user` adapter action removing the role). It's lenient/reversible so
@@ -1089,6 +1116,37 @@ the repeat-question/repeat-max-turns shortcuts. Two things are genuinely new:
   fire. A thread-creation failure degrades to answering directly in the
   channel rather than dropping the reply.
 
+**Thread follow-ups (issue #519).** The summon gate above only ever matched
+the *channel* a message was posted in, so a member's own follow-up typed
+inside the auto-answer thread it just opened — "what about X", "that didn't
+work" — reported the thread's own id as `conversationId`, never a member of
+`autoAnswerChannelIds`, and silently reverted to mention-required one message
+into the exact back-and-forth the feature exists for. The router closes this
+by also treating a message as an auto-answer candidate when its
+`conversationId` is a live entry in `autoAnswerThreadParents` — the same
+thread → parent-channel map, and the same creation-anchored
+`ESCALATION_WINDOW_MS` (10 min) TTL, the CONFIRM/CANCEL and escalation
+intercepts already consult to resolve a thread reply back to its parent. Two
+follow-on adjustments keep this correct, not just permissive:
+
+- A follow-up reply is sent **into the existing thread** (`replyConversationId
+  = msg.conversationId`) — `startAutoAnswerThread` is only called for the
+  origin post in the parent channel, never for a message already inside a
+  known thread, so a live back-and-forth never spawns a second thread.
+- The per-channel rolling-hour cap (`reserveAutoAnswerSlot`) is reserved
+  against the **parent** channel id, not the thread id, for a thread
+  follow-up exactly as for the origin post — the thread id has never had a
+  slot reserved against it, so keying on it would open an uncapped
+  side-channel around `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`.
+
+The TTL is **not refreshed** by a follow-up — it is set once, at thread
+creation, and only counted down from there. A back-and-forth that outlives
+the 10-minute window from the thread's creation reverts to mention-required,
+same as any other expired entry in this map; there is no indefinitely
+auto-answerable thread. This is a deliberate scope limit for the smallest
+viable version, not a defect — a longer or refreshing TTL is a named growth
+path if it proves too tight in practice.
+
 Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
 ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for
 the full security posture and its test references.
@@ -1165,8 +1223,15 @@ differ because `ROLE_NOTES[role]` varies, so the benefit is scoped to
 consecutive same-role turns, not every message. No dollar/token saving is
 claimed here — `execTurn` now reads `usage.cache_read_input_tokens` and
 `usage.cache_creation_input_tokens` off the SDK's `result` message (mirroring
-the existing `total_cost_usd` read) and logs them at debug level per turn, so
-the actual hit rate can be measured from real traffic instead of asserted.
+the existing `total_cost_usd` read) and logs them at debug level per turn.
+**Issue #522** threads those same two counts the rest of the way to an
+operator: `AgentReply`/`TurnOutcome` carry them alongside `costUsd`, the
+router's outbound `recordInteraction` call stamps them into
+`interactions.meta` (omitted entirely when the SDK reported no usage, or
+all-zero usage), and `usage_stats` now sums them across the requested window
+and reports a real `Prompt cache: NN% hit rate (X read / Y new tokens)` line
+— so the actual hit rate is a number in the tool an operator already checks,
+not just a debug log line.
 
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
@@ -1412,6 +1477,12 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   repeat-max-turns) fired, with a rough dollar estimate of Max-pool spend
   avoided at the member-tier average reply cost. Both lines are appended only
   when non-zero, byte-identical to today's output otherwise.
+- `usage_stats` also reports a `Prompt cache: NN% hit rate (X read / Y new
+  tokens)` line (issue #522), summing the `cache_read_input_tokens`/
+  `cache_creation_input_tokens` counts issue #508 already reads off each
+  turn's SDK `result` message — see "Known cost/latency characteristic"
+  above. Appended only when the window has recorded any cache activity;
+  byte-identical to today's output on a fresh deployment or before #522.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.
