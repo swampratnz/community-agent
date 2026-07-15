@@ -206,7 +206,18 @@ memory**:
    `countMutedMembers`/`countMaxTurnsFailures`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
-   own list `limit` is never understated. The DM sends when *any* of the
+   own list `limit` is never understated. Three of these queue lines also
+   carry the age of their single OLDEST outstanding item, so a 1-day and a
+   60-day backlog no longer read identically: the pending-access-request line
+   (`oldestAccessRequestAgeDays()`, `MIN(first_requested_at)`, issue #515) and,
+   via issue #450, the open-report line (`oldestOpenReportAgeDays()`) and the
+   pending-suggestion line (`oldestPendingSuggestionAgeDays()`), each a
+   `MIN(created_at)` aggregate over exactly the same scoped row set its sibling
+   `COUNT(*)` already reads — so the report age inherits `countOpenReports`'s
+   conversation/DM scoping and an admin can never see the age of a report
+   outside their scope. Each age only ever decorates its already-nonzero count
+   line and only when non-null (an empty scoped set has no meaningful age), so
+   a quiet week is byte-identical to before. The DM sends when *any* of the
    eleven signals is non-zero, and sends nothing on a quiet week (all zero, no
    DM, no noise); a persistently untriaged queue re-appears every subsequent
    weekly tick until it's cleared. Super admins are not enrolled; they keep

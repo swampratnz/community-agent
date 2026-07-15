@@ -218,6 +218,185 @@ test('SECURITY: buildAdminDigestMessage: pendingAccessRequests === 0 renders no 
   );
 });
 
+test('buildAdminDigestMessage: oldestOpenReportAgeDays / oldestPendingSuggestionAgeDays append an "oldest Nd old" fragment to their respective lines only when the paired count > 0 AND the age is non-null (issue #450)', () => {
+  // positional layout (1-indexed): 3 = openReports, 4 = pendingSuggestions,
+  // 22 = previousCounts, 23 = oldestAccessRequestAgeDays,
+  // 24 = oldestOpenReportAgeDays, 25 = oldestPendingSuggestionAgeDays.
+  const reportWithAge = buildAdminDigestMessage(
+    [],
+    0,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    12,
+  );
+  assert.equal(
+    reportWithAge,
+    '🚩 2 open report(s) in your conversations, oldest 12d old — run `list_reports`.',
+    'the report age fragment is appended right after the count',
+  );
+
+  const suggestionWithAge = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    4,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    5,
+  );
+  assert.equal(
+    suggestionWithAge,
+    '💡 4 pending suggestion(s), oldest 5d old — run `list_suggestions`.',
+    'the suggestion age fragment is appended right after the count',
+  );
+
+  // A null age (empty scoped set at the moment of the aggregate query) renders
+  // the line exactly as before #450, for both signals.
+  const reportNullAge = buildAdminDigestMessage(
+    [],
+    0,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+  );
+  assert.equal(
+    reportNullAge,
+    '🚩 2 open report(s) in your conversations — run `list_reports`.',
+    'a null report age renders no fragment',
+  );
+  const suggestionNullAge = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    4,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+  );
+  assert.equal(
+    suggestionNullAge,
+    '💡 4 pending suggestion(s) — run `list_suggestions`.',
+    'a null suggestion age renders no fragment',
+  );
+
+  // Omitting the trailing params entirely defaults them to null — same output.
+  assert.equal(buildAdminDigestMessage([], 0, 2, 0, 0, 0), reportNullAge);
+  assert.equal(buildAdminDigestMessage([], 0, 0, 4, 0, 0), suggestionNullAge);
+});
+
+test('SECURITY: buildAdminDigestMessage: openReports === 0 / pendingSuggestions === 0 render no line and are byte-identical whether or not the #450 age params are supplied — a non-null age never surfaces a line on its own (issue #450)', () => {
+  const quiet = buildAdminDigestMessage([], 0, 0, 0, 0, 0);
+  // Both ages non-null but both paired counts zero — must stay null (all
+  // signals zero), never leak a report/suggestion line off the age alone.
+  const withAgesButZeroCounts = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    99,
+    77,
+  );
+  assert.equal(quiet, null, 'the quiet case (all signals zero) is unaffected');
+  assert.equal(
+    withAgesButZeroCounts,
+    null,
+    'a non-null report/suggestion age must never surface a line on its own — it only ever decorates an already-nonzero paired count',
+  );
+});
+
 test('buildAdminDigestMessage: open-report line appears only when count > 0 (issue #133)', () => {
   const message = buildAdminDigestMessage([], 0, 2, 0, 0, 0);
   assert.ok(message, 'a non-zero open-report count alone still produces a DM');
