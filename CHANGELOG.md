@@ -95,6 +95,23 @@ for anything after ~noon NZST/NZDT). Get today's date with
   unaffected (it runs against a real Postgres, so log volume stays low and no
   EPIPE occurs). Test/infra-only; no `SECURITY:` tests added or removed, so
   `tests/security-floor.json` is unchanged.
+- **Auto-answer thread follow-ups no longer require an explicit @mention**
+  (#523): the help-channel auto-answer summon gate (`AUTO_ANSWER_CHANNEL_IDS`,
+  #477) only ever matched the *channel* a message was posted in — a member's
+  own follow-up typed inside the thread the bot had just opened reported the
+  thread's own id as its conversation id, never a member of the channel
+  allowlist, so the very next message in the back-and-forth the feature
+  exists for silently reverted to mention-required. The router now also
+  treats a message as an auto-answer candidate when its conversation id is a
+  live entry in the existing thread-to-parent-channel map (the same one
+  CONFIRM/CANCEL and escalation replies already use), replying in place
+  rather than opening a second thread. The per-channel rate cap is still
+  reserved against the parent channel, not the thread, so a busy thread can't
+  become an uncapped side-channel around `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`;
+  the TTL is creation-anchored and not refreshed by a follow-up, so a
+  back-and-forth beyond the 10-minute window from thread creation still
+  reverts to mention-required. No new tool, config knob, or schema change.
+  See docs/ARCHITECTURE.md and docs/SECURITY.md §14.
 
 ## 2026-07-14
 
