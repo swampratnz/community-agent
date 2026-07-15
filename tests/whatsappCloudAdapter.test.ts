@@ -1758,3 +1758,163 @@ test(
     assert.match(result.content[0]?.text ?? '', /not available|aren't available/i);
   },
 );
+
+// --- reactToMessage: native Graph API reaction (issue #528) -----
+
+test('reactToMessage: POSTs a type: reaction Graph API message with the exact body shape and URL (issue #528)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await adapter.reactToMessage('64211234567', 'wamid.TARGET', '👀');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/test-phone-id/messages'));
+  assert.deepEqual(JSON.parse(calls[0].body), {
+    messaging_product: 'whatsapp',
+    to: '64211234567',
+    type: 'reaction',
+    reaction: { message_id: 'wamid.TARGET', emoji: '👀' },
+  });
+});
+
+test('SECURITY: reactToMessage outside the 24h customer-service window throws before any Graph API call (issue #528)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  // No markInboundNow — this recipient has no recent inbound message.
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await assert.rejects(
+      () => adapter.reactToMessage('64299999999', 'wamid.OUTSIDE', '👍'),
+      /outside the 24h customer-service window/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 0, 'no Graph API call may be attempted outside the window');
+});
+
+test('reactToMessage: a failed send (non-OK response) calls recordSendFailure() and throws, participating in the isConnected() threshold (issue #528)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(
+        () => adapter.reactToMessage('64211234567', `wamid.FAIL${i}`, '👍'),
+        /WhatsApp Cloud reaction failed: 500/,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 3);
+  assert.equal(
+    adapter.isConnected(),
+    false,
+    'isConnected() must flip false once consecutive failed reaction sends cross the threshold',
+  );
+});
+
+test('reactToMessage: a REJECTED fetch (network error) also calls recordSendFailure() and re-throws the original error (issue #528)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const rejectingFetch = async () => {
+    throw new Error('getaddrinfo ENOTFOUND graph.facebook.com');
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = rejectingFetch;
+  try {
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() => adapter.reactToMessage('64211234567', `wamid.NET${i}`, '👍'), /ENOTFOUND/);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(
+    adapter.isConnected(),
+    false,
+    'consecutive rejected fetches from reactToMessage must flip isConnected() just like a non-OK response',
+  );
+});
+
+test('reactToMessage: a successful send after crossing the failure threshold resets the counter and restores isConnected() (issue #528)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  (adapter as unknown as { server: object }).server = {};
+  markInboundNow(adapter, '64211234567');
+  const originalFetch = globalThis.fetch;
+  try {
+    let { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+    globalThis.fetch = fetchMock as typeof fetch;
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() => adapter.reactToMessage('64211234567', `wamid.R${i}`, '👍'));
+    }
+    assert.equal(adapter.isConnected(), false, 'sanity check: threshold crossed');
+
+    ({ fetchMock } = mockFetch([{ ok: true }]));
+    globalThis.fetch = fetchMock as typeof fetch;
+    await adapter.reactToMessage('64211234567', 'wamid.RECOVERED', '👍');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(adapter.isConnected(), true, 'a successful reaction send must reset the failure counter');
+});
+
+test('SECURITY: react_to_message refuses a WhatsApp-Cloud reaction to a messageId the bot has never recorded via isKnownMessage — no fetch call at all (issue #528)', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+
+  const cloud = config.whatsapp.cloud as { phoneNumberId?: string; accessToken?: string };
+  const prevPhoneNumberId = cloud.phoneNumberId;
+  const prevAccessToken = cloud.accessToken;
+  cloud.phoneNumberId = 'test-phone-id';
+  cloud.accessToken = 'test-access-token';
+
+  const adapter = new WhatsAppCloudAdapter();
+  markInboundNow(adapter, '64211234567');
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    const server = buildToolServer(
+      {
+        platform: 'whatsapp',
+        userId: '64211234567',
+        userName: 'Member',
+        role: 'member',
+        conversationId: '64211234567',
+        isDirect: true,
+      },
+      adapter,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              emoji: string;
+              messageId?: string;
+            }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+          }
+        >;
+      }
+    )._registeredTools['react_to_message'];
+    const result = await registeredTool.handler({ emoji: '👍', messageId: 'wamid.NEVER-SEEN' });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /never been seen/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    cloud.phoneNumberId = prevPhoneNumberId;
+    cloud.accessToken = prevAccessToken;
+  }
+  assert.equal(calls.length, 0, 'an unvalidated target must never reach reactToMessage/fetch');
+});

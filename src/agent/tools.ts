@@ -2448,7 +2448,7 @@ export function buildToolServer(
     'React to a message with an emoji instead of replying with text — a lightweight, low-noise ' +
       `acknowledgement ("got it", "noted", "seen"). Only ${ALLOWED_REACTION_EMOJI.join(' ')} are allowed; ` +
       'no other emoji, custom, or Nitro emoji can be used. Defaults to the message that triggered this ' +
-      'turn when messageId is omitted. Works on Discord and WhatsApp (Baileys).',
+      'turn when messageId is omitted. Works on Discord and WhatsApp (both Baileys and Cloud API).',
     {
       emoji: z
         .enum(ALLOWED_REACTION_EMOJI)
