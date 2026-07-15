@@ -112,6 +112,109 @@ test('buildAdminDigestMessage: pending-access-request line appears only when cou
   assert.ok(!message.includes('📚'), 'no stale-knowledge line when the count is zero');
 });
 
+test('buildAdminDigestMessage: oldestAccessRequestAgeDays appends an "oldest waiting Nd" fragment to the pending-access-request line only when pendingAccessRequests > 0 AND the age is non-null (issue #515)', () => {
+  const withAge = buildAdminDigestMessage(
+    [],
+    3,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    12,
+  );
+  assert.equal(
+    withAge,
+    '⏳ 3 pending access request(s), oldest waiting 12d — run `list_access_requests`.',
+    'the age fragment is appended right after the count, before the trend suffix position',
+  );
+
+  const nullAge = buildAdminDigestMessage(
+    [],
+    3,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+  );
+  assert.equal(
+    nullAge,
+    '⏳ 3 pending access request(s) — run `list_access_requests`.',
+    'a null age (e.g. an empty access_requests table at the moment of the aggregate query) renders no fragment',
+  );
+
+  const omittedAge = buildAdminDigestMessage([], 3, 0, 0, 0, 0);
+  assert.equal(
+    omittedAge,
+    nullAge,
+    'omitting the trailing param entirely defaults to null, same output as passing null explicitly',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: pendingAccessRequests === 0 renders no access-request line and is byte-identical whether or not oldestAccessRequestAgeDays is supplied — no regression to the quiet case (issue #515)', () => {
+  const withoutAgeParam = buildAdminDigestMessage([], 0, 0, 0, 0, 0);
+  const withAgeParam = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    40,
+  );
+  assert.equal(withoutAgeParam, null, 'the quiet case (all signals zero) is unaffected');
+  assert.equal(
+    withAgeParam,
+    null,
+    'a non-null age must never surface a line on its own — it only ever decorates an already-nonzero pendingAccessRequests count',
+  );
+});
+
 test('buildAdminDigestMessage: open-report line appears only when count > 0 (issue #133)', () => {
   const message = buildAdminDigestMessage([], 0, 2, 0, 0, 0);
   assert.ok(message, 'a non-zero open-report count alone still produces a DM');
@@ -1585,8 +1688,8 @@ test(
     assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
     assert.match(
       sent[0].text,
-      /⏳ \d+ pending access request\(s\) — run `list_access_requests`\./,
-      'the pending-access-request line is present',
+      /⏳ \d+ pending access request\(s\), oldest waiting \d+d — run `list_access_requests`\./,
+      'the pending-access-request line is present, now with the oldest-request age (issue #515)',
     );
     assert.match(
       sent[0].text,

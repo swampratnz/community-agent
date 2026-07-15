@@ -491,7 +491,12 @@ weakening it:
    their message content, preserving the existing no-storage invariant for
    guests. Admins call `list_access_requests` to see who's waiting instead of
    relying on informal pings; `add_member` clears the row for that user once
-   actioned.
+   actioned. `list_access_requests` (issue #515) additionally renders each
+   row's `first_requested_at` (ISO timestamp plus a derived "waiting Nd"
+   figure) so an admin can distinguish a fresh request from stale backlog at
+   a glance, and the weekly admin digest's pending-request line gains the
+   same age for the single OLDEST row (`oldestAccessRequestAgeDays()`,
+   `MIN(first_requested_at)`) — see the admin-digest entry in SECURITY.md.
 3. **Server roster** (issue #47, extended to WhatsApp by issue #407). The
    Discord adapter records every `guildMemberAdd`/`guildMemberRemove` into
    `server_roster` (identity metadata only — see SECURITY.md) and

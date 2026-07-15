@@ -97,6 +97,7 @@ const {
   getMemberRole,
   recordAccessRequest,
   clearAccessRequest,
+  listAccessRequests,
   countAccessRequests,
   countActiveWarnings,
   clearWarnings,
@@ -8258,6 +8259,63 @@ test(
     assert.ok(
       !text.includes('x'.repeat(200)),
       'a hostile guest display name must be truncated, same as buildSystemPrompt',
+    );
+
+    await clearAccessRequest('discord', guest);
+  },
+);
+
+test(
+  "list_access_requests: rendered output surfaces each row's first-requested signal (ISO timestamp and derived waiting-Nd figure) alongside the existing request count and last-requested time (issue #515)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-access-requests-age-admin`;
+    const guest = `${RUN}-list-access-requests-age-guest`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const row = (await listAccessRequests(200)).find((r) => r.userId === guest);
+    assert.ok(row, 'the freshly recorded request must be visible via listAccessRequests');
+
+    const result = await listAccessRequestsHandler(admin).handler({});
+    const text = result.content[0]?.text ?? '';
+
+    assert.ok(
+      text.includes(row.firstRequestedAt.toISOString()),
+      'the rendered line must include the DB-stored first_requested_at ISO timestamp',
+    );
+    assert.match(text, /waiting 0d/, 'a request recorded moments ago must render as waiting 0d');
+
+    await clearAccessRequest('discord', guest);
+  },
+);
+
+test(
+  "SECURITY: list_access_requests' first-requested field is always sourced from the DB-stored first_requested_at row and can never be overridden by a caller-supplied argument (issue #515)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-list-access-requests-age-spoof-admin`;
+    const guest = `${RUN}-list-access-requests-age-spoof-guest`;
+    await clearAccessRequest('discord', guest);
+    await recordAccessRequest({ platform: 'discord', userId: guest, userName: 'tester' });
+
+    const row = (await listAccessRequests(200)).find((r) => r.userId === guest);
+    assert.ok(row, 'the freshly recorded request must be visible via listAccessRequests');
+
+    // The tool's declared schema only accepts `limit` — this extra field is
+    // never part of the type, simulating a future refactor (or a malformed
+    // upstream call) that smuggles an override value through anyway.
+    const spoofed = { firstRequestedAt: '2099-01-01T00:00:00.000Z' } as unknown as { limit?: number };
+    const result = await listAccessRequestsHandler(admin).handler(spoofed);
+    const text = result.content[0]?.text ?? '';
+
+    assert.ok(
+      text.includes(row.firstRequestedAt.toISOString()),
+      'the real DB-stored first_requested_at must still be rendered',
+    );
+    assert.ok(
+      !text.includes('2099-01-01'),
+      'a caller-supplied firstRequestedAt-shaped argument must never reach the rendered output',
     );
 
     await clearAccessRequest('discord', guest);

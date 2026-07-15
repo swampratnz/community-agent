@@ -2710,6 +2710,25 @@ export async function countAccessRequests(): Promise<number> {
   return Number(rows[0].n);
 }
 
+/**
+ * Whole-day age of the oldest still-pending access request — the same
+ * `MIN(first_requested_at)` oldest-age mechanic issue #450 applies to
+ * reports/suggestions, applied here to `access_requests` (issue #515).
+ * `first_requested_at` is set once at insert and never updated
+ * (`recordAccessRequest`), and `clearAccessRequest` deletes the row on
+ * `add_member`, so by construction every remaining row is unresolved
+ * backlog and `MIN` over an empty table is `null`, never `0` — returned
+ * as-is rather than coerced, so an admin/digest reader can never mistake
+ * "no pending requests" for "a request that just arrived".
+ */
+export async function oldestAccessRequestAgeDays(): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(DAY FROM now() - MIN(first_requested_at))::int AS age_days FROM access_requests`,
+  );
+  const ageDays = rows[0]?.age_days;
+  return ageDays === null || ageDays === undefined ? null : Number(ageDays);
+}
+
 // --- Context digests (offline builder output, issue #51) ---------------------
 
 export interface ContextDigest {
