@@ -125,6 +125,7 @@ const {
 } = await import('../src/storage/policies.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { superAdminIds } = await import('../src/auth/roles.js');
+const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
@@ -8850,6 +8851,109 @@ test(
       1,
       'SECURITY: a report naming a message the bot never saw must not trigger a reaction call',
     );
+  },
+);
+
+test(
+  'report_content acknowledges a known message with a 👀 reaction on the REAL WhatsApp Cloud adapter — ' +
+    'ackReportedMessage no longer no-ops on Cloud (issue #528)',
+  { skip },
+  async () => {
+    const conv = `${REPORT_CONTENT_ACK_HANDLER_CONVO}-cloud`;
+    const seenMessageId = `${conv}-seen`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: conv,
+      userId: `${conv}-author`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'the message being reported',
+      messageId: seenMessageId,
+    });
+
+    // Cloud adapter's own config (phoneNumberId/accessToken) is only set
+    // when WHATSAPP_PROVIDER=cloud, which this file doesn't set — set it
+    // directly for the duration of this test, same convention as
+    // withCloudWelcomeConfig in tests/whatsappCloudAdapter.test.ts.
+    const cloud = config.whatsapp.cloud as { phoneNumberId?: string; accessToken?: string };
+    const prevPhoneNumberId = cloud.phoneNumberId;
+    const prevAccessToken = cloud.accessToken;
+    cloud.phoneNumberId = 'test-phone-id';
+    cloud.accessToken = 'test-access-token';
+
+    const adapter = new WhatsAppCloudAdapter();
+    // Marks the reporter's number as within the 24h customer-service window
+    // without a real webhook round-trip, same as markInboundNow in
+    // tests/whatsappCloudAdapter.test.ts.
+    (adapter as unknown as { lastInboundAt: Map<string, number> }).lastInboundAt.set(conv, Date.now());
+
+    const graphCalls: Array<{ url: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      graphCalls.push({ url: String(url), body: typeof init?.body === 'string' ? init.body : '' });
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => '',
+        json: async () => ({}),
+      } as Response;
+    }) as typeof fetch;
+
+    try {
+      const server = buildToolServer(
+        {
+          platform: 'whatsapp' as const,
+          userId: `${conv}-reporter`,
+          userName: 'Reporter',
+          role: 'member' as const,
+          conversationId: conv,
+          isDirect: false,
+        },
+        adapter,
+      );
+      const reportContent = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            {
+              handler: (args: {
+                reason: string;
+                messageId?: string;
+              }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+            }
+          >;
+        }
+      )._registeredTools['report_content'];
+
+      await reportContent.handler({
+        reason: 'seen message on the real Cloud adapter',
+        messageId: seenMessageId,
+      });
+      // ackReportedMessage is fire-and-forget — poll for the reaction's
+      // Graph API call to land, same shape as waitForReactCallCount above.
+      const deadline = Date.now() + 5_000;
+      while (graphCalls.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      cloud.phoneNumberId = prevPhoneNumberId;
+      cloud.accessToken = prevAccessToken;
+    }
+
+    assert.equal(
+      graphCalls.length,
+      1,
+      'ackReportedMessage must fire a real Graph API reaction call on the Cloud adapter, not no-op',
+    );
+    assert.ok(graphCalls[0].url.endsWith('/test-phone-id/messages'));
+    assert.deepEqual(JSON.parse(graphCalls[0].body), {
+      messaging_product: 'whatsapp',
+      to: conv,
+      type: 'reaction',
+      reaction: { message_id: seenMessageId, emoji: '👀' },
+    });
   },
 );
 

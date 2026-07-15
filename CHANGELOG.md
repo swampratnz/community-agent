@@ -26,6 +26,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   Enforcement — warning DMs, mutes, and the `member_warnings` audit trail —
   is never gated by this cap, only the notification is. See
   docs/ARCHITECTURE.md and docs/SECURITY.md's auto-moderation sections.
+- **`react_to_message` on the WhatsApp Cloud API adapter** (#528): the docs'
+  own recommended production WhatsApp path was the one remaining platform
+  where `react_to_message` silently no-op'd — #494 extended it from
+  Discord-only to Baileys WhatsApp and explicitly deferred the Cloud-adapter
+  follow-up. `WhatsAppCloudAdapter.reactToMessage` closes that gap, reusing
+  the adapter's existing 24h customer-service-window check, retry wrapper,
+  and send-failure tracking verbatim — no new tool, RBAC tier, config knob,
+  or schema change. Also fixes `ackReportedMessage`, the deterministic 👀 ack
+  fired after a `report_content` submission, which previously silently
+  no-op'd for any Cloud-adapter member filing a report.
 ### Fixed
 - **`build` CI failure — `community_info` admin reply over its char cap**: the
   admin capabilities text had grown 18 chars past its intentional 2800-char cap
