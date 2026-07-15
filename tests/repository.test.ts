@@ -3151,6 +3151,92 @@ test(
 );
 
 test(
+  'repository: usageStats().cacheUsage sums meta.cacheReadTokens/cacheCreationTokens over outbound rows in the window, across other meta shapes and outside the window (issue #522, acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-cache-usage`;
+    const days = 1;
+    const before = await usageStats(days);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 1',
+      meta: { cacheReadTokens: 1000, cacheCreationTokens: 40 },
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 2',
+      meta: { cacheReadTokens: 234, cacheCreationTokens: 6, knowledgeEntryId: 99 },
+    });
+    // No cache-usage keys at all — must contribute 0, not throw or null-poison the SUM.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 3',
+      meta: { replyToUserId: 'someone' },
+    });
+    // Inbound rows must never contribute — cacheUsage is direction = 'outbound' only.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'someone',
+      role: 'member',
+      direction: 'inbound',
+      content: 'a member question',
+      meta: { cacheReadTokens: 999999, cacheCreationTokens: 999999 },
+    });
+    // Outside the 1-day window — must not appear in the sum.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'old reply',
+               '{"cacheReadTokens": 5000, "cacheCreationTokens": 500}'::jsonb, now() - interval '2 days')`,
+      [conversationId],
+    );
+
+    const after = await usageStats(days);
+
+    assert.equal(
+      after.cacheUsage.readTokens - before.cacheUsage.readTokens,
+      1234,
+      'readTokens sums only the two in-window outbound rows that carried the key (1000 + 234)',
+    );
+    assert.equal(
+      after.cacheUsage.creationTokens - before.cacheUsage.creationTokens,
+      46,
+      'creationTokens sums only the two in-window outbound rows that carried the key (40 + 6)',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: usageStats().cacheUsage reflects zero delta when no interaction is recorded in between two reads (empty-window case, issue #522)',
+  { skip },
+  async () => {
+    const before = await usageStats(1);
+    const after = await usageStats(1);
+    assert.deepEqual(
+      after.cacheUsage,
+      before.cacheUsage,
+      'no interactions recorded in between — the window contributes nothing new',
+    );
+  },
+);
+
+test(
   'SECURITY: repository: shortcut_hits stores only the fixed kind enum and a timestamp — no user id, conversation id, platform, or free text (issue #440)',
   { skip },
   async () => {

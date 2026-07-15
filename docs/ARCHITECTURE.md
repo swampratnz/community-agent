@@ -1218,8 +1218,15 @@ differ because `ROLE_NOTES[role]` varies, so the benefit is scoped to
 consecutive same-role turns, not every message. No dollar/token saving is
 claimed here — `execTurn` now reads `usage.cache_read_input_tokens` and
 `usage.cache_creation_input_tokens` off the SDK's `result` message (mirroring
-the existing `total_cost_usd` read) and logs them at debug level per turn, so
-the actual hit rate can be measured from real traffic instead of asserted.
+the existing `total_cost_usd` read) and logs them at debug level per turn.
+**Issue #522** threads those same two counts the rest of the way to an
+operator: `AgentReply`/`TurnOutcome` carry them alongside `costUsd`, the
+router's outbound `recordInteraction` call stamps them into
+`interactions.meta` (omitted entirely when the SDK reported no usage, or
+all-zero usage), and `usage_stats` now sums them across the requested window
+and reports a real `Prompt cache: NN% hit rate (X read / Y new tokens)` line
+— so the actual hit rate is a number in the tool an operator already checks,
+not just a debug log line.
 
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
@@ -1449,6 +1456,12 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   repeat-max-turns) fired, with a rough dollar estimate of Max-pool spend
   avoided at the member-tier average reply cost. Both lines are appended only
   when non-zero, byte-identical to today's output otherwise.
+- `usage_stats` also reports a `Prompt cache: NN% hit rate (X read / Y new
+  tokens)` line (issue #522), summing the `cache_read_input_tokens`/
+  `cache_creation_input_tokens` counts issue #508 already reads off each
+  turn's SDK `result` message — see "Known cost/latency characteristic"
+  above. Appended only when the window has recorded any cache activity;
+  byte-identical to today's output on a fresh deployment or before #522.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.

@@ -5367,6 +5367,7 @@ const BASE_USAGE_STATS = {
   backgroundCostUsd: 0,
   shortcutHits: { total: 0, byKind: [] as Array<{ kind: string; count: number }> },
   backgroundCostByJob: [],
+  cacheUsage: { readTokens: 0, creationTokens: 0 },
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -5502,6 +5503,36 @@ test('SECURITY: usage_stats rejects an admin caller — still super-admin-only a
   );
 });
 
+test('SECURITY: usage_stats remains refused for admin, member, and guest callers after adding the cache-usage fields (issue #522) — the new metric did not widen the super_admin-only gate', async () => {
+  for (const role of ['admin', 'member', 'guest'] as const) {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-1`,
+      userName: role,
+      role,
+      conversationId: 'convo-1',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['usage_stats'];
+
+    await assert.rejects(
+      () => registeredTool.handler({}),
+      /super_admin/i,
+      `a ${role} caller must be rejected by usage_stats' super_admin gate — the cache-usage fields must not land the metric on a lower-tier tool`,
+    );
+  }
+});
+
 test('formatUsageStats: shortcutHits.total === 0 is byte-identical to the pre-#440 output (no shortcuts line)', () => {
   const out = formatUsageStats(BASE_USAGE_STATS, 7);
   assert.equal(
@@ -5555,6 +5586,32 @@ test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits th
       'Cost by role: none\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0).',
+  );
+});
+
+test('formatUsageStats: cacheUsage all-zero is byte-identical to the pre-#522 output (no Prompt cache line), issue #522 acceptance criterion 5', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Prompt cache'), 'no Prompt cache line when cacheUsage is all-zero');
+});
+
+test('formatUsageStats: non-zero cacheUsage appends a rounded hit-rate line (issue #522 acceptance criterion 5)', () => {
+  const out = formatUsageStats(
+    { ...BASE_USAGE_STATS, cacheUsage: { readTokens: 12345, creationTokens: 2678 } },
+    7,
+  );
+  // 12345 / (12345 + 2678) = 82.18...% -> rounds to 82%
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Prompt cache: 82% hit rate (12345 read / 2678 new tokens).',
   );
 });
 
