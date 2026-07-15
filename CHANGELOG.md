@@ -26,6 +26,35 @@ for anything after ~noon NZST/NZDT). Get today's date with
   Enforcement — warning DMs, mutes, and the `member_warnings` audit trail —
   is never gated by this cap, only the notification is. See
   docs/ARCHITECTURE.md and docs/SECURITY.md's auto-moderation sections.
+### Fixed
+- **`build` CI failure — `community_info` admin reply over its char cap**: the
+  admin capabilities text had grown 18 chars past its intentional 2800-char cap
+  (the `community_info: admin reply stays under a hard char cap` test, issue
+  #367), failing the `build` job deterministically on `main`. Trimmed two
+  non-load-bearing clarifiers (`" with reasons"`, `" (questions I couldn't
+  answer)"`) from `ADMIN_CAPABILITIES_TEXT` — neither is referenced by the
+  anti-drift coverage map, so every admin tool stays covered and the reply is
+  back under the cap. Honours the test's "keep it tight, don't grow into a wall
+  of text" discipline rather than bumping the cap.
+- **Intermittent `security-invariants` CI crash (`tsx --test` exit 7)**: the
+  `security-invariants` gate runs the suite with **no** Postgres, so every
+  `runAgentTurn`-driven test emits a burst of fail-open warn/error logs
+  (`ECONNREFUSED`, degraded-turn fallbacks, …). `pino` buffers those and flushes
+  to stdout asynchronously; under **Node 24** each test file runs in a child
+  process whose stdout is a pipe to the parent runner, and that trailing async
+  flush could land *after* the parent stopped reading — surfacing as
+  `write EPIPE`, an unhandled `'error'` on the stdout `Socket` that aborts the
+  child (exit 7, no failing assertion, output truncated mid-line, and
+  uninterceptable by any JS `uncaughtException`/`unhandledRejection` handler
+  because it is a stream-error abort, not a throw). It was deterministic on
+  Node 24 (reproduced 6/6 locally with a Node diagnostic report) but invisible
+  on Node 22. The `test:security` script now runs with `LOG_LEVEL=silent`
+  (override-able), so no test-run log output is buffered for a racy teardown
+  flush — fixing it for every affected file at once rather than per-file. Adds
+  `silent` as a valid `LOG_LEVEL` (a real `pino` level). The `build` job is
+  unaffected (it runs against a real Postgres, so log volume stays low and no
+  EPIPE occurs). Test/infra-only; no `SECURITY:` tests added or removed, so
+  `tests/security-floor.json` is unchanged.
 
 ## 2026-07-14
 

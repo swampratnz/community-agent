@@ -652,7 +652,7 @@ const EnvSchema = z.object({
   // unauthenticated endpoint is NOT reachable off-box unless the operator
   // deliberately fronts it with a reverse proxy or sets 0.0.0.0 (issue #220).
   HEALTH_HOST: z.string().min(1).default('127.0.0.1'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'silent']).default('info'),
   LOG_PRETTY: z
     .string()
     .optional()
