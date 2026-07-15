@@ -19,6 +19,8 @@ import {
   getLastDigestCounts,
   listAdmins,
   oldestAccessRequestAgeDays,
+  oldestOpenReportAgeDays,
+  oldestPendingSuggestionAgeDays,
   recentQuestionClusters,
   recordAdminDigestSent,
   recordAdminDigestSnapshot,
@@ -135,6 +137,14 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * hasn't wired the new trailing param through are byte-identical to the
  * pre-#515 form. Bare integer only, same privacy convention as every signal
  * above.
+ * `oldestOpenReportAgeDays`/`oldestPendingSuggestionAgeDays` (issue #450) are
+ * the same oldest-age refinement applied to the open-report and pending-
+ * suggestion lines — each from a `MIN(created_at)` aggregate over exactly the
+ * scoped row set its sibling count (`countOpenReports`/`countPendingSuggestions`)
+ * already returns, so the report age inherits `countOpenReports`'s conversation
+ * scoping and can never surface an out-of-scope report's age. Each only ever
+ * appends to its already-nonzero count line and only when non-null, so the
+ * quiet case is byte-identical to the pre-#450 form. Bare integers only.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -201,6 +211,17 @@ export function buildAdminDigestMessage(
   // meaningful age), so the quiet case (`pendingAccessRequests === 0`) is
   // byte-identical to its pre-#515 form regardless of what's passed here.
   oldestAccessRequestAgeDays: number | null = null,
+  // Whole-day age of the oldest open report / oldest pending suggestion
+  // (`oldestOpenReportAgeDays`/`oldestPendingSuggestionAgeDays`, issue #450) —
+  // the same append-only trailing-param, non-null-only, refine-an-existing-
+  // line shape as `oldestAccessRequestAgeDays` (#515) above. Each only ever
+  // decorates its already-nonzero count line (`openReports`/`pendingSuggestions
+  // > 0`) and only when non-null (an empty scoped set has no meaningful age),
+  // so the quiet case and every caller that hasn't wired these through are
+  // byte-identical to the pre-#450 form. Bare integer only, same privacy
+  // convention as every signal above.
+  oldestOpenReportAgeDays: number | null = null,
+  oldestPendingSuggestionAgeDays: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -245,14 +266,21 @@ export function buildAdminDigestMessage(
     );
   }
   if (openReports > 0) {
+    // Oldest-age fragment only when the scoped aggregate resolved to a real
+    // day count — an empty scoped set (or a caller that hasn't wired the new
+    // param through) renders the line exactly as before #450 (issue #450).
+    const ageFragment = oldestOpenReportAgeDays !== null ? `, oldest ${oldestOpenReportAgeDays}d old` : '';
     sections.push(
-      `🚩 ${openReports} open report(s) in your conversations — run \`list_reports\`.` +
+      `🚩 ${openReports} open report(s) in your conversations${ageFragment} — run \`list_reports\`.` +
         trendSuffix('openReports', openReports, previousCounts),
     );
   }
   if (pendingSuggestions > 0) {
+    // Same oldest-age refinement as the report line above (issue #450).
+    const ageFragment =
+      oldestPendingSuggestionAgeDays !== null ? `, oldest ${oldestPendingSuggestionAgeDays}d old` : '';
     sections.push(
-      `💡 ${pendingSuggestions} pending suggestion(s) — run \`list_suggestions\`.` +
+      `💡 ${pendingSuggestions} pending suggestion(s)${ageFragment} — run \`list_suggestions\`.` +
         trendSuffix('pendingSuggestions', pendingSuggestions, previousCounts),
     );
   }
@@ -429,6 +457,8 @@ export async function buildAdminDigestForAdmin(
     pendingKnowledgeCandidatesStaleCount,
     oldestAccessRequestAge,
     escalatedKnowledgeGapsCount,
+    oldestOpenReportAge,
+    oldestPendingSuggestionAge,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -483,6 +513,13 @@ export async function buildAdminDigestForAdmin(
     // the same freshness window — the confirmed-escalation subset of that
     // count (issue #514).
     countEscalatedKnowledgeGaps(scope, FRESHNESS_DAYS),
+    // Oldest-age companions to openReports/pendingSuggestions above — each
+    // over exactly its sibling count's scoped row set (openReport age inherits
+    // countOpenReports's conversation+viewer scoping; suggestion age is
+    // guild-wide like its count), so neither can surface an age for a row the
+    // paired count wouldn't include (issue #450).
+    oldestOpenReportAgeDays(scope, viewerIds),
+    oldestPendingSuggestionAgeDays(),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -540,6 +577,8 @@ export async function buildAdminDigestForAdmin(
     escalatedKnowledgeGapsCount,
     previousCounts,
     oldestAccessRequestAge,
+    oldestOpenReportAge,
+    oldestPendingSuggestionAge,
   );
   return { message, currentCounts };
 }
@@ -569,7 +608,13 @@ export async function buildAdminDigestForAdmin(
  * stale-knowledge, and pending-candidate counts. `oldestAccessRequestAgeDays`
  * (issue #515) is fetched alongside `countAccessRequests` and is guild-wide
  * for the same reason, so every enrolled admin sees the same
- * oldest-pending-request age too. `countStaleKnowledge` only runs when
+ * oldest-pending-request age too. `oldestPendingSuggestionAgeDays` (issue #450)
+ * is likewise fetched alongside `countPendingSuggestions` and guild-wide, while
+ * `oldestOpenReportAgeDays` (issue #450) is fetched alongside `countOpenReports`
+ * with the SAME `scope`+`viewerIds` arguments — so a report's age inherits the
+ * exact conversation/DM scoping and self-report exclusion its count already
+ * has, and an admin can never see the age of a report outside their scope.
+ * `countStaleKnowledge` only runs when
  * `KNOWLEDGE_STALE_DAYS` is configured (`> 0`) — otherwise the signal stays
  * `0` and the digest is byte-for-byte unchanged from before issue #199.
  * `rosterCounts(admin.platform)` is likewise guild-wide by platform — same

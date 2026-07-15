@@ -13,6 +13,21 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-15
 
 ### Added
+- **Weekly admin digest now shows report/suggestion backlog age, not just
+  volume** (#450): the digest's open-report and pending-suggestion lines were
+  bare counts, so a report filed 5 minutes ago and one that had sat untriaged
+  for six weeks both read as "1 open report(s)" — a nag with no urgency
+  signal. Each line now names the age of its single oldest outstanding item
+  ("oldest 12d old"), from a `MIN(created_at)` aggregate
+  (`oldestOpenReportAgeDays`/`oldestPendingSuggestionAgeDays`) over exactly the
+  same scoped row set its existing count already reads — so the report age
+  inherits `countOpenReports`'s conversation/DM scoping (an admin can never see
+  the age of a report outside their scope) and the suggestion age stays
+  guild-wide like its count. The same oldest-age refinement #515 added to the
+  access-request line. Renders only when the paired count is already nonzero
+  and the age is non-null, so a quiet week is byte-identical to before — no new
+  tool, config knob, schema change, or extra model/embedding spend. See
+  docs/ARCHITECTURE.md's admin-digest section.
 - **Mod-alerts rate cap** (`MODERATION_ALERT_RATE_LIMIT_PER_HOUR`, #517):
   every other admin-notification path (escalation DMs, access-request
   alerts, auto-answer, `warn_user`) already had a rolling-hour cap — the

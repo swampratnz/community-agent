@@ -75,6 +75,7 @@ const {
   resolveContentReport,
   withdrawOwnReports,
   countOpenReports,
+  oldestOpenReportAgeDays,
   countRecentDmReportsByReporterAndTarget,
   REPORT_RATE_LIMIT_PER_DAY,
   recordAccessRequest,
@@ -96,6 +97,7 @@ const {
   listOwnSuggestions,
   resolveSuggestion,
   countPendingSuggestions,
+  oldestPendingSuggestionAgeDays,
   SUGGESTION_RATE_LIMIT_PER_DAY,
   SUGGESTION_MAX_CHARS,
   upsertMember,
@@ -4035,6 +4037,138 @@ test(
         'a non-empty table must yield null or a non-negative integer day count, never NaN',
       );
     }
+  },
+);
+
+test(
+  'SECURITY: repository: oldestOpenReportAgeDays inherits countOpenReports scoping — an out-of-scope report never influences the age, only open status counts, and MIN(created_at) picks the oldest (issue #450)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-reportage-in`;
+    const outOfScopeConvo = `${RUN}-c-reportage-out`;
+    const reporter = `${RUN}-reportage-reporter`;
+
+    const recent = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: inScopeConvo,
+      reason: 'in scope, open, recent',
+    });
+    const old = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: inScopeConvo,
+      reason: 'in scope, open, old',
+    });
+    const outOfScope = await createContentReport({
+      platform: 'discord',
+      reporterUserId: reporter,
+      conversationId: outOfScopeConvo,
+      reason: 'out of scope — must never influence the in-scope age',
+    });
+    assert.ok(recent && old && outOfScope);
+
+    // Backdate the in-scope "old" report to 300d and the out-of-scope one to
+    // 900d. If scoping leaked, MIN(created_at) over the scoped set would jump
+    // to 900; a correctly-scoped query stays at 300.
+    await pool.query(`UPDATE content_reports SET created_at = now() - interval '300 days' WHERE id = $1`, [
+      old.id,
+    ]);
+    await pool.query(`UPDATE content_reports SET created_at = now() - interval '900 days' WHERE id = $1`, [
+      outOfScope.id,
+    ]);
+
+    assert.equal(
+      await oldestOpenReportAgeDays([inScopeConvo]),
+      300,
+      'the oldest IN-SCOPE open report determines the age; the older out-of-scope report must never leak in',
+    );
+
+    // Resolving the oldest in-scope report drops it out — the age falls back to
+    // the remaining (recent) in-scope report, never to the out-of-scope one.
+    await resolveContentReport(old.id, 'resolved', `${RUN}-reportage-resolver`);
+    const afterResolve = await oldestOpenReportAgeDays([inScopeConvo]);
+    assert.ok(
+      afterResolve !== null && afterResolve < 300,
+      'a resolved report no longer counts; the age reflects only the remaining open in-scope reports',
+    );
+
+    await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[recent.id, old.id, outOfScope.id]]);
+  },
+);
+
+test(
+  'SECURITY: oldestOpenReportAgeDays / oldestPendingSuggestionAgeDays return null (never 0 or NaN) for an empty scoped/pending set, and a real non-negative integer otherwise (issue #450)',
+  { skip },
+  async () => {
+    // A conversation scope with no reports at all — must be null, never 0.
+    const emptyScope = `${RUN}-c-reportage-empty`;
+    assert.equal(
+      await oldestOpenReportAgeDays([emptyScope]),
+      null,
+      'an empty scoped report set must return null, never 0 or a throw',
+    );
+
+    const suggestionAge = await oldestPendingSuggestionAgeDays();
+    const pendingCount = await countPendingSuggestions();
+    if (pendingCount === 0) {
+      assert.equal(
+        suggestionAge,
+        null,
+        'an empty pending-suggestion set must return null, never 0 or a throw',
+      );
+    } else {
+      // A concurrently-running test file may have a pending suggestion at this
+      // instant — still must never be anything other than null or a
+      // well-formed non-negative integer.
+      assert.ok(
+        suggestionAge === null || (Number.isInteger(suggestionAge) && suggestionAge >= 0),
+        'a non-empty pending set must yield null or a non-negative integer day count, never NaN',
+      );
+    }
+  },
+);
+
+test(
+  'repository: oldestPendingSuggestionAgeDays returns the whole-day age of the oldest status=new row (MIN(created_at)), excludes reviewed rows, and is null when none are pending (issue #450)',
+  { skip },
+  async () => {
+    const user = `${RUN}-suggestionage-user`;
+    // Insert two pending suggestions directly (bypassing createSuggestion's
+    // rolling-24h rate cap) so we control created_at deterministically.
+    const { rows: recentRows } = await pool.query(
+      `INSERT INTO suggestions (platform, user_id, content) VALUES ($1,$2,$3) RETURNING id`,
+      ['discord', user, 'recent pending suggestion'],
+    );
+    const { rows: oldRows } = await pool.query(
+      `INSERT INTO suggestions (platform, user_id, content) VALUES ($1,$2,$3) RETURNING id`,
+      ['discord', user, 'old pending suggestion'],
+    );
+    const recentId = Number(recentRows[0].id);
+    const oldId = Number(oldRows[0].id);
+    // Backdate the old one far enough that no concurrent test file's fresh row
+    // (created_at defaults to now()) could plausibly be older, so
+    // MIN(created_at) over status='new' is deterministically this row.
+    await pool.query(`UPDATE suggestions SET created_at = now() - interval '400 days' WHERE id = $1`, [
+      oldId,
+    ]);
+
+    assert.equal(
+      await oldestPendingSuggestionAgeDays(),
+      400,
+      'the oldest status=new suggestion by created_at determines the age',
+    );
+
+    // Marking the old one reviewed drops it from the pending set — the age
+    // falls back to the recent one, proving status='new' scoping.
+    await resolveSuggestion(oldId, 'done', `${RUN}-suggestionage-reviewer`);
+    const afterReview = await oldestPendingSuggestionAgeDays();
+    assert.ok(
+      afterReview !== null && afterReview < 400,
+      "a reviewed suggestion no longer counts as pending — only 'new' rows drive the age",
+    );
+
+    await pool.query(`DELETE FROM suggestions WHERE id = ANY($1)`, [[recentId, oldId]]);
   },
 );
 

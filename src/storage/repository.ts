@@ -3221,6 +3221,23 @@ export async function countPendingSuggestions(): Promise<number> {
 }
 
 /**
+ * Whole-day age of the oldest still-pending suggestion — the same
+ * `MIN(created_at)` oldest-age mechanic `oldestAccessRequestAgeDays` (#515)
+ * applies to access requests, over exactly the `status = 'new'` row set
+ * `countPendingSuggestions` counts (issue #450). Guild-wide, unscoped, matching
+ * its sibling count. `MIN` over an empty (all-reviewed) set is `null`, never
+ * `0`, and is returned as-is so a digest reader can never mistake "no pending
+ * suggestions" for "one that just arrived".
+ */
+export async function oldestPendingSuggestionAgeDays(): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(DAY FROM now() - MIN(created_at))::int AS age_days FROM suggestions WHERE status = 'new'`,
+  );
+  const ageDays = rows[0]?.age_days;
+  return ageDays === null || ageDays === undefined ? null : Number(ageDays);
+}
+
+/**
  * Self-scoped read of a member's OWN suggestions — the only member-reachable
  * read of this table (the shared queue itself stays admin-only; see the doc
  * comment on listSuggestions above). Same query shape as listSuggestions with
@@ -4436,6 +4453,44 @@ export async function countOpenReports(
     params,
   );
   return Number(rows[0].n);
+}
+
+/**
+ * Whole-day age of the oldest still-open report visible to this admin — the
+ * same `MIN(created_at)` oldest-age mechanic `oldestAccessRequestAgeDays`
+ * (#515) applies to access requests, over exactly the scoped row set
+ * `countOpenReports` counts (issue #450). Builds the identical
+ * `status = 'open'` + conversation/DM scoping predicate `countOpenReports`
+ * does — so a report filed in a conversation this admin doesn't participate
+ * in (or a DM report against the admin themselves) can never influence the
+ * age they see, same as it can't influence their count. `MIN` over an empty
+ * scoped set is `null`, never `0`, and is returned as-is so a digest reader
+ * can never mistake "no open reports" for "one that just arrived".
+ */
+export async function oldestOpenReportAgeDays(
+  conversationIds: readonly string[] | null,
+  viewerUserIds?: readonly string[],
+): Promise<number | null> {
+  const params: unknown[] = [];
+  const filters: string[] = [`status = 'open'`];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    const convoIdx = params.length;
+    if (viewerUserIds && viewerUserIds.length > 0) {
+      params.push([...viewerUserIds]);
+      filters.push(
+        `(conversation_id = ANY($${convoIdx}) OR (is_dm AND (target_user_id IS NULL OR target_user_id <> ALL($${params.length}))))`,
+      );
+    } else {
+      filters.push(`conversation_id = ANY($${convoIdx})`);
+    }
+  }
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(DAY FROM now() - MIN(created_at))::int AS age_days FROM content_reports WHERE ${filters.join(' AND ')}`,
+    params,
+  );
+  const ageDays = rows[0]?.age_days;
+  return ageDays === null || ageDays === undefined ? null : Number(ageDays);
 }
 
 /**
