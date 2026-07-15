@@ -2031,8 +2031,8 @@ test(
     );
     assert.match(
       sent[0].text,
-      /🚩 1 open report\(s\) in your conversations — run `list_reports`\./,
-      'the open-report line is present with the exact scoped count',
+      /🚩 1 open report\(s\) in your conversations, oldest \d+d old — run `list_reports`\./,
+      'the open-report line is present with the exact scoped count, now with the oldest-report age (issue #450)',
     );
 
     assert.equal(
@@ -2092,8 +2092,8 @@ test(
     }
     assert.match(
       sent[0].text,
-      /💡 \d+ pending suggestion\(s\) — run `list_suggestions`\./,
-      'the pending-suggestion line is present',
+      /💡 \d+ pending suggestion\(s\), oldest \d+d old — run `list_suggestions`\./,
+      'the pending-suggestion line is present, now with the oldest-suggestion age (issue #450)',
     );
     assert.ok(
       !sent[0].text.includes('private suggestion content'),
@@ -3648,7 +3648,7 @@ test(
     const line = sent[0].text.split('\n').find((l) => l.includes('🚩'));
     assert.equal(
       line,
-      '🚩 5 open report(s) in your conversations — run `list_reports`. (▲+3 since last week)',
+      '🚩 5 open report(s) in your conversations, oldest 0d old — run `list_reports`. (▲+3 since last week)',
       'previous 2 -> current 5 renders exactly ▲+3',
     );
 
@@ -3709,7 +3709,7 @@ test(
     const line = sent[0].text.split('\n').find((l) => l.includes('🚩'));
     assert.equal(
       line,
-      '🚩 2 open report(s) in your conversations — run `list_reports`. (▼-6 since last week)',
+      '🚩 2 open report(s) in your conversations, oldest 0d old — run `list_reports`. (▼-6 since last week)',
       'previous 8 -> current 2 renders exactly ▼-6',
     );
 
@@ -3762,7 +3762,7 @@ test(
     const line = sent[0].text.split('\n').find((l) => l.includes('🚩'));
     assert.equal(
       line,
-      '🚩 2 open report(s) in your conversations — run `list_reports`.',
+      '🚩 2 open report(s) in your conversations, oldest 0d old — run `list_reports`.',
       'previous 2 -> current 2 is unchanged — no suffix, no clutter',
     );
 
