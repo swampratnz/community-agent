@@ -36,6 +36,21 @@ for anything after ~noon NZST/NZDT). Get today's date with
   or schema change. Also fixes `ackReportedMessage`, the deterministic 👀 ack
   fired after a `report_content` submission, which previously silently
   no-op'd for any Cloud-adapter member filing a report.
+- **Confirmed escalations now feed `knowledge_gaps` for curation priority**
+  (#514): a member who confirms a real-time escalation (issue #479) has
+  asked a human directly — the single strongest signal that documentation is
+  missing — but that confirmation only ever DM'd admins and left no trace in
+  the curation backlog. `recordEscalatedKnowledgeGap` now writes the question
+  into `knowledge_gaps` with a new `escalated = true` column (added
+  idempotently, defaulting every pre-existing row to `false`), fired
+  alongside the existing admin notification and, unlike the passive
+  below-floor `knowledge_search` miss, not gated by the per-user daily cap.
+  The weekly admin digest surfaces the escalated subset as a nested count
+  under its existing knowledge-gap line ("N of those were member-flagged —
+  start here"), so curators triage the questions members cared enough to
+  escalate first. Bare integers only reach the DM — no question text or
+  member id — and `forget_me`/`purge_user_data` already delete these rows by
+  `user_id`. See docs/ARCHITECTURE.md and docs/SECURITY.md.
 ### Fixed
 - **`build` CI failure — `community_info` admin reply over its char cap**: the
   admin capabilities text had grown 18 chars past its intentional 2800-char cap

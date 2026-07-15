@@ -29,6 +29,7 @@ import {
   isKnowledgeLowRated,
   listAdmins,
   recordAccessRequest,
+  recordEscalatedKnowledgeGap,
   recordInteraction,
   recordKnowledgeRetrieval,
   recordShortcutHit as recordShortcutHitDefault,
@@ -416,6 +417,9 @@ export class Router {
    * `notifyAdminsFn` defaults to the real `listAdmins()`-backed admin alert
    * (issue #479), fired from the escalation-confirmation intercept in
    * `handle()`; overridable so tests can assert on it without a live DB.
+   * `recordEscalatedGapFn` defaults to the real DB-backed escalated-gap
+   * recorder (issue #514), fired alongside `notifyAdminsFn` from the same
+   * intercept; overridable so tests can assert on it without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -432,6 +436,7 @@ export class Router {
     private readonly recordAccessRequestFn: typeof recordAccessRequest = recordAccessRequest,
     private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
+    private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -920,6 +925,16 @@ export class Router {
               `(conversation ${msg.conversationId}): "${truncateForEcho(pendingEscalation.query)}"`,
             msg.userId,
           ).catch((err) => logger.warn({ err }, 'Escalation admin notification failed'));
+          // Link this confirmed escalation into the knowledge_gaps curation
+          // queue (issue #514) — only reached inside the reserved-slot
+          // branch, so a rate-limited "yes" never writes a row. Same
+          // fire-and-forget, non-blocking shape as notifyAdminsFn above.
+          this.recordEscalatedGapFn(
+            msg.platform,
+            msg.conversationId,
+            msg.userId,
+            pendingEscalation.query,
+          ).catch((err) => logger.warn({ err }, 'Escalated knowledge gap recording failed'));
           await this.send(
             adapter,
             msg.conversationId,

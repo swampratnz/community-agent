@@ -58,7 +58,10 @@ const {
   recentKnowledgeGapClusters,
   recordKnowledgeGap,
   countKnowledgeGaps,
+  recordEscalatedKnowledgeGap,
+  countEscalatedKnowledgeGaps,
   KNOWLEDGE_GAP_DAILY_LIMIT,
+  KNOWLEDGE_GAP_QUERY_MAX_CHARS,
   recentModerationEntries,
   adminActivitySummary,
   usageStats,
@@ -2036,6 +2039,65 @@ test('repository: recordKnowledgeGap inserts a row with a real embedding', { ski
 });
 
 test(
+  'repository: recordEscalatedKnowledgeGap inserts a row with escalated = true, a real embedding, and is NOT gated by KNOWLEDGE_GAP_DAILY_LIMIT (issue #514, acceptance criterion 2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-escalated-insert`;
+    const userId = `${RUN}-gap-escalated-insert-user`;
+    const query = 'how do I reset my Zylotrix session — escalated';
+
+    // Seed the caller's daily gap cap so an ordinary recordKnowledgeGap
+    // insert would be refused, proving the escalated path is genuinely
+    // unconditional rather than merely under the cap by coincidence.
+    for (let i = 0; i < KNOWLEDGE_GAP_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text) VALUES ($1,$2,$3,$4)`,
+        ['discord', conversationId, userId, `seeded escalated-cap gap ${i}`],
+      );
+    }
+    const capped = await recordKnowledgeGap('discord', conversationId, userId, 'would be capped');
+    assert.equal(capped, 'rate_limited', 'sanity check — the ordinary daily cap is indeed exhausted');
+
+    const result = await recordEscalatedKnowledgeGap('discord', conversationId, userId, query);
+
+    const { rows } = await pool.query(
+      `SELECT platform, conversation_id, user_id, query_text, embedding, escalated FROM knowledge_gaps WHERE id = $1`,
+      [result.id],
+    );
+    assert.equal(rows.length, 1, 'the escalated insert succeeds despite the exhausted daily cap');
+    assert.equal(rows[0].platform, 'discord');
+    assert.equal(rows[0].conversation_id, conversationId);
+    assert.equal(rows[0].user_id, userId);
+    assert.equal(rows[0].query_text, query);
+    assert.equal(rows[0].escalated, true);
+    assert.ok(Array.isArray(rows[0].embedding), 'a real embedding vector must be stored');
+    assert.equal(rows[0].embedding.length, config.db.embeddingDim);
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: recordEscalatedKnowledgeGap query_text is truncated to KNOWLEDGE_GAP_QUERY_MAX_CHARS, identically to recordKnowledgeGap',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-escalated-truncate`;
+    const userId = `${RUN}-gap-escalated-truncate-user`;
+    const longQuery = 'x'.repeat(1000);
+
+    const result = await recordEscalatedKnowledgeGap('discord', conversationId, userId, longQuery);
+    const { rows } = await pool.query(`SELECT query_text FROM knowledge_gaps WHERE id = $1`, [result.id]);
+    assert.equal(
+      rows[0].query_text.length,
+      KNOWLEDGE_GAP_QUERY_MAX_CHARS,
+      'truncated to KNOWLEDGE_GAP_QUERY_MAX_CHARS',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE id = $1`, [result.id]);
+  },
+);
+
+test(
   'repository: recentKnowledgeGapClusters groups near-duplicate embeddings, separates unrelated ones, and enforces count >= 2',
   { skip },
   async () => {
@@ -2428,6 +2490,72 @@ test(
     assert.equal(afterCount, 0, 'a resolved gap drops out of the digest count immediately');
 
     await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  'repository: countEscalatedKnowledgeGaps counts only escalated=true rows, conversation-scoped and day-windowed, mirroring countKnowledgeGaps (issue #514, acceptance criterion 4)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-gap-escalated-count-in`;
+    const outOfScopeConvo = `${RUN}-c-gap-escalated-count-out`;
+    const userId = `${RUN}-gap-escalated-count-user`;
+
+    const escalatedA = await recordEscalatedKnowledgeGap(
+      'discord',
+      inScopeConvo,
+      userId,
+      'escalated count query A',
+    );
+    const escalatedB = await recordEscalatedKnowledgeGap(
+      'discord',
+      inScopeConvo,
+      userId,
+      'escalated count query B',
+    );
+    const passive = await recordKnowledgeGap('discord', inScopeConvo, userId, 'passive count query');
+    assert.ok(passive !== 'rate_limited', 'fixture passive gap recorded');
+    const outOfScopeEscalated = await recordEscalatedKnowledgeGap(
+      'discord',
+      outOfScopeConvo,
+      userId,
+      'out-of-scope escalated query',
+    );
+
+    const scopedCount = await countEscalatedKnowledgeGaps([inScopeConvo], 7);
+    assert.equal(scopedCount, 2, 'counts only the two escalated rows in-scope, excluding the passive gap');
+
+    const outOfScopeCount = await countEscalatedKnowledgeGaps([outOfScopeConvo], 7);
+    assert.equal(outOfScopeCount, 1);
+
+    const noScopeCount = await countEscalatedKnowledgeGaps([], 7);
+    assert.equal(noScopeCount, 0, 'an empty conversation scope always returns 0, never a guild-wide count');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE id = ANY($1)`, [
+      [escalatedA.id, escalatedB.id, passive.id, outOfScopeEscalated.id],
+    ]);
+  },
+);
+
+test(
+  'repository: countEscalatedKnowledgeGaps excludes a resolved escalated gap immediately, mirroring countKnowledgeGaps (issue #422 + #514)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-escalated-resolve`;
+    const userId = `${RUN}-gap-escalated-resolve-user`;
+    const query = `${RUN} escalated resolve-exclusion query`;
+
+    const escalated = await recordEscalatedKnowledgeGap('discord', conversationId, userId, query);
+    const beforeCount = await countEscalatedKnowledgeGaps([conversationId], 7);
+    assert.equal(beforeCount, 1);
+
+    const { id: knowledgeId } = await saveKnowledge({ content: query });
+
+    const afterCount = await countEscalatedKnowledgeGaps([conversationId], 7);
+    assert.equal(afterCount, 0, 'a resolved escalated gap drops out of the count immediately');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE id = $1`, [escalated.id]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
   },
 );

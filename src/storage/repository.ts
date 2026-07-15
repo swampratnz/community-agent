@@ -3668,6 +3668,48 @@ export async function recordKnowledgeGap(
   return rows[0] ? { id: Number(rows[0].id) } : 'rate_limited';
 }
 
+/**
+ * Record a CONFIRMED escalation (issue #479's escalation-confirmation
+ * intercept) into `knowledge_gaps` with `escalated = true` — the strongest
+ * curation-priority signal available: a member asked a human directly,
+ * rather than a passive below-floor `knowledge_search` miss (issue #514).
+ * Deliberately an unconditional insert, NOT gated by `KNOWLEDGE_GAP_DAILY_LIMIT`
+ * — that per-user cap exists to bound passive per-message noise, and reusing
+ * it here would risk silently dropping the highest-value data point. The
+ * caller (router.ts) only ever invokes this inside the
+ * `reserveEscalationSlot` success branch, so volume is already independently
+ * bounded by the guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR`. Fire-and-forget
+ * from the router — callers must swallow failures themselves (never block or
+ * delay the confirmation reply), matching the sibling `notifyAdminsFn` call.
+ */
+export async function recordEscalatedKnowledgeGap(
+  platform: Platform,
+  conversationId: string,
+  userId: string,
+  query: string,
+): Promise<{ id: number }> {
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(query);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for escalated knowledge gap');
+  }
+
+  const { rows } = await pool.query(
+    `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding, escalated)
+     VALUES ($1, $2, $3, $4, $5, true)
+     RETURNING id`,
+    [
+      platform,
+      conversationId,
+      userId,
+      query.slice(0, KNOWLEDGE_GAP_QUERY_MAX_CHARS),
+      embedding ? pgvector.toSql(embedding) : null,
+    ],
+  );
+  return { id: Number(rows[0].id) };
+}
+
 export interface KnowledgeGapCluster {
   representative: string;
   count: number;
@@ -4414,6 +4456,30 @@ export async function countKnowledgeGaps(conversationIds: readonly string[], day
     `SELECT count(*) AS n FROM knowledge_gaps
       WHERE conversation_id = ANY($1)
         AND resolved_at IS NULL
+        AND created_at >= now() - ($2 || ' days')::interval`,
+    [[...conversationIds], String(days)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Count ESCALATED knowledge gaps (issue #514) recorded in the given
+ * conversations within the last `days`, for the weekly admin digest — the
+ * subset of `countKnowledgeGaps` written by `recordEscalatedKnowledgeGap`
+ * (a confirmed, member-initiated escalation rather than a passive miss).
+ * Mirrors `countKnowledgeGaps` exactly (conversation-scoped, day-windowed,
+ * `resolved_at IS NULL`, a true `COUNT(*)`) plus `AND escalated = true`.
+ */
+export async function countEscalatedKnowledgeGaps(
+  conversationIds: readonly string[],
+  days: number,
+): Promise<number> {
+  if (conversationIds.length === 0) return 0;
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM knowledge_gaps
+      WHERE conversation_id = ANY($1)
+        AND resolved_at IS NULL
+        AND escalated = true
         AND created_at >= now() - ($2 || ' days')::interval`,
     [[...conversationIds], String(days)],
   );

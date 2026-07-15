@@ -1332,6 +1332,25 @@ fallback" gap with a member-initiated, real-time admin alert — see
 - **Off by default, byte-identical when unset.** With the flag unset, no
   offer line is ever appended, no pending entry is ever recorded, and no
   caller message can call `notifyAdmins` — pinned by a router test.
+- **Linked into `knowledge_gaps` (issue #514).** The same confirmed-escalation
+  branch that calls `notifyAdmins` also fire-and-forget calls
+  `recordEscalatedKnowledgeGap`, marking the resulting row `escalated = true`
+  so admins can distinguish "a member asked a human directly" from an
+  ordinary below-floor `knowledge_search` miss (§ "Knowledge gaps" above).
+  No new tool, no new model-reachable surface, no new data exposure: the
+  query text is already DM'd to admins by `notifyAdmins` at the same moment.
+  - **`SECURITY:`** With `ESCALATION_TO_ADMIN_ENABLED` unset/false, no code
+    path ever calls `recordEscalatedKnowledgeGap` — behaviour is
+    byte-identical to today's passive-only `knowledge_gaps` writes.
+  - **`SECURITY:`** A rate-limited (cap-exhausted) escalation confirmation
+    never calls `recordEscalatedKnowledgeGap` — the write is gated on an
+    actual `notifyAdmins` notification firing, not merely on a "yes" being
+    received.
+  - Deliberately **not** gated by `KNOWLEDGE_GAP_DAILY_LIMIT`: that per-user
+    cap bounds passive per-message noise, while an escalated write is already
+    independently bounded by the guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR`
+    above — reusing the daily cap would risk silently dropping the
+    highest-value data point instead.
 
 ### 15. Help-channel auto-answer mode (`AUTO_ANSWER_CHANNEL_IDS`, opt-in, Discord-only, issue #477)
 

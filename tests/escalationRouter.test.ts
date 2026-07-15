@@ -106,7 +106,8 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
 /**
  * Builds a Router with a stub notifyAdminsFn (14th constructor arg — after
  * the recordAccessRequestFn/notifyAccessRequestFn pair issue #480 inserted
- * ahead of it) that records every call, and a stub runTurn. `getLangPref`
+ * ahead of it) and a stub recordEscalatedGapFn (15th constructor arg, issue
+ * #514) that each record every call, plus a stub runTurn. `getLangPref`
  * defaults to undefined (the real DB-backed lookup, which fails safe to
  * 'auto' against the unreachable dummy DB) — pass an override for a 'mi'
  * scenario, since the escalation-confirm intercept's own language lookup is
@@ -118,6 +119,7 @@ function makeRouterWithNotifySpy(
   getLangPref?: Parameters<typeof Router>[6],
 ) {
   const notifyCalls: { message: string; excludeUserId: string }[] = [];
+  const gapCalls: { platform: string; conversationId: string; userId: string; query: string }[] = [];
   const router = new Router(
     runTurn,
     20,
@@ -139,8 +141,12 @@ function makeRouterWithNotifySpy(
     ) => {
       notifyCalls.push({ message, excludeUserId });
     },
+    async (platform: Platform, conversationId: string, userId: string, query: string) => {
+      gapCalls.push({ platform, conversationId, userId, query });
+      return { id: gapCalls.length };
+    },
   );
-  return { router, notifyCalls };
+  return { router, notifyCalls, gapCalls };
 }
 
 test('config: ESCALATION_TO_ADMIN_ENABLED=true is reflected in config.behaviour.escalationToAdminEnabled', () => {
@@ -178,6 +184,32 @@ test('router (escalation offer, flag off): a max-turns failure produces byte-ide
   }
 });
 
+test('SECURITY: router (escalated knowledge gap): with ESCALATION_TO_ADMIN_ENABLED false, recordEscalatedGapFn is never invoked — even after a max-turns failure and a later "yes" (issue #514 acceptance criterion 6)', async () => {
+  const originalFlag = config.behaviour.escalationToAdminEnabled;
+  (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = false;
+  try {
+    const { router, gapCalls } = makeRouterWithNotifySpy(async () => ({
+      text: MAX_TURNS_REPLY,
+      ok: false,
+      maxTurnsExceeded: true,
+    }));
+    const { adapter, trigger } = makeAdapter();
+    router.register(adapter);
+    const conversationId = `${RUN}-gap-flag-off`;
+
+    await trigger(makeMessage({ text: `${RUN} a long ask for the gap-flag-off case`, conversationId }));
+    await trigger(makeMessage({ text: 'yes', conversationId }));
+
+    assert.equal(
+      gapCalls.length,
+      0,
+      "recordEscalatedGapFn must never be invoked when ESCALATION_TO_ADMIN_ENABLED is off — behaviour byte-identical to today's passive-only knowledge_gaps writes",
+    );
+  } finally {
+    (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = originalFlag;
+  }
+});
+
 test('router (escalation offer, flag on): a max-turns failure appends the offer and atomically records a live pending entry (acceptance criterion 2)', async () => {
   const { router } = makeRouterWithNotifySpy(async () => ({
     text: MAX_TURNS_REPLY,
@@ -203,7 +235,7 @@ test('router (escalation offer, flag on): a max-turns failure appends the offer 
 
 test('SECURITY: router (escalation offer via repeat-max-turns shortcut): with both flags on, a repeated identical message that hits sendRepeatMaxTurnsShortcut re-offers escalation with its own live pending entry, and a subsequent "yes" confirms it exactly like the non-shortcut path (issue #479 dead-offer/orphaned-entry hazard, repeat-shortcut replay case)', async () => {
   let calls = 0;
-  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => {
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(async () => {
     calls++;
     return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
   });
@@ -248,6 +280,12 @@ test('SECURITY: router (escalation offer via repeat-max-turns shortcut): with bo
     false,
     'the shortcut-path pending entry must be consumed (deleted) once confirmed',
   );
+  assert.equal(
+    gapCalls.length,
+    1,
+    'exactly one recordEscalatedGapFn call from the shortcut-path confirmation',
+  );
+  assert.equal(gapCalls[0].query, text);
 });
 
 test('router (escalation offer): a reply with maxTurnsExceeded !== true never gets the offer appended or a pending entry recorded', async () => {
@@ -268,7 +306,7 @@ test('router (escalation offer): a reply with maxTurnsExceeded !== true never ge
 
 test('SECURITY: router (escalation confirm): a confirmed "yes" short-circuits entirely in the router — calls notifyAdmins exactly once (echoing the truncated original question), replies with the fixed confirmation, and never spawns a second model turn (acceptance criterion 3)', async () => {
   let calls = 0;
-  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => {
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(async () => {
     calls++;
     return { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true };
   });
@@ -297,6 +335,15 @@ test('SECURITY: router (escalation confirm): a confirmed "yes" short-circuits en
     0,
     'the pending entry must be consumed (deleted) the moment it is confirmed',
   );
+
+  // Issue #514: a confirmed escalation must also write exactly one
+  // knowledge_gaps row (via recordEscalatedGapFn) with matching
+  // platform/conversation/user/query.
+  assert.equal(gapCalls.length, 1, 'exactly one recordEscalatedGapFn call from the confirmed escalation');
+  assert.equal(gapCalls[0].platform, 'discord');
+  assert.equal(gapCalls[0].conversationId, conversationId);
+  assert.equal(gapCalls[0].userId, 'super-1');
+  assert.equal(gapCalls[0].query, `${RUN} help me please`);
 });
 
 test('SECURITY: router (escalation confirm): "y" and the te reo "āe" variant (case-insensitive, trimmed) also confirm a pending escalation', async () => {
@@ -322,7 +369,7 @@ test('SECURITY: router (escalation confirm): "y" and the te reo "āe" variant (c
 });
 
 test('SECURITY: router (escalation confirm): single-shot consumption — replaying the identical confirmed "yes" a second time produces zero further notifyAdmins calls (acceptance criterion 4)', async () => {
-  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(async () => ({
     text: MAX_TURNS_REPLY,
     ok: false,
     maxTurnsExceeded: true,
@@ -334,9 +381,11 @@ test('SECURITY: router (escalation confirm): single-shot consumption — replayi
   await trigger(makeMessage({ text: `${RUN} first failing ask`, conversationId, userId: 'super-1' }));
   await trigger(makeMessage({ text: 'yes', conversationId, userId: 'super-1' }));
   assert.equal(notifyCalls.length, 1);
+  assert.equal(gapCalls.length, 1);
 
   await trigger(makeMessage({ text: 'yes', conversationId, userId: 'super-1' }));
   assert.equal(notifyCalls.length, 1, 'a replayed "yes" must never produce a second notification');
+  assert.equal(gapCalls.length, 1, 'a replayed "yes" must never produce a second recordEscalatedGapFn call');
   // The second "yes" has no live pending entry, so it must fall through to a
   // fresh model turn rather than being silently dropped.
   assert.notEqual(sent[2].text, ESCALATION_CONFIRMED_TEXT);
@@ -344,7 +393,7 @@ test('SECURITY: router (escalation confirm): single-shot consumption — replayi
 
 test('SECURITY: router (escalation confirm): a "yes" with no live pending entry is routed to the model as an ordinary message and never calls notifyAdmins (acceptance criterion 5)', async () => {
   let calls = 0;
-  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => {
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(async () => {
     calls++;
     return { text: `${RUN} a genuine answer to yes`, ok: true };
   });
@@ -356,13 +405,14 @@ test('SECURITY: router (escalation confirm): a "yes" with no live pending entry 
 
   assert.equal(calls, 1, 'a "yes" with no pending escalation must run a fresh turn');
   assert.equal(notifyCalls.length, 0);
+  assert.equal(gapCalls.length, 0);
   assert.equal(sent[0].text, `${RUN} a genuine answer to yes`);
 });
 
 test('SECURITY: router (escalation confirm): a "yes" whose pending entry is past the 10-minute TTL is routed to the model, not treated as a confirmation', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   let calls = 0;
-  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => {
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(async () => {
     calls++;
     return calls === 1
       ? { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }
@@ -380,6 +430,7 @@ test('SECURITY: router (escalation confirm): a "yes" whose pending entry is past
 
   assert.equal(calls, 2, 'the expired pending entry must not intercept — a fresh turn must run');
   assert.equal(notifyCalls.length, 0);
+  assert.equal(gapCalls.length, 0);
   assert.equal(sent[1].text, `${RUN} fresh turn after ttl`);
 });
 
@@ -425,8 +476,47 @@ test('SECURITY: router (escalation confirm): the rate cap holds regardless of ca
   assert.equal(sent[sent.length - 1].text, ESCALATION_RATE_LIMITED_TEXT);
 });
 
+test('SECURITY: router (escalated knowledge gap): a rate-limited (cap-exhausted) escalation confirmation never calls recordEscalatedGapFn — zero additional knowledge_gaps writes after the rate-limited "yes" (issue #514 acceptance criterion 7)', async () => {
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(async () => ({
+    text: MAX_TURNS_REPLY,
+    ok: false,
+    maxTurnsExceeded: true,
+  }));
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // Exhaust the guild-wide cap first, same shape as the sibling rate-cap
+  // test above — each confirmed escalation in this loop DOES write a gap.
+  for (let i = 0; i < ESCALATION_RATE_LIMIT_PER_HOUR; i++) {
+    const conversationId = `${RUN}-gap-cap-${i}`;
+    await trigger(makeMessage({ text: `${RUN} gap capped ask ${i}`, conversationId, userId: 'super-1' }));
+    await trigger(makeMessage({ text: 'yes', conversationId, userId: 'super-1' }));
+  }
+  assert.equal(notifyCalls.length, ESCALATION_RATE_LIMIT_PER_HOUR);
+  assert.equal(
+    gapCalls.length,
+    ESCALATION_RATE_LIMIT_PER_HOUR,
+    'the cap-allowed escalations each wrote a gap',
+  );
+
+  // One further "yes", past the cap: must hit the rate-limited reply and
+  // write zero additional knowledge_gaps rows.
+  const overCapConversationId = `${RUN}-gap-cap-over`;
+  await trigger(
+    makeMessage({ text: `${RUN} over-cap ask`, conversationId: overCapConversationId, userId: 'super-1' }),
+  );
+  await trigger(makeMessage({ text: 'yes', conversationId: overCapConversationId, userId: 'super-1' }));
+
+  assert.equal(sent[sent.length - 1].text, ESCALATION_RATE_LIMITED_TEXT);
+  assert.equal(
+    gapCalls.length,
+    ESCALATION_RATE_LIMIT_PER_HOUR,
+    'recordEscalatedGapFn must not be called for a rate-limited confirmation — no additional knowledge_gaps write',
+  );
+});
+
 test("router (escalation offer): a caller with a standing 'mi' language preference gets ESCALATION_OFFER_SUFFIX_MI appended to MAX_TURNS_REPLY_MI, and a confirmed 'āe' gets the MI confirmation text", async () => {
-  const { router, notifyCalls } = makeRouterWithNotifySpy(
+  const { router, notifyCalls, gapCalls } = makeRouterWithNotifySpy(
     // Real `runAgentTurn` already substitutes MAX_TURNS_REPLY_MI into `text`
     // whenever `languagePreference` resolves to 'mi' (agent/core.ts's
     // FALLBACK_REPLY_MI lookup) — mirror that pairing here rather than the
@@ -451,6 +541,7 @@ test("router (escalation offer): a caller with a standing 'mi' language preferen
 
   await trigger(makeMessage({ text: 'āe', conversationId, userId: 'super-1' }));
   assert.equal(notifyCalls.length, 1);
+  assert.equal(gapCalls.length, 1);
   assert.equal(
     sent[1].text,
     '👍 Kua tohu mō tētahi kaiwhakahaere hapori — ka whai kōrero mai tētahi i muri tata nei.',

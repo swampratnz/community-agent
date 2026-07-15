@@ -591,6 +591,15 @@ ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
   ON knowledge_gaps (conversation_id, created_at DESC) WHERE resolved_at IS NULL;
 
+-- True for a row written by recordEscalatedKnowledgeGap — a confirmed,
+-- member-initiated escalation (issue #479) rather than a passive
+-- below-floor knowledge_search miss. Distinguishes "a member asked a human
+-- directly" from an ordinary gap for curation priority (issue #514). Every
+-- pre-existing row defaults to false (correct: none of them were escalated).
+-- forget_me/purge_user_data already delete knowledge_gaps rows by user_id
+-- regardless of this column, so no extra purge code is needed.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS escalated BOOLEAN NOT NULL DEFAULT false;
+
 -- ---------------------------------------------------------------------------
 -- Cost of the three standalone background `query()` calls (issue #401) that
 -- spend from the shared Max pool but write no `interactions` row, so
