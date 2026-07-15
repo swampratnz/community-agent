@@ -1369,6 +1369,37 @@ control downstream of it is reused completely unchanged:
   itself is additionally hard-restricted to `msg.platform === 'discord'`.
   WhatsApp/Baileys auto-answer carries separate ToS/ban risk and is
   deliberately out of scope for this feature — a different proposal.
+- **Thread follow-ups match the same widened gate, nothing more (issue
+  #519).** A message posted inside a thread the bot itself opened for an
+  auto-answer reports the thread's own id as `conversationId`, which is never
+  in `AUTO_ANSWER_CHANNEL_IDS` — without a follow-up-aware gate, the very next
+  message in the exact back-and-forth this feature exists for silently
+  reverted to mention-required. The router additionally matches when
+  `conversationId` is a live entry in `autoAnswerThreadParents` (populated
+  only at thread creation, keyed by the bot's own thread id — not
+  attacker-forgeable via message content) — this widens *which* conversation
+  ids can match the existing gate, never what a matched post is allowed to
+  do: tier resolution, tool surface, the per-user rate limit, the daily
+  budget, and `isBotAuthor` loop prevention all apply to a thread follow-up
+  exactly as to the origin post, unconditionally. Pinned by `SECURITY:`
+  router tests.
+  - **No second thread.** `startAutoAnswerThread` is only called for the
+    origin post in the parent channel; a follow-up already inside a known
+    thread replies in place. Pinned by a router test.
+  - **Rate cap still keyed on the parent channel.** A thread follow-up
+    reserves `AUTO_ANSWER_RATE_LIMIT_PER_HOUR` against the **parent** channel
+    id via the same `autoAnswerThreadParents` lookup, not the thread id — the
+    thread id has never had a slot reserved against it, so keying on it would
+    let a single busy thread bypass the per-channel cap entirely. Pinned by a
+    `SECURITY:` router test that exhausts the parent cap via top-level posts,
+    then asserts an in-thread follow-up is dropped in the same window.
+  - **TTL is creation-anchored, not refreshed.** The `at` timestamp is set
+    once, when the thread is created, and a follow-up never extends it —
+    matching the existing CONFIRM/CANCEL and escalation intercepts' use of
+    the same map. A follow-up more than `ESCALATION_WINDOW_MS` (10 min) after
+    thread creation, once swept, reverts to mention-required rather than
+    remaining auto-answerable indefinitely. Pinned by a router test that
+    advances past the TTL.
 
 ## Platform-specific notes
 
