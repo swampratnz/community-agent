@@ -117,6 +117,7 @@ import {
   type JobStatus,
 } from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
+import { buildAdminDigestForAdmin } from '../adminDigest.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
@@ -827,12 +828,12 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread that's gotten out of hand, review the moderation history log, pull one member's full warning history with reasons, or list everyone who's currently muted\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
-  "- Review knowledge candidates surfaced from community digests, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, and raw context digests\n" +
+  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -3966,6 +3967,33 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const adminDigestTool = tool(
+    'admin_digest',
+    'On-demand pull of your OWN admin-digest snapshot — the same recurring-question, pending-access-request, ' +
+      'open-report, pending-suggestion, stale/gap/candidate/low-rated-knowledge, roster, muted-member, ' +
+      'max-turns-failure, duplicate/conflict-knowledge, and onboarding-queue signals the weekly digest DM ' +
+      'would send you right now, without waiting for its cadence. Takes no arguments — always your own scoped ' +
+      "view, never another admin's. Read-only; does not affect when your next weekly digest DM arrives. Admin only.",
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'admin_digest');
+      // Read-only pull: take only the rendered message. Deliberately ignore
+      // `currentCounts` — snapshotting is exclusive to the scheduled
+      // `runAdminDigestOnce`, so an on-demand pull never advances the
+      // week-over-week trend baseline (issue #499 / #497).
+      const { message } = await buildAdminDigestForAdmin(caller.platform, caller.userId, adapter);
+      if (message == null) return text('Nothing to report right now.');
+      // Unlike the weekly DM push (plain text straight to a human, never
+      // re-parsed), this tool result re-enters the model's context — and the
+      // cluster section embeds raw member-submitted question text
+      // (recentQuestionClusters). Quarantine the whole message the same way
+      // question_digest quarantines the identical cluster data above (issue
+      // #499 review).
+      return text(untrusted('Admin digest', message));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const listKnowledgeGaps = tool(
     'list_knowledge_gaps',
     'Show searches (asked >= 2 times) in your conversations over recent days that found no confident answer — ' +
@@ -5247,6 +5275,7 @@ export function buildToolServer(
       acceptKnowledgeCandidateTool,
       declineKnowledgeCandidateTool,
       questionDigest,
+      adminDigestTool,
       listKnowledgeGaps,
       moderationHistory,
       listReportsTool,
