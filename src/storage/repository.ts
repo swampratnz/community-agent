@@ -4894,6 +4894,12 @@ function mapKnowledgeFeedbackSummary(r: {
  * ratings are never selected, since they aren't signal for what's wrong with
  * the entry. Drawn from the same scope-filtered rows as the counts above, so
  * a comment from a conversation outside `conversationIds` can never surface.
+ *
+ * `interactions.created_at >= knowledge.updated_at` (issue #540) excludes
+ * ratings on interactions that predate the entry's most recent
+ * `update_knowledge` edit, so fixing a flagged entry resets its counts here
+ * instead of the pre-edit unhelpful ratings counting against the new
+ * content forever.
  */
 export async function listKnowledgeFeedbackSummary(
   conversationIds: readonly string[] | null,
@@ -4901,7 +4907,10 @@ export async function listKnowledgeFeedbackSummary(
   limit = 20,
 ): Promise<KnowledgeFeedbackSummary[]> {
   const params: unknown[] = [];
-  const filters: string[] = [`(interactions.meta->>'knowledgeEntryId') IS NOT NULL`];
+  const filters: string[] = [
+    `(interactions.meta->>'knowledgeEntryId') IS NOT NULL`,
+    `interactions.created_at >= knowledge.updated_at`,
+  ];
   if (conversationIds) {
     params.push([...conversationIds]);
     filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);
@@ -4944,13 +4953,20 @@ export async function listKnowledgeFeedbackSummary(
  * caller-side render path must never see a number derived from the
  * aggregate, since `minUnhelpful` is enforced to be >= 2 specifically so no
  * single identifiable rater can be inferred from it (config.ts).
+ *
+ * `interactions.created_at >= knowledge.updated_at` (issue #540) excludes
+ * ratings from before the entry's most recent `update_knowledge` edit, so a
+ * fixed entry stops being reported low-rated once its pre-edit ratings are
+ * the only ones on record.
  */
 export async function isKnowledgeLowRated(entryId: number, minUnhelpful: number): Promise<boolean> {
   const { rows } = await pool.query(
     `SELECT count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $2 AS is_low_rated
        FROM answer_feedback
        JOIN interactions ON interactions.id = answer_feedback.interaction_id
-      WHERE (interactions.meta->>'knowledgeEntryId')::bigint = $1`,
+       JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint
+      WHERE (interactions.meta->>'knowledgeEntryId')::bigint = $1
+        AND interactions.created_at >= knowledge.updated_at`,
     [entryId, minUnhelpful],
   );
   return rows[0]?.is_low_rated === true;
@@ -4972,6 +4988,9 @@ export async function isKnowledgeLowRated(entryId: number, minUnhelpful: number)
  * Short-circuits to an empty set for an empty `entryIds` array without
  * issuing a query — mirrors `hasConflictAmongIds`'s own zero-query
  * short-circuit for a too-small input.
+ *
+ * `interactions.created_at >= knowledge.updated_at` (issue #540) — same
+ * post-edit reset as `isKnowledgeLowRated`.
  */
 export async function areKnowledgeEntriesLowRated(
   entryIds: readonly number[],
@@ -4984,6 +5003,7 @@ export async function areKnowledgeEntriesLowRated(
        JOIN interactions ON interactions.id = answer_feedback.interaction_id
        JOIN knowledge ON knowledge.id = (interactions.meta->>'knowledgeEntryId')::bigint
       WHERE knowledge.id = ANY($1)
+        AND interactions.created_at >= knowledge.updated_at
       GROUP BY knowledge.id
      HAVING count(*) FILTER (WHERE NOT answer_feedback.helpful) >= $2`,
     [entryIds, minUnhelpful],
@@ -5004,13 +5024,20 @@ export async function areKnowledgeEntriesLowRated(
  * interactions with no `knowledgeEntryId` never join to a `knowledge` row
  * and are therefore never counted, matching `listKnowledgeFeedbackSummary`'s
  * existing boundary.
+ *
+ * `interactions.created_at >= knowledge.updated_at` (issue #540) — same
+ * post-edit reset as `listKnowledgeFeedbackSummary`, so this count and that
+ * list agree after an admin fixes an entry.
  */
 export async function countLowRatedKnowledge(
   conversationIds: readonly string[] | null,
   minUnhelpful = 2,
 ): Promise<number> {
   const params: unknown[] = [];
-  const filters: string[] = [`(interactions.meta->>'knowledgeEntryId') IS NOT NULL`];
+  const filters: string[] = [
+    `(interactions.meta->>'knowledgeEntryId') IS NOT NULL`,
+    `interactions.created_at >= knowledge.updated_at`,
+  ];
   if (conversationIds) {
     params.push([...conversationIds]);
     filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);

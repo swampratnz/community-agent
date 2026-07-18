@@ -6954,6 +6954,52 @@ test(
   },
 );
 
+test(
+  "SECURITY: repository: listAnswerFeedback's raw per-rating output is unchanged by an intervening update_knowledge call on the rated entry — the aggregate-only #540 reset never reaches the raw audit log (issue #540)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-feedback-list-unchanged-by-edit`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} raw-audit entry content` });
+    const userId = `${RUN}-feedback-list-unchanged-user`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: `shortcut answer for ${userId}`,
+      meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+    });
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+    );
+
+    const beforeEdit = await listAnswerFeedback([conversationId]);
+    const beforeRow = beforeEdit.find((r) => r.id === feedbackId);
+    assert.ok(beforeRow, 'the raw rating is visible before the edit');
+
+    const updated = await updateKnowledge({ id: entryId, content: `${RUN} raw-audit entry content, fixed` });
+    assert.ok(updated, 'update applied');
+
+    const afterEdit = await listAnswerFeedback([conversationId]);
+    const afterRow = afterEdit.find((r) => r.id === feedbackId);
+    assert.ok(
+      afterRow,
+      'SECURITY: the raw audit row must still be present after an intervening update_knowledge call — only the aggregate views (listKnowledgeFeedbackSummary/isKnowledgeLowRated/areKnowledgeEntriesLowRated/countLowRatedKnowledge) apply the post-edit time filter, never the raw audit log',
+    );
+    assert.deepEqual(
+      afterRow,
+      beforeRow,
+      'the raw row is byte-identical before and after the edit — listAnswerFeedback is unaffected by knowledge.updated_at entirely',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
 // listKnowledgeFeedbackSummary (issue #287): the grouped complement to
 // listAnswerFeedback, aggregating answer_feedback per knowledgeEntryId.
 test(
@@ -7046,6 +7092,72 @@ test(
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[hotEntryId, mediumEntryId, warmEntryId]]);
+  },
+);
+
+// Issue #540: fixing a flagged entry (update_knowledge) must clear the
+// low-rated signal it earned under its old content, and a new run of
+// post-edit unhelpful ratings must be able to flag it again — a reset, not a
+// permanent suppression.
+test(
+  'repository: listKnowledgeFeedbackSummary drops an edited entry once its only unhelpful ratings predate the edit, and re-includes it once new unhelpful ratings arrive afterward (issue #540)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-knowledge-feedback-summary-reset`;
+    const { id: entryId } = await saveKnowledge({
+      content: `${RUN} reset entry content`,
+      title: `${RUN} reset entry`,
+    });
+
+    async function rateShortcut(userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-summary-reset-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    users.push(await rateShortcut('pre-1', false));
+    users.push(await rateShortcut('pre-2', false));
+
+    const beforeEdit = await listKnowledgeFeedbackSummary([conversationId]);
+    assert.ok(
+      beforeEdit.some((s) => s.knowledgeEntryId === entryId && s.unhelpfulCount === 2),
+      'the entry is flagged before any edit, with both pre-edit ratings counted',
+    );
+
+    const updated = await updateKnowledge({ id: entryId, content: `${RUN} reset entry content, fixed` });
+    assert.ok(updated, 'update applied');
+
+    const afterEdit = await listKnowledgeFeedbackSummary([conversationId]);
+    assert.ok(
+      !afterEdit.some((s) => s.knowledgeEntryId === entryId),
+      'the fixed entry with no post-edit ratings no longer appears in the summary at all',
+    );
+
+    users.push(await rateShortcut('post-1', false));
+    users.push(await rateShortcut('post-2', false));
+
+    const afterNewRatings = await listKnowledgeFeedbackSummary([conversationId]);
+    const reflagged = afterNewRatings.find((s) => s.knowledgeEntryId === entryId);
+    assert.ok(reflagged, 'the entry is flagged again once it accumulates new unhelpful ratings post-edit');
+    assert.equal(
+      reflagged?.unhelpfulCount,
+      2,
+      'only the 2 post-edit ratings are counted, not the 2 pre-edit ones — proving a reset, not a permanent suppression',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
   },
 );
 
@@ -7423,6 +7535,71 @@ test(
   },
 );
 
+test(
+  'SECURITY: repository: isKnowledgeLowRated resets after update_knowledge and re-flags once new unhelpful ratings arrive post-edit, still crossing the boundary as a boolean only (issue #540)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-low-rated-reset`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} low-rated reset entry content` });
+
+    async function rateShortcut(userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-low-rated-reset-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    users.push(await rateShortcut('pre-1', false));
+    users.push(await rateShortcut('pre-2', false));
+
+    const beforeEdit = await isKnowledgeLowRated(entryId, 2);
+    assert.equal(
+      typeof beforeEdit,
+      'boolean',
+      'SECURITY: must cross the boundary as a boolean, never a number',
+    );
+    assert.equal(beforeEdit, true, 'the entry is low-rated before any edit');
+
+    const updated = await updateKnowledge({
+      id: entryId,
+      content: `${RUN} low-rated reset entry content, fixed`,
+    });
+    assert.ok(updated, 'update applied');
+
+    const afterEdit = await isKnowledgeLowRated(entryId, 2);
+    assert.equal(typeof afterEdit, 'boolean');
+    assert.equal(
+      afterEdit,
+      false,
+      'fixing the entry resets the low-rated flag when no ratings have arrived since',
+    );
+
+    users.push(await rateShortcut('post-1', false));
+    users.push(await rateShortcut('post-2', false));
+
+    const afterNewRatings = await isKnowledgeLowRated(entryId, 2);
+    assert.equal(typeof afterNewRatings, 'boolean');
+    assert.equal(
+      afterNewRatings,
+      true,
+      'the entry is flagged again once it accumulates new unhelpful ratings post-edit — proving a reset, not a permanent suppression',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
 // areKnowledgeEntriesLowRated (issue #432): the batched sibling of
 // isKnowledgeLowRated above, feeding the display-side caveat on the normal
 // knowledge_search path (as opposed to isKnowledgeLowRated's shortcut-only
@@ -7488,6 +7665,80 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
       [lowRatedEntryId, belowThresholdEntryId, unratedEntryId],
     ]);
+  },
+);
+
+test(
+  'SECURITY: repository: areKnowledgeEntriesLowRated drops an edited entry from the returned set once its only unhelpful ratings predate the edit, and re-includes it once new ratings arrive post-edit, still returning only an id Set (issue #540)',
+  { skip },
+  async () => {
+    const convoA = `${RUN}-c-batch-low-rated-reset-a`;
+    const convoB = `${RUN}-c-batch-low-rated-reset-b`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} batch reset entry content` });
+    const { id: siblingEntryId } = await saveKnowledge({
+      content: `${RUN} batch reset sibling entry content`,
+    });
+
+    async function rate(conversationId: string, targetEntryId: number, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-batch-low-rated-reset-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `knowledge_search answer for ${userId}`,
+        meta: { knowledgeEntryId: targetEntryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    users.push(await rate(convoA, entryId, 'pre-1', false));
+    users.push(await rate(convoB, entryId, 'pre-2', false));
+    // siblingEntryId is never edited and only ever gets 1 unhelpful rating —
+    // stays below threshold throughout, proving the returned set doesn't
+    // leak an unrelated id.
+    users.push(await rate(convoA, siblingEntryId, 'sib-1', false));
+
+    const beforeEdit = await areKnowledgeEntriesLowRated([entryId, siblingEntryId], 2);
+    assert.ok(
+      beforeEdit instanceof Set,
+      'SECURITY: must cross the boundary as a Set of ids, never a count or map',
+    );
+    assert.deepEqual(
+      [...beforeEdit].sort((a, b) => a - b),
+      [entryId],
+      'entryId clears the threshold before any edit; siblingEntryId (1 unhelpful) does not',
+    );
+
+    const updated = await updateKnowledge({
+      id: entryId,
+      content: `${RUN} batch reset entry content, fixed`,
+    });
+    assert.ok(updated, 'update applied');
+
+    const afterEdit = await areKnowledgeEntriesLowRated([entryId, siblingEntryId], 2);
+    assert.deepEqual(
+      [...afterEdit],
+      [],
+      'the fixed entry with no post-edit ratings drops out of the low-rated set entirely',
+    );
+
+    users.push(await rate(convoA, entryId, 'post-1', false));
+    users.push(await rate(convoB, entryId, 'post-2', false));
+
+    const afterNewRatings = await areKnowledgeEntriesLowRated([entryId, siblingEntryId], 2);
+    assert.deepEqual(
+      [...afterNewRatings].sort((a, b) => a - b),
+      [entryId],
+      'the entry re-enters the low-rated set once new unhelpful ratings arrive post-edit — proving a reset, not a permanent suppression',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[convoA, convoB]]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[entryId, siblingEntryId]]);
   },
 );
 
@@ -7566,6 +7817,65 @@ test(
 );
 
 test(
+  'repository: countLowRatedKnowledge excludes an edited entry with only pre-edit unhelpful ratings, and re-includes it once new post-edit ratings clear the threshold again (issue #540)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-low-rated-count-reset`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} count reset entry content` });
+
+    async function rateShortcut(userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-lowratedcount-reset-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      return userId;
+    }
+
+    const users: string[] = [];
+    users.push(await rateShortcut('pre-1', false));
+    users.push(await rateShortcut('pre-2', false));
+
+    assert.equal(
+      await countLowRatedKnowledge([conversationId]),
+      1,
+      'the entry counts as low-rated before any edit',
+    );
+
+    const updated = await updateKnowledge({
+      id: entryId,
+      content: `${RUN} count reset entry content, fixed`,
+    });
+    assert.ok(updated, 'update applied');
+
+    assert.equal(
+      await countLowRatedKnowledge([conversationId]),
+      0,
+      'the fixed entry with no post-edit ratings no longer counts as low-rated',
+    );
+
+    users.push(await rateShortcut('post-1', false));
+    users.push(await rateShortcut('post-2', false));
+
+    assert.equal(
+      await countLowRatedKnowledge([conversationId]),
+      1,
+      'the entry counts again once it accumulates new unhelpful ratings post-edit — proving a reset, not a permanent suppression',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
   'SECURITY: repository: countLowRatedKnowledge scopes by conversation — a rating recorded outside the calling admin scope is excluded from the count entirely, while a null (super admin) scope sees it',
   { skip },
   async () => {
@@ -7630,6 +7940,86 @@ test(
       [inScopeConvo, outOfScopeConvo],
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[inScopeEntryId, outOfScopeEntryId]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listKnowledgeFeedbackSummary's and countLowRatedKnowledge's conversation-scope filter still excludes out-of-scope ratings once the post-edit #540 time filter is composed in (issue #540)",
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-scope-edit-in`;
+    const outOfScopeConvo = `${RUN}-c-scope-edit-out`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} scope-edit entry content` });
+
+    async function rateShortcut(conversationId: string, userSuffix: string) {
+      const userId = `${RUN}-scope-edit-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `shortcut answer for ${userId}`,
+        meta: { replyToUserId: userId, knowledgeShortcut: true, knowledgeEntryId: entryId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      );
+      return userId;
+    }
+
+    // Pre-edit ratings in both conversations — excluded by the time filter
+    // regardless of scope, but scope must not leak in the process.
+    const preEditUsers = [
+      await rateShortcut(inScopeConvo, 'pre-in'),
+      await rateShortcut(outOfScopeConvo, 'pre-out'),
+    ];
+
+    const updated = await updateKnowledge({ id: entryId, content: `${RUN} scope-edit entry content, fixed` });
+    assert.ok(updated, 'update applied');
+
+    // Post-edit ratings: 2 in-scope, 2 out-of-scope.
+    const postEditUsers = [
+      await rateShortcut(inScopeConvo, 'post-in-1'),
+      await rateShortcut(inScopeConvo, 'post-in-2'),
+      await rateShortcut(outOfScopeConvo, 'post-out-1'),
+      await rateShortcut(outOfScopeConvo, 'post-out-2'),
+    ];
+
+    const scopedSummary = await listKnowledgeFeedbackSummary([inScopeConvo], 1);
+    const scopedRow = scopedSummary.find((s) => s.knowledgeEntryId === entryId);
+    assert.equal(
+      scopedRow?.unhelpfulCount,
+      2,
+      'SECURITY: only the 2 in-scope, post-edit ratings are counted — never the pre-edit or out-of-scope ones',
+    );
+
+    assert.equal(
+      await countLowRatedKnowledge([inScopeConvo], 1),
+      1,
+      'SECURITY: the in-scope count agrees with the summary above',
+    );
+    assert.equal(
+      await countLowRatedKnowledge([inScopeConvo], 3),
+      0,
+      'a threshold above the 2 in-scope post-edit ratings excludes the entry, proving pre-edit/out-of-scope ratings are not silently folded in',
+    );
+
+    const unscopedSummary = await listKnowledgeFeedbackSummary(null, 1);
+    const unscopedRow = unscopedSummary.find((s) => s.knowledgeEntryId === entryId);
+    assert.equal(
+      unscopedRow?.unhelpfulCount,
+      4,
+      'null scope (super admin) sees all 4 post-edit ratings, in-scope and out-of-scope alike, still excluding the 2 pre-edit ones',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [...preEditUsers, ...postEditUsers],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
   },
 );
 
