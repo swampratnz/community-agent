@@ -2353,6 +2353,7 @@ export const MODERATION_ACTION_KINDS = [
   'timeout_user',
   'kick_user',
   'ban_user',
+  'unban_user',
   'delete_message',
   'clear_warnings',
   'announce',
