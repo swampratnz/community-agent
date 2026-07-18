@@ -1549,6 +1549,20 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   turn's SDK `result` message — see "Known cost/latency characteristic"
   above. Appended only when the window has recorded any cache activity;
   byte-identical to today's output on a fresh deployment or before #522.
+- `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
+  spend)` line (issue #552) — how much of `usage_stats`' total spend the
+  opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
+  #523/#542) is responsible for. `respond()` stamps `meta.autoAnswer: true`
+  on an outbound reply exactly when `replyConversationId` was populated by
+  the auto-answer path (origin thread creation or an in-thread follow-up) —
+  internal router state only, never derived from message content, so it
+  cannot be spoofed by a crafted member message. This counts **thread-
+  anchored auto-answer replies** specifically: if origin-thread creation
+  transiently fails, the router falls back to answering directly in the
+  channel and that reply is *not* tagged, so the figure is a close-but-not-
+  exact floor on true auto-answer spend, never a guaranteed total. Appended
+  only when the window has at least one tagged reply; byte-identical to
+  today's output on a deployment with auto-answer off or unused.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.

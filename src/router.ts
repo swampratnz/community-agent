@@ -1646,6 +1646,13 @@ export class Router {
           ...(reply.cacheCreationTokens != null && reply.cacheCreationTokens > 0
             ? { cacheCreationTokens: reply.cacheCreationTokens }
             : {}),
+          // Auto-answer cost visibility (issue #552): `replyConversationId` is
+          // populated ONLY inside the `isAutoAnswerCandidate` branch above
+          // (origin thread creation or an in-thread follow-up), so this is
+          // unspoofable internal router state, never message content/model
+          // output. Absent (never `false`) on a normal @mention/DM reply,
+          // matching the conditional-spread convention above.
+          ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
         },
       }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
     } finally {
