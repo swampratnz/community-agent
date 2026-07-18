@@ -1552,9 +1552,12 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
 - `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
   spend)` line (issue #552) — how much of `usage_stats`' total spend the
   opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
-  #523/#542) is responsible for. `respond()` stamps `meta.autoAnswer: true`
-  on an outbound reply exactly when `replyConversationId` was populated by
-  the auto-answer path (origin thread creation or an in-thread follow-up) —
+  #523/#542) is responsible for. `respond()` — and, identically, each of the
+  three shortcut sends that can also resolve an auto-answer turn
+  (`sendKnowledgeShortcut`, `sendRepeatShortcut`,
+  `sendRepeatMaxTurnsShortcut`) — stamps `meta.autoAnswer: true` on an
+  outbound reply exactly when `replyConversationId` was populated by the
+  auto-answer path (origin thread creation or an in-thread follow-up) —
   internal router state only, never derived from message content, so it
   cannot be spoofed by a crafted member message. This counts **thread-
   anchored auto-answer replies** specifically: if origin-thread creation

@@ -1351,7 +1351,15 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, knowledgeShortcut: true, knowledgeEntryId: hit.id },
+      meta: {
+        replyToUserId: msg.userId,
+        knowledgeShortcut: true,
+        knowledgeEntryId: hit.id,
+        // Auto-answer cost visibility (issue #552) — same unspoofable
+        // `replyConversationId !== undefined` derivation as `respond()`;
+        // see that call site for the full rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
     }).catch((err) => logger.error({ err }, 'Failed to record knowledge-shortcut outbound interaction'));
   }
 
@@ -1416,7 +1424,13 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, repeatShortcut: true },
+      meta: {
+        replyToUserId: msg.userId,
+        repeatShortcut: true,
+        // Auto-answer cost visibility (issue #552) — see
+        // `sendKnowledgeShortcut`'s identical derivation for rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
     }).catch((err) => logger.error({ err }, 'Failed to record repeat-shortcut outbound interaction'));
   }
 
@@ -1451,7 +1465,13 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, repeatMaxTurnsShortcut: true },
+      meta: {
+        replyToUserId: msg.userId,
+        repeatMaxTurnsShortcut: true,
+        // Auto-answer cost visibility (issue #552) — see
+        // `sendKnowledgeShortcut`'s identical derivation for rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
     }).catch((err) =>
       logger.error({ err }, 'Failed to record repeat-max-turns-shortcut outbound interaction'),
     );
