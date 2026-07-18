@@ -980,10 +980,13 @@ export class Router {
     // the thread's own id, which is never in `autoAnswerChannelIds` (that
     // list only ever holds parent channel ids), so without this lookup the
     // very next message in the same back-and-forth would silently revert to
-    // mention-required. Same map, same creation-anchored (non-refreshed)
-    // `ESCALATION_WINDOW_MS` TTL the CONFIRM/escalation intercepts above
-    // already trust — presence here means "live", sweep() prunes expired
-    // entries on its own tick.
+    // mention-required. Same map, same `ESCALATION_WINDOW_MS` TTL the
+    // CONFIRM/escalation intercepts above already trust — presence here
+    // means "live", sweep() prunes expired entries on its own tick. Unlike
+    // those intercepts (which only ever check presence/`parent`, never
+    // `at`), the follow-up branch below (issue #542) refreshes `at` on every
+    // follow-up so the window slides forward with activity instead of only
+    // ever counting down from thread creation.
     const autoAnswerThreadParent = this.autoAnswerThreadParents.get(msg.conversationId)?.parent;
     const isAutoAnswerCandidate =
       !msg.addressedToBot &&
@@ -1125,6 +1128,16 @@ export class Router {
         // is a follow-up, not an origin post, so reply in place rather than
         // opening a second thread anchored to the follow-up message.
         replyConversationId = msg.conversationId;
+        // Slide the TTL forward (issue #542) — this branch is only reached
+        // when the map lookup above already found a LIVE entry, so this can
+        // only refresh an existing entry, never seed or revive an expired
+        // one. `parent` is carried over unchanged; only `at` moves, keeping
+        // a continuously-active thread answerable past its creation+10min
+        // cutoff while a quiet thread still expires exactly as before.
+        this.autoAnswerThreadParents.set(replyConversationId, {
+          parent: autoAnswerThreadParent,
+          at: Date.now(),
+        });
       } else {
         replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
           logger.warn(

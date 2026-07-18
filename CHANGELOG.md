@@ -28,6 +28,22 @@ for anything after ~noon NZST/NZDT). Get today's date with
   flag that isn't consciously surfaced fails CI loudly. See
   docs/ARCHITECTURE.md and docs/SECURITY.md.
 
+## 2026-07-18
+
+### Added
+- **`unban_user` moderation action (Discord only)** (#543): closes the one gap
+  #445 deliberately left open — `ban_user` was the sole punitive `moderate`
+  action with no in-bot reversal path, forcing an admin who needed to undo a
+  ban (mistake, changed situation, or an upheld appeal) out to Discord's own
+  client UI, bypassing the audit trail, RBAC gate, CONFIRM flow, and
+  conversation scoping every other action gets. `unban_user` is a sixth
+  `moderate` action reusing that machinery unchanged: admin-tier only,
+  CONFIRM-gated, refused for a target the bot has never seen, and audited
+  identically to `ban_user`. Discord-only by design; requires the bot's
+  Discord role to hold **Ban Members** (the same permission `ban_user` already
+  needs), or the action fails cleanly as `Failed: …` rather than a
+  false-success audit row.
+
 ## 2026-07-15
 
 ### Added
