@@ -434,10 +434,18 @@ fixed `FAILED_PREFIX_MI` on a standing `'mi'` preference, leaving the dynamic
 `result`/error text after it byte-identical to the English case; a plain
 string-prefix match at the single existing send site, so it covers every
 `requireConfirm` call site sharing that template without touching
-`agent/tools.ts`. What stays out of scope and English-only: any bespoke,
-non-`Failed:`-templated outcome/description string a `requireConfirm` tool
-authors directly, and the symmetric `'Done: '` success shell (deferred — see
-below). The five opt-in,
+`agent/tools.ts`. An eleventh addition (issue #538) closes the symmetric
+follow-up #490 named and deferred: the generic `'Done: '` shell that fronts a
+successful `requireConfirm` outcome now gets the identical treatment via a
+fixed `DONE_PREFIX_MI`, added as a parallel `else if` arm at the same send
+site off the same already-resolved language read — no additional
+`getLanguagePreference` call, and the dynamic `result` text stays
+byte-identical to the English case, including the trailing-period variant
+(`` `Done: ${result}.` ``). What stays out of scope and English-only: any
+bespoke, non-`Failed:`/non-`Done:`-templated outcome/description string a
+`requireConfirm` tool authors directly — the same boundary #405/#490 already
+drew, now closed on both the failure and success halves of the shared shell.
+The five opt-in,
 off-by-default shortcut-reply strings `respond()` uses to skip a full agent
 turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
 `GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
