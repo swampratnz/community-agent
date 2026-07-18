@@ -998,6 +998,19 @@ from a hit's content body rather than the tool-computed citation clause.
    floor and threads the resulting id set into `formatKnowledgeSearchResults`,
    which appends the caveat to each low-rated hit's own line — never as a
    single result-wide line like the conflict caveat (#389) above it.
+7. Issue #540: fixing a flagged entry via `update_knowledge` now resets its
+   low-rated window. All four decision-facing aggregates —
+   `isKnowledgeLowRated`, `areKnowledgeEntriesLowRated`,
+   `listKnowledgeFeedbackSummary`/`list_low_rated_knowledge`, and
+   `countLowRatedKnowledge` (the weekly digest count, #324) — add
+   `interactions.created_at >= knowledge.updated_at` to their existing join,
+   so a rating on an interaction served before the entry's most recent edit
+   no longer counts toward it. `list_answer_feedback`'s raw per-rating audit
+   log is deliberately untouched. Since `updateKnowledge` bumps `updated_at`
+   on every call regardless of whether the visible content actually changed,
+   this is a coarse "any edit resets the clock" signal, not a content-diff;
+   it fails toward under-counting after a metadata-only edit, never toward
+   leaving a fixed entry flagged.
 
 ## Auto-moderation (Discord)
 
