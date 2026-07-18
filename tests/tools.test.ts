@@ -7139,6 +7139,162 @@ test('formatKnowledgeSearchResults never appends the low-rated caveat when there
   );
 });
 
+// formatKnowledgeSearchResults' near-tie comparator also considering
+// lowRatedIds (issue #562) — the low-rated check is a sibling of the
+// existing staleness check, checked FIRST, inside the same
+// KNOWLEDGE_TIE_MARGIN branch #308 established. lowRatedFreshHit/
+// lowRatedStaleHit below reuse freshHit/staleHit's updatedAt values so the
+// staleness signal can be held constant while only the rating signal varies.
+const lowRatedTieHit = (similarity: number, title: string, id: number) => ({
+  id,
+  title,
+  content: `Content for ${title}.`,
+  similarity,
+  updatedAt: new Date(),
+  lastRetrievedAt: null,
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): the non-low-rated hit sorts before an equally-relevant low-rated hit even when the low-rated hit has marginally higher raw similarity', () => {
+  const lowRated = lowRatedTieHit(0.8, 'Low-rated entry', 1);
+  const healthy = lowRatedTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Healthy entry', 2);
+  const text = formatKnowledgeSearchResults([lowRated, healthy], undefined, undefined, false, new Set([1]));
+  assert.ok(
+    text.indexOf('Healthy entry') < text.indexOf('Low-rated entry'),
+    'the non-low-rated hit must sort first despite the low-rated hit having the marginally higher raw similarity',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): order is unchanged when both near-tied hits are low-rated (no rating signal to act on)', () => {
+  const higher = lowRatedTieHit(0.8, 'Higher-scored low-rated entry', 1);
+  const lower = lowRatedTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored low-rated entry', 2);
+  const text = formatKnowledgeSearchResults([higher, lower], undefined, undefined, false, new Set([1, 2]));
+  assert.ok(
+    text.indexOf('Higher-scored low-rated entry') < text.indexOf('Lower-scored low-rated entry'),
+    'both-low-rated near-ties fall through to the staleness/index tie-break, keeping similarity-descending order',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): order is unchanged when neither near-tied hit is in lowRatedIds', () => {
+  const higher = lowRatedTieHit(0.8, 'Higher-scored healthy entry', 1);
+  const lower = lowRatedTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored healthy entry', 2);
+  const text = formatKnowledgeSearchResults([higher, lower], undefined, undefined, false, new Set([999]));
+  assert.ok(
+    text.indexOf('Higher-scored healthy entry') < text.indexOf('Lower-scored healthy entry'),
+    'neither-low-rated near-ties fall through to the staleness/index tie-break, unchanged',
+  );
+});
+
+test('formatKnowledgeSearchResults (issue #562): a real relevance gap (more than KNOWLEDGE_TIE_MARGIN) always wins, even when the higher-scored hit is the low-rated one', () => {
+  const lowRated = lowRatedTieHit(0.9, 'Low-rated but clearly more relevant', 1);
+  const healthy = lowRatedTieHit(0.9 - (KNOWLEDGE_TIE_MARGIN + 0.01), 'Healthy but clearly less relevant', 2);
+  const text = formatKnowledgeSearchResults([lowRated, healthy], undefined, undefined, false, new Set([1]));
+  assert.ok(
+    text.indexOf('Low-rated but clearly more relevant') < text.indexOf('Healthy but clearly less relevant'),
+    'a genuine relevance gap must never be overridden by the low-rated tie-break',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): the low-rated check runs before the staleness check — a fresh low-rated hit still sorts after a stale non-low-rated hit', () => {
+  const freshLowRated = { ...lowRatedTieHit(0.8, 'Fresh low-rated entry', 1) };
+  const staleHealthy = {
+    id: 2,
+    title: 'Stale healthy entry',
+    content: 'Content for Stale healthy entry.',
+    similarity: 0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    updatedAt: ancientDate,
+    lastRetrievedAt: null,
+  };
+  const text = formatKnowledgeSearchResults(
+    [freshLowRated, staleHealthy],
+    30,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  assert.ok(
+    text.indexOf('Stale healthy entry') < text.indexOf('Fresh low-rated entry'),
+    'the low-rated signal must win over staleness — a fresh but low-rated hit sorts after a stale but healthy one',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults near-tie ordering is byte-identical to pre-#562 behaviour when lowRatedIds is empty (default), even for a stale/fresh pair the staleness tie-break already reorders', () => {
+  const stale = staleHit(0.8, 'Stale entry');
+  const fresh = freshHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh entry');
+  const withDefaultLowRatedIds = formatKnowledgeSearchResults([stale, fresh], 30);
+  const withExplicitEmptySet = formatKnowledgeSearchResults([stale, fresh], 30, undefined, false, new Set());
+  assert.equal(
+    withDefaultLowRatedIds,
+    withExplicitEmptySet,
+    'an empty lowRatedIds must be a strict no-op — identical to omitting the argument entirely',
+  );
+  assert.ok(
+    withDefaultLowRatedIds.indexOf('Fresh entry') < withDefaultLowRatedIds.indexOf('Stale entry'),
+    'with no rating signal, the pre-#562 staleness tie-break still decides the order unchanged',
+  );
+});
+
+test("SECURITY: formatKnowledgeSearchResults keeps a low-rated hit's own content/caveat correctly paired after the near-tie rating tie-break moves it — checked sorted both first and second (issue #562)", () => {
+  const lowRated = {
+    id: 1,
+    title: 'Low-rated topic',
+    content: 'Unique low-rated content marker.',
+    similarity: 0.8,
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  const healthy = {
+    id: 2,
+    title: 'Healthy topic',
+    content: 'Unique healthy content marker.',
+    similarity: 0.79, // within KNOWLEDGE_TIE_MARGIN (0.03) of 0.8
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+
+  // low-rated has marginally higher raw similarity -> tie-break moves it to second.
+  const sortedSecond = formatKnowledgeSearchResults(
+    [lowRated, healthy],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  const lowRatedLine = sortedSecond.split('\n').find((l) => l.includes('Low-rated topic'));
+  const healthyLine = sortedSecond.split('\n').find((l) => l.includes('Healthy topic'));
+  assert.ok(
+    sortedSecond.indexOf('Healthy topic') < sortedSecond.indexOf('Low-rated topic'),
+    'low-rated entry moves to second',
+  );
+  assert.match(lowRatedLine ?? '', /\(80% match\).*Unique low-rated content marker\./);
+  assert.match(
+    lowRatedLine ?? '',
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
+  assert.match(healthyLine ?? '', /\(79% match\).*Unique healthy content marker\./);
+  assert.doesNotMatch(
+    healthyLine ?? '',
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "the healthy sibling must never inherit the low-rated hit's caveat",
+  );
+
+  // Give the low-rated hit a similarity outside the margin so the real
+  // relevance gap wins and it stays first — same pair, opposite position.
+  const lowRatedAheadClearly = { ...lowRated, similarity: 0.95 };
+  const sortedFirst = formatKnowledgeSearchResults(
+    [lowRatedAheadClearly, healthy],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  const lowRatedLineFirst = sortedFirst.split('\n').find((l) => l.includes('Low-rated topic'));
+  assert.ok(
+    sortedFirst.indexOf('Low-rated topic') < sortedFirst.indexOf('Healthy topic'),
+    'low-rated entry stays first when its relevance gap is real',
+  );
+  assert.match(lowRatedLineFirst ?? '', /\(95% match\).*Unique low-rated content marker\./);
+});
+
 test('formatKnowledgeSearchResults (issue #465): the knowledge_search tool reply surfaces the dead-link caveat for a hit whose source_unreachable is true', () => {
   const checkedAt = new Date(Date.now() - 2 * 86_400_000);
   const a = {
