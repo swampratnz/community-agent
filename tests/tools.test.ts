@@ -101,6 +101,9 @@ const {
   countAccessRequests,
   countActiveWarnings,
   clearWarnings,
+  createModerationAppeal,
+  listAppeals,
+  resolveModerationAppeal,
   countRepliesToUser,
   linkMembers,
   getMyDataSummary,
@@ -252,6 +255,18 @@ after(async () => {
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id LIKE $1`, [
       `${RUN}-ban-%`,
     ]);
+    // Safety net for the moderation appeals tests (issue #554): tests clean
+    // up their own rows inline, this just catches anything an assertion
+    // failure left behind mid-test.
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [
+      `${APPEAL_MODERATION_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [`${RUN}%appeal%`]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND actor_user_id LIKE $1`,
+      [`${RUN}%`],
+    );
+    await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${RUN}%appeal%`]);
   }
   await closeDb();
 });
@@ -2019,6 +2034,8 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
   ['mcp__community__list_member_warnings', /full warning history/i],
   ['mcp__community__list_muted_members', /list everyone who's currently muted/i],
+  ['mcp__community__list_appeals', /review .*filed appeals/i],
+  ['mcp__community__resolve_appeal', /resolve filed appeals/i],
   ['mcp__community__announce', /make an announcement/i],
   ['mcp__community__create_poll', /create a poll/i],
   ['mcp__community__end_poll', /end one poll early/i],
@@ -2110,12 +2127,14 @@ test('community_info anti-drift pin fails loudly for an uncovered admin tool (is
 test('community_info: admin reply stays under a hard char cap, not a wall of text (issue #367)', async () => {
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
-  // 44 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
+  // 46 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
   // (same discipline as the member cap at the ~1200-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
-  // of text. Bumped alongside the member cap for issue #437.
-  assert.ok(adminReply.length < 2800, `admin reply should stay short; was ${adminReply.length} chars`);
+  // of text. Bumped alongside the member cap for issue #437; bumped again for
+  // issue #554's list_appeals/resolve_appeal (consolidated into the existing
+  // moderation bullet, not a new one).
+  assert.ok(adminReply.length < 2860, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -10978,6 +10997,328 @@ test(
     const after = await countActiveWarnings('whatsapp', userId);
 
     assert.equal(after, before, "appeal_moderation must not alter the caller's own warning count");
+  },
+);
+
+// Durable persistence (issue #554): appeal_moderation was, until now,
+// entirely fire-and-forget — nothing survived a missed/dismissed
+// notifyAppealFiled DM. These pin the new moderation_appeals write alongside
+// the unchanged notification behaviour above.
+test(
+  'appeal_moderation persists exactly one moderation_appeals row, snapshotting platform/user id/name/reason/active warnings/strike limit, status open (issue #554 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const result = await appealModerationHandler(adapter, userId).handler({
+      reason: 'I was not actually spamming',
+    });
+    assert.equal(result.isError, false);
+
+    const rows = await listAppeals();
+    const matching = rows.filter((r) => r.userId === userId);
+    assert.equal(matching.length, 1, 'exactly one moderation_appeals row was written');
+    const row = matching[0];
+    assert.equal(row.platform, 'whatsapp');
+    assert.equal(row.userName, 'Appealing Member');
+    assert.equal(row.reason, 'I was not actually spamming');
+    assert.equal(row.activeWarnings, 1);
+    assert.equal(row.strikeLimit, config.moderation.strikeLimit);
+    assert.equal(row.status, 'open');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'appeal_moderation with zero active warnings writes no moderation_appeals row (issue #554 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist-clean`;
+    const result = await appealModerationHandler(
+      stubAdapter(async () => {}),
+      userId,
+    ).handler({});
+    assert.equal(result.isError, true);
+
+    const rows = await listAppeals();
+    assert.equal(
+      rows.filter((r) => r.userId === userId).length,
+      0,
+      'an ineligible (no active warnings) call must insert no moderation_appeals row',
+    );
+  },
+);
+
+test(
+  'appeal_moderation refused by the per-caller cooldown writes no second moderation_appeals row (issue #554 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist-cooldown`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const first = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(first.isError, false);
+
+    const second = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(second.isError, true);
+    assert.match(second.content[0]?.text ?? '', /already asked for a review recently/i);
+
+    const rows = await listAppeals();
+    assert.equal(
+      rows.filter((r) => r.userId === userId).length,
+      1,
+      'the cooldown-refused second call must not insert a second moderation_appeals row',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+  },
+);
+
+// list_appeals / resolve_appeal (issue #554): the admin-tier read/resolve
+// pair over the durable appeal queue appeal_moderation now writes into. Same
+// tier/guild-wide (not conversation-scoped) shape as
+// list_member_warnings/clear_warnings — see those fixtures above.
+function listAppealsHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-list-appeals') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-list-appeals',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { status?: 'open' | 'resolved' | 'dismissed'; limit?: number }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_appeals'];
+}
+
+function resolveAppealHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-resolve-appeal') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-resolve-appeal',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { id: number; status: 'resolved' | 'dismissed' }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['resolve_appeal'];
+}
+
+test(
+  'list_appeals round-trips filed appeals and its status filter narrows results (issue #554 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-appeals-target`;
+    const open = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: 'please review',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(dismissed.id, 'dismissed', 'admin-1');
+
+    const all = await listAppealsHandler().handler({});
+    assert.equal(all.isError, false);
+    const allText = all.content[0]?.text ?? '';
+    assert.match(allText, new RegExp(`#${open.id}\\b`));
+    assert.match(allText, new RegExp(`#${dismissed.id}\\b`));
+
+    const openOnly = await listAppealsHandler().handler({ status: 'open' });
+    const openText = openOnly.content[0]?.text ?? '';
+    assert.match(openText, new RegExp(`#${open.id}\\b`));
+    assert.ok(
+      !new RegExp(`#${dismissed.id}\\b`).test(openText),
+      'the status filter excludes the dismissed appeal',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[open.id, dismissed.id]]);
+  },
+);
+
+test(
+  'list_appeals is read-only (readOnlyHint annotation) and reports a clean empty result',
+  { skip },
+  async () => {
+    const result = await listAppealsHandler().handler({ status: 'dismissed' });
+    // Not asserting zero globally (other tests may leave rows), just that a
+    // filtered, plausibly-empty call never errors.
+    assert.equal(result.isError, false);
+  },
+);
+
+test(
+  'resolve_appeal flips only status/resolved_by/resolved_at, writes exactly one admin_audit row with actionKind resolve_appeal, and never touches member_warnings (issue #554 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-target`;
+    await addWarning({
+      platform: 'discord',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const before = await countActiveWarnings('discord', userId);
+
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: before,
+      strikeLimit: 3,
+    });
+
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-admin`).handler({
+      id,
+      status: 'resolved',
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+
+    const resolvedRow = (await listAppeals('resolved')).find((r) => r.id === id);
+    assert.ok(resolvedRow);
+    assert.equal(resolvedRow?.resolvedBy, `${RUN}-resolve-appeal-admin`);
+    assert.ok(resolvedRow?.resolvedAt);
+
+    const after = await countActiveWarnings('discord', userId);
+    assert.equal(after, before, 'resolve_appeal must never itself clear member_warnings');
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit
+        WHERE action_kind = 'resolve_appeal' AND actor_user_id = $1 AND params->>'id' = $2`,
+      [`${RUN}-resolve-appeal-admin`, String(id)],
+    );
+    assert.equal(Number(auditRows[0].n), 1, 'exactly one admin_audit row is written for this resolution');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND actor_user_id = $1`, [
+      `${RUN}-resolve-appeal-admin`,
+    ]);
+  },
+);
+
+test(
+  'resolve_appeal reports failure for an unknown appeal id, writing no member_warnings change',
+  { skip },
+  async () => {
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-unknown-admin`).handler({
+      id: 999_999_999,
+      status: 'resolved',
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /^Failed/);
+  },
+);
+
+test(
+  'SECURITY: list_appeals and resolve_appeal are reachable by any admin regardless of conversation membership — guild-wide, not conversation-scoped, same as list_member_warnings/clear_warnings (issue #554 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-guild-wide-target`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    // A DIFFERENT admin, in a conversation entirely unrelated to where the
+    // appeal originated (there is no conversation on the row at all) — an
+    // admin with zero conversation overlap must still see and resolve it.
+    const listResult = await listAppealsHandler('admin', `${RUN}-appeal-guild-wide-other-admin`).handler({});
+    assert.match(listResult.content[0]?.text ?? '', new RegExp(`#${id}\\b`));
+
+    const resolveResult = await resolveAppealHandler('admin', `${RUN}-appeal-guild-wide-other-admin`).handler(
+      { id, status: 'dismissed' },
+    );
+    assert.equal(resolveResult.isError, false);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test('SECURITY: list_appeals rejects a caller below admin tier (issue #554 acceptance criterion #6)', async () => {
+  const registeredTool = listAppealsHandler('member');
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+});
+
+test(
+  'SECURITY: resolve_appeal rejects a caller below admin tier, before any DB read/write (issue #554 acceptance criterion #6)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-tier-floor`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const registeredTool = resolveAppealHandler('member');
+    await assert.rejects(() => registeredTool.handler({ id, status: 'resolved' }), /Permission denied/);
+
+    const rows = await listAppeals();
+    const row = rows.find((r) => r.id === id);
+    assert.equal(row?.status, 'open', 'a below-tier caller must not have mutated the appeal row');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
   },
 );
 

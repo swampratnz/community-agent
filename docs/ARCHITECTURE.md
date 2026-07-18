@@ -339,6 +339,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `moderation_history` (warn/timeout/kick/delete/announce log, filterable by member/action) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `list_member_warnings` (one member's full `member_warnings` history — auto + admin strikes, with reason/excerpt — the read `moderation_history` can't reach) | ❌ | ❌ | ✅ *(platform/user-scoped, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_muted_members` (currently-muted members by identity — user id, strike count, `active`/`stale` status, last-warning timestamp; never reason/excerpt; closes the growth path #403 named for the digest's bare `🔇 N` count) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
+| `list_appeals` / `resolve_appeal` (durable queue for member-filed `appeal_moderation` appeals; resolve never touches `member_warnings`/mute state) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped — same as `clear_warnings`)* | ✅ |
 | `list_reports` / `resolve_report` (member-submitted content reports) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `add_member` / `remove_member` | ❌ | ❌ | ✅ (member tier only) | ✅ |
 | `link_member` / `unlink_member` (cross-platform identity linking) | ❌ | ❌ | ✅, confirm-gated, tier never propagates | ✅ |
@@ -1081,9 +1082,26 @@ enabled (every message is inspected) — treat it like ambient archiving.
   — no new conversation-scoped push helper. Rate-capped **per caller**, not
   per-conversation (an appeal is about one person's own status), one per
   `MODERATION_APPEAL_COOLDOWN_HOURS` (default 24h) — an in-memory,
-  best-effort cap, deliberately no new table for the MVP. Never itself
-  changes a warning count or mute state: resolution stays exactly
-  `clear_warnings`.
+  best-effort cap. Never itself changes a warning count or mute state:
+  resolution stays exactly `clear_warnings`.
+- **Appeal persistence**: until issue #554, an appeal was entirely
+  fire-and-forget — only the best-effort `notifyAppealFiled` DM, nothing
+  durable, so a missed/dismissed DM erased it with no trace. `appeal_moderation`
+  now also inserts one `moderation_appeals` row (mirroring the
+  `content_reports` shape: member-submitted, admin-reviewed, non-destructive
+  resolution) alongside the unchanged DM — snapshotting `platform`, `user_id`,
+  `user_name`, the optional `reason`, and the caller's `active_warnings`/
+  `strike_limit` at filing time (not a live join to `member_warnings`). No
+  `conversation_id` — same guild-wide boundary as `member_warnings`/
+  `clear_warnings`/`list_member_warnings`, since warnings/mutes carry no
+  conversation to scope by. Admins triage with `list_appeals` (optional
+  `status` filter) and `resolve_appeal(id, 'resolved' | 'dismissed')` — same
+  admin tier, guild-wide scope, non-destructive/no-CONFIRM/audited shape as
+  `list_reports`/`resolve_report`. `resolve_appeal` deliberately never touches
+  `member_warnings` or mute state itself — `clear_warnings` remains the only
+  way an admin lifts a mute, a scope guardrail so the two actions stay
+  separate admin judgement calls. Deletable via `forget_me`/`purge_user_data`
+  alongside the caller's other filed-signal rows.
 - **Enumerating**: `list_muted_members()` (issue #487) answers "who is muted
   right now", the question `list_member_warnings` structurally can't (it
   requires an already-known `targetUserId`) and the digest's bare `🔇 N`

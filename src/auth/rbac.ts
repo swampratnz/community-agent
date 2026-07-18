@@ -139,6 +139,13 @@ export const ADMIN_TOOLS = [
   // conversation-scoped boundary as clear_warnings/list_member_warnings;
   // never includes reason/excerpt.
   'mcp__community__list_muted_members',
+  // Durable queue for appeal_moderation (issue #554): a member appealing
+  // their own active warning(s)/mute is a self-scoped MEMBER_TOOLS write
+  // (appeal_moderation); reviewing/resolving the filed appeal is admin-tier,
+  // same guild-wide (not conversation-scoped) boundary as clear_warnings/
+  // list_member_warnings — warnings/mutes carry no conversation to scope by.
+  'mcp__community__list_appeals',
+  'mcp__community__resolve_appeal',
   'mcp__community__announce',
   'mcp__community__create_poll',
   // End a running poll early — same admin tier / conversation-scope / audit as

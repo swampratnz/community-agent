@@ -130,6 +130,9 @@ const {
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
   getInteractionContentByMessageId,
+  createModerationAppeal,
+  listAppeals,
+  resolveModerationAppeal,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -8326,6 +8329,204 @@ test(
     assert.equal(otherRows.rows.length, 1, "another requester's watch rows are untouched");
 
     await pool.query(`DELETE FROM dev_team_watches WHERE requester_user_id = $1`, [otherUser]);
+  },
+);
+
+// moderation_appeals (issue #554): the durable record appeal_moderation
+// inserts alongside its existing best-effort notifyAppealFiled DM, plus the
+// admin-tier list_appeals/resolve_appeal read/write pair.
+
+test(
+  'repository: createModerationAppeal inserts a row with the snapshotted warning counts and reason',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-create`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Appealing Member',
+      reason: 'I was not spamming',
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    assert.ok(id > 0);
+
+    const { rows } = await pool.query(
+      `SELECT platform, user_id, user_name, reason, active_warnings, strike_limit, status, resolved_by, resolved_at
+       FROM moderation_appeals WHERE id = $1`,
+      [id],
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].platform, 'discord');
+    assert.equal(rows[0].user_id, userId);
+    assert.equal(rows[0].user_name, 'Appealing Member');
+    assert.equal(rows[0].reason, 'I was not spamming');
+    assert.equal(Number(rows[0].active_warnings), 2);
+    assert.equal(Number(rows[0].strike_limit), 3);
+    assert.equal(rows[0].status, 'open');
+    assert.equal(rows[0].resolved_by, null);
+    assert.equal(rows[0].resolved_at, null);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test('repository: createModerationAppeal stores a null reason when none is given', { skip }, async () => {
+  const userId = `${RUN}-appeal-create-no-reason`;
+  const { id } = await createModerationAppeal({
+    platform: 'discord',
+    userId,
+    userName: null,
+    activeWarnings: 1,
+    strikeLimit: 3,
+  });
+
+  const { rows } = await pool.query(`SELECT reason, user_name FROM moderation_appeals WHERE id = $1`, [id]);
+  assert.equal(rows[0].reason, null);
+  assert.equal(rows[0].user_name, null);
+
+  await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+});
+
+test(
+  'repository: listAppeals returns newest-first and the status filter narrows results',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-list`;
+    const open = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'A',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const toResolve = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'A',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(toResolve.id, 'resolved', 'admin-1');
+
+    const all = await listAppeals();
+    const ids = all.map((r) => r.id);
+    assert.ok(
+      ids.includes(open.id) && ids.includes(toResolve.id),
+      'both fixture rows are visible unfiltered',
+    );
+    assert.ok(
+      ids.indexOf(toResolve.id) < ids.indexOf(open.id),
+      'newest first: the later-inserted, later-resolved row sorts before the earlier open row',
+    );
+
+    const openOnly = await listAppeals('open');
+    assert.ok(openOnly.some((r) => r.id === open.id));
+    assert.ok(!openOnly.some((r) => r.id === toResolve.id), 'the status filter excludes the resolved row');
+
+    const resolvedOnly = await listAppeals('resolved');
+    assert.ok(resolvedOnly.some((r) => r.id === toResolve.id));
+    assert.ok(!resolvedOnly.some((r) => r.id === open.id));
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[open.id, toResolve.id]]);
+  },
+);
+
+test(
+  'repository: resolveModerationAppeal flips only status/resolved_by/resolved_at, never active_warnings/strike_limit/reason, and returns null for an unknown id',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-resolve`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'A',
+      reason: 'original reason',
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+
+    const resolved = await resolveModerationAppeal(id, 'dismissed', 'admin-9');
+    assert.ok(resolved);
+    assert.equal(resolved?.status, 'dismissed');
+    assert.equal(resolved?.resolvedBy, 'admin-9');
+    assert.ok(resolved?.resolvedAt);
+    assert.equal(resolved?.reason, 'original reason', 'the original reason is untouched');
+    assert.equal(resolved?.activeWarnings, 2, 'the snapshotted warning count is untouched');
+    assert.equal(resolved?.strikeLimit, 3, 'the snapshotted strike limit is untouched');
+
+    const unknown = await resolveModerationAppeal(id + 1_000_000, 'resolved', 'admin-9');
+    assert.equal(unknown, null, 'an unknown id returns null rather than throwing');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'SECURITY: repository: resolveModerationAppeal never touches member_warnings — resolving an appeal does not clear the underlying warnings or lift a mute (issue #554 scope guardrail)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-resolve-no-side-effects`;
+    await addWarning({
+      platform: 'discord',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const before = await countActiveWarnings('discord', userId);
+
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'A',
+      activeWarnings: before,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(id, 'resolved', 'admin-1');
+
+    const after = await countActiveWarnings('discord', userId);
+    assert.equal(after, before, 'resolving the appeal must not change the member_warnings active count');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData (forget_me/purge_user_data) removes the caller's own moderation_appeals rows (issue #554)",
+  { skip },
+  async () => {
+    const targetUser = `${RUN}-appeal-purge-target`;
+    const otherUser = `${RUN}-appeal-purge-other`;
+
+    const targetAppeal = await createModerationAppeal({
+      platform: 'discord',
+      userId: targetUser,
+      userName: 'Target',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(targetAppeal.id > 0, 'fixture appeal was recorded');
+    const otherAppeal = await createModerationAppeal({
+      platform: 'discord',
+      userId: otherUser,
+      userName: 'Other',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const purged = await purgeUserData('discord', targetUser);
+    assert.ok(purged >= 1, 'purged count covers the target appeal row');
+
+    const targetRows = await pool.query(`SELECT 1 FROM moderation_appeals WHERE user_id = $1`, [targetUser]);
+    assert.equal(targetRows.rows.length, 0, "the target user's moderation_appeals rows are gone");
+
+    const otherRows = await pool.query(`SELECT 1 FROM moderation_appeals WHERE id = $1`, [otherAppeal.id]);
+    assert.equal(otherRows.rows.length, 1, "another user's moderation_appeals rows are untouched");
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [otherAppeal.id]);
   },
 );
 
