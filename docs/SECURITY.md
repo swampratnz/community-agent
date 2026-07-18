@@ -1518,10 +1518,10 @@ extended to `backgroundJobs.ts`'s `alertSuperAdmins` or `tools.ts`'s
   or the bot will fail to log in.**
 - Give the bot the least role permissions required for moderation (Timeout
   Members, Kick Members, **Ban Members** — required for the admin `ban_user`
-  action; without it, `ban_user` fails cleanly as `Failed: …` rather than
-  silently no-oping — Manage Messages) plus Manage Events (required for the
-  admin `create_event` tool, §11), and place its role appropriately in the
-  hierarchy.
+  and `unban_user` actions; without it, either fails cleanly as `Failed: …`
+  rather than silently no-oping — Manage Messages) plus Manage Events
+  (required for the admin `create_event` tool, §11), and place its role
+  appropriately in the hierarchy.
 
 ## Subscription-auth caveat
 Anthropic's Agent SDK docs state subscription/claude.ai login is **not
