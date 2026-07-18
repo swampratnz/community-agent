@@ -1150,13 +1150,19 @@ follow-on adjustments keep this correct, not just permissive:
   slot reserved against it, so keying on it would open an uncapped
   side-channel around `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`.
 
-The TTL is **not refreshed** by a follow-up — it is set once, at thread
-creation, and only counted down from there. A back-and-forth that outlives
-the 10-minute window from the thread's creation reverts to mention-required,
-same as any other expired entry in this map; there is no indefinitely
-auto-answerable thread. This is a deliberate scope limit for the smallest
-viable version, not a defect — a longer or refreshing TTL is a named growth
-path if it proves too tight in practice.
+The TTL **slides** on every follow-up (issue #542): each follow-up rewrites
+its map entry's `at` to the follow-up's own arrival time, so the 10-minute
+window is measured from the most recent activity, not just thread creation.
+`parent` is carried over unchanged on every refresh — only `at` moves — and
+the refresh is reachable only through the follow-up branch above, which is
+only taken when the lookup already found a live entry, so this can never
+seed or revive an expired one. A thread with no follow-up for 10 minutes
+still expires and reverts to mention-required exactly as before, pruned by
+the same `sweep()` tick; there is still no indefinitely auto-answerable
+thread — only a continuously-active one stays live. An absolute
+max-lifetime cap regardless of activity remains a named growth path, not
+needed while total volume is already bounded by
+`AUTO_ANSWER_RATE_LIMIT_PER_HOUR`.
 
 Discord-only by construction (WhatsApp/Baileys auto-answer carries separate
 ToS/ban risk — a different, deferred proposal); see docs/SECURITY.md §14 for

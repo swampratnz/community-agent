@@ -1112,6 +1112,16 @@ export class Router {
         // is a follow-up, not an origin post, so reply in place rather than
         // opening a second thread anchored to the follow-up message.
         replyConversationId = msg.conversationId;
+        // Slide the TTL forward (issue #542) — this branch is only reached
+        // when the map lookup above already found a LIVE entry, so this can
+        // only refresh an existing entry, never seed or revive an expired
+        // one. `parent` is carried over unchanged; only `at` moves, keeping
+        // a continuously-active thread answerable past its creation+10min
+        // cutoff while a quiet thread still expires exactly as before.
+        this.autoAnswerThreadParents.set(replyConversationId, {
+          parent: autoAnswerThreadParent,
+          at: Date.now(),
+        });
       } else {
         replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
           logger.warn(
