@@ -1390,6 +1390,22 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   DMs configured super admins via whichever adapter(s) are still up and logs
   at `error`. Debounced: one alert per outage, not one per check tick;
   reconnecting clears the state silently (no "it's back!" spam).
+- **Pending-alert queue for the zero-connected-adapter case** (issue #534) —
+  in a single-platform deployment (Discord-only or WhatsApp-only), the
+  platform going down means the alert above finds *zero* connected adapters
+  to DM through, which previously dropped the message silently. `health.ts`
+  now holds a small in-memory queue (capped at 5, oldest dropped first) local
+  to the module: when `alertSuperAdmins` finds nothing connected, it pushes
+  the message onto the queue instead of discarding it and logs at `warn`. The
+  existing 30s poll already computes `justReconnected` per adapter; the first
+  reconnect flushes every queued message through that adapter's
+  `sendDirectMessage` to every super admin, then clears the queue. A flush
+  send that throws is logged and the message dropped, never re-queued, so a
+  persistently-broken send path can't accumulate forever. In-memory only —
+  clears on restart, same tradeoff as every other best-effort
+  alert/cooldown in this codebase. Not yet extended to `backgroundJobs.ts`'s
+  `alertSuperAdmins` or `tools.ts`'s `notifySuperAdmins`, which share the
+  identical blind spot — documented growth path, not built here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
