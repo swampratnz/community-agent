@@ -127,6 +127,7 @@ const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/au
 const { superAdminIds } = await import('../src/auth/roles.js');
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -974,6 +975,123 @@ test('notifyReportWithdrawn reaches every configured super admin across ALL regi
   assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
   assert.equal(discordCalls.length, 0, 'no discord super admins are configured');
 });
+
+// notifySuperAdmins's shared pending-alert queue (issue #545): when NO
+// adapter across ALL_PLATFORMS is connected, the alert is queued instead of
+// silently dropped, mirroring health.ts's own all-disconnected fallback
+// (#534). Exercised via notifyReportFiled since notifySuperAdmins itself
+// isn't exported.
+test('notifySuperAdmins (via notifyReportFiled): with zero connected adapters across ALL_PLATFORMS, the alert is queued instead of dropped, and no send is attempted (issue #545)', async () => {
+  resetPendingAlertsForTests();
+  const discordCalls: string[] = [];
+  const discordAdapter: PlatformAdapter = {
+    ...stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    }),
+    isConnected: () => false,
+  };
+  const whatsappCalls: string[] = [];
+  const whatsappAdapter: PlatformAdapter = {
+    ...stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    }),
+    isConnected: () => false,
+  };
+
+  await notifyReportFiled((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+    id: 545,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    reason: 'queued while every platform is disconnected',
+  });
+
+  assert.equal(discordCalls.length, 0, 'no send is attempted through the disconnected discord adapter');
+  assert.equal(whatsappCalls.length, 0, 'no send is attempted through the disconnected whatsapp adapter');
+  assert.equal(
+    getPendingAlertsForTests().length,
+    1,
+    'the alert should be queued instead of dropped when every adapter is disconnected',
+  );
+  assert.match(getPendingAlertsForTests()[0] ?? '', /#545/);
+  resetPendingAlertsForTests();
+});
+
+test(
+  'SECURITY: notifySuperAdmins with one disconnected and one connected adapter behaves byte-identically to ' +
+    'today — a single disconnected adapter among >=1 connected is still just skipped, and nothing is queued (issue #545)',
+  async () => {
+    resetPendingAlertsForTests();
+    const discordCalls: string[] = [];
+    const discordAdapter: PlatformAdapter = {
+      ...stubAdapter(async (userId) => {
+        discordCalls.push(userId);
+      }),
+      isConnected: () => false,
+    };
+    const whatsappCalls: Array<[string, string]> = [];
+    const whatsappAdapter = stubAdapter(async (userId, message) => {
+      whatsappCalls.push([userId, message]);
+    });
+
+    await notifyReportFiled((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+      id: 546,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'reason',
+    });
+
+    assert.equal(
+      whatsappCalls.length,
+      2,
+      'the connected whatsapp adapter still receives the alert as before',
+    );
+    assert.equal(discordCalls.length, 0, 'the disconnected discord adapter is skipped, never DMed');
+    assert.deepEqual(
+      getPendingAlertsForTests(),
+      [],
+      'nothing is queued when at least one adapter is connected',
+    );
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  'SECURITY: a queued notifySuperAdmins alert (zero connected adapters) is byte-identical to what ' +
+    'sendDirectMessage would have received on a live send (issue #545)',
+  async () => {
+    resetPendingAlertsForTests();
+    const liveCalls: string[] = [];
+    const connectedAdapter = stubAdapter(async (_userId, message) => {
+      liveCalls.push(message);
+    });
+    await notifyReportFiled(whatsappOnlyAdapterFor(connectedAdapter), {
+      id: 547,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'byte identical check',
+    });
+    assert.equal(liveCalls.length, 2);
+    const [liveBody] = liveCalls;
+
+    resetPendingAlertsForTests();
+    const disconnectedAdapter: PlatformAdapter = {
+      ...stubAdapter(async () => {}),
+      isConnected: () => false,
+    };
+    await notifyReportFiled((platform) => (platform === 'whatsapp' ? disconnectedAdapter : undefined), {
+      id: 547,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'byte identical check',
+    });
+    assert.deepEqual(getPendingAlertsForTests(), [liveBody]);
+    resetPendingAlertsForTests();
+  },
+);
 
 // notifyAppealFiled (issue #496): the appeal_moderation counterpart to
 // notifyReportFiled/notifyReportWithdrawn above — same notifySuperAdmins
