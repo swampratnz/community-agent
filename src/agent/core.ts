@@ -186,13 +186,45 @@ interface TurnOutcome {
 }
 
 /**
+ * Tool groups gated behind a config flag that defaults `false` — each
+ * handler already refuses independently when its flag is off (defense in
+ * depth, kept as-is), but leaving them in `allowedTools` still pays their
+ * full name+description+schema tokens on every turn for a tier that can
+ * never successfully call them (issue #535). Purely subtractive: a tool
+ * named here is dropped from `allowedTools` only while its flag is off.
+ */
+const FEATURE_FLAGGED_TOOL_GROUPS: ReadonlyArray<{ enabled: boolean; tools: readonly string[] }> = [
+  { enabled: config.imageGen.enabled, tools: ['mcp__community__generate_image'] },
+  { enabled: config.github.enabled, tools: ['mcp__community__suggest_issue'] },
+  {
+    enabled: config.devTeam.enabled,
+    tools: [
+      'mcp__community__dev_team_dispatch',
+      'mcp__community__dev_team_status',
+      'mcp__community__dev_team_result',
+      'mcp__community__dev_team_backlog',
+      'mcp__community__dev_team_findings',
+      'mcp__community__dev_team_verify',
+    ],
+  },
+];
+
+function filterFeatureFlaggedTools(tools: string[]): string[] {
+  const disabled = new Set(FEATURE_FLAGGED_TOOL_GROUPS.filter((g) => !g.enabled).flatMap((g) => g.tools));
+  return tools.filter((t) => !disabled.has(t));
+}
+
+/**
  * Build the SDK query options for one turn. Extracted (and exported) so the
  * security invariants are regression-testable:
  *  - built-in Claude Code tools are disabled via `tools` (empty for members;
  *    admin+ additionally get WebSearch — and ONLY WebSearch);
  *  - WebFetch is disallowed for every tier (URL construction is an
  *    exfiltration channel; fetched pages are a rich injection vector);
- *  - `allowedTools` is derived from the caller's role only;
+ *  - `allowedTools` is derived from the caller's role, further filtered by
+ *    platform (Discord-only tools dropped on WhatsApp) and by feature flags
+ *    (tools behind a disabled `config.*.enabled` dropped entirely, issue
+ *    #535) — never from message content, and only ever a subtractive filter;
  *  - `maxTurns` is tiered by role: member/guest get the lower
  *    `AGENT_MAX_TURNS_MEMBER` ceiling, admin+ keep `AGENT_MAX_TURNS`.
  *  - `model` is tiered by role the same way (issue #382): member/guest get
@@ -218,6 +250,7 @@ export function buildQueryOptions(
   mcpServers: Record<string, McpServerConfig>,
   resumeSession: string | null,
   conversationId: string,
+  platform: Platform = 'discord',
 ) {
   // Web search is a privileged capability: admins and super admins only.
   const webSearch = atLeast(role, 'admin');
@@ -233,7 +266,10 @@ export function buildQueryOptions(
     // exactly one: WebSearch. `allowedTools` alone only auto-approves; this
     // list is what actually restricts the surface.
     tools: webSearch ? ['WebSearch'] : [],
-    allowedTools: [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])],
+    allowedTools: [
+      ...filterFeatureFlaggedTools(toolsForRole(role, platform)),
+      ...(webSearch ? ['WebSearch'] : []),
+    ],
     disallowedTools: ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
     permissionMode: 'default' as const,
     // Member/guest turns get a tighter loop-depth ceiling than admin+
@@ -535,6 +571,7 @@ async function execTurn(
         { community: toolServer },
         resumeSession,
         caller.conversationId,
+        caller.platform,
       ),
     })) {
       switch (message.type) {

@@ -1500,7 +1500,16 @@ no message content, no user identifiers, no internal ids. Bind to localhost
 and put a reverse proxy in front if exposing it externally, same guidance as
 the Cloud API webhook port above. The sustained-disconnect super-admin DM
 alert reuses the existing adapter `sendDirectMessage` path — no new
-privileged tool, no RBAC surface.
+privileged tool, no RBAC surface. When the alert fires with zero adapters
+connected (the only-configured-platform-is-down case), the message is held
+in a capped (5-entry, oldest-dropped) in-memory queue and flushed verbatim
+through the first adapter to reconnect (issue #534) — no schema, no new
+tool, no new privileged surface, and the queued content is always the exact
+fixed disconnect-alert template (`🔴 {platform} has been disconnected for
+over N minute(s).`), never message content or user-supplied text; a
+`SECURITY:` test pins the flushed text to that exact template. Not yet
+extended to `backgroundJobs.ts`'s `alertSuperAdmins` or `tools.ts`'s
+`notifySuperAdmins`, which share the identical blind spot.
 
 ### Discord
 - Enable only the gateway intents the bot needs (Guilds, GuildMessages,

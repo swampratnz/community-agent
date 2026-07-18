@@ -289,6 +289,24 @@ offered to the model. Each privileged tool re-asserts the tier
 CONFIRM reply (handled deterministically by the router, never by the model),
 and every privileged action is audited and alerted to super admins by DM.
 
+`allowedTools` is additionally filtered by platform capability and feature
+flags (issue #535): `toolsForRole` itself drops Discord-only tools
+(`list_events`/`create_event`/`cancel_event`/`create_poll`/`end_poll`/
+`create_thread`/`archive_thread`/`assign_community_role`/
+`remove_community_role`/`list_assignable_roles` — every tool structurally
+gated on a Discord-only `PlatformAdapter` capability, per
+`DISCORD_ONLY_TOOLS` in `src/auth/rbac.ts`) on WhatsApp, and
+`buildQueryOptions` (`src/agent/core.ts`) further drops `generate_image`/
+`suggest_issue`/the 6 `dev_team_*` tools when their respective
+`IMAGE_GEN_ENABLED`/`GITHUB_ISSUE_ENABLED`/`DEV_TEAM_ENABLED` flag is off. So
+the "isn't even offered to the model" property holds for these tools too, not
+just tier gating — a tool nothing on this deployment can ever successfully
+call never reaches the model's context. Each handler's own flag/capability
+check is kept as defense in depth (a stale cached session, or a race during a
+flag flip, must still fail closed). `react_to_message` is deliberately NOT in
+this list — unlike the others it's implemented on both WhatsApp adapters
+(issues #495, #528), so it stays in `allowedTools` on every platform.
+
 | Capability | guest (gated) | member | admin | super_admin |
 |---|:--:|:--:|:--:|:--:|
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
@@ -416,10 +434,18 @@ fixed `FAILED_PREFIX_MI` on a standing `'mi'` preference, leaving the dynamic
 `result`/error text after it byte-identical to the English case; a plain
 string-prefix match at the single existing send site, so it covers every
 `requireConfirm` call site sharing that template without touching
-`agent/tools.ts`. What stays out of scope and English-only: any bespoke,
-non-`Failed:`-templated outcome/description string a `requireConfirm` tool
-authors directly, and the symmetric `'Done: '` success shell (deferred — see
-below). The five opt-in,
+`agent/tools.ts`. An eleventh addition (issue #538) closes the symmetric
+follow-up #490 named and deferred: the generic `'Done: '` shell that fronts a
+successful `requireConfirm` outcome now gets the identical treatment via a
+fixed `DONE_PREFIX_MI`, added as a parallel `else if` arm at the same send
+site off the same already-resolved language read — no additional
+`getLanguagePreference` call, and the dynamic `result` text stays
+byte-identical to the English case, including the trailing-period variant
+(`` `Done: ${result}.` ``). What stays out of scope and English-only: any
+bespoke, non-`Failed:`/non-`Done:`-templated outcome/description string a
+`requireConfirm` tool authors directly — the same boundary #405/#490 already
+drew, now closed on both the failure and success halves of the shared shell.
+The five opt-in,
 off-by-default shortcut-reply strings `respond()` uses to skip a full agent
 turn — `ACK_REPLY_TEXT`, `KNOWLEDGE_SHORTCUT_SUFFIX`,
 `GUEST_KNOWLEDGE_SHORTCUT_NUDGE`, `REPEAT_SHORTCUT_NOTICE`, and
@@ -972,6 +998,19 @@ from a hit's content body rather than the tool-computed citation clause.
    floor and threads the resulting id set into `formatKnowledgeSearchResults`,
    which appends the caveat to each low-rated hit's own line — never as a
    single result-wide line like the conflict caveat (#389) above it.
+7. Issue #540: fixing a flagged entry via `update_knowledge` now resets its
+   low-rated window. All four decision-facing aggregates —
+   `isKnowledgeLowRated`, `areKnowledgeEntriesLowRated`,
+   `listKnowledgeFeedbackSummary`/`list_low_rated_knowledge`, and
+   `countLowRatedKnowledge` (the weekly digest count, #324) — add
+   `interactions.created_at >= knowledge.updated_at` to their existing join,
+   so a rating on an interaction served before the entry's most recent edit
+   no longer counts toward it. `list_answer_feedback`'s raw per-rating audit
+   log is deliberately untouched. Since `updateKnowledge` bumps `updated_at`
+   on every call regardless of whether the visible content actually changed,
+   this is a coarse "any edit resets the clock" signal, not a content-diff;
+   it fails toward under-counting after a metadata-only edit, never toward
+   leaving a fixed entry flagged.
 
 ## Auto-moderation (Discord)
 
@@ -1396,6 +1435,22 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   DMs configured super admins via whichever adapter(s) are still up and logs
   at `error`. Debounced: one alert per outage, not one per check tick;
   reconnecting clears the state silently (no "it's back!" spam).
+- **Pending-alert queue for the zero-connected-adapter case** (issue #534) —
+  in a single-platform deployment (Discord-only or WhatsApp-only), the
+  platform going down means the alert above finds *zero* connected adapters
+  to DM through, which previously dropped the message silently. `health.ts`
+  now holds a small in-memory queue (capped at 5, oldest dropped first) local
+  to the module: when `alertSuperAdmins` finds nothing connected, it pushes
+  the message onto the queue instead of discarding it and logs at `warn`. The
+  existing 30s poll already computes `justReconnected` per adapter; the first
+  reconnect flushes every queued message through that adapter's
+  `sendDirectMessage` to every super admin, then clears the queue. A flush
+  send that throws is logged and the message dropped, never re-queued, so a
+  persistently-broken send path can't accumulate forever. In-memory only —
+  clears on restart, same tradeoff as every other best-effort
+  alert/cooldown in this codebase. Not yet extended to `backgroundJobs.ts`'s
+  `alertSuperAdmins` or `tools.ts`'s `notifySuperAdmins`, which share the
+  identical blind spot — documented growth path, not built here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
