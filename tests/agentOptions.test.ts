@@ -93,25 +93,51 @@ test('SECURITY: acceptance criterion 1 — default config excludes all 9 feature
   }
 });
 
-test('platform filtering — WhatsApp excludes list_events (member) and create_event/cancel_event (admin+)', () => {
+// Every ADMIN_TOOLS/MEMBER_TOOLS entry that's structurally Discord-only
+// (gated on a PlatformAdapter capability neither WhatsApp adapter grants —
+// see DISCORD_ONLY_TOOLS in src/auth/rbac.ts). Deliberately excludes
+// react_to_message, which IS implemented on both WhatsApp adapters (issues
+// #495, #528) and so must NOT be platform-filtered.
+const DISCORD_ONLY_ADMIN_TOOLS = [
+  'mcp__community__create_event',
+  'mcp__community__cancel_event',
+  'mcp__community__create_poll',
+  'mcp__community__end_poll',
+  'mcp__community__create_thread',
+  'mcp__community__archive_thread',
+  'mcp__community__assign_community_role',
+  'mcp__community__remove_community_role',
+  'mcp__community__list_assignable_roles',
+] as const;
+
+test('platform filtering — WhatsApp excludes list_events (member) and every Discord-only admin tool', () => {
   const member = buildQueryOptions('member', 'prompt', {}, null, 'conv-1', 'whatsapp');
   assert.ok(!member.allowedTools.includes('mcp__community__list_events'));
   for (const role of ['admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'whatsapp');
-    assert.ok(!opts.allowedTools.includes('mcp__community__create_event'));
-    assert.ok(!opts.allowedTools.includes('mcp__community__cancel_event'));
+    for (const t of DISCORD_ONLY_ADMIN_TOOLS) {
+      assert.ok(!opts.allowedTools.includes(t), `whatsapp allowedTools must not include ${t}`);
+    }
   }
 });
 
-test('platform filtering — Discord is unaffected: list_events (member+) and create_event/cancel_event (admin+) still present', () => {
+test('platform filtering — WhatsApp still includes react_to_message (implemented on both WhatsApp adapters, issues #495/#528)', () => {
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'whatsapp');
+    assert.ok(opts.allowedTools.includes('mcp__community__react_to_message'));
+  }
+});
+
+test('platform filtering — Discord is unaffected: list_events (member+) and every Discord-only admin tool still present', () => {
   for (const role of ['member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
     assert.ok(opts.allowedTools.includes('mcp__community__list_events'));
   }
   for (const role of ['admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
-    assert.ok(opts.allowedTools.includes('mcp__community__create_event'));
-    assert.ok(opts.allowedTools.includes('mcp__community__cancel_event'));
+    for (const t of DISCORD_ONLY_ADMIN_TOOLS) {
+      assert.ok(opts.allowedTools.includes(t), `discord allowedTools must include ${t}`);
+    }
   }
 });
 

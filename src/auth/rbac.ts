@@ -110,8 +110,8 @@ export const MEMBER_TOOLS = [
   // allowlist only, and only on a message the bot has actually seen in this
   // conversation — same "validate targets" discipline as moderate/announce,
   // just scoped to the caller's own conversation rather than an admin's set.
-  // Discord-only; other adapters simply don't implement
-  // PlatformAdapter.reactToMessage.
+  // Implemented on Discord and both WhatsApp adapters (Baileys: issue #495,
+  // Cloud: issue #528) — NOT platform-filtered, unlike list_events below.
   'mcp__community__react_to_message',
   // Read-only, no arguments, no CONFIRM (issue #388) — the read counterpart
   // to the admin-tier, CONFIRM-gated create_event (issue #230). Publicly
@@ -250,10 +250,26 @@ export const SUPER_ADMIN_TOOLS = [
 // checks). Dropped from the tier list itself on non-Discord platforms (issue
 // #535) so the model isn't even offered a schema it can never successfully
 // call there — the handler refusal stays as defense in depth.
+//
+// `react_to_message` is deliberately NOT in this list: unlike the other
+// tools here it IS implemented on both WhatsApp adapters (Baileys: issue
+// #495, Cloud: issue #528) — see PlatformAdapter.reactToMessage and the
+// 'Works on Discord and WhatsApp' tool description in agent/tools.ts.
 const DISCORD_ONLY_TOOLS: readonly string[] = [
+  // Gated on adapter.listUpcomingEvents, which only DiscordAdapter implements.
   'mcp__community__list_events',
+  // Gated on adapter.adminCapabilities.has(...) — DiscordAdapter is the only
+  // adapter whose adminCapabilities set includes any of these six actions;
+  // both WhatsApp adapters' sets are limited to warn/kick/delete/(un)mute.
   'mcp__community__create_event',
   'mcp__community__cancel_event',
+  'mcp__community__create_poll',
+  'mcp__community__end_poll',
+  'mcp__community__create_thread',
+  'mcp__community__archive_thread',
+  'mcp__community__assign_community_role',
+  'mcp__community__remove_community_role',
+  'mcp__community__list_assignable_roles',
 ];
 
 // `platform` defaults to 'discord' (the unfiltered, full-surface case) so the
