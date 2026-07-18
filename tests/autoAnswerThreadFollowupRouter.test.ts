@@ -33,11 +33,14 @@ const AUTO_CHAN = `${RUN}-chan`;
 process.env.AUTO_ANSWER_CHANNEL_IDS = AUTO_CHAN;
 process.env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR = '2';
 
+const { config } = await import('../src/config.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { Router } = await import('../src/router.js');
 const { ADMIN_TOOLS, MEMBER_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
 type Tier = Parameters<typeof toolsForRole>[0];
 const { embed } = await import('../src/storage/embeddings.js');
+const { registerPendingAction, hasPendingAction, CONFIRM_TTL_MS } =
+  await import('../src/agent/pendingActions.js');
 
 await embed('warmup').catch(() => {});
 
@@ -254,4 +257,285 @@ test('SECURITY: a thread follow-up resolves the exact member/guest tool surface,
   );
   assert.equal(calls, callsBeforeBotPost, 'a bot-authored follow-up inside the thread must not spawn a turn');
   assert.equal(sent.length, 2, 'no additional reply for the bot-authored follow-up');
+});
+
+// Issue #542: the TTL is creation-anchored no longer — a follow-up now slides
+// the same ESCALATION_WINDOW_MS window forward from ITS OWN arrival time,
+// rather than only ever counting down from thread creation.
+test('auto-answer: a follow-up refreshes the thread TTL, sliding it past the original creation+10min cutoff (issue #542, AC1+AC2)', async (t) => {
+  // This test sends 3 auto-answered messages to the same parent channel
+  // within minutes — above the file's AUTO_ANSWER_RATE_LIMIT_PER_HOUR=2, which
+  // would otherwise cap the 3rd message before the TTL-slide behaviour under
+  // test is even reached. Bump it for this test only; unrelated to AC5's cap
+  // coverage below, which deliberately tests AGAINST the file's default cap.
+  const originalCap = config.discord.autoAnswerRateLimitPerHour;
+  (config.discord as { autoAnswerRateLimitPerHour: number }).autoAnswerRateLimitPerHour = 10;
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 0 });
+  try {
+    let calls = 0;
+    const router = new Router(async () => {
+      calls += 1;
+      return makeReply('answer');
+    }, 20);
+    const { adapter, sent, threadCalls, trigger } = makeAdapter();
+    router.register(adapter);
+
+    const userId = `${RUN}-member-542-slide`;
+    await trigger(makeMessage({ userId, messageId: 'origin-542-slide' }));
+    assert.equal(threadCalls.length, 1);
+    const threadId = threadCalls[0].threadId;
+    assert.equal(calls, 1);
+
+    // T0+8min: a follow-up well inside the original TTL — answered, and
+    // (per this fix) refreshes the entry's `at` to T0+8min.
+    t.mock.timers.tick(8 * 60_000);
+    await trigger(
+      makeMessage({
+        userId,
+        conversationId: threadId,
+        messageId: 'followup-542-a',
+        text: `${RUN} first follow-up`,
+      }),
+    );
+    assert.equal(calls, 2, 'the first follow-up must be answered');
+
+    // T0+15min: more than 10 minutes after thread CREATION (would have been
+    // swept under the old creation-anchored TTL) but only 7 minutes after the
+    // refreshed `at` — must still be answered, proving the window actually
+    // slid forward rather than just resetting once.
+    t.mock.timers.tick(7 * 60_000);
+    await trigger(
+      makeMessage({
+        userId,
+        conversationId: threadId,
+        messageId: 'followup-542-b',
+        text: `${RUN} second follow-up, past creation+10min`,
+      }),
+    );
+
+    assert.equal(
+      calls,
+      3,
+      'a follow-up past creation+10min but within 10min of the last refresh must still answer',
+    );
+    assert.equal(threadCalls.length, 1, 'still no second thread created');
+    assert.equal(sent.length, 3);
+    assert.equal(sent[2].conversationId, threadId, 'the slid-window reply must land in the SAME thread');
+  } finally {
+    t.mock.timers.reset();
+    (config.discord as { autoAnswerRateLimitPerHour: number }).autoAnswerRateLimitPerHour = originalCap;
+  }
+});
+
+test('SECURITY: parent is preserved unchanged across refreshes — a CONFIRM typed after follow-ups still resolves the original parent-scoped pending action (issue #542, AC4+AC7)', async () => {
+  const userId = `${RUN}-member-542-parent`;
+  let executed = false;
+  const router = new Router(async (caller) => {
+    // Only the origin-post turn registers the pending action, against the
+    // PARENT channel (caller.conversationId) — exactly as a real
+    // requireConfirm-gated tool would.
+    if (!executed) {
+      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+        description: `${RUN} delete your data`,
+        minTier: 'guest',
+        execute: async () => {
+          executed = true;
+          return 'Deleted.';
+        },
+      });
+    }
+    return makeReply('Are you sure?');
+  }, 20);
+  const { adapter, threadCalls, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ userId, messageId: 'origin-542-parent' }));
+  const threadId = threadCalls[0].threadId;
+  assert.equal(
+    hasPendingAction('discord', AUTO_CHAN, userId),
+    true,
+    'the pending action is registered against the parent channel',
+  );
+
+  // A follow-up refreshes the thread entry's `at` — `parent` must be
+  // untouched by this.
+  await trigger(
+    makeMessage({
+      userId,
+      conversationId: threadId,
+      messageId: 'followup-542-parent',
+      text: `${RUN} one more thing`,
+    }),
+  );
+
+  // CONFIRM typed inside the thread must still resolve against the
+  // ORIGINAL parent channel, proving the refresh never redirected it.
+  await trigger(
+    makeMessage({ userId, conversationId: threadId, messageId: 'confirm-542-parent', text: 'CONFIRM' }),
+  );
+
+  assert.equal(
+    executed,
+    true,
+    'CONFIRM must execute the pending action registered against the ORIGINAL parent',
+  );
+  assert.equal(
+    hasPendingAction('discord', AUTO_CHAN, userId),
+    false,
+    'the pending action (still keyed on the original parent) is consumed once confirmed',
+  );
+});
+
+test('SECURITY: a refreshed follow-up still consumes the shared per-channel cap keyed on the PARENT — once exhausted, further follow-ups are dropped even with a live, refreshed thread entry (issue #542, AC5)', async () => {
+  // AUTO_ANSWER_RATE_LIMIT_PER_HOUR is '2' for this whole file (set at the
+  // top); this Router instance's own autoAnswerHits map starts empty.
+  let calls = 0;
+  const router = new Router(async () => {
+    calls += 1;
+    return makeReply('answer');
+  }, 20);
+  const { adapter, sent, threadCalls, trigger } = makeAdapter();
+  router.register(adapter);
+
+  const userId = `${RUN}-member-542-cap`;
+
+  // Slot 1/2: origin post opens the thread.
+  await trigger(makeMessage({ userId, messageId: 'origin-542-cap' }));
+  assert.equal(threadCalls.length, 1);
+  const threadId = threadCalls[0].threadId;
+  assert.equal(calls, 1);
+
+  // Slot 2/2: a follow-up inside the thread — answered AND refreshes the
+  // entry's `at`, exhausting the parent-keyed cap.
+  await trigger(
+    makeMessage({
+      userId,
+      conversationId: threadId,
+      messageId: 'followup-542-cap-1',
+      text: `${RUN} cap follow-up 1`,
+    }),
+  );
+  assert.equal(calls, 2, 'the refreshing follow-up still consumed a cap slot and was answered');
+
+  // A further follow-up, even though the (just-refreshed) thread entry is
+  // still live, must be dropped — the cap, not the TTL, is now the limit.
+  await trigger(
+    makeMessage({
+      userId,
+      conversationId: threadId,
+      messageId: 'followup-542-cap-2',
+      text: `${RUN} cap follow-up 2`,
+    }),
+  );
+  assert.equal(calls, 2, 'once the parent-keyed cap is exhausted, a live/refreshed entry must not bypass it');
+  assert.equal(sent.length, 2, 'no reply for the capped follow-up');
+});
+
+test('SECURITY: a follow-up arriving after sweep has pruned the entry gets no reply and does not recreate/revive the map entry (issue #542, AC6)', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 0 });
+  try {
+    let calls = 0;
+    const router = new Router(async () => {
+      calls += 1;
+      return makeReply('answer');
+    }, 20);
+    const { adapter, sent, threadCalls, trigger } = makeAdapter();
+    router.register(adapter);
+
+    const userId = `${RUN}-member-542-revive`;
+    await trigger(makeMessage({ userId, messageId: 'origin-542-revive' }));
+    const threadId = threadCalls[0].threadId;
+    assert.equal(calls, 1);
+
+    // Past the TTL and past a sweep tick — the entry is actually pruned.
+    t.mock.timers.tick(15 * 60_000);
+    await trigger(
+      makeMessage({
+        userId,
+        conversationId: threadId,
+        messageId: 'followup-542-revive-late',
+        text: `${RUN} still there?`,
+      }),
+    );
+    assert.equal(calls, 1, 'the swept follow-up must not get an agent turn');
+    assert.equal(sent.length, 1, 'no reply for the swept follow-up');
+
+    // If the attempt above had (incorrectly) recreated/revived the map
+    // entry, this immediately-following message would be treated as a live
+    // in-thread follow-up and answered. It must not be.
+    await trigger(
+      makeMessage({
+        userId,
+        conversationId: threadId,
+        messageId: 'followup-542-revive-later',
+        text: `${RUN} anyone home?`,
+      }),
+    );
+    assert.equal(
+      calls,
+      1,
+      'a failed swept attempt must never have revived the map entry for a later message',
+    );
+    assert.equal(sent.length, 1, 'still no reply — the thread stays reverted to mention-required');
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test('SECURITY: a stale/expired pending CONFIRM action is not made resolvable by a refreshed, still-live auto-answer thread entry (issue #542, AC8)', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  try {
+    const userId = `${RUN}-member-542-shared-map`;
+    let executed = false;
+    let registered = false;
+    const router = new Router(async (caller) => {
+      if (!registered) {
+        registered = true;
+        registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+          description: `${RUN} delete your data`,
+          minTier: 'guest',
+          execute: async () => {
+            executed = true;
+            return 'Deleted.';
+          },
+        });
+      }
+      return makeReply('Are you sure?');
+    }, 20);
+    const { adapter, threadCalls, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage({ userId, messageId: 'origin-542-shared-map' }));
+    const threadId = threadCalls[0].threadId;
+    assert.equal(hasPendingAction('discord', AUTO_CHAN, userId), true);
+
+    // A follow-up well past the pending CONFIRM action's own (much shorter)
+    // TTL, but well within the auto-answer thread's 10-minute window —
+    // refreshes the thread entry, keeping it live.
+    t.mock.timers.tick(CONFIRM_TTL_MS + 5_000);
+    await trigger(
+      makeMessage({
+        userId,
+        conversationId: threadId,
+        messageId: 'followup-542-shared-map',
+        text: `${RUN} one more thing`,
+      }),
+    );
+    assert.equal(
+      hasPendingAction('discord', AUTO_CHAN, userId),
+      false,
+      'the pending CONFIRM action must have expired on its own independent TTL',
+    );
+
+    // A CONFIRM typed now, with the thread entry alive (refreshed) but the
+    // pending action already expired, must NOT execute — the thread's own
+    // refreshed liveness must never resurrect a stale pending action.
+    await trigger(
+      makeMessage({ userId, conversationId: threadId, messageId: 'confirm-542-shared-map', text: 'CONFIRM' }),
+    );
+
+    assert.equal(executed, false, 'a stale pending action must never execute via a refreshed thread entry');
+  } finally {
+    t.mock.timers.reset();
+  }
 });

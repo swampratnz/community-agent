@@ -114,6 +114,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     'timeout_user',
     'kick_user',
     'ban_user',
+    'unban_user',
     'delete_message',
     'warn_user',
     'unmute_user',
@@ -881,6 +882,14 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
           reason: paramString(action.params?.reason, 'No reason given'),
         });
         return `Banned ${action.targetUserId}.`;
+      }
+      case 'unban_user': {
+        const guild = await this.client.guilds.fetch(config.discord.guildId);
+        await guild.members.unban(
+          action.targetUserId!,
+          paramString(action.params?.reason, 'No reason given'),
+        );
+        return `Unbanned ${action.targetUserId}.`;
       }
       case 'delete_message': {
         const channel = await this.client.channels.fetch(action.conversationId!);
