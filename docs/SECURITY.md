@@ -1450,6 +1450,50 @@ control downstream of it is reused completely unchanged:
     remaining auto-answerable indefinitely. Pinned by a router test that
     advances past the TTL.
 
+### 16. Config-flag visibility (`feature_flags`, super-admin, issue #559)
+
+A read-only, no-argument, no-CONFIRM chat tool answering "which of this
+deployment's ~28 opt-in `*_ENABLED` config flags are actually on right now?"
+— previously answerable only by reading env vars on the deploy host directly.
+This is a **new read path into `config`**, so it's called out separately from
+the "Secret exposure" controls (§2) above rather than assumed covered by them:
+
+- **Super-admin floor, not admin.** Reuses `assertAtLeast(caller.role,
+  'super_admin', ...)`, the same tier `usage_stats`/`admin_activity`/
+  `list_admins`/`engagement_stats` already sit at — several flags are
+  themselves security-relevant posture (e.g. `MODERATION_LLM_ABUSE_ENABLED`,
+  `WHATSAPP_VOICE_MIN_ROLE`), so least-privilege favours restricting
+  operational-config visibility to the operator over the wider admin tier.
+- **Exempt from the redaction concern by construction, not by review.** The
+  outbound secret-redaction filter (§2) exists because bot-composed text can
+  in principle echo a value that flowed through untrusted input or a broad
+  read. `feature_flags` structurally cannot reach a secret field: it is
+  driven by a fixed, hand-maintained `FEATURE_FLAG_MAP` allowlist
+  (`src/agent/tools.ts`) of `{ envVar, configPath, label, category }`
+  entries, and the handler's formatter only ever indexes those fixed dotted
+  paths off the in-memory `config` singleton — it never calls
+  `Object.entries`/`Object.values`/spreads `config` itself. There is no code
+  path from the handler to any token/URL/id field; a missing allowlist entry
+  can only under-report a flag, never expose one. Pinned by a `SECURITY:`
+  test that plants a fake secret-shaped field on a fixture config and asserts
+  it never appears in rendered output, plus a structural test asserting the
+  handler/formatter source never calls `Object.entries`/`Object.values`/
+  spread on the object they read.
+- **Booleans only, V1.** Output is `label: On/Off` per flag, grouped by
+  category — no raw values, channel-id lists, numeric thresholds, tokens, or
+  URLs. A future non-boolean summary (e.g. "configured (3 channels)" without
+  the ids) is an explicitly deferred growth path, not this tool.
+- **No new untrusted input, no state change.** No arguments, no CONFIRM, no
+  DB/model call — a synchronous read of the already-parsed `config` object
+  every running process already has in memory. Pinned by a `SECURITY:` test
+  asserting the handler makes no repository/`query()` call.
+- **Anti-drift coverage.** A test enumerates every `*_ENABLED` identifier
+  actually present in `config.ts` and asserts each has a `FEATURE_FLAG_MAP`
+  entry, so a newly-added flag that isn't consciously surfaced (or exempted)
+  fails CI loudly instead of `feature_flags` silently under-reporting it —
+  same shape as the `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage
+  pins (issues #311/#367).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

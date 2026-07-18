@@ -252,6 +252,28 @@ memory**:
    gates the proactive timer, never the admin's standing authorization to
    read their own already-scoped counts).
 
+`feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
+#559) answers a different, static question `admin_digest`/`community_info`
+don't: "which of this deployment's ~28 opt-in `*_ENABLED` config flags are
+actually on right now?" — previously only answerable by reading env vars on
+the deploy host directly. It is deliberately **not** a generic config dump: a
+fixed, hand-maintained `FEATURE_FLAG_MAP` (`src/agent/tools.ts`) allowlists
+exactly the boolean `*_ENABLED` flags, each mapped to a dotted `configPath`
+into the already-loaded `config` singleton, a human label, and a category
+(Moderation, Knowledge & Learning, Admin Alerts & Digest, Onboarding,
+WhatsApp, Cost/Model, Integrations). The handler and its formatter only ever
+index those fixed paths — never `Object.entries`/`Object.values`/spread the
+`config` object itself — so a missing allowlist entry can only under-report a
+flag, never accidentally expose a non-boolean field (a token, URL, or id) by
+that field merely existing on `config`. Super-admin only (not admin): several
+flags reflect security-relevant posture (e.g. `MODERATION_LLM_ABUSE_ENABLED`,
+`WHATSAPP_VOICE_MIN_ROLE`), so this follows `engagement_stats`/`admin_activity`'s
+own precedent of keeping guild-wide, non-conversation-scoped operational state
+at the operator floor. An anti-drift test ties `FEATURE_FLAG_MAP` to every
+`*_ENABLED` identifier actually in `config.ts`, so a newly-added flag that
+isn't consciously surfaced (or exempted) fails CI loudly, mirroring the
+`community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage pins (issues #311/#367).
+
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
 passed back as `resume` on the next turn.
@@ -347,6 +369,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
+| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags, from a fixed boolean-only allowlist; no arguments, read-only, no CONFIRM; issue #559) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget

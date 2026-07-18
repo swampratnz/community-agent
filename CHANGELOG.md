@@ -10,6 +10,24 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **`feature_flags` tool: see which optional behaviours are actually on**
+  (#559): with 28 opt-in `*_ENABLED` config flags and growing, the only way
+  to answer "is X actually turned on in prod?" was reading env vars on the
+  deploy host directly — `community_info` only ever described *which tools
+  exist*, never *which optional behaviours are enabled*. The new
+  super-admin-only, read-only `feature_flags` tool renders a grouped On/Off
+  listing (Moderation, Knowledge & Learning, Admin Alerts & Digest,
+  Onboarding, WhatsApp, Cost/Model, Integrations) from a fixed, hand-written
+  `FEATURE_FLAG_MAP` allowlist — it never enumerates the underlying config
+  object, so a missing allowlist entry can only under-report a flag, never
+  expose a non-boolean field like a token or URL. An anti-drift test ties
+  the allowlist to every `*_ENABLED` flag in `config.ts`, so a newly-added
+  flag that isn't consciously surfaced fails CI loudly. See
+  docs/ARCHITECTURE.md and docs/SECURITY.md.
+
 ## 2026-07-15
 
 ### Added

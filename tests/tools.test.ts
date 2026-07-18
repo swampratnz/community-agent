@@ -1,5 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -43,6 +44,8 @@ const {
   formatUsageStats,
   formatAdminActivity,
   formatEngagementStats,
+  formatFeatureFlags,
+  FEATURE_FLAG_MAP,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   formatRelativeAge,
@@ -5789,6 +5792,219 @@ test('SECURITY: engagement_stats handler refuses a forged direct call from a non
     const registeredTool = engagementStatsHandler(role);
     await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
   }
+});
+
+// --- issue #559: feature_flags ---------------------------------------------
+
+function featureFlagsHandler(role: 'member' | 'admin' | 'guest' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-feature-flags-caller`,
+      userName: 'Caller',
+      role,
+      conversationId: `${RUN}-feature-flags-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<unknown> }>;
+    }
+  )._registeredTools['feature_flags'];
+}
+
+test('feature_flags: exact set of rendered labels against a fixture config, grouped by category (issue #559)', () => {
+  const fixture = {
+    moderation: { enabled: true, llmAbuseEnabled: false },
+    contextBuilder: { enabled: false },
+    contextCandidates: { enabled: true },
+    knowledgeRefresh: { enabled: false },
+    docsIngest: { enabled: false },
+    knowledgeLinkCheck: { enabled: true },
+    contextExport: { enabled: false },
+    adminDigest: { enabled: true, trendsEnabled: false },
+    behaviour: {
+      upstreamLimitAlertEnabled: false,
+      escalationToAdminEnabled: true,
+      ackShortcutEnabled: true,
+      knowledgeShortcutEnabled: false,
+      guestKnowledgeShortcutEnabled: false,
+      repeatQuestionShortcutEnabled: true,
+      repeatMaxTurnsShortcutEnabled: false,
+      dailyReplyBudgetWarnEnabled: false,
+    },
+    departedAdminAlert: { enabled: false },
+    accessRequestAlert: { enabled: true },
+    discord: { welcome: { enabled: true } },
+    whatsapp: {
+      welcome: { enabled: false },
+      voice: { enabled: true },
+      cloud: { welcomeEnabled: false },
+    },
+    imageGen: { enabled: true },
+    github: { enabled: false },
+    devTeam: { enabled: false },
+    statusCheck: { enabled: true },
+  };
+
+  const rendered = formatFeatureFlags(fixture);
+
+  assert.match(rendered, new RegExp(`Feature flags \\(${FEATURE_FLAG_MAP.length} total\\):`));
+  for (const category of new Set(FEATURE_FLAG_MAP.map((e) => e.category))) {
+    assert.match(rendered, new RegExp(`^${category}:$`, 'm'), `missing category header for ${category}`);
+  }
+  // Spot-check On/Off rendering across categories rather than asserting the
+  // whole string, so a label-wording tweak doesn't require touching this
+  // fixture's every line.
+  assert.match(rendered, /- Discord moderation \(auto strikes\): On/);
+  assert.match(rendered, /- LLM-based abuse detection: Off/);
+  assert.match(rendered, /- Context candidate extraction: On/);
+  assert.match(rendered, /- Weekly admin digest: On/);
+  assert.match(rendered, /- Admin digest trend lines: Off/);
+  assert.match(rendered, /- Escalation to admin: On/);
+  assert.match(rendered, /- Discord welcome message: On/);
+  assert.match(rendered, /- WhatsApp welcome message \(Baileys\): Off/);
+  assert.match(rendered, /- WhatsApp voice message transcription: On/);
+  assert.match(rendered, /- Image generation: On/);
+  assert.match(rendered, /- GitHub issue filing: Off/);
+  assert.match(rendered, /- Anthropic status check: On/);
+  // Every entry in the map renders exactly one line, no more no less.
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, FEATURE_FLAG_MAP.length);
+});
+
+test('feature_flags: a config path missing/non-boolean on the source renders "Off" rather than throwing (issue #559)', () => {
+  const rendered = formatFeatureFlags({});
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, FEATURE_FLAG_MAP.length);
+  assert.ok(
+    renderedLabelLines.every((l) => l.endsWith('Off')),
+    'every flag defaults to Off against an empty source',
+  );
+});
+
+test('SECURITY: feature_flags handler refuses a forged direct call from a non-super-admin caller, before any config field is read (assertAtLeast re-check, issue #559)', async () => {
+  for (const role of ['member', 'admin', 'guest'] as const) {
+    const registeredTool = featureFlagsHandler(role);
+    await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+  }
+  // Structural half of the same guarantee: assertAtLeast is literally the
+  // first statement in the handler body, and formatFeatureFlags (the only
+  // config read) is only reached afterwards — so a refusal can never fall
+  // through to a config read, not merely "usually doesn't" in practice.
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'feature_flags',");
+  assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+  assert.ok(handlerMatch, 'feature_flags handler body not found');
+  const body = handlerMatch[1];
+  const assertIdx = body.indexOf('assertAtLeast(');
+  const formatIdx = body.indexOf('formatFeatureFlags(');
+  assert.ok(
+    assertIdx !== -1 && formatIdx !== -1 && assertIdx < formatIdx,
+    'assertAtLeast must precede the config read',
+  );
+});
+
+test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field on the config source never reaches rendered output (issue #559)', () => {
+  const plantedSecret = 'sk-ant-oat-planted-fake-super-secret-token-should-never-render';
+  const fixture = {
+    llm: { oauthToken: plantedSecret },
+    discord: { botToken: plantedSecret, welcome: { enabled: true } },
+    github: { token: plantedSecret, enabled: false },
+  };
+  const rendered = formatFeatureFlags(fixture);
+  assert.doesNotMatch(rendered, new RegExp(plantedSecret.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')));
+});
+
+test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const formatterStart = source.indexOf('export function formatFeatureFlags(');
+  const getterStart = source.indexOf('function getConfigBoolean(');
+  assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
+  const start = Math.min(formatterStart, getterStart);
+  const region = source.slice(start, source.indexOf('\n}\n', Math.max(formatterStart, getterStart)) + 3);
+  assert.doesNotMatch(region, /Object\.entries\(|Object\.values\(|\.\.\.(source|config)\b/);
+});
+
+test('feature_flags: every FEATURE_FLAG_MAP entry resolves to a boolean-typed value against the real, already-loaded config (issue #559)', () => {
+  // Renders against the real singleton config (imported at top of this file,
+  // loaded from this file's dummy test env) rather than a fixture — this is
+  // the one test that ties the hand-written allowlist to config.ts's actual
+  // shape, so a rename/restructure of config.ts breaks this test loudly
+  // instead of feature_flags silently under-reporting in production.
+  const rendered = formatFeatureFlags(config);
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(
+    renderedLabelLines.length,
+    FEATURE_FLAG_MAP.length,
+    'every entry must render a line — a path that resolved to undefined would still render "Off" here, ' +
+      'so this test only proves no entry throws; boolean-typedness end to end is exercised by the anti-drift ' +
+      'coverage test below reading config.ts source directly',
+  );
+});
+
+// Anti-drift pin (issue #559), same shape as the community_info/ADMIN_TOOLS
+// pins above (#311/#367): ties FEATURE_FLAG_MAP to the ground truth of which
+// `*_ENABLED` env vars actually exist in config.ts, so a 29th flag added
+// without a conscious surface-or-not decision fails CI loudly instead of
+// silently going unreported by feature_flags.
+function extractEnabledEnvVars(configSource: string): string[] {
+  return [...new Set(configSource.match(/\b[A-Z][A-Z0-9_]*_ENABLED\b/g) ?? [])];
+}
+
+function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envVar: string }[]): void {
+  const mapped = new Set(map.map((e) => e.envVar));
+  for (const envVar of envVars) {
+    assert.ok(
+      mapped.has(envVar),
+      `${envVar} has no FEATURE_FLAG_MAP entry — add one (or a conscious exemption) or it silently goes ` +
+        'unreported by feature_flags',
+    );
+  }
+}
+
+test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
+  const configSource = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');
+  const envVars = extractEnabledEnvVars(configSource);
+  assert.equal(
+    envVars.length,
+    28,
+    "the 28 count is the proposal's own pinned evidence — a change here is itself signal worth noticing",
+  );
+  assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
+  assert.equal(
+    FEATURE_FLAG_MAP.length,
+    envVars.length,
+    'no stale FEATURE_FLAG_MAP entry for a since-removed env var either',
+  );
+});
+
+test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag (issue #559)', () => {
+  const syntheticEnvVarsWithGap = ['DISCORD_MODERATION_ENABLED', 'A_BRAND_NEW_FUTURE_FLAG_ENABLED'];
+  assert.throws(
+    () => assertFeatureFlagEnvVarsCovered(syntheticEnvVarsWithGap, FEATURE_FLAG_MAP),
+    /A_BRAND_NEW_FUTURE_FLAG_ENABLED/,
+  );
+});
+
+test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'feature_flags',");
+  assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+  assert.ok(handlerMatch, 'feature_flags handler body not found');
+  const body = handlerMatch[1];
+  assert.doesNotMatch(
+    body,
+    /pool\.|query\(|await\s/,
+    'handler must be a synchronous read of in-memory config — no DB/model call',
+  );
 });
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {

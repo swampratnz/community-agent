@@ -763,6 +763,245 @@ export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementSta
   );
 }
 
+/** One entry in the `feature_flags` allowlist (issue #559). */
+export interface FeatureFlagEntry {
+  /** Exact `X_ENABLED` env var identifier, as it appears in config.ts — lets the anti-drift test tie this allowlist back to the real env schema without ever touching runtime `config` shape reflection. */
+  envVar: string;
+  /** Dotted path into the in-memory `config` object, e.g. 'moderation.llmAbuseEnabled'. */
+  configPath: string;
+  label: string;
+  category: string;
+}
+
+/**
+ * Fixed, hand-maintained allowlist mapping the 28 existing boolean
+ * `*_ENABLED` config flags to a human label and category (issue #559).
+ * Deliberately NOT derived by walking `config` — a missing entry here only
+ * under-reports a flag, and can never over-expose a non-boolean field (a
+ * token, URL, or id) just by that field existing on `config`. When adding a
+ * 29th `*_ENABLED` flag, add a matching entry here or the anti-drift test
+ * (tests/tools.test.ts) fails CI.
+ */
+export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
+  // Moderation
+  {
+    envVar: 'DISCORD_MODERATION_ENABLED',
+    configPath: 'moderation.enabled',
+    label: 'Discord moderation (auto strikes)',
+    category: 'Moderation',
+  },
+  {
+    envVar: 'MODERATION_LLM_ABUSE_ENABLED',
+    configPath: 'moderation.llmAbuseEnabled',
+    label: 'LLM-based abuse detection',
+    category: 'Moderation',
+  },
+  // Knowledge & Learning
+  {
+    envVar: 'CONTEXT_BUILDER_ENABLED',
+    configPath: 'contextBuilder.enabled',
+    label: 'Nightly context builder',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'CONTEXT_CANDIDATES_ENABLED',
+    configPath: 'contextCandidates.enabled',
+    label: 'Context candidate extraction',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'KNOWLEDGE_REFRESH_ENABLED',
+    configPath: 'knowledgeRefresh.enabled',
+    label: 'Knowledge refresh',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'DOCS_INGEST_ENABLED',
+    configPath: 'docsIngest.enabled',
+    label: 'Docs ingest',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'KNOWLEDGE_LINK_CHECK_ENABLED',
+    configPath: 'knowledgeLinkCheck.enabled',
+    label: 'Knowledge link check',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'CONTEXT_EXPORT_ENABLED',
+    configPath: 'contextExport.enabled',
+    label: 'Context export',
+    category: 'Knowledge & Learning',
+  },
+  // Admin Alerts & Digest
+  {
+    envVar: 'ADMIN_DIGEST_ENABLED',
+    configPath: 'adminDigest.enabled',
+    label: 'Weekly admin digest',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'ADMIN_DIGEST_TRENDS_ENABLED',
+    configPath: 'adminDigest.trendsEnabled',
+    label: 'Admin digest trend lines',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'UPSTREAM_LIMIT_ALERT_ENABLED',
+    configPath: 'behaviour.upstreamLimitAlertEnabled',
+    label: 'Upstream rate-limit alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'DEPARTED_ADMIN_ALERT_ENABLED',
+    configPath: 'departedAdminAlert.enabled',
+    label: 'Departed admin alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'ACCESS_REQUEST_ALERT_ENABLED',
+    configPath: 'accessRequestAlert.enabled',
+    label: 'Access request alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'ESCALATION_TO_ADMIN_ENABLED',
+    configPath: 'behaviour.escalationToAdminEnabled',
+    label: 'Escalation to admin',
+    category: 'Admin Alerts & Digest',
+  },
+  // Onboarding
+  {
+    envVar: 'DISCORD_WELCOME_ENABLED',
+    configPath: 'discord.welcome.enabled',
+    label: 'Discord welcome message',
+    category: 'Onboarding',
+  },
+  // WhatsApp
+  {
+    envVar: 'WHATSAPP_WELCOME_ENABLED',
+    configPath: 'whatsapp.welcome.enabled',
+    label: 'WhatsApp welcome message (Baileys)',
+    category: 'WhatsApp',
+  },
+  {
+    envVar: 'WHATSAPP_VOICE_ENABLED',
+    configPath: 'whatsapp.voice.enabled',
+    label: 'WhatsApp voice message transcription',
+    category: 'WhatsApp',
+  },
+  {
+    envVar: 'WHATSAPP_CLOUD_WELCOME_ENABLED',
+    configPath: 'whatsapp.cloud.welcomeEnabled',
+    label: 'WhatsApp Cloud welcome message',
+    category: 'WhatsApp',
+  },
+  // Cost/Model
+  {
+    envVar: 'ACK_SHORTCUT_ENABLED',
+    configPath: 'behaviour.ackShortcutEnabled',
+    label: 'Acknowledgement shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'KNOWLEDGE_SHORTCUT_ENABLED',
+    configPath: 'behaviour.knowledgeShortcutEnabled',
+    label: 'Knowledge-match shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'GUEST_KNOWLEDGE_SHORTCUT_ENABLED',
+    configPath: 'behaviour.guestKnowledgeShortcutEnabled',
+    label: 'Guest knowledge shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'REPEAT_QUESTION_SHORTCUT_ENABLED',
+    configPath: 'behaviour.repeatQuestionShortcutEnabled',
+    label: 'Repeat-question shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'REPEAT_MAX_TURNS_SHORTCUT_ENABLED',
+    configPath: 'behaviour.repeatMaxTurnsShortcutEnabled',
+    label: 'Repeat-max-turns shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'DAILY_REPLY_BUDGET_WARN_ENABLED',
+    configPath: 'behaviour.dailyReplyBudgetWarnEnabled',
+    label: 'Daily reply budget warning',
+    category: 'Cost/Model',
+  },
+  // Integrations
+  {
+    envVar: 'IMAGE_GEN_ENABLED',
+    configPath: 'imageGen.enabled',
+    label: 'Image generation',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'GITHUB_ISSUE_ENABLED',
+    configPath: 'github.enabled',
+    label: 'GitHub issue filing',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'DEV_TEAM_ENABLED',
+    configPath: 'devTeam.enabled',
+    label: 'Dev-team service integration',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'STATUS_CHECK_ENABLED',
+    configPath: 'statusCheck.enabled',
+    label: 'Anthropic status check',
+    category: 'Integrations',
+  },
+] as const;
+
+/**
+ * Only ever indexes a fixed, hand-written dotted path — never
+ * `Object.entries`/`Object.values`/spreads the object it's walking, so it
+ * cannot be used to enumerate or leak fields the caller didn't already name.
+ * Returns `undefined` (never throws) for a missing/non-boolean path, so a
+ * config-shape typo under-reports rather than crashing the tool.
+ */
+function getConfigBoolean(source: unknown, path: string): boolean | undefined {
+  const value = path.split('.').reduce<unknown>((node, key) => {
+    if (node && typeof node === 'object' && key in (node as Record<string, unknown>)) {
+      return (node as Record<string, unknown>)[key];
+    }
+    return undefined;
+  }, source);
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * Pure formatter for the `feature_flags` tool reply (issue #559). Takes the
+ * config-shaped object to read from as a parameter (defaulting to the real,
+ * already-loaded `config` singleton) purely so it's unit-testable against a
+ * fixture without mutating process env — it never reaches any other data
+ * source. A flag whose configPath resolves to a non-boolean or missing value
+ * renders as "Off" rather than throwing, so a fixture missing an unrelated
+ * branch doesn't break the whole listing.
+ */
+export function formatFeatureFlags(source: unknown = config): string {
+  const categories: string[] = [];
+  for (const entry of FEATURE_FLAG_MAP) {
+    if (!categories.includes(entry.category)) categories.push(entry.category);
+  }
+  const lines = [`Feature flags (${FEATURE_FLAG_MAP.length} total):`];
+  for (const category of categories) {
+    lines.push('', `${category}:`);
+    for (const entry of FEATURE_FLAG_MAP.filter((e) => e.category === category)) {
+      const value = getConfigBoolean(source, entry.configPath) ?? false;
+      lines.push(`- ${entry.label}: ${value ? 'On' : 'Off'}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** Shared zod shape for create_event's startTime/endTime — format only; future/ordering checks are cross-field and live in the handler. */
 function isoInstantSchema(description: string) {
   return z
@@ -4700,6 +4939,19 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const featureFlagsTool = tool(
+    'feature_flags',
+    'List which of the optional, off-by-default behaviours (boolean *_ENABLED config flags — moderation, ' +
+      'knowledge/learning, admin alerts, onboarding, WhatsApp, cost-saving shortcuts, integrations) are ' +
+      'actually turned on right now, grouped by category. Super admin only.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'super_admin', 'feature_flags');
+      return text(formatFeatureFlags());
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const pauseBot = tool(
     'pause_bot',
     'Pause the bot community-wide (only super admins can still talk to it). Super admin only.',
@@ -5307,6 +5559,7 @@ export function buildToolServer(
       adminActivityTool,
       listAdminsTool,
       engagementStatsTool,
+      featureFlagsTool,
       pauseBot,
       resumeBot,
       setPolicy,
