@@ -32,6 +32,7 @@ const {
   PENDING_NOTICE_MI,
   PENDING_NOTICE_PLAIN,
   FAILED_PREFIX_MI,
+  DONE_PREFIX_MI,
 } = await import('../src/router.js');
 const { registerPendingAction, classifyConfirmReply, hasPendingAction } =
   await import('../src/agent/pendingActions.js');
@@ -475,6 +476,99 @@ test("router (CONFIRM): a thrown execute()'s Failed: ... message stays byte-iden
   assert.equal(sent[0].text, 'Failed: boom');
 });
 
+// --- issue #538: the 'Done: ' shell now honours 'mi', symmetric with #490's 'Failed: ' ---
+
+test("router (CONFIRM): a successful execute()'s 'Done: ' shell is replaced with DONE_PREFIX_MI for a standing 'mi' preference, with the dynamic tail byte-identical to the English case", async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'super-1', {
+    description: `${RUN} success-scope-mi`,
+    minTier: 'guest',
+    execute: async () => 'Done: Updated knowledge entry #5',
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, text: 'CONFIRM' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, `${DONE_PREFIX_MI}Updated knowledge entry #5`);
+  // The dynamic tail after the shell must be byte-identical to what the
+  // English case emits after its own 'Done: ' shell.
+  assert.equal(
+    sent[0].text.slice(DONE_PREFIX_MI.length),
+    'Done: Updated knowledge entry #5'.slice('Done: '.length),
+  );
+});
+
+test("router (CONFIRM): a successful execute()'s Done: ... message stays byte-identical to today for a non-'mi' (auto) preference", async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'super-1', {
+    description: `${RUN} success-scope-auto`,
+    minTier: 'guest',
+    execute: async () => 'Done: Updated knowledge entry #5',
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'auto',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, text: 'CONFIRM' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'Done: Updated knowledge entry #5');
+});
+
+test("router (CONFIRM): the 'Done: ${result}.' trailing-period template (tools.ts:4604) keeps the final period in the 'mi' case, byte-identical to the English tail", async () => {
+  const conversationId = nextConvo();
+  registerPendingAction('discord', conversationId, 'super-1', {
+    description: `${RUN} success-scope-period`,
+    minTier: 'guest',
+    execute: async () => 'Done: Muted user for 10 minutes.',
+  });
+  const router = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ conversationId, text: 'CONFIRM' }));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, `${DONE_PREFIX_MI}Muted user for 10 minutes.`);
+  assert.equal(
+    sent[0].text.slice(DONE_PREFIX_MI.length),
+    'Done: Muted user for 10 minutes.'.slice('Done: '.length),
+  );
+});
+
 // --- SECURITY: fixed, non-interpolated _MI constants (acceptance criterion 7) ----
 
 test('SECURITY: CANCEL_TEXT_MI and PERMISSIONS_CHANGED_TEXT_MI are fixed, non-interpolated strings — pinned so a future edit cannot silently make them depend on caller-controlled input', () => {
@@ -492,7 +586,12 @@ test('SECURITY: FAILED_PREFIX_MI is a fixed, non-interpolated string — pinned 
   assert.equal(FAILED_PREFIX_MI, 'I hapa: ');
 });
 
-test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, and cancellation) is unchanged by issue #490 — only the outcome TEXT varies by language, never the behaviour', async () => {
+test('SECURITY: DONE_PREFIX_MI is a fixed, non-interpolated string — pinned so a future edit cannot silently make it depend on caller-controlled input (issue #538)', () => {
+  assert.equal(typeof DONE_PREFIX_MI, 'string');
+  assert.equal(DONE_PREFIX_MI, 'Kua oti: ');
+});
+
+test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, and cancellation) is unchanged by issues #490/#538 — only the outcome TEXT varies by language, never the behaviour', async () => {
   // 1. CONFIRM with a standing tier still executes the pending action,
   // regardless of language preference — the 'mi' shell swap must never
   // suppress or alter which action runs.
@@ -581,6 +680,38 @@ test('SECURITY: the CONFIRM flow itself (which action runs, the tier re-check, a
   assert.equal(cancelExecuted, 0);
   assert.equal(cancelSent[0].text, CANCEL_TEXT_MI);
   assert.equal(hasPendingAction('discord', cancelConvo, 'super-1'), false);
+
+  // 4. A 'Done: '-templated outcome still runs execute() exactly once and
+  // consumes the pending action, regardless of language preference — the
+  // 'mi' Done: shell swap (issue #538) must never suppress or alter which
+  // action runs, same guarantee as the Failed: shell swap in section 1.
+  let doneExecuted = 0;
+  const doneConvo = nextConvo();
+  registerPendingAction('discord', doneConvo, 'super-1', {
+    description: `${RUN} behaviour-done`,
+    minTier: 'guest',
+    execute: async () => {
+      doneExecuted += 1;
+      return 'Done: behaviour thing';
+    },
+  });
+  const doneRouter = new Router(
+    async () => {
+      throw new Error('runTurn must not be called for a CONFIRM reply');
+    },
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => 'mi',
+  );
+  const { adapter: doneAdapter, sent: doneSent, trigger: doneTrigger } = makeAdapter();
+  doneRouter.register(doneAdapter);
+  await doneTrigger(makeMessage({ conversationId: doneConvo, text: 'CONFIRM' }));
+  assert.equal(doneExecuted, 1);
+  assert.equal(doneSent[0].text, `${DONE_PREFIX_MI}behaviour thing`);
+  assert.equal(hasPendingAction('discord', doneConvo, 'super-1'), false);
 });
 
 test('SECURITY: PENDING_NOTICE_MI interpolates ONLY the pending.description placeholder — every other part of the template is fixed regardless of input', () => {

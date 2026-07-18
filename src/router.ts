@@ -105,12 +105,19 @@ export const PERMISSIONS_CHANGED_TEXT_PLAIN =
 // of scope and English-only"). Only this fixed shell is translated; the
 // dynamic `result`/error text after it is untouched, same "translate the
 // shell, not the payload" discipline as CODE_TRUNCATED_NOTE_MI (#339) and
-// every other constant in this file. Deliberately no `Done: ` counterpart
-// here — ARCHITECTURE.md doesn't name that shell as an open gap, and several
-// requireConfirm tools return fully bespoke (non-`Done:`) success strings, so
-// translating only the `Done:`-templated subset would read unevenly; left as
-// a named follow-up.
+// every other constant in this file.
 export const FAILED_PREFIX_MI = 'I hapa: ';
+
+// Symmetric te reo Māori substitute for the literal `'Done: '` shell prefix
+// a successful `requireConfirm` outcome uses when it returns the shared
+// `` `Done: ${result}` `` template (issue #538 — the named follow-up #490
+// deferred). Same "translate the shell, not the payload" discipline as
+// FAILED_PREFIX_MI above: only this fixed prefix is translated, the dynamic
+// `result` text stays byte-identical to the English case. The ~10
+// requireConfirm tools that return fully bespoke (non-`Done:`) success
+// strings stay English-only — the same scope boundary FAILED_PREFIX_MI
+// already draws for bespoke failure strings.
+export const DONE_PREFIX_MI = 'Kua oti: ';
 
 // Wrapper around the deterministic pending-action notice (issue #405),
 // mirroring the "translate the shell, leave the dynamic payload alone"
@@ -873,16 +880,22 @@ export class Router {
           } catch (err) {
             outcome = `Failed: ${err instanceof Error ? err.message : String(err)}`;
           }
-          // Translate only the generic `Failed: ` shell (issue #490) — covers
-          // both the catch-block fallback above and any requireConfirm tool
-          // that returns its own `Failed: ${result}`-shaped string, without
-          // touching agent/tools.ts. Bespoke, non-templated outcome strings
-          // some tools author directly stay English-only, matching #405's
-          // scope boundary exactly (just closing the `Failed: ` half of it).
+          // Translate the generic `Failed: `/`Done: ` shells (issues #490,
+          // #538) — covers the catch-block fallback above and any
+          // requireConfirm tool that returns its own `Failed: ${result}`- or
+          // `Done: ${result}`-shaped string, without touching agent/tools.ts.
+          // Bespoke, non-templated outcome strings some tools author directly
+          // stay English-only, matching #405's scope boundary exactly (just
+          // closing the templated `Failed: `/`Done: ` halves of it).
           if (outcome.startsWith('Failed: ')) {
             const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
             if (lang === 'mi') {
               outcome = FAILED_PREFIX_MI + outcome.slice('Failed: '.length);
+            }
+          } else if (outcome.startsWith('Done: ')) {
+            const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+            if (lang === 'mi') {
+              outcome = DONE_PREFIX_MI + outcome.slice('Done: '.length);
             }
           }
         }
