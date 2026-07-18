@@ -53,6 +53,7 @@
   "grokImage.test.ts": 3,
   "guestKnowledgeShortcut.test.ts": 2,
   "guestKnowledgeShortcutRouter.test.ts": 3,
+  "health.test.ts": 1,
   "healthState.test.ts": 1,
   "injectionCorpus.test.ts": 6,
   "knowledgeCandidateDedupDegradation.test.ts": 1,

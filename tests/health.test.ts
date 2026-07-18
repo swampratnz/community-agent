@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { PlatformAdapter } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // (including WHATSAPP_PROVIDER=cloud config) before importing anything that
@@ -15,10 +16,205 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 process.env.HEALTH_ALERT_AFTER_MINUTES = '1';
+process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1,super-2';
 
-const { startDisconnectAlerts } = await import('../src/health.js');
+const {
+  startDisconnectAlerts,
+  alertSuperAdmins,
+  flushPendingAlerts,
+  getPendingAlertsForTests,
+  resetPendingAlertsForTests,
+} = await import('../src/health.js');
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { logger } = await import('../src/logger.js');
+
+function makeFakeAdapter(connected: boolean): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+} {
+  const dms: Array<{ userId: string; text: string }> = [];
+  const adapter: PlatformAdapter = {
+    platform: 'discord',
+    adminCapabilities: new Set(),
+    async start() {},
+    async stop() {},
+    isConnected: () => connected,
+    onMessage() {},
+    async sendMessage() {},
+    async sendDirectMessage(userId: string, text: string) {
+      dms.push({ userId, text });
+    },
+    async conversationsForUser() {
+      return [];
+    },
+    async performAdminAction() {
+      return '';
+    },
+  };
+  return { adapter, dms };
+}
+
+test('alertSuperAdmins: with at least one connected adapter, DMs every super admin on that adapter exactly as before and queues nothing', async (t) => {
+  t.after(() => resetPendingAlertsForTests());
+  resetPendingAlertsForTests();
+  const { adapter: connectedAdapter, dms } = makeFakeAdapter(true);
+  const { adapter: disconnectedAdapter } = makeFakeAdapter(false);
+
+  await alertSuperAdmins([disconnectedAdapter, connectedAdapter], 'test message');
+
+  assert.deepEqual(
+    dms.map((d) => d.userId).sort(),
+    ['super-1', 'super-2'],
+    'every super admin should be DMed via the connected adapter',
+  );
+  assert.equal(dms[0]?.text, 'test message');
+  assert.deepEqual(
+    getPendingAlertsForTests(),
+    [],
+    'nothing should be queued when a connected adapter exists',
+  );
+});
+
+test('alertSuperAdmins: with zero connected adapters, the message is queued instead of dropped, and a warn log fires', async (t) => {
+  t.after(() => resetPendingAlertsForTests());
+  resetPendingAlertsForTests();
+  const { adapter: disconnectedA } = makeFakeAdapter(false);
+  const { adapter: disconnectedB } = makeFakeAdapter(false);
+
+  const warnLogs: unknown[][] = [];
+  t.mock.method(logger, 'warn', (...args: unknown[]) => {
+    warnLogs.push(args);
+  });
+
+  await alertSuperAdmins([disconnectedA, disconnectedB], 'undeliverable message');
+
+  assert.deepEqual(getPendingAlertsForTests(), ['undeliverable message']);
+  assert.ok(
+    warnLogs.some((args) => typeof args[1] === 'string' && /could not be delivered live/.test(args[1])),
+    'a warn log must record the undelivered alert',
+  );
+});
+
+test('alertSuperAdmins: the pending queue never exceeds 5 entries, dropping the oldest first', async () => {
+  resetPendingAlertsForTests();
+  const { adapter: disconnected } = makeFakeAdapter(false);
+
+  for (let i = 1; i <= 6; i++) {
+    await alertSuperAdmins([disconnected], `message-${i}`);
+  }
+
+  assert.deepEqual(
+    getPendingAlertsForTests(),
+    ['message-2', 'message-3', 'message-4', 'message-5', 'message-6'],
+    'the oldest entry (message-1) should have been dropped once the cap of 5 was exceeded',
+  );
+});
+
+test('flushPendingAlerts: on reconnect, every queued message is sent via the reconnected adapter to every super admin, then the queue is cleared', async () => {
+  resetPendingAlertsForTests();
+  const { adapter: disconnected } = makeFakeAdapter(false);
+  await alertSuperAdmins([disconnected], 'queued-message-1');
+  await alertSuperAdmins([disconnected], 'queued-message-2');
+  assert.equal(getPendingAlertsForTests().length, 2);
+
+  const { adapter: reconnected, dms } = makeFakeAdapter(true);
+  await flushPendingAlerts(reconnected);
+
+  assert.deepEqual(
+    dms.map((d) => d.text).sort(),
+    ['queued-message-1', 'queued-message-1', 'queued-message-2', 'queued-message-2'],
+    'every queued message should be flushed to every super admin (2 messages x 2 admins = 4 DMs)',
+  );
+  assert.deepEqual(
+    dms.map((d) => d.userId).sort(),
+    ['super-1', 'super-1', 'super-2', 'super-2'],
+    'the flush should reach every super admin, not just one',
+  );
+  assert.deepEqual(getPendingAlertsForTests(), [], 'the queue must be empty after a successful flush');
+});
+
+test('flushPendingAlerts: a throwing sendDirectMessage during flush is logged and the message dropped, not re-queued', async (t) => {
+  resetPendingAlertsForTests();
+  const { adapter: disconnected } = makeFakeAdapter(false);
+  await alertSuperAdmins([disconnected], 'queued-message');
+  assert.equal(getPendingAlertsForTests().length, 1);
+
+  const warnLogs: unknown[][] = [];
+  t.mock.method(logger, 'warn', (...args: unknown[]) => {
+    warnLogs.push(args);
+  });
+  const throwingAdapter = makeFakeAdapter(true).adapter;
+  throwingAdapter.sendDirectMessage = async () => {
+    throw new Error('send failed');
+  };
+
+  await flushPendingAlerts(throwingAdapter);
+
+  assert.deepEqual(
+    getPendingAlertsForTests(),
+    [],
+    'a failed flush send must drop the message, not re-queue it',
+  );
+  assert.ok(
+    warnLogs.some((args) => typeof args[1] === 'string' && /flush failed/.test(args[1])),
+    'a warn log must record the failed flush send',
+  );
+});
+
+test('startDisconnectAlerts: a message queued during a total outage is flushed the moment the platform reconnects', (t) => {
+  resetPendingAlertsForTests();
+  let connected = false;
+  const { adapter, dms } = makeFakeAdapter(true);
+  adapter.isConnected = () => connected;
+
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 0 });
+  const timer = startDisconnectAlerts([adapter]);
+  try {
+    t.mock.timers.tick(30_000); // first check: disconnect begins
+    t.mock.timers.tick(60_000); // past HEALTH_ALERT_AFTER_MINUTES=1 — alert fires, queues (zero connected)
+    assert.equal(
+      getPendingAlertsForTests().length,
+      1,
+      'the alert should have been queued while disconnected',
+    );
+
+    connected = true;
+    t.mock.timers.tick(30_000); // next check sees reconnect -> flush
+  } finally {
+    clearInterval(timer);
+  }
+
+  assert.equal(dms.length, 1, 'the queued alert should have been flushed via the reconnected adapter');
+  assert.match(dms[0]?.text ?? '', /has been disconnected for over 1 minute\(s\)\./);
+  assert.deepEqual(getPendingAlertsForTests(), [], 'the queue must be empty after the flush');
+});
+
+// --- SECURITY: no new content class reaches the flushed DM (issue #534) ----
+
+test(
+  'SECURITY: a flushed queued alert is byte-identical to the fixed disconnect-alert template — no free text, ' +
+    'no user-supplied content can reach this DM path',
+  async () => {
+    resetPendingAlertsForTests();
+    const platform = 'discord';
+    const minutes = 1;
+    const template = `🔴 ${platform} has been disconnected for over ${minutes} minute(s).`;
+    const { adapter: disconnected } = makeFakeAdapter(false);
+    await alertSuperAdmins([disconnected], template);
+
+    const { adapter: reconnected, dms } = makeFakeAdapter(true);
+    await flushPendingAlerts(reconnected);
+
+    assert.equal(dms.length, 2); // one per super admin
+    for (const dm of dms) {
+      assert.equal(
+        dm.text,
+        '🔴 discord has been disconnected for over 1 minute(s).',
+        'the flushed message must exactly equal the fixed template, with no additional or free text appended',
+      );
+    }
+  },
+);
 
 test('a WhatsApp Cloud adapter whose consecutive-send-failure counter has crossed the threshold is reported disconnected, and health.ts still fires the sustained-disconnect error log even with no other adapter to DM through', (t) => {
   const adapter = new WhatsAppCloudAdapter();

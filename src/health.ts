@@ -15,11 +15,38 @@ import type { PlatformAdapter } from './platforms/types.js';
 
 const CHECK_INTERVAL_MS = 30_000;
 
+// Bounded so a persistently-disconnected deployment can't accumulate an
+// unbounded backlog; oldest is dropped once full (see queuePendingAlert).
+const PENDING_ALERT_QUEUE_CAP = 5;
+
+// Messages that couldn't be delivered live because every adapter was
+// disconnected. Flushed through the first adapter to reconnect (see `check`
+// below), then cleared. In-memory only — clears on restart, same as every
+// other best-effort notification convention in this codebase.
+const pendingAlerts: string[] = [];
+
+function queuePendingAlert(message: string): void {
+  pendingAlerts.push(message);
+  if (pendingAlerts.length > PENDING_ALERT_QUEUE_CAP) pendingAlerts.shift();
+}
+
+/** Shallow copy for read — tests can inspect the queue without mutating it. */
+export function getPendingAlertsForTests(): readonly string[] {
+  return [...pendingAlerts];
+}
+
+export function resetPendingAlertsForTests(): void {
+  pendingAlerts.length = 0;
+}
+
 /**
  * Periodic check across all registered adapters; on a sustained disconnect
  * past HEALTH_ALERT_AFTER_MINUTES, DMs configured super admins via whichever
  * adapter(s) are still connected and logs at error level. Debounced (see
- * healthState.ts) so a long outage produces exactly one alert.
+ * healthState.ts) so a long outage produces exactly one alert. If zero
+ * adapters are connected when the alert fires, the message is queued
+ * (capped) instead of lost, and flushed through the first adapter to
+ * reconnect.
  */
 export function startDisconnectAlerts(adapters: readonly PlatformAdapter[]): ReturnType<typeof setInterval> {
   const afterMs = config.behaviour.healthAlertAfterMinutes * 60_000;
@@ -37,6 +64,7 @@ export function startDisconnectAlerts(adapters: readonly PlatformAdapter[]): Ret
       trackers.set(adapter, tracker);
       if (justReconnected) {
         logger.info({ platform: adapter.platform }, 'Platform reconnected');
+        void flushPendingAlerts(adapter);
       }
       if (shouldAlert) {
         logger.error(
@@ -55,13 +83,42 @@ export function startDisconnectAlerts(adapters: readonly PlatformAdapter[]): Ret
   return timer;
 }
 
-async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  for (const adapter of adapters) {
-    if (!adapter.isConnected()) continue; // can't send through a dead connection
+// Exported (not just used internally by the check() interval) so tests can
+// drive queuing/overflow behaviour directly, without waiting out the
+// once-per-outage debounce in stepDisconnectTracker.
+export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
+  const connected = adapters.filter((adapter) => adapter.isConnected());
+  if (connected.length === 0) {
+    logger.warn(
+      { message },
+      'Health alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(message);
+    return;
+  }
+  for (const adapter of connected) {
     for (const id of superAdminIds(adapter.platform)) {
       adapter
         .sendDirectMessage(id, message)
         .catch((err) => logger.warn({ err, platform: adapter.platform, id }, 'Health alert DM failed'));
+    }
+  }
+}
+
+// Sends every queued message through the just-reconnected adapter to every
+// super admin, then clears the queue. A throwing send is logged and the
+// message dropped — never re-queued — so a persistently-broken send path
+// can't accumulate forever. Exported so tests can drive it directly.
+export async function flushPendingAlerts(adapter: PlatformAdapter): Promise<void> {
+  if (pendingAlerts.length === 0) return;
+  const queued = pendingAlerts.splice(0, pendingAlerts.length);
+  for (const message of queued) {
+    for (const id of superAdminIds(adapter.platform)) {
+      try {
+        await adapter.sendDirectMessage(id, message);
+      } catch (err) {
+        logger.warn({ err, platform: adapter.platform, id }, 'Queued health alert flush failed; dropping');
+      }
     }
   }
 }
