@@ -4257,7 +4257,12 @@ export function buildToolServer(
       await clearAccessRequest(platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
-      await notifyMemberApproved(adapter, userId, wasAlreadyMember, platform);
+      // Cross-platform approval DM (issue #157's pattern, extended by #548):
+      // routes through the TARGET's platform adapter, not the acting admin's
+      // current-turn one — degrades to today's silent skip if that platform
+      // isn't registered in this deployment.
+      const memberTarget = adapterFor(platform);
+      if (memberTarget) await notifyMemberApproved(memberTarget, userId, wasAlreadyMember, platform);
       const label = await resolveSanitizedLabel(platform, userId, args.displayName);
       return text(`Added ${label} as ${finalRole} on ${platform}.`);
     },
@@ -4531,7 +4536,12 @@ export function buildToolServer(
         });
         if (success) {
           await resetSessionsForRoleChange(platform, userId, 'grant_admin');
-          await notifyAdminApproved(adapter, userId, wasAlreadyAdmin, platform);
+          // Cross-platform promotion DM (issue #157's pattern, extended by
+          // #548): routes through the TARGET's platform adapter, not the
+          // acting admin's current-turn one — degrades to today's silent
+          // skip if that platform isn't registered in this deployment.
+          const adminTarget = adapterFor(platform);
+          if (adminTarget) await notifyAdminApproved(adminTarget, userId, wasAlreadyAdmin, platform);
         }
         return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
       });

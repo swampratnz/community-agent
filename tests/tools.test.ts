@@ -5376,6 +5376,221 @@ test(
   },
 );
 
+// add_member/grant_admin's cross-platform approval/promotion DM routing
+// (issue #548): the two notifyMemberApproved/notifyAdminApproved call sites
+// #157/#288/#325's adapterFor migration never reached. The caller is put on
+// whatsapp and the target on discord (the reverse of this file's other
+// single-platform tests) specifically so SUPER_ADMIN_WHATSAPP_NUMBERS's own
+// notifySuperAdmins fan-out (fired by audited() on every successful action)
+// lands on the CALLER's own whatsapp adapter, never the discord adapter this
+// test is actually pinning — keeping that expected background noise clearly
+// separated from the approval/promotion DM assertion below.
+test(
+  "SECURITY: add_member routes the approval DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-cross-${targetUserId}`;
+    const whatsappCalls: string[] = [];
+    const discordCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'whatsapp' as const,
+      userId: 'cross-platform-add-member-caller-548',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, whatsappAdapter, (platform) =>
+      platform === 'discord' ? discordAdapter : undefined,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(result.content[0]?.text ?? '', /^Added/);
+      assert.deepEqual(
+        discordCalls,
+        [targetUserId],
+        "the approval DM is sent through the target's own discord adapter exactly once",
+      );
+      assert.ok(
+        !whatsappCalls.includes(targetUserId),
+        "the acting admin's own whatsapp adapter must never be asked to DM the target's discord id",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: add_member sends no DM and does not throw when the target platform has no adapter registered (issue #548)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const conversationId = `convo-add-member-unregistered-${targetUserId}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'unregistered-add-member-caller-548',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    // No getAdapter at all — whatsapp simply isn't registered in this deployment.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'whatsapp' });
+      assert.match(result.content[0]?.text ?? '', /^Added/);
+      assert.equal(
+        discordCalls.length,
+        0,
+        'whatsapp is unregistered so the approval DM is silently skipped, never sent through the wrong (discord) adapter',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: grant_admin routes the promotion DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-grant-admin-cross-${targetUserId}`;
+    const whatsappCalls: string[] = [];
+    const discordCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const callerUserId = 'cross-platform-grant-admin-caller-548';
+    const caller = {
+      platform: 'whatsapp' as const,
+      userId: callerUserId,
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, whatsappAdapter, (platform) =>
+      platform === 'discord' ? discordAdapter : undefined,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pending = takePendingAction('whatsapp', conversationId, callerUserId);
+      assert.ok(pending, 'grant_admin must register a pending action, not execute directly');
+      await pending?.execute();
+
+      assert.deepEqual(
+        discordCalls,
+        [targetUserId],
+        "the promotion DM is sent through the target's own discord adapter exactly once",
+      );
+      assert.ok(
+        !whatsappCalls.includes(targetUserId),
+        "the acting admin's own whatsapp adapter must never be asked to DM the target's discord id",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: grant_admin sends no DM and does not throw when the target platform has no adapter registered (issue #548)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const conversationId = `convo-grant-admin-unregistered-${targetUserId}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const callerUserId = 'unregistered-grant-admin-caller-548';
+    const caller = {
+      platform: 'discord' as const,
+      userId: callerUserId,
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    // No getAdapter at all — whatsapp simply isn't registered in this deployment.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'whatsapp' });
+      const pending = takePendingAction('discord', conversationId, callerUserId);
+      assert.ok(pending, 'grant_admin must register a pending action, not execute directly');
+      const resultText = await pending?.execute();
+      assert.match(resultText ?? '', /^Granted/);
+      assert.equal(
+        discordCalls.length,
+        0,
+        'whatsapp is unregistered so the promotion DM is silently skipped, never sent through the wrong (discord) adapter',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
 // formatKnowledgeSearchResults holds all of knowledge_search's relevance-
 // filtering behaviour (issue #95) — it's exported and unit-tested directly
 // here with synthetic similarity values, same rationale as

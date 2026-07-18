@@ -1714,7 +1714,12 @@ base, unlike the other two's fixed-format extraction.
   as before — never an error, never a misdirected send. `notifySuperAdmins`
   still has the narrower limitation this closed for suggestions/reports: it
   has no cross-turn adapter lookup at all, since its callers don't know a
-  target platform to look up.
+  target platform to look up. `add_member`/`grant_admin`'s approval/promotion
+  DMs (`notifyMemberApproved`/`notifyAdminApproved`) are now also routed
+  through the same `adapterFor` lookup (issue #548) — they, unlike
+  `notifySuperAdmins`, always know the target platform (it's the tool's own
+  `platform` argument), so there was no structural reason left to leave them
+  on the old direct-adapter path.
 - **`appeal_moderation` (issue #496)** gives a member/guest a way to ask
   admins to double-check their own active warning(s)/mute — the missing
   action counterpart to `my_warnings`' read-only visibility. Self-scoped
