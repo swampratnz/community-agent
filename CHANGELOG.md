@@ -10,6 +10,23 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **Weekly admin digest now flags unhelpful ratings on general-knowledge
+  answers, not just knowledge-base ones** (#563): `list_low_rated_knowledge`/
+  `countLowRatedKnowledge` and the digest's `👎` line only ever covered
+  ratings attributed to a curated knowledge entry — a rating on a general-
+  knowledge (ungrounded, model-training-data) answer, the highest
+  accuracy-risk bucket the bot produces, had no push signal at all, only the
+  manual `list_answer_feedback` pull tool. A new rolling-window,
+  conversation-scoped count (`countGeneralUnhelpfulAnswers`, modelled on
+  `countMaxTurnsFailures`) surfaces a `⚠️` digest line whenever an admin has
+  ≥1 such rating in scope this week, pointing them at
+  `list_answer_feedback` (`unhelpfulOnly: true`) to review. No new tool, no
+  schema change, bare integer only — same privacy convention as every other
+  digest signal. See docs/ARCHITECTURE.md's admin-digest section.
+
 ## 2026-07-18
 
 ### Added

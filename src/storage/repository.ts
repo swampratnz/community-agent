@@ -4567,6 +4567,43 @@ export async function countMaxTurnsFailures(
 }
 
 /**
+ * Count unhelpful ratings on GENERAL-KNOWLEDGE answers (issue #563) — the
+ * `meta->>'knowledgeEntryId' IS NULL` complement `countLowRatedKnowledge`/
+ * `listKnowledgeFeedbackSummary` deliberately exclude (their own doc
+ * comments: "Ratings on interactions with no `knowledgeEntryId` are still
+ * excluded"). A general-knowledge answer has no community-curated grounding
+ * to re-check, unlike a KB-attributed one — the highest accuracy-risk bucket
+ * per VISION's answer-quality theme — so this is the missing push signal for
+ * it. Modelled on `countMaxTurnsFailures`'s rolling-window, conversation-
+ * scoped, true-`COUNT(*)` shape rather than `countLowRatedKnowledge`'s
+ * per-entity backlog shape: free-text general-knowledge answers have no
+ * stable grouping key to bucket repeated ratings against.
+ *
+ * The JOIN to `interactions` (rather than a `meta` subquery) means a row
+ * whose `interaction_id` is NULL — e.g. after the rated reply was purged via
+ * `forget_me`/`purge_user_data`, which sets `answer_feedback.interaction_id`
+ * to NULL on delete (schema.sql) — is excluded: with no interaction left to
+ * join, there's nothing to classify as grounded or ungrounded.
+ */
+export async function countGeneralUnhelpfulAnswers(
+  conversationIds: readonly string[],
+  days: number,
+): Promise<number> {
+  if (conversationIds.length === 0) return 0;
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+      WHERE answer_feedback.helpful = false
+        AND answer_feedback.conversation_id = ANY($1)
+        AND answer_feedback.created_at >= now() - ($2 || ' days')::interval
+        AND (interactions.meta->>'knowledgeEntryId') IS NULL`,
+    [[...conversationIds], String(days)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Flip a report's status (resolve/dismiss) — non-destructive, no CONFIRM
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
  * to `conversationIds` so an admin can only resolve reports from
