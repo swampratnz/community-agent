@@ -2583,10 +2583,10 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    "Perform a moderation action. warn_user sends immediately; timeout/kick/ban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite, and there is no unban_user counterpart in this bot; use Discord's own UI to unban. Admins can only act in conversations they are in.",
+    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. Admins can only act in conversations they are in.',
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'ban_user', 'delete_message', 'warn_user'])
+        .enum(['timeout_user', 'kick_user', 'ban_user', 'unban_user', 'delete_message', 'warn_user'])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
