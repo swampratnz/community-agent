@@ -289,6 +289,24 @@ offered to the model. Each privileged tool re-asserts the tier
 CONFIRM reply (handled deterministically by the router, never by the model),
 and every privileged action is audited and alerted to super admins by DM.
 
+`allowedTools` is additionally filtered by platform capability and feature
+flags (issue #535): `toolsForRole` itself drops Discord-only tools
+(`list_events`/`create_event`/`cancel_event`/`create_poll`/`end_poll`/
+`create_thread`/`archive_thread`/`assign_community_role`/
+`remove_community_role`/`list_assignable_roles` — every tool structurally
+gated on a Discord-only `PlatformAdapter` capability, per
+`DISCORD_ONLY_TOOLS` in `src/auth/rbac.ts`) on WhatsApp, and
+`buildQueryOptions` (`src/agent/core.ts`) further drops `generate_image`/
+`suggest_issue`/the 6 `dev_team_*` tools when their respective
+`IMAGE_GEN_ENABLED`/`GITHUB_ISSUE_ENABLED`/`DEV_TEAM_ENABLED` flag is off. So
+the "isn't even offered to the model" property holds for these tools too, not
+just tier gating — a tool nothing on this deployment can ever successfully
+call never reaches the model's context. Each handler's own flag/capability
+check is kept as defense in depth (a stale cached session, or a race during a
+flag flip, must still fail closed). `react_to_message` is deliberately NOT in
+this list — unlike the others it's implemented on both WhatsApp adapters
+(issues #495, #528), so it stays in `allowedTools` on every platform.
+
 | Capability | guest (gated) | member | admin | super_admin |
 |---|:--:|:--:|:--:|:--:|
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |

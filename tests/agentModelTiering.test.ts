@@ -17,6 +17,21 @@ const { config } = await import('../src/config.js');
 const { buildQueryOptions } = await import('../src/agent/core.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 
+// Same feature-flagged set as tests/agentOptions.test.ts — this process also
+// leaves IMAGE_GEN_ENABLED/GITHUB_ISSUE_ENABLED/DEV_TEAM_ENABLED unset
+// (default off), so buildQueryOptions drops these from allowedTools too
+// (issue #535).
+const FEATURE_FLAGGED_TOOLS = [
+  'mcp__community__generate_image',
+  'mcp__community__suggest_issue',
+  'mcp__community__dev_team_dispatch',
+  'mcp__community__dev_team_status',
+  'mcp__community__dev_team_result',
+  'mcp__community__dev_team_backlog',
+  'mcp__community__dev_team_findings',
+  'mcp__community__dev_team_verify',
+] as const;
+
 test('config: AGENT_MODEL_MEMBER set resolves to config.llm.memberModel (issue #382)', () => {
   assert.equal(config.llm.memberModel, 'claude-haiku-4-5-20251001');
   assert.notEqual(
@@ -48,10 +63,10 @@ test('SECURITY: AGENT_MODEL_MEMBER set ⇒ tools/allowedTools/disallowedTools ar
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     const webSearch = role === 'admin' || role === 'super_admin';
     assert.deepEqual(opts.tools, webSearch ? ['WebSearch'] : []);
-    assert.deepEqual(
-      [...opts.allowedTools].sort(),
-      [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])].sort(),
+    const expected = [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])].filter(
+      (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
     );
+    assert.deepEqual([...opts.allowedTools].sort(), [...expected].sort());
     assert.ok(opts.disallowedTools.includes('Task'));
     assert.ok(opts.disallowedTools.includes('WebFetch'));
     assert.equal(opts.disallowedTools.includes('WebSearch'), !webSearch);
