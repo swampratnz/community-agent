@@ -980,10 +980,13 @@ export class Router {
     // the thread's own id, which is never in `autoAnswerChannelIds` (that
     // list only ever holds parent channel ids), so without this lookup the
     // very next message in the same back-and-forth would silently revert to
-    // mention-required. Same map, same creation-anchored (non-refreshed)
-    // `ESCALATION_WINDOW_MS` TTL the CONFIRM/escalation intercepts above
-    // already trust — presence here means "live", sweep() prunes expired
-    // entries on its own tick.
+    // mention-required. Same map, same `ESCALATION_WINDOW_MS` TTL the
+    // CONFIRM/escalation intercepts above already trust — presence here
+    // means "live", sweep() prunes expired entries on its own tick. Unlike
+    // those intercepts (which only ever check presence/`parent`, never
+    // `at`), the follow-up branch below (issue #542) refreshes `at` on every
+    // follow-up so the window slides forward with activity instead of only
+    // ever counting down from thread creation.
     const autoAnswerThreadParent = this.autoAnswerThreadParents.get(msg.conversationId)?.parent;
     const isAutoAnswerCandidate =
       !msg.addressedToBot &&

@@ -1442,13 +1442,18 @@ control downstream of it is reused completely unchanged:
     let a single busy thread bypass the per-channel cap entirely. Pinned by a
     `SECURITY:` router test that exhausts the parent cap via top-level posts,
     then asserts an in-thread follow-up is dropped in the same window.
-  - **TTL is creation-anchored, not refreshed.** The `at` timestamp is set
-    once, when the thread is created, and a follow-up never extends it —
-    matching the existing CONFIRM/CANCEL and escalation intercepts' use of
-    the same map. A follow-up more than `ESCALATION_WINDOW_MS` (10 min) after
-    thread creation, once swept, reverts to mention-required rather than
-    remaining auto-answerable indefinitely. Pinned by a router test that
-    advances past the TTL.
+  - **TTL slides on every follow-up (issue #542).** The `at` timestamp is
+    rewritten to the follow-up's own arrival time on every in-thread
+    follow-up, so the `ESCALATION_WINDOW_MS` (10 min) window is measured from
+    the most recent activity, not just thread creation. `parent` is carried
+    over unchanged on every refresh, and the refresh path is reachable only
+    through a lookup that already found a live entry, so it can never seed or
+    revive an expired one. A thread with no follow-up for 10 minutes still
+    expires and reverts to mention-required, pruned by the same `sweep()`
+    tick as before — there is still no indefinitely auto-answerable thread,
+    only a continuously-active one stays live. Pinned by `SECURITY:` router
+    tests, including one that advances past the original creation+10min
+    cutoff but within 10min of the last refresh.
 
 ## Platform-specific notes
 
