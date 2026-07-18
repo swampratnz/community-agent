@@ -2353,6 +2353,37 @@ test('dev_team_findings / dev_team_verify return a friendly disabled message (no
   assert.equal(verify.isError, true);
 });
 
+// Issue #535 dropped generate_image/suggest_issue/dev_team_* from allowedTools
+// entirely when their config flag is off, so the model is never offered them
+// on a default-config deployment — but the handler-level refusal below is
+// kept as defense in depth (a stale cached session, or a race during a flag
+// flip, must still fail closed). This test proves that refusal still fires
+// even when the tool is called directly, independent of the allowedTools
+// filtering (this process leaves IMAGE_GEN_ENABLED unset — default off).
+test('SECURITY: generate_image handler refuses with a friendly message (not an error throw) when IMAGE_GEN_ENABLED is off, independent of the allowedTools filtering (issue #535)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-generate-image-disabled',
+  };
+  assert.equal(config.imageGen.enabled, false, 'precondition: image-gen feature is off in this test process');
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['generate_image'];
+  const result = await registeredTool.handler({ prompt: 'a cat' });
+  assert.match(result.content[0].text, /not enabled/i, 'disabled feature must return a friendly message');
+  assert.equal(result.isError, true);
+});
+
 test('SECURITY: update_knowledge registers a pending CONFIRM action instead of overwriting the KB in place (advisory E2)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {

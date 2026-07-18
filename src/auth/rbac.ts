@@ -16,6 +16,13 @@ import type { Platform } from '../platforms/types.js';
  * against the caller's real conversation membership; destructive actions
  * additionally require an out-of-band CONFIRM from the caller (see
  * agent/pendingActions.ts). Roles come from env/DB only — never chat text.
+ *
+ * `toolsForRole` additionally drops platform-incompatible tools (Discord-only
+ * tools, on WhatsApp) from the tier list itself; `buildQueryOptions`
+ * (agent/core.ts) further drops feature-flagged tools whose config flag is
+ * off (issue #535) — so a tool nothing can ever successfully call on this
+ * deployment isn't even offered to the model, not merely refused at call
+ * time.
  */
 
 export type { Tier } from '../platforms/types.js';
@@ -236,16 +243,33 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__dev_team_verify',
 ] as const;
 
-export function toolsForRole(role: Tier): string[] {
-  switch (role) {
-    case 'super_admin':
-      return [...MEMBER_TOOLS, ...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS];
-    case 'admin':
-      return [...MEMBER_TOOLS, ...ADMIN_TOOLS];
-    default:
-      // Guests only ever reach the agent in open mode; same surface as member.
-      return [...MEMBER_TOOLS];
-  }
+// Discord-only tools: implemented by src/platforms/discord/adapter.ts but not
+// by either WhatsApp adapter (cloudAdapter.ts/baileysAdapter.ts both report
+// platform 'whatsapp'), so the handler unconditionally refuses on WhatsApp
+// (see tools.ts's `!adapter.listUpcomingEvents` / `adminCapabilities.has(...)`
+// checks). Dropped from the tier list itself on non-Discord platforms (issue
+// #535) so the model isn't even offered a schema it can never successfully
+// call there — the handler refusal stays as defense in depth.
+const DISCORD_ONLY_TOOLS: readonly string[] = [
+  'mcp__community__list_events',
+  'mcp__community__create_event',
+  'mcp__community__cancel_event',
+];
+
+// `platform` defaults to 'discord' (the unfiltered, full-surface case) so the
+// many existing tier-only call sites (tests asserting "this tier can/can't
+// reach tool X" with no interest in platform) keep compiling and keep
+// asserting the pre-#535 list unchanged; `buildQueryOptions` (core.ts) is the
+// one real call site and always passes the caller's actual platform.
+export function toolsForRole(role: Tier, platform: Platform = 'discord'): string[] {
+  const tools =
+    role === 'super_admin'
+      ? [...MEMBER_TOOLS, ...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]
+      : role === 'admin'
+        ? [...MEMBER_TOOLS, ...ADMIN_TOOLS]
+        : // Guests only ever reach the agent in open mode; same surface as member.
+          [...MEMBER_TOOLS];
+  return platform === 'discord' ? tools : tools.filter((t) => !DISCORD_ONLY_TOOLS.includes(t));
 }
 
 export interface CallerContext {

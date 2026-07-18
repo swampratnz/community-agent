@@ -10,6 +10,7 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
 const { buildQueryOptions } = await import('../src/agent/core.js');
 const { ADMIN_TOOLS, SUPER_ADMIN_TOOLS, toolsForRole } = await import('../src/auth/rbac.js');
+const { config } = await import('../src/config.js');
 
 test('SECURITY: members/guests get NO built-in tools; admin+ get exactly WebSearch', () => {
   for (const role of ['guest', 'member'] as const) {
@@ -47,16 +48,70 @@ test('SECURITY: settingSources is empty for every tier (host ~/.claude config is
   }
 });
 
-test('SECURITY: allowedTools tracks toolsForRole exactly — no drift between rbac.ts and core.ts', () => {
+// The 9 tools issue #535 filters out of allowedTools when their config flag
+// is off (default). Kept in one place here so the two tests below (the
+// no-drift pin and the default-config exclusion pin) can't silently disagree
+// about which tools are feature-flagged.
+const FEATURE_FLAGGED_TOOLS = [
+  'mcp__community__generate_image',
+  'mcp__community__suggest_issue',
+  'mcp__community__dev_team_dispatch',
+  'mcp__community__dev_team_status',
+  'mcp__community__dev_team_result',
+  'mcp__community__dev_team_backlog',
+  'mcp__community__dev_team_findings',
+  'mcp__community__dev_team_verify',
+] as const;
+
+test('SECURITY: allowedTools tracks toolsForRole exactly, modulo feature-flag/platform filtering — no drift between rbac.ts and core.ts', () => {
+  // Default config (this test process sets none of IMAGE_GEN_ENABLED /
+  // GITHUB_ISSUE_ENABLED / DEV_TEAM_ENABLED) — all three flags are off.
+  assert.equal(config.imageGen.enabled, false, 'precondition: image-gen is off in this test process');
+  assert.equal(config.github.enabled, false, 'precondition: github-issue is off in this test process');
+  assert.equal(config.devTeam.enabled, false, 'precondition: dev-team is off in this test process');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
-    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
-    const webSearch = role === 'admin' || role === 'super_admin';
-    const expected = [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])];
-    assert.deepEqual(
-      [...opts.allowedTools].sort(),
-      [...expected].sort(),
-      `${role} allowedTools must be exactly toolsForRole(${role}) plus tier-gated WebSearch`,
-    );
+    for (const platform of ['discord', 'whatsapp'] as const) {
+      const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', platform);
+      const webSearch = role === 'admin' || role === 'super_admin';
+      const expected = [...toolsForRole(role, platform), ...(webSearch ? ['WebSearch'] : [])].filter(
+        (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+      );
+      assert.deepEqual(
+        [...opts.allowedTools].sort(),
+        [...expected].sort(),
+        `${role}/${platform} allowedTools must be exactly toolsForRole(${role}, ${platform}) plus tier-gated ` +
+          'WebSearch, minus the feature-flagged tools disabled in this process — no other difference',
+      );
+    }
+  }
+});
+
+test('SECURITY: acceptance criterion 1 — default config excludes all 9 feature-flagged tools from a super_admin turn', () => {
+  const opts = buildQueryOptions('super_admin', 'prompt', {}, null, 'conv-1', 'discord');
+  for (const t of FEATURE_FLAGGED_TOOLS) {
+    assert.ok(!opts.allowedTools.includes(t), `default config must exclude ${t} from allowedTools`);
+  }
+});
+
+test('platform filtering — WhatsApp excludes list_events (member) and create_event/cancel_event (admin+)', () => {
+  const member = buildQueryOptions('member', 'prompt', {}, null, 'conv-1', 'whatsapp');
+  assert.ok(!member.allowedTools.includes('mcp__community__list_events'));
+  for (const role of ['admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'whatsapp');
+    assert.ok(!opts.allowedTools.includes('mcp__community__create_event'));
+    assert.ok(!opts.allowedTools.includes('mcp__community__cancel_event'));
+  }
+});
+
+test('platform filtering — Discord is unaffected: list_events (member+) and create_event/cancel_event (admin+) still present', () => {
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+    assert.ok(opts.allowedTools.includes('mcp__community__list_events'));
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+    assert.ok(opts.allowedTools.includes('mcp__community__create_event'));
+    assert.ok(opts.allowedTools.includes('mcp__community__cancel_event'));
   }
 });
 
@@ -73,13 +128,18 @@ test('SECURITY: admin turns never carry super-admin tools', () => {
     assert.ok(!opts.allowedTools.includes(t), `admin allowedTools must not include ${t}`);
   }
   for (const t of ADMIN_TOOLS) {
+    // generate_image is feature-flagged (off by default in this test process,
+    // issue #535) and is correctly ABSENT here — every other admin tool must
+    // still be present.
+    if ((FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t)) continue;
     assert.ok(opts.allowedTools.includes(t), `admin allowedTools must include ${t}`);
   }
 });
 
-test('super-admin turns carry the full surface', () => {
+test('super-admin turns carry the full surface, minus feature-flagged tools disabled by default', () => {
   const opts = buildQueryOptions('super_admin', 'prompt', {}, null, 'conv-1');
   for (const t of [...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]) {
+    if ((FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t)) continue;
     assert.ok(opts.allowedTools.includes(t));
   }
 });
@@ -127,10 +187,10 @@ test('SECURITY: AGENT_MODEL_MEMBER unset ⇒ tools/allowedTools/disallowedTools 
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     const webSearch = role === 'admin' || role === 'super_admin';
     assert.deepEqual(opts.tools, webSearch ? ['WebSearch'] : []);
-    assert.deepEqual(
-      [...opts.allowedTools].sort(),
-      [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])].sort(),
+    const expected = [...toolsForRole(role), ...(webSearch ? ['WebSearch'] : [])].filter(
+      (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
     );
+    assert.deepEqual([...opts.allowedTools].sort(), [...expected].sort());
     assert.ok(opts.disallowedTools.includes('Task'));
     assert.ok(opts.disallowedTools.includes('WebFetch'));
     assert.equal(opts.disallowedTools.includes('WebSearch'), !webSearch);
