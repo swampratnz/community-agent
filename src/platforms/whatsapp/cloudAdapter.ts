@@ -373,8 +373,16 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
   }
 
-  async sendMessage(out: OutgoingMessage): Promise<void> {
+  // No `deleteOwnMessage` on this adapter: the Cloud Business API has no
+  // message-deletion/unsend endpoint at all (mirrors the existing
+  // `delete_message` capability gap, cloudAdapter.ts's `adminCapabilities`
+  // below). `sendMessage` therefore always returns undefined — issue #575's
+  // reply-retraction mapping is harmless to populate with no id to act on,
+  // but there is genuinely no id to report here since `sendText` doesn't
+  // surface Meta's response wamid.
+  async sendMessage(out: OutgoingMessage): Promise<string | undefined> {
     await this.sendText(out.conversationId, out.text, out.language);
+    return undefined;
   }
 
   async sendDirectMessage(userId: string, text: string): Promise<void> {

@@ -10,6 +10,27 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **Auto-retract the bot's own reply when the member deletes the message it
+  answered** (#575): a member's native platform delete/revoke is a one-tap
+  action that reasonably implies "make this go away" — including a regretted
+  disclosure (health, immigration, workplace) restated in the bot's answer —
+  but previously only the *stored* row was ever touched (issue #48/#103's
+  ambient-archiving delete honouring); the *live* reply stayed public
+  indefinitely. `AUTO_RETRACT_REPLY_ENABLED` (off by default) closes that gap:
+  Discord deletes the bot's own message via the same mechanism the admin-only
+  `delete_message` action uses; WhatsApp Baileys sends a REVOKE for the bot's
+  own prior send, honouring the member's revoke only when it comes from the
+  message's true original sender or a group admin (reusing #48/#103's
+  spoofed-revoke authorship discipline, fail-safe on any other participant).
+  WhatsApp Cloud is excluded by capability (no unsend endpoint), never by
+  throwing. Independent of, and composable with, the existing archived-row
+  honouring — no new tool, no RBAC change, no schema/migration (an in-memory,
+  TTL'd, size-capped mapping only). Privacy-positive: this reduces exposure
+  rather than increasing retention or access.
+
 ## 2026-07-18
 
 ### Added

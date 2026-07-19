@@ -274,6 +274,60 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   > only. You can tell the bot to "forget me" at any time to erase your
   > stored messages [, and messages are automatically deleted after N days].
   > Questions → ask an admin.
+- **Auto-retracting the bot's own reply** (`AUTO_RETRACT_REPLY_ENABLED`,
+  issue #575, off by default): when a member deletes the message the bot
+  answered, the bot retracts its own live reply too — independent of, and
+  never touching, the archived-row mechanisms above (see docs/ARCHITECTURE.md
+  for how the two compose). **Privacy-positive, not a regression**: this
+  *reduces* data exposure (a reply that often restated the question no longer
+  sits public indefinitely) rather than increasing retention or access — the
+  opposite direction of a privacy-regression change, and in keeping with NZ
+  Privacy Act 2020 expectations that a member's decision to delete something
+  is honoured as fully as the platform allows. There is no new
+  model-reachable surface: this is server-side plumbing triggered only by a
+  genuine platform delete/revoke gateway event, never invocable via a chat
+  message, a tool call, or any model action, and it introduces no new tool
+  and no RBAC change.
+  - **`SECURITY:` WhatsApp revoke-authorship check.** Exactly like the
+    archived-row delete/edit honouring above, WhatsApp servers don't validate
+    revoke-stanza authorship — only clients do — and a modified client can
+    broadcast a revoke keyed to ANOTHER participant's message id. Without a
+    check, that would let any group participant retract a reply the bot sent
+    to someone else just by forging a revoke keyed to that reply's origin
+    message id. The mitigation reuses the #48/#103 discipline exactly:
+    honour the revoke only when the revoker is the reply-mapping's own
+    recorded original sender, or is a group admin (legitimate "delete for
+    everyone" moderation) — any other revoker is ignored, fail-safe. Unlike
+    the archived-row check, this never depends on an archived
+    `interactions` row existing (it works even with ambient archiving off):
+    the sender is captured directly in the in-memory reply mapping when the
+    router sends the reply. A **failed** authorship check must never consume
+    the mapping either — `src/replyRetraction.ts` exposes a non-destructive
+    `peekReplyMapping` for this check, only evicting the entry once a
+    retraction is actually authorised, so a single forged/non-author revoke
+    can't permanently deny a later legitimate retraction of the same reply (a
+    griefing vector a naive "look up and delete unconditionally" design would
+    have opened). Pinned by a `SECURITY:` test that forges a revoke keyed to
+    another participant's mapped message and asserts no retraction occurs,
+    then confirms the true sender (or a group admin) can still retract it
+    afterward.
+  - **`SECURITY:` Flag-off is byte-identical.** With the flag unset (the
+    default), the router never records a reply mapping in the first place —
+    Discord's and WhatsApp Baileys' delete/revoke listeners find nothing to
+    retract, and neither adapter's `deleteOwnMessage` is ever called. Pinned
+    by a test asserting zero calls to that method on both platforms.
+  - **Capability-gated, fails safe.** WhatsApp Cloud has no
+    message-deletion/unsend endpoint at all, mirroring the existing
+    `delete_message` capability gap — enabling the flag has no effect there
+    and never throws, since Cloud has no delete/revoke event source to react
+    to in the first place (capability-gated by omission, not by a runtime
+    check that could be bypassed).
+  - **Bounded memory.** The reply-mapping is in-memory only (no schema/
+    migration — a restart merely means a reply sent just before it can no
+    longer be auto-retracted, the same best-effort tradeoff WhatsApp's own
+    "delete for everyone" already has), TTL'd (30 min) and size-capped
+    (1000 entries, oldest-first eviction), so a delete storm or an idle
+    process can't grow it unboundedly.
 - **Context digests** (`context_digests`, issue #51): an internal batch job
   summarises *already-stored* interactions into aggregate topic digests — no
   new collection surface. Admin-tier reads only (`list_context_digests`,
