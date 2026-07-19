@@ -487,7 +487,7 @@ test(
 
     const beforeRow = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
     const updated = await updateKnowledge({ id, content: 'We meet monthly on the SECOND Tuesday now.' });
-    assert.equal(updated, true);
+    assert.equal(updated.updated, true);
 
     const afterRow = await pool.query(`SELECT title, content, updated_at FROM knowledge WHERE id = $1`, [id]);
     assert.equal(afterRow.rows[0].title, 'Meetup schedule', 'unspecified field (title) is preserved');
@@ -780,6 +780,56 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE scope IN ($1, $2)`, [scope, `${RUN}-other-scope`]);
     void dupId;
     void distinctId;
+  },
+);
+
+test(
+  'repository: updateKnowledge surfaces the same near-duplicate nudge saveKnowledge does, but excludes the entry being edited from its own candidate set (issue #584)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-dup-scope`;
+    const { id: firstId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: secondId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    // A near-no-op edit (whitespace-only tweak) re-embeds to something ~1.0
+    // similar to the entry's OWN pre-edit content — without exclusion this
+    // would always self-nudge.
+    const selfEdit = await updateKnowledge({
+      id: secondId,
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+    assert.equal(
+      selfEdit.similarEntry,
+      undefined,
+      'SECURITY: the entry being edited must never be reported as its own near-duplicate',
+    );
+
+    // Editing secondId's content to converge onto firstId's topic DOES nudge,
+    // pointing at the other (pre-existing) entry.
+    const convergingEdit = await updateKnowledge({
+      id: secondId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    assert.ok(convergingEdit.similarEntry, 'a converging edit onto a different entry triggers a nudge');
+    assert.equal(convergingEdit.similarEntry.id, firstId, 'nudge points at the other entry, not itself');
+    assert.ok(
+      convergingEdit.similarEntry.similarity >= 0.92,
+      'reported similarity clears the duplicate threshold',
+    );
+    assert.equal(convergingEdit.similarEntry.title, 'WhatsApp linking steps');
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
   },
 );
 
@@ -2306,7 +2356,7 @@ test(
     );
 
     const updated = await updateKnowledge({ id: knowledgeId, content: gapQuery });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     const afterUpdate = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [gap.id]);
     assert.ok(
@@ -2347,7 +2397,7 @@ test(
     // Editing that same 'auto' row (e.g. the daily refresh's updateKnowledge
     // call) must also not resolve gaps — created_by_role never changes.
     const autoUpdated = await updateKnowledge({ id: autoId, content: `${autoQuery} refreshed` });
-    assert.ok(autoUpdated, 'update applied');
+    assert.ok(autoUpdated.updated, 'update applied');
     const afterAutoUpdate = await pool.query(`SELECT resolved_at FROM knowledge_gaps WHERE id = $1`, [
       autoGap.id,
     ]);
@@ -6980,7 +7030,7 @@ test(
     assert.ok(beforeRow, 'the raw rating is visible before the edit');
 
     const updated = await updateKnowledge({ id: entryId, content: `${RUN} raw-audit entry content, fixed` });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     const afterEdit = await listAnswerFeedback([conversationId]);
     const afterRow = afterEdit.find((r) => r.id === feedbackId);
@@ -7135,7 +7185,7 @@ test(
     );
 
     const updated = await updateKnowledge({ id: entryId, content: `${RUN} reset entry content, fixed` });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     const afterEdit = await listKnowledgeFeedbackSummary([conversationId]);
     assert.ok(
@@ -7573,7 +7623,7 @@ test(
       id: entryId,
       content: `${RUN} low-rated reset entry content, fixed`,
     });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     const afterEdit = await isKnowledgeLowRated(entryId, 2);
     assert.equal(typeof afterEdit, 'boolean');
@@ -7717,7 +7767,7 @@ test(
       id: entryId,
       content: `${RUN} batch reset entry content, fixed`,
     });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     const afterEdit = await areKnowledgeEntriesLowRated([entryId, siblingEntryId], 2);
     assert.deepEqual(
@@ -7852,7 +7902,7 @@ test(
       id: entryId,
       content: `${RUN} count reset entry content, fixed`,
     });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     assert.equal(
       await countLowRatedKnowledge([conversationId]),
@@ -7976,7 +8026,7 @@ test(
     ];
 
     const updated = await updateKnowledge({ id: entryId, content: `${RUN} scope-edit entry content, fixed` });
-    assert.ok(updated, 'update applied');
+    assert.ok(updated.updated, 'update applied');
 
     // Post-edit ratings: 2 in-scope, 2 out-of-scope.
     const postEditUsers = [

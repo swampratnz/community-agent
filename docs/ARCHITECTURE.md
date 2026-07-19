@@ -128,7 +128,16 @@ memory**:
 4. Admins can promote durable facts into `knowledge` via `save_knowledge`, and
    curate existing entries with `list_knowledge` (browse by scope),
    `update_knowledge` (correct + re-embed), and `delete_knowledge` (retire,
-   CONFIRM-gated). `scope` (`'global'` | a platform | a conversation id) is
+   CONFIRM-gated). `update_knowledge` now surfaces the same write-time
+   near-duplicate nudge `save_knowledge` does (both call a single shared
+   `findNearDuplicateKnowledge` helper) — an ordinary curation edit that
+   converges an entry's wording onto a different entry's topic gets an
+   immediate advisory note instead of waiting for the weekly digest to catch
+   it retroactively, closing the asymmetry #316 documented. The check
+   excludes the entry being edited from its own candidate set, is purely
+   advisory (the edit always proceeds, matching #93's nudge-not-block
+   decision), and stays admin-tier + CONFIRM-gated exactly as before (issue
+   #584). `scope` (`'global'` | a platform | a conversation id) is
    enforced at retrieval time: `knowledge_search` only ever surfaces
    `'global'` entries plus entries scoped to the caller's own platform or
    conversation (see docs/SECURITY.md, issue #106). `list_knowledge` is the
