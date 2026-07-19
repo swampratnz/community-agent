@@ -154,6 +154,25 @@ jobs:
               echo "::endgroup::"; continue
             fi
 
+            # --- Governance / CI / config paths are ALWAYS human-merged --------
+            # A PR that changes CI or any workflow (including THIS loop's own
+            # gates), the check machinery (npm scripts, the security-gate script,
+            # lint/format/typecheck config), or the governance docs could weaken
+            # what "green"/"eligible" even means for auto-merge — and because
+            # `pull_request` CI runs the workflow version FROM THE PR BRANCH, a PR
+            # could neuter a check and still show that named check "passing".
+            # Auto-merging such a PR on an LLM `LGTM` would let the pipeline
+            # rewrite its own guardrails unattended. Route ANY PR touching these
+            # paths to a mandatory human merge, regardless of LGTM/green.
+            # (Deliberately NOT including tests/security-floor.json or CHANGELOG.md
+            # — those are per-PR DATA nearly every PR touches; excluding them
+            # would merge nothing. This list is the files that change the RULES.)
+            files="$(gh pr view "$n" --repo "$REPO" --json files --jq '.files[].path')"
+            if printf '%s\n' "$files" | grep -qE '^(\.github/|scripts/|CLAUDE\.md$|docs/PIPELINE\.md$|docs/SECURITY\.md$|package(-lock)?\.json$|tsconfig([.-].*)?\.json$|eslint\.config\.|\.prettier)'; then
+              echo "PR #$n: touches a governance/CI/config path (workflows, check machinery, or governance docs) — requires human merge, skip."
+              echo "::endgroup::"; continue
+            fi
+
             # Only NOW (structurally eligible) resolve the state GitHub computes
             # asynchronously: `mergeable` reads UNKNOWN until it settles, so poll
             # a bounded number of times, then defer to a later tick rather than

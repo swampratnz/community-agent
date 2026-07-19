@@ -114,11 +114,19 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   forge an approval) **newer than the head commit** (a stale approval from
   before a later push never counts) — and is not labelled
   `needs-human` or `no-auto-merge` (pin a PR out by hand, same shape as
-  `no-auto-resolve`). It merges **exactly one PR per run**: afterwards `main`
-  has advanced, so it dispatches the conflict resolver to rebase whatever now
-  conflicts, and the next PR only re-qualifies once it is green against the new
-  `main` — so a PR is never merged except against the exact `main` its checks
-  last passed on. Branch protection on `main` (required checks + who may merge)
+  `no-auto-resolve`). Crucially, it **routes any PR touching a governance/CI/
+  config path to a human merge** — `.github/**` (workflows/CI, including this
+  loop itself), `scripts/**` (the check machinery), `package.json`,
+  typecheck/lint/format config, and the `CLAUDE.md`/`docs/PIPELINE.md`/
+  `docs/SECURITY.md` governance docs — so the pipeline can never auto-merge a
+  change to its own guardrails or to what "green" means (and since
+  `pull_request` CI runs the workflow version from the PR branch, a PR could
+  otherwise weaken a check and still show it "passing"). It merges **exactly one
+  PR per run**: afterwards `main` has advanced, so it dispatches the conflict
+  resolver to rebase whatever now conflicts, and the next PR only re-qualifies
+  once it is green against the new `main` — so a PR is never merged except
+  against the exact `main` its checks last passed on. Branch protection on
+  `main` (required checks + who may merge)
   is the enforceable backstop, exactly as for the push-based loops; if it
   requires a human approving *review* the merge is refused and the PR is left
   for a human, since the automated verdict is a comment, not a review.

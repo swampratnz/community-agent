@@ -155,8 +155,12 @@ ownership rules:
   authored by the build worker (`claude[bot]` — the exact identity, not merely
   any bot), `Closes #`, has all checks green, is `MERGEABLE`, and whose
   LATEST automated review verdict is an `LGTM` (from `github-actions[bot]`,
-  the review worker's identity) newer than the head commit —
-  never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
+  the review worker's identity) newer than the head commit, and does NOT touch
+  any governance/CI/config path (`.github/`, `scripts/`, `package.json`,
+  typecheck/lint/format config, `CLAUDE.md`, `docs/PIPELINE.md`,
+  `docs/SECURITY.md`) — those always require a human merge, so the loop can
+  never auto-merge a change to its own guardrails or to what "green" means.
+  Never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to
   rebase the rest, and the next PR only re-qualifies once it is green against
   the new `main`. Branch protection on `main` is the enforceable backstop, as

@@ -1813,9 +1813,16 @@ number could reach an unrelated person).
       `MERGEABLE`, exact-identity + freshness + `--match-head-commit` gates — all
       deterministic, no LLM, so no *added* injection surface of its own). The
       residual risk it accepts is a review LLM tricked into a wrongful `LGTM`
-      shipping unreviewed code to `main` unattended. Controls: it is **off by
-      default** (`AUTOMERGE_MODE` unset ⇒ inert; set `dry-run` to observe, `live`
-      to act); any PR can be pinned out with `no-auto-merge`; and branch
+      shipping unreviewed *application* code to `main` unattended. Controls: it is
+      **off by default** (`AUTOMERGE_MODE` unset ⇒ inert; set `dry-run` to
+      observe, `live` to act); it **always routes a PR touching any
+      governance/CI/config path to a human merge** — `.github/**` (workflows/CI,
+      including the auto-merge loop itself), `scripts/**` (the check machinery),
+      `package.json`, typecheck/lint/format config, and the
+      `CLAUDE.md`/`docs/PIPELINE.md`/`docs/SECURITY.md` docs — so the loop can
+      never auto-merge a change to its *own* gates or to what "green" means (which
+      matters because `pull_request` CI runs the workflow version from the PR
+      branch); any PR can be pinned out with `no-auto-merge`; and branch
       protection's required checks + who-may-merge still bound it. If you require
       the strict "no code reaches `main` without a human even if a worker is
       prompt-injected" guarantee, leave `AUTOMERGE_MODE` unset (or require a human
