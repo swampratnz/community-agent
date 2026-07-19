@@ -117,9 +117,13 @@ memory**:
    on demand mid-turn. Cross-conversation search is admin-only.
    `knowledge_search`'s result ordering is similarity-descending except for a
    narrow tie-break (issue #308): when two relevant hits land within
-   `KNOWLEDGE_TIE_MARGIN` of each other and exactly one is stale (per
-   `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), the fresher one is listed
-   first — a real relevance gap always wins regardless of staleness.
+   `KNOWLEDGE_TIE_MARGIN` of each other, the tie is broken first by low-rated
+   status (issue #562) — if exactly one hit has been flagged unhelpful by
+   ≥2 distinct members (per `areKnowledgeEntriesLowRated`), the non-low-rated
+   hit is listed first — and only then, if that doesn't decide it, by
+   staleness (per `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the
+   fresher one is listed first — a real relevance gap always wins regardless
+   of rating or staleness.
    `isKnowledgeStale` also honors an optional absolute content-age ceiling,
    `KNOWLEDGE_STALE_MAX_AGE_DAYS` (issue #380, off unless set), OR-ed into the
    same predicate: it fires on a hit's edit age alone, closing the gap where a
@@ -199,11 +203,23 @@ memory**:
    and the `repeatMaxTurnsShortcut: true` stamp issue #306's shortcut already
    writes for a replayed wall-hit, since each is a distinct member-facing
    failure — a bare integer only, no message content, question text, user id,
-   or conversation id. All these counts are
+   or conversation id.
+   Plus (issue #563) their own scoped count of unhelpful ratings on
+   general-knowledge (ungrounded) answers, sourced from
+   `countGeneralUnhelpfulAnswers(scope, ...)` — conversation-scoped and
+   windowed identically to the max-turns-failures count above. It is the
+   `meta->>'knowledgeEntryId' IS NULL` complement of the low-rated-knowledge
+   count above, which deliberately excludes ratings with no `knowledgeEntryId`:
+   a general-knowledge answer has no community-curated grounding to re-check,
+   the highest accuracy-risk bucket the bot produces (VISION's answer-quality
+   theme). No new tool — the digest line points an admin at the existing
+   `list_answer_feedback` (`unhelpfulOnly: true`) to drill in. A bare integer
+   only, no question text, answer content, comment, or user id. All these
+   counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
-   `countMutedMembers`/`countMaxTurnsFailures`)
+   `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Three of these queue lines also
@@ -251,6 +267,28 @@ memory**:
    identically whether `ADMIN_DIGEST_ENABLED` is on or off (that flag only
    gates the proactive timer, never the admin's standing authorization to
    read their own already-scoped counts).
+
+`feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
+#559) answers a different, static question `admin_digest`/`community_info`
+don't: "which of this deployment's ~28 opt-in `*_ENABLED` config flags are
+actually on right now?" — previously only answerable by reading env vars on
+the deploy host directly. It is deliberately **not** a generic config dump: a
+fixed, hand-maintained `FEATURE_FLAG_MAP` (`src/agent/tools.ts`) allowlists
+exactly the boolean `*_ENABLED` flags, each mapped to a dotted `configPath`
+into the already-loaded `config` singleton, a human label, and a category
+(Moderation, Knowledge & Learning, Admin Alerts & Digest, Onboarding,
+WhatsApp, Cost/Model, Integrations). The handler and its formatter only ever
+index those fixed paths — never `Object.entries`/`Object.values`/spread the
+`config` object itself — so a missing allowlist entry can only under-report a
+flag, never accidentally expose a non-boolean field (a token, URL, or id) by
+that field merely existing on `config`. Super-admin only (not admin): several
+flags reflect security-relevant posture (e.g. `MODERATION_LLM_ABUSE_ENABLED`,
+`WHATSAPP_VOICE_MIN_ROLE`), so this follows `engagement_stats`/`admin_activity`'s
+own precedent of keeping guild-wide, non-conversation-scoped operational state
+at the operator floor. An anti-drift test ties `FEATURE_FLAG_MAP` to every
+`*_ENABLED` identifier actually in `config.ts`, so a newly-added flag that
+isn't consciously surfaced (or exempted) fails CI loudly, mirroring the
+`community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage pins (issues #311/#367).
 
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
@@ -347,6 +385,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
+| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags, from a fixed boolean-only allowlist; no arguments, read-only, no CONFIRM; issue #559) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
@@ -1435,22 +1474,48 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   DMs configured super admins via whichever adapter(s) are still up and logs
   at `error`. Debounced: one alert per outage, not one per check tick;
   reconnecting clears the state silently (no "it's back!" spam).
-- **Pending-alert queue for the zero-connected-adapter case** (issue #534) —
-  in a single-platform deployment (Discord-only or WhatsApp-only), the
-  platform going down means the alert above finds *zero* connected adapters
-  to DM through, which previously dropped the message silently. `health.ts`
-  now holds a small in-memory queue (capped at 5, oldest dropped first) local
-  to the module: when `alertSuperAdmins` finds nothing connected, it pushes
-  the message onto the queue instead of discarding it and logs at `warn`. The
-  existing 30s poll already computes `justReconnected` per adapter; the first
-  reconnect flushes every queued message through that adapter's
-  `sendDirectMessage` to every super admin, then clears the queue. A flush
-  send that throws is logged and the message dropped, never re-queued, so a
-  persistently-broken send path can't accumulate forever. In-memory only —
-  clears on restart, same tradeoff as every other best-effort
-  alert/cooldown in this codebase. Not yet extended to `backgroundJobs.ts`'s
-  `alertSuperAdmins` or `tools.ts`'s `notifySuperAdmins`, which share the
-  identical blind spot — documented growth path, not built here.
+- **Shared pending-alert queue for the zero-connected-adapter case** (issue
+  #534, extended to all three producers by #545) — in a single-platform
+  deployment (Discord-only or WhatsApp-only), an alert fired while that
+  platform is down finds *zero* connected adapters to DM through, which
+  previously dropped the message silently. `src/pendingAlertQueue.ts` is a
+  small leaf module (no imports from `health.ts`/`backgroundJobs.ts`/
+  `tools.ts`) holding one in-memory queue (capped at 5 combined across all
+  producers): `queuePendingAlert(message, priority)` pushes a message onto it.
+  Three call sites share it — `health.ts`'s own `alertSuperAdmins`
+  (sustained-disconnect alert), `backgroundJobs.ts`'s `alertSuperAdmins`
+  (background-job failure-threshold alert), and `tools.ts`'s
+  `notifySuperAdmins` (the `report_content`/`appeal_moderation`/every other
+  model-triggered admin-notification fan-out) — each finds nothing connected
+  (all registered adapters, or all of `ALL_PLATFORMS` for `notifySuperAdmins`)
+  and queues instead of discarding, logging at `warn`. **Eviction is
+  priority-aware, not plain oldest-dropped**, because the queue is shared
+  between the two `'system'` producers (`health.ts`/`backgroundJobs.ts`, only
+  ever triggered by the bot's own machinery) and one `'low'`, member-reachable
+  producer (`tools.ts`'s `notifySuperAdmins`, reached from member-tier
+  `report_content` — itself capped at exactly 5/24h, the queue cap — and
+  `appeal_moderation`). Without priority, a single member filing their daily
+  reports during an outbound outage could evict, via oldest-dropped, the very
+  disconnect/job-failure alerts admins need during that incident. So on
+  overflow the queue evicts the oldest `'low'` entry first; only when it holds
+  *nothing but* `'system'` alerts does a new `'system'` alert drop the oldest
+  (FIFO, bounded), and a new `'low'` alert is then rejected outright — a `'low'`
+  alert can never displace a `'system'` one (issue #545). Flushing stays
+  `health.ts`'s job: its existing 30s poll already computes `justReconnected`
+  per adapter, and the first reconnect (regardless of which producer queued
+  the message) flushes every queued message through that adapter's
+  `sendDirectMessage` to every super admin, then clears the queue — no new
+  flush machinery. A flush send that throws is logged and the message
+  dropped, never re-queued, so a persistently-broken send path can't
+  accumulate forever. In-memory only — clears on restart, same tradeoff as
+  every other best-effort alert/cooldown in this codebase. A message queued
+  from `tools.ts`'s `notifySuperAdmins` loses its per-call `excludeUserId` on
+  flush (the queue holds bare strings), so the recipient set becomes all
+  super admins — an accepted tradeoff (structured queue entries were
+  deliberately left out of scope). Deliberately not extended to `tools.ts`'s
+  `notifyAdmins`, `usageAlert.ts`, `departedAdminAlert.ts`, `agent/core.ts`'s
+  `noteUsageLimitOutcome`, or `router.ts`'s alert sites — a documented growth
+  path, not built here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
@@ -1555,6 +1620,23 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   turn's SDK `result` message — see "Known cost/latency characteristic"
   above. Appended only when the window has recorded any cache activity;
   byte-identical to today's output on a fresh deployment or before #522.
+- `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
+  spend)` line (issue #552) — how much of `usage_stats`' total spend the
+  opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
+  #523/#542) is responsible for. `respond()` — and, identically, each of the
+  three shortcut sends that can also resolve an auto-answer turn
+  (`sendKnowledgeShortcut`, `sendRepeatShortcut`,
+  `sendRepeatMaxTurnsShortcut`) — stamps `meta.autoAnswer: true` on an
+  outbound reply exactly when `replyConversationId` was populated by the
+  auto-answer path (origin thread creation or an in-thread follow-up) —
+  internal router state only, never derived from message content, so it
+  cannot be spoofed by a crafted member message. This counts **thread-
+  anchored auto-answer replies** specifically: if origin-thread creation
+  transiently fails, the router falls back to answering directly in the
+  channel and that reply is *not* tagged, so the figure is a close-but-not-
+  exact floor on true auto-answer spend, never a guaranteed total. Appended
+  only when the window has at least one tagged reply; byte-identical to
+  today's output on a deployment with auto-answer off or unused.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.
@@ -1640,6 +1722,43 @@ still holds bot-admin privilege via DM if they think to run `list_admins`.
   through already-proven alert machinery. Auto-revoke on departure remains
   deliberately out of scope, same as `list_admins` itself — this closes the
   visibility gap, not the decision to revoke.
+
+## Engagement alert
+
+`src/engagementAlert.ts` (off unless `ENGAGEMENT_ALERT_ENABLED`, issue #568)
+closes the same pull-only gap #472/#480 closed for other super-admin-only
+signals: `engagement_stats` (issue #419) already computes what fraction of
+currently-present roster members have ever posted, but only on pull — a
+super admin only sees it if they think to run the tool again.
+
+- Routed through the shared `startTrackedJob` (the same 6h cadence as every
+  other opt-in job), so a throwing `runOnce` (e.g. a DB error from
+  `engagementStats`) gets the existing consecutive-failure alerting for
+  free — no bespoke tracker.
+- Unlike the departed-admin alert's zero→nonzero latch (appropriate for a
+  signal that's usually zero), engagement % is a continuous value that's
+  always meaningful, so this follows the admin-digest's **freshness-guard
+  cadence** instead: a new, single-row/guild-wide `engagement_alert_sends`
+  table (`id = 1` enforced by a CHECK constraint) persists `sent_at`, and
+  each tick is eligible only when there is no prior row or that row is
+  older than 7 days — restart-safe, mirroring `admin_digest_sends`'
+  `sent_at` guard exactly, but with no per-identity key since
+  `engagementStats()` itself is a guild-wide, unscoped aggregate, not
+  something computed per recipient.
+- On an eligible tick, calls `engagementStats()` unchanged, formats the
+  reply with a thin wrapper around the existing `formatEngagementStats`
+  (the same pure formatter `engagement_stats` itself uses — byte-identical
+  aggregate text, including its zero-roster fallback), and DMs every
+  super admin via `alertSuperAdmins`, imported from `departedAdminAlert.ts`
+  rather than re-implemented, so "super admins only, connected adapters
+  only" has one implementation shared by both jobs.
+- No new tool, no new RBAC tier, no LLM/embedding call, and no
+  week-over-week trend in v1: `engagement_alert_sends.last_percentage` is
+  written every send for forward-compat only (the named, deferred growth
+  path) but is never read back in this PR.
+- Nothing user-scoped: the new table stores only a timestamp and an
+  aggregate percentage, never a user id, so `forget_me`/`purge_user_data`
+  have nothing to reach here.
 
 ## Switching WhatsApp providers
 
