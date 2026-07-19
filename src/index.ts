@@ -21,6 +21,7 @@ import { startUsageAlert } from './usageAlert.js';
 import { startUsageCostDigest } from './usageCostDigest.js';
 import { startAdminDigest } from './adminDigest.js';
 import { startDepartedAdminAlert } from './departedAdminAlert.js';
+import { startEngagementAlert } from './engagementAlert.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
@@ -112,6 +113,9 @@ async function main(): Promise<void> {
   // 4f-bis. Optional departed-admin visibility alert (disabled unless configured).
   const departedAdminAlertTimer = startDepartedAdminAlert(adapters);
 
+  // 4f-ter. Optional weekly engagement-percentage alert (disabled unless configured).
+  const engagementAlertTimer = startEngagementAlert(adapters);
+
   // 4g. Optional dev-team completion-DM poller (disabled unless DEV_TEAM_ENABLED):
   //     DMs the requester when a dispatched ~20-min job finishes.
   const devTeamWatchTimer = startDevTeamWatchPoller(adapters);
@@ -132,6 +136,7 @@ async function main(): Promise<void> {
     if (statusCheckTimer) clearInterval(statusCheckTimer);
     if (adminDigestTimer) clearInterval(adminDigestTimer);
     if (departedAdminAlertTimer) clearInterval(departedAdminAlertTimer);
+    if (engagementAlertTimer) clearInterval(engagementAlertTimer);
     if (devTeamWatchTimer) clearInterval(devTeamWatchTimer);
     // Drain in-flight per-conversation turns BEFORE stopping any adapter, so
     // a reply generated during the drain window can still be sent on a live

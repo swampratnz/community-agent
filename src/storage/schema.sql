@@ -707,3 +707,23 @@ CREATE TABLE IF NOT EXISTS usage_cost_digest_state (
   total_cost_usd NUMERIC     NOT NULL,
   sent_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard for the proactive engagement-percentage alert
+-- (issue #568): a push companion to the pull-only, super-admin-only
+-- `engagement_stats` tool (issue #419). Unlike `admin_digest_sends`, this is
+-- deliberately SINGLE-ROW/guild-wide, not per-identity — `engagementStats()`
+-- itself is a guild-wide, unscoped aggregate, not something computed per
+-- recipient, so there is nothing to key per admin. The `id = 1` CHECK plus a
+-- fixed-value upsert enforce the single row. `last_percentage` is forward-
+-- compat only for a v2 week-over-week trend suffix (mirroring `admin_digest_
+-- sends.last_counts`'s own growth path) — this PR writes it but MUST NOT read
+-- or render it. No user/admin identifier column: forget_me/purge_user_data
+-- have nothing to touch here, same as `background_job_costs`/`shortcut_hits`.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS engagement_alert_sends (
+  id              SMALLINT    PRIMARY KEY DEFAULT 1,
+  sent_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_percentage NUMERIC,
+  CONSTRAINT engagement_alert_sends_singleton CHECK (id = 1)
+);

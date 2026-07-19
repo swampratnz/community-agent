@@ -87,6 +87,8 @@ const {
   listRoster,
   rosterCounts,
   engagementStats,
+  wasEngagementAlertSentRecently,
+  recordEngagementAlertSent,
   purgeDepartedRoster,
   addMemberNote,
   listMemberNotes,
@@ -3368,6 +3370,95 @@ test(
 );
 
 test(
+  "repository: usageStats().autoAnswerUsage counts/sums only outbound rows tagged meta.autoAnswer === 'true', across other meta shapes and outside the window (issue #552, acceptance criterion 3)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-autoanswer-usage`;
+    const days = 1;
+    const before = await usageStats(days);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 1',
+      costUsd: 0.1,
+      meta: { autoAnswer: true },
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 2',
+      costUsd: 0.05,
+      meta: { autoAnswer: true, knowledgeEntryId: 99 },
+    });
+    // No autoAnswer key at all — a normal reply — must contribute 0, not throw.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 3',
+      costUsd: 1.5,
+      meta: { replyToUserId: 'someone' },
+    });
+    // Inbound rows must never contribute — autoAnswerUsage is direction = 'outbound' only.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'someone',
+      role: 'member',
+      direction: 'inbound',
+      content: 'a member question',
+      costUsd: 999,
+      meta: { autoAnswer: true },
+    });
+    // Outside the 1-day window — must not appear in the sum.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, cost_usd, meta, created_at)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'old reply', 500,
+               '{"autoAnswer": true}'::jsonb, now() - interval '2 days')`,
+      [conversationId],
+    );
+
+    const after = await usageStats(days);
+
+    assert.equal(
+      after.autoAnswerUsage.count - before.autoAnswerUsage.count,
+      2,
+      'count sums only the two in-window outbound rows tagged autoAnswer',
+    );
+    assert.ok(
+      Math.abs(after.autoAnswerUsage.costUsd - before.autoAnswerUsage.costUsd - 0.15) < 1e-9,
+      'costUsd sums only the two in-window outbound rows tagged autoAnswer (0.10 + 0.05)',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: usageStats().autoAnswerUsage reflects zero delta when no interaction is recorded in between two reads (empty-window case, issue #552)',
+  { skip },
+  async () => {
+    const before = await usageStats(1);
+    const after = await usageStats(1);
+    assert.deepEqual(
+      after.autoAnswerUsage,
+      before.autoAnswerUsage,
+      'no interactions recorded in between — the window contributes nothing new',
+    );
+  },
+);
+
+test(
   'SECURITY: repository: shortcut_hits stores only the fixed kind enum and a timestamp — no user id, conversation id, platform, or free text (issue #440)',
   { skip },
   async () => {
@@ -5424,6 +5515,66 @@ test(
 
     await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[engaged, lurker, departed]]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: wasEngagementAlertSentRecently is true within the freshness window, false past it and before any send (issue #568) — same restart-safe shape as wasAdminDigestSentRecently',
+  { skip },
+  async () => {
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+
+    assert.equal(await wasEngagementAlertSentRecently(7), false, 'no send recorded yet — not fresh');
+
+    await recordEngagementAlertSent(42);
+    assert.equal(
+      await wasEngagementAlertSentRecently(7),
+      true,
+      'a send just recorded is within the 7-day freshness window',
+    );
+
+    await pool.query(`UPDATE engagement_alert_sends SET sent_at = now() - interval '8 days' WHERE id = 1`);
+    assert.equal(
+      await wasEngagementAlertSentRecently(7),
+      false,
+      'a send older than the window no longer counts as fresh',
+    );
+
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+  },
+);
+
+test(
+  'repository: recordEngagementAlertSent upserts the single guild-wide row (id = 1) — a second call updates sent_at/last_percentage rather than inserting a second row (issue #568)',
+  { skip },
+  async () => {
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+
+    await recordEngagementAlertSent(10);
+    await recordEngagementAlertSent(55);
+
+    const { rows } = await pool.query(`SELECT id, last_percentage FROM engagement_alert_sends`);
+    assert.equal(rows.length, 1, 'exactly one row ever exists — the singleton guard');
+    assert.equal(rows[0].id, 1);
+    assert.equal(Number(rows[0].last_percentage), 55, "the latest call's percentage wins");
+
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+  },
+);
+
+test(
+  'SECURITY: repository: engagement_alert_sends holds no user/admin identifier column — only sent_at and an aggregate percentage, so forget_me/purge_user_data have nothing user-scoped to purge here (issue #568)',
+  { skip },
+  async () => {
+    const { rows } = await pool.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'engagement_alert_sends'`,
+    );
+    const columns = new Set(rows.map((r) => r.column_name));
+    assert.deepEqual(
+      columns,
+      new Set(['id', 'sent_at', 'last_percentage']),
+      'no platform/platform_user_id/display_name column exists on this table',
+    );
   },
 );
 

@@ -5,7 +5,7 @@ import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js
 // config.ts validates env at import time. CONTEXT_BUILDER_ENABLED /
 // KNOWLEDGE_REFRESH_ENABLED / DOCS_INGEST_ENABLED / KNOWLEDGE_LINK_CHECK_ENABLED /
 // INTERACTION_RETENTION_DAYS / ROSTER_DEPARTED_RETENTION_DAYS / STATUS_CHECK_ENABLED /
-// ADMIN_DIGEST_ENABLED / DEPARTED_ADMIN_ALERT_ENABLED / USAGE_COST_DIGEST_ENABLED are deliberately left unset
+// ADMIN_DIGEST_ENABLED / DEPARTED_ADMIN_ALERT_ENABLED / USAGE_COST_DIGEST_ENABLED / ENGAGEMENT_ALERT_ENABLED are deliberately left unset
 // (all default off/0) so this file exercises the disabled-by-default
 // path in its own process, separate from tests/backgroundJobs.test.ts and
 // tests/statusCheckAlert.test.ts which pin their respective flags on — config
@@ -30,6 +30,7 @@ const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
 const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
+const { startEngagementAlert } = await import('../src/engagementAlert.js');
 
 function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
   const dms: Array<{ userId: string; text: string }> = [];
@@ -64,6 +65,7 @@ const JOBS = [
   ['startAdminDigest', startAdminDigest],
   ['startDepartedAdminAlert', startDepartedAdminAlert],
   ['startUsageCostDigest', startUsageCostDigest],
+  ['startEngagementAlert', startEngagementAlert],
 ] as const;
 
 test('SECURITY: a job whose own enable flag is off creates no timer, never invokes runOnce, and can never DM — zero behaviour change for a deployment that has not opted in', () => {

@@ -53,7 +53,8 @@ export type BackgroundJobName =
   | 'usage-alert'
   | 'dev-team-watch'
   | 'departed-admin-alert'
-  | 'usage-cost-digest';
+  | 'usage-cost-digest'
+  | 'engagement-alert';
 
 /**
  * Fixed, non-leaking alert template — deliberately excludes the caught
