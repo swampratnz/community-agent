@@ -203,11 +203,23 @@ memory**:
    and the `repeatMaxTurnsShortcut: true` stamp issue #306's shortcut already
    writes for a replayed wall-hit, since each is a distinct member-facing
    failure — a bare integer only, no message content, question text, user id,
-   or conversation id. All these counts are
+   or conversation id.
+   Plus (issue #563) their own scoped count of unhelpful ratings on
+   general-knowledge (ungrounded) answers, sourced from
+   `countGeneralUnhelpfulAnswers(scope, ...)` — conversation-scoped and
+   windowed identically to the max-turns-failures count above. It is the
+   `meta->>'knowledgeEntryId' IS NULL` complement of the low-rated-knowledge
+   count above, which deliberately excludes ratings with no `knowledgeEntryId`:
+   a general-knowledge answer has no community-curated grounding to re-check,
+   the highest accuracy-risk bucket the bot produces (VISION's answer-quality
+   theme). No new tool — the digest line points an admin at the existing
+   `list_answer_feedback` (`unhelpfulOnly: true`) to drill in. A bare integer
+   only, no question text, answer content, comment, or user id. All these
+   counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
-   `countMutedMembers`/`countMaxTurnsFailures`)
+   `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Three of these queue lines also
