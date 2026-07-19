@@ -137,6 +137,73 @@ test('AC-7: the existing rate-limit behaviour is unchanged when the query differ
   );
 });
 
+test('AC-8: the dedup history evicts the oldest query once more than historySize distinct queries have been recorded', async () => {
+  const { config } = await import('../src/config.js');
+  const conversationId = 'ws-dedup-eviction';
+  const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
+  const historySize = config.llm.webSearchDedupHistorySize;
+
+  const first = await fn(preToolUseInput('e-first', 'query zero'), 'e-first', hookOptions);
+  assert.equal(first.hookSpecificOutput, undefined);
+
+  // Fill the history with (historySize) MORE distinct queries, pushing
+  // "query zero" out the back once the history exceeds historySize entries.
+  for (let i = 1; i <= historySize; i++) {
+    const result = await fn(preToolUseInput(`e-${i}`, `query ${i}`), `e-${i}`, hookOptions);
+    assert.equal(result.hookSpecificOutput, undefined, `distinct query ${i} must not be denied by dedup`);
+  }
+
+  // "query zero" has now been evicted, so repeating it must be treated as a
+  // brand-new query, not a duplicate.
+  const repeatEvicted = await fn(preToolUseInput('e-repeat', 'query zero'), 'e-repeat', hookOptions);
+  assert.equal(
+    repeatEvicted.hookSpecificOutput,
+    undefined,
+    'a query evicted from the (bounded) history must no longer be treated as a duplicate',
+  );
+});
+
+test('AC-9: a query denied by the volume cap is never recorded into the dedup history — a retry of it is denied by the SAME rate-limit reason, not misreported as "already searched"', async () => {
+  const { config } = await import('../src/config.js');
+  const conversationId = 'ws-dedup-rate-then-retry';
+  const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
+
+  // Exhaust the volume cap with distinct queries, none of which collide
+  // with the query used below.
+  for (let i = 0; i < config.llm.webSearchRateLimitPerHour; i++) {
+    const result = await fn(preToolUseInput(`f-${i}`, `filler query number ${i}`), `f-${i}`, hookOptions);
+    assert.equal(result.hookSpecificOutput, undefined, `filler query ${i} must not be denied by dedup`);
+  }
+
+  // A genuinely new, never-before-seen query is now denied by the volume
+  // cap — not the dedup guard, since it is not a repeat of anything.
+  const first = await fn(preToolUseInput('g-1', 'a brand new never searched query'), 'g-1', hookOptions);
+  assert.equal(first.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(
+    first.hookSpecificOutput?.permissionDecisionReason ?? '',
+    /\/hour/,
+    'a call denied purely by the volume cap must carry the rate-limit reason',
+  );
+
+  // Retrying the SAME query must be denied for the SAME rate-limit reason —
+  // if the first call had wrongly been recorded into the dedup history
+  // despite never actually searching, this retry would instead get the
+  // dedup guard's "already searched" denial.
+  const retry = await fn(preToolUseInput('g-2', 'a brand new never searched query'), 'g-2', hookOptions);
+  assert.equal(retry.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(
+    retry.hookSpecificOutput?.permissionDecisionReason ?? '',
+    /\/hour/,
+    'a retry of a call that was only ever rate-limited (never actually searched) must still be denied ' +
+      'by the rate-limit reason, not misreported as an "already searched" dedup denial',
+  );
+  assert.doesNotMatch(
+    retry.hookSpecificOutput?.permissionDecisionReason ?? '',
+    /already searched/i,
+    'a query that was denied by the volume cap (never recorded as searched) must not be dedup-denied on retry',
+  );
+});
+
 // AC-4 (fail-closed) and AC-5 (no-log) each need to t.mock.module a
 // dependency of core.ts BEFORE core.ts's first import — and this file
 // already imports core.js at module top-level above for AC-1/2/3/7 — so

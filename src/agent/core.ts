@@ -20,6 +20,7 @@ import { selectPersona } from './personas.js';
 import {
   buildToolServer,
   isDuplicateWebSearchQuery,
+  recordWebSearchQuery,
   reserveWebSearchSlot,
   type ToolServerTurnState,
 } from './tools.js';
@@ -250,14 +251,19 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  *    WebSearch for those tiers.
  *  - the same hook additionally denies an exact-normalized repeat of a
  *    recent query in the same conversation (issue #589,
- *    `isDuplicateWebSearchQuery` in `tools.ts`) — the volume cap above bounds
- *    call count but never inspected the query, so an agentic turn could
- *    reformulate and re-fire the same search for no new information. This
- *    check runs BEFORE the volume-cap check and, on a match, denies without
- *    consuming a volume slot (a call the guard itself blocked never reaches
- *    the real search, so it shouldn't count against the hourly budget). Both
- *    checks share the same try/catch, so a thrown error from either fails
- *    closed identically.
+ *    `isDuplicateWebSearchQuery`/`recordWebSearchQuery` in `tools.ts`) — the
+ *    volume cap above bounds call count but never inspected the query, so an
+ *    agentic turn could reformulate and re-fire the same search for no new
+ *    information. The dedup CHECK runs BEFORE the volume-cap check and, on a
+ *    match, denies without consuming a volume slot (a call the guard itself
+ *    blocked never reaches the real search, so it shouldn't count against
+ *    the hourly budget). The query is only RECORDED into the dedup history
+ *    once BOTH checks pass and the call is actually going to proceed —
+ *    recording it any earlier would let a query later denied by the volume
+ *    cap poison the dedup history, so a retry of that exact (never-searched)
+ *    query would be wrongly denied as "already searched" instead of hitting
+ *    the accurate rate-limit message. Both checks share the same try/catch,
+ *    so a thrown error from either fails closed identically.
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
@@ -318,14 +324,8 @@ export function buildQueryOptions(
                           ? (toolInput as { query: string }).query
                           : '';
 
-                      if (
-                        isDuplicateWebSearchQuery(
-                          conversationId,
-                          query,
-                          config.llm.webSearchDedupWindowSeconds * 1000,
-                          config.llm.webSearchDedupHistorySize,
-                        )
-                      ) {
+                      const dedupWindowMs = config.llm.webSearchDedupWindowSeconds * 1000;
+                      if (isDuplicateWebSearchQuery(conversationId, query, dedupWindowMs)) {
                         return {
                           continue: true,
                           hookSpecificOutput: {
@@ -341,17 +341,29 @@ export function buildQueryOptions(
                         conversationId,
                         config.llm.webSearchRateLimitPerHour,
                       );
-                      if (allowed) return { continue: true };
-                      return {
-                        continue: true,
-                        hookSpecificOutput: {
-                          hookEventName: 'PreToolUse',
-                          permissionDecision: 'deny',
-                          permissionDecisionReason:
-                            'WebSearch already hit the conversation limit ' +
-                            `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
-                        },
-                      };
+                      if (!allowed) {
+                        return {
+                          continue: true,
+                          hookSpecificOutput: {
+                            hookEventName: 'PreToolUse',
+                            permissionDecision: 'deny',
+                            permissionDecisionReason:
+                              'WebSearch already hit the conversation limit ' +
+                              `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
+                          },
+                        };
+                      }
+
+                      // Only record once the call is actually going to proceed — recording a
+                      // query that then gets denied by the volume cap would poison the dedup
+                      // history with a search that never ran (issue #589 review).
+                      recordWebSearchQuery(
+                        conversationId,
+                        query,
+                        dedupWindowMs,
+                        config.llm.webSearchDedupHistorySize,
+                      );
+                      return { continue: true };
                     } catch (err) {
                       logger.error(
                         { err, conversationId },

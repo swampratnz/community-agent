@@ -155,11 +155,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   through). Never constructed for member/guest turns — those tiers have no
   WebSearch access to begin with. The same hook also denies an
   exact-normalized repeat of a recent query in the same conversation
-  (`isDuplicateWebSearchQuery`, `src/agent/tools.ts`, issue #589): the volume
-  cap bounds call count but never inspected the query, so a reformulate-and-
-  retry agentic loop could burn a second metered call plus its redundant
-  result tokens for no new information. Runs BEFORE the volume-cap check and
-  a match denies without consuming a volume slot; both checks share one
+  (`isDuplicateWebSearchQuery`/`recordWebSearchQuery`, `src/agent/tools.ts`,
+  issue #589): the volume cap bounds call count but never inspected the
+  query, so a reformulate-and-retry agentic loop could burn a second metered
+  call plus its redundant result tokens for no new information. The dedup
+  check runs BEFORE the volume-cap check and a match denies without
+  consuming a volume slot; the query is only recorded into the dedup history
+  once BOTH checks pass and the call is actually going to proceed, so a call
+  later denied by the volume cap can never poison the dedup history for a
+  retry of that same (never-searched) query. Both checks share one
   try/catch, so a thrown error from either fails closed identically.
   In-memory only (`AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS`, default 300s;
   `AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE`, default 3) — the query text is never
