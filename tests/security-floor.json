@@ -66,7 +66,7 @@
   "lowRatedCaveatRouter.test.ts": 1,
   "moderation.test.ts": 12,
   "moderationRepo.test.ts": 4,
-  "outbound.test.ts": 4,
+  "outbound.test.ts": 5,
   "pauseNotice.router.test.ts": 2,
   "pendingActions.test.ts": 3,
   "personas.test.ts": 1,
