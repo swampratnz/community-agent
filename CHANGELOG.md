@@ -10,6 +10,19 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **Proactive weekly engagement alert** (`ENGAGEMENT_ALERT_ENABLED`, #568):
+  closes the same pull-only gap #472/#480 already closed for other
+  super-admin-only signals — the `engagement_stats` tool (#419) already
+  computes what fraction of currently-present roster members have ever
+  posted, but a super admin only saw it if they thought to run the tool
+  again. This adds an opt-in job, off by default, that DMs every super admin
+  the current guild-wide percentage at most once a week (restart-safe,
+  persisted freshness guard) — no new tool, no new RBAC tier, no LLM/
+  embedding spend, and no trend/delta in this first version.
+
 ## 2026-07-18
 
 ### Added

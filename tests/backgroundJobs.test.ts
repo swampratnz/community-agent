@@ -39,6 +39,7 @@ process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 process.env.ADMIN_DIGEST_ENABLED = 'true';
 process.env.DEPARTED_ADMIN_ALERT_ENABLED = 'true';
+process.env.ENGAGEMENT_ALERT_ENABLED = 'true';
 
 const {
   startContextBuilder,
@@ -55,6 +56,7 @@ const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
+const { startEngagementAlert } = await import('../src/engagementAlert.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
@@ -116,6 +118,7 @@ const JOBS = [
   ['startEmbeddingHealthCheckJob', startEmbeddingHealthCheckJob],
   ['startAdminDigest', startAdminDigest],
   ['startDepartedAdminAlert', startDepartedAdminAlert],
+  ['startEngagementAlert', startEngagementAlert],
 ] as const;
 
 /** Maps each starter above to the BackgroundJobName key it records under in the shared job-health registry (issue #467). */
@@ -129,6 +132,7 @@ const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
   startEmbeddingHealthCheckJob: 'embedding-model',
   startAdminDigest: 'admin-digest',
   startDepartedAdminAlert: 'departed-admin-alert',
+  startEngagementAlert: 'engagement-alert',
 };
 
 for (const [name, start] of JOBS) {
@@ -232,7 +236,7 @@ test("SECURITY: a job's registry entry after a failed run() never contains the c
   }
 });
 
-test('each of the nine jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
+test('each of the ten jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
   const { adapter, dms } = makeAdapter();
   const failOnce = async () => {
     throw new Error('sentinel-independent');
@@ -249,13 +253,14 @@ test('each of the nine jobs keeps an independent tracker: one failure each (belo
     startEmbeddingHealthCheckJob([adapter], failOnce),
     startAdminDigest([adapter], failOnce),
     startDepartedAdminAlert([adapter], failOnce),
+    startEngagementAlert([adapter], failOnce),
   ];
   try {
     await flush();
     assert.equal(
       dms.length,
       0,
-      'nine distinct jobs each failing once (< threshold) never alerts — trackers are independent',
+      'ten distinct jobs each failing once (< threshold) never alerts — trackers are independent',
     );
   } finally {
     for (const timer of timers) if (timer) clearInterval(timer);
@@ -692,6 +697,68 @@ test('SECURITY: the alert DM body for departed-admin-alert never contains the ca
     assert.match(
       body,
       /^⚠️ Background job 'departed-admin-alert' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test("startEngagementAlert: a successful run after a failure streak resets that job's tracker, so a fresh streak of 3 further failures alerts again (not a one-shot latch, issue #568)", async (t) => {
+  const { adapter, dms } = makeAdapter();
+  let mode: 'fail' | 'succeed' = 'fail';
+  const runOnce = async () => {
+    if (mode === 'fail') throw new Error('sentinel-rearm-engagement');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startEngagementAlert([adapter], runOnce);
+  try {
+    await flush(); // failure 1
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alert
+    assert.equal(dms.length, 1, 'first streak of 3 consecutive failures alerts once');
+
+    mode = 'succeed';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // success -> silently resets the tracker
+    assert.equal(dms.length, 1, 'a successful run never itself sends a DM');
+
+    mode = 'fail';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 1 of the new streak
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alerts again
+    assert.equal(dms.length, 2, 'a fresh streak of 3 failures after recovery alerts again');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('SECURITY: the alert DM body for engagement-alert never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp) (issue #568)', async (t) => {
+  const sentinel = 'sentinel-secret-path-or-query-fragment-engagement';
+  const { adapter, dms } = makeAdapter();
+  const runOnce = async () => {
+    throw new Error(sentinel);
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startEngagementAlert([adapter], runOnce);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.equal(dms.length, 1, 'threshold reached, one alert sent');
+    const body = dms[0].text;
+    assert.ok(!body.includes(sentinel), 'the DM body must never contain the caught error message');
+    assert.match(
+      body,
+      /^⚠️ Background job 'engagement-alert' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
     );
   } finally {
     clearInterval(timer!);

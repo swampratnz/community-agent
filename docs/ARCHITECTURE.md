@@ -1641,6 +1641,43 @@ still holds bot-admin privilege via DM if they think to run `list_admins`.
   deliberately out of scope, same as `list_admins` itself — this closes the
   visibility gap, not the decision to revoke.
 
+## Engagement alert
+
+`src/engagementAlert.ts` (off unless `ENGAGEMENT_ALERT_ENABLED`, issue #568)
+closes the same pull-only gap #472/#480 closed for other super-admin-only
+signals: `engagement_stats` (issue #419) already computes what fraction of
+currently-present roster members have ever posted, but only on pull — a
+super admin only sees it if they think to run the tool again.
+
+- Routed through the shared `startTrackedJob` (the same 6h cadence as every
+  other opt-in job), so a throwing `runOnce` (e.g. a DB error from
+  `engagementStats`) gets the existing consecutive-failure alerting for
+  free — no bespoke tracker.
+- Unlike the departed-admin alert's zero→nonzero latch (appropriate for a
+  signal that's usually zero), engagement % is a continuous value that's
+  always meaningful, so this follows the admin-digest's **freshness-guard
+  cadence** instead: a new, single-row/guild-wide `engagement_alert_sends`
+  table (`id = 1` enforced by a CHECK constraint) persists `sent_at`, and
+  each tick is eligible only when there is no prior row or that row is
+  older than 7 days — restart-safe, mirroring `admin_digest_sends`'
+  `sent_at` guard exactly, but with no per-identity key since
+  `engagementStats()` itself is a guild-wide, unscoped aggregate, not
+  something computed per recipient.
+- On an eligible tick, calls `engagementStats()` unchanged, formats the
+  reply with a thin wrapper around the existing `formatEngagementStats`
+  (the same pure formatter `engagement_stats` itself uses — byte-identical
+  aggregate text, including its zero-roster fallback), and DMs every
+  super admin via `alertSuperAdmins`, imported from `departedAdminAlert.ts`
+  rather than re-implemented, so "super admins only, connected adapters
+  only" has one implementation shared by both jobs.
+- No new tool, no new RBAC tier, no LLM/embedding call, and no
+  week-over-week trend in v1: `engagement_alert_sends.last_percentage` is
+  written every send for forward-compat only (the named, deferred growth
+  path) but is never read back in this PR.
+- Nothing user-scoped: the new table stores only a timestamp and an
+  aggregate percentage, never a user id, so `forget_me`/`purge_user_data`
+  have nothing to reach here.
+
 ## Switching WhatsApp providers
 
 The Baileys adapter is the default (immediate, free, dedicated number, but
