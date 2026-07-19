@@ -10,6 +10,22 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Changed
+- **Discord role changes no longer evict every admin's cached scope, only the
+  changed member's own** (#573): `onGuildMemberUpdate` invalidated the
+  *entire* `membershipCache` on any member's role change, even though a
+  member's own roles never affect any other cached member's computed channel
+  visibility. It now deletes only the changed member's own entry — the same
+  targeted pattern `onGuildMemberRemove` (#286) already used for a guild exit
+  — so a routine role grant/removal (onboarding, moderator promotion,
+  cosmetic role) no longer forces every other currently-cached admin's next
+  scoped tool call (`moderate`, `announce`, `create_poll`, …) to re-fetch and
+  recompute their own channel list. `onChannelUpdate`, `onGuildRoleUpdate`,
+  and `onGuildRoleDelete` are unchanged — those can affect an unknown set of
+  members and still clear the whole cache.
+
 ## 2026-07-18
 
 ### Added

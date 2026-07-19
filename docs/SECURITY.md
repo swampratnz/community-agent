@@ -1580,24 +1580,28 @@ base, unlike the other two's fixed-format extraction.
   treatment via `AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR` (issue #412), closing
   the enumeration gap #315 left (its own framing covered only the bot's
   custom tool set and never named the one built-in admin+ also has).
-- **Membership-scope staleness (narrowed, issues #286 + #328 + #350 + #374)**:
-  adapters cache an admin's conversation list for ~60s, but an *observed*
-  change invalidates the affected cache entry immediately rather than
-  waiting out the TTL. Discord's `GuildMemberRemove` (full guild exit)
+- **Membership-scope staleness (narrowed, issues #286 + #328 + #350 + #374 +
+  #573)**: adapters cache an admin's conversation list for ~60s, but an
+  *observed* change invalidates the affected cache entry immediately rather
+  than waiting out the TTL. Discord's `GuildMemberRemove` (full guild exit)
   clears the removed user's entry the instant it fires; Discord's
   `ChannelUpdate` clears the *entire* cache the instant a genuine
-  `permissionOverwrites` change lands on an in-guild text channel; Discord's
-  `GuildMemberUpdate`/`GuildRoleUpdate`/`GuildRoleDelete` likewise clear the
-  *entire* cache the instant a member's role set actually changes, a role's
-  own `permissions` bitfield actually changes, or a role in the configured
-  guild is deleted — this is arguably the *more* common Discord admin
-  revocation workflow (pulling someone out of a role) versus hand-editing a
-  channel's raw permission overwrites (#328), and it now narrows the same
-  way (a targeted per-user/per-role diff is a documented growth path, not
-  implemented; the whole-cache clear can only invalidate sooner, never grant
-  scope a live check wouldn't; a partial `GuildMemberUpdate` old-member whose
-  role set is unknowable fails safe and clears the cache rather than risk
-  treating a real revocation as unchanged); and WhatsApp's
+  `permissionOverwrites` change lands on an in-guild text channel, and
+  Discord's `GuildRoleUpdate`/`GuildRoleDelete` likewise clear the *entire*
+  cache the instant a role's own `permissions` bitfield actually changes or a
+  role in the configured guild is deleted — both can affect an unknown set of
+  members with no reverse index from role/channel back to cached users, so a
+  targeted diff there remains a documented growth path, not implemented, and
+  the whole-cache clear can only invalidate sooner, never grant scope a live
+  check wouldn't. Discord's `GuildMemberUpdate` — arguably the *more* common
+  Discord admin revocation workflow (pulling someone out of a role) versus
+  hand-editing a channel's raw permission overwrites (#328) — clears only the
+  changed member's *own* cache entry (#573; narrowed from a whole-cache clear
+  introduced by #350), since a member's own role set only ever affects that
+  member's own computed permissions, never another cached member's; a partial
+  `GuildMemberUpdate` old-member whose role set is unknowable still fails safe
+  and deletes that member's own entry rather than risk treating a real
+  revocation as unchanged. And WhatsApp's
   `group-participants.update` with `action: 'remove'` clears the removed
   user's entry the same way — and, since #374, also the same person's
   *phone-number*-keyed entry when a bare `@lid` removal is all the event
