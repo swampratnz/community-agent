@@ -394,6 +394,39 @@ CREATE INDEX IF NOT EXISTS content_reports_target_idx
   ON content_reports (target_user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Durable record of a member's own appeal of their auto-moderation warning(s)
+-- (issue #554) — appeal_moderation was, until now, fire-and-forget: it only
+-- fired a best-effort notifySuperAdmins DM (notifyAppealFiled), so a missed
+-- DM erased the appeal with no trace. Mirrors content_reports's shape
+-- (member-submitted, admin-reviewed, non-destructive resolution). No
+-- conversation_id — warnings/mutes are guild-wide state, same boundary as
+-- member_warnings/clear_warnings/list_member_warnings, so this table isn't
+-- conversation-scoped either. active_warnings/strike_limit are a snapshot at
+-- filing time (not a live join to member_warnings), same convention as the
+-- notifyAppealFiled DM they already accompany.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS moderation_appeals (
+  id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform         TEXT        NOT NULL,
+  user_id          TEXT        NOT NULL,
+  user_name        TEXT,
+  reason           TEXT,
+  active_warnings  INT         NOT NULL,
+  strike_limit     INT         NOT NULL,
+  status           TEXT        NOT NULL DEFAULT 'open', -- 'open' | 'resolved' | 'dismissed'
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_by      TEXT,
+  resolved_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS moderation_appeals_status_idx
+  ON moderation_appeals (status, created_at DESC);
+
+-- Backs forget_me/purge_user_data's per-identity delete.
+CREATE INDEX IF NOT EXISTS moderation_appeals_user_idx
+  ON moderation_appeals (platform, user_id);
+
+-- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard for the weekly proactive admin
 -- recurring-questions digest (issue #97): one row per admin identity, so a
 -- redeploy/restart mid-week can't re-send within the same freshness window.
@@ -686,3 +719,44 @@ CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
 -- path but remain covered by the untouched exact-match fast path.
 -- ---------------------------------------------------------------------------
 ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS topic_embedding VECTOR(:EMBEDDING_DIM);
+
+-- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard + trend store for the weekly super-admin
+-- cost-trend DM (issue #578), off unless USAGE_COST_DIGEST_ENABLED. A single
+-- global row (`id` pinned to `true`, never more than one) — this signal is
+-- one aggregate dollar figure every super admin sees identically (same shape
+-- as `usageAlert.ts`'s own global `outbound`/`costUsd` read), unlike
+-- `admin_digest_sends` above which is keyed per-admin for a per-admin-scoped
+-- signal. `total_cost_usd` is the LAST WEEK's reported total
+-- (`usageStats(7).costUsd + .backgroundCostUsd`), read back the following
+-- week to compute the delta; `sent_at` is the freshness guard so a
+-- redeploy/restart mid-week can't re-send within the same ~7-day window.
+-- Bare aggregate figure + timestamp only — no user id, conversation id, or
+-- message content — so forget_me/purge_user_data have nothing to touch here,
+-- same as `background_job_costs`.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS usage_cost_digest_state (
+  id             BOOLEAN     PRIMARY KEY DEFAULT true CHECK (id),
+  total_cost_usd NUMERIC     NOT NULL,
+  sent_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard for the proactive engagement-percentage alert
+-- (issue #568): a push companion to the pull-only, super-admin-only
+-- `engagement_stats` tool (issue #419). Unlike `admin_digest_sends`, this is
+-- deliberately SINGLE-ROW/guild-wide, not per-identity — `engagementStats()`
+-- itself is a guild-wide, unscoped aggregate, not something computed per
+-- recipient, so there is nothing to key per admin. The `id = 1` CHECK plus a
+-- fixed-value upsert enforce the single row. `last_percentage` is forward-
+-- compat only for a v2 week-over-week trend suffix (mirroring `admin_digest_
+-- sends.last_counts`'s own growth path) — this PR writes it but MUST NOT read
+-- or render it. No user/admin identifier column: forget_me/purge_user_data
+-- have nothing to touch here, same as `background_job_costs`/`shortcut_hits`.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS engagement_alert_sends (
+  id              SMALLINT    PRIMARY KEY DEFAULT 1,
+  sent_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_percentage NUMERIC,
+  CONSTRAINT engagement_alert_sends_singleton CHECK (id = 1)
+);

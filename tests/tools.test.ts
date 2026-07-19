@@ -1,6 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
+import { formatNzEventTime } from '../src/util/nzTime.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -43,6 +45,8 @@ const {
   formatUsageStats,
   formatAdminActivity,
   formatEngagementStats,
+  formatFeatureFlags,
+  FEATURE_FLAG_MAP,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   formatRelativeAge,
@@ -101,6 +105,9 @@ const {
   countAccessRequests,
   countActiveWarnings,
   clearWarnings,
+  createModerationAppeal,
+  listAppeals,
+  resolveModerationAppeal,
   countRepliesToUser,
   linkMembers,
   getMyDataSummary,
@@ -253,6 +260,18 @@ after(async () => {
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id LIKE $1`, [
       `${RUN}-ban-%`,
     ]);
+    // Safety net for the moderation appeals tests (issue #554): tests clean
+    // up their own rows inline, this just catches anything an assertion
+    // failure left behind mid-test.
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [
+      `${APPEAL_MODERATION_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [`${RUN}%appeal%`]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND actor_user_id LIKE $1`,
+      [`${RUN}%`],
+    );
+    await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${RUN}%appeal%`]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}-unban-%`]);
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'unban_user' AND target_user_id LIKE $1`, [
       `${RUN}-unban-%`,
@@ -332,17 +351,18 @@ function stubEventsAdapter(events: UpcomingEvent[]): PlatformAdapter & { calls: 
   return result;
 }
 
-test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant', async () => {
+test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant, and resolves true (issue #556)', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, text) => {
     calls.push([userId, text]);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', false, 'discord');
+  const delivered = await notifyMemberApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /approved/i);
+  assert.equal(delivered, true);
 });
 
 test('notifyMemberApproved signposts the community_info discovery path (issue #92)', async () => {
@@ -356,23 +376,26 @@ test('notifyMemberApproved signposts the community_info discovery path (issue #9
   assert.match(calls[0], /what can you do/i);
 });
 
-test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op)', async () => {
+test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op), and resolves true — no failure occurred (issue #556)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
     calls.push(userId);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', true, 'discord');
+  const delivered = await notifyMemberApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
+  assert.equal(delivered, true);
 });
 
-test('notifyMemberApproved swallows a DM failure rather than throwing (grant stays the source of truth)', async () => {
+test('notifyMemberApproved swallows a DM failure rather than throwing, and resolves false (issue #556)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false, 'discord'));
+  const delivered = await notifyMemberApproved(adapter, 'user-1', false, 'discord');
+
+  assert.equal(delivered, false);
 });
 
 test("notifyMemberApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
@@ -414,17 +437,18 @@ test("SECURITY: notifyMemberApproved degrades to the English default, rather tha
 
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
-test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion', async () => {
+test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion, and resolves true (issue #556)', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, message) => {
     calls.push([userId, message]);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', false, 'discord');
+  const delivered = await notifyAdminApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /admin/i);
+  assert.equal(delivered, true);
 });
 
 test('notifyAdminApproved signposts the community_info discovery path rather than duplicating ADMIN_TOOLS (issue #201)', async () => {
@@ -438,23 +462,26 @@ test('notifyAdminApproved signposts the community_info discovery path rather tha
   assert.match(calls[0], /what can you do/i);
 });
 
-test('notifyAdminApproved sends nothing when the user was already an admin (re-grant is a no-op)', async () => {
+test('notifyAdminApproved sends nothing when the user was already an admin (re-grant is a no-op), and resolves true — no failure occurred (issue #556)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
     calls.push(userId);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', true, 'discord');
+  const delivered = await notifyAdminApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
+  assert.equal(delivered, true);
 });
 
-test('notifyAdminApproved swallows a DM failure rather than throwing (grant stays the source of truth)', async () => {
+test('notifyAdminApproved swallows a DM failure rather than throwing, and resolves false (issue #556)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyAdminApproved(adapter, 'user-1', false, 'discord'));
+  const delivered = await notifyAdminApproved(adapter, 'user-1', false, 'discord');
+
+  assert.equal(delivered, false);
 });
 
 test("notifyAdminApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
@@ -2019,8 +2046,63 @@ test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/
     /what's new/i,
     'the old, misleading "ask what\'s new" pointer must be gone — superseded by inline content (issue #367)',
   );
-  assert.equal(superAdminReply, adminReply, 'super_admin sees the same admin rundown as admin');
+  assert.ok(
+    superAdminReply.startsWith(adminReply),
+    'super_admin reply must include the full admin content (issue #582)',
+  );
   assert.notEqual(adminReply, memberReply, 'admin reply must differ from the member-only reply');
+});
+
+test('community_info appends SUPER_ADMIN_CAPABILITIES_TEXT for a super_admin caller, in member+admin+super_admin order (issue #582)', async () => {
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+  assert.equal(
+    superAdminReply,
+    `${adminReply}\n${superAdminReply.slice(adminReply.length + 1)}`,
+    'super_admin reply must be admin reply plus a trailing block',
+  );
+  assert.notEqual(superAdminReply, adminReply, 'super_admin reply must differ from the admin-only reply');
+  assert.match(
+    superAdminReply,
+    /grant or revoke admin status/i,
+    'super_admin reply must contain a SUPER_ADMIN_CAPABILITIES_TEXT-unique line (grant_admin/revoke_admin)',
+  );
+  assert.ok(
+    superAdminReply.indexOf(memberReply) === 0,
+    'super_admin reply must start with the full member content',
+  );
+});
+
+test('community_info: admin-tier reply stays byte-identical, never gains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #582 regression pin)', async () => {
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+
+  const expectedAdminCapabilitiesText =
+    'As an admin, you also have:\n' +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
+    "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
+    '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
+    '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
+    '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
+    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
+    '- See who is waiting for access, or who has joined or left the server\n' +
+    "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
+    '- Set the community guidelines or the welcome message shown to new members\n' +
+    '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+    '- Generate an image, or check recent changes to the bot and community (the changelog)';
+
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  assert.equal(
+    adminReply,
+    `${memberReply}\n${expectedAdminCapabilitiesText}`,
+    'admin-tier reply must be byte-identical to today — this PR must not change the admin branch (issue #582)',
+  );
+  assert.doesNotMatch(
+    adminReply,
+    /grant or revoke admin status/i,
+    'admin reply must never contain SUPER_ADMIN_CAPABILITIES_TEXT-unique content',
+  );
 });
 
 // Anti-drift pin (issue #311): the docstring above MEMBER_CAPABILITIES_TEXT
@@ -2141,6 +2223,8 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
   ['mcp__community__list_member_warnings', /full warning history/i],
   ['mcp__community__list_muted_members', /list everyone who's currently muted/i],
+  ['mcp__community__list_appeals', /review .*filed appeals/i],
+  ['mcp__community__resolve_appeal', /resolve filed appeals/i],
   ['mcp__community__announce', /make an announcement/i],
   ['mcp__community__create_poll', /create a poll/i],
   ['mcp__community__end_poll', /end one poll early/i],
@@ -2232,12 +2316,14 @@ test('community_info anti-drift pin fails loudly for an uncovered admin tool (is
 test('community_info: admin reply stays under a hard char cap, not a wall of text (issue #367)', async () => {
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
-  // 44 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
+  // 46 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
   // (same discipline as the member cap at the ~1200-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
-  // of text. Bumped alongside the member cap for issue #437.
-  assert.ok(adminReply.length < 2800, `admin reply should stay short; was ${adminReply.length} chars`);
+  // of text. Bumped alongside the member cap for issue #437; bumped again for
+  // issue #554's list_appeals/resolve_appeal (consolidated into the existing
+  // moderation bullet, not a new one).
+  assert.ok(adminReply.length < 2860, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -2268,6 +2354,133 @@ test('SECURITY: community_info member-tier and guest-tier replies never name an 
       new RegExp(id, 'i'),
       `guest-tier reply must never name the privileged tool "${id}"`,
     );
+  }
+});
+
+// Anti-drift pin (issue #582), mirroring ADMIN_CAPABILITY_COVERAGE above: the
+// docstring above SUPER_ADMIN_CAPABILITIES_TEXT states "every entry in
+// SUPER_ADMIN_TOOLS gets a mention" as an invariant. This coverage map ties
+// every SUPER_ADMIN_TOOLS id to a regex its mention must satisfy in the
+// rendered super_admin community_info text, so a future super-admin tool
+// shipping with no capabilities-text line fails loudly here instead of
+// drifting silently, the same way #367 caught the admin-side gap.
+const SUPER_ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__grant_admin', /grant or revoke admin status/i],
+  ['mcp__community__revoke_admin', /grant or revoke admin status/i],
+  ['mcp__community__purge_user_data', /purge their data/i],
+  ['mcp__community__audit_view', /view audit logs/i],
+  ['mcp__community__usage_stats', /usage\/engagement stats/i],
+  ['mcp__community__admin_activity', /review admin activity/i],
+  ['mcp__community__list_admins', /list current admins/i],
+  ['mcp__community__engagement_stats', /usage\/engagement stats/i],
+  ['mcp__community__pause_bot', /pause or resume the bot/i],
+  ['mcp__community__resume_bot', /pause or resume the bot/i],
+  ['mcp__community__set_policy', /change bot-wide policy settings/i],
+  ['mcp__community__redeploy_bot', /trigger a redeploy of the bot/i],
+  ['mcp__community__feature_flags', /which optional feature flags are currently on or off/i],
+  ['mcp__community__suggest_issue', /file a github issue/i],
+  ['mcp__community__dev_team_dispatch', /dispatch a remote dev-team job/i],
+  ['mcp__community__dev_team_status', /check its status/i],
+  ['mcp__community__dev_team_result', /fetch its result/i],
+  ['mcp__community__dev_team_backlog', /tracked backlog/i],
+  ['mcp__community__dev_team_findings', /assessment's findings/i],
+  ['mcp__community__dev_team_verify', /re-check one finding/i],
+]);
+// Every SUPER_ADMIN_TOOLS entry gets its own line — no exemptions needed
+// (unlike MEMBER_CAPABILITY_EXEMPT, SUPER_ADMIN_TOOLS has no self-referential
+// tool like community_info to exclude).
+const SUPER_ADMIN_CAPABILITY_EXEMPT = new Set<string>();
+
+function assertSuperAdminToolsCovered(
+  tools: readonly string[],
+  coverage: Map<string, RegExp>,
+  exempt: Set<string>,
+  renderedText: string,
+): void {
+  for (const toolId of tools) {
+    if (exempt.has(toolId)) continue;
+    const pattern = coverage.get(toolId);
+    assert.ok(
+      pattern,
+      `${toolId} has no SUPER_ADMIN_CAPABILITY_COVERAGE entry — add a capabilities-text line and a coverage-map entry`,
+    );
+    assert.match(renderedText, pattern, `${toolId}'s capabilities-text line is missing or changed`);
+  }
+}
+
+test('community_info: every SUPER_ADMIN_TOOLS entry has a capabilities-text line (issue #582 anti-drift pin)', async () => {
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+  assertSuperAdminToolsCovered(
+    SUPER_ADMIN_TOOLS,
+    SUPER_ADMIN_CAPABILITY_COVERAGE,
+    SUPER_ADMIN_CAPABILITY_EXEMPT,
+    superAdminReply,
+  );
+});
+
+test('community_info anti-drift pin fails loudly for an uncovered super-admin tool (issue #582)', async () => {
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+  // Synthetic fixture standing in for a future super-admin tool —
+  // SUPER_ADMIN_TOOLS itself is `as const` and must not be mutated by a test.
+  // Demonstrates that the coverage check above would actually catch the
+  // exact drift #367/#311 found on their own tiers, now on the super-admin
+  // side too.
+  const syntheticToolsWithGap = [...SUPER_ADMIN_TOOLS, 'mcp__community__a_brand_new_super_admin_tool'];
+  assert.throws(
+    () =>
+      assertSuperAdminToolsCovered(
+        syntheticToolsWithGap,
+        SUPER_ADMIN_CAPABILITY_COVERAGE,
+        SUPER_ADMIN_CAPABILITY_EXEMPT,
+        superAdminReply,
+      ),
+    /a_brand_new_super_admin_tool/,
+  );
+});
+
+test('community_info: super_admin reply stays under a hard char cap, not a wall of text (issue #582)', async () => {
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+  // 19 SUPER_ADMIN_TOOLS entries consolidated into behaviourally-related
+  // bullets on top of the member+admin content (same discipline as the admin
+  // cap above) — a hard cap, not a soft heuristic: a future super-admin tool
+  // added without consolidation should fail this rather than silently
+  // growing into a wall of text. Own cap, distinct from the 2800-char admin
+  // cap, since this reply is longer (member + admin + super_admin content).
+  assert.ok(
+    superAdminReply.length < 3500,
+    `super_admin reply should stay short; was ${superAdminReply.length} chars`,
+  );
+});
+
+test('SECURITY: community_info admin-, member-, and guest-tier replies never contain any SUPER_ADMIN_CAPABILITIES_TEXT-unique line (issue #582, extends issue #367/#311)', async () => {
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
+
+  for (const untieredReply of [adminReply, memberReply, guestReply]) {
+    for (const [toolId, pattern] of SUPER_ADMIN_CAPABILITY_COVERAGE) {
+      assert.doesNotMatch(
+        untieredReply,
+        pattern,
+        `non-super_admin reply must never contain the SUPER_ADMIN_CAPABILITIES_TEXT line for "${toolId}"`,
+      );
+    }
+  }
+
+  const superAdminOnlyToolIds = SUPER_ADMIN_TOOLS.map((id) => id.replace('mcp__community__', ''));
+  for (const id of superAdminOnlyToolIds) {
+    for (const [tierName, reply] of [
+      ['admin', adminReply],
+      ['member', memberReply],
+      ['guest', guestReply],
+    ] as const) {
+      assert.doesNotMatch(
+        reply,
+        new RegExp(id, 'i'),
+        `${tierName}-tier reply must never name the super-admin-only tool "${id}"`,
+      );
+    }
   }
 });
 
@@ -5410,8 +5623,13 @@ test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose desc
   );
   assert.match(
     result.content[0].text,
-    new RegExp(EVENT_FUTURE_START.replace(/[+.]/g, '\\$&')),
-    'the CONFIRM text must quote the resolved ISO start time',
+    new RegExp(formatNzEventTime(EVENT_FUTURE_START).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'the CONFIRM text must quote the resolved start time in NZ-local time, not raw ISO (issue #577)',
+  );
+  assert.doesNotMatch(
+    result.content[0].text,
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    'the CONFIRM text must not contain a raw ISO timestamp (issue #577)',
   );
   assert.match(result.content[0].text, /rain/, 'the CONFIRM text must quote the reason');
   assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
@@ -5424,6 +5642,47 @@ test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose desc
   assert.equal(calls[0].kind, 'cancel_event');
   assert.deepEqual(calls[0].params, { eventId: 'event-42', reason: 'rain' });
 });
+
+test(
+  "SECURITY: cancel_event's NZ-local CONFIRM-text rendering (issue #577) does not weaken CONFIRM " +
+    'gating — still registers a CONFIRM before any execution, the executed action still keys on the ' +
+    'same unchanged eventId, and the pending action still requires admin tier; only the human-readable ' +
+    'string changed',
+  async () => {
+    const conversationId = 'convo-cancel-confirm-577';
+    const calls: Array<{ kind: string; params?: Record<string, unknown> }> = [];
+    const adapter = cancelEventAdapter({
+      getScheduledEvent: async () => ({
+        name: 'Wellington Winter Meetup',
+        status: 'scheduled',
+        scheduledStartAt: EVENT_FUTURE_START,
+      }),
+      performAdminAction: async (action) => {
+        calls.push({ kind: action.kind, params: action.params });
+        return `Canceled event "${action.params?.eventId}".`;
+      },
+    });
+    const handler = cancelEventHandler({ conversationId, adapter });
+
+    const result = await handler.handler({ eventId: 'event-nz-577' });
+    assert.match(result.content[0].text, /CONFIRM/, 'must still ask for confirmation, not run immediately');
+    assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
+
+    const pending = takePendingAction('discord', conversationId, 'admin-1');
+    assert.ok(pending, 'must still register a pending action');
+    assert.equal(pending?.minTier, 'admin', 'the pending action must still require admin tier');
+
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(calls.length, 1, 'CONFIRM must still gate exactly one execution');
+    assert.equal(calls[0].kind, 'cancel_event');
+    assert.deepEqual(
+      calls[0].params,
+      { eventId: 'event-nz-577', reason: undefined },
+      'the executed action must still key on the same unchanged eventId — only display text changed',
+    );
+  },
+);
 
 test(
   'set_community_guidelines lets an admin set and clear guidelines; community_guidelines reflects the change verbatim, not paraphrased or truncated (issue #212)',
@@ -5707,6 +5966,417 @@ test(
   },
 );
 
+// add_member's reply now reflects DM delivery (issue #556): a fixed note is
+// appended iff notifyMemberApproved reports the confirmation DM did not
+// land, and the reply is byte-identical to today when it succeeded or when
+// no DM was attempted (already a member). DB-backed like the grant_admin
+// test above, since add_member's execute path runs upsertMember/audited/
+// clearAccessRequest for real.
+test(
+  "add_member's reply appends a fixed note iff the welcome DM failed, and is byte-identical to today otherwise (issue #556)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-${targetUserId}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      // 1. DM fails on the fresh grant: the note is appended.
+      shouldFail = true;
+      const failed = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(
+        failed.content[0].text,
+        `Added ${targetUserId} as member on discord. (Couldn't DM them the welcome message — they may not know yet.)`,
+      );
+
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+
+      // 2. DM succeeds on the fresh grant: byte-identical to today, no note.
+      shouldFail = false;
+      const succeeded = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(succeeded.content[0].text, `Added ${targetUserId} as member on discord.`);
+
+      // 3. Already a member: no DM attempted, byte-identical to today.
+      const alreadyMember = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(alreadyMember.content[0].text, `Added ${targetUserId} as member on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+// grant_admin's reply now reflects DM delivery too (issue #556), same shape
+// as add_member above but inside the CONFIRM-gated execute path.
+test(
+  "grant_admin's reply appends a fixed note iff the promotion DM failed, and is byte-identical to today otherwise (issue #556)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-grant-admin-dm-${targetUserId}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      // 1. DM fails on the fresh promotion: the note is appended.
+      shouldFail = true;
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingFailed = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingFailed);
+      const failedReply = await pendingFailed?.execute();
+      assert.equal(
+        failedReply,
+        `Granted admin to ${targetUserId} on discord. (Couldn't DM them about the promotion — they may not know yet.)`,
+      );
+
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+
+      // 2. DM succeeds on the fresh promotion: byte-identical to today, no note.
+      shouldFail = false;
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingSucceeded = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingSucceeded);
+      const succeededReply = await pendingSucceeded?.execute();
+      assert.equal(succeededReply, `Granted admin to ${targetUserId} on discord.`);
+
+      // 3. Already an admin: no DM attempted, byte-identical to today.
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingAlready = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingAlready);
+      const alreadyReply = await pendingAlready?.execute();
+      assert.equal(alreadyReply, `Granted admin to ${targetUserId} on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: the appended DM-failure note is always one of two static strings, never a function of the underlying adapter error (issue #556) — a fake secret-shaped token in the error never reaches either tool reply',
+  { skip },
+  async () => {
+    const secretToken = 'sk-ant-faketoken123';
+    const conversationId = `convo-dm-note-leak-${Date.now()}`;
+    const adapter = stubAdapter(async () => {
+      throw new Error(`upstream rejected: token ${secretToken} is invalid`);
+    });
+
+    const memberTargetId = `${Date.now()}1${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const memberCaller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${conversationId}-member`,
+    };
+    const memberServer = buildToolServer(memberCaller, adapter);
+    const addMemberTool = (
+      memberServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    const adminTargetId = `${Date.now()}2${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const superCaller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: `${conversationId}-admin`,
+    };
+    const superServer = buildToolServer(superCaller, adapter);
+    const grantAdminTool = (
+      superServer.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      const memberResult = await addMemberTool.handler({ userId: memberTargetId, platform: 'discord' });
+      const memberText = memberResult.content[0].text;
+      assert.doesNotMatch(memberText, /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.equal(
+        memberText,
+        `Added ${memberTargetId} as member on discord. (Couldn't DM them the welcome message — they may not know yet.)`,
+      );
+
+      await grantAdminTool.handler({ userId: adminTargetId, platform: 'discord' });
+      const pending = takePendingAction('discord', `${conversationId}-admin`, 'super-1');
+      assert.ok(pending);
+      const adminText = await pending?.execute();
+      assert.doesNotMatch(String(adminText), /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.equal(
+        adminText,
+        `Granted admin to ${adminTargetId} on discord. (Couldn't DM them about the promotion — they may not know yet.)`,
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[memberTargetId, adminTargetId]],
+      );
+    }
+  },
+);
+
+// add_member/grant_admin's cross-platform approval/promotion DM routing
+// (issue #548): the two notifyMemberApproved/notifyAdminApproved call sites
+// #157/#288/#325's adapterFor migration never reached. The caller is put on
+// whatsapp and the target on discord (the reverse of this file's other
+// single-platform tests) specifically so SUPER_ADMIN_WHATSAPP_NUMBERS's own
+// notifySuperAdmins fan-out (fired by audited() on every successful action)
+// lands on the CALLER's own whatsapp adapter, never the discord adapter this
+// test is actually pinning — keeping that expected background noise clearly
+// separated from the approval/promotion DM assertion below.
+test(
+  "SECURITY: add_member routes the approval DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-cross-${targetUserId}`;
+    const whatsappCalls: string[] = [];
+    const discordCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'whatsapp' as const,
+      userId: 'cross-platform-add-member-caller-548',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, whatsappAdapter, (platform) =>
+      platform === 'discord' ? discordAdapter : undefined,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(result.content[0]?.text ?? '', /^Added/);
+      assert.deepEqual(
+        discordCalls,
+        [targetUserId],
+        "the approval DM is sent through the target's own discord adapter exactly once",
+      );
+      assert.ok(
+        !whatsappCalls.includes(targetUserId),
+        "the acting admin's own whatsapp adapter must never be asked to DM the target's discord id",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: add_member sends no DM and does not throw when the target platform has no adapter registered (issue #548)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const conversationId = `convo-add-member-unregistered-${targetUserId}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'unregistered-add-member-caller-548',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    // No getAdapter at all — whatsapp simply isn't registered in this deployment.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'whatsapp' });
+      assert.match(result.content[0]?.text ?? '', /^Added/);
+      assert.equal(
+        discordCalls.length,
+        0,
+        'whatsapp is unregistered so the approval DM is silently skipped, never sent through the wrong (discord) adapter',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: grant_admin routes the promotion DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-grant-admin-cross-${targetUserId}`;
+    const whatsappCalls: string[] = [];
+    const discordCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const callerUserId = 'cross-platform-grant-admin-caller-548';
+    const caller = {
+      platform: 'whatsapp' as const,
+      userId: callerUserId,
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, whatsappAdapter, (platform) =>
+      platform === 'discord' ? discordAdapter : undefined,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pending = takePendingAction('whatsapp', conversationId, callerUserId);
+      assert.ok(pending, 'grant_admin must register a pending action, not execute directly');
+      await pending?.execute();
+
+      assert.deepEqual(
+        discordCalls,
+        [targetUserId],
+        "the promotion DM is sent through the target's own discord adapter exactly once",
+      );
+      assert.ok(
+        !whatsappCalls.includes(targetUserId),
+        "the acting admin's own whatsapp adapter must never be asked to DM the target's discord id",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: grant_admin sends no DM and does not throw when the target platform has no adapter registered (issue #548)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const conversationId = `convo-grant-admin-unregistered-${targetUserId}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const callerUserId = 'unregistered-grant-admin-caller-548';
+    const caller = {
+      platform: 'discord' as const,
+      userId: callerUserId,
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    // No getAdapter at all — whatsapp simply isn't registered in this deployment.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'whatsapp' });
+      const pending = takePendingAction('discord', conversationId, callerUserId);
+      assert.ok(pending, 'grant_admin must register a pending action, not execute directly');
+      const resultText = await pending?.execute();
+      assert.match(resultText ?? '', /^Granted/);
+      assert.equal(
+        discordCalls.length,
+        0,
+        'whatsapp is unregistered so the promotion DM is silently skipped, never sent through the wrong (discord) adapter',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
 // formatKnowledgeSearchResults holds all of knowledge_search's relevance-
 // filtering behaviour (issue #95) — it's exported and unit-tested directly
 // here with synthetic similarity values, same rationale as
@@ -5726,6 +6396,12 @@ const BASE_USAGE_STATS = {
   inbound: 5,
   outbound: 3,
   costUsd: 1.5,
+  byPlatform: [] as Array<{
+    platform: 'discord' | 'whatsapp';
+    inbound: number;
+    outbound: number;
+    costUsd: number;
+  }>,
   topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
   costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
   backgroundCostUsd: 0,
@@ -5980,6 +6656,91 @@ test('formatUsageStats: non-zero cacheUsage appends a rounded hit-rate line (iss
   );
 });
 
+test('formatUsageStats: byPlatform breakdown line renders inbound/outbound/cost per platform in array order, totals stay consistent (issue #580)', () => {
+  const s = {
+    ...BASE_USAGE_STATS,
+    inbound: 412,
+    outbound: 398,
+    costUsd: 3.12,
+    byPlatform: [
+      { platform: 'discord' as const, inbound: 301, outbound: 290, costUsd: 2.4 },
+      { platform: 'whatsapp' as const, inbound: 111, outbound: 108, costUsd: 0.72 },
+    ],
+  };
+  const out = formatUsageStats(s, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 412 inbound / 398 replies, ~$3.12 recorded.\n' +
+      'By platform: discord: 301 in / 290 out, ~$2.40 · whatsapp: 111 in / 108 out, ~$0.72\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  // Criterion 3: per-platform sums must equal the pre-existing top-level totals exactly.
+  assert.equal(
+    s.byPlatform.reduce((a, p) => a + p.inbound, 0),
+    s.inbound,
+  );
+  assert.equal(
+    s.byPlatform.reduce((a, p) => a + p.outbound, 0),
+    s.outbound,
+  );
+  assert.ok(Math.abs(s.byPlatform.reduce((a, p) => a + p.costUsd, 0) - s.costUsd) < 1e-9);
+});
+
+test('formatUsageStats: byPlatform empty array is byte-identical to pre-#580 output (no By platform line)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('By platform'), 'no By platform line when byPlatform is empty');
+});
+
+test('formatUsageStats: single-platform-only data omits the other platform entirely from the breakdown line (issue #580 criterion 4)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      byPlatform: [{ platform: 'discord' as const, inbound: 5, outbound: 3, costUsd: 1.5 }],
+    },
+    7,
+  );
+  const line = out.split('\n').find((l) => l.startsWith('By platform:'));
+  assert.ok(line, 'a By platform line is present when at least one platform has interactions');
+  assert.equal(line, 'By platform: discord: 5 in / 3 out, ~$1.50');
+  assert.ok(
+    !line.includes('whatsapp'),
+    'whatsapp must never appear when it had zero interactions in the window',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-platform breakdown (assertAtLeast re-check, issue #580)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the per-platform breakdown',
+  );
+});
+
 test('formatUsageStats: autoAnswerUsage.count === 0 is byte-identical to the pre-#552 output (no Auto-answer line), issue #552 acceptance criterion 4', () => {
   const out = formatUsageStats(BASE_USAGE_STATS, 7);
   assert.equal(
@@ -6158,6 +6919,219 @@ test('SECURITY: engagement_stats handler refuses a forged direct call from a non
     const registeredTool = engagementStatsHandler(role);
     await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
   }
+});
+
+// --- issue #559: feature_flags ---------------------------------------------
+
+function featureFlagsHandler(role: 'member' | 'admin' | 'guest' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-feature-flags-caller`,
+      userName: 'Caller',
+      role,
+      conversationId: `${RUN}-feature-flags-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<unknown> }>;
+    }
+  )._registeredTools['feature_flags'];
+}
+
+test('feature_flags: exact set of rendered labels against a fixture config, grouped by category (issue #559)', () => {
+  const fixture = {
+    moderation: { enabled: true, llmAbuseEnabled: false },
+    contextBuilder: { enabled: false },
+    contextCandidates: { enabled: true },
+    knowledgeRefresh: { enabled: false },
+    docsIngest: { enabled: false },
+    knowledgeLinkCheck: { enabled: true },
+    contextExport: { enabled: false },
+    adminDigest: { enabled: true, trendsEnabled: false },
+    behaviour: {
+      upstreamLimitAlertEnabled: false,
+      escalationToAdminEnabled: true,
+      ackShortcutEnabled: true,
+      knowledgeShortcutEnabled: false,
+      guestKnowledgeShortcutEnabled: false,
+      repeatQuestionShortcutEnabled: true,
+      repeatMaxTurnsShortcutEnabled: false,
+      dailyReplyBudgetWarnEnabled: false,
+    },
+    departedAdminAlert: { enabled: false },
+    accessRequestAlert: { enabled: true },
+    discord: { welcome: { enabled: true } },
+    whatsapp: {
+      welcome: { enabled: false },
+      voice: { enabled: true },
+      cloud: { welcomeEnabled: false },
+    },
+    imageGen: { enabled: true },
+    github: { enabled: false },
+    devTeam: { enabled: false },
+    statusCheck: { enabled: true },
+  };
+
+  const rendered = formatFeatureFlags(fixture);
+
+  assert.match(rendered, new RegExp(`Feature flags \\(${FEATURE_FLAG_MAP.length} total\\):`));
+  for (const category of new Set(FEATURE_FLAG_MAP.map((e) => e.category))) {
+    assert.match(rendered, new RegExp(`^${category}:$`, 'm'), `missing category header for ${category}`);
+  }
+  // Spot-check On/Off rendering across categories rather than asserting the
+  // whole string, so a label-wording tweak doesn't require touching this
+  // fixture's every line.
+  assert.match(rendered, /- Discord moderation \(auto strikes\): On/);
+  assert.match(rendered, /- LLM-based abuse detection: Off/);
+  assert.match(rendered, /- Context candidate extraction: On/);
+  assert.match(rendered, /- Weekly admin digest: On/);
+  assert.match(rendered, /- Admin digest trend lines: Off/);
+  assert.match(rendered, /- Escalation to admin: On/);
+  assert.match(rendered, /- Discord welcome message: On/);
+  assert.match(rendered, /- WhatsApp welcome message \(Baileys\): Off/);
+  assert.match(rendered, /- WhatsApp voice message transcription: On/);
+  assert.match(rendered, /- Image generation: On/);
+  assert.match(rendered, /- GitHub issue filing: Off/);
+  assert.match(rendered, /- Anthropic status check: On/);
+  // Every entry in the map renders exactly one line, no more no less.
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, FEATURE_FLAG_MAP.length);
+});
+
+test('feature_flags: a config path missing/non-boolean on the source renders "Off" rather than throwing (issue #559)', () => {
+  const rendered = formatFeatureFlags({});
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, FEATURE_FLAG_MAP.length);
+  assert.ok(
+    renderedLabelLines.every((l) => l.endsWith('Off')),
+    'every flag defaults to Off against an empty source',
+  );
+});
+
+test('SECURITY: feature_flags handler refuses a forged direct call from a non-super-admin caller, before any config field is read (assertAtLeast re-check, issue #559)', async () => {
+  for (const role of ['member', 'admin', 'guest'] as const) {
+    const registeredTool = featureFlagsHandler(role);
+    await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+  }
+  // Structural half of the same guarantee: assertAtLeast is literally the
+  // first statement in the handler body, and formatFeatureFlags (the only
+  // config read) is only reached afterwards — so a refusal can never fall
+  // through to a config read, not merely "usually doesn't" in practice.
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'feature_flags',");
+  assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+  assert.ok(handlerMatch, 'feature_flags handler body not found');
+  const body = handlerMatch[1];
+  const assertIdx = body.indexOf('assertAtLeast(');
+  const formatIdx = body.indexOf('formatFeatureFlags(');
+  assert.ok(
+    assertIdx !== -1 && formatIdx !== -1 && assertIdx < formatIdx,
+    'assertAtLeast must precede the config read',
+  );
+});
+
+test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field on the config source never reaches rendered output (issue #559)', () => {
+  const plantedSecret = 'sk-ant-oat-planted-fake-super-secret-token-should-never-render';
+  const fixture = {
+    llm: { oauthToken: plantedSecret },
+    discord: { botToken: plantedSecret, welcome: { enabled: true } },
+    github: { token: plantedSecret, enabled: false },
+  };
+  const rendered = formatFeatureFlags(fixture);
+  assert.doesNotMatch(rendered, new RegExp(plantedSecret.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')));
+});
+
+test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const formatterStart = source.indexOf('export function formatFeatureFlags(');
+  const getterStart = source.indexOf('function getConfigBoolean(');
+  assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
+  const start = Math.min(formatterStart, getterStart);
+  const region = source.slice(start, source.indexOf('\n}\n', Math.max(formatterStart, getterStart)) + 3);
+  assert.doesNotMatch(region, /Object\.entries\(|Object\.values\(|\.\.\.(source|config)\b/);
+});
+
+test('feature_flags: every FEATURE_FLAG_MAP entry resolves to a boolean-typed value against the real, already-loaded config (issue #559)', () => {
+  // Renders against the real singleton config (imported at top of this file,
+  // loaded from this file's dummy test env) rather than a fixture — this is
+  // the one test that ties the hand-written allowlist to config.ts's actual
+  // shape, so a rename/restructure of config.ts breaks this test loudly
+  // instead of feature_flags silently under-reporting in production.
+  const rendered = formatFeatureFlags(config);
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(
+    renderedLabelLines.length,
+    FEATURE_FLAG_MAP.length,
+    'every entry must render a line — a path that resolved to undefined would still render "Off" here, ' +
+      'so this test only proves no entry throws; boolean-typedness end to end is exercised by the anti-drift ' +
+      'coverage test below reading config.ts source directly',
+  );
+});
+
+// Anti-drift pin (issue #559), same shape as the community_info/ADMIN_TOOLS
+// pins above (#311/#367): ties FEATURE_FLAG_MAP to the ground truth of which
+// `*_ENABLED` env vars actually exist in config.ts, so a 29th flag added
+// without a conscious surface-or-not decision fails CI loudly instead of
+// silently going unreported by feature_flags.
+function extractEnabledEnvVars(configSource: string): string[] {
+  return [...new Set(configSource.match(/\b[A-Z][A-Z0-9_]*_ENABLED\b/g) ?? [])];
+}
+
+function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envVar: string }[]): void {
+  const mapped = new Set(map.map((e) => e.envVar));
+  for (const envVar of envVars) {
+    assert.ok(
+      mapped.has(envVar),
+      `${envVar} has no FEATURE_FLAG_MAP entry — add one (or a conscious exemption) or it silently goes ` +
+        'unreported by feature_flags',
+    );
+  }
+}
+
+test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
+  const configSource = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');
+  const envVars = extractEnabledEnvVars(configSource);
+  assert.equal(
+    envVars.length,
+    31,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582)",
+  );
+  assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
+  assert.equal(
+    FEATURE_FLAG_MAP.length,
+    envVars.length,
+    'no stale FEATURE_FLAG_MAP entry for a since-removed env var either',
+  );
+});
+
+test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag (issue #559)', () => {
+  const syntheticEnvVarsWithGap = ['DISCORD_MODERATION_ENABLED', 'A_BRAND_NEW_FUTURE_FLAG_ENABLED'];
+  assert.throws(
+    () => assertFeatureFlagEnvVarsCovered(syntheticEnvVarsWithGap, FEATURE_FLAG_MAP),
+    /A_BRAND_NEW_FUTURE_FLAG_ENABLED/,
+  );
+});
+
+test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'feature_flags',");
+  assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+  assert.ok(handlerMatch, 'feature_flags handler body not found');
+  const body = handlerMatch[1];
+  assert.doesNotMatch(
+    body,
+    /pool\.|query\(|await\s/,
+    'handler must be a synchronous read of in-memory config — no DB/model call',
+  );
 });
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {
@@ -7293,6 +8267,162 @@ test('formatKnowledgeSearchResults never appends the low-rated caveat when there
     formatKnowledgeSearchResults([a], undefined, undefined, false, new Set([1])),
     'No matching knowledge entries.',
   );
+});
+
+// formatKnowledgeSearchResults' near-tie comparator also considering
+// lowRatedIds (issue #562) — the low-rated check is a sibling of the
+// existing staleness check, checked FIRST, inside the same
+// KNOWLEDGE_TIE_MARGIN branch #308 established. lowRatedFreshHit/
+// lowRatedStaleHit below reuse freshHit/staleHit's updatedAt values so the
+// staleness signal can be held constant while only the rating signal varies.
+const lowRatedTieHit = (similarity: number, title: string, id: number) => ({
+  id,
+  title,
+  content: `Content for ${title}.`,
+  similarity,
+  updatedAt: new Date(),
+  lastRetrievedAt: null,
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): the non-low-rated hit sorts before an equally-relevant low-rated hit even when the low-rated hit has marginally higher raw similarity', () => {
+  const lowRated = lowRatedTieHit(0.8, 'Low-rated entry', 1);
+  const healthy = lowRatedTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Healthy entry', 2);
+  const text = formatKnowledgeSearchResults([lowRated, healthy], undefined, undefined, false, new Set([1]));
+  assert.ok(
+    text.indexOf('Healthy entry') < text.indexOf('Low-rated entry'),
+    'the non-low-rated hit must sort first despite the low-rated hit having the marginally higher raw similarity',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): order is unchanged when both near-tied hits are low-rated (no rating signal to act on)', () => {
+  const higher = lowRatedTieHit(0.8, 'Higher-scored low-rated entry', 1);
+  const lower = lowRatedTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored low-rated entry', 2);
+  const text = formatKnowledgeSearchResults([higher, lower], undefined, undefined, false, new Set([1, 2]));
+  assert.ok(
+    text.indexOf('Higher-scored low-rated entry') < text.indexOf('Lower-scored low-rated entry'),
+    'both-low-rated near-ties fall through to the staleness/index tie-break, keeping similarity-descending order',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): order is unchanged when neither near-tied hit is in lowRatedIds', () => {
+  const higher = lowRatedTieHit(0.8, 'Higher-scored healthy entry', 1);
+  const lower = lowRatedTieHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Lower-scored healthy entry', 2);
+  const text = formatKnowledgeSearchResults([higher, lower], undefined, undefined, false, new Set([999]));
+  assert.ok(
+    text.indexOf('Higher-scored healthy entry') < text.indexOf('Lower-scored healthy entry'),
+    'neither-low-rated near-ties fall through to the staleness/index tie-break, unchanged',
+  );
+});
+
+test('formatKnowledgeSearchResults (issue #562): a real relevance gap (more than KNOWLEDGE_TIE_MARGIN) always wins, even when the higher-scored hit is the low-rated one', () => {
+  const lowRated = lowRatedTieHit(0.9, 'Low-rated but clearly more relevant', 1);
+  const healthy = lowRatedTieHit(0.9 - (KNOWLEDGE_TIE_MARGIN + 0.01), 'Healthy but clearly less relevant', 2);
+  const text = formatKnowledgeSearchResults([lowRated, healthy], undefined, undefined, false, new Set([1]));
+  assert.ok(
+    text.indexOf('Low-rated but clearly more relevant') < text.indexOf('Healthy but clearly less relevant'),
+    'a genuine relevance gap must never be overridden by the low-rated tie-break',
+  );
+});
+
+test('formatKnowledgeSearchResults near-tie (issue #562): the low-rated check runs before the staleness check — a fresh low-rated hit still sorts after a stale non-low-rated hit', () => {
+  const freshLowRated = { ...lowRatedTieHit(0.8, 'Fresh low-rated entry', 1) };
+  const staleHealthy = {
+    id: 2,
+    title: 'Stale healthy entry',
+    content: 'Content for Stale healthy entry.',
+    similarity: 0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01),
+    updatedAt: ancientDate,
+    lastRetrievedAt: null,
+  };
+  const text = formatKnowledgeSearchResults(
+    [freshLowRated, staleHealthy],
+    30,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  assert.ok(
+    text.indexOf('Stale healthy entry') < text.indexOf('Fresh low-rated entry'),
+    'the low-rated signal must win over staleness — a fresh but low-rated hit sorts after a stale but healthy one',
+  );
+});
+
+test('SECURITY: formatKnowledgeSearchResults near-tie ordering is byte-identical to pre-#562 behaviour when lowRatedIds is empty (default), even for a stale/fresh pair the staleness tie-break already reorders', () => {
+  const stale = staleHit(0.8, 'Stale entry');
+  const fresh = freshHit(0.8 - (KNOWLEDGE_TIE_MARGIN - 0.01), 'Fresh entry');
+  const withDefaultLowRatedIds = formatKnowledgeSearchResults([stale, fresh], 30);
+  const withExplicitEmptySet = formatKnowledgeSearchResults([stale, fresh], 30, undefined, false, new Set());
+  assert.equal(
+    withDefaultLowRatedIds,
+    withExplicitEmptySet,
+    'an empty lowRatedIds must be a strict no-op — identical to omitting the argument entirely',
+  );
+  assert.ok(
+    withDefaultLowRatedIds.indexOf('Fresh entry') < withDefaultLowRatedIds.indexOf('Stale entry'),
+    'with no rating signal, the pre-#562 staleness tie-break still decides the order unchanged',
+  );
+});
+
+test("SECURITY: formatKnowledgeSearchResults keeps a low-rated hit's own content/caveat correctly paired after the near-tie rating tie-break moves it — checked sorted both first and second (issue #562)", () => {
+  const lowRated = {
+    id: 1,
+    title: 'Low-rated topic',
+    content: 'Unique low-rated content marker.',
+    similarity: 0.8,
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+  const healthy = {
+    id: 2,
+    title: 'Healthy topic',
+    content: 'Unique healthy content marker.',
+    similarity: 0.79, // within KNOWLEDGE_TIE_MARGIN (0.03) of 0.8
+    updatedAt: new Date(),
+    lastRetrievedAt: null,
+  };
+
+  // low-rated has marginally higher raw similarity -> tie-break moves it to second.
+  const sortedSecond = formatKnowledgeSearchResults(
+    [lowRated, healthy],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  const lowRatedLine = sortedSecond.split('\n').find((l) => l.includes('Low-rated topic'));
+  const healthyLine = sortedSecond.split('\n').find((l) => l.includes('Healthy topic'));
+  assert.ok(
+    sortedSecond.indexOf('Healthy topic') < sortedSecond.indexOf('Low-rated topic'),
+    'low-rated entry moves to second',
+  );
+  assert.match(lowRatedLine ?? '', /\(80% match\).*Unique low-rated content marker\./);
+  assert.match(
+    lowRatedLine ?? '',
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
+  assert.match(healthyLine ?? '', /\(79% match\).*Unique healthy content marker\./);
+  assert.doesNotMatch(
+    healthyLine ?? '',
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "the healthy sibling must never inherit the low-rated hit's caveat",
+  );
+
+  // Give the low-rated hit a similarity outside the margin so the real
+  // relevance gap wins and it stays first — same pair, opposite position.
+  const lowRatedAheadClearly = { ...lowRated, similarity: 0.95 };
+  const sortedFirst = formatKnowledgeSearchResults(
+    [lowRatedAheadClearly, healthy],
+    undefined,
+    undefined,
+    false,
+    new Set([1]),
+  );
+  const lowRatedLineFirst = sortedFirst.split('\n').find((l) => l.includes('Low-rated topic'));
+  assert.ok(
+    sortedFirst.indexOf('Low-rated topic') < sortedFirst.indexOf('Healthy topic'),
+    'low-rated entry stays first when its relevance gap is real',
+  );
+  assert.match(lowRatedLineFirst ?? '', /\(95% match\).*Unique low-rated content marker\./);
 });
 
 test('formatKnowledgeSearchResults (issue #465): the knowledge_search tool reply surfaces the dead-link caveat for a hit whose source_unreachable is true', () => {
@@ -9670,8 +10800,21 @@ test('list_events formats each event with id, name, start/end time, location, an
   const replyText = result.content[0]?.text ?? '';
   assert.equal(result.isError, false);
   assert.match(replyText, /Wellington Meetup/);
-  assert.match(replyText, /2099-06-01T19:00:00\.000Z/);
-  assert.match(replyText, /2099-06-01T21:00:00\.000Z/);
+  assert.doesNotMatch(
+    replyText,
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    'must render NZ-local time, not a raw ISO timestamp (issue #577)',
+  );
+  assert.match(
+    replyText,
+    new RegExp(formatNzEventTime('2099-06-01T19:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "must render the event's start in NZ-local time (issue #577)",
+  );
+  assert.match(
+    replyText,
+    new RegExp(formatNzEventTime('2099-06-01T21:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "must render the event's end in NZ-local time (issue #577)",
+  );
   assert.match(replyText, /Wellington Central Library/);
   assert.match(replyText, /Bring your laptop/);
   assert.match(replyText, /Auckland Hack Night/);
@@ -10521,6 +11664,242 @@ test(
   },
 );
 
+test(
+  'update_knowledge appends the same near-duplicate nudge save_knowledge uses when a converging edit lands on a different entry, and stays byte-identical to today when it does not (issue #584)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id: anchorId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    // AC4/regression: an edit with no near-duplicate above threshold returns
+    // exactly `Updated knowledge entry #${id}.` — byte-identical to today.
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      content: 'We meet monthly on the SECOND Tuesday at the community hall.',
+    });
+    const noMatchReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.equal(noMatchReply, `Updated knowledge entry #${editedId}.`);
+
+    // AC2: converging editedId's content onto anchorId's topic appends the
+    // same nudge format save_knowledge uses.
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    const nudgeReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(
+      nudgeReply ?? '',
+      new RegExp(`^Updated knowledge entry #${editedId}\\.`),
+      'the base reply is unchanged, the nudge is appended after it',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      /Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/,
+      'the nudge uses the same format save_knowledge uses',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      new RegExp(`existing entry #${anchorId}\\b`),
+      'nudge points at the other entry',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      /\("WhatsApp linking steps"\)/,
+      'nudge names the other entry by its title',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  'update_knowledge excludes the edited entry from its own near-duplicate candidate set — a near-no-op edit never self-nudges (issue #584)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-self-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-self-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id } = await saveKnowledge({
+      title: `${RUN} self-nudge fixture`,
+      content: 'A stable fact that should never be flagged as a duplicate of itself.',
+    });
+
+    // A whitespace-only edit re-embeds to ~1.0 similarity against its OWN
+    // pre-edit content — without excludeId this would always self-nudge.
+    await tools['update_knowledge'].handler({
+      id,
+      content: 'A stable fact that should never be flagged as a duplicate of itself. ',
+    });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.equal(
+      reply,
+      `Updated knowledge entry #${id}.`,
+      'SECURITY: an edit must never be reported as a near-duplicate of its own pre-edit content',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's near-duplicate nudge exposes only {id, title/label, similarity%} — the identical field set save_knowledge's nudge already surfaces, no additional entry fields (issue #584)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-parity-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-parity-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-parity-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    // The exact same regex, anchored at both ends of the nudge clause, so a
+    // match against BOTH replies pins that neither surfaces any field beyond
+    // {id, title/label, similarity%} — widening either would break the match.
+    const nudgeClause =
+      / Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/;
+
+    await tools['save_knowledge'].handler({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+
+    const dupSaveResult = await tools['save_knowledge'].handler({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    const dupSaveReply = dupSaveResult.content[0]?.text ?? '';
+    assert.match(dupSaveReply, nudgeClause, 'save_knowledge nudge matches the shared field-set regex');
+
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    const updateReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(
+      updateReply ?? '',
+      nudgeClause,
+      'update_knowledge nudge matches the identical shared field-set regex — no additional fields',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's CONFIRM-gating, admin-tier requirement, and audit trail are unchanged by the near-duplicate nudge — an unconfirmed call produces no nudge and does not touch the KB (issue #584)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-security-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-security-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-security-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pendingResult = await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    assert.match(pendingResult.content[0]?.text ?? '', /CONFIRM/, 'still asks for out-of-band confirmation');
+    assert.doesNotMatch(
+      pendingResult.content[0]?.text ?? '',
+      /looks similar/,
+      'SECURITY: the nudge must never appear before the edit is confirmed — it only decorates the success reply',
+    );
+
+    const unedited = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [editedId]);
+    assert.equal(
+      unedited.rows[0].title,
+      'Meetup schedule',
+      'SECURITY: an unconfirmed call must not touch the KB',
+    );
+
+    cancelPendingAction('discord', caller.conversationId, caller.userId);
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
 // list_knowledge_candidates / accept_knowledge_candidate / decline_knowledge_candidate
 // (issue #102): the review queue that turns a context-builder digest into a
 // durable knowledge entry. RBAC gating itself is pinned in rbac.test.ts; these
@@ -11347,6 +12726,328 @@ test(
     const after = await countActiveWarnings('whatsapp', userId);
 
     assert.equal(after, before, "appeal_moderation must not alter the caller's own warning count");
+  },
+);
+
+// Durable persistence (issue #554): appeal_moderation was, until now,
+// entirely fire-and-forget — nothing survived a missed/dismissed
+// notifyAppealFiled DM. These pin the new moderation_appeals write alongside
+// the unchanged notification behaviour above.
+test(
+  'appeal_moderation persists exactly one moderation_appeals row, snapshotting platform/user id/name/reason/active warnings/strike limit, status open (issue #554 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const result = await appealModerationHandler(adapter, userId).handler({
+      reason: 'I was not actually spamming',
+    });
+    assert.equal(result.isError, false);
+
+    const rows = await listAppeals();
+    const matching = rows.filter((r) => r.userId === userId);
+    assert.equal(matching.length, 1, 'exactly one moderation_appeals row was written');
+    const row = matching[0];
+    assert.equal(row.platform, 'whatsapp');
+    assert.equal(row.userName, 'Appealing Member');
+    assert.equal(row.reason, 'I was not actually spamming');
+    assert.equal(row.activeWarnings, 1);
+    assert.equal(row.strikeLimit, config.moderation.strikeLimit);
+    assert.equal(row.status, 'open');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'appeal_moderation with zero active warnings writes no moderation_appeals row (issue #554 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist-clean`;
+    const result = await appealModerationHandler(
+      stubAdapter(async () => {}),
+      userId,
+    ).handler({});
+    assert.equal(result.isError, true);
+
+    const rows = await listAppeals();
+    assert.equal(
+      rows.filter((r) => r.userId === userId).length,
+      0,
+      'an ineligible (no active warnings) call must insert no moderation_appeals row',
+    );
+  },
+);
+
+test(
+  'appeal_moderation refused by the per-caller cooldown writes no second moderation_appeals row (issue #554 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist-cooldown`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const first = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(first.isError, false);
+
+    const second = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(second.isError, true);
+    assert.match(second.content[0]?.text ?? '', /already asked for a review recently/i);
+
+    const rows = await listAppeals();
+    assert.equal(
+      rows.filter((r) => r.userId === userId).length,
+      1,
+      'the cooldown-refused second call must not insert a second moderation_appeals row',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+  },
+);
+
+// list_appeals / resolve_appeal (issue #554): the admin-tier read/resolve
+// pair over the durable appeal queue appeal_moderation now writes into. Same
+// tier/guild-wide (not conversation-scoped) shape as
+// list_member_warnings/clear_warnings — see those fixtures above.
+function listAppealsHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-list-appeals') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-list-appeals',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { status?: 'open' | 'resolved' | 'dismissed'; limit?: number }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_appeals'];
+}
+
+function resolveAppealHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-resolve-appeal') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-resolve-appeal',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { id: number; status: 'resolved' | 'dismissed' }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['resolve_appeal'];
+}
+
+test(
+  'list_appeals round-trips filed appeals and its status filter narrows results (issue #554 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-appeals-target`;
+    const open = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: 'please review',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(dismissed.id, 'dismissed', 'admin-1');
+
+    const all = await listAppealsHandler().handler({});
+    assert.equal(all.isError, false);
+    const allText = all.content[0]?.text ?? '';
+    assert.match(allText, new RegExp(`#${open.id}\\b`));
+    assert.match(allText, new RegExp(`#${dismissed.id}\\b`));
+
+    const openOnly = await listAppealsHandler().handler({ status: 'open' });
+    const openText = openOnly.content[0]?.text ?? '';
+    assert.match(openText, new RegExp(`#${open.id}\\b`));
+    assert.ok(
+      !new RegExp(`#${dismissed.id}\\b`).test(openText),
+      'the status filter excludes the dismissed appeal',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[open.id, dismissed.id]]);
+  },
+);
+
+test(
+  'list_appeals is read-only (readOnlyHint annotation) and reports a clean empty result',
+  { skip },
+  async () => {
+    const result = await listAppealsHandler().handler({ status: 'dismissed' });
+    // Not asserting zero globally (other tests may leave rows), just that a
+    // filtered, plausibly-empty call never errors.
+    assert.equal(result.isError, false);
+  },
+);
+
+test(
+  'resolve_appeal flips only status/resolved_by/resolved_at, writes exactly one admin_audit row with actionKind resolve_appeal, and never touches member_warnings (issue #554 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-target`;
+    await addWarning({
+      platform: 'discord',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const before = await countActiveWarnings('discord', userId);
+
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: before,
+      strikeLimit: 3,
+    });
+
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-admin`).handler({
+      id,
+      status: 'resolved',
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+
+    const resolvedRow = (await listAppeals('resolved')).find((r) => r.id === id);
+    assert.ok(resolvedRow);
+    assert.equal(resolvedRow?.resolvedBy, `${RUN}-resolve-appeal-admin`);
+    assert.ok(resolvedRow?.resolvedAt);
+
+    const after = await countActiveWarnings('discord', userId);
+    assert.equal(after, before, 'resolve_appeal must never itself clear member_warnings');
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit
+        WHERE action_kind = 'resolve_appeal' AND actor_user_id = $1 AND params->>'id' = $2`,
+      [`${RUN}-resolve-appeal-admin`, String(id)],
+    );
+    assert.equal(Number(auditRows[0].n), 1, 'exactly one admin_audit row is written for this resolution');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND actor_user_id = $1`, [
+      `${RUN}-resolve-appeal-admin`,
+    ]);
+  },
+);
+
+test(
+  'resolve_appeal reports failure for an unknown appeal id, writing no member_warnings change',
+  { skip },
+  async () => {
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-unknown-admin`).handler({
+      id: 999_999_999,
+      status: 'resolved',
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /^Failed/);
+  },
+);
+
+test(
+  'SECURITY: list_appeals and resolve_appeal are reachable by any admin regardless of conversation membership — guild-wide, not conversation-scoped, same as list_member_warnings/clear_warnings (issue #554 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-guild-wide-target`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    // A DIFFERENT admin, in a conversation entirely unrelated to where the
+    // appeal originated (there is no conversation on the row at all) — an
+    // admin with zero conversation overlap must still see and resolve it.
+    const listResult = await listAppealsHandler('admin', `${RUN}-appeal-guild-wide-other-admin`).handler({});
+    assert.match(listResult.content[0]?.text ?? '', new RegExp(`#${id}\\b`));
+
+    const resolveResult = await resolveAppealHandler('admin', `${RUN}-appeal-guild-wide-other-admin`).handler(
+      { id, status: 'dismissed' },
+    );
+    assert.equal(resolveResult.isError, false);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test('SECURITY: list_appeals rejects a caller below admin tier (issue #554 acceptance criterion #6)', async () => {
+  const registeredTool = listAppealsHandler('member');
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+});
+
+test(
+  'SECURITY: resolve_appeal rejects a caller below admin tier, before any DB read/write (issue #554 acceptance criterion #6)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-tier-floor`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const registeredTool = resolveAppealHandler('member');
+    await assert.rejects(() => registeredTool.handler({ id, status: 'resolved' }), /Permission denied/);
+
+    const rows = await listAppeals();
+    const row = rows.find((r) => r.id === id);
+    assert.equal(row?.status, 'open', 'a below-tier caller must not have mutated the appeal row');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
   },
 );
 

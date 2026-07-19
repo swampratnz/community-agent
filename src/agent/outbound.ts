@@ -132,6 +132,12 @@ const BOLD_DOUBLE = /\*\*(.+?)\*\*/g;
 const UNDERSCORE_DOUBLE = /__(.+?)__/g;
 const HEADING_LINE = /^(\s*)#{1,6}\s+(.*)$/;
 const BULLET_LINE = /^(\s*)[-*]\s+(.*)$/;
+// `[label](http(s)://url)` -> `label: http(s)://url`. Constrained to an
+// http(s) target immediately inside the parens (no space after `]`) so bare
+// `[]`/`()` prose and space-separated shapes like `[note] (aside)` never
+// match. The URL segment allows one level of nested `(...)` so a target like
+// a Wikipedia `.../Foo_(bar)` link isn't truncated at the inner `)`.
+const MARKDOWN_LINK = /\[([^\]]+)\]\((https?:\/\/(?:[^()\s]|\([^()]*\))+)\)/g;
 
 function convertInlineEmphasis(line: string): string {
   return line
@@ -141,12 +147,18 @@ function convertInlineEmphasis(line: string): string {
     .replace(UNDERSCORE_DOUBLE, '*$1*');
 }
 
+function convertMarkdownLinks(line: string): string {
+  return line.replace(MARKDOWN_LINK, '$1: $2');
+}
+
 /**
  * Rewrite Discord/GFM-flavoured markdown into WhatsApp-readable formatting:
- * `**bold**`/`__bold__` -> `*bold*`, `# Heading` -> `*Heading*`, `- item`/`* item`
- * bullets -> `• item`. Line-anchored and fence-aware (same walker style as
- * {@link stripEmDashesOutsideCode}) so code blocks and inline `*`/`#` in prose
- * are never touched. Idempotent: re-running on already-converted text is a no-op.
+ * `[label](url)` -> `label: url`, `**bold**`/`__bold__` -> `*bold*`,
+ * `# Heading` -> `*Heading*`, `- item`/`* item` bullets -> `• item`. Line-anchored
+ * and fence-aware (same walker style as {@link stripEmDashesOutsideCode}) so code
+ * blocks and inline `*`/`#`/`[]`/`()` in prose are never touched. Links are
+ * resolved before emphasis so a bolded link label (`**[label](url)**`) still
+ * folds correctly. Idempotent: re-running on already-converted text is a no-op.
  */
 export function convertMarkdownForWhatsApp(text: string): string {
   let inFence = false;
@@ -159,10 +171,12 @@ export function convertMarkdownForWhatsApp(text: string): string {
       }
       if (inFence) return line;
 
-      const heading = line.match(HEADING_LINE);
+      const linked = convertMarkdownLinks(line);
+
+      const heading = linked.match(HEADING_LINE);
       if (heading) return `${heading[1]}*${convertInlineEmphasis(heading[2])}*`;
 
-      const emphasised = convertInlineEmphasis(line);
+      const emphasised = convertInlineEmphasis(linked);
       const bullet = emphasised.match(BULLET_LINE);
       if (bullet) return `${bullet[1]}• ${bullet[2]}`;
 

@@ -325,6 +325,23 @@ test('SECURITY: list_reports and resolve_report are admin-only (member/guest mus
   }
 });
 
+test('SECURITY: list_appeals and resolve_appeal are admin-only (member/guest must never reach them) and guild-wide, not conversation-scoped, same as list_member_warnings/clear_warnings (issue #554)', () => {
+  const tools = ['mcp__community__list_appeals', 'mcp__community__resolve_appeal'];
+  for (const t of tools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+    assert.ok(!(SUPER_ADMIN_TOOLS as readonly string[]).includes(t), `${t} must not be super-admin-only`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(!surface.includes(t), `${role} must not reach ${t}`);
+  }
+  for (const role of ['admin', 'super_admin'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of tools) assert.ok(surface.includes(t), `${role} must reach ${t}`);
+  }
+});
+
 test('SECURITY: list_roster is admin-only — members/guests never see the roster (issue #47)', () => {
   const tool = 'mcp__community__list_roster';
   assert.ok(ADMIN_TOOLS.includes(tool), 'list_roster must be in ADMIN_TOOLS');
