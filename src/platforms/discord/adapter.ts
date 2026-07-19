@@ -724,7 +724,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     const mapping = takeReplyMapping('discord', conversationId, messageId);
     if (!mapping) return;
     await Promise.all(
-      mapping.botReplyMessageIds.map((id) => this.deleteOwnMessage(mapping.replyConversationId, id)),
+      mapping.botReplyMessageIds.map((id) =>
+        this.deleteOwnMessage(mapping.replyConversationId, id).catch((err) =>
+          logger.warn({ err, messageId: id }, 'Failed to retract own reply'),
+        ),
+      ),
     );
   }
 

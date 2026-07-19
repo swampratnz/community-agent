@@ -72,14 +72,25 @@ function sweep(): void {
   }
 }
 
-/** Record the mapping for a just-sent reply. Overwrites any stale entry for the same key. */
+/**
+ * Record the mapping for a just-sent reply. Overwrites any stale entry for
+ * the same key — deleting before re-setting so the entry moves to the END of
+ * the Map's iteration order (a plain overwriting `set()` on an EXISTING key
+ * updates its value in place without moving it, per the Map spec). `sweep()`
+ * relies on iteration order matching recency to know when it can stop
+ * scanning; without the delete, an early-inserted key that gets overwritten
+ * much later would keep its old (early) slot with a fresh `at`, which could
+ * make `sweep()` stop before reaching genuinely-expired entries behind it.
+ */
 export function recordReplyMapping(
   platform: Platform,
   conversationId: string,
   messageId: string,
   entry: Omit<ReplyMapping, 'at'>,
 ): void {
-  mappings.set(mapKey(platform, conversationId, messageId), { ...entry, at: Date.now() });
+  const key = mapKey(platform, conversationId, messageId);
+  mappings.delete(key);
+  mappings.set(key, { ...entry, at: Date.now() });
   sweep();
 }
 
@@ -139,4 +150,13 @@ export const REPLY_RETRACTION_MAX_ENTRIES = MAX_ENTRIES;
 /** Test-only: clear all state between tests (this module is a process-wide singleton). */
 export function resetReplyMappingsForTests(): void {
   mappings.clear();
+}
+
+/**
+ * Test-only: the raw number of entries currently in the map, bypassing
+ * `peekReplyMapping`'s own per-key TTL check (which would otherwise silently
+ * clean up — and so mask — an entry that `sweep()` itself failed to evict).
+ */
+export function mappingsSizeForTests(): number {
+  return mappings.size;
 }

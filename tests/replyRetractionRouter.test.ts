@@ -273,6 +273,42 @@ test('Discord: a multi-chunk reply (longer than the 2000-char cap) is retracted 
   }
 });
 
+test("Discord: one chunk failing to delete (e.g. already manually removed) does not stop the other chunks from being retracted, and does not reject/throw (PR #576 review — matches the WhatsApp Baileys equivalent's per-chunk .catch)", async (t) => {
+  const longText = `${RUN}-chunk-a-`.padEnd(2200, 'a') + '\n' + `${RUN}-chunk-b-`.padEnd(2200, 'b');
+  const router = new Router(async () => ({ text: longText, ok: true }), 1_000_000);
+  const adapter = new DiscordAdapter();
+  const { sentMessages } = stubDiscordChannel(adapter);
+  router.register(adapter);
+  const handler = getHandler(adapter);
+
+  const conversationId = `${RUN}-chan-partialfail`;
+  const messageId = `${RUN}-origin-partialfail`;
+  await handler(discordMessage({ conversationId, messageId }));
+
+  const chunkIds = [...sentMessages.keys()];
+  assert.ok(chunkIds.length >= 2, 'the long reply was split into multiple Discord messages by chunkText');
+  const [failingId, ...otherIds] = chunkIds;
+
+  const realDelete = adapter.deleteOwnMessage.bind(adapter);
+  t.mock.method(adapter, 'deleteOwnMessage', async (convId: string, msgId: string) => {
+    if (msgId === failingId) throw new Error('already deleted manually');
+    return realDelete(convId, msgId);
+  });
+
+  await assert.doesNotReject(
+    fireDiscordDelete(adapter, conversationId, messageId),
+    'a single chunk delete failure must not reject the overall retraction',
+  );
+
+  for (const id of otherIds) {
+    assert.equal(
+      sentMessages.get(id)?.deleted,
+      true,
+      `chunk ${id} must still be retracted even though a sibling chunk's delete failed`,
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // WhatsApp Baileys (SECURITY acceptance criterion 4)
 // ---------------------------------------------------------------------------
