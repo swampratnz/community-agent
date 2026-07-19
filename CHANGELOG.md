@@ -10,6 +10,23 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-20
+
+### Added
+- **`update_knowledge` now nudges on a converging edit** (#584): `save_knowledge`
+  has warned an admin since #93 when a new entry looks like a near-duplicate
+  (≥92% similar) of an existing one — but editing an entry via
+  `update_knowledge` so its wording converged onto a different entry's topic
+  produced no signal at all, a gap #316 named as its own natural follow-up.
+  Both write paths now share one `findNearDuplicateKnowledge` lookup;
+  `update_knowledge` excludes the entry being edited from its own candidate
+  set and appends the identical advisory note `save_knowledge` uses when a
+  match is found, otherwise the reply is unchanged. Purely advisory (the edit
+  always proceeds, per #93's nudge-not-block decision) — no new tool, tier,
+  schema, or config knob, and `update_knowledge` stays admin-tier and
+  CONFIRM-gated exactly as before. See docs/ARCHITECTURE.md's knowledge
+  section.
+
 ## 2026-07-19
 
 ### Added

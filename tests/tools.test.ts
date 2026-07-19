@@ -11645,6 +11645,242 @@ test(
   },
 );
 
+test(
+  'update_knowledge appends the same near-duplicate nudge save_knowledge uses when a converging edit lands on a different entry, and stays byte-identical to today when it does not (issue #584)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id: anchorId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    // AC4/regression: an edit with no near-duplicate above threshold returns
+    // exactly `Updated knowledge entry #${id}.` — byte-identical to today.
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      content: 'We meet monthly on the SECOND Tuesday at the community hall.',
+    });
+    const noMatchReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.equal(noMatchReply, `Updated knowledge entry #${editedId}.`);
+
+    // AC2: converging editedId's content onto anchorId's topic appends the
+    // same nudge format save_knowledge uses.
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    const nudgeReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(
+      nudgeReply ?? '',
+      new RegExp(`^Updated knowledge entry #${editedId}\\.`),
+      'the base reply is unchanged, the nudge is appended after it',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      /Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/,
+      'the nudge uses the same format save_knowledge uses',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      new RegExp(`existing entry #${anchorId}\\b`),
+      'nudge points at the other entry',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      /\("WhatsApp linking steps"\)/,
+      'nudge names the other entry by its title',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  'update_knowledge excludes the edited entry from its own near-duplicate candidate set — a near-no-op edit never self-nudges (issue #584)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-self-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-self-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id } = await saveKnowledge({
+      title: `${RUN} self-nudge fixture`,
+      content: 'A stable fact that should never be flagged as a duplicate of itself.',
+    });
+
+    // A whitespace-only edit re-embeds to ~1.0 similarity against its OWN
+    // pre-edit content — without excludeId this would always self-nudge.
+    await tools['update_knowledge'].handler({
+      id,
+      content: 'A stable fact that should never be flagged as a duplicate of itself. ',
+    });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.equal(
+      reply,
+      `Updated knowledge entry #${id}.`,
+      'SECURITY: an edit must never be reported as a near-duplicate of its own pre-edit content',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's near-duplicate nudge exposes only {id, title/label, similarity%} — the identical field set save_knowledge's nudge already surfaces, no additional entry fields (issue #584)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-parity-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-parity-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-parity-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    // The exact same regex, anchored at both ends of the nudge clause, so a
+    // match against BOTH replies pins that neither surfaces any field beyond
+    // {id, title/label, similarity%} — widening either would break the match.
+    const nudgeClause =
+      / Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/;
+
+    await tools['save_knowledge'].handler({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+
+    const dupSaveResult = await tools['save_knowledge'].handler({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    const dupSaveReply = dupSaveResult.content[0]?.text ?? '';
+    assert.match(dupSaveReply, nudgeClause, 'save_knowledge nudge matches the shared field-set regex');
+
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    const updateReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(
+      updateReply ?? '',
+      nudgeClause,
+      'update_knowledge nudge matches the identical shared field-set regex — no additional fields',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's CONFIRM-gating, admin-tier requirement, and audit trail are unchanged by the near-duplicate nudge — an unconfirmed call produces no nudge and does not touch the KB (issue #584)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-security-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-security-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-security-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pendingResult = await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    assert.match(pendingResult.content[0]?.text ?? '', /CONFIRM/, 'still asks for out-of-band confirmation');
+    assert.doesNotMatch(
+      pendingResult.content[0]?.text ?? '',
+      /looks similar/,
+      'SECURITY: the nudge must never appear before the edit is confirmed — it only decorates the success reply',
+    );
+
+    const unedited = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [editedId]);
+    assert.equal(
+      unedited.rows[0].title,
+      'Meetup schedule',
+      'SECURITY: an unconfirmed call must not touch the KB',
+    );
+
+    cancelPendingAction('discord', caller.conversationId, caller.userId);
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
 // list_knowledge_candidates / accept_knowledge_candidate / decline_knowledge_candidate
 // (issue #102): the review queue that turns a context-builder digest into a
 // durable knowledge entry. RBAC gating itself is pinned in rbac.test.ts; these

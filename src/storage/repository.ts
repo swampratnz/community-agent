@@ -582,6 +582,40 @@ export interface KnowledgeDuplicateMatch {
 }
 
 /**
+ * Shared near-duplicate lookup used by both `saveKnowledge` and
+ * `updateKnowledge` (issue #584) — the one place the 0.92 threshold and the
+ * `ORDER BY embedding <=> $1` query are written, so the two write paths can
+ * never drift apart. `excludeId` lets `updateKnowledge` exclude the entry
+ * being edited from its own candidate set (it would otherwise always match
+ * itself at ~1.0 similarity).
+ */
+async function findNearDuplicateKnowledge(
+  scope: string,
+  embedding: number[],
+  excludeId?: number,
+): Promise<KnowledgeDuplicateMatch | undefined> {
+  const vec = pgvector.toSql(embedding);
+  const { rows: matches } = await pool.query(
+    `SELECT id, title, content, 1 - (embedding <=> $1) AS similarity
+       FROM knowledge
+      WHERE scope = $2 AND embedding IS NOT NULL ${excludeId !== undefined ? 'AND id != $3' : ''}
+      ORDER BY embedding <=> $1
+      LIMIT 1`,
+    excludeId !== undefined ? [vec, scope, excludeId] : [vec, scope],
+  );
+  const top = matches[0];
+  if (top && Number(top.similarity) >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD) {
+    return {
+      id: Number(top.id),
+      title: top.title,
+      content: top.content,
+      similarity: Number(top.similarity),
+    };
+  }
+  return undefined;
+}
+
+/**
  * Machine-ingestion provenance stored in `knowledge.created_by_role` alongside
  * the human RBAC tiers. 'auto' = daily web-research (quarantined untrusted at
  * retrieval); 'docs' = official Anthropic docs backfill (trusted, verbatim).
@@ -620,27 +654,7 @@ export async function saveKnowledge(input: {
     logger.warn({ err }, 'Embedding failed for knowledge entry');
   }
 
-  let similarEntry: KnowledgeDuplicateMatch | undefined;
-  if (embedding) {
-    const vec = pgvector.toSql(embedding);
-    const { rows: matches } = await pool.query(
-      `SELECT id, title, content, 1 - (embedding <=> $1) AS similarity
-         FROM knowledge
-        WHERE scope = $2 AND embedding IS NOT NULL
-        ORDER BY embedding <=> $1
-        LIMIT 1`,
-      [vec, scope],
-    );
-    const top = matches[0];
-    if (top && Number(top.similarity) >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD) {
-      similarEntry = {
-        id: Number(top.id),
-        title: top.title,
-        content: top.content,
-        similarity: Number(top.similarity),
-      };
-    }
-  }
+  const similarEntry = embedding ? await findNearDuplicateKnowledge(scope, embedding) : undefined;
 
   const createdByRole = input.createdByRole ?? 'admin';
   const { rows } = await pool.query(
@@ -1221,12 +1235,12 @@ export async function updateKnowledge(input: {
   // saveKnowledge's callerPlatform, only for scoping automatic
   // knowledge-gap resolution below; never stored on the knowledge row.
   callerPlatform?: Platform;
-}): Promise<boolean> {
+}): Promise<{ updated: boolean; similarEntry?: KnowledgeDuplicateMatch }> {
   const { rows: existingRows } = await pool.query(
     `SELECT title, content, scope, source_url, source_title, created_by_role FROM knowledge WHERE id = $1`,
     [input.id],
   );
-  if (existingRows.length === 0) return false;
+  if (existingRows.length === 0) return { updated: false };
 
   const title = input.title !== undefined ? input.title : existingRows[0].title;
   const content = input.content !== undefined ? input.content : existingRows[0].content;
@@ -1241,6 +1255,12 @@ export async function updateKnowledge(input: {
   } catch (err) {
     logger.warn({ err }, 'Embedding failed for knowledge update');
   }
+
+  // Same near-duplicate check saveKnowledge runs, excluding this entry from
+  // its own candidate set (issue #584) — an ordinary curation edit that
+  // converges this entry's wording onto another entry's topic otherwise
+  // produces no signal until the weekly digest.
+  const similarEntry = embedding ? await findNearDuplicateKnowledge(scope, embedding, input.id) : undefined;
 
   const { rowCount } = await pool.query(
     `UPDATE knowledge
@@ -1271,7 +1291,7 @@ export async function updateKnowledge(input: {
     }
   }
 
-  return (rowCount ?? 0) > 0;
+  return { updated: (rowCount ?? 0) > 0, similarEntry };
 }
 
 /**

@@ -3903,6 +3903,7 @@ export function buildToolServer(
         // (in-place UPDATE keeps no history) — recoverability if a bad/hostile
         // edit slips through.
         const prior = await getKnowledgeContentById(args.id);
+        const state: { similarEntry?: KnowledgeDuplicateMatch } = {};
         const { success, result } = await audited({
           actionKind: 'update_knowledge',
           params: {
@@ -3916,7 +3917,7 @@ export function buildToolServer(
             priorContent: prior?.content,
           },
           run: async () => {
-            const updated = await updateKnowledge({
+            const outcome = await updateKnowledge({
               id: args.id,
               title: args.title,
               content: args.content,
@@ -3925,11 +3926,20 @@ export function buildToolServer(
               sourceTitle: args.sourceTitle,
               callerPlatform: caller.platform,
             });
-            if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
+            if (!outcome.updated) throw new Error(`No knowledge entry with id ${args.id}.`);
+            state.similarEntry = outcome.similarEntry;
             return 'updated';
           },
         });
-        return success ? `Updated knowledge entry #${args.id}.` : `Failed: ${result}`;
+        if (!success) return `Failed: ${result}`;
+        let reply = `Updated knowledge entry #${args.id}.`;
+        if (state.similarEntry) {
+          const { similarEntry } = state;
+          const pct = (similarEntry.similarity * 100).toFixed(0);
+          const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
+          reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
+        }
+        return reply;
       });
     },
   );
