@@ -140,9 +140,10 @@ mirroring the existing optional-capability convention (`reactToMessage?`,
   `MessageDelete` event only ever fires for a delete Discord's own permission
   model already allowed (the author, or a Manage Messages holder), so any
   successful delete of the source message is itself a legitimate trigger.
-  `MessageBulkDelete` retraction is explicitly out of scope for v1 (a
-  moderator clearing a channel) — deferred as a mechanically trivial,
-  same-shape follow-up.
+  `MessageBulkDelete` (issue #595) mirrors this — a moderator's bulk
+  channel-clear (Manage Messages-gated, same as any single delete) retracts
+  the bot's reply for every mapped message in the batch, independently of the
+  archive branch, per message in the batch.
 - **WhatsApp Baileys**: the bot sends a REVOKE protocol message for its own
   prior send — a standard first-party "delete for everyone" on the bot's OWN
   message, distinct from *honouring* someone else's revoke (the archiving

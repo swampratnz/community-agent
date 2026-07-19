@@ -182,9 +182,11 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // updates the stored copy. Extended (issue #575) to also wire up when
     // AUTO_RETRACT_REPLY_ENABLED is on — a second, independent reason to
     // listen for a delete: retracting the bot's OWN live reply, not honouring
-    // a stored row. MessageUpdate/MessageBulkDelete stay archiving-only:
-    // `onMessageUpdate` re-checks archive scope itself, and bulk-delete
-    // retraction is explicitly out of scope for #575 (deferred growth item).
+    // a stored row. MessageBulkDelete (issue #595) mirrors MessageDelete's
+    // two-independent-branches shape per message in the batch, so a
+    // moderator's bulk channel-clear retracts the bot's replies exactly like
+    // a single delete does. MessageUpdate stays archiving-only:
+    // `onMessageUpdate` re-checks archive scope itself.
     if (config.discord.archiveAllMessages || config.behaviour.autoRetractReplyEnabled) {
       this.client.on(Events.MessageDelete, (message) => {
         if (
@@ -202,13 +204,20 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         }
       });
       this.client.on(Events.MessageBulkDelete, (messages) => {
-        if (!config.discord.archiveAllMessages) return;
         for (const message of messages.values()) {
-          if (!this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId)))
-            continue;
-          deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
-            logger.warn({ err, messageId: message.id }, 'Stored-message bulk delete failed'),
-          );
+          if (
+            config.discord.archiveAllMessages &&
+            this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId))
+          ) {
+            deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
+              logger.warn({ err, messageId: message.id }, 'Stored-message bulk delete failed'),
+            );
+          }
+          if (config.behaviour.autoRetractReplyEnabled) {
+            this.retractReplyIfMapped(message.channelId, message.id).catch((err) =>
+              logger.warn({ err, messageId: message.id }, 'Reply retraction failed'),
+            );
+          }
         }
       });
       // `onMessageUpdate` re-checks archive scope itself, so registering it
