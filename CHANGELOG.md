@@ -32,6 +32,81 @@ for anything after ~noon NZST/NZDT). Get today's date with
   honouring — no new tool, no RBAC change, no schema/migration (an in-memory,
   TTL'd, size-capped mapping only). Privacy-positive: this reduces exposure
   rather than increasing retention or access.
+### Changed
+- **Discord role changes no longer evict every admin's cached scope, only the
+  changed member's own** (#573): `onGuildMemberUpdate` invalidated the
+  *entire* `membershipCache` on any member's role change, even though a
+  member's own roles never affect any other cached member's computed channel
+  visibility. It now deletes only the changed member's own entry — the same
+  targeted pattern `onGuildMemberRemove` (#286) already used for a guild exit
+  — so a routine role grant/removal (onboarding, moderator promotion,
+  cosmetic role) no longer forces every other currently-cached admin's next
+  scoped tool call (`moderate`, `announce`, `create_poll`, …) to re-fetch and
+  recompute their own channel list. `onChannelUpdate`, `onGuildRoleUpdate`,
+  and `onGuildRoleDelete` are unchanged — those can affect an unknown set of
+  members and still clear the whole cache.
+### Added
+- **Proactive weekly engagement alert** (`ENGAGEMENT_ALERT_ENABLED`, #568):
+  closes the same pull-only gap #472/#480 already closed for other
+  super-admin-only signals — the `engagement_stats` tool (#419) already
+  computes what fraction of currently-present roster members have ever
+  posted, but a super admin only saw it if they thought to run the tool
+  again. This adds an opt-in job, off by default, that DMs every super admin
+  the current guild-wide percentage at most once a week (restart-safe,
+  persisted freshness guard) — no new tool, no new RBAC tier, no LLM/
+  embedding spend, and no trend/delta in this first version.
+- **Weekly admin digest now flags unhelpful ratings on general-knowledge
+  answers, not just knowledge-base ones** (#563): `list_low_rated_knowledge`/
+  `countLowRatedKnowledge` and the digest's `👎` line only ever covered
+  ratings attributed to a curated knowledge entry — a rating on a general-
+  knowledge (ungrounded, model-training-data) answer, the highest
+  accuracy-risk bucket the bot produces, had no push signal at all, only the
+  manual `list_answer_feedback` pull tool. A new rolling-window,
+  conversation-scoped count (`countGeneralUnhelpfulAnswers`, modelled on
+  `countMaxTurnsFailures`) surfaces a `⚠️` digest line whenever an admin has
+  ≥1 such rating in scope this week, pointing them at
+  `list_answer_feedback` (`unhelpfulOnly: true`) to review. No new tool, no
+  schema change, bare integer only — same privacy convention as every other
+  digest signal. See docs/ARCHITECTURE.md's admin-digest section.
+### Changed
+- **`knowledge_search`'s near-tie ranking now also breaks on low-rated status,
+  checked before staleness** (#562): the existing near-tie comparator (#308)
+  broke ties within `KNOWLEDGE_TIE_MARGIN` on staleness alone, even though
+  `lowRatedIds` — whether a hit has been flagged unhelpful by ≥2 distinct
+  members — was already computed for the same call to render the low-rated
+  caveat (#432) and simply never reached the sort. Now, within a near-tie, if
+  exactly one hit is low-rated the non-low-rated one sorts first; only when
+  neither or both are low-rated does the tie fall through to the existing
+  staleness break. A real relevance gap (outside the margin) still always
+  wins regardless of rating. No new tool, config, query, or schema; output is
+  byte-identical when the low-rated caveat feature is off (the default) or no
+  hit in a result set is low-rated.
+### Added
+- **`feature_flags` tool: see which optional behaviours are actually on**
+  (#559): with 28 opt-in `*_ENABLED` config flags and growing, the only way
+  to answer "is X actually turned on in prod?" was reading env vars on the
+  deploy host directly — `community_info` only ever described *which tools
+  exist*, never *which optional behaviours are enabled*. The new
+  super-admin-only, read-only `feature_flags` tool renders a grouped On/Off
+  listing (Moderation, Knowledge & Learning, Admin Alerts & Digest,
+  Onboarding, WhatsApp, Cost/Model, Integrations) from a fixed, hand-written
+  `FEATURE_FLAG_MAP` allowlist — it never enumerates the underlying config
+  object, so a missing allowlist entry can only under-report a flag, never
+  expose a non-boolean field like a token or URL. An anti-drift test ties
+  the allowlist to every `*_ENABLED` flag in `config.ts`, so a newly-added
+  flag that isn't consciously surfaced fails CI loudly. See
+  docs/ARCHITECTURE.md and docs/SECURITY.md.
+- **Undeliverable super-admin alerts are queued instead of dropped** (#545,
+  extending #534): in a single-platform deployment, a sustained-disconnect
+  alert, a background-job failure-threshold alert, or a model-triggered
+  admin-notification (`report_content`/`appeal_moderation`/…) fired while that
+  platform is down previously vanished — there was no connected adapter to DM
+  through. All three now share one small in-memory queue and flush through the
+  first adapter to reconnect. The shared queue is **priority-aware**: the
+  member-reachable notification path can never evict a system disconnect/
+  job-failure alert, so a member filing their daily reports during an outage
+  can't crowd out the alerts admins most need. In-memory only (clears on
+  restart), same as every other best-effort alert here.
 
 ## 2026-07-18
 

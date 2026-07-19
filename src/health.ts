@@ -11,33 +11,17 @@ import {
   stepDisconnectTracker,
   type DisconnectTracker,
 } from './healthState.js';
+import {
+  drainPendingAlerts,
+  queuePendingAlert,
+  getPendingAlertsForTests,
+  resetPendingAlertsForTests,
+} from './pendingAlertQueue.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const CHECK_INTERVAL_MS = 30_000;
 
-// Bounded so a persistently-disconnected deployment can't accumulate an
-// unbounded backlog; oldest is dropped once full (see queuePendingAlert).
-const PENDING_ALERT_QUEUE_CAP = 5;
-
-// Messages that couldn't be delivered live because every adapter was
-// disconnected. Flushed through the first adapter to reconnect (see `check`
-// below), then cleared. In-memory only — clears on restart, same as every
-// other best-effort notification convention in this codebase.
-const pendingAlerts: string[] = [];
-
-function queuePendingAlert(message: string): void {
-  pendingAlerts.push(message);
-  if (pendingAlerts.length > PENDING_ALERT_QUEUE_CAP) pendingAlerts.shift();
-}
-
-/** Shallow copy for read — tests can inspect the queue without mutating it. */
-export function getPendingAlertsForTests(): readonly string[] {
-  return [...pendingAlerts];
-}
-
-export function resetPendingAlertsForTests(): void {
-  pendingAlerts.length = 0;
-}
+export { getPendingAlertsForTests, resetPendingAlertsForTests };
 
 /**
  * Periodic check across all registered adapters; on a sustained disconnect
@@ -93,7 +77,7 @@ export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], mes
       { message },
       'Health alert could not be delivered live — no connected adapter; queued for flush on reconnect',
     );
-    queuePendingAlert(message);
+    queuePendingAlert(message, 'system'); // disconnect alert — never evicted by a member-reachable alert (#545)
     return;
   }
   for (const adapter of connected) {
@@ -110,8 +94,8 @@ export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], mes
 // message dropped — never re-queued — so a persistently-broken send path
 // can't accumulate forever. Exported so tests can drive it directly.
 export async function flushPendingAlerts(adapter: PlatformAdapter): Promise<void> {
-  if (pendingAlerts.length === 0) return;
-  const queued = pendingAlerts.splice(0, pendingAlerts.length);
+  const queued = drainPendingAlerts();
+  if (queued.length === 0) return;
   for (const message of queued) {
     for (const id of superAdminIds(adapter.platform)) {
       try {

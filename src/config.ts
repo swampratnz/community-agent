@@ -387,6 +387,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Proactive super-admin alert (issue #568) pushing engagement_stats' (issue
+  // #419) guild-wide engagement percentage on a weekly cadence — closes the
+  // same pull-only gap #472/#480 closed for other super-admin-only signals.
+  // Off by default, consistent with this repo's convention for new proactive
+  // DMs.
+  ENGAGEMENT_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
   // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
   // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
@@ -948,6 +957,9 @@ export const config = {
   },
   departedAdminAlert: {
     enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
+  },
+  engagementAlert: {
+    enabled: env.ENGAGEMENT_ALERT_ENABLED ?? false,
   },
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,

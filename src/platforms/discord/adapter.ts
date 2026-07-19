@@ -596,24 +596,28 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   /**
    * Narrows the Discord role-based-access membership-scope-staleness gap
    * (issue #350): `conversationsForUser` derives per-channel visibility from
-   * `channel.permissionsFor(member)`, which depends on the member's roles,
-   * so a role added to or removed from a member must invalidate the cache
-   * as immediately as a full guild exit (`onGuildMemberRemove`, #286) or a
-   * channel permission-overwrite edit (`onChannelUpdate`, #328) already do.
-   * No-ops on a routine update that leaves the role id set unchanged (e.g.
-   * nickname, avatar, timeout, boost) — mirrors `onChannelUpdate`'s guard
-   * that a routine edit is free. Whole-cache clear on a genuine change,
-   * same correct-by-construction reasoning as the two precedents.
+   * `channel.permissionsFor(member)`, which depends on the member's own
+   * roles, so a role added to or removed from a member must invalidate the
+   * cache as immediately as a full guild exit (`onGuildMemberRemove`, #286)
+   * already does. No-ops on a routine update that leaves the role id set
+   * unchanged (e.g. nickname, avatar, timeout, boost) — mirrors
+   * `onChannelUpdate`'s guard that a routine edit is free. On a genuine
+   * change, invalidates only the changed member's own entry (issue #573):
+   * unlike a channel permission-overwrite edit or a role's own permission
+   * change, a member's own role-set change can only ever affect that
+   * member's own computed permissions, so a targeted `delete` — the same
+   * pattern `onGuildMemberRemove` already uses — invalidates enough without
+   * evicting every other still-valid cached entry.
    *
    * Fail-safe edge: a partial `oldMember` (e.g. wasn't in the member cache
    * when the event fired) means its role set at the time of the event is
-   * unknowable — treat that as a change and clear the cache rather than
-   * risk silently treating a real revocation as unchanged.
+   * unknowable — treat that as a change and delete this member's entry
+   * rather than risk silently treating a real revocation as unchanged.
    */
   private onGuildMemberUpdate(oldMember: GuildMember | PartialGuildMember, newMember: GuildMember): void {
     if (newMember.guild.id !== config.discord.guildId) return;
     if (oldMember.partial || !this.roleIdSetsEqual(oldMember.roles.cache, newMember.roles.cache)) {
-      this.membershipCache.clear();
+      this.membershipCache.delete(newMember.id);
     }
   }
 
@@ -789,14 +793,16 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   /**
    * Channels in the configured guild the user can currently view, plus their
    * DM with the bot. Backs admin conversation scoping; cached ~60s, but a
-   * full guild exit invalidates the cache immediately via
-   * `onGuildMemberRemove`, a genuine channel permission-overwrite change in
-   * the configured guild invalidates the whole cache immediately via
-   * `onChannelUpdate` (issue #328), and a genuine role change — a role
-   * added to/removed from a member, a role's own permissions edited, or a
-   * role deleted — invalidates the whole cache immediately via
-   * `onGuildMemberUpdate`/`onGuildRoleUpdate`/`onGuildRoleDelete` (issue
-   * #350). The TTL only bounds staleness from membership changes this
+   * full guild exit invalidates that member's own cache entry immediately
+   * via `onGuildMemberRemove`, a role added to/removed from a member
+   * likewise invalidates only that member's own entry immediately via
+   * `onGuildMemberUpdate` (issue #573; issue #350 originally introduced
+   * this handler as a whole-cache clear), and a genuine channel
+   * permission-overwrite change or a role's own permissions edited/deleted
+   * invalidates the whole cache immediately via
+   * `onChannelUpdate`/`onGuildRoleUpdate`/`onGuildRoleDelete` (issues #328,
+   * #350) since those can affect an unknown set of members. The TTL only
+   * bounds staleness from membership changes this
    * adapter still doesn't observe at all — documented in SECURITY.md.
    */
   async conversationsForUser(userId: string): Promise<string[]> {
