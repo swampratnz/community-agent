@@ -3368,6 +3368,95 @@ test(
 );
 
 test(
+  "repository: usageStats().autoAnswerUsage counts/sums only outbound rows tagged meta.autoAnswer === 'true', across other meta shapes and outside the window (issue #552, acceptance criterion 3)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-autoanswer-usage`;
+    const days = 1;
+    const before = await usageStats(days);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 1',
+      costUsd: 0.1,
+      meta: { autoAnswer: true },
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 2',
+      costUsd: 0.05,
+      meta: { autoAnswer: true, knowledgeEntryId: 99 },
+    });
+    // No autoAnswer key at all — a normal reply — must contribute 0, not throw.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 3',
+      costUsd: 1.5,
+      meta: { replyToUserId: 'someone' },
+    });
+    // Inbound rows must never contribute — autoAnswerUsage is direction = 'outbound' only.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'someone',
+      role: 'member',
+      direction: 'inbound',
+      content: 'a member question',
+      costUsd: 999,
+      meta: { autoAnswer: true },
+    });
+    // Outside the 1-day window — must not appear in the sum.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, cost_usd, meta, created_at)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'old reply', 500,
+               '{"autoAnswer": true}'::jsonb, now() - interval '2 days')`,
+      [conversationId],
+    );
+
+    const after = await usageStats(days);
+
+    assert.equal(
+      after.autoAnswerUsage.count - before.autoAnswerUsage.count,
+      2,
+      'count sums only the two in-window outbound rows tagged autoAnswer',
+    );
+    assert.ok(
+      Math.abs(after.autoAnswerUsage.costUsd - before.autoAnswerUsage.costUsd - 0.15) < 1e-9,
+      'costUsd sums only the two in-window outbound rows tagged autoAnswer (0.10 + 0.05)',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: usageStats().autoAnswerUsage reflects zero delta when no interaction is recorded in between two reads (empty-window case, issue #552)',
+  { skip },
+  async () => {
+    const before = await usageStats(1);
+    const after = await usageStats(1);
+    assert.deepEqual(
+      after.autoAnswerUsage,
+      before.autoAnswerUsage,
+      'no interactions recorded in between — the window contributes nothing new',
+    );
+  },
+);
+
+test(
   'SECURITY: repository: shortcut_hits stores only the fixed kind enum and a timestamp — no user id, conversation id, platform, or free text (issue #440)',
   { skip },
   async () => {
