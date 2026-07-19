@@ -1794,16 +1794,33 @@ number could reach an unrelated person).
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.
 - [ ] **Branch protection on `main`** blocks direct and force pushes (require a
-      PR + review). This is the **enforceable** guarantee for the pipeline's
-      write-scoped automation — the build, autofix, and conflict-resolver workers
-      each hold a `contents: write` token and run an agent with code execution
-      (`node`/`npm`, needed to run the gate). Their `git push origin HEAD`
-      allowlist and withheld `checkout`/`branch` raise the bar, but an agent with
-      code execution could still rewrite `.git/HEAD` on disk to retarget a push,
-      so the tool restrictions are defence-in-depth, not the guarantee. Branch
-      protection (server-side) is what actually guarantees nothing reaches `main`
-      without a human merge even if a worker is prompt-injected. Enable it before
-      relying on these loops.
+      PR + passing required checks). This is the **enforceable** guarantee for the
+      pipeline's write-scoped automation — the build, autofix, and
+      conflict-resolver workers each hold a `contents: write` token and run an
+      agent with code execution (`node`/`npm`, needed to run the gate). Their
+      `git push origin HEAD` allowlist and withheld `checkout`/`branch` raise the
+      bar, but an agent with code execution could still rewrite `.git/HEAD` on
+      disk to retarget a push, so the tool restrictions are defence-in-depth, not
+      the guarantee. Branch protection (server-side) is what actually guarantees
+      nothing reaches `main` except through a PR that passed the required checks.
+      Enable it before relying on these loops.
+- [ ] **Auto-merge posture (`pipeline-pr-automerge.yml`) is a conscious
+      decision.** By default the pipeline requires a **human** to merge every PR,
+      which is the backstop against the PR-review LLM itself being prompt-injected
+      into a false "LGTM" (it reads untrusted PR diffs/bodies). The auto-merge
+      loop, when enabled, deliberately trades that backstop for throughput: it
+      merges build-worker PRs on the automated `LGTM` alone (plus green checks,
+      `MERGEABLE`, exact-identity + freshness + `--match-head-commit` gates — all
+      deterministic, no LLM, so no *added* injection surface of its own). The
+      residual risk it accepts is a review LLM tricked into a wrongful `LGTM`
+      shipping unreviewed code to `main` unattended. Controls: it is **off by
+      default** (`AUTOMERGE_MODE` unset ⇒ inert; set `dry-run` to observe, `live`
+      to act); any PR can be pinned out with `no-auto-merge`; and branch
+      protection's required checks + who-may-merge still bound it. If you require
+      the strict "no code reaches `main` without a human even if a worker is
+      prompt-injected" guarantee, leave `AUTOMERGE_MODE` unset (or require a human
+      approving *review* in branch protection, which the automated verdict is
+      not) — then a human merges everything, as before.
 - [ ] **If enabling `redeploy_bot`**: the exact-match sudoers line in
       docs/DEPLOYMENT.md is added (opt-in — omit it and the tool simply fails
       clean with no new host surface granted).

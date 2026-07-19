@@ -87,11 +87,16 @@ jobs:
       # review) posts ONE marker-guarded note explaining the likely cause,
       # rather than silently doing nothing every tick.
       BLOCKED_MARKER: '<!-- pipeline-automerge-blocked -->'
-      # Safety valve for rollout: set repository variable AUTOMERGE_DRY_RUN=true
-      # (Settings → Secrets and variables → Actions → Variables) to LOG the PR
-      # it would merge each run without merging, so the eligibility logic can be
-      # watched against real PRs first. Unset/anything-else = live merges.
-      DRY_RUN: ${{ vars.AUTOMERGE_DRY_RUN }}
+      # OPT-IN mode gate (repository variable AUTOMERGE_MODE — Settings → Secrets
+      # and variables → Actions → Variables). The default (unset) is INERT, so
+      # merging this workflow onto `main` never auto-merges anything until an
+      # operator has deliberately turned it on — no zero-observation live merge
+      # on the first tick. Three states:
+      #   unset / anything else → inert (does nothing)
+      #   dry-run               → evaluates + logs the PR it WOULD merge, no merge
+      #   live                  → actually merges
+      # Roll out by setting it to `dry-run`, watching a few ticks, then `live`.
+      MODE: ${{ vars.AUTOMERGE_MODE }}
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -101,6 +106,13 @@ jobs:
         if: env.HAS_TOKEN == 'true'
         run: |
           set -euo pipefail
+
+          # Opt-in gate: do nothing at all unless an operator has set the mode.
+          if [ "$MODE" != 'dry-run' ] && [ "$MODE" != 'live' ]; then
+            echo "AUTOMERGE_MODE is '${MODE:-<unset>}' — auto-merge is OFF (default). Set the AUTOMERGE_MODE repository variable to 'dry-run' or 'live' to enable."
+            exit 0
+          fi
+          echo "AUTOMERGE_MODE=$MODE"
 
           # Candidates: open, oldest-first. All eligibility is re-checked per PR
           # below from authoritative fields; this list is just the scan order.
@@ -116,18 +128,11 @@ jobs:
           for n in $candidates; do
             echo "::group::Evaluating PR #$n"
 
-            # `mergeable` is computed asynchronously by GitHub and reads UNKNOWN
-            # until it settles — poll a bounded number of times, then defer to a
-            # later tick rather than guessing (same policy as the conflict
-            # resolver's discover job).
-            info='{}'; mergeable='UNKNOWN'
-            for _ in $(seq 1 8); do
-              info="$(gh pr view "$n" --repo "$REPO" \
-                --json number,isDraft,isCrossRepository,mergeable,author,labels,body,headRefOid,statusCheckRollup)"
-              mergeable="$(jq -r '.mergeable' <<<"$info")"
-              [ "$mergeable" != 'UNKNOWN' ] && break
-              sleep 3
-            done
+            # CHEAP structural filter FIRST (a single view, no polling) so a
+            # draft / human / fork / stop-labelled / non-`Closes #` PR is skipped
+            # before spending any mergeable-poll time on it.
+            struct="$(gh pr view "$n" --repo "$REPO" \
+              --json isDraft,isCrossRepository,author,labels,body)"
 
             # --- Structural contract: build-worker PR, not pinned/escalated ----
             # Pin to the EXACT build-worker identity (`claude[bot]`, the App the
@@ -143,11 +148,26 @@ jobs:
               and (.author.login == "claude[bot]")
               and ((.body // "") | test("[Cc]loses #[0-9]+"))
               and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-merge") | not))
-            ' <<<"$info")"
+            ' <<<"$struct")"
             if [ "$eligible" != 'true' ]; then
               echo "PR #$n: not an eligible build-worker PR (draft/fork/not claude[bot]/no Closes #/stop-labelled) — skip."
               echo "::endgroup::"; continue
             fi
+
+            # Only NOW (structurally eligible) resolve the state GitHub computes
+            # asynchronously: `mergeable` reads UNKNOWN until it settles, so poll
+            # a bounded number of times, then defer to a later tick rather than
+            # guessing (same policy as the conflict resolver's discover job).
+            # This fetch also carries headRefOid + statusCheckRollup for the
+            # gates below.
+            info='{}'; mergeable='UNKNOWN'
+            for _ in $(seq 1 8); do
+              info="$(gh pr view "$n" --repo "$REPO" \
+                --json mergeable,headRefOid,statusCheckRollup)"
+              mergeable="$(jq -r '.mergeable' <<<"$info")"
+              [ "$mergeable" != 'UNKNOWN' ] && break
+              sleep 3
+            done
 
             # --- Mergeable (no conflict) ---------------------------------------
             if [ "$mergeable" != 'MERGEABLE' ]; then
@@ -218,8 +238,8 @@ jobs:
             fi
 
             # --- All gates passed ---------------------------------------------
-            if [ "$DRY_RUN" = 'true' ]; then
-              echo "PR #$n: DRY RUN — fully eligible; would merge (method: $MERGE_METHOD) but AUTOMERGE_DRY_RUN=true. No merge performed."
+            if [ "$MODE" != 'live' ]; then
+              echo "PR #$n: DRY RUN (AUTOMERGE_MODE=$MODE) — fully eligible; would merge (method: $MERGE_METHOD, head $head_sha). No merge performed."
               echo "::endgroup::"
               exit 0
             fi

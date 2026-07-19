@@ -417,8 +417,17 @@ To go live:
 Until both exist the workflows are inert (they log a notice and skip). Fork PRs
 never receive the secret, so the review worker won't run on untrusted forks.
 
-The **auto-merge loop** has two extra rollout knobs:
+The **auto-merge loop** is **OFF by default** and has two rollout knobs:
 
+- **Opt in with `AUTOMERGE_MODE` (repository variable** — Settings → Secrets and
+  variables → Actions → Variables). Unset (the default) ⇒ the loop is inert, so
+  merging this workflow onto `main` never auto-merges anything until you
+  deliberately turn it on. Set it to **`dry-run`** to have each run LOG the PR it
+  *would* merge (no merge) so you can confirm the eligibility logic picks the
+  right PRs against real traffic; then set it to **`live`** to actually merge.
+  Pin any individual PR out at any time with the `no-auto-merge` label. This
+  opt-in default is deliberate: it guarantees an observation window before any
+  live merge, given this is the first loop allowed to write to `main`.
 - **Branch protection on `main` must let the Actions identity merge.** It merges
   with the `GITHUB_TOKEN`, and the automated review verdict is a *comment*, not
   a GitHub approving review — so if protection requires a human approving
@@ -426,13 +435,9 @@ The **auto-merge loop** has two extra rollout knobs:
   comment). Configure protection to require the *checks* (build, lint,
   security-invariants, review) rather than a human review, and to allow the
   Actions/bot identity to merge. Required-checks protection is also the
-  enforceable backstop that the loop's own gating supplements, not replaces.
-- **Dry run first (optional):** set repository **variable**
-  `AUTOMERGE_DRY_RUN=true` (Settings → Secrets and variables → Actions →
-  Variables) to have each run LOG the PR it would merge, without merging, so you
-  can confirm the eligibility logic picks the right PRs against real traffic.
-  Unset it (or set anything else) to go live. Pin any individual PR out at any
-  time with the `no-auto-merge` label.
+  enforceable backstop that the loop's own gating supplements, not replaces. See
+  docs/SECURITY.md's Operational checklist for the security posture this trades
+  off (a human merge is the backstop against a prompt-injected review LLM).
 
 **Cost caution:** every run draws on the same Max 5-hour/weekly pool as the
 production bot serving real members. Keep an eye on `/usage`; if the pipeline
