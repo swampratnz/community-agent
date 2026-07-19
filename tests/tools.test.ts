@@ -1901,8 +1901,63 @@ test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/
     /what's new/i,
     'the old, misleading "ask what\'s new" pointer must be gone — superseded by inline content (issue #367)',
   );
-  assert.equal(superAdminReply, adminReply, 'super_admin sees the same admin rundown as admin');
+  assert.ok(
+    superAdminReply.startsWith(adminReply),
+    'super_admin reply must include the full admin content (issue #582)',
+  );
   assert.notEqual(adminReply, memberReply, 'admin reply must differ from the member-only reply');
+});
+
+test('community_info appends SUPER_ADMIN_CAPABILITIES_TEXT for a super_admin caller, in member+admin+super_admin order (issue #582)', async () => {
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+  assert.equal(
+    superAdminReply,
+    `${adminReply}\n${superAdminReply.slice(adminReply.length + 1)}`,
+    'super_admin reply must be admin reply plus a trailing block',
+  );
+  assert.notEqual(superAdminReply, adminReply, 'super_admin reply must differ from the admin-only reply');
+  assert.match(
+    superAdminReply,
+    /grant or revoke admin status/i,
+    'super_admin reply must contain a SUPER_ADMIN_CAPABILITIES_TEXT-unique line (grant_admin/revoke_admin)',
+  );
+  assert.ok(
+    superAdminReply.indexOf(memberReply) === 0,
+    'super_admin reply must start with the full member content',
+  );
+});
+
+test('community_info: admin-tier reply stays byte-identical, never gains SUPER_ADMIN_CAPABILITIES_TEXT content (issue #582 regression pin)', async () => {
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+
+  const expectedAdminCapabilitiesText =
+    'As an admin, you also have:\n' +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
+    "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
+    '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
+    '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
+    '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
+    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
+    '- See who is waiting for access, or who has joined or left the server\n' +
+    "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
+    '- Set the community guidelines or the welcome message shown to new members\n' +
+    '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
+    '- Generate an image, or check recent changes to the bot and community (the changelog)';
+
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  assert.equal(
+    adminReply,
+    `${memberReply}\n${expectedAdminCapabilitiesText}`,
+    'admin-tier reply must be byte-identical to today — this PR must not change the admin branch (issue #582)',
+  );
+  assert.doesNotMatch(
+    adminReply,
+    /grant or revoke admin status/i,
+    'admin reply must never contain SUPER_ADMIN_CAPABILITIES_TEXT-unique content',
+  );
 });
 
 // Anti-drift pin (issue #311): the docstring above MEMBER_CAPABILITIES_TEXT
@@ -2150,6 +2205,132 @@ test('SECURITY: community_info member-tier and guest-tier replies never name an 
       new RegExp(id, 'i'),
       `guest-tier reply must never name the privileged tool "${id}"`,
     );
+  }
+});
+
+// Anti-drift pin (issue #582), mirroring ADMIN_CAPABILITY_COVERAGE above: the
+// docstring above SUPER_ADMIN_CAPABILITIES_TEXT states "every entry in
+// SUPER_ADMIN_TOOLS gets a mention" as an invariant. This coverage map ties
+// every SUPER_ADMIN_TOOLS id to a regex its mention must satisfy in the
+// rendered super_admin community_info text, so a future super-admin tool
+// shipping with no capabilities-text line fails loudly here instead of
+// drifting silently, the same way #367 caught the admin-side gap.
+const SUPER_ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
+  ['mcp__community__grant_admin', /grant or revoke admin status/i],
+  ['mcp__community__revoke_admin', /grant or revoke admin status/i],
+  ['mcp__community__purge_user_data', /purge their data/i],
+  ['mcp__community__audit_view', /view audit logs/i],
+  ['mcp__community__usage_stats', /usage\/engagement stats/i],
+  ['mcp__community__admin_activity', /review admin activity/i],
+  ['mcp__community__list_admins', /list current admins/i],
+  ['mcp__community__engagement_stats', /usage\/engagement stats/i],
+  ['mcp__community__pause_bot', /pause or resume the bot/i],
+  ['mcp__community__resume_bot', /pause or resume the bot/i],
+  ['mcp__community__set_policy', /change bot-wide policy settings/i],
+  ['mcp__community__redeploy_bot', /trigger a redeploy of the bot/i],
+  ['mcp__community__suggest_issue', /file a github issue/i],
+  ['mcp__community__dev_team_dispatch', /dispatch a remote dev-team job/i],
+  ['mcp__community__dev_team_status', /check its status/i],
+  ['mcp__community__dev_team_result', /fetch its result/i],
+  ['mcp__community__dev_team_backlog', /tracked backlog/i],
+  ['mcp__community__dev_team_findings', /assessment's findings/i],
+  ['mcp__community__dev_team_verify', /re-check one finding/i],
+]);
+// Every SUPER_ADMIN_TOOLS entry gets its own line — no exemptions needed
+// (unlike MEMBER_CAPABILITY_EXEMPT, SUPER_ADMIN_TOOLS has no self-referential
+// tool like community_info to exclude).
+const SUPER_ADMIN_CAPABILITY_EXEMPT = new Set<string>();
+
+function assertSuperAdminToolsCovered(
+  tools: readonly string[],
+  coverage: Map<string, RegExp>,
+  exempt: Set<string>,
+  renderedText: string,
+): void {
+  for (const toolId of tools) {
+    if (exempt.has(toolId)) continue;
+    const pattern = coverage.get(toolId);
+    assert.ok(
+      pattern,
+      `${toolId} has no SUPER_ADMIN_CAPABILITY_COVERAGE entry — add a capabilities-text line and a coverage-map entry`,
+    );
+    assert.match(renderedText, pattern, `${toolId}'s capabilities-text line is missing or changed`);
+  }
+}
+
+test('community_info: every SUPER_ADMIN_TOOLS entry has a capabilities-text line (issue #582 anti-drift pin)', async () => {
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+  assertSuperAdminToolsCovered(
+    SUPER_ADMIN_TOOLS,
+    SUPER_ADMIN_CAPABILITY_COVERAGE,
+    SUPER_ADMIN_CAPABILITY_EXEMPT,
+    superAdminReply,
+  );
+});
+
+test('community_info anti-drift pin fails loudly for an uncovered super-admin tool (issue #582)', async () => {
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+  // Synthetic fixture standing in for a future super-admin tool —
+  // SUPER_ADMIN_TOOLS itself is `as const` and must not be mutated by a test.
+  // Demonstrates that the coverage check above would actually catch the
+  // exact drift #367/#311 found on their own tiers, now on the super-admin
+  // side too.
+  const syntheticToolsWithGap = [...SUPER_ADMIN_TOOLS, 'mcp__community__a_brand_new_super_admin_tool'];
+  assert.throws(
+    () =>
+      assertSuperAdminToolsCovered(
+        syntheticToolsWithGap,
+        SUPER_ADMIN_CAPABILITY_COVERAGE,
+        SUPER_ADMIN_CAPABILITY_EXEMPT,
+        superAdminReply,
+      ),
+    /a_brand_new_super_admin_tool/,
+  );
+});
+
+test('community_info: super_admin reply stays under a hard char cap, not a wall of text (issue #582)', async () => {
+  const superAdminReply = (await communityInfoHandler('super_admin')).content[0]?.text ?? '';
+
+  // 19 SUPER_ADMIN_TOOLS entries consolidated into behaviourally-related
+  // bullets on top of the member+admin content (same discipline as the admin
+  // cap above) — a hard cap, not a soft heuristic: a future super-admin tool
+  // added without consolidation should fail this rather than silently
+  // growing into a wall of text. Own cap, distinct from the 2800-char admin
+  // cap, since this reply is longer (member + admin + super_admin content).
+  assert.ok(
+    superAdminReply.length < 3400,
+    `super_admin reply should stay short; was ${superAdminReply.length} chars`,
+  );
+});
+
+test('SECURITY: community_info admin-, member-, and guest-tier replies never contain any SUPER_ADMIN_CAPABILITIES_TEXT-unique line (issue #582, extends issue #367/#311)', async () => {
+  const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
+  const memberReply = (await communityInfoHandler('member')).content[0]?.text ?? '';
+  const guestReply = (await communityInfoHandler('guest')).content[0]?.text ?? '';
+
+  for (const untieredReply of [adminReply, memberReply, guestReply]) {
+    for (const [toolId, pattern] of SUPER_ADMIN_CAPABILITY_COVERAGE) {
+      assert.doesNotMatch(
+        untieredReply,
+        pattern,
+        `non-super_admin reply must never contain the SUPER_ADMIN_CAPABILITIES_TEXT line for "${toolId}"`,
+      );
+    }
+  }
+
+  const superAdminOnlyToolIds = SUPER_ADMIN_TOOLS.map((id) => id.replace('mcp__community__', ''));
+  for (const id of superAdminOnlyToolIds) {
+    for (const [tierName, reply] of [
+      ['admin', adminReply],
+      ['member', memberReply],
+      ['guest', guestReply],
+    ] as const) {
+      assert.doesNotMatch(
+        reply,
+        new RegExp(id, 'i'),
+        `${tierName}-tier reply must never name the super-admin-only tool "${id}"`,
+      );
+    }
   }
 });
 

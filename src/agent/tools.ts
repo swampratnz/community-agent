@@ -841,6 +841,26 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
 
 /**
+ * Plain-language rundown of what a super admin can additionally ask the bot
+ * to do, on top of MEMBER_CAPABILITIES_TEXT and ADMIN_CAPABILITIES_TEXT above
+ * (issue #582) — every entry in SUPER_ADMIN_TOOLS gets a mention,
+ * consolidated into behaviourally-related bullets rather than 19 one-per-line
+ * entries, same discipline ADMIN_CAPABILITIES_TEXT already uses (issue #367).
+ * No interpolation of any runtime/tool argument — static text only, same
+ * trust level as its two siblings.
+ */
+const SUPER_ADMIN_CAPABILITIES_TEXT =
+  'As a super admin, you also have:\n' +
+  '- Grant or revoke admin status for a member\n' +
+  '- Pause or resume the bot, view audit logs, review admin activity, list current admins, ' +
+  'or check usage/engagement stats\n' +
+  '- Erase all of a user\'s stored data on request ("purge their data")\n' +
+  '- Change bot-wide policy settings, or trigger a redeploy of the bot\n' +
+  '- File a GitHub issue suggesting an improvement\n' +
+  '- Dispatch a remote dev-team job to assess or deliver a change, check its status, fetch its result, ' +
+  "turn a completed assessment into a tracked backlog, list an assessment's findings, or re-check one finding";
+
+/**
  * Best-effort confirmation DM for a member grant. Fires only on an actual
  * transition into membership (`wasAlreadyMember` false) so re-running
  * `add_member` on an existing member/admin doesn't re-send it. A failed DM
@@ -1755,7 +1775,12 @@ export function buildToolServer(
       'do not answer that from general knowledge alone.',
     {},
     async () => {
-      if (caller.role === 'admin' || caller.role === 'super_admin') {
+      if (caller.role === 'super_admin') {
+        return text(
+          `${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`,
+        );
+      }
+      if (caller.role === 'admin') {
         return text(`${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}`);
       }
       return text(MEMBER_CAPABILITIES_TEXT);
