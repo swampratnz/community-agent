@@ -10,6 +10,18 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **`usage_stats` now breaks down volume and cost by platform** (#580): the
+  super admin's cost/volume monitoring tool blended Discord and WhatsApp into
+  one total, so a spike could never be attributed to a platform — every
+  sibling admin-insight tool (`engagement_stats`, `admin_activity`) already
+  supported this split. A new `By platform: ...` line reports inbound count,
+  outbound count, and recorded cost per platform, ordered by volume (then
+  platform name), omitting any platform with zero interactions in the window.
+  Same `super_admin` gate, no new tool or param.
+
 ## 2026-07-18
 
 ### Added

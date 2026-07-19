@@ -663,12 +663,26 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     .join(' · ');
   return (
     `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+    formatUsageByPlatformLine(s.byPlatform) +
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
     formatCacheUsageLine(s.cacheUsage)
   );
+}
+
+/**
+ * Renders the per-platform breakdown line (issue #580) — `usage_stats` was
+ * the last admin-insight tool still blending Discord and WhatsApp into one
+ * total. `s.byPlatform` is already ordered by volume desc (then platform
+ * name) by the repository query, so this only formats; a platform absent
+ * from the array (zero interactions in the window) is simply not rendered,
+ * matching this codebase's "quiet signal omitted" convention.
+ */
+function formatUsageByPlatformLine(byPlatform: Awaited<ReturnType<typeof usageStats>>['byPlatform']): string {
+  if (byPlatform.length === 0) return '';
+  return `By platform: ${byPlatform.map((p) => `${p.platform}: ${p.inbound} in / ${p.outbound} out, ~$${p.costUsd.toFixed(2)}`).join(' · ')}\n`;
 }
 
 /**

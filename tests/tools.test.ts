@@ -5608,6 +5608,12 @@ const BASE_USAGE_STATS = {
   inbound: 5,
   outbound: 3,
   costUsd: 1.5,
+  byPlatform: [] as Array<{
+    platform: 'discord' | 'whatsapp';
+    inbound: number;
+    outbound: number;
+    costUsd: number;
+  }>,
   topUsers: [{ userId: 'u1', userName: 'Alice', messages: 2 }],
   costByRole: [{ role: 'member' as const, costUsd: 1.5, replies: 3 }],
   backgroundCostUsd: 0,
@@ -5858,6 +5864,91 @@ test('formatUsageStats: non-zero cacheUsage appends a rounded hit-rate line (iss
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Prompt cache: 82% hit rate (12345 read / 2678 new tokens).',
+  );
+});
+
+test('formatUsageStats: byPlatform breakdown line renders inbound/outbound/cost per platform in array order, totals stay consistent (issue #580)', () => {
+  const s = {
+    ...BASE_USAGE_STATS,
+    inbound: 412,
+    outbound: 398,
+    costUsd: 3.12,
+    byPlatform: [
+      { platform: 'discord' as const, inbound: 301, outbound: 290, costUsd: 2.4 },
+      { platform: 'whatsapp' as const, inbound: 111, outbound: 108, costUsd: 0.72 },
+    ],
+  };
+  const out = formatUsageStats(s, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 412 inbound / 398 replies, ~$3.12 recorded.\n' +
+      'By platform: discord: 301 in / 290 out, ~$2.40 · whatsapp: 111 in / 108 out, ~$0.72\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  // Criterion 3: per-platform sums must equal the pre-existing top-level totals exactly.
+  assert.equal(
+    s.byPlatform.reduce((a, p) => a + p.inbound, 0),
+    s.inbound,
+  );
+  assert.equal(
+    s.byPlatform.reduce((a, p) => a + p.outbound, 0),
+    s.outbound,
+  );
+  assert.ok(Math.abs(s.byPlatform.reduce((a, p) => a + p.costUsd, 0) - s.costUsd) < 1e-9);
+});
+
+test('formatUsageStats: byPlatform empty array is byte-identical to pre-#580 output (no By platform line)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('By platform'), 'no By platform line when byPlatform is empty');
+});
+
+test('formatUsageStats: single-platform-only data omits the other platform entirely from the breakdown line (issue #580 criterion 4)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      byPlatform: [{ platform: 'discord' as const, inbound: 5, outbound: 3, costUsd: 1.5 }],
+    },
+    7,
+  );
+  const line = out.split('\n').find((l) => l.startsWith('By platform:'));
+  assert.ok(line, 'a By platform line is present when at least one platform has interactions');
+  assert.equal(line, 'By platform: discord: 5 in / 3 out, ~$1.50');
+  assert.ok(
+    !line.includes('whatsapp'),
+    'whatsapp must never appear when it had zero interactions in the window',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-platform breakdown (assertAtLeast re-check, issue #580)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({}),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the per-platform breakdown',
   );
 });
 

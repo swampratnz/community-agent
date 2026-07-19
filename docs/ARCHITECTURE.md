@@ -1555,6 +1555,13 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   turn's SDK `result` message — see "Known cost/latency characteristic"
   above. Appended only when the window has recorded any cache activity;
   byte-identical to today's output on a fresh deployment or before #522.
+- `usage_stats` also reports a `By platform: ...` line (issue #580) breaking
+  inbound/outbound counts and cost down by platform — `engagement_stats` and
+  `admin_activity` already split by platform; `usage_stats` was the last
+  admin-insight tool still blending Discord and WhatsApp into one total. Same
+  table, window, and `direction`-based semantics as the top-level totals, just
+  `GROUP BY platform`, ordered by volume desc then platform name. A platform
+  with zero interactions in the window is omitted, not rendered as a zero row.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.

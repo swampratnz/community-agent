@@ -2985,6 +2985,95 @@ test(
 );
 
 test(
+  'repository: usageStats().byPlatform sums inbound/outbound/cost per platform, consistent with the top-level totals, ordered by volume desc then platform (issue #580)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-platform-split`;
+    const discordUser = `${RUN}-platform-discord`;
+    const whatsappUser = `${RUN}-platform-whatsapp`;
+
+    const days = 1;
+    const before = await usageStats(days);
+    const beforeByPlatform = new Map(before.byPlatform.map((r) => [r.platform, r]));
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: discordUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'discord question',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: discordUser,
+      role: 'member',
+      direction: 'outbound',
+      content: 'discord reply',
+      costUsd: 1.2,
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: whatsappUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'whatsapp question',
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: whatsappUser,
+      role: 'member',
+      direction: 'outbound',
+      content: 'whatsapp reply',
+      costUsd: 0.3,
+    });
+
+    const after = await usageStats(days);
+    const afterByPlatform = new Map(after.byPlatform.map((r) => [r.platform, r]));
+
+    const discordBefore = beforeByPlatform.get('discord');
+    const discordAfter = afterByPlatform.get('discord');
+    assert.ok(discordAfter, 'discord appears in byPlatform after seeding a discord row');
+    assert.equal(discordAfter.inbound - (discordBefore?.inbound ?? 0), 1);
+    assert.equal(discordAfter.outbound - (discordBefore?.outbound ?? 0), 1);
+    assert.equal(discordAfter.costUsd - (discordBefore?.costUsd ?? 0), 1.2);
+
+    const whatsappBefore = beforeByPlatform.get('whatsapp');
+    const whatsappAfter = afterByPlatform.get('whatsapp');
+    assert.ok(whatsappAfter, 'whatsapp appears in byPlatform after seeding a whatsapp row');
+    assert.equal(whatsappAfter.inbound - (whatsappBefore?.inbound ?? 0), 1);
+    assert.equal(whatsappAfter.outbound - (whatsappBefore?.outbound ?? 0), 1);
+    assert.equal(whatsappAfter.costUsd - (whatsappBefore?.costUsd ?? 0), 0.3);
+
+    // Criterion 3: summing byPlatform must equal the top-level totals exactly (same
+    // table/window/direction semantics as `totals`, differing only by GROUP BY platform).
+    const sumInbound = after.byPlatform.reduce((a, r) => a + r.inbound, 0);
+    const sumOutbound = after.byPlatform.reduce((a, r) => a + r.outbound, 0);
+    const sumCost = after.byPlatform.reduce((a, r) => a + r.costUsd, 0);
+    assert.equal(sumInbound, after.inbound);
+    assert.equal(sumOutbound, after.outbound);
+    assert.ok(Math.abs(sumCost - after.costUsd) < 1e-9);
+
+    // Criterion 5: deterministic ordering by volume (inbound+outbound) desc, then platform name.
+    for (let i = 1; i < after.byPlatform.length; i++) {
+      const prev = after.byPlatform[i - 1];
+      const curr = after.byPlatform[i];
+      const prevVolume = prev.inbound + prev.outbound;
+      const currVolume = curr.inbound + curr.outbound;
+      assert.ok(
+        prevVolume > currVolume || (prevVolume === currVolume && prev.platform < curr.platform),
+        'byPlatform is ordered by volume desc, then platform asc as a deterministic tiebreaker',
+      );
+    }
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   'repository: usageStats clamps an out-of-range days window to [1, 365] (issue #110)',
   { skip },
   async () => {
