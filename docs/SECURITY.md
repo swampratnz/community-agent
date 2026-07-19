@@ -1480,6 +1480,50 @@ control downstream of it is reused completely unchanged:
     tests, including one that advances past the original creation+10min
     cutoff but within 10min of the last refresh.
 
+### 16. Config-flag visibility (`feature_flags`, super-admin, issue #559)
+
+A read-only, no-argument, no-CONFIRM chat tool answering "which of this
+deployment's ~28 opt-in `*_ENABLED` config flags are actually on right now?"
+— previously answerable only by reading env vars on the deploy host directly.
+This is a **new read path into `config`**, so it's called out separately from
+the "Secret exposure" controls (§2) above rather than assumed covered by them:
+
+- **Super-admin floor, not admin.** Reuses `assertAtLeast(caller.role,
+  'super_admin', ...)`, the same tier `usage_stats`/`admin_activity`/
+  `list_admins`/`engagement_stats` already sit at — several flags are
+  themselves security-relevant posture (e.g. `MODERATION_LLM_ABUSE_ENABLED`,
+  `WHATSAPP_VOICE_MIN_ROLE`), so least-privilege favours restricting
+  operational-config visibility to the operator over the wider admin tier.
+- **Exempt from the redaction concern by construction, not by review.** The
+  outbound secret-redaction filter (§2) exists because bot-composed text can
+  in principle echo a value that flowed through untrusted input or a broad
+  read. `feature_flags` structurally cannot reach a secret field: it is
+  driven by a fixed, hand-maintained `FEATURE_FLAG_MAP` allowlist
+  (`src/agent/tools.ts`) of `{ envVar, configPath, label, category }`
+  entries, and the handler's formatter only ever indexes those fixed dotted
+  paths off the in-memory `config` singleton — it never calls
+  `Object.entries`/`Object.values`/spreads `config` itself. There is no code
+  path from the handler to any token/URL/id field; a missing allowlist entry
+  can only under-report a flag, never expose one. Pinned by a `SECURITY:`
+  test that plants a fake secret-shaped field on a fixture config and asserts
+  it never appears in rendered output, plus a structural test asserting the
+  handler/formatter source never calls `Object.entries`/`Object.values`/
+  spread on the object they read.
+- **Booleans only, V1.** Output is `label: On/Off` per flag, grouped by
+  category — no raw values, channel-id lists, numeric thresholds, tokens, or
+  URLs. A future non-boolean summary (e.g. "configured (3 channels)" without
+  the ids) is an explicitly deferred growth path, not this tool.
+- **No new untrusted input, no state change.** No arguments, no CONFIRM, no
+  DB/model call — a synchronous read of the already-parsed `config` object
+  every running process already has in memory. Pinned by a `SECURITY:` test
+  asserting the handler makes no repository/`query()` call.
+- **Anti-drift coverage.** A test enumerates every `*_ENABLED` identifier
+  actually present in `config.ts` and asserts each has a `FEATURE_FLAG_MAP`
+  entry, so a newly-added flag that isn't consciously surfaced (or exempted)
+  fails CI loudly instead of `feature_flags` silently under-reporting it —
+  same shape as the `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage
+  pins (issues #311/#367).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
@@ -1744,7 +1788,12 @@ base, unlike the other two's fixed-format extraction.
   as before — never an error, never a misdirected send. `notifySuperAdmins`
   still has the narrower limitation this closed for suggestions/reports: it
   has no cross-turn adapter lookup at all, since its callers don't know a
-  target platform to look up.
+  target platform to look up. `add_member`/`grant_admin`'s approval/promotion
+  DMs (`notifyMemberApproved`/`notifyAdminApproved`) are now also routed
+  through the same `adapterFor` lookup (issue #548) — they, unlike
+  `notifySuperAdmins`, always know the target platform (it's the tool's own
+  `platform` argument), so there was no structural reason left to leave them
+  on the old direct-adapter path.
 - **`appeal_moderation` (issue #496)** gives a member/guest a way to ask
   admins to double-check their own active warning(s)/mute — the missing
   action counterpart to `my_warnings`' read-only visibility. Self-scoped
@@ -1819,16 +1868,40 @@ number could reach an unrelated person).
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.
 - [ ] **Branch protection on `main`** blocks direct and force pushes (require a
-      PR + review). This is the **enforceable** guarantee for the pipeline's
-      write-scoped automation — the build, autofix, and conflict-resolver workers
-      each hold a `contents: write` token and run an agent with code execution
-      (`node`/`npm`, needed to run the gate). Their `git push origin HEAD`
-      allowlist and withheld `checkout`/`branch` raise the bar, but an agent with
-      code execution could still rewrite `.git/HEAD` on disk to retarget a push,
-      so the tool restrictions are defence-in-depth, not the guarantee. Branch
-      protection (server-side) is what actually guarantees nothing reaches `main`
-      without a human merge even if a worker is prompt-injected. Enable it before
-      relying on these loops.
+      PR + passing required checks). This is the **enforceable** guarantee for the
+      pipeline's write-scoped automation — the build, autofix, and
+      conflict-resolver workers each hold a `contents: write` token and run an
+      agent with code execution (`node`/`npm`, needed to run the gate). Their
+      `git push origin HEAD` allowlist and withheld `checkout`/`branch` raise the
+      bar, but an agent with code execution could still rewrite `.git/HEAD` on
+      disk to retarget a push, so the tool restrictions are defence-in-depth, not
+      the guarantee. Branch protection (server-side) is what actually guarantees
+      nothing reaches `main` except through a PR that passed the required checks.
+      Enable it before relying on these loops.
+- [ ] **Auto-merge posture (`pipeline-pr-automerge.yml`) is a conscious
+      decision.** By default the pipeline requires a **human** to merge every PR,
+      which is the backstop against the PR-review LLM itself being prompt-injected
+      into a false "LGTM" (it reads untrusted PR diffs/bodies). The auto-merge
+      loop, when enabled, deliberately trades that backstop for throughput: it
+      merges build-worker PRs on the automated `LGTM` alone (plus green checks,
+      `MERGEABLE`, exact-identity + freshness + `--match-head-commit` gates — all
+      deterministic, no LLM, so no *added* injection surface of its own). The
+      residual risk it accepts is a review LLM tricked into a wrongful `LGTM`
+      shipping unreviewed *application* code to `main` unattended. Controls: it is
+      **off by default** (`AUTOMERGE_MODE` unset ⇒ inert; set `dry-run` to
+      observe, `live` to act); it **always routes a PR touching any
+      governance/CI/config path to a human merge** — `.github/**` (workflows/CI,
+      including the auto-merge loop itself), `scripts/**` (the check machinery),
+      `package.json`, typecheck/lint/format config, and the
+      `CLAUDE.md`/`docs/PIPELINE.md`/`docs/SECURITY.md` docs — so the loop can
+      never auto-merge a change to its *own* gates or to what "green" means (which
+      matters because `pull_request` CI runs the workflow version from the PR
+      branch); any PR can be pinned out with `no-auto-merge`; and branch
+      protection's required checks + who-may-merge still bound it. If you require
+      the strict "no code reaches `main` without a human even if a worker is
+      prompt-injected" guarantee, leave `AUTOMERGE_MODE` unset (or require a human
+      approving *review* in branch protection, which the automated verdict is
+      not) — then a human merges everything, as before.
 - [ ] **If enabling `redeploy_bot`**: the exact-match sudoers line in
       docs/DEPLOYMENT.md is added (opt-in — omit it and the tool simply fails
       clean with no new host surface granted).

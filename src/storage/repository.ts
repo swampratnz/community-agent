@@ -2483,6 +2483,7 @@ export async function usageStats(days = 7): Promise<{
   shortcutHits: { total: number; byKind: Array<{ kind: string; count: number }> };
   backgroundCostByJob: Array<{ job: string; costUsd: number }>;
   cacheUsage: { readTokens: number; creationTokens: number };
+  autoAnswerUsage: { count: number; costUsd: number };
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2523,6 +2524,19 @@ export async function usageStats(days = 7): Promise<{
      WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
     [interval],
   );
+  // Auto-answer cost visibility (issue #552): mirrors the cache-usage
+  // aggregate immediately above — same table/window/direction filter, one
+  // more pair of SUM()/COUNT() over the `meta->>'autoAnswer'` key
+  // `router.ts`'s `respond()` now stamps. Rows predating this change (or any
+  // non-auto-answer reply) carry no such key and contribute 0 via `coalesce`.
+  const { rows: autoAnswer } = await pool.query(
+    `SELECT
+       coalesce(count(*) FILTER (WHERE meta->>'autoAnswer' = 'true'), 0) AS count,
+       coalesce(sum(cost_usd) FILTER (WHERE meta->>'autoAnswer' = 'true'), 0) AS cost
+     FROM interactions
+     WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
+    [interval],
+  );
   const background = await sumBackgroundJobCosts(clampedDays);
   const shortcuts = await sumShortcutHits(clampedDays);
   return {
@@ -2537,6 +2551,10 @@ export async function usageStats(days = 7): Promise<{
     cacheUsage: {
       readTokens: Number(cache[0].read_tokens),
       creationTokens: Number(cache[0].creation_tokens),
+    },
+    autoAnswerUsage: {
+      count: Number(autoAnswer[0].count),
+      costUsd: Number(autoAnswer[0].cost),
     },
   };
 }
@@ -4593,6 +4611,43 @@ export async function countMaxTurnsFailures(
         AND conversation_id = ANY($1)
         AND created_at >= now() - ($2 || ' days')::interval
         AND (meta->>'maxTurnsExceeded' = 'true' OR meta->>'repeatMaxTurnsShortcut' = 'true')`,
+    [[...conversationIds], String(days)],
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Count unhelpful ratings on GENERAL-KNOWLEDGE answers (issue #563) — the
+ * `meta->>'knowledgeEntryId' IS NULL` complement `countLowRatedKnowledge`/
+ * `listKnowledgeFeedbackSummary` deliberately exclude (their own doc
+ * comments: "Ratings on interactions with no `knowledgeEntryId` are still
+ * excluded"). A general-knowledge answer has no community-curated grounding
+ * to re-check, unlike a KB-attributed one — the highest accuracy-risk bucket
+ * per VISION's answer-quality theme — so this is the missing push signal for
+ * it. Modelled on `countMaxTurnsFailures`'s rolling-window, conversation-
+ * scoped, true-`COUNT(*)` shape rather than `countLowRatedKnowledge`'s
+ * per-entity backlog shape: free-text general-knowledge answers have no
+ * stable grouping key to bucket repeated ratings against.
+ *
+ * The JOIN to `interactions` (rather than a `meta` subquery) means a row
+ * whose `interaction_id` is NULL — e.g. after the rated reply was purged via
+ * `forget_me`/`purge_user_data`, which sets `answer_feedback.interaction_id`
+ * to NULL on delete (schema.sql) — is excluded: with no interaction left to
+ * join, there's nothing to classify as grounded or ungrounded.
+ */
+export async function countGeneralUnhelpfulAnswers(
+  conversationIds: readonly string[],
+  days: number,
+): Promise<number> {
+  if (conversationIds.length === 0) return 0;
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+      WHERE answer_feedback.helpful = false
+        AND answer_feedback.conversation_id = ANY($1)
+        AND answer_feedback.created_at >= now() - ($2 || ' days')::interval
+        AND (interactions.meta->>'knowledgeEntryId') IS NULL`,
     [[...conversationIds], String(days)],
   );
   return Number(rows[0].n);
