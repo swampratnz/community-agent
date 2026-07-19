@@ -256,6 +256,20 @@ jobs:
               echo "::endgroup::"; continue
             fi
 
+            # --- FINAL gate: re-check the stop labels right before merging ----
+            # The structural label check ran from the initial `struct` fetch,
+            # BEFORE the mergeable poll (~24s of retries) and the review/freshness
+            # API calls. A human adding `needs-human`/`no-auto-merge` during that
+            # window — the very interrupt this loop relies on — must still stop
+            # the merge. (`--match-head-commit` catches a moved head, not a label
+            # change, so this re-check is the label equivalent of that pin.)
+            has_stop="$(gh pr view "$n" --repo "$REPO" --json labels \
+              --jq '[.labels[].name] | any(. == "needs-human" or . == "no-auto-merge")')"
+            if [ "$has_stop" = 'true' ]; then
+              echo "PR #$n: a stop label (needs-human/no-auto-merge) appeared during evaluation — aborting before merge."
+              echo "::endgroup::"; continue
+            fi
+
             # --- All gates passed ---------------------------------------------
             if [ "$MODE" != 'live' ]; then
               echo "PR #$n: DRY RUN (AUTOMERGE_MODE=$MODE) — fully eligible; would merge (method: $MERGE_METHOD, head $head_sha). No merge performed."
