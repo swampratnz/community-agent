@@ -62,7 +62,7 @@
   "knowledgeScope.test.ts": 4,
   "knowledgeSearchLowRatedCaveat.test.ts": 1,
   "knowledgeShortcutRouter.test.ts": 3,
-  "linkCheck.test.ts": 6,
+  "linkCheck.test.ts": 10,
   "lowRatedCaveatRouter.test.ts": 1,
   "moderation.test.ts": 12,
   "moderationRepo.test.ts": 4,
