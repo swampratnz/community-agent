@@ -684,7 +684,8 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
-    formatCacheUsageLine(s.cacheUsage)
+    formatCacheUsageLine(s.cacheUsage) +
+    formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd)
   );
 }
 
@@ -703,6 +704,26 @@ function formatCacheUsageLine(cacheUsage: Awaited<ReturnType<typeof usageStats>>
   if (totalTokens === 0) return '';
   const hitRate = Math.round((readTokens / totalTokens) * 100);
   return `\nPrompt cache: ${hitRate}% hit rate (${readTokens} read / ${creationTokens} new tokens).`;
+}
+
+/**
+ * Renders the auto-answer spend line (issue #552) — the operator-facing
+ * counterpart to `router.ts`'s `meta.autoAnswer` tag: how much of
+ * `usage_stats`' total spend the opt-in `AUTO_ANSWER_CHANNEL_IDS` feature is
+ * responsible for. Same "omit entirely when there's nothing to show"
+ * convention as `formatCacheUsageLine`/`formatShortcutHitsLine` above — a
+ * deployment with the feature off, or unused in the window, gets
+ * byte-identical output. The percentage clause is omitted (count/dollar
+ * only) when total spend is zero, to avoid a divide-by-zero.
+ */
+function formatAutoAnswerUsageLine(
+  autoAnswerUsage: Awaited<ReturnType<typeof usageStats>>['autoAnswerUsage'],
+  totalCostUsd: number,
+): string {
+  if (autoAnswerUsage.count === 0) return '';
+  const pctClause =
+    totalCostUsd > 0 ? `, ${Math.round((autoAnswerUsage.costUsd / totalCostUsd) * 100)}% of total spend` : '';
+  return `\nAuto-answer: ${autoAnswerUsage.count} replies (~$${autoAnswerUsage.costUsd.toFixed(2)}${pctClause}).`;
 }
 
 /**

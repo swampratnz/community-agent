@@ -5732,6 +5732,7 @@ const BASE_USAGE_STATS = {
   shortcutHits: { total: 0, byKind: [] as Array<{ kind: string; count: number }> },
   backgroundCostByJob: [],
   cacheUsage: { readTokens: 0, creationTokens: 0 },
+  autoAnswerUsage: { count: 0, costUsd: 0 },
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -5976,6 +5977,43 @@ test('formatUsageStats: non-zero cacheUsage appends a rounded hit-rate line (iss
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
       'Prompt cache: 82% hit rate (12345 read / 2678 new tokens).',
+  );
+});
+
+test('formatUsageStats: autoAnswerUsage.count === 0 is byte-identical to the pre-#552 output (no Auto-answer line), issue #552 acceptance criterion 4', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Auto-answer'), 'no Auto-answer line when autoAnswerUsage.count is 0');
+});
+
+test('formatUsageStats: non-zero autoAnswerUsage appends a replies/cost line with % of total spend (issue #552 acceptance criterion 4)', () => {
+  const out = formatUsageStats({ ...BASE_USAGE_STATS, autoAnswerUsage: { count: 12, costUsd: 0.34 } }, 7);
+  // 0.34 / 1.5 = 22.67% -> rounds to 23%
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Auto-answer: 12 replies (~$0.34, 23% of total spend).',
+  );
+});
+
+test('formatUsageStats: non-zero autoAnswerUsage with zero total spend omits the percentage clause (divide-by-zero guard, issue #552)', () => {
+  const out = formatUsageStats(
+    { ...BASE_USAGE_STATS, costUsd: 0, costByRole: [], autoAnswerUsage: { count: 3, costUsd: 0 } },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$0.00 recorded.\n' +
+      'Cost by role: none\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Auto-answer: 3 replies (~$0.00).',
   );
 });
 
