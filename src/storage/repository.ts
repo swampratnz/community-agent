@@ -3927,6 +3927,38 @@ export async function getLastDigestCounts(
   return rows.length > 0 ? rows[0].last_counts : null;
 }
 
+// --- Engagement-alert freshness guard (issue #568) --------------------------
+
+/**
+ * True if the single-row, guild-wide `engagement_alert_sends` guard was
+ * stamped within the last `days` — the restart-safe check `src/engagement
+ * Alert.ts` uses so a redeploy mid-week can't double-send, mirroring
+ * `wasAdminDigestSentRecently`'s shape but with no identity to key on.
+ */
+export async function wasEngagementAlertSentRecently(days: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM engagement_alert_sends
+      WHERE id = 1 AND sent_at > now() - ($1 || ' days')::interval`,
+    [days],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Record that the engagement alert was just sent, stamping the freshness
+ * guard and this run's percentage (forward-compat only — see schema.sql;
+ * nothing in this PR reads `last_percentage` back). Always the same `id = 1`
+ * row, so this is an upsert, not an insert.
+ */
+export async function recordEngagementAlertSent(percentage: number): Promise<void> {
+  await pool.query(
+    `INSERT INTO engagement_alert_sends (id, sent_at, last_percentage)
+     VALUES (1, now(), $1)
+     ON CONFLICT (id) DO UPDATE SET sent_at = now(), last_percentage = EXCLUDED.last_percentage`,
+    [percentage],
+  );
+}
+
 // --- Standing response-style preference (issue #126) ------------------------
 
 export type ResponseStyle = 'standard' | 'plain';

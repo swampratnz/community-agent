@@ -13,6 +13,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-19
 
 ### Added
+- **Proactive weekly engagement alert** (`ENGAGEMENT_ALERT_ENABLED`, #568):
+  closes the same pull-only gap #472/#480 already closed for other
+  super-admin-only signals — the `engagement_stats` tool (#419) already
+  computes what fraction of currently-present roster members have ever
+  posted, but a super admin only saw it if they thought to run the tool
+  again. This adds an opt-in job, off by default, that DMs every super admin
+  the current guild-wide percentage at most once a week (restart-safe,
+  persisted freshness guard) — no new tool, no new RBAC tier, no LLM/
+  embedding spend, and no trend/delta in this first version.
 - **Weekly admin digest now flags unhelpful ratings on general-knowledge
   answers, not just knowledge-base ones** (#563): `list_low_rated_knowledge`/
   `countLowRatedKnowledge` and the digest's `👎` line only ever covered

@@ -700,6 +700,31 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the already-proven `startTrackedJob`/`alertSuperAdmins` machinery. Like
   `list_admins`, auto-revoke on departure remains deliberately out of
   scope — this is visibility, not action.
+- **Engagement alert** (`src/engagementAlert.ts`, off unless
+  `ENGAGEMENT_ALERT_ENABLED`, issue #568): closes the same pull-only gap
+  #472/#480 closed for other super-admin-only signals — `engagement_stats`
+  (issue #419) already computes what fraction of currently-present roster
+  members have ever posted, but only on pull. This adds the missing push: an
+  opt-in job on the same 6h `startTrackedJob` cadence calls `engagementStats()`
+  unchanged and DMs every super admin, via the exact same `alertSuperAdmins`
+  helper `departedAdminAlert.ts` exports and this job imports (not a second
+  copy — the "super admins only, connected adapters only" rule has one
+  implementation), on a **weekly freshness-guard cadence** (a new,
+  single-row/guild-wide `engagement_alert_sends` table, `id = 1` enforced by
+  a CHECK constraint, restart-safe like `admin_digest_sends`' own `sent_at`
+  guard) rather than the departed-admin alert's zero→nonzero latch — a
+  continuous percentage has no natural "crossing" to latch on. The DM text
+  is a thin wrapper around `formatEngagementStats`, the exact same pure
+  formatter `engagement_stats` itself uses, so it inherits that tool's
+  privacy contract byte-for-byte: aggregate counts and a percentage only,
+  never a display name, platform user id, or roster row, and the same fixed
+  zero-roster fallback text (never a divide-by-zero or `NaN%`). No new tool,
+  no new RBAC tier, no LLM/embedding call, and deliberately **no
+  week-over-week trend in v1** — `engagement_alert_sends.last_percentage` is
+  written every send for a named, deferred v2 growth path but is never read
+  back by this PR. Purge-coherent by construction: the new table stores only
+  a timestamp and an aggregate percentage, never a user id, so
+  `forget_me`/`purge_user_data` have nothing user-scoped to reach here.
 - **Real-time access-request alert** (`notifyAccessRequest` in `router.ts`,
   off unless `ACCESS_REQUEST_ALERT_ENABLED`, issue #480): the discrete-event
   push complement to the pull-only `list_access_requests` tool and the
