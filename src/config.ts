@@ -387,6 +387,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Proactive super-admin alert (issue #568) pushing engagement_stats' (issue
+  // #419) guild-wide engagement percentage on a weekly cadence — closes the
+  // same pull-only gap #472/#480 closed for other super-admin-only signals.
+  // Off by default, consistent with this repo's convention for new proactive
+  // DMs.
+  ENGAGEMENT_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
   // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
   // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
@@ -641,6 +650,17 @@ const EnvSchema = z.object({
   // Always a positive count — unlike the "0 disabled" knobs above, disabling
   // this feature is DAILY_REPLY_BUDGET_WARN_ENABLED=false, not a 0 here.
   DAILY_REPLY_BUDGET_WARN_REMAINING: z.coerce.number().int().positive().default(5),
+  // Auto-retract the bot's own reply when the member deletes the message it
+  // answered (issue #575) — a native platform delete/revoke event, server-
+  // side plumbing only, never model-reachable. Off by default: with it
+  // unset, deleting a message the bot replied to leaves the reply untouched
+  // and calls no adapter deletion method (byte-identical to today). See
+  // src/replyRetraction.ts, src/router.ts, and the Discord/WhatsApp Baileys
+  // adapters' delete/revoke listeners.
+  AUTO_RETRACT_REPLY_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -938,6 +958,9 @@ export const config = {
   departedAdminAlert: {
     enabled: env.DEPARTED_ADMIN_ALERT_ENABLED ?? false,
   },
+  engagementAlert: {
+    enabled: env.ENGAGEMENT_ALERT_ENABLED ?? false,
+  },
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
     rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
@@ -966,6 +989,7 @@ export const config = {
     escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
     dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
     dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,
+    autoRetractReplyEnabled: env.AUTO_RETRACT_REPLY_ENABLED ?? false,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {

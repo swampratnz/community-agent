@@ -34,6 +34,7 @@ import {
   type BackgroundJobName,
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
+import { queuePendingAlert } from './pendingAlertQueue.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 const TICK_INTERVAL_MS = 6 * 3_600_000;
@@ -98,7 +99,19 @@ export function startTrackedJob(
   return timer;
 }
 
+// If every adapter is disconnected, the failure-threshold DM is queued
+// (shared with health.ts/tools.ts — see src/pendingAlertQueue.ts) instead of
+// silently dropped, and flushed through the first adapter to reconnect via
+// health.ts's existing flushPendingAlerts (issue #545).
 async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
+  if (!adapters.some((adapter) => adapter.isConnected())) {
+    logger.warn(
+      { message },
+      'Background job failure alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(message, 'system'); // job-failure alert — never evicted by a member-reachable alert (#545)
+    return;
+  }
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
