@@ -5,6 +5,7 @@ import {
   countAccessRequests,
   countDuplicateKnowledge,
   countEscalatedKnowledgeGaps,
+  countGeneralUnhelpfulAnswers,
   countKnowledgeConflictCandidates,
   countKnowledgeGaps,
   countLowRatedKnowledge,
@@ -145,6 +146,15 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * scoping and can never surface an out-of-scope report's age. Each only ever
  * appends to its already-nonzero count line and only when non-null, so the
  * quiet case is byte-identical to the pre-#450 form. Bare integers only.
+ * `generalUnhelpfulCount` (issue #563) comes from `countGeneralUnhelpfulAnswers`,
+ * conversation-scoped and windowed identically to `maxTurnsFailuresCount` — the
+ * `meta->>'knowledgeEntryId' IS NULL` complement `lowRatedKnowledgeCount`
+ * deliberately excludes, i.e. unhelpful ratings on general-knowledge (ungrounded)
+ * answers rather than KB-attributed ones. Only rendered when `> 0`; a trailing,
+ * append-only param, so every existing call site is unaffected and the quiet
+ * case (count 0, or a caller that hasn't wired it through) is byte-identical to
+ * the pre-#563 form. Bare integer only, same privacy convention as every signal
+ * above.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -222,6 +232,11 @@ export function buildAdminDigestMessage(
   // convention as every signal above.
   oldestOpenReportAgeDays: number | null = null,
   oldestPendingSuggestionAgeDays: number | null = null,
+  // Unhelpful ratings on general-knowledge (ungrounded) answers — the
+  // `knowledgeEntryId IS NULL` complement of `lowRatedKnowledgeCount`
+  // (issue #563). Append-only trailing param, default 0, so every existing
+  // call site is unaffected.
+  generalUnhelpfulCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -239,7 +254,8 @@ export function buildAdminDigestMessage(
     duplicateKnowledgeCount === 0 &&
     conflictCandidateCount === 0 &&
     staleMutedMembersCount === 0 &&
-    notMembersCount === 0
+    notMembersCount === 0 &&
+    generalUnhelpfulCount === 0
   )
     return null;
 
@@ -387,6 +403,16 @@ export function buildAdminDigestMessage(
         trendSuffix('maxTurnsFailuresCount', maxTurnsFailuresCount, previousCounts),
     );
   }
+  if (generalUnhelpfulCount > 0) {
+    // Bare integer only — no question text, answer content, comment, or
+    // user id ever reaches the DM (#563), same privacy convention as every
+    // other digest line.
+    sections.push(
+      `⚠️ ${generalUnhelpfulCount} general-knowledge answer${generalUnhelpfulCount === 1 ? '' : 's'} rated ` +
+        'unhelpful this week (no knowledge-base grounding) — run `list_answer_feedback` (unhelpfulOnly) to review.' +
+        trendSuffix('generalUnhelpfulCount', generalUnhelpfulCount, previousCounts),
+    );
+  }
   if (duplicateKnowledgeCount > 0) {
     // Bare integer only — no pair id, title, or content ever reaches the DM (#378).
     sections.push(
@@ -459,6 +485,7 @@ export async function buildAdminDigestForAdmin(
     escalatedKnowledgeGapsCount,
     oldestOpenReportAge,
     oldestPendingSuggestionAge,
+    generalUnhelpfulCount,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -520,6 +547,11 @@ export async function buildAdminDigestForAdmin(
     // paired count wouldn't include (issue #450).
     oldestOpenReportAgeDays(scope, viewerIds),
     oldestPendingSuggestionAgeDays(),
+    // Conversation-scoped like maxTurnsFailuresCount (answer_feedback has a
+    // conversation_id), over the same freshness window — the
+    // `knowledgeEntryId IS NULL` complement of lowRatedKnowledgeCount
+    // (issue #563).
+    countGeneralUnhelpfulAnswers(scope, FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -549,6 +581,7 @@ export async function buildAdminDigestForAdmin(
     staleMutedMembersCount,
     notMembersCount,
     escalatedKnowledgeGapsCount,
+    generalUnhelpfulCount,
   };
   const previousCounts = config.adminDigest.trendsEnabled
     ? ((await getLastDigestCounts(platform, platformUserId)) ?? undefined)
@@ -579,6 +612,7 @@ export async function buildAdminDigestForAdmin(
     oldestAccessRequestAge,
     oldestOpenReportAge,
     oldestPendingSuggestionAge,
+    generalUnhelpfulCount,
   );
   return { message, currentCounts };
 }
@@ -725,12 +759,13 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * `KNOWLEDGE_STALE_DAYS` is configured) stale-knowledge, pending
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
  * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
- * knowledge-pair, conflict-candidate-knowledge-pair, and (in `'gated'`
+ * knowledge-pair, conflict-candidate-knowledge-pair, general-knowledge-
+ * unhelpful-rating, and (in `'gated'`
  * access mode) onboarding-queue counts, plus (when at least one request is
  * pending) the oldest pending access request's age in days (issue #21's
  * deferred proactive follow-up, extended by issue #133, issue #193, issue
  * #199, issue #284, issue #324, issue #344, issue #357, issue #378, issue
- * #403, issue #460, and issue #515) — the same signals
+ * #403, issue #460, issue #515, and issue #563) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/

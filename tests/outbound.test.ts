@@ -196,3 +196,63 @@ test("filterOutbound: threads its optional 5th 'language' parameter into applyCo
   assert.match(out, /whakakorehia te waehere/);
   assert.ok(!out.includes('code omitted'));
 });
+
+test('convertMarkdownForWhatsApp: markdown links become "label: url" (issue #566)', () => {
+  assert.equal(
+    convertMarkdownForWhatsApp('[Anthropic docs](https://docs.anthropic.com/x)'),
+    'Anthropic docs: https://docs.anthropic.com/x',
+  );
+});
+
+test('convertMarkdownForWhatsApp: a bolded link label resolves the link first, then folds emphasis (issue #566)', () => {
+  assert.equal(convertMarkdownForWhatsApp('**[label](https://url)**'), '*label: https://url*');
+});
+
+test('convertMarkdownForWhatsApp: non-URL bracket/paren prose and plain citations are left byte-identical (issue #566)', () => {
+  const bracketSpace = 'see the FAQ [note] (not a link)';
+  assert.equal(convertMarkdownForWhatsApp(bracketSpace), bracketSpace);
+
+  // formatKnowledgeCitationNote's own citation shape: "Title (https://...)" with no preceding `[...]`.
+  const citation = 'source: Anthropic Docs (https://docs.anthropic.com/x) · last verified today';
+  assert.equal(convertMarkdownForWhatsApp(citation), citation);
+
+  const bareBrackets = 'array indices use [0] and (parens) in prose';
+  assert.equal(convertMarkdownForWhatsApp(bareBrackets), bareBrackets);
+});
+
+test('convertMarkdownForWhatsApp: a URL containing its own nested parens (e.g. a Wikipedia link) is not truncated (issue #566)', () => {
+  assert.equal(
+    convertMarkdownForWhatsApp('[Foo](https://en.wikipedia.org/wiki/Foo_(bar))'),
+    'Foo: https://en.wikipedia.org/wiki/Foo_(bar)',
+  );
+});
+
+test('convertMarkdownForWhatsApp: markdown links inside fenced code blocks are never touched (issue #566)', () => {
+  const text = '**intro**\n```js\nconst a = [x](https://example.com);\n```\n[label](https://example.com)';
+  const out = convertMarkdownForWhatsApp(text);
+  assert.ok(out.includes('const a = [x](https://example.com);'), 'code fence body is untouched');
+  assert.match(out, /^\*intro\*$/m);
+  assert.match(out, /^label: https:\/\/example\.com$/m);
+});
+
+test('convertMarkdownForWhatsApp: link conversion is idempotent (issue #566)', () => {
+  const text = 'See [docs](https://docs.anthropic.com/x) for more.';
+  const once = convertMarkdownForWhatsApp(text);
+  const twice = convertMarkdownForWhatsApp(once);
+  assert.equal(twice, once);
+});
+
+test('filterOutbound: Discord output is byte-identical regardless of markdown link content (issue #566)', () => {
+  const text = 'See [docs](https://docs.anthropic.com/x) for more.';
+  const withoutPlatform = filterOutbound(text, 'full');
+  const withDiscord = filterOutbound(text, 'full', [], 'discord');
+  assert.equal(withoutPlatform, text);
+  assert.equal(withDiscord, text);
+});
+
+test('SECURITY: a secret-pattern match wrapped in markdown link syntax is still redacted, never emitted raw (issue #566)', () => {
+  const out = filterOutbound('[key](https://x.example/?token=sk-ant-abcdef12345678)', 'full', [], 'whatsapp');
+  assert.ok(!out.includes('sk-ant-abcdef12345678'), 'must never emit the raw secret value');
+  assert.match(out, /\[redacted\]/);
+  assert.equal(out, 'key: https://x.example/?token=[redacted]');
+});

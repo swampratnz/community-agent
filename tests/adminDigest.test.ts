@@ -30,6 +30,7 @@ const {
   recordAccessRequest,
   clearAccessRequest,
   countAccessRequests,
+  countGeneralUnhelpfulAnswers,
   countKnowledgeGaps,
   countLowRatedKnowledge,
   countMaxTurnsFailures,
@@ -1350,6 +1351,337 @@ test('SECURITY: the escalated-knowledge-gap line is a deterministic function of 
   assert.ok(
     !escalatedLine(a)!.includes(secretQuery) && !escalatedLine(a)!.includes(secretUserId),
     'SECURITY: no query_text or user id ever appears in the escalated-gap line — bare count only',
+  );
+});
+
+test('buildAdminDigestMessage: general-unhelpful-answers line appears only when count > 0, and all SEVENTEEN signals zero -> null (issue #563)', () => {
+  assert.equal(
+    buildAdminDigestMessage(
+      [],
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      undefined,
+      null,
+      null,
+      null,
+      0,
+    ),
+    null,
+    'all seventeen signals zero — including general-unhelpful-answers — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    3,
+  );
+  assert.ok(message, 'a non-zero general-unhelpful-answers count alone still produces a DM');
+  const lines = message.split('\n').filter((l) => l.includes('⚠️'));
+  assert.equal(lines.length, 1, 'exactly one general-unhelpful-answers line');
+  assert.match(
+    lines[0],
+    /^⚠️ 3 general-knowledge answers rated unhelpful this week \(no knowledge-base grounding\) — run `list_answer_feedback` \(unhelpfulOnly\) to review\.$/,
+  );
+  assert.ok(!message.includes('👎'), 'no low-rated-knowledge line when that count is zero');
+
+  assert.ok(
+    !buildAdminDigestMessage(
+      [],
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      undefined,
+      null,
+      null,
+      null,
+      0,
+    )!.includes('⚠️'),
+    'no general-unhelpful-answers line when the count is zero',
+  );
+
+  const singular = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    1,
+  );
+  assert.match(
+    singular!,
+    /^⚠️ 1 general-knowledge answer rated unhelpful this week \(no knowledge-base grounding\) — run `list_answer_feedback` \(unhelpfulOnly\) to review\.$/,
+  );
+});
+
+test('SECURITY: the general-unhelpful-answers line is a deterministic function of generalUnhelpfulCount only, and never carries question text, answer content, comment text, or user id (issue #563)', () => {
+  const secretQuestion = 'a very identifiable question about a secret internal system';
+  const secretAnswer = 'a very identifiable answer text that must never leak';
+  const secretComment = 'a very identifiable rater comment explaining why it was unhelpful';
+  const secretUserId = 'discord-user-1234567890';
+
+  const a = buildAdminDigestMessage(
+    [{ representative: secretQuestion, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    4,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: `${secretAnswer} ${secretComment} ${secretUserId}`, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    4,
+  );
+  assert.ok(a && b);
+  const line = (m: string) => m.split('\n').find((l) => l.includes('⚠️'));
+  assert.equal(
+    line(a),
+    line(b),
+    'the general-unhelpful-answers line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(
+    line(a)!,
+    /^⚠️ 4 general-knowledge answers rated unhelpful this week \(no knowledge-base grounding\) — run `list_answer_feedback` \(unhelpfulOnly\) to review\.$/,
+  );
+  assert.ok(
+    !line(a)!.includes(secretQuestion) &&
+      !line(a)!.includes(secretAnswer) &&
+      !line(a)!.includes(secretComment) &&
+      !line(a)!.includes(secretUserId),
+    'SECURITY: no question text, answer content, comment text, or user id ever appears in the general-unhelpful-answers line — bare count only',
+  );
+});
+
+test('buildAdminDigestMessage: generalUnhelpfulCount omitted (default 0) -> output is byte-identical to the pre-#563 form (issue #563)', () => {
+  const before = buildAdminDigestMessage([], 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  const after = buildAdminDigestMessage(
+    [],
+    3,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+  );
+  assert.equal(
+    before,
+    after,
+    'an explicit 0 for the new trailing param matches the pre-#563 omitted-param output',
+  );
+  assert.ok(!before!.includes('⚠️'), 'no general-unhelpful-answers line at the pre-#563 call shape');
+});
+
+test('buildAdminDigestMessage: the general-unhelpful-answers line trends via the existing trendSuffix mechanism, and renders no suffix when previousCounts is omitted (issue #563 acceptance criterion 5)', () => {
+  const withTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { generalUnhelpfulCount: 1 },
+    null,
+    null,
+    null,
+    4,
+  );
+  assert.ok(withTrend);
+  const trendLine = withTrend.split('\n').find((l) => l.includes('⚠️'));
+  assert.equal(
+    trendLine,
+    '⚠️ 4 general-knowledge answers rated unhelpful this week (no knowledge-base grounding) — run `list_answer_feedback` (unhelpfulOnly) to review. (▲+3 since last week)',
+    'the trend suffix appends exactly as every other signal line does',
+  );
+
+  const withoutTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    4,
+  );
+  assert.ok(withoutTrend);
+  const noTrendLine = withoutTrend.split('\n').find((l) => l.includes('⚠️'));
+  assert.equal(
+    noTrendLine,
+    '⚠️ 4 general-knowledge answers rated unhelpful this week (no knowledge-base grounding) — run `list_answer_feedback` (unhelpfulOnly) to review.',
+    'no previousCounts -> no suffix, same as every other signal',
   );
 });
 
@@ -3170,6 +3502,126 @@ test(
   },
 );
 
+// countGeneralUnhelpfulAnswers (issue #563): the `knowledgeEntryId IS NULL`
+// complement of countLowRatedKnowledge, modelled on countMaxTurnsFailures's
+// rolling-window/conversation-scoped/true-COUNT(*) shape.
+test(
+  'repository: countGeneralUnhelpfulAnswers counts only in-window, in-scope, unhelpful ratings on answers with NO knowledgeEntryId — excludes KB-attributed ratings, helpful ratings, out-of-window ratings, and rows with a purged (NULL) interaction_id (issue #563)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-general-unhelpful`;
+    const users: string[] = [];
+
+    async function rateGeneral(userSuffix: string, helpful: boolean, knowledgeEntryId?: number) {
+      const userId = `${RUN}-generalunhelpful-${userSuffix}`;
+      users.push(userId);
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta:
+          knowledgeEntryId !== undefined
+            ? { replyToUserId: userId, knowledgeEntryId }
+            : { replyToUserId: userId },
+      });
+      return expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }),
+        `feedback recorded for ${userId}`,
+      );
+    }
+
+    // (a) KB-attributed unhelpful rating — excluded (that's
+    // countLowRatedKnowledge's half of the signal, not this one).
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} general-unhelpful KB entry content` });
+    await rateGeneral('kb-attributed', false, entryId);
+    // (b) helpful=true general-knowledge rating — excluded.
+    await rateGeneral('helpful', true);
+    // (c) genuine ungrounded unhelpful rating, but backdated outside the
+    // window — excluded.
+    const outOfWindowId = await rateGeneral('out-of-window', false);
+    await pool.query(`UPDATE answer_feedback SET created_at = now() - interval '10 days' WHERE id = $1`, [
+      outOfWindowId,
+    ]);
+    // (d) a row whose interaction_id is NULL (as if the rated reply had
+    // since been purged via forget_me/purge_user_data, which sets
+    // interaction_id to NULL on delete per schema.sql) — excluded, since
+    // there's no interaction left to classify as grounded/ungrounded.
+    const purgedUserId = `${RUN}-generalunhelpful-purged`;
+    users.push(purgedUserId);
+    await pool.query(
+      `INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful)
+       VALUES ('discord', $1, $2, NULL, false)`,
+      [conversationId, purgedUserId],
+    );
+    // (e) the true positive: in-window, in-scope, unhelpful, no
+    // knowledgeEntryId — included.
+    await rateGeneral('true-positive', false);
+
+    assert.equal(
+      await countGeneralUnhelpfulAnswers([conversationId], 7),
+      1,
+      'only the true-positive row is counted — KB-attributed, helpful, out-of-window, and NULL-interaction rows are all excluded',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  'SECURITY: repository: countGeneralUnhelpfulAnswers scopes by conversation — an unhelpful general-knowledge rating recorded outside the calling admin scope is never counted (issue #563)',
+  { skip },
+  async () => {
+    const inScope = `${RUN}-c-general-unhelpful-in`;
+    const outOfScope = `${RUN}-c-general-unhelpful-out`;
+    const users: string[] = [];
+
+    async function rateGeneral(conversationId: string, userSuffix: string) {
+      const userId = `${RUN}-generalunhelpfulscope-${userSuffix}`;
+      users.push(userId);
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+      );
+    }
+
+    await rateGeneral(inScope, 'in');
+    await rateGeneral(outOfScope, 'out');
+
+    assert.equal(
+      await countGeneralUnhelpfulAnswers([inScope], 7),
+      1,
+      'SECURITY: only the in-scope conversation is counted, never the out-of-scope one',
+    );
+    assert.equal(
+      await countGeneralUnhelpfulAnswers([outOfScope], 7),
+      1,
+      'the out-of-scope conversation has its own single rating, counted only under its own scope',
+    );
+    assert.equal(
+      await countGeneralUnhelpfulAnswers([inScope, outOfScope], 7),
+      2,
+      'counting across both scopes returns the full 2 rows (the count is not capped)',
+    );
+    assert.equal(await countGeneralUnhelpfulAnswers([], 7), 0, 'an empty scope counts nothing');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
+  },
+);
+
 test(
   'SECURITY: runAdminDigestOnce: an admin with every other signal at zero but ≥1 max-turns failure in scope still receives a digest containing only the bare count — never message content, replyToUserId, or conversation id (issue #371 acceptance criteria)',
   { skip },
@@ -3216,6 +3668,77 @@ test(
       'the freshness row is updated after a successful send',
     );
 
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: an admin with every other signal at zero but ≥1 general-knowledge unhelpful rating in scope still receives a digest containing only the bare count — never question text, answer content, comment, or user id (issue #563 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-generalunhelpful-admin`;
+    const conversationId = `${RUN}-c-run-generalunhelpful`;
+    const secretUserId = `${RUN}-run-generalunhelpful-asker`;
+    const secretAnswer = 'a very identifiable general-knowledge answer that must never leak';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: secretAnswer,
+      meta: { replyToUserId: secretUserId },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: secretUserId,
+        helpful: false,
+      }),
+    );
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the in-scope general-unhelpful rating alone triggers a digest');
+    assert.ok(
+      !sent[0].text.includes('👎'),
+      'no low-rated-knowledge line — this rating has no knowledgeEntryId',
+    );
+    assert.match(
+      sent[0].text,
+      /⚠️ 1 general-knowledge answer rated unhelpful this week \(no knowledge-base grounding\) — run `list_answer_feedback` \(unhelpfulOnly\) to review\./,
+      'the general-unhelpful-answers line is present',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretUserId),
+      'SECURITY: the rater/asker user id must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretAnswer),
+      'SECURITY: the rated answer content must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(conversationId),
+      'SECURITY: the conversation id must never appear in the digest DM',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [secretUserId]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
