@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChannelType, Events, GuildScheduledEventEntityType, GuildScheduledEventStatus } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
+import { formatNzEventTime } from '../src/util/nzTime.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it. DATABASE_URL
@@ -604,6 +605,30 @@ test('performAdminAction("create_event") treats an external/physical location as
   assert.deepEqual(created[0].entityMetadata, { location: 'Wellington Central Library' });
   assert.equal(created[0].channel, undefined);
 });
+
+test(
+  'performAdminAction("create_event") returns a confirmation naming the event and its NZ-local ' +
+    'start time, not raw UTC ISO (issue #577)',
+  async () => {
+    const adapter = new DiscordAdapter();
+    stubClientForEvent(adapter);
+    const result = await adapter.performAdminAction({
+      kind: 'create_event',
+      params: {
+        name: 'Auckland Meetup',
+        startTime: EVENT_FUTURE_START,
+        endTime: EVENT_FUTURE_END,
+        location: 'Wellington Central Library',
+      },
+    });
+    assert.doesNotMatch(result, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, 'must not render a raw ISO timestamp');
+    assert.doesNotMatch(result, /Z(?=[.\s]|$)/, 'must not render a bare Z-suffixed UTC timestamp');
+    assert.equal(
+      result,
+      `Created event "Auckland Meetup" starting ${formatNzEventTime(EVENT_FUTURE_START)}.`,
+    );
+  },
+);
 
 test('SECURITY: performAdminAction("create_event") refuses an external location with no endTime — Discord requires one for non-channel events (issue #230)', async () => {
   const adapter = new DiscordAdapter();
