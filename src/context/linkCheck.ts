@@ -1,4 +1,5 @@
 import dns from 'node:dns/promises';
+import { Agent, buildConnector, type Dispatcher } from 'undici';
 import { logger } from '../logger.js';
 import {
   latestKnowledgeSourceCheckAt,
@@ -31,9 +32,16 @@ import {
  * ranges before any request is issued to them; a disallowed target is
  * refused outright — no request, no persisted result (see
  * `classifySourceUrl`'s `'refused'` outcome and `runKnowledgeLinkCheck`,
- * which never calls `recordKnowledgeSourceCheck` for it). This is a
- * standard deny-list-plus-redirect-recheck mitigation, not a fully
- * rebinding-proof design (that would need connection-level IP pinning).
+ * which never calls `recordKnowledgeSourceCheck` for it).
+ *
+ * DNS-rebinding/TOCTOU closed (issue #587): the guard resolves each hop's
+ * hostname exactly once via the injectable `lookup`; the request for that
+ * hop is then connected to that SAME guard-checked IP literal (pinned via a
+ * custom undici connector — Node's global `fetch` is undici, which ignores
+ * a Node `http(s).Agent`), with the original hostname presented as the TLS
+ * SNI/Host header. The connection layer never performs its own independent
+ * DNS resolution, so a low-TTL DNS record that would resolve differently a
+ * moment later can no longer bypass the guard.
  */
 
 export const LINK_CHECK_USER_AGENT = 'nz-claude-community-agent/link-check (+community bot)';
@@ -116,7 +124,8 @@ export function isDisallowedIp(ip: string, family: number): boolean {
   return family === 6 ? isDisallowedIpv6(ip) : isDisallowedIpv4(ip);
 }
 
-type GuardResult = 'allowed' | 'blocked' | 'dns-failure';
+type GuardOutcome =
+  { kind: 'allowed'; pinnedAddress: string } | { kind: 'blocked' } | { kind: 'dns-failure' };
 
 /**
  * https-only, plus a DNS resolution check against the denylist above. A
@@ -124,18 +133,55 @@ type GuardResult = 'allowed' | 'blocked' | 'dns-failure';
  * that's a legitimate reachability signal (`classifySourceUrl` turns it into
  * `'unreachable'`), distinct from a hostname that resolves fine but to a
  * disallowed range (`'blocked'`, which `classifySourceUrl` turns into
- * `'refused'` — no request ever issued, no result ever persisted).
+ * `'refused'` — no request ever issued, no result ever persisted). On
+ * `'allowed'`, `pinnedAddress` is the ONE resolved IP the caller must
+ * connect to — this is the single DNS resolution for this hop; the request
+ * itself must never trigger a second one (see `buildPinnedDispatcher`).
  */
-async function guardTarget(url: URL, lookup: DnsLookupFn): Promise<GuardResult> {
-  if (url.protocol !== 'https:') return 'blocked';
+async function guardTarget(url: URL, lookup: DnsLookupFn): Promise<GuardOutcome> {
+  if (url.protocol !== 'https:') return { kind: 'blocked' };
   let addrs: Array<{ address: string; family: number }>;
   try {
     addrs = await lookup(url.hostname);
   } catch {
-    return 'dns-failure';
+    return { kind: 'dns-failure' };
   }
-  if (addrs.length === 0) return 'dns-failure';
-  return addrs.some((a) => isDisallowedIp(a.address, a.family)) ? 'blocked' : 'allowed';
+  if (addrs.length === 0) return { kind: 'dns-failure' };
+  if (addrs.some((a) => isDisallowedIp(a.address, a.family))) return { kind: 'blocked' };
+  return { kind: 'allowed', pinnedAddress: addrs[0].address };
+}
+
+export type DispatcherFactory = (pinnedAddress: string) => unknown;
+
+/**
+ * Connects by IP literal to `pinnedAddress`, leaving `host`/`servername`
+ * untouched so undici's default connector still presents the ORIGINAL
+ * hostname as the TLS SNI (and the request's `Host` header, derived
+ * independently from the request URL, is unaffected). This is what actually
+ * closes the DNS-rebinding gap: the socket never re-resolves the hostname —
+ * it connects straight to the address `guardTarget` already vetted, so
+ * there is no second, independent DNS resolution for a rebinding attacker to
+ * win a race against.
+ */
+function pinnedConnect(pinnedAddress: string): buildConnector.connector {
+  const connect = buildConnector({});
+  return (opts, callback) => connect({ ...opts, hostname: pinnedAddress }, callback);
+}
+
+/** Real dispatcher factory (production default) — tests inject their own. */
+export function buildPinnedDispatcher(pinnedAddress: string): Dispatcher {
+  return new Agent({ connect: pinnedConnect(pinnedAddress) });
+}
+
+async function closeDispatcher(dispatcher: unknown): Promise<void> {
+  const closeable = dispatcher as { close?: () => Promise<void> } | null;
+  if (typeof closeable?.close === 'function') {
+    try {
+      await closeable.close();
+    } catch {
+      // best-effort cleanup — the request itself already completed
+    }
+  }
 }
 
 async function issueRequest(
@@ -143,13 +189,23 @@ async function issueRequest(
   method: 'HEAD' | 'GET',
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  pinnedAddress: string,
+  buildDispatcher: DispatcherFactory,
 ): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const dispatcher = buildDispatcher(pinnedAddress);
   try {
     const headers: Record<string, string> = { 'user-agent': LINK_CHECK_USER_AGENT };
     if (method === 'GET') headers['range'] = 'bytes=0-0';
-    const res = await fetchImpl(url, { method, redirect: 'manual', signal: ctrl.signal, headers });
+    const init: RequestInit = {
+      method,
+      redirect: 'manual',
+      signal: ctrl.signal,
+      headers,
+      dispatcher: dispatcher as RequestInit['dispatcher'],
+    };
+    const res = await fetchImpl(url, init);
     // Never read the body — a pure reachability check (see module header).
     if (res.body) {
       try {
@@ -161,14 +217,21 @@ async function issueRequest(
     return res;
   } finally {
     clearTimeout(timer);
+    await closeDispatcher(dispatcher);
   }
 }
 
 /** HEAD, falling back to a body-less ranged GET on a host that rejects HEAD. */
-async function requestOnce(url: URL, fetchImpl: typeof fetch, timeoutMs: number): Promise<Response> {
-  const head = await issueRequest(url, 'HEAD', fetchImpl, timeoutMs);
+async function requestOnce(
+  url: URL,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+  pinnedAddress: string,
+  buildDispatcher: DispatcherFactory,
+): Promise<Response> {
+  const head = await issueRequest(url, 'HEAD', fetchImpl, timeoutMs, pinnedAddress, buildDispatcher);
   if (head.status === 405 || head.status === 501) {
-    return issueRequest(url, 'GET', fetchImpl, timeoutMs);
+    return issueRequest(url, 'GET', fetchImpl, timeoutMs, pinnedAddress, buildDispatcher);
   }
   return head;
 }
@@ -179,6 +242,8 @@ export interface ClassifyDeps {
   fetchImpl?: typeof fetch;
   lookup?: DnsLookupFn;
   timeoutMs?: number;
+  /** Builds the per-hop pinned connection. Defaults to `buildPinnedDispatcher`; tests inject their own. */
+  buildDispatcher?: DispatcherFactory;
 }
 
 /**
@@ -194,6 +259,7 @@ export async function classifySourceUrl(
   const fetchImpl = deps.fetchImpl ?? fetch;
   const lookup = deps.lookup ?? defaultLookup;
   const timeoutMs = deps.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const buildDispatcher = deps.buildDispatcher ?? buildPinnedDispatcher;
 
   let current: URL;
   try {
@@ -204,12 +270,12 @@ export async function classifySourceUrl(
 
   for (let hop = 0; hop <= REDIRECT_HOP_CAP; hop++) {
     const guard = await guardTarget(current, lookup);
-    if (guard === 'blocked') return 'refused';
-    if (guard === 'dns-failure') return 'unreachable';
+    if (guard.kind === 'blocked') return 'refused';
+    if (guard.kind === 'dns-failure') return 'unreachable';
 
     let res: Response;
     try {
-      res = await requestOnce(current, fetchImpl, timeoutMs);
+      res = await requestOnce(current, fetchImpl, timeoutMs, guard.pinnedAddress, buildDispatcher);
     } catch {
       return 'unreachable'; // network error / timeout
     }

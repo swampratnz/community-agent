@@ -10,6 +10,23 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-20
+
+### Security
+- **Closed a DNS-rebinding/TOCTOU gap in the knowledge link-check's SSRF
+  guard** (#587): the weekly link-rot checker's SSRF guard resolved a
+  `sourceUrl`'s hostname once to check it against a deny-list of
+  loopback/private/link-local/cloud-metadata ranges, but the actual HTTP
+  request that followed re-resolved the hostname independently — so a
+  host with a very low DNS TTL could in principle resolve to a public IP
+  for the guard's check and a different (internal) IP for the real
+  request moments later, bypassing the guard entirely. The request is now
+  pinned to the exact IP the guard already vetted (connecting by IP with
+  the original hostname presented via TLS SNI/the `Host` header), applied
+  independently at every redirect hop. Threat actor was already admin-tier
+  only (an admin with `save_knowledge`/`update_knowledge`); this narrows an
+  existing trust boundary, adds no new tool or data access.
+
 ## 2026-07-18
 
 ### Added

@@ -503,27 +503,29 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   body is cancelled unread) — this is a pure reachability probe, not
   `WebFetch` (still disallowed for every tier; no model is ever in this
   loop). Bounds: a redirect-hop cap, a per-request timeout, and a ~weekly
-  freshness guard mirroring docs-ingest's cadence. **Disclosed, accepted
-  residual risk**: the guard is a standard deny-list-plus-redirect-recheck
-  design, not connection-level IP pinning — it resolves the hostname once via
-  an injectable `lookup`, checks those IPs, then `fetch()` performs its own
-  independent DNS resolution for the actual request. A host with a very
+  freshness guard mirroring docs-ingest's cadence. **DNS-rebinding/TOCTOU gap
+  closed** (issue #587): the guard resolves each hop's hostname exactly once
+  via the injectable `lookup`, and the request for that hop connects to that
+  SAME guard-checked IP literal — pinned via a custom undici connector (Node's
+  global `fetch` is undici, which ignores a Node `http(s).Agent`) that
+  connects by IP while presenting the original hostname as the TLS SNI and
+  `Host` header (`buildPinnedDispatcher`, `src/context/linkCheck.ts`). This
+  pin is applied independently at every redirect hop, not just the initial
+  URL. Previously, `fetch()` performed its own independent DNS resolution for
+  the actual request after the guard's check, so a host with a very
   low/zero DNS TTL could in principle resolve to a public IP for the guard's
-  check and a different (internal) IP for the real request moments later
-  (DNS rebinding / TOCTOU), bypassing the guard. This is accepted because the
-  threat actor here is admin-only (an admin who already has the
-  `save_knowledge` tool) and the blast radius is a reachability boolean, not
-  response content — but a stricter deployment wanting to close this gap
-  entirely would need to pin the guard-resolved IP into the actual request
-  (e.g. via a custom `dns.lookup` override or connecting by IP with the
-  original hostname sent as the TLS SNI/Host header), which this PR does not
-  implement. The admin-only `list_knowledge(sourceUnreachable: true)` filter
-  surfaces flagged entries for re-verification; it is parameterized SQL,
-  composes with existing filters, and re-asserts the tier gate. All of the
-  above — the guard's denylist coverage, the non-https rejection, the
-  per-redirect-hop re-guard, the `'refused'`-never-persists invariant, and
-  the body-never-read behaviour — are pinned by `SECURITY:` tests in
-  `tests/linkCheck.test.ts` and `tests/tools.test.ts`.
+  check and a different (internal) IP for the real request moments later —
+  that gap no longer exists: the connection layer never re-resolves the
+  hostname, so there is no second, independent resolution for a rebinding
+  attacker to race. The admin-only `list_knowledge(sourceUnreachable: true)`
+  filter surfaces flagged entries for re-verification; it is parameterized
+  SQL, composes with existing filters, and re-asserts the tier gate. All of
+  the above — the guard's denylist coverage, the non-https rejection, the
+  per-redirect-hop re-guard and pin, the `'refused'`-never-persists
+  invariant, the body-never-read behaviour, and the DNS-rebinding closure
+  itself (proven both by dependency-injected wiring tests and a real local
+  socket connecting through the pinned dispatcher) — are pinned by
+  `SECURITY:` tests in `tests/linkCheck.test.ts` and `tests/tools.test.ts`.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The
