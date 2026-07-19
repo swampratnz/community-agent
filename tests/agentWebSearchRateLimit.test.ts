@@ -29,14 +29,18 @@ type PreToolUseHook = (
 
 const hookOptions = { signal: new AbortController().signal };
 
-function preToolUseInput(toolUseId: string) {
+// Each call defaults to a query DERIVED from toolUseId so that looping this
+// helper never collides with the dedup guard (issue #589) — these tests
+// exercise the volume cap, not dedup, so every iteration must look like a
+// genuinely distinct search unless a test deliberately wants a repeat.
+function preToolUseInput(toolUseId: string, query = `test query ${toolUseId}`) {
   return {
     session_id: 'sess-1',
     transcript_path: '/tmp/transcript',
     cwd: '/tmp',
     hook_event_name: 'PreToolUse' as const,
     tool_name: 'WebSearch',
-    tool_input: { query: 'test query' },
+    tool_input: { query },
     tool_use_id: toolUseId,
   };
 }

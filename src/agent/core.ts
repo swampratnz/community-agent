@@ -17,7 +17,13 @@ import {
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { buildSystemPrompt, renderMemoryContext, renderRequesterTag } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
-import { buildToolServer, reserveWebSearchSlot, type ToolServerTurnState } from './tools.js';
+import {
+  buildToolServer,
+  isDuplicateWebSearchQuery,
+  recordWebSearchQuery,
+  reserveWebSearchSlot,
+  type ToolServerTurnState,
+} from './tools.js';
 import {
   initialUsageLimitTracker,
   isUsageLimitFailure,
@@ -243,6 +249,21 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  *    auto-approval path. Member/guest turns never get this hook at all —
  *    there is nothing to gate, since `tools`/`allowedTools` already exclude
  *    WebSearch for those tiers.
+ *  - the same hook additionally denies an exact-normalized repeat of a
+ *    recent query in the same conversation (issue #589,
+ *    `isDuplicateWebSearchQuery`/`recordWebSearchQuery` in `tools.ts`) — the
+ *    volume cap above bounds call count but never inspected the query, so an
+ *    agentic turn could reformulate and re-fire the same search for no new
+ *    information. The dedup CHECK runs BEFORE the volume-cap check and, on a
+ *    match, denies without consuming a volume slot (a call the guard itself
+ *    blocked never reaches the real search, so it shouldn't count against
+ *    the hourly budget). The query is only RECORDED into the dedup history
+ *    once BOTH checks pass and the call is actually going to proceed —
+ *    recording it any earlier would let a query later denied by the volume
+ *    cap poison the dedup history, so a retry of that exact (never-searched)
+ *    query would be wrongly denied as "already searched" instead of hitting
+ *    the accurate rate-limit message. Both checks share the same try/catch,
+ *    so a thrown error from either fails closed identically.
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
@@ -287,32 +308,66 @@ export function buildQueryOptions(
               {
                 matcher: 'WebSearch',
                 hooks: [
-                  async (): Promise<HookJSONOutput> => {
-                    // Fail closed: a thrown/rejected error while checking the
-                    // cap must never let the call through unbounded — it
-                    // denies instead of relying on any SDK default behaviour
-                    // on a hook exception, which this repo has never
-                    // exercised before (issue #412 AC-5).
+                  async (input: unknown): Promise<HookJSONOutput> => {
+                    // Fail closed: a thrown/rejected error while checking
+                    // either the dedup or the rate cap must never let the
+                    // call through unbounded — denies instead of relying on
+                    // any SDK default behaviour on a hook exception, which
+                    // this repo has never exercised before (issue #412
+                    // AC-5, extended to the dedup check by issue #589).
                     try {
+                      const toolInput = (input as { tool_input?: unknown } | undefined)?.tool_input;
+                      const query =
+                        toolInput &&
+                        typeof toolInput === 'object' &&
+                        typeof (toolInput as { query?: unknown }).query === 'string'
+                          ? (toolInput as { query: string }).query
+                          : '';
+
+                      const dedupWindowMs = config.llm.webSearchDedupWindowSeconds * 1000;
+                      if (isDuplicateWebSearchQuery(conversationId, query, dedupWindowMs)) {
+                        return {
+                          continue: true,
+                          hookSpecificOutput: {
+                            hookEventName: 'PreToolUse',
+                            permissionDecision: 'deny',
+                            permissionDecisionReason:
+                              'You already searched for this in the last few minutes — use what you found.',
+                          },
+                        };
+                      }
+
                       const allowed = reserveWebSearchSlot(
                         conversationId,
                         config.llm.webSearchRateLimitPerHour,
                       );
-                      if (allowed) return { continue: true };
-                      return {
-                        continue: true,
-                        hookSpecificOutput: {
-                          hookEventName: 'PreToolUse',
-                          permissionDecision: 'deny',
-                          permissionDecisionReason:
-                            'WebSearch already hit the conversation limit ' +
-                            `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
-                        },
-                      };
+                      if (!allowed) {
+                        return {
+                          continue: true,
+                          hookSpecificOutput: {
+                            hookEventName: 'PreToolUse',
+                            permissionDecision: 'deny',
+                            permissionDecisionReason:
+                              'WebSearch already hit the conversation limit ' +
+                              `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
+                          },
+                        };
+                      }
+
+                      // Only record once the call is actually going to proceed — recording a
+                      // query that then gets denied by the volume cap would poison the dedup
+                      // history with a search that never ran (issue #589 review).
+                      recordWebSearchQuery(
+                        conversationId,
+                        query,
+                        dedupWindowMs,
+                        config.llm.webSearchDedupHistorySize,
+                      );
+                      return { continue: true };
                     } catch (err) {
                       logger.error(
                         { err, conversationId },
-                        'WebSearch rate-limit check threw — failing closed (denying the call)',
+                        'WebSearch rate-limit/dedup check threw — failing closed (denying the call)',
                       );
                       return {
                         continue: true,

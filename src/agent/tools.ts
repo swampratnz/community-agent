@@ -1705,6 +1705,79 @@ export function reserveWebSearchSlot(conversationId: string, limit: number): boo
   return true;
 }
 
+/** Trim, collapse internal whitespace, and casefold a WebSearch query for exact-match dedup comparison. */
+function normalizeWebSearchQuery(query: string): string {
+  return query.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Recent (normalized query, timestamp) pairs per conversation, for WebSearch
+ * query-level dedup (issue #589). In-memory only — same durability class as
+ * `webSearchTimestampsByConversation` right above: a restart just forgets
+ * recent queries, harmless. Deliberately holds nothing but the normalized
+ * query text and its timestamp; never written to `interactions`/
+ * `admin_audit` or logged (this module has no DB handle in scope, and the
+ * caller in `core.ts` only ever logs `{ err, conversationId }` on failure,
+ * never the query).
+ */
+const webSearchQueryHistoryByConversation = new Map<string, Array<{ query: string; ts: number }>>();
+
+/**
+ * Returns true if `query`, once normalized, exactly matches one of the
+ * queries recorded for `conversationId` within `windowMs` — the "search,
+ * get an unsatisfying result, reformulate almost identically, search again"
+ * agentic-loop failure mode (issue #589). Pure check: it prunes
+ * window-expired entries (so the stored history doesn't grow unboundedly
+ * across calls that never record) but never itself records `query` — a
+ * genuine repeat is therefore also never re-recorded, so its timestamp
+ * keeps anchoring the original window instead of extending it. An
+ * empty/non-string query (normalizes to `''`) never matches, so a missing
+ * `tool_input.query` can't wedge the guard.
+ *
+ * Recording is a SEPARATE step (`recordWebSearchQuery`) that callers must
+ * invoke only once the call is actually going to proceed — i.e. AFTER
+ * `reserveWebSearchSlot` also confirms it, not just after this check passes.
+ * Recording here unconditionally (as an earlier version of this guard did)
+ * let a query that was later denied by the volume cap poison the dedup
+ * history: a retry of that exact query would then be wrongly denied as
+ * "already searched" even though no search ever ran (issue #589 review).
+ */
+export function isDuplicateWebSearchQuery(conversationId: string, query: string, windowMs: number): boolean {
+  const normalized = normalizeWebSearchQuery(query);
+  const now = Date.now();
+  const recent = (webSearchQueryHistoryByConversation.get(conversationId) ?? []).filter(
+    (entry) => now - entry.ts < windowMs,
+  );
+  webSearchQueryHistoryByConversation.set(conversationId, recent);
+  return normalized.length > 0 && recent.some((entry) => entry.query === normalized);
+}
+
+/**
+ * Record `query` as seen for `conversationId`, trimmed to the last
+ * `historySize` entries (oldest evicted first). Callers must only call this
+ * once a WebSearch call is confirmed to actually proceed (after BOTH
+ * `isDuplicateWebSearchQuery` returns false AND `reserveWebSearchSlot`
+ * returns true) — see the ordering note on `isDuplicateWebSearchQuery`. An
+ * empty/non-string query (normalizes to `''`) is never recorded, so a
+ * missing `tool_input.query` can't wedge the guard.
+ */
+export function recordWebSearchQuery(
+  conversationId: string,
+  query: string,
+  windowMs: number,
+  historySize: number,
+): void {
+  const normalized = normalizeWebSearchQuery(query);
+  if (normalized.length === 0) return;
+  const now = Date.now();
+  const recent = (webSearchQueryHistoryByConversation.get(conversationId) ?? []).filter(
+    (entry) => now - entry.ts < windowMs,
+  );
+  recent.push({ query: normalized, ts: now });
+  while (recent.length > historySize) recent.shift();
+  webSearchQueryHistoryByConversation.set(conversationId, recent);
+}
+
 /**
  * WhatsApp voice-note transcription timestamps per SENDER (issue #507), for
  * `config.whatsapp.voice.rateLimitPerHour`. Per-sender rather than
