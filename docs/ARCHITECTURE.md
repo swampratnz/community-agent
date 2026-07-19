@@ -117,9 +117,13 @@ memory**:
    on demand mid-turn. Cross-conversation search is admin-only.
    `knowledge_search`'s result ordering is similarity-descending except for a
    narrow tie-break (issue #308): when two relevant hits land within
-   `KNOWLEDGE_TIE_MARGIN` of each other and exactly one is stale (per
-   `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), the fresher one is listed
-   first — a real relevance gap always wins regardless of staleness.
+   `KNOWLEDGE_TIE_MARGIN` of each other, the tie is broken first by low-rated
+   status (issue #562) — if exactly one hit has been flagged unhelpful by
+   ≥2 distinct members (per `areKnowledgeEntriesLowRated`), the non-low-rated
+   hit is listed first — and only then, if that doesn't decide it, by
+   staleness (per `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the
+   fresher one is listed first — a real relevance gap always wins regardless
+   of rating or staleness.
    `isKnowledgeStale` also honors an optional absolute content-age ceiling,
    `KNOWLEDGE_STALE_MAX_AGE_DAYS` (issue #380, off unless set), OR-ed into the
    same predicate: it fires on a hit's edit age alone, closing the gap where a

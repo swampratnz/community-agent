@@ -374,6 +374,17 @@ export const KNOWLEDGE_TIE_MARGIN = 0.03;
  * caller's actual low-rated data, so the caveat only ever reached members
  * through the narrow `sendKnowledgeShortcut` path in router.ts. With an
  * empty (default) set, output is byte-identical to pre-#432 behaviour.
+ *
+ * `lowRatedIds` also feeds the near-tie comparator itself (issue #562):
+ * within `KNOWLEDGE_TIE_MARGIN`, if exactly one of the pair is in
+ * `lowRatedIds`, the non-low-rated hit sorts first — checked *before* the
+ * staleness tie-break above, as a member-flagged "not helpful" signal (≥2
+ * distinct raters) is stronger, more deliberate evidence than inferred
+ * staleness. Both-low-rated and neither-low-rated pairs fall through to the
+ * staleness check unchanged. Outside the margin, a real relevance gap always
+ * wins regardless of rating, same as the staleness case. With an empty
+ * (default) `lowRatedIds`, this branch never fires and ordering stays
+ * byte-identical to pre-#562 behaviour.
  */
 export function formatKnowledgeSearchResults(
   hits: Array<
@@ -406,6 +417,9 @@ export function formatKnowledgeSearchResults(
       if (Math.abs(a.h.similarity - b.h.similarity) > KNOWLEDGE_TIE_MARGIN) {
         return b.h.similarity - a.h.similarity;
       }
+      const aLowRated = lowRatedIds.has(a.h.id);
+      const bLowRated = lowRatedIds.has(b.h.id);
+      if (aLowRated !== bLowRated) return aLowRated ? 1 : -1;
       const aStale = isKnowledgeStale(
         { updatedAt: a.h.updatedAt, lastRetrievedAt: a.h.lastRetrievedAt ?? null },
         staleDays,

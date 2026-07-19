@@ -12,6 +12,19 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-19
 
+### Changed
+- **`knowledge_search`'s near-tie ranking now also breaks on low-rated status,
+  checked before staleness** (#562): the existing near-tie comparator (#308)
+  broke ties within `KNOWLEDGE_TIE_MARGIN` on staleness alone, even though
+  `lowRatedIds` — whether a hit has been flagged unhelpful by ≥2 distinct
+  members — was already computed for the same call to render the low-rated
+  caveat (#432) and simply never reached the sort. Now, within a near-tie, if
+  exactly one hit is low-rated the non-low-rated one sorts first; only when
+  neither or both are low-rated does the tie fall through to the existing
+  staleness break. A real relevance gap (outside the margin) still always
+  wins regardless of rating. No new tool, config, query, or schema; output is
+  byte-identical when the low-rated caveat feature is off (the default) or no
+  hit in a result set is low-rated.
 ### Added
 - **`feature_flags` tool: see which optional behaviours are actually on**
   (#559): with 28 opt-in `*_ENABLED` config flags and growing, the only way
