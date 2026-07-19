@@ -380,7 +380,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   // reply-retraction mapping is harmless to populate with no id to act on,
   // but there is genuinely no id to report here since `sendText` doesn't
   // surface Meta's response wamid.
-  async sendMessage(out: OutgoingMessage): Promise<string | undefined> {
+  async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     await this.sendText(out.conversationId, out.text, out.language);
     return undefined;
   }

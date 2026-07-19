@@ -596,8 +596,12 @@ export class BaileysAdapter implements PlatformAdapter {
       return;
     }
     evictReplyMapping('whatsapp', remoteJid, targetId);
-    await this.deleteOwnMessage(mapping.replyConversationId, mapping.botReplyMessageId).catch((err) =>
-      logger.warn({ err, messageId: mapping.botReplyMessageId }, 'Failed to retract own reply'),
+    await Promise.all(
+      mapping.botReplyMessageIds.map((id) =>
+        this.deleteOwnMessage(mapping.replyConversationId, id).catch((err) =>
+          logger.warn({ err, messageId: id }, 'Failed to retract own reply'),
+        ),
+      ),
     );
   }
 
@@ -785,7 +789,7 @@ export class BaileysAdapter implements PlatformAdapter {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
   }
 
-  async sendMessage(out: OutgoingMessage): Promise<string | undefined> {
+  async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     const sent = await this.sock.sendMessage(out.conversationId, {
       text: await this.filtered(out.text, out.language),
@@ -797,7 +801,7 @@ export class BaileysAdapter implements PlatformAdapter {
     this.sock
       .sendPresenceUpdate('paused', out.conversationId)
       .catch((err) => logger.debug({ err }, 'Failed to clear WhatsApp presence'));
-    return sent?.key?.id ?? undefined;
+    return sent?.key?.id ? [sent.key.id] : undefined;
   }
 
   /** Post an image (with an optional caption) to a conversation. */

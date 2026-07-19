@@ -687,7 +687,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), undefined, language);
   }
 
-  async sendMessage(out: OutgoingMessage): Promise<string | undefined> {
+  async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     const channel = await this.client.channels.fetch(out.conversationId);
     if (!channel || !channel.isTextBased() || !('send' in channel)) {
       throw new Error(`Discord channel ${out.conversationId} is not sendable`);
@@ -695,16 +695,18 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // Discord caps messages at 2000 chars; chunk longer replies. Mentions are
     // never parsed so an injected "@everyone" can't mass-ping. SuppressEmbeds
     // stops Discord from expanding any links in the reply into preview cards.
-    let lastMessageId: string | undefined;
+    // Every chunk's id is collected (issue #575) so a later retraction can
+    // delete ALL of them, not just the last chunk.
+    const messageIds: string[] = [];
     for (const chunk of chunkText(await this.filtered(out.text, out.language), MAX_DISCORD_LEN)) {
       const sent = await channel.send({
         content: chunk,
         allowedMentions: { parse: [] },
         flags: MessageFlags.SuppressEmbeds,
       });
-      lastMessageId = sent?.id;
+      if (sent?.id) messageIds.push(sent.id);
     }
-    return lastMessageId;
+    return messageIds.length > 0 ? messageIds : undefined;
   }
 
   /**
@@ -715,11 +717,15 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
    * event only ever fires for a delete Discord's own permission model
    * already allowed (the author, or a Manage Messages holder) — so any
    * successful delete of the source message is itself a legitimate trigger.
+   * A long reply can span multiple chunks (`sendMessage` above); every
+   * chunk id in the mapping is deleted, not just one.
    */
   private async retractReplyIfMapped(conversationId: string, messageId: string): Promise<void> {
     const mapping = takeReplyMapping('discord', conversationId, messageId);
     if (!mapping) return;
-    await this.deleteOwnMessage(mapping.replyConversationId, mapping.botReplyMessageId);
+    await Promise.all(
+      mapping.botReplyMessageIds.map((id) => this.deleteOwnMessage(mapping.replyConversationId, id)),
+    );
   }
 
   /**

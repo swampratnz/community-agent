@@ -35,8 +35,14 @@ export interface ReplyMapping {
    * delete/revoke event itself reports.
    */
   replyConversationId: string;
-  /** Platform message id of the bot's own reply — the thing to retract. */
-  botReplyMessageId: string;
+  /**
+   * Platform message id(s) of the bot's own reply — the thing(s) to retract.
+   * A single logical reply can span multiple platform messages (e.g. Discord
+   * chunking a long reply past its 2000-char cap via `chunkText`), so this is
+   * always an array, even when a platform only ever sends one message per
+   * reply; a retraction must delete every chunk, not just the last one.
+   */
+  botReplyMessageIds: string[];
   /**
    * The original message's sender. Carried so WhatsApp's revoke-authorship
    * check (issue #48/#103's spoofed-revoke discipline) never has to depend

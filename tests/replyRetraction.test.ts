@@ -19,13 +19,13 @@ test('replyRetraction: record + take round-trips the mapping and evicts on read 
   resetReplyMappingsForTests();
   recordReplyMapping('discord', 'chan-1', 'msg-1', {
     replyConversationId: 'chan-1',
-    botReplyMessageId: 'reply-1',
+    botReplyMessageIds: ['reply-1'],
     senderId: 'user-1',
   });
 
   const taken = takeReplyMapping('discord', 'chan-1', 'msg-1');
   assert.equal(taken?.replyConversationId, 'chan-1');
-  assert.equal(taken?.botReplyMessageId, 'reply-1');
+  assert.deepEqual(taken?.botReplyMessageIds, ['reply-1']);
   assert.equal(taken?.senderId, 'user-1');
 
   assert.equal(
@@ -39,7 +39,7 @@ test('replyRetraction: peek never evicts, even across repeated reads — only ev
   resetReplyMappingsForTests();
   recordReplyMapping('whatsapp', 'group-1', 'msg-2', {
     replyConversationId: 'group-1',
-    botReplyMessageId: 'reply-2',
+    botReplyMessageIds: ['reply-2'],
     senderId: 'sender-a',
   });
 
@@ -61,7 +61,7 @@ test('replyRetraction: the map key is (platform, conversationId, messageId) — 
   resetReplyMappingsForTests();
   recordReplyMapping('discord', 'chan-a', 'msg-x', {
     replyConversationId: 'chan-a',
-    botReplyMessageId: 'reply-a',
+    botReplyMessageIds: ['reply-a'],
     senderId: 'user-a',
   });
 
@@ -87,7 +87,7 @@ test('replyRetraction: an entry older than the TTL is not honoured (time-injecte
     resetReplyMappingsForTests();
     recordReplyMapping('discord', 'chan-ttl', 'msg-ttl', {
       replyConversationId: 'chan-ttl',
-      botReplyMessageId: 'reply-ttl',
+      botReplyMessageIds: ['reply-ttl'],
       senderId: 'user-ttl',
     });
 
@@ -116,7 +116,7 @@ test('replyRetraction: the map is size-capped with oldest-first eviction (accept
   for (let i = 0; i < REPLY_RETRACTION_MAX_ENTRIES + overflow; i++) {
     recordReplyMapping('discord', 'chan-cap', `msg-${i}`, {
       replyConversationId: 'chan-cap',
-      botReplyMessageId: `reply-${i}`,
+      botReplyMessageIds: [`reply-${i}`],
       senderId: 'user-cap',
     });
   }
@@ -132,5 +132,21 @@ test('replyRetraction: the map is size-capped with oldest-first eviction (accept
   assert.ok(
     peekReplyMapping('discord', 'chan-cap', `msg-${newestIndex}`),
     'the most recently recorded entry survives the cap',
+  );
+});
+
+test('replyRetraction: botReplyMessageIds carries every chunk id of a multi-chunk reply, in order (PR #576 review — a multi-chunk Discord reply must be fully retractable, not just its last chunk)', () => {
+  resetReplyMappingsForTests();
+  recordReplyMapping('discord', 'chan-multi', 'msg-multi', {
+    replyConversationId: 'chan-multi',
+    botReplyMessageIds: ['reply-1', 'reply-2', 'reply-3'],
+    senderId: 'user-multi',
+  });
+
+  const taken = takeReplyMapping('discord', 'chan-multi', 'msg-multi');
+  assert.deepEqual(
+    taken?.botReplyMessageIds,
+    ['reply-1', 'reply-2', 'reply-3'],
+    'all chunk ids are preserved, in send order, so every chunk can be retracted',
   );
 });

@@ -1,5 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { Events } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // Issue #575's auto-retraction feature, flag ON. Lives in its own
@@ -178,6 +179,97 @@ test('Discord: no false positives — a delete arriving after the 30-minute TTL 
     assert.equal(deleteSpy.mock.calls.length, 0, 'a delete outside the TTL window must not retract');
   } finally {
     t.mock.timers.reset();
+  }
+});
+
+test(
+  'Discord: firing the REAL client MessageDelete gateway listener registered by start() (not the ' +
+    'private retractReplyIfMapped shortcut every other test in this file uses) retracts the mapped reply — ' +
+    'pins the actual listener-registration wiring itself, so a regression there (e.g. the listener not ' +
+    'being registered when only autoRetractReplyEnabled is set) would be caught (PR #576 review)',
+  async (t) => {
+    const router = makeReplyRouter();
+    const adapter = new DiscordAdapter();
+    const { sentMessages } = stubDiscordChannel(adapter);
+    router.register(adapter);
+    const handler = getHandler(adapter);
+    const deleteSpy = t.mock.method(adapter, 'deleteOwnMessage');
+
+    const client = (
+      adapter as unknown as {
+        client: {
+          emit: (event: string, ...args: unknown[]) => void;
+          login: (token: string) => Promise<void>;
+        };
+      }
+    ).client;
+    // start() wires the real gateway listeners under test but also logs in
+    // for real — stub the login call so this stays a local, network-free
+    // test, mirroring tests/discordAdapter.test.ts's existing client.emit
+    // pattern for GuildMemberUpdate/GuildRoleUpdate/GuildRoleDelete.
+    client.login = async () => {};
+    await adapter.start();
+
+    const conversationId = `${RUN}-chan-wiring`;
+    const messageId = `${RUN}-origin-wiring`;
+    await handler(discordMessage({ conversationId, messageId }));
+
+    assert.equal(sentMessages.size, 1, 'exactly one reply was sent');
+    const [replyId] = [...sentMessages.keys()];
+
+    // Dispatch the actual discord.js gateway event — exercising the
+    // `Events.MessageDelete` listener body registered in `start()`
+    // end-to-end, including the `if (config.discord.archiveAllMessages || ` +
+    // `config.behaviour.autoRetractReplyEnabled)` registration gate itself.
+    client.emit(Events.MessageDelete, { channelId: conversationId, id: messageId, guildId: null });
+    // The listener's body is async but the `on` callback doesn't await it —
+    // give the microtask queue a turn so the fire-and-forget retraction settles.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(
+      deleteSpy.mock.calls.length,
+      1,
+      'the real gateway listener invoked deleteOwnMessage exactly once',
+    );
+    assert.deepEqual(deleteSpy.mock.calls[0].arguments, [conversationId, replyId]);
+    assert.equal(
+      sentMessages.get(replyId)?.deleted,
+      true,
+      'the bot reply was actually retracted via the real listener, not a bypassed private method',
+    );
+  },
+);
+
+test('Discord: a multi-chunk reply (longer than the 2000-char cap) is retracted in its ENTIRETY — every chunk is deleted, not just the last one (PR #576 review)', async (t) => {
+  const longText = `${RUN}-chunk-a-`.padEnd(2200, 'a') + '\n' + `${RUN}-chunk-b-`.padEnd(2200, 'b');
+  const router = new Router(async () => ({ text: longText, ok: true }), 1_000_000);
+  const adapter = new DiscordAdapter();
+  const { sentMessages } = stubDiscordChannel(adapter);
+  router.register(adapter);
+  const handler = getHandler(adapter);
+  const deleteSpy = t.mock.method(adapter, 'deleteOwnMessage');
+
+  const conversationId = `${RUN}-chan-multichunk`;
+  const messageId = `${RUN}-origin-multichunk`;
+  await handler(discordMessage({ conversationId, messageId }));
+
+  const chunkIds = [...sentMessages.keys()];
+  assert.ok(chunkIds.length >= 2, 'the long reply was split into multiple Discord messages by chunkText');
+  for (const id of chunkIds) assert.equal(sentMessages.get(id)?.deleted, false);
+
+  await fireDiscordDelete(adapter, conversationId, messageId);
+
+  assert.equal(
+    deleteSpy.mock.calls.length,
+    chunkIds.length,
+    'deleteOwnMessage is called once per chunk, not just once for the last chunk',
+  );
+  for (const id of chunkIds) {
+    assert.equal(
+      sentMessages.get(id)?.deleted,
+      true,
+      `chunk ${id} must be retracted — an earlier chunk staying public would defeat the privacy goal`,
+    );
   }
 });
 

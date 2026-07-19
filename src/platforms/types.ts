@@ -157,12 +157,13 @@ export interface PlatformAdapter {
 
   /**
    * Send a text reply to a conversation. Returns the platform-native message
-   * id of the sent reply when the platform can report one (issue #575, the
-   * auto-retraction feature) — `undefined` when it genuinely can't (e.g.
+   * id(s) of the sent reply when the platform can report them (issue #575,
+   * the auto-retraction feature) — `undefined` when it genuinely can't (e.g.
    * WhatsApp Cloud). Adapters that chunk a long reply into multiple platform
-   * messages return the LAST chunk's id.
+   * messages return EVERY chunk's id, in send order, so a retraction can
+   * delete all of them rather than just the last one.
    */
-  sendMessage(out: OutgoingMessage): Promise<string | undefined>;
+  sendMessage(out: OutgoingMessage): Promise<string[] | undefined>;
 
   /**
    * Best-effort "processing…" signal while an agent turn is in flight. Never

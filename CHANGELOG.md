@@ -25,6 +25,8 @@ for anything after ~noon NZST/NZDT). Get today's date with
   own prior send, honouring the member's revoke only when it comes from the
   message's true original sender or a group admin (reusing #48/#103's
   spoofed-revoke authorship discipline, fail-safe on any other participant).
+  A reply long enough to be split across multiple platform messages (Discord's
+  2000-char cap) is retracted in full — every chunk, not just the last one.
   WhatsApp Cloud is excluded by capability (no unsend endpoint), never by
   throwing. Independent of, and composable with, the existing archived-row
   honouring — no new tool, no RBAC change, no schema/migration (an in-memory,

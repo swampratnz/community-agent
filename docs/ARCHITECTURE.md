@@ -105,20 +105,24 @@ mechanism depending on which flags are on; they're deliberately two separate
 opt-ins (an operator may want stored-row coherence without touching live
 replies, or vice versa) rather than reusing one flag for both.
 
-**Mechanism.** `PlatformAdapter.sendMessage` returns the platform-native
-message id of the reply it just sent (`undefined` when a platform genuinely
-can't report one). After the router sends the real-agent-turn main reply for
-an addressed message that carried an inbound `messageId`, it records an
-in-memory, TTL'd (30 min), size-capped (1000 entries, oldest-first eviction)
-mapping — `(platform, conversationId, inboundMessageId) → { botReplyMessageId,
-replyConversationId, senderId }` — in `src/replyRetraction.ts`. That module is
-a directly-imported shared singleton (not Router instance state, despite
-mirroring the shape of `Router`'s own `lastReply`/`pendingEscalations` maps):
-both the write side (the router, right after a send) and the read side (an
-adapter's own native delete/revoke listener) need direct access, and adapters
-hold no reference back to the Router — the same "shared module, imported by
-both call sites" convention `storage/repository.ts`'s
-`deleteInteractionByMessageId` already uses from the adapters directly.
+**Mechanism.** `PlatformAdapter.sendMessage` returns EVERY platform-native
+message id of the reply it just sent, in send order (`undefined` when a
+platform genuinely can't report one) — a long reply that gets chunked (e.g.
+Discord's 2000-char cap via `chunkText`) returns one id per chunk, not just
+the last, so a retraction later removes the whole reply rather than leaving
+earlier chunks stranded. After the router sends the real-agent-turn main
+reply for an addressed message that carried an inbound `messageId`, it
+records an in-memory, TTL'd (30 min), size-capped (1000 entries, oldest-first
+eviction) mapping — `(platform, conversationId, inboundMessageId) →
+{ botReplyMessageIds, replyConversationId, senderId }` — in
+`src/replyRetraction.ts`. That module is a directly-imported shared singleton
+(not Router instance state, despite mirroring the shape of `Router`'s own
+`lastReply`/`pendingEscalations` maps): both the write side (the router,
+right after a send) and the read side (an adapter's own native delete/revoke
+listener) need direct access, and adapters hold no reference back to the
+Router — the same "shared module, imported by both call sites" convention
+`storage/repository.ts`'s `deleteInteractionByMessageId` already uses from
+the adapters directly.
 
 **Per-platform capability.** A new optional `PlatformAdapter.deleteOwnMessage?
 (conversationId, messageId)` capability retracts the bot's own prior send,
@@ -129,14 +133,15 @@ mirroring the existing optional-capability convention (`reactToMessage?`,
   registration is extended from `archiveAllMessages` alone to
   `archiveAllMessages || autoRetractReplyEnabled`; on a delete, the mapping is
   looked up independently of archive scope and, if found, `deleteOwnMessage`
-  fetches and deletes the bot's own message — the exact mechanism the
-  admin-only `delete_message` moderation action already uses. No authorship
-  check is needed: Discord's gateway doesn't expose who triggered the delete,
-  but a `MessageDelete` event only ever fires for a delete Discord's own
-  permission model already allowed (the author, or a Manage Messages holder),
-  so any successful delete of the source message is itself a legitimate
-  trigger. `MessageBulkDelete` retraction is explicitly out of scope for v1
-  (a moderator clearing a channel) — deferred as a mechanically trivial,
+  fetches and deletes EVERY chunk of the bot's own message — the exact
+  mechanism the admin-only `delete_message` moderation action already uses,
+  applied once per chunk id in `botReplyMessageIds`. No authorship check is
+  needed: Discord's gateway doesn't expose who triggered the delete, but a
+  `MessageDelete` event only ever fires for a delete Discord's own permission
+  model already allowed (the author, or a Manage Messages holder), so any
+  successful delete of the source message is itself a legitimate trigger.
+  `MessageBulkDelete` retraction is explicitly out of scope for v1 (a
+  moderator clearing a channel) — deferred as a mechanically trivial,
   same-shape follow-up.
 - **WhatsApp Baileys**: the bot sends a REVOKE protocol message for its own
   prior send — a standard first-party "delete for everyone" on the bot's OWN

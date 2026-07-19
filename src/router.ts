@@ -648,7 +648,7 @@ export class Router {
     conversationId: string,
     text: string,
     language?: 'mi',
-  ): Promise<string | undefined> {
+  ): Promise<string[] | undefined> {
     return adapter.sendMessage({ conversationId, text, language });
   }
 
@@ -1576,7 +1576,7 @@ export class Router {
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
       // those are out of scope.
-      const sentMessageId = await this.send(
+      const sentMessageIds = await this.send(
         adapter,
         target,
         outboundText,
@@ -1584,16 +1584,19 @@ export class Router {
       );
 
       // Auto-retraction mapping (issue #575): only for a genuine addressed
-      // message (msg.messageId set) that actually produced a reply id — this
+      // message (msg.messageId set) that actually produced reply id(s) — this
       // is the ONLY call site that ever writes to the map, so shortcut/ack
       // replies and any other `this.send()` call site are never retractable,
       // matching the proposal's "single top-level-message" v1 scope. Off by
       // default (`autoRetractReplyEnabled` unset), so this is a no-op and the
       // map stays empty — byte-identical behaviour to before this feature.
-      if (config.behaviour.autoRetractReplyEnabled && msg.messageId && sentMessageId) {
+      // `sentMessageIds` carries EVERY chunk id a platform's `sendMessage`
+      // split a long reply into (e.g. Discord's 2000-char cap), so a
+      // retraction later deletes all of them, not just the last chunk.
+      if (config.behaviour.autoRetractReplyEnabled && msg.messageId && sentMessageIds?.length) {
         recordReplyMapping(msg.platform, msg.conversationId, msg.messageId, {
           replyConversationId: target,
-          botReplyMessageId: sentMessageId,
+          botReplyMessageIds: sentMessageIds,
           senderId: msg.userId,
         });
       }
