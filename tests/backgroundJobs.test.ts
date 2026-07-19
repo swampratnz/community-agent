@@ -61,6 +61,7 @@ const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
 
 after(async () => {
   await closeDb();
@@ -478,6 +479,7 @@ for (const [jobName, start] of [
 }
 
 test('DM routing: the alert is delivered via sendDirectMessage + superAdminIds(platform), skipping any adapter whose isConnected() is false', async (t) => {
+  resetPendingAlertsForTests();
   const { adapter: connected, dms: connectedDms } = makeAdapter();
   const { adapter: disconnectedBase, dms: disconnectedDms } = makeAdapter();
   const disconnected: PlatformAdapter = { ...disconnectedBase, isConnected: () => false };
@@ -496,9 +498,89 @@ test('DM routing: the alert is delivered via sendDirectMessage + superAdminIds(p
     await flush(); // threshold reached
     assert.equal(connectedDms.length, 1, 'the connected adapter receives the alert DM');
     assert.equal(disconnectedDms.length, 0, 'a disconnected adapter is skipped, never DMed');
+    // SECURITY (issue #545): a single disconnected adapter among >=1
+    // connected is still just skipped — nothing is queued, byte-identical
+    // to pre-#545 behaviour.
+    assert.deepEqual(
+      getPendingAlertsForTests(),
+      [],
+      'with at least one connected adapter, nothing should be queued',
+    );
   } finally {
     clearInterval(timer!);
+    resetPendingAlertsForTests();
   }
+});
+
+test('alertSuperAdmins (via startDocsIngest): with zero connected adapters, the failure-threshold DM is queued instead of dropped, and no send is attempted (issue #545)', async (t) => {
+  resetPendingAlertsForTests();
+  const { adapter, dms } = makeAdapter();
+  adapter.isConnected = () => false;
+  const alwaysFail = async () => {
+    throw new Error('sentinel-queue-545');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDocsIngest([adapter], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.equal(dms.length, 0, 'no adapter is connected, so no send is attempted');
+    assert.equal(
+      getPendingAlertsForTests().length,
+      1,
+      'the failure-threshold alert should be queued instead of dropped',
+    );
+    assert.match(getPendingAlertsForTests()[0] ?? '', /docs-ingest/);
+  } finally {
+    clearInterval(timer!);
+    resetPendingAlertsForTests();
+  }
+});
+
+test('SECURITY: a queued failure-threshold alert (zero connected adapters) is byte-identical to what sendDirectMessage would have received on a live send (issue #545)', async (t) => {
+  resetPendingAlertsForTests();
+  const { adapter: connected, dms } = makeAdapter();
+  const { adapter: disconnected } = makeAdapter();
+  disconnected.isConnected = () => false;
+  const alwaysFail = async () => {
+    throw new Error('sentinel-byte-identical-545');
+  };
+
+  // First run: live send through the connected adapter, to capture what
+  // the real DM body looks like.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const liveTimer = startDocsIngest([connected], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+  } finally {
+    clearInterval(liveTimer!);
+  }
+  assert.equal(dms.length, 1);
+  const liveBody = dms[0].text;
+
+  // Second run, same shape but zero connected adapters: the queued entry
+  // must equal the live body exactly.
+  resetPendingAlertsForTests();
+  const queueTimer = startDocsIngest([disconnected], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+  } finally {
+    clearInterval(queueTimer!);
+  }
+  assert.deepEqual(getPendingAlertsForTests(), [liveBody]);
+  resetPendingAlertsForTests();
 });
 
 test('SECURITY: the alert DM body never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp)', async (t) => {

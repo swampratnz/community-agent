@@ -7,6 +7,7 @@ import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
+import { queuePendingAlert } from '../pendingAlertQueue.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
@@ -469,13 +470,29 @@ const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
  * `router.ts`'s budget-check alert. `adapterFor` is the same per-platform
  * lookup `buildToolServer` already threads through for #157; a platform with
  * no registered or connected adapter is silently skipped, matching that
- * lookup's existing fallback behaviour.
+ * lookup's existing fallback behaviour. If NO platform has a connected
+ * adapter, the alert is queued (shared with health.ts/backgroundJobs.ts —
+ * see src/pendingAlertQueue.ts) instead of silently dropped, and flushed
+ * through the first adapter to reconnect via health.ts's existing
+ * flushPendingAlerts (issue #545).
  */
 async function notifySuperAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
 ): Promise<void> {
+  const anyConnected = ALL_PLATFORMS.some((platform) => adapterFor(platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Super-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    // 'low': notifySuperAdmins is reachable from member-tier tools
+    // (report_content, appeal_moderation), so it must never evict a
+    // system-triggered disconnect/job-failure alert from the shared queue (#545).
+    queuePendingAlert(`🔔 ${message}`, 'low');
+    return;
+  }
   for (const platform of ALL_PLATFORMS) {
     const target = adapterFor(platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection

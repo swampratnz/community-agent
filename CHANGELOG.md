@@ -10,6 +10,21 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **Undeliverable super-admin alerts are queued instead of dropped** (#545,
+  extending #534): in a single-platform deployment, a sustained-disconnect
+  alert, a background-job failure-threshold alert, or a model-triggered
+  admin-notification (`report_content`/`appeal_moderation`/…) fired while that
+  platform is down previously vanished — there was no connected adapter to DM
+  through. All three now share one small in-memory queue and flush through the
+  first adapter to reconnect. The shared queue is **priority-aware**: the
+  member-reachable notification path can never evict a system disconnect/
+  job-failure alert, so a member filing their daily reports during an outage
+  can't crowd out the alerts admins most need. In-memory only (clears on
+  restart), same as every other best-effort alert here.
+
 ## 2026-07-18
 
 ### Added
