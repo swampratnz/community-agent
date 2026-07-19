@@ -274,6 +274,60 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   > only. You can tell the bot to "forget me" at any time to erase your
   > stored messages [, and messages are automatically deleted after N days].
   > Questions → ask an admin.
+- **Auto-retracting the bot's own reply** (`AUTO_RETRACT_REPLY_ENABLED`,
+  issue #575, off by default): when a member deletes the message the bot
+  answered, the bot retracts its own live reply too — independent of, and
+  never touching, the archived-row mechanisms above (see docs/ARCHITECTURE.md
+  for how the two compose). **Privacy-positive, not a regression**: this
+  *reduces* data exposure (a reply that often restated the question no longer
+  sits public indefinitely) rather than increasing retention or access — the
+  opposite direction of a privacy-regression change, and in keeping with NZ
+  Privacy Act 2020 expectations that a member's decision to delete something
+  is honoured as fully as the platform allows. There is no new
+  model-reachable surface: this is server-side plumbing triggered only by a
+  genuine platform delete/revoke gateway event, never invocable via a chat
+  message, a tool call, or any model action, and it introduces no new tool
+  and no RBAC change.
+  - **`SECURITY:` WhatsApp revoke-authorship check.** Exactly like the
+    archived-row delete/edit honouring above, WhatsApp servers don't validate
+    revoke-stanza authorship — only clients do — and a modified client can
+    broadcast a revoke keyed to ANOTHER participant's message id. Without a
+    check, that would let any group participant retract a reply the bot sent
+    to someone else just by forging a revoke keyed to that reply's origin
+    message id. The mitigation reuses the #48/#103 discipline exactly:
+    honour the revoke only when the revoker is the reply-mapping's own
+    recorded original sender, or is a group admin (legitimate "delete for
+    everyone" moderation) — any other revoker is ignored, fail-safe. Unlike
+    the archived-row check, this never depends on an archived
+    `interactions` row existing (it works even with ambient archiving off):
+    the sender is captured directly in the in-memory reply mapping when the
+    router sends the reply. A **failed** authorship check must never consume
+    the mapping either — `src/replyRetraction.ts` exposes a non-destructive
+    `peekReplyMapping` for this check, only evicting the entry once a
+    retraction is actually authorised, so a single forged/non-author revoke
+    can't permanently deny a later legitimate retraction of the same reply (a
+    griefing vector a naive "look up and delete unconditionally" design would
+    have opened). Pinned by a `SECURITY:` test that forges a revoke keyed to
+    another participant's mapped message and asserts no retraction occurs,
+    then confirms the true sender (or a group admin) can still retract it
+    afterward.
+  - **`SECURITY:` Flag-off is byte-identical.** With the flag unset (the
+    default), the router never records a reply mapping in the first place —
+    Discord's and WhatsApp Baileys' delete/revoke listeners find nothing to
+    retract, and neither adapter's `deleteOwnMessage` is ever called. Pinned
+    by a test asserting zero calls to that method on both platforms.
+  - **Capability-gated, fails safe.** WhatsApp Cloud has no
+    message-deletion/unsend endpoint at all, mirroring the existing
+    `delete_message` capability gap — enabling the flag has no effect there
+    and never throws, since Cloud has no delete/revoke event source to react
+    to in the first place (capability-gated by omission, not by a runtime
+    check that could be bypassed).
+  - **Bounded memory.** The reply-mapping is in-memory only (no schema/
+    migration — a restart merely means a reply sent just before it can no
+    longer be auto-retracted, the same best-effort tradeoff WhatsApp's own
+    "delete for everyone" already has), TTL'd (30 min) and size-capped
+    (1000 entries, oldest-first eviction), so a delete storm or an idle
+    process can't grow it unboundedly.
 - **Context digests** (`context_digests`, issue #51): an internal batch job
   summarises *already-stored* interactions into aggregate topic digests — no
   new collection surface. Admin-tier reads only (`list_context_digests`,
@@ -700,6 +754,31 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the already-proven `startTrackedJob`/`alertSuperAdmins` machinery. Like
   `list_admins`, auto-revoke on departure remains deliberately out of
   scope — this is visibility, not action.
+- **Engagement alert** (`src/engagementAlert.ts`, off unless
+  `ENGAGEMENT_ALERT_ENABLED`, issue #568): closes the same pull-only gap
+  #472/#480 closed for other super-admin-only signals — `engagement_stats`
+  (issue #419) already computes what fraction of currently-present roster
+  members have ever posted, but only on pull. This adds the missing push: an
+  opt-in job on the same 6h `startTrackedJob` cadence calls `engagementStats()`
+  unchanged and DMs every super admin, via the exact same `alertSuperAdmins`
+  helper `departedAdminAlert.ts` exports and this job imports (not a second
+  copy — the "super admins only, connected adapters only" rule has one
+  implementation), on a **weekly freshness-guard cadence** (a new,
+  single-row/guild-wide `engagement_alert_sends` table, `id = 1` enforced by
+  a CHECK constraint, restart-safe like `admin_digest_sends`' own `sent_at`
+  guard) rather than the departed-admin alert's zero→nonzero latch — a
+  continuous percentage has no natural "crossing" to latch on. The DM text
+  is a thin wrapper around `formatEngagementStats`, the exact same pure
+  formatter `engagement_stats` itself uses, so it inherits that tool's
+  privacy contract byte-for-byte: aggregate counts and a percentage only,
+  never a display name, platform user id, or roster row, and the same fixed
+  zero-roster fallback text (never a divide-by-zero or `NaN%`). No new tool,
+  no new RBAC tier, no LLM/embedding call, and deliberately **no
+  week-over-week trend in v1** — `engagement_alert_sends.last_percentage` is
+  written every send for a named, deferred v2 growth path but is never read
+  back by this PR. Purge-coherent by construction: the new table stores only
+  a timestamp and an aggregate percentage, never a user id, so
+  `forget_me`/`purge_user_data` have nothing user-scoped to reach here.
 - **Real-time access-request alert** (`notifyAccessRequest` in `router.ts`,
   off unless `ACCESS_REQUEST_ALERT_ENABLED`, issue #480): the discrete-event
   push complement to the pull-only `list_access_requests` tool and the
@@ -1455,6 +1534,50 @@ control downstream of it is reused completely unchanged:
     tests, including one that advances past the original creation+10min
     cutoff but within 10min of the last refresh.
 
+### 16. Config-flag visibility (`feature_flags`, super-admin, issue #559)
+
+A read-only, no-argument, no-CONFIRM chat tool answering "which of this
+deployment's ~28 opt-in `*_ENABLED` config flags are actually on right now?"
+— previously answerable only by reading env vars on the deploy host directly.
+This is a **new read path into `config`**, so it's called out separately from
+the "Secret exposure" controls (§2) above rather than assumed covered by them:
+
+- **Super-admin floor, not admin.** Reuses `assertAtLeast(caller.role,
+  'super_admin', ...)`, the same tier `usage_stats`/`admin_activity`/
+  `list_admins`/`engagement_stats` already sit at — several flags are
+  themselves security-relevant posture (e.g. `MODERATION_LLM_ABUSE_ENABLED`,
+  `WHATSAPP_VOICE_MIN_ROLE`), so least-privilege favours restricting
+  operational-config visibility to the operator over the wider admin tier.
+- **Exempt from the redaction concern by construction, not by review.** The
+  outbound secret-redaction filter (§2) exists because bot-composed text can
+  in principle echo a value that flowed through untrusted input or a broad
+  read. `feature_flags` structurally cannot reach a secret field: it is
+  driven by a fixed, hand-maintained `FEATURE_FLAG_MAP` allowlist
+  (`src/agent/tools.ts`) of `{ envVar, configPath, label, category }`
+  entries, and the handler's formatter only ever indexes those fixed dotted
+  paths off the in-memory `config` singleton — it never calls
+  `Object.entries`/`Object.values`/spreads `config` itself. There is no code
+  path from the handler to any token/URL/id field; a missing allowlist entry
+  can only under-report a flag, never expose one. Pinned by a `SECURITY:`
+  test that plants a fake secret-shaped field on a fixture config and asserts
+  it never appears in rendered output, plus a structural test asserting the
+  handler/formatter source never calls `Object.entries`/`Object.values`/
+  spread on the object they read.
+- **Booleans only, V1.** Output is `label: On/Off` per flag, grouped by
+  category — no raw values, channel-id lists, numeric thresholds, tokens, or
+  URLs. A future non-boolean summary (e.g. "configured (3 channels)" without
+  the ids) is an explicitly deferred growth path, not this tool.
+- **No new untrusted input, no state change.** No arguments, no CONFIRM, no
+  DB/model call — a synchronous read of the already-parsed `config` object
+  every running process already has in memory. Pinned by a `SECURITY:` test
+  asserting the handler makes no repository/`query()` call.
+- **Anti-drift coverage.** A test enumerates every `*_ENABLED` identifier
+  actually present in `config.ts` and asserts each has a `FEATURE_FLAG_MAP`
+  entry, so a newly-added flag that isn't consciously surfaced (or exempted)
+  fails CI loudly instead of `feature_flags` silently under-reporting it —
+  same shape as the `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage
+  pins (issues #311/#367).
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
@@ -1580,24 +1703,28 @@ base, unlike the other two's fixed-format extraction.
   treatment via `AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR` (issue #412), closing
   the enumeration gap #315 left (its own framing covered only the bot's
   custom tool set and never named the one built-in admin+ also has).
-- **Membership-scope staleness (narrowed, issues #286 + #328 + #350 + #374)**:
-  adapters cache an admin's conversation list for ~60s, but an *observed*
-  change invalidates the affected cache entry immediately rather than
-  waiting out the TTL. Discord's `GuildMemberRemove` (full guild exit)
+- **Membership-scope staleness (narrowed, issues #286 + #328 + #350 + #374 +
+  #573)**: adapters cache an admin's conversation list for ~60s, but an
+  *observed* change invalidates the affected cache entry immediately rather
+  than waiting out the TTL. Discord's `GuildMemberRemove` (full guild exit)
   clears the removed user's entry the instant it fires; Discord's
   `ChannelUpdate` clears the *entire* cache the instant a genuine
-  `permissionOverwrites` change lands on an in-guild text channel; Discord's
-  `GuildMemberUpdate`/`GuildRoleUpdate`/`GuildRoleDelete` likewise clear the
-  *entire* cache the instant a member's role set actually changes, a role's
-  own `permissions` bitfield actually changes, or a role in the configured
-  guild is deleted — this is arguably the *more* common Discord admin
-  revocation workflow (pulling someone out of a role) versus hand-editing a
-  channel's raw permission overwrites (#328), and it now narrows the same
-  way (a targeted per-user/per-role diff is a documented growth path, not
-  implemented; the whole-cache clear can only invalidate sooner, never grant
-  scope a live check wouldn't; a partial `GuildMemberUpdate` old-member whose
-  role set is unknowable fails safe and clears the cache rather than risk
-  treating a real revocation as unchanged); and WhatsApp's
+  `permissionOverwrites` change lands on an in-guild text channel, and
+  Discord's `GuildRoleUpdate`/`GuildRoleDelete` likewise clear the *entire*
+  cache the instant a role's own `permissions` bitfield actually changes or a
+  role in the configured guild is deleted — both can affect an unknown set of
+  members with no reverse index from role/channel back to cached users, so a
+  targeted diff there remains a documented growth path, not implemented, and
+  the whole-cache clear can only invalidate sooner, never grant scope a live
+  check wouldn't. Discord's `GuildMemberUpdate` — arguably the *more* common
+  Discord admin revocation workflow (pulling someone out of a role) versus
+  hand-editing a channel's raw permission overwrites (#328) — clears only the
+  changed member's *own* cache entry (#573; narrowed from a whole-cache clear
+  introduced by #350), since a member's own role set only ever affects that
+  member's own computed permissions, never another cached member's; a partial
+  `GuildMemberUpdate` old-member whose role set is unknowable still fails safe
+  and deletes that member's own entry rather than risk treating a real
+  revocation as unchanged. And WhatsApp's
   `group-participants.update` with `action: 'remove'` clears the removed
   user's entry the same way — and, since #374, also the same person's
   *phone-number*-keyed entry when a bare `@lid` removal is all the event
@@ -1719,7 +1846,12 @@ base, unlike the other two's fixed-format extraction.
   as before — never an error, never a misdirected send. `notifySuperAdmins`
   still has the narrower limitation this closed for suggestions/reports: it
   has no cross-turn adapter lookup at all, since its callers don't know a
-  target platform to look up.
+  target platform to look up. `add_member`/`grant_admin`'s approval/promotion
+  DMs (`notifyMemberApproved`/`notifyAdminApproved`) are now also routed
+  through the same `adapterFor` lookup (issue #548) — they, unlike
+  `notifySuperAdmins`, always know the target platform (it's the tool's own
+  `platform` argument), so there was no structural reason left to leave them
+  on the old direct-adapter path.
 - **`appeal_moderation` (issue #496)** gives a member/guest a way to ask
   admins to double-check their own active warning(s)/mute — the missing
   action counterpart to `my_warnings`' read-only visibility. Self-scoped
