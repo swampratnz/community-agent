@@ -95,11 +95,49 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   guardrails as autofix (`gh` read-only except `gh pr comment` so a
   principled refusal is explained on the PR). It never opens or merges PRs.
   Do not misflag its pushes as an ownership violation either.
-- **No loop merges PRs.** A human merges — especially important for this
-  security-sensitive bot. This is enforced structurally, not just by prompt:
-  the build worker's `--allowedTools` in `pipeline-build.yml` grants no blanket
-  `git:*`/`gh:*`/`npx:*`/`node:*` and no form of `gh pr merge` or `gh api`
-  (matching the autofix worker's least-privilege standard, #107).
+- A fourth exception: the **auto-merge loop** (`pipeline-pr-automerge.yml`)
+  merges fully-vetted build-worker PRs — a deliberate, tightly-gated reversal
+  of the original "a human merges everything" rule, added because throughput,
+  not correctness, had become the bottleneck: a backlog of green + approved
+  PRs sat waiting on a human and pairwise-conflicted on the shared
+  `CHANGELOG.md` / `security-floor.json` append points the longer they waited.
+  It is safe to automate because it is **deterministic — no LLM, no agent, no
+  Max-pool spend**: pure shell + `gh` that reads PR titles/bodies/comments only
+  as jq DATA (never as instructions) and runs no PR-controlled code, so it has
+  none of the fix/resolve/revise loops' prompt-injection or code-execution
+  surface. It merges the OLDEST PR that is same-repo, authored by the build
+  worker (`claude[bot]` — the exact identity, not merely any bot, since a bad
+  match here merges to `main`), `Closes #`, has every check green, is
+  `MERGEABLE` (no conflict), and whose LATEST automated review verdict is an
+  `LGTM` from `github-actions[bot]` (the review worker's identity — matched on
+  author, not just body text, so a public copy of the verdict phrasing can't
+  forge an approval) **newer than the head commit** (a stale approval from
+  before a later push never counts) — and is not labelled
+  `needs-human` or `no-auto-merge` (pin a PR out by hand, same shape as
+  `no-auto-resolve`). Crucially, it **routes any PR touching a governance/CI/
+  config path to a human merge** — `.github/**` (workflows/CI, including this
+  loop itself), `scripts/**` (the check machinery), `package.json`,
+  typecheck/lint/format config, and the `CLAUDE.md`/`docs/PIPELINE.md`/
+  `docs/SECURITY.md` governance docs — so the pipeline can never auto-merge a
+  change to its own guardrails or to what "green" means (and since
+  `pull_request` CI runs the workflow version from the PR branch, a PR could
+  otherwise weaken a check and still show it "passing"). It merges **exactly one
+  PR per run**: afterwards `main` has advanced, so it dispatches the conflict
+  resolver to rebase whatever now conflicts, and the next PR only re-qualifies
+  once it is green against the new `main` — so a PR is never merged except
+  against the exact `main` its checks last passed on. Branch protection on
+  `main` (required checks + who may merge)
+  is the enforceable backstop, exactly as for the push-based loops; if it
+  requires a human approving *review* the merge is refused and the PR is left
+  for a human, since the automated verdict is a comment, not a review.
+- **No loop OPENS PRs but the build worker, and no loop merges a HUMAN or
+  non-build-worker PR.** A human still merges everything the auto-merge loop
+  won't touch. The build worker itself still cannot merge — enforced
+  structurally, not just by prompt: its `--allowedTools` in `pipeline-build.yml`
+  grants no blanket `git:*`/`gh:*`/`npx:*`/`node:*` and no form of
+  `gh pr merge` or `gh api` (matching the autofix worker's least-privilege
+  standard, #107). Only the deterministic auto-merge loop merges, and only its
+  own gated build-worker PRs.
 - **WIP caps:** ≤3 open `status:draft`. Builds run **per-issue** (each issue its
   own `concurrency` group — distinct issues in parallel, no cross-eviction; a
   single shared group would silently *cancel* queued builds, which aren't
@@ -262,9 +300,12 @@ and exits. Consequences to respect:
 | orchestrator | Routine (fresh session) | every ~6h | Haiku 4.5 |
 | build | **GitHub Action** on `issues.labeled == status:approved` (Routine hourly as fallback) | event | Sonnet 5 |
 | pr-review | **GitHub Action** on `pull_request` events (Routine hourly as fallback) | event | Sonnet 5 |
+| auto-merge | **GitHub Action** on a 15-min schedule + CI/review completion | event | — (deterministic, no model) |
 
 Event-driven Actions cost nothing when idle and need no live session — the
 right fit for the two code loops. Routines suit the time-driven discovery loops.
+The auto-merge loop is deterministic shell (no model), so it costs nothing but
+GitHub Actions minutes.
 
 ### Setup
 
@@ -364,8 +405,16 @@ sessions:
   worker; addresses a Changes-requested review on the build-worker PR's own
   branch and pushes (2 attempts per PR, then `needs-human`). See the third
   ownership-rule exception above.
+- `.github/workflows/pipeline-pr-automerge.yml` — deterministic (no model)
+  shell loop on a 15-min schedule + CI/review completion; merges the oldest
+  fully-vetted build-worker PR (green + `MERGEABLE` + fresh `LGTM`, not
+  `needs-human`/`no-auto-merge`), one per run, then dispatches the conflict
+  resolver to rebase the rest. See the fourth ownership-rule exception above.
+  Unlike the loops below it uses **only the `GITHUB_TOKEN`** (no
+  claude-code-action, no Max pool) — it stays inert until the pipeline token is
+  set because until then no automated review verdict exists to gate on.
 
-All of these use `anthropics/claude-code-action` with **subscription auth** via the
+The agent loops below use `anthropics/claude-code-action` with **subscription auth** via the
 `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) — same Max pool as
 the bot, not a metered key.
 
@@ -375,6 +424,28 @@ To go live:
 
 Until both exist the workflows are inert (they log a notice and skip). Fork PRs
 never receive the secret, so the review worker won't run on untrusted forks.
+
+The **auto-merge loop** is **OFF by default** and has two rollout knobs:
+
+- **Opt in with `AUTOMERGE_MODE` (repository variable** — Settings → Secrets and
+  variables → Actions → Variables). Unset (the default) ⇒ the loop is inert, so
+  merging this workflow onto `main` never auto-merges anything until you
+  deliberately turn it on. Set it to **`dry-run`** to have each run LOG the PR it
+  *would* merge (no merge) so you can confirm the eligibility logic picks the
+  right PRs against real traffic; then set it to **`live`** to actually merge.
+  Pin any individual PR out at any time with the `no-auto-merge` label. This
+  opt-in default is deliberate: it guarantees an observation window before any
+  live merge, given this is the first loop allowed to write to `main`.
+- **Branch protection on `main` must let the Actions identity merge.** It merges
+  with the `GITHUB_TOKEN`, and the automated review verdict is a *comment*, not
+  a GitHub approving review — so if protection requires a human approving
+  review, the merge is refused (the PR is left for a human, with one explanatory
+  comment). Configure protection to require the *checks* (build, lint,
+  security-invariants, review) rather than a human review, and to allow the
+  Actions/bot identity to merge. Required-checks protection is also the
+  enforceable backstop that the loop's own gating supplements, not replaces. See
+  docs/SECURITY.md's Operational checklist for the security posture this trades
+  off (a human merge is the backstop against a prompt-injected review LLM).
 
 **Cost caution:** every run draws on the same Max 5-hour/weekly pool as the
 production bot serving real members. Keep an eye on `/usage`; if the pipeline

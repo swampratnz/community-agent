@@ -22,6 +22,7 @@ import {
   takePendingAction,
 } from './agent/pendingActions.js';
 import { isPaused } from './storage/policies.js';
+import { recordReplyMapping } from './replyRetraction.js';
 import {
   countRepliesToUser,
   getLanguagePreference,
@@ -647,8 +648,8 @@ export class Router {
     conversationId: string,
     text: string,
     language?: 'mi',
-  ): Promise<void> {
-    await adapter.sendMessage({ conversationId, text, language });
+  ): Promise<string[] | undefined> {
+    return adapter.sendMessage({ conversationId, text, language });
   }
 
   /**
@@ -980,10 +981,13 @@ export class Router {
     // the thread's own id, which is never in `autoAnswerChannelIds` (that
     // list only ever holds parent channel ids), so without this lookup the
     // very next message in the same back-and-forth would silently revert to
-    // mention-required. Same map, same creation-anchored (non-refreshed)
-    // `ESCALATION_WINDOW_MS` TTL the CONFIRM/escalation intercepts above
-    // already trust — presence here means "live", sweep() prunes expired
-    // entries on its own tick.
+    // mention-required. Same map, same `ESCALATION_WINDOW_MS` TTL the
+    // CONFIRM/escalation intercepts above already trust — presence here
+    // means "live", sweep() prunes expired entries on its own tick. Unlike
+    // those intercepts (which only ever check presence/`parent`, never
+    // `at`), the follow-up branch below (issue #542) refreshes `at` on every
+    // follow-up so the window slides forward with activity instead of only
+    // ever counting down from thread creation.
     const autoAnswerThreadParent = this.autoAnswerThreadParents.get(msg.conversationId)?.parent;
     const isAutoAnswerCandidate =
       !msg.addressedToBot &&
@@ -1125,6 +1129,16 @@ export class Router {
         // is a follow-up, not an origin post, so reply in place rather than
         // opening a second thread anchored to the follow-up message.
         replyConversationId = msg.conversationId;
+        // Slide the TTL forward (issue #542) — this branch is only reached
+        // when the map lookup above already found a LIVE entry, so this can
+        // only refresh an existing entry, never seed or revive an expired
+        // one. `parent` is carried over unchanged; only `at` moves, keeping
+        // a continuously-active thread answerable past its creation+10min
+        // cutoff while a quiet thread still expires exactly as before.
+        this.autoAnswerThreadParents.set(replyConversationId, {
+          parent: autoAnswerThreadParent,
+          at: Date.now(),
+        });
       } else {
         replyConversationId = await this.startAutoAnswerThread(msg, adapter).catch((err) => {
           logger.warn(
@@ -1160,13 +1174,13 @@ export class Router {
       );
       this.recordShortcutHit('ack').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
       const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-      await this.enqueue(key, 'ack reply', () =>
-        this.send(
+      await this.enqueue(key, 'ack reply', async () => {
+        await this.send(
           adapter,
           replyConversationId ?? msg.conversationId,
           lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT,
-        ),
-      );
+        );
+      });
       return;
     }
 
@@ -1351,7 +1365,15 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, knowledgeShortcut: true, knowledgeEntryId: hit.id },
+      meta: {
+        replyToUserId: msg.userId,
+        knowledgeShortcut: true,
+        knowledgeEntryId: hit.id,
+        // Auto-answer cost visibility (issue #552) — same unspoofable
+        // `replyConversationId !== undefined` derivation as `respond()`;
+        // see that call site for the full rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
     }).catch((err) => logger.error({ err }, 'Failed to record knowledge-shortcut outbound interaction'));
   }
 
@@ -1416,7 +1438,13 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, repeatShortcut: true },
+      meta: {
+        replyToUserId: msg.userId,
+        repeatShortcut: true,
+        // Auto-answer cost visibility (issue #552) — see
+        // `sendKnowledgeShortcut`'s identical derivation for rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
     }).catch((err) => logger.error({ err }, 'Failed to record repeat-shortcut outbound interaction'));
   }
 
@@ -1451,7 +1479,13 @@ export class Router {
       role: 'member',
       direction: 'outbound',
       content: replyText,
-      meta: { replyToUserId: msg.userId, repeatMaxTurnsShortcut: true },
+      meta: {
+        replyToUserId: msg.userId,
+        repeatMaxTurnsShortcut: true,
+        // Auto-answer cost visibility (issue #552) — see
+        // `sendKnowledgeShortcut`'s identical derivation for rationale.
+        ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
+      },
     }).catch((err) =>
       logger.error({ err }, 'Failed to record repeat-max-turns-shortcut outbound interaction'),
     );
@@ -1562,7 +1596,30 @@ export class Router {
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
       // those are out of scope.
-      await this.send(adapter, target, outboundText, reply.languagePreference === 'mi' ? 'mi' : undefined);
+      const sentMessageIds = await this.send(
+        adapter,
+        target,
+        outboundText,
+        reply.languagePreference === 'mi' ? 'mi' : undefined,
+      );
+
+      // Auto-retraction mapping (issue #575): only for a genuine addressed
+      // message (msg.messageId set) that actually produced reply id(s) — this
+      // is the ONLY call site that ever writes to the map, so shortcut/ack
+      // replies and any other `this.send()` call site are never retractable,
+      // matching the proposal's "single top-level-message" v1 scope. Off by
+      // default (`autoRetractReplyEnabled` unset), so this is a no-op and the
+      // map stays empty — byte-identical behaviour to before this feature.
+      // `sentMessageIds` carries EVERY chunk id a platform's `sendMessage`
+      // split a long reply into (e.g. Discord's 2000-char cap), so a
+      // retraction later deletes all of them, not just the last chunk.
+      if (config.behaviour.autoRetractReplyEnabled && msg.messageId && sentMessageIds?.length) {
+        recordReplyMapping(msg.platform, msg.conversationId, msg.messageId, {
+          replyConversationId: target,
+          botReplyMessageIds: sentMessageIds,
+          senderId: msg.userId,
+        });
+      }
 
       // If the turn registered a NEW pending destructive action, the model
       // composed the reply above and could have hidden or misrepresented the
@@ -1646,6 +1703,13 @@ export class Router {
           ...(reply.cacheCreationTokens != null && reply.cacheCreationTokens > 0
             ? { cacheCreationTokens: reply.cacheCreationTokens }
             : {}),
+          // Auto-answer cost visibility (issue #552): `replyConversationId` is
+          // populated ONLY inside the `isAutoAnswerCandidate` branch above
+          // (origin thread creation or an in-thread follow-up), so this is
+          // unspoofable internal router state, never message content/model
+          // output. Absent (never `false`) on a normal @mention/DM reply,
+          // matching the conditional-spread convention above.
+          ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
         },
       }).catch((err) => logger.error({ err }, 'Failed to record outbound interaction'));
     } finally {

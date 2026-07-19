@@ -228,6 +228,12 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__admin_activity',
   'mcp__community__list_admins',
   'mcp__community__engagement_stats',
+  // Read-only, no CONFIRM, no DB/model call — reflects the fixed
+  // FEATURE_FLAG_MAP allowlist (issue #559) against the already-loaded
+  // config object. Super-admin only: several flags are security-relevant
+  // posture (e.g. moderation.llmAbuseEnabled), same least-privilege
+  // reasoning as engagement_stats/admin_activity's own super-admin floor.
+  'mcp__community__feature_flags',
   'mcp__community__pause_bot',
   'mcp__community__resume_bot',
   'mcp__community__set_policy',
