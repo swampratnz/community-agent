@@ -1,5 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -43,6 +44,8 @@ const {
   formatUsageStats,
   formatAdminActivity,
   formatEngagementStats,
+  formatFeatureFlags,
+  FEATURE_FLAG_MAP,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   formatRelativeAge,
@@ -127,6 +130,7 @@ const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/au
 const { superAdminIds } = await import('../src/auth/roles.js');
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
 
 // Unique per test-run scope so the knowledge_search handler test's fixture
 // row never collides across runs, mirroring the RUN-tag convention in
@@ -331,17 +335,18 @@ function stubEventsAdapter(events: UpcomingEvent[]): PlatformAdapter & { calls: 
   return result;
 }
 
-test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant', async () => {
+test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant, and resolves true (issue #556)', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, text) => {
     calls.push([userId, text]);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', false, 'discord');
+  const delivered = await notifyMemberApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /approved/i);
+  assert.equal(delivered, true);
 });
 
 test('notifyMemberApproved signposts the community_info discovery path (issue #92)', async () => {
@@ -355,23 +360,26 @@ test('notifyMemberApproved signposts the community_info discovery path (issue #9
   assert.match(calls[0], /what can you do/i);
 });
 
-test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op)', async () => {
+test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op), and resolves true — no failure occurred (issue #556)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
     calls.push(userId);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', true, 'discord');
+  const delivered = await notifyMemberApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
+  assert.equal(delivered, true);
 });
 
-test('notifyMemberApproved swallows a DM failure rather than throwing (grant stays the source of truth)', async () => {
+test('notifyMemberApproved swallows a DM failure rather than throwing, and resolves false (issue #556)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false, 'discord'));
+  const delivered = await notifyMemberApproved(adapter, 'user-1', false, 'discord');
+
+  assert.equal(delivered, false);
 });
 
 test("notifyMemberApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
@@ -413,17 +421,18 @@ test("SECURITY: notifyMemberApproved degrades to the English default, rather tha
 
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
-test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion', async () => {
+test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion, and resolves true (issue #556)', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, message) => {
     calls.push([userId, message]);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', false, 'discord');
+  const delivered = await notifyAdminApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /admin/i);
+  assert.equal(delivered, true);
 });
 
 test('notifyAdminApproved signposts the community_info discovery path rather than duplicating ADMIN_TOOLS (issue #201)', async () => {
@@ -437,23 +446,26 @@ test('notifyAdminApproved signposts the community_info discovery path rather tha
   assert.match(calls[0], /what can you do/i);
 });
 
-test('notifyAdminApproved sends nothing when the user was already an admin (re-grant is a no-op)', async () => {
+test('notifyAdminApproved sends nothing when the user was already an admin (re-grant is a no-op), and resolves true — no failure occurred (issue #556)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
     calls.push(userId);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', true, 'discord');
+  const delivered = await notifyAdminApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
+  assert.equal(delivered, true);
 });
 
-test('notifyAdminApproved swallows a DM failure rather than throwing (grant stays the source of truth)', async () => {
+test('notifyAdminApproved swallows a DM failure rather than throwing, and resolves false (issue #556)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyAdminApproved(adapter, 'user-1', false, 'discord'));
+  const delivered = await notifyAdminApproved(adapter, 'user-1', false, 'discord');
+
+  assert.equal(delivered, false);
 });
 
 test("notifyAdminApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
@@ -978,6 +990,123 @@ test('notifyReportWithdrawn reaches every configured super admin across ALL regi
   assert.deepEqual(whatsappCalls.map((c) => c[0]).sort(), ['super-1', 'super-2']);
   assert.equal(discordCalls.length, 0, 'no discord super admins are configured');
 });
+
+// notifySuperAdmins's shared pending-alert queue (issue #545): when NO
+// adapter across ALL_PLATFORMS is connected, the alert is queued instead of
+// silently dropped, mirroring health.ts's own all-disconnected fallback
+// (#534). Exercised via notifyReportFiled since notifySuperAdmins itself
+// isn't exported.
+test('notifySuperAdmins (via notifyReportFiled): with zero connected adapters across ALL_PLATFORMS, the alert is queued instead of dropped, and no send is attempted (issue #545)', async () => {
+  resetPendingAlertsForTests();
+  const discordCalls: string[] = [];
+  const discordAdapter: PlatformAdapter = {
+    ...stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    }),
+    isConnected: () => false,
+  };
+  const whatsappCalls: string[] = [];
+  const whatsappAdapter: PlatformAdapter = {
+    ...stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    }),
+    isConnected: () => false,
+  };
+
+  await notifyReportFiled((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+    id: 545,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    reason: 'queued while every platform is disconnected',
+  });
+
+  assert.equal(discordCalls.length, 0, 'no send is attempted through the disconnected discord adapter');
+  assert.equal(whatsappCalls.length, 0, 'no send is attempted through the disconnected whatsapp adapter');
+  assert.equal(
+    getPendingAlertsForTests().length,
+    1,
+    'the alert should be queued instead of dropped when every adapter is disconnected',
+  );
+  assert.match(getPendingAlertsForTests()[0] ?? '', /#545/);
+  resetPendingAlertsForTests();
+});
+
+test(
+  'SECURITY: notifySuperAdmins with one disconnected and one connected adapter behaves byte-identically to ' +
+    'today — a single disconnected adapter among >=1 connected is still just skipped, and nothing is queued (issue #545)',
+  async () => {
+    resetPendingAlertsForTests();
+    const discordCalls: string[] = [];
+    const discordAdapter: PlatformAdapter = {
+      ...stubAdapter(async (userId) => {
+        discordCalls.push(userId);
+      }),
+      isConnected: () => false,
+    };
+    const whatsappCalls: Array<[string, string]> = [];
+    const whatsappAdapter = stubAdapter(async (userId, message) => {
+      whatsappCalls.push([userId, message]);
+    });
+
+    await notifyReportFiled((platform) => (platform === 'whatsapp' ? whatsappAdapter : discordAdapter), {
+      id: 546,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'reason',
+    });
+
+    assert.equal(
+      whatsappCalls.length,
+      2,
+      'the connected whatsapp adapter still receives the alert as before',
+    );
+    assert.equal(discordCalls.length, 0, 'the disconnected discord adapter is skipped, never DMed');
+    assert.deepEqual(
+      getPendingAlertsForTests(),
+      [],
+      'nothing is queued when at least one adapter is connected',
+    );
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  'SECURITY: a queued notifySuperAdmins alert (zero connected adapters) is byte-identical to what ' +
+    'sendDirectMessage would have received on a live send (issue #545)',
+  async () => {
+    resetPendingAlertsForTests();
+    const liveCalls: string[] = [];
+    const connectedAdapter = stubAdapter(async (_userId, message) => {
+      liveCalls.push(message);
+    });
+    await notifyReportFiled(whatsappOnlyAdapterFor(connectedAdapter), {
+      id: 547,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'byte identical check',
+    });
+    assert.equal(liveCalls.length, 2);
+    const [liveBody] = liveCalls;
+
+    resetPendingAlertsForTests();
+    const disconnectedAdapter: PlatformAdapter = {
+      ...stubAdapter(async () => {}),
+      isConnected: () => false,
+    };
+    await notifyReportFiled((platform) => (platform === 'whatsapp' ? disconnectedAdapter : undefined), {
+      id: 547,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'byte identical check',
+    });
+    assert.deepEqual(getPendingAlertsForTests(), [liveBody]);
+    resetPendingAlertsForTests();
+  },
+);
 
 // notifyAppealFiled (issue #496): the appeal_moderation counterpart to
 // notifyReportFiled/notifyReportWithdrawn above — same notifySuperAdmins
@@ -5589,6 +5718,417 @@ test(
   },
 );
 
+// add_member's reply now reflects DM delivery (issue #556): a fixed note is
+// appended iff notifyMemberApproved reports the confirmation DM did not
+// land, and the reply is byte-identical to today when it succeeded or when
+// no DM was attempted (already a member). DB-backed like the grant_admin
+// test above, since add_member's execute path runs upsertMember/audited/
+// clearAccessRequest for real.
+test(
+  "add_member's reply appends a fixed note iff the welcome DM failed, and is byte-identical to today otherwise (issue #556)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-${targetUserId}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      // 1. DM fails on the fresh grant: the note is appended.
+      shouldFail = true;
+      const failed = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(
+        failed.content[0].text,
+        `Added ${targetUserId} as member on discord. (Couldn't DM them the welcome message — they may not know yet.)`,
+      );
+
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+
+      // 2. DM succeeds on the fresh grant: byte-identical to today, no note.
+      shouldFail = false;
+      const succeeded = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(succeeded.content[0].text, `Added ${targetUserId} as member on discord.`);
+
+      // 3. Already a member: no DM attempted, byte-identical to today.
+      const alreadyMember = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(alreadyMember.content[0].text, `Added ${targetUserId} as member on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+// grant_admin's reply now reflects DM delivery too (issue #556), same shape
+// as add_member above but inside the CONFIRM-gated execute path.
+test(
+  "grant_admin's reply appends a fixed note iff the promotion DM failed, and is byte-identical to today otherwise (issue #556)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-grant-admin-dm-${targetUserId}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      // 1. DM fails on the fresh promotion: the note is appended.
+      shouldFail = true;
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingFailed = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingFailed);
+      const failedReply = await pendingFailed?.execute();
+      assert.equal(
+        failedReply,
+        `Granted admin to ${targetUserId} on discord. (Couldn't DM them about the promotion — they may not know yet.)`,
+      );
+
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+
+      // 2. DM succeeds on the fresh promotion: byte-identical to today, no note.
+      shouldFail = false;
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingSucceeded = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingSucceeded);
+      const succeededReply = await pendingSucceeded?.execute();
+      assert.equal(succeededReply, `Granted admin to ${targetUserId} on discord.`);
+
+      // 3. Already an admin: no DM attempted, byte-identical to today.
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingAlready = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingAlready);
+      const alreadyReply = await pendingAlready?.execute();
+      assert.equal(alreadyReply, `Granted admin to ${targetUserId} on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: the appended DM-failure note is always one of two static strings, never a function of the underlying adapter error (issue #556) — a fake secret-shaped token in the error never reaches either tool reply',
+  { skip },
+  async () => {
+    const secretToken = 'sk-ant-faketoken123';
+    const conversationId = `convo-dm-note-leak-${Date.now()}`;
+    const adapter = stubAdapter(async () => {
+      throw new Error(`upstream rejected: token ${secretToken} is invalid`);
+    });
+
+    const memberTargetId = `${Date.now()}1${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const memberCaller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${conversationId}-member`,
+    };
+    const memberServer = buildToolServer(memberCaller, adapter);
+    const addMemberTool = (
+      memberServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    const adminTargetId = `${Date.now()}2${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const superCaller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: `${conversationId}-admin`,
+    };
+    const superServer = buildToolServer(superCaller, adapter);
+    const grantAdminTool = (
+      superServer.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      const memberResult = await addMemberTool.handler({ userId: memberTargetId, platform: 'discord' });
+      const memberText = memberResult.content[0].text;
+      assert.doesNotMatch(memberText, /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.equal(
+        memberText,
+        `Added ${memberTargetId} as member on discord. (Couldn't DM them the welcome message — they may not know yet.)`,
+      );
+
+      await grantAdminTool.handler({ userId: adminTargetId, platform: 'discord' });
+      const pending = takePendingAction('discord', `${conversationId}-admin`, 'super-1');
+      assert.ok(pending);
+      const adminText = await pending?.execute();
+      assert.doesNotMatch(String(adminText), /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.equal(
+        adminText,
+        `Granted admin to ${adminTargetId} on discord. (Couldn't DM them about the promotion — they may not know yet.)`,
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[memberTargetId, adminTargetId]],
+      );
+    }
+  },
+);
+
+// add_member/grant_admin's cross-platform approval/promotion DM routing
+// (issue #548): the two notifyMemberApproved/notifyAdminApproved call sites
+// #157/#288/#325's adapterFor migration never reached. The caller is put on
+// whatsapp and the target on discord (the reverse of this file's other
+// single-platform tests) specifically so SUPER_ADMIN_WHATSAPP_NUMBERS's own
+// notifySuperAdmins fan-out (fired by audited() on every successful action)
+// lands on the CALLER's own whatsapp adapter, never the discord adapter this
+// test is actually pinning — keeping that expected background noise clearly
+// separated from the approval/promotion DM assertion below.
+test(
+  "SECURITY: add_member routes the approval DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-cross-${targetUserId}`;
+    const whatsappCalls: string[] = [];
+    const discordCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'whatsapp' as const,
+      userId: 'cross-platform-add-member-caller-548',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, whatsappAdapter, (platform) =>
+      platform === 'discord' ? discordAdapter : undefined,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.match(result.content[0]?.text ?? '', /^Added/);
+      assert.deepEqual(
+        discordCalls,
+        [targetUserId],
+        "the approval DM is sent through the target's own discord adapter exactly once",
+      );
+      assert.ok(
+        !whatsappCalls.includes(targetUserId),
+        "the acting admin's own whatsapp adapter must never be asked to DM the target's discord id",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: add_member sends no DM and does not throw when the target platform has no adapter registered (issue #548)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const conversationId = `convo-add-member-unregistered-${targetUserId}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'unregistered-add-member-caller-548',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    // No getAdapter at all — whatsapp simply isn't registered in this deployment.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      const result = await registeredTool.handler({ userId: targetUserId, platform: 'whatsapp' });
+      assert.match(result.content[0]?.text ?? '', /^Added/);
+      assert.equal(
+        discordCalls.length,
+        0,
+        'whatsapp is unregistered so the approval DM is silently skipped, never sent through the wrong (discord) adapter',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: grant_admin routes the promotion DM through the target's cross-platform adapter, never the acting admin's own (issue #548)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-grant-admin-cross-${targetUserId}`;
+    const whatsappCalls: string[] = [];
+    const discordCalls: string[] = [];
+    const whatsappAdapter = stubAdapter(async (userId) => {
+      whatsappCalls.push(userId);
+    });
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const callerUserId = 'cross-platform-grant-admin-caller-548';
+    const caller = {
+      platform: 'whatsapp' as const,
+      userId: callerUserId,
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, whatsappAdapter, (platform) =>
+      platform === 'discord' ? discordAdapter : undefined,
+    );
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pending = takePendingAction('whatsapp', conversationId, callerUserId);
+      assert.ok(pending, 'grant_admin must register a pending action, not execute directly');
+      await pending?.execute();
+
+      assert.deepEqual(
+        discordCalls,
+        [targetUserId],
+        "the promotion DM is sent through the target's own discord adapter exactly once",
+      );
+      assert.ok(
+        !whatsappCalls.includes(targetUserId),
+        "the acting admin's own whatsapp adapter must never be asked to DM the target's discord id",
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: grant_admin sends no DM and does not throw when the target platform has no adapter registered (issue #548)',
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
+    const conversationId = `convo-grant-admin-unregistered-${targetUserId}`;
+    const discordCalls: string[] = [];
+    const discordAdapter = stubAdapter(async (userId) => {
+      discordCalls.push(userId);
+    });
+    const callerUserId = 'unregistered-grant-admin-caller-548';
+    const caller = {
+      platform: 'discord' as const,
+      userId: callerUserId,
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    // No getAdapter at all — whatsapp simply isn't registered in this deployment.
+    const server = buildToolServer(caller, discordAdapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      await registeredTool.handler({ userId: targetUserId, platform: 'whatsapp' });
+      const pending = takePendingAction('discord', conversationId, callerUserId);
+      assert.ok(pending, 'grant_admin must register a pending action, not execute directly');
+      const resultText = await pending?.execute();
+      assert.match(resultText ?? '', /^Granted/);
+      assert.equal(
+        discordCalls.length,
+        0,
+        'whatsapp is unregistered so the promotion DM is silently skipped, never sent through the wrong (discord) adapter',
+      );
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'whatsapp' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+      await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUserId]);
+    }
+  },
+);
+
 // formatKnowledgeSearchResults holds all of knowledge_search's relevance-
 // filtering behaviour (issue #95) — it's exported and unit-tested directly
 // here with synthetic similarity values, same rationale as
@@ -5614,6 +6154,7 @@ const BASE_USAGE_STATS = {
   shortcutHits: { total: 0, byKind: [] as Array<{ kind: string; count: number }> },
   backgroundCostByJob: [],
   cacheUsage: { readTokens: 0, creationTokens: 0 },
+  autoAnswerUsage: { count: 0, costUsd: 0 },
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -5861,6 +6402,43 @@ test('formatUsageStats: non-zero cacheUsage appends a rounded hit-rate line (iss
   );
 });
 
+test('formatUsageStats: autoAnswerUsage.count === 0 is byte-identical to the pre-#552 output (no Auto-answer line), issue #552 acceptance criterion 4', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Auto-answer'), 'no Auto-answer line when autoAnswerUsage.count is 0');
+});
+
+test('formatUsageStats: non-zero autoAnswerUsage appends a replies/cost line with % of total spend (issue #552 acceptance criterion 4)', () => {
+  const out = formatUsageStats({ ...BASE_USAGE_STATS, autoAnswerUsage: { count: 12, costUsd: 0.34 } }, 7);
+  // 0.34 / 1.5 = 22.67% -> rounds to 23%
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Auto-answer: 12 replies (~$0.34, 23% of total spend).',
+  );
+});
+
+test('formatUsageStats: non-zero autoAnswerUsage with zero total spend omits the percentage clause (divide-by-zero guard, issue #552)', () => {
+  const out = formatUsageStats(
+    { ...BASE_USAGE_STATS, costUsd: 0, costByRole: [], autoAnswerUsage: { count: 3, costUsd: 0 } },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$0.00 recorded.\n' +
+      'Cost by role: none\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Auto-answer: 3 replies (~$0.00).',
+  );
+});
+
 test('formatAdminActivity renders the exact empty-window message, not an empty list (issue #488)', () => {
   const out = formatAdminActivity([], 30);
   assert.equal(out, 'No privileged actions recorded in the last 30 day(s).');
@@ -6002,6 +6580,219 @@ test('SECURITY: engagement_stats handler refuses a forged direct call from a non
     const registeredTool = engagementStatsHandler(role);
     await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
   }
+});
+
+// --- issue #559: feature_flags ---------------------------------------------
+
+function featureFlagsHandler(role: 'member' | 'admin' | 'guest' | 'super_admin') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-feature-flags-caller`,
+      userName: 'Caller',
+      role,
+      conversationId: `${RUN}-feature-flags-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<unknown> }>;
+    }
+  )._registeredTools['feature_flags'];
+}
+
+test('feature_flags: exact set of rendered labels against a fixture config, grouped by category (issue #559)', () => {
+  const fixture = {
+    moderation: { enabled: true, llmAbuseEnabled: false },
+    contextBuilder: { enabled: false },
+    contextCandidates: { enabled: true },
+    knowledgeRefresh: { enabled: false },
+    docsIngest: { enabled: false },
+    knowledgeLinkCheck: { enabled: true },
+    contextExport: { enabled: false },
+    adminDigest: { enabled: true, trendsEnabled: false },
+    behaviour: {
+      upstreamLimitAlertEnabled: false,
+      escalationToAdminEnabled: true,
+      ackShortcutEnabled: true,
+      knowledgeShortcutEnabled: false,
+      guestKnowledgeShortcutEnabled: false,
+      repeatQuestionShortcutEnabled: true,
+      repeatMaxTurnsShortcutEnabled: false,
+      dailyReplyBudgetWarnEnabled: false,
+    },
+    departedAdminAlert: { enabled: false },
+    accessRequestAlert: { enabled: true },
+    discord: { welcome: { enabled: true } },
+    whatsapp: {
+      welcome: { enabled: false },
+      voice: { enabled: true },
+      cloud: { welcomeEnabled: false },
+    },
+    imageGen: { enabled: true },
+    github: { enabled: false },
+    devTeam: { enabled: false },
+    statusCheck: { enabled: true },
+  };
+
+  const rendered = formatFeatureFlags(fixture);
+
+  assert.match(rendered, new RegExp(`Feature flags \\(${FEATURE_FLAG_MAP.length} total\\):`));
+  for (const category of new Set(FEATURE_FLAG_MAP.map((e) => e.category))) {
+    assert.match(rendered, new RegExp(`^${category}:$`, 'm'), `missing category header for ${category}`);
+  }
+  // Spot-check On/Off rendering across categories rather than asserting the
+  // whole string, so a label-wording tweak doesn't require touching this
+  // fixture's every line.
+  assert.match(rendered, /- Discord moderation \(auto strikes\): On/);
+  assert.match(rendered, /- LLM-based abuse detection: Off/);
+  assert.match(rendered, /- Context candidate extraction: On/);
+  assert.match(rendered, /- Weekly admin digest: On/);
+  assert.match(rendered, /- Admin digest trend lines: Off/);
+  assert.match(rendered, /- Escalation to admin: On/);
+  assert.match(rendered, /- Discord welcome message: On/);
+  assert.match(rendered, /- WhatsApp welcome message \(Baileys\): Off/);
+  assert.match(rendered, /- WhatsApp voice message transcription: On/);
+  assert.match(rendered, /- Image generation: On/);
+  assert.match(rendered, /- GitHub issue filing: Off/);
+  assert.match(rendered, /- Anthropic status check: On/);
+  // Every entry in the map renders exactly one line, no more no less.
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, FEATURE_FLAG_MAP.length);
+});
+
+test('feature_flags: a config path missing/non-boolean on the source renders "Off" rather than throwing (issue #559)', () => {
+  const rendered = formatFeatureFlags({});
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, FEATURE_FLAG_MAP.length);
+  assert.ok(
+    renderedLabelLines.every((l) => l.endsWith('Off')),
+    'every flag defaults to Off against an empty source',
+  );
+});
+
+test('SECURITY: feature_flags handler refuses a forged direct call from a non-super-admin caller, before any config field is read (assertAtLeast re-check, issue #559)', async () => {
+  for (const role of ['member', 'admin', 'guest'] as const) {
+    const registeredTool = featureFlagsHandler(role);
+    await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+  }
+  // Structural half of the same guarantee: assertAtLeast is literally the
+  // first statement in the handler body, and formatFeatureFlags (the only
+  // config read) is only reached afterwards — so a refusal can never fall
+  // through to a config read, not merely "usually doesn't" in practice.
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'feature_flags',");
+  assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+  assert.ok(handlerMatch, 'feature_flags handler body not found');
+  const body = handlerMatch[1];
+  const assertIdx = body.indexOf('assertAtLeast(');
+  const formatIdx = body.indexOf('formatFeatureFlags(');
+  assert.ok(
+    assertIdx !== -1 && formatIdx !== -1 && assertIdx < formatIdx,
+    'assertAtLeast must precede the config read',
+  );
+});
+
+test('SECURITY: feature_flags allowlist purity — a planted secret-shaped field on the config source never reaches rendered output (issue #559)', () => {
+  const plantedSecret = 'sk-ant-oat-planted-fake-super-secret-token-should-never-render';
+  const fixture = {
+    llm: { oauthToken: plantedSecret },
+    discord: { botToken: plantedSecret, welcome: { enabled: true } },
+    github: { token: plantedSecret, enabled: false },
+  };
+  const rendered = formatFeatureFlags(fixture);
+  assert.doesNotMatch(rendered, new RegExp(plantedSecret.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')));
+});
+
+test('SECURITY: feature_flags handler + formatter never call Object.entries/Object.values/spread on the object they read — only fixed allowlist paths are indexed (issue #559)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const formatterStart = source.indexOf('export function formatFeatureFlags(');
+  const getterStart = source.indexOf('function getConfigBoolean(');
+  assert.ok(formatterStart !== -1 && getterStart !== -1, 'formatFeatureFlags/getConfigBoolean not found');
+  const start = Math.min(formatterStart, getterStart);
+  const region = source.slice(start, source.indexOf('\n}\n', Math.max(formatterStart, getterStart)) + 3);
+  assert.doesNotMatch(region, /Object\.entries\(|Object\.values\(|\.\.\.(source|config)\b/);
+});
+
+test('feature_flags: every FEATURE_FLAG_MAP entry resolves to a boolean-typed value against the real, already-loaded config (issue #559)', () => {
+  // Renders against the real singleton config (imported at top of this file,
+  // loaded from this file's dummy test env) rather than a fixture — this is
+  // the one test that ties the hand-written allowlist to config.ts's actual
+  // shape, so a rename/restructure of config.ts breaks this test loudly
+  // instead of feature_flags silently under-reporting in production.
+  const rendered = formatFeatureFlags(config);
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(
+    renderedLabelLines.length,
+    FEATURE_FLAG_MAP.length,
+    'every entry must render a line — a path that resolved to undefined would still render "Off" here, ' +
+      'so this test only proves no entry throws; boolean-typedness end to end is exercised by the anti-drift ' +
+      'coverage test below reading config.ts source directly',
+  );
+});
+
+// Anti-drift pin (issue #559), same shape as the community_info/ADMIN_TOOLS
+// pins above (#311/#367): ties FEATURE_FLAG_MAP to the ground truth of which
+// `*_ENABLED` env vars actually exist in config.ts, so a 29th flag added
+// without a conscious surface-or-not decision fails CI loudly instead of
+// silently going unreported by feature_flags.
+function extractEnabledEnvVars(configSource: string): string[] {
+  return [...new Set(configSource.match(/\b[A-Z][A-Z0-9_]*_ENABLED\b/g) ?? [])];
+}
+
+function assertFeatureFlagEnvVarsCovered(envVars: string[], map: readonly { envVar: string }[]): void {
+  const mapped = new Set(map.map((e) => e.envVar));
+  for (const envVar of envVars) {
+    assert.ok(
+      mapped.has(envVar),
+      `${envVar} has no FEATURE_FLAG_MAP entry — add one (or a conscious exemption) or it silently goes ` +
+        'unreported by feature_flags',
+    );
+  }
+}
+
+test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.ts (issue #559 anti-drift pin)', () => {
+  const configSource = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');
+  const envVars = extractEnabledEnvVars(configSource);
+  assert.equal(
+    envVars.length,
+    28,
+    "the 28 count is the proposal's own pinned evidence — a change here is itself signal worth noticing",
+  );
+  assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
+  assert.equal(
+    FEATURE_FLAG_MAP.length,
+    envVars.length,
+    'no stale FEATURE_FLAG_MAP entry for a since-removed env var either',
+  );
+});
+
+test('feature_flags anti-drift pin fails loudly for an uncovered *_ENABLED flag (issue #559)', () => {
+  const syntheticEnvVarsWithGap = ['DISCORD_MODERATION_ENABLED', 'A_BRAND_NEW_FUTURE_FLAG_ENABLED'];
+  assert.throws(
+    () => assertFeatureFlagEnvVarsCovered(syntheticEnvVarsWithGap, FEATURE_FLAG_MAP),
+    /A_BRAND_NEW_FUTURE_FLAG_ENABLED/,
+  );
+});
+
+test('SECURITY: feature_flags handler makes no repository or query() call — synchronous read of the in-memory config only (issue #559)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'feature_flags',");
+  assert.notEqual(defStart, -1, 'feature_flags tool definition not found');
+  const handlerMatch = source
+    .slice(defStart)
+    .match(/async \(\) => \{([\s\S]*?)\},\s*\{ annotations: \{ readOnlyHint: true \} \},\s*\);/);
+  assert.ok(handlerMatch, 'feature_flags handler body not found');
+  const body = handlerMatch[1];
+  assert.doesNotMatch(
+    body,
+    /pool\.|query\(|await\s/,
+    'handler must be a synchronous read of in-memory config — no DB/model call',
+  );
 });
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {
