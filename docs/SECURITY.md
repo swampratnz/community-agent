@@ -1783,8 +1783,9 @@ base, unlike the other two's fixed-format extraction.
   are never purged regardless of this setting.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, content reports *they submitted
-  as reporter*, their response-style preference, and their auto-moderation
-  warning history (`member_warnings`). Membership rows, the
+  as reporter*, their response-style preference, their auto-moderation
+  warning history (`member_warnings`), and moderation appeals *they filed*
+  (`moderation_appeals`, issue #554). Membership rows, the
   admin audit log, and reports where the user is only the *target* (not the
   reporter) are retained deliberately
   (accountability) — the same precedent already applied to `admin_audit`. If
@@ -1891,6 +1892,36 @@ base, unlike the other two's fixed-format extraction.
   Worst-case abuse from a hijacked/injected member turn: one unwanted admin
   DM per cooldown window naming the real, self-identified caller — the same
   residual bound every other non-CONFIRM member-notification tool carries.
+- **`moderation_appeals` durable persistence (issue #554)**: before this,
+  `appeal_moderation` was entirely fire-and-forget — only the best-effort
+  `notifyAppealFiled` DM, no durable record, so a missed DM (adapter
+  disconnected, admin DMs off, admin AFK) erased the appeal with no trace and
+  no admin could prove it was ever reviewed. `appeal_moderation` now also
+  inserts one `moderation_appeals` row in the same call, gated by the SAME
+  eligibility (`countActiveWarnings > 0`) and cooldown (`reserveAppealSlot`)
+  checks that already gate the DM — a no-warning refusal or a cooldown-refused
+  repeat call writes nothing, so the new table inherits the DM's existing
+  anti-flood bound rather than opening a new one. No new tier, no new
+  untrusted-input path, and no new data category: everything persisted
+  (platform, user id/name, snapshotted active-warning count/strike limit, the
+  already-length-capped `reason`) is exactly what the plaintext super-admin DM
+  already carries. `list_appeals`/`resolve_appeal` are admin-tier, guild-wide
+  (not conversation-scoped — same boundary as `list_member_warnings`/
+  `clear_warnings`, since warnings/mutes carry no conversation to scope by),
+  read via `list_appeals` (optional `status` filter, output wrapped in
+  `untrusted()` exactly like `list_reports`, so a hostile reason/user name
+  can't smuggle a fresh instruction line into the admin transcript) and
+  resolved via `resolve_appeal(id, 'resolved' | 'dismissed')` — a
+  non-destructive status flip, no CONFIRM (mirrors `resolve_report`), audited
+  via `admin_audit` with `actionKind: 'resolve_appeal'`.
+  `resolve_appeal` deliberately never mutates `member_warnings` or mute state
+  — `clear_warnings` remains the only way an admin lifts a mute, a scope
+  guardrail keeping appeal-triage and warning-clearing as two separate admin
+  judgement calls (an appeal being marked resolved is not itself evidence the
+  warning was wrong). Deletable: `forget_me`/`purge_user_data` remove the
+  caller's own filed `moderation_appeals` row(s) in the same transaction as
+  their `content_reports`/`suggestions`/`member_warnings` rows, pinned by a
+  `SECURITY:` test.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.

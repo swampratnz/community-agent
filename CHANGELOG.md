@@ -10,6 +10,22 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-19
+
+### Added
+- **Moderation appeals are now persisted, not just DM'd** (#554):
+  `appeal_moderation` was entirely fire-and-forget — it only fired a
+  best-effort admin DM (`notifyAppealFiled`), so a missed DM erased the
+  appeal with no trace and no admin could show it was ever reviewed. It now
+  also writes a durable `moderation_appeals` row (mirroring the
+  `content_reports` shape) alongside the unchanged DM, gated by the same
+  eligibility/cooldown checks so it can't be flooded. New admin-tier,
+  guild-wide tools `list_appeals` (optional `status` filter) and
+  `resolve_appeal(id, 'resolved' | 'dismissed')` — same non-destructive,
+  audited, no-CONFIRM shape as `list_reports`/`resolve_report`.
+  `resolve_appeal` never itself clears warnings or lifts a mute — that stays
+  `clear_warnings`' job alone. Deletable via `forget_me`/`purge_user_data`.
+  See docs/ARCHITECTURE.md and docs/SECURITY.md.
 ## 2026-07-20
 
 ### Added

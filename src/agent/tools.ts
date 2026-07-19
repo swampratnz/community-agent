@@ -23,6 +23,7 @@ import {
   countRepliesToUser,
   createAnswerFeedback,
   createContentReport,
+  createModerationAppeal,
   createSuggestion,
   clearUserSessions,
   declineKnowledgeCandidate,
@@ -55,6 +56,7 @@ import {
   listAdmins,
   listAdminRoster,
   listAnswerFeedback,
+  listAppeals,
   listContextDigests,
   listKnowledge,
   listKnowledgeFeedbackSummary,
@@ -78,6 +80,7 @@ import {
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
   resolveDisplayName,
+  resolveModerationAppeal,
   resolveSuggestion,
   rosterCounts,
   resolveLinkedIdentities,
@@ -1162,7 +1165,7 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -2594,6 +2597,18 @@ export function buildToolServer(
           true,
         );
       }
+      // Durable record FIRST (issue #554) — a missed/dismissed DM must never
+      // erase the appeal with no trace. Awaited, not fire-and-forget: the
+      // whole point of this write is that it survives even when the DM
+      // below fails, so it must actually land before we report success.
+      await createModerationAppeal({
+        platform: caller.platform,
+        userId: caller.userId,
+        userName: caller.userName,
+        reason: args.reason,
+        activeWarnings: active,
+        strikeLimit: config.moderation.strikeLimit,
+      });
       void notifyAppealFiled(adapterFor, {
         callerUserId: caller.userId,
         callerName: caller.userName,
@@ -3184,6 +3199,66 @@ export function buildToolServer(
       );
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const listAppealsTool = tool(
+    'list_appeals',
+    "List members' filed appeals of their own auto-moderation warning(s)/mute (issue #554) — the durable " +
+      'queue `appeal_moderation` writes into, so a missed/dismissed admin DM no longer erases the record. ' +
+      'Each row snapshots the active-warning count and strike limit at filing time, plus the optional ' +
+      'reason. Admin only, guild-wide (not conversation-scoped, same as list_member_warnings/' +
+      'clear_warnings) — warnings/mutes carry no conversation boundary to scope by.',
+    {
+      status: z
+        .enum(['open', 'resolved', 'dismissed'])
+        .optional()
+        .describe('Filter by status (default: all statuses)'),
+      limit: z.number().optional().describe('Max entries (default 50)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_appeals');
+      const rows = await listAppeals(args.status, args.limit ?? 50);
+      if (rows.length === 0) return text('No appeals found.');
+      return text(
+        untrusted(
+          'Moderation appeals',
+          rows
+            .map(
+              (r) =>
+                `#${r.id} [${r.status}] ${r.platform} — ${r.userName ? sanitizeName(r.userName) : r.userId} ` +
+                `(${r.userId}), ${r.activeWarnings}/${r.strikeLimit} active warnings` +
+                `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const resolveAppealTool = tool(
+    'resolve_appeal',
+    'Mark a filed moderation appeal as resolved or dismissed once triaged. Non-destructive status change ' +
+      '(no CONFIRM needed), audited. Does NOT itself clear the warnings or lift a mute — that stays ' +
+      "clear_warnings' job alone, a deliberate, separate admin judgement call. Admin only, guild-wide, " +
+      'same as list_appeals.',
+    {
+      id: z.number().describe('Appeal id (from list_appeals)'),
+      status: z.enum(['resolved', 'dismissed']).describe('New status'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'resolve_appeal');
+      const { success, result } = await audited({
+        actionKind: 'resolve_appeal',
+        params: { id: args.id, status: args.status },
+        run: async () => {
+          const row = await resolveModerationAppeal(args.id, args.status, caller.userId);
+          if (!row) throw new Error(`No appeal with id ${args.id}.`);
+          return `marked ${args.status}`;
+        },
+      });
+      return text(success ? `Appeal #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
+    },
   );
 
   const announce = tool(
@@ -5687,6 +5762,8 @@ export function buildToolServer(
       clearWarningsTool,
       listMemberWarningsTool,
       listMutedMembersTool,
+      listAppealsTool,
+      resolveAppealTool,
       announce,
       createPoll,
       endPoll,
