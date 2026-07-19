@@ -688,6 +688,27 @@ CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
 ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS topic_embedding VECTOR(:EMBEDDING_DIM);
 
 -- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard + trend store for the weekly super-admin
+-- cost-trend DM (issue #578), off unless USAGE_COST_DIGEST_ENABLED. A single
+-- global row (`id` pinned to `true`, never more than one) — this signal is
+-- one aggregate dollar figure every super admin sees identically (same shape
+-- as `usageAlert.ts`'s own global `outbound`/`costUsd` read), unlike
+-- `admin_digest_sends` above which is keyed per-admin for a per-admin-scoped
+-- signal. `total_cost_usd` is the LAST WEEK's reported total
+-- (`usageStats(7).costUsd + .backgroundCostUsd`), read back the following
+-- week to compute the delta; `sent_at` is the freshness guard so a
+-- redeploy/restart mid-week can't re-send within the same ~7-day window.
+-- Bare aggregate figure + timestamp only — no user id, conversation id, or
+-- message content — so forget_me/purge_user_data have nothing to touch here,
+-- same as `background_job_costs`.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS usage_cost_digest_state (
+  id             BOOLEAN     PRIMARY KEY DEFAULT true CHECK (id),
+  total_cost_usd NUMERIC     NOT NULL,
+  sent_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard for the proactive engagement-percentage alert
 -- (issue #568): a push companion to the pull-only, super-admin-only
 -- `engagement_stats` tool (issue #419). Unlike `admin_digest_sends`, this is

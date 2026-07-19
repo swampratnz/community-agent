@@ -13,6 +13,26 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-19
 
 ### Added
+- **`usage_stats` now breaks down volume and cost by platform** (#580): the
+  super admin's cost/volume monitoring tool blended Discord and WhatsApp into
+  one total, so a spike could never be attributed to a platform — every
+  sibling admin-insight tool (`engagement_stats`, `admin_activity`) already
+  supported this split. A new `By platform: ...` line reports inbound count,
+  outbound count, and recorded cost per platform, ordered by volume (then
+  platform name), omitting any platform with zero interactions in the window.
+  Same `super_admin` gate, no new tool or param.
+- **Weekly super-admin cost-trend DM** (#578): `usage_stats` was pull-only for
+  cost data, and `usageAlert.ts`'s existing proactive alert is reactive
+  only — a one-shot latch on a rolling-24h reply *count*, never a
+  week-over-week $ trend. `USAGE_COST_DIGEST_ENABLED` (off by default) now
+  wires an opt-in weekly job that compares this week's `usage_stats(7)` total
+  (conversational + background spend) against last week's persisted total and
+  DMs every super admin the signed delta (▲/▼), or a defined no-comparison
+  message on the very first run. Same delivery path as every other
+  super-admin alert (`alertSuperAdmins`/`superAdminIds`) — no new privileged
+  tool, no new RBAC tier, no per-user or per-conversation data, just two
+  aggregate dollar figures. Complementary to, not a replacement for, the
+  existing reactive threshold alert.
 - **Auto-retract the bot's own reply when the member deletes the message it
   answered** (#575): a member's native platform delete/revoke is a one-tap
   action that reasonably implies "make this go away" — including a regretted

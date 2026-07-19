@@ -387,6 +387,15 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Weekly super-admin cost-trend DM (issue #578): compares this week's
+  // usageStats(7) total against last week's persisted total and DMs the
+  // signed delta. Complementary to USAGE_ALERT_DAILY_REPLIES's reactive
+  // volume latch — this always reports the trend on a weekly cadence. Off by
+  // default, consistent with this repo's convention for new proactive DMs.
+  USAGE_COST_DIGEST_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Proactive super-admin alert (issue #568) pushing engagement_stats' (issue
   // #419) guild-wide engagement percentage on a weekly cadence — closes the
   // same pull-only gap #472/#480 closed for other super-admin-only signals.
@@ -964,6 +973,9 @@ export const config = {
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
     rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
+  },
+  usageCostDigest: {
+    enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

@@ -1707,6 +1707,13 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   turn's SDK `result` message — see "Known cost/latency characteristic"
   above. Appended only when the window has recorded any cache activity;
   byte-identical to today's output on a fresh deployment or before #522.
+- `usage_stats` also reports a `By platform: ...` line (issue #580) breaking
+  inbound/outbound counts and cost down by platform — `engagement_stats` and
+  `admin_activity` already split by platform; `usage_stats` was the last
+  admin-insight tool still blending Discord and WhatsApp into one total. Same
+  table, window, and `direction`-based semantics as the top-level totals, just
+  `GROUP BY platform`, ordered by volume desc then platform name. A platform
+  with zero interactions in the window is omitted, not rendered as a zero row.
 - `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
   spend)` line (issue #552) — how much of `usage_stats`' total spend the
   opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
@@ -1778,6 +1785,37 @@ overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
   notified" when this flag is actually on.
 - No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
   decides.
+
+`src/usageCostDigest.ts` (off unless `USAGE_COST_DIGEST_ENABLED`, issue #578)
+adds a third, complementary signal: a **weekly $ trend**, rather than a
+reactive volume threshold or an on-demand pull.
+
+- Independent of `usageAlert.ts`'s threshold latch — this always reports the
+  trend on a weekly cadence; the latch continues to fire reactively on a
+  volume spike. Two non-overlapping signals sharing one data source
+  (`usageStats`) and one delivery path (`alertSuperAdmins`).
+- Routed through the shared `startTrackedJob` (same 6h outer tick as every
+  other opt-in job), so a throwing `runOnce` gets the existing consecutive-
+  failure alerting for free. The outer tick is faster than the real
+  cadence; each tick calls `wasUsageCostDigestSentRecently(7)` first and
+  is a no-op unless that returns false, the same "fast outer tick,
+  freshness-guarded inner cadence" shape `startAdminDigest` already uses —
+  guarded by a single global `usage_cost_digest_state` row (one aggregate
+  figure + `sent_at` timestamp, restart-safe) rather than
+  `admin_digest_sends`' per-admin rows, since every super admin sees the
+  identical figure.
+- When due, it reads `usageStats(7).costUsd + .backgroundCostUsd` (this
+  week's total, already computed on demand by the `usage_stats` tool),
+  compares it against the persisted previous total, and DMs every super
+  admin a two-line trend via the pure `formatUsageCostDigestMessage`
+  (unit-tested directly, same convention as `formatUsageAlertMessage`): the
+  current total plus a signed ▲/▼ delta, or a defined no-comparison form on
+  the very first run. The new total then overwrites the persisted row for
+  next week's delta.
+- Delivery rides the exact same `alertSuperAdmins`/`superAdminIds` path
+  `usageAlert.ts`/`departedAdminAlert.ts` already use — no new privileged
+  tool, no new RBAC surface. The DM carries exactly two aggregate dollar
+  figures, never a user id, conversation id, or message excerpt.
 
 ## Departed-admin alert
 
