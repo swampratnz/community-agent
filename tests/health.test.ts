@@ -27,6 +27,10 @@ const {
 } = await import('../src/health.js');
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { logger } = await import('../src/logger.js');
+// Cross-producer cap test below (issue #545) drives the OTHER two shared-
+// queue producers directly, without their own test files' env/setup.
+const { startTrackedJob } = await import('../src/backgroundJobs.js');
+const { notifyReportFiled } = await import('../src/agent/tools.js');
 
 function makeFakeAdapter(connected: boolean): {
   adapter: PlatformAdapter;
@@ -132,6 +136,74 @@ test('flushPendingAlerts: on reconnect, every queued message is sent via the rec
   );
   assert.deepEqual(getPendingAlertsForTests(), [], 'the queue must be empty after a successful flush');
 });
+
+test(
+  'flushPendingAlerts: a mixed-source queue — one entry queued via health.ts, one via backgroundJobs.ts, ' +
+    'one via tools.ts — is fully flushed and cleared through the same reconnect path, with no new flush ' +
+    'machinery (issue #545)',
+  async (t) => {
+    resetPendingAlertsForTests();
+
+    // 1. health.ts's own alertSuperAdmins, all adapters disconnected.
+    const { adapter: disconnectedHealth } = makeFakeAdapter(false);
+    await alertSuperAdmins([disconnectedHealth], 'from-health');
+
+    // 2. backgroundJobs.ts's alertSuperAdmins, reached via startTrackedJob's
+    // failure-threshold branch (3 consecutive failures), all adapters
+    // disconnected.
+    const { adapter: disconnectedJob } = makeFakeAdapter(false);
+    const alwaysFail = async () => {
+      throw new Error('sentinel-mixed-flush');
+    };
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startTrackedJob('docs-ingest', [disconnectedJob], true, alwaysFail);
+    try {
+      await flush(); // 1st scheduled run (fires immediately) fails
+      t.mock.timers.tick(6 * 3_600_000);
+      await flush(); // 2nd
+      t.mock.timers.tick(6 * 3_600_000);
+      await flush(); // 3rd — threshold reached, queues
+    } finally {
+      clearInterval(timer!);
+    }
+
+    // 3. tools.ts's notifySuperAdmins (via notifyReportFiled), no adapter
+    // connected on either registered platform.
+    const disconnectedTools = { ...makeFakeAdapter(false).adapter, platform: 'whatsapp' as const };
+    await notifyReportFiled((platform) => (platform === 'whatsapp' ? disconnectedTools : undefined), {
+      id: 545,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'from-tools',
+    });
+
+    assert.equal(getPendingAlertsForTests().length, 3, 'all three producers queued exactly one entry each');
+
+    const { adapter: reconnected, dms } = makeFakeAdapter(true);
+    await flushPendingAlerts(reconnected);
+
+    assert.equal(dms.length, 6, 'three queued messages x two super admins each = 6 DMs');
+    assert.ok(
+      dms.some((d) => d.text === 'from-health'),
+      'the health.ts-sourced message was flushed',
+    );
+    assert.ok(
+      dms.some((d) => /docs-ingest/.test(d.text)),
+      'the backgroundJobs.ts-sourced message was flushed',
+    );
+    assert.ok(
+      dms.some((d) => /#545/.test(d.text)),
+      'the tools.ts-sourced message was flushed',
+    );
+    assert.deepEqual(
+      getPendingAlertsForTests(),
+      [],
+      'the shared queue must be fully cleared after the flush',
+    );
+  },
+);
 
 test('flushPendingAlerts: a throwing sendDirectMessage during flush is logged and the message dropped, not re-queued', async (t) => {
   resetPendingAlertsForTests();

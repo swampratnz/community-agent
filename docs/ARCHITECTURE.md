@@ -1458,22 +1458,48 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   DMs configured super admins via whichever adapter(s) are still up and logs
   at `error`. Debounced: one alert per outage, not one per check tick;
   reconnecting clears the state silently (no "it's back!" spam).
-- **Pending-alert queue for the zero-connected-adapter case** (issue #534) —
-  in a single-platform deployment (Discord-only or WhatsApp-only), the
-  platform going down means the alert above finds *zero* connected adapters
-  to DM through, which previously dropped the message silently. `health.ts`
-  now holds a small in-memory queue (capped at 5, oldest dropped first) local
-  to the module: when `alertSuperAdmins` finds nothing connected, it pushes
-  the message onto the queue instead of discarding it and logs at `warn`. The
-  existing 30s poll already computes `justReconnected` per adapter; the first
-  reconnect flushes every queued message through that adapter's
-  `sendDirectMessage` to every super admin, then clears the queue. A flush
-  send that throws is logged and the message dropped, never re-queued, so a
-  persistently-broken send path can't accumulate forever. In-memory only —
-  clears on restart, same tradeoff as every other best-effort
-  alert/cooldown in this codebase. Not yet extended to `backgroundJobs.ts`'s
-  `alertSuperAdmins` or `tools.ts`'s `notifySuperAdmins`, which share the
-  identical blind spot — documented growth path, not built here.
+- **Shared pending-alert queue for the zero-connected-adapter case** (issue
+  #534, extended to all three producers by #545) — in a single-platform
+  deployment (Discord-only or WhatsApp-only), an alert fired while that
+  platform is down finds *zero* connected adapters to DM through, which
+  previously dropped the message silently. `src/pendingAlertQueue.ts` is a
+  small leaf module (no imports from `health.ts`/`backgroundJobs.ts`/
+  `tools.ts`) holding one in-memory queue (capped at 5 combined across all
+  producers): `queuePendingAlert(message, priority)` pushes a message onto it.
+  Three call sites share it — `health.ts`'s own `alertSuperAdmins`
+  (sustained-disconnect alert), `backgroundJobs.ts`'s `alertSuperAdmins`
+  (background-job failure-threshold alert), and `tools.ts`'s
+  `notifySuperAdmins` (the `report_content`/`appeal_moderation`/every other
+  model-triggered admin-notification fan-out) — each finds nothing connected
+  (all registered adapters, or all of `ALL_PLATFORMS` for `notifySuperAdmins`)
+  and queues instead of discarding, logging at `warn`. **Eviction is
+  priority-aware, not plain oldest-dropped**, because the queue is shared
+  between the two `'system'` producers (`health.ts`/`backgroundJobs.ts`, only
+  ever triggered by the bot's own machinery) and one `'low'`, member-reachable
+  producer (`tools.ts`'s `notifySuperAdmins`, reached from member-tier
+  `report_content` — itself capped at exactly 5/24h, the queue cap — and
+  `appeal_moderation`). Without priority, a single member filing their daily
+  reports during an outbound outage could evict, via oldest-dropped, the very
+  disconnect/job-failure alerts admins need during that incident. So on
+  overflow the queue evicts the oldest `'low'` entry first; only when it holds
+  *nothing but* `'system'` alerts does a new `'system'` alert drop the oldest
+  (FIFO, bounded), and a new `'low'` alert is then rejected outright — a `'low'`
+  alert can never displace a `'system'` one (issue #545). Flushing stays
+  `health.ts`'s job: its existing 30s poll already computes `justReconnected`
+  per adapter, and the first reconnect (regardless of which producer queued
+  the message) flushes every queued message through that adapter's
+  `sendDirectMessage` to every super admin, then clears the queue — no new
+  flush machinery. A flush send that throws is logged and the message
+  dropped, never re-queued, so a persistently-broken send path can't
+  accumulate forever. In-memory only — clears on restart, same tradeoff as
+  every other best-effort alert/cooldown in this codebase. A message queued
+  from `tools.ts`'s `notifySuperAdmins` loses its per-call `excludeUserId` on
+  flush (the queue holds bare strings), so the recipient set becomes all
+  super admins — an accepted tradeoff (structured queue entries were
+  deliberately left out of scope). Deliberately not extended to `tools.ts`'s
+  `notifyAdmins`, `usageAlert.ts`, `departedAdminAlert.ts`, `agent/core.ts`'s
+  `noteUsageLimitOutcome`, or `router.ts`'s alert sites — a documented growth
+  path, not built here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
@@ -1578,6 +1604,23 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   turn's SDK `result` message — see "Known cost/latency characteristic"
   above. Appended only when the window has recorded any cache activity;
   byte-identical to today's output on a fresh deployment or before #522.
+- `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
+  spend)` line (issue #552) — how much of `usage_stats`' total spend the
+  opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
+  #523/#542) is responsible for. `respond()` — and, identically, each of the
+  three shortcut sends that can also resolve an auto-answer turn
+  (`sendKnowledgeShortcut`, `sendRepeatShortcut`,
+  `sendRepeatMaxTurnsShortcut`) — stamps `meta.autoAnswer: true` on an
+  outbound reply exactly when `replyConversationId` was populated by the
+  auto-answer path (origin thread creation or an in-thread follow-up) —
+  internal router state only, never derived from message content, so it
+  cannot be spoofed by a crafted member message. This counts **thread-
+  anchored auto-answer replies** specifically: if origin-thread creation
+  transiently fails, the router falls back to answering directly in the
+  channel and that reply is *not* tagged, so the figure is a close-but-not-
+  exact floor on true auto-answer spend, never a guaranteed total. Appended
+  only when the window has at least one tagged reply; byte-identical to
+  today's output on a deployment with auto-answer off or unused.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.
