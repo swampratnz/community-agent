@@ -143,15 +143,18 @@ function fireGuildRoleDelete(adapter: Adapter, role: unknown): void {
 
 /**
  * A minimal GuildMember stand-in for onGuildMemberUpdate: carries a
- * `roles.cache` map keyed by role id (what the handler diffs). `partial`
+ * `roles.cache` map keyed by role id (what the handler diffs) and an `id`
+ * (what the handler now deletes from membershipCache — issue #573). `partial`
  * exercises the fail-safe edge where the old member's role set at event
- * time is unknowable.
+ * time is unknowable. `id` defaults to 'admin-1' to match the existing
+ * conversationsForUser('admin-1') convention used across these tests.
  */
-function fakeRoleMember(opts: { guildId: string; roleIds: string[]; partial?: boolean }) {
+function fakeRoleMember(opts: { guildId: string; roleIds: string[]; partial?: boolean; id?: string }) {
   return {
+    id: opts.id ?? 'admin-1',
     guild: { id: opts.guildId },
     partial: opts.partial ?? false,
-    roles: { cache: new Map(opts.roleIds.map((id) => [id, { id }])) },
+    roles: { cache: new Map(opts.roleIds.map((roleId) => [roleId, { id: roleId }])) },
   };
 }
 
@@ -2825,11 +2828,12 @@ test('SECURITY: WELCOME_MESSAGE_OPEN carries no sender-supplied data (issue #351
   }
 });
 // --- onGuildMemberUpdate / onGuildRoleUpdate / onGuildRoleDelete: Discord
-// role-based-access membership-scope cache invalidation (issue #350) ---
+// role-based-access membership-scope cache invalidation (issue #350, targeted
+// per-member invalidation for onGuildMemberUpdate issue #573) ---
 
 test(
-  'SECURITY: a GuildMemberUpdate whose role id-set changed (a role removed from the member) in the ' +
-    'configured guild invalidates the whole membershipCache — the very next conversationsForUser recomputes live',
+  'a GuildMemberUpdate whose role id-set changed (a role removed from the member) in the configured guild ' +
+    'invalidates that member’s own membershipCache entry — the very next conversationsForUser recomputes live',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
     const adapter = new DiscordAdapter();
@@ -2844,16 +2848,43 @@ test(
 
     fireGuildMemberUpdate(
       adapter,
-      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
-      fakeRoleMember({ guildId: config.discord.guildId, roleIds: [] }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'], id: 'admin-1' }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: [], id: 'admin-1' }),
     );
 
     await adapter.conversationsForUser('admin-1');
     assert.equal(
       calls.guildFetch,
       2,
-      'a GuildMemberUpdate that changes the member’s role id-set must invalidate the cache so the next ' +
-        'lookup re-fetches live',
+      'a GuildMemberUpdate that changes the member’s role id-set must invalidate that member’s own cache ' +
+        'entry so the next lookup re-fetches live',
+    );
+  },
+);
+
+test(
+  'SECURITY: a GuildMemberUpdate’s cache invalidation is targeted — a different, still-cached member’s ' +
+    'membershipCache entry survives untouched (issue #573)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new DiscordAdapter();
+    const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
+
+    await adapter.conversationsForUser('member-a');
+    await adapter.conversationsForUser('member-b');
+    assert.equal(calls.guildFetch, 2, 'two distinct members each cause one cache-miss fetch');
+
+    fireGuildMemberUpdate(
+      adapter,
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'], id: 'member-a' }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: [], id: 'member-a' }),
+    );
+
+    await adapter.conversationsForUser('member-b');
+    assert.equal(
+      calls.guildFetch,
+      2,
+      'member B’s still-live cache entry must be untouched by member A’s role change — zero additional fetches',
     );
   },
 );
@@ -2887,27 +2918,42 @@ test(
 
 test(
   'SECURITY: a GuildMemberUpdate whose old member is partial (role set at event time unknowable) fails ' +
-    'safe and clears the cache, even though the new member’s roles look unchanged from what was cached',
+    'safe and invalidates that member’s own cache entry, even though the new member’s roles look unchanged ' +
+    'from what was cached — and an unrelated member’s entry survives untouched',
   async (t) => {
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
     const adapter = new DiscordAdapter();
     const calls = stubConversationsGuild(adapter, { channelIds: ['chan-1'] });
 
     await adapter.conversationsForUser('admin-1');
-    assert.equal(calls.guildFetch, 1);
+    await adapter.conversationsForUser('member-b');
+    assert.equal(calls.guildFetch, 2);
 
     fireGuildMemberUpdate(
       adapter,
-      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'], partial: true }),
-      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'] }),
+      fakeRoleMember({
+        guildId: config.discord.guildId,
+        roleIds: ['role-admin'],
+        partial: true,
+        id: 'admin-1',
+      }),
+      fakeRoleMember({ guildId: config.discord.guildId, roleIds: ['role-admin'], id: 'admin-1' }),
     );
 
     await adapter.conversationsForUser('admin-1');
     assert.equal(
       calls.guildFetch,
-      2,
+      3,
       'a partial old member means the prior role set is unknowable — the handler must fail safe toward ' +
         'invalidation, never treat it as unchanged',
+    );
+
+    await adapter.conversationsForUser('member-b');
+    assert.equal(
+      calls.guildFetch,
+      3,
+      'an unrelated member’s still-live cache entry must be untouched by another member’s partial-update ' +
+        'fail-safe invalidation',
     );
   },
 );
