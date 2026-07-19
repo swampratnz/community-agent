@@ -68,6 +68,17 @@ const EnvSchema = z.object({
   // backstop against runaway/injected repetition across many turns in an
   // hour, not throttling normal use.
   AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(20),
+  // Query-level dedup for admin+ WebSearch (issue #589): the rate cap above
+  // bounds worst-case call VOLUME but never inspects the query, so an
+  // agentic turn can reformulate and re-fire the same search — a second
+  // metered call plus its redundant result tokens re-entering context, for
+  // no new information. Denies an exact repeat (normalized: trimmed,
+  // whitespace-collapsed, casefolded) of one of the last
+  // AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE queries within this rolling window,
+  // scoped per conversation. Low-risk defaults: short window + small history
+  // so a legitimate multi-topic research turn can't plausibly be blocked.
+  AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
+  AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE: z.coerce.number().int().positive().default(3),
 
   // Discord
   DISCORD_BOT_TOKEN: z.string().min(1),
@@ -807,6 +818,8 @@ export const config = {
     maxTurns: env.AGENT_MAX_TURNS,
     memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
     webSearchRateLimitPerHour: env.AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR,
+    webSearchDedupWindowSeconds: env.AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS,
+    webSearchDedupHistorySize: env.AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE,
   },
   discord: {
     botToken: env.DISCORD_BOT_TOKEN,

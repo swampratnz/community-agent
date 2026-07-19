@@ -1322,6 +1322,55 @@ export function reserveWebSearchSlot(conversationId: string, limit: number): boo
   return true;
 }
 
+/** Trim, collapse internal whitespace, and casefold a WebSearch query for exact-match dedup comparison. */
+function normalizeWebSearchQuery(query: string): string {
+  return query.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Recent (normalized query, timestamp) pairs per conversation, for WebSearch
+ * query-level dedup (issue #589). In-memory only — same durability class as
+ * `webSearchTimestampsByConversation` right above: a restart just forgets
+ * recent queries, harmless. Deliberately holds nothing but the normalized
+ * query text and its timestamp; never written to `interactions`/
+ * `admin_audit` or logged (this module has no DB handle in scope, and the
+ * caller in `core.ts` only ever logs `{ err, conversationId }` on failure,
+ * never the query).
+ */
+const webSearchQueryHistoryByConversation = new Map<string, Array<{ query: string; ts: number }>>();
+
+/**
+ * Returns true if `query`, once normalized, exactly matches one of the last
+ * `historySize` queries recorded for `conversationId` within `windowMs` —
+ * the "search, get an unsatisfying result, reformulate almost identically,
+ * search again" agentic-loop failure mode (issue #589). A genuine repeat is
+ * denied WITHOUT being re-recorded (its timestamp already anchors the
+ * window); a non-duplicate is appended and the history trimmed to
+ * `historySize`, oldest first. An empty/non-string query never matches and
+ * is never recorded, so a missing `tool_input.query` can't wedge the guard.
+ * Strictly additive alongside `reserveWebSearchSlot` — callers must run both
+ * so the existing volume cap is unaffected when the query differs.
+ */
+export function isDuplicateWebSearchQuery(
+  conversationId: string,
+  query: string,
+  windowMs: number,
+  historySize: number,
+): boolean {
+  const normalized = normalizeWebSearchQuery(query);
+  const now = Date.now();
+  const recent = (webSearchQueryHistoryByConversation.get(conversationId) ?? []).filter(
+    (entry) => now - entry.ts < windowMs,
+  );
+  const isDuplicate = normalized.length > 0 && recent.some((entry) => entry.query === normalized);
+  if (!isDuplicate) {
+    recent.push({ query: normalized, ts: now });
+    while (recent.length > historySize) recent.shift();
+  }
+  webSearchQueryHistoryByConversation.set(conversationId, recent);
+  return isDuplicate;
+}
+
 /**
  * WhatsApp voice-note transcription timestamps per SENDER (issue #507), for
  * `config.whatsapp.voice.rateLimitPerHour`. Per-sender rather than

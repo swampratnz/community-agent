@@ -10,6 +10,24 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-20
+
+### Added
+- **WebSearch query-level dedup guard** (#589): the admin+ `WebSearch`
+  `PreToolUse` hook (#412's per-conversation rolling-hour cap) bounded call
+  *volume* but never inspected the query, so an agentic turn could search,
+  get an unsatisfying result, reformulate almost identically, and search
+  again — a second real metered call plus its redundant result tokens
+  re-entering context, for no new information. The same hook now also denies
+  an exact-normalized (trimmed, whitespace-collapsed, casefolded) repeat of
+  one of the last `AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE` (default 3) queries
+  in the same conversation within `AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS`
+  (default 300s), running before and additively alongside the existing
+  volume cap — a denied duplicate doesn't consume a volume slot, and a
+  distinct query is never false-positived. In-memory only, same durability
+  class as the sibling `reserve*Slot` caps; fails closed on a thrown check,
+  and the query text is never persisted or logged.
+
 ## 2026-07-18
 
 ### Added
