@@ -1,6 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import tls from 'node:tls';
 import { fetch as undiciFetch, Agent } from 'undici';
 
 // Knowledge link-rot check (issue #448). Classification/SSRF-guard tests are
@@ -473,6 +474,67 @@ test("SECURITY: Node's own global `fetch` (not the `undici`-package fetch) honor
     } finally {
       await res.body?.cancel();
     }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+// A throwaway self-signed EC cert, used only so tls.createServer has a context;
+// its identity is irrelevant to this test (global fetch rejects it after the
+// handshake — see below), so it need not match any hostname.
+const SNI_TEST_KEY =
+  '-----BEGIN PRIVATE KEY-----\n' +
+  'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJujgnnFZY6PGSuMb\n' +
+  '9NbJoP42FT+IJFJgrMzsX+8JPAWhRANCAAROfYmW45fJW9HpTy0yOjZoLbSBaxKD\n' +
+  't1iN5uHU4inlHIj2ddJV4660ykJ3OFIJ8Xn3b5TSa5Gu2DytimhPqeZJ\n' +
+  '-----END PRIVATE KEY-----\n';
+const SNI_TEST_CERT =
+  '-----BEGIN CERTIFICATE-----\n' +
+  'MIIBjjCCATWgAwIBAgIUPFPDzlx8MSuIoRWTIBlH8Cy82+kwCgYIKoZIzj0EAwIw\n' +
+  'HTEbMBkGA1UEAwwSbGlua2NoZWNrLXNuaS10ZXN0MB4XDTI2MDcxOTIwNDExM1oX\n' +
+  'DTM2MDcxNjIwNDExM1owHTEbMBkGA1UEAwwSbGlua2NoZWNrLXNuaS10ZXN0MFkw\n' +
+  'EwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETn2JluOXyVvR6U8tMjo2aC20gWsSg7dY\n' +
+  'jebh1OIp5RyI9nXSVeOutMpCdzhSCfF592+U0muRrtg8rYpoT6nmSaNTMFEwHQYD\n' +
+  'VR0OBBYEFPC47B4m1hFDRKSTHRFn7YYUfgcuMB8GA1UdIwQYMBaAFPC47B4m1hFD\n' +
+  'RKSTHRFn7YYUfgcuMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDRwAwRAIg\n' +
+  'YO1Jh0S6gGXu50ZlsF3gTVKauvb5kgvgGRjgWJOCFWsCIAPehaDkjuT0tET7TidP\n' +
+  'WJI7YUkggKDUSzBZeU3UCFQn\n' +
+  '-----END CERTIFICATE-----\n';
+
+test('SECURITY: the pinned dispatcher presents the ORIGINAL hostname as the TLS SNI, never the pinned IP literal — a real TLS handshake proves the novel claim this PR rests on (issue #587)', async () => {
+  // guardTarget only ever allows https:, so buildPinnedDispatcher is exercised
+  // exclusively against TLS in production — yet the other real-socket proofs use
+  // http and so never verify SNI. SNICallback fires on the ClientHello (before
+  // the client validates the cert), so the throwaway self-signed cert being
+  // untrusted is fine: global fetch rejects it AFTER the handshake, but the
+  // server has already captured the presented SNI by then.
+  const seenSni: (string | false)[] = [];
+  const server = tls.createServer(
+    {
+      key: SNI_TEST_KEY,
+      cert: SNI_TEST_CERT,
+      SNICallback: (servername, cb) => {
+        seenSni.push(servername);
+        cb(null);
+      },
+    },
+    (socket) => socket.destroy(),
+  );
+  // The client will abort on the untrusted cert; swallow the resulting
+  // server-side TLS error so it isn't an unhandled 'error' event.
+  server.on('tlsClientError', () => {});
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const bogusHostname = 'sni-pin-proof.invalid';
+    await fetch(`https://${bogusHostname}:${port}/`, {
+      dispatcher: buildPinnedDispatcher('127.0.0.1') as unknown as RequestInit['dispatcher'],
+    }).catch(() => undefined); // cert is untrusted — the SNI was already captured
+    assert.ok(
+      seenSni.includes(bogusHostname),
+      `the TLS SNI must present the ORIGINAL hostname (${bogusHostname}), not the pinned IP — proving pinnedConnect overrides only the socket address, never the servername; saw ${JSON.stringify(seenSni)}`,
+    );
+    assert.ok(!seenSni.includes('127.0.0.1'), 'the pinned IP literal must never leak into the TLS SNI');
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
