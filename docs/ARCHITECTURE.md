@@ -117,9 +117,13 @@ memory**:
    on demand mid-turn. Cross-conversation search is admin-only.
    `knowledge_search`'s result ordering is similarity-descending except for a
    narrow tie-break (issue #308): when two relevant hits land within
-   `KNOWLEDGE_TIE_MARGIN` of each other and exactly one is stale (per
-   `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), the fresher one is listed
-   first — a real relevance gap always wins regardless of staleness.
+   `KNOWLEDGE_TIE_MARGIN` of each other, the tie is broken first by low-rated
+   status (issue #562) — if exactly one hit has been flagged unhelpful by
+   ≥2 distinct members (per `areKnowledgeEntriesLowRated`), the non-low-rated
+   hit is listed first — and only then, if that doesn't decide it, by
+   staleness (per `isKnowledgeStale`/`KNOWLEDGE_STALE_DAYS`), where the
+   fresher one is listed first — a real relevance gap always wins regardless
+   of rating or staleness.
    `isKnowledgeStale` also honors an optional absolute content-age ceiling,
    `KNOWLEDGE_STALE_MAX_AGE_DAYS` (issue #380, off unless set), OR-ed into the
    same predicate: it fires on a hit's edit age alone, closing the gap where a
@@ -264,6 +268,28 @@ memory**:
    gates the proactive timer, never the admin's standing authorization to
    read their own already-scoped counts).
 
+`feature_flags` (super-admin, no arguments, read-only, no CONFIRM; issue
+#559) answers a different, static question `admin_digest`/`community_info`
+don't: "which of this deployment's ~28 opt-in `*_ENABLED` config flags are
+actually on right now?" — previously only answerable by reading env vars on
+the deploy host directly. It is deliberately **not** a generic config dump: a
+fixed, hand-maintained `FEATURE_FLAG_MAP` (`src/agent/tools.ts`) allowlists
+exactly the boolean `*_ENABLED` flags, each mapped to a dotted `configPath`
+into the already-loaded `config` singleton, a human label, and a category
+(Moderation, Knowledge & Learning, Admin Alerts & Digest, Onboarding,
+WhatsApp, Cost/Model, Integrations). The handler and its formatter only ever
+index those fixed paths — never `Object.entries`/`Object.values`/spread the
+`config` object itself — so a missing allowlist entry can only under-report a
+flag, never accidentally expose a non-boolean field (a token, URL, or id) by
+that field merely existing on `config`. Super-admin only (not admin): several
+flags reflect security-relevant posture (e.g. `MODERATION_LLM_ABUSE_ENABLED`,
+`WHATSAPP_VOICE_MIN_ROLE`), so this follows `engagement_stats`/`admin_activity`'s
+own precedent of keeping guild-wide, non-conversation-scoped operational state
+at the operator floor. An anti-drift test ties `FEATURE_FLAG_MAP` to every
+`*_ENABLED` identifier actually in `config.ts`, so a newly-added flag that
+isn't consciously surfaced (or exempted) fails CI loudly, mirroring the
+`community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage pins (issues #311/#367).
+
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
 passed back as `resume` on the next turn.
@@ -359,6 +385,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
+| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags, from a fixed boolean-only allowlist; no arguments, read-only, no CONFIRM; issue #559) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget
@@ -1447,22 +1474,48 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   DMs configured super admins via whichever adapter(s) are still up and logs
   at `error`. Debounced: one alert per outage, not one per check tick;
   reconnecting clears the state silently (no "it's back!" spam).
-- **Pending-alert queue for the zero-connected-adapter case** (issue #534) —
-  in a single-platform deployment (Discord-only or WhatsApp-only), the
-  platform going down means the alert above finds *zero* connected adapters
-  to DM through, which previously dropped the message silently. `health.ts`
-  now holds a small in-memory queue (capped at 5, oldest dropped first) local
-  to the module: when `alertSuperAdmins` finds nothing connected, it pushes
-  the message onto the queue instead of discarding it and logs at `warn`. The
-  existing 30s poll already computes `justReconnected` per adapter; the first
-  reconnect flushes every queued message through that adapter's
-  `sendDirectMessage` to every super admin, then clears the queue. A flush
-  send that throws is logged and the message dropped, never re-queued, so a
-  persistently-broken send path can't accumulate forever. In-memory only —
-  clears on restart, same tradeoff as every other best-effort
-  alert/cooldown in this codebase. Not yet extended to `backgroundJobs.ts`'s
-  `alertSuperAdmins` or `tools.ts`'s `notifySuperAdmins`, which share the
-  identical blind spot — documented growth path, not built here.
+- **Shared pending-alert queue for the zero-connected-adapter case** (issue
+  #534, extended to all three producers by #545) — in a single-platform
+  deployment (Discord-only or WhatsApp-only), an alert fired while that
+  platform is down finds *zero* connected adapters to DM through, which
+  previously dropped the message silently. `src/pendingAlertQueue.ts` is a
+  small leaf module (no imports from `health.ts`/`backgroundJobs.ts`/
+  `tools.ts`) holding one in-memory queue (capped at 5 combined across all
+  producers): `queuePendingAlert(message, priority)` pushes a message onto it.
+  Three call sites share it — `health.ts`'s own `alertSuperAdmins`
+  (sustained-disconnect alert), `backgroundJobs.ts`'s `alertSuperAdmins`
+  (background-job failure-threshold alert), and `tools.ts`'s
+  `notifySuperAdmins` (the `report_content`/`appeal_moderation`/every other
+  model-triggered admin-notification fan-out) — each finds nothing connected
+  (all registered adapters, or all of `ALL_PLATFORMS` for `notifySuperAdmins`)
+  and queues instead of discarding, logging at `warn`. **Eviction is
+  priority-aware, not plain oldest-dropped**, because the queue is shared
+  between the two `'system'` producers (`health.ts`/`backgroundJobs.ts`, only
+  ever triggered by the bot's own machinery) and one `'low'`, member-reachable
+  producer (`tools.ts`'s `notifySuperAdmins`, reached from member-tier
+  `report_content` — itself capped at exactly 5/24h, the queue cap — and
+  `appeal_moderation`). Without priority, a single member filing their daily
+  reports during an outbound outage could evict, via oldest-dropped, the very
+  disconnect/job-failure alerts admins need during that incident. So on
+  overflow the queue evicts the oldest `'low'` entry first; only when it holds
+  *nothing but* `'system'` alerts does a new `'system'` alert drop the oldest
+  (FIFO, bounded), and a new `'low'` alert is then rejected outright — a `'low'`
+  alert can never displace a `'system'` one (issue #545). Flushing stays
+  `health.ts`'s job: its existing 30s poll already computes `justReconnected`
+  per adapter, and the first reconnect (regardless of which producer queued
+  the message) flushes every queued message through that adapter's
+  `sendDirectMessage` to every super admin, then clears the queue — no new
+  flush machinery. A flush send that throws is logged and the message
+  dropped, never re-queued, so a persistently-broken send path can't
+  accumulate forever. In-memory only — clears on restart, same tradeoff as
+  every other best-effort alert/cooldown in this codebase. A message queued
+  from `tools.ts`'s `notifySuperAdmins` loses its per-call `excludeUserId` on
+  flush (the queue holds bare strings), so the recipient set becomes all
+  super admins — an accepted tradeoff (structured queue entries were
+  deliberately left out of scope). Deliberately not extended to `tools.ts`'s
+  `notifyAdmins`, `usageAlert.ts`, `departedAdminAlert.ts`, `agent/core.ts`'s
+  `noteUsageLimitOutcome`, or `router.ts`'s alert sites — a documented growth
+  path, not built here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
@@ -1567,6 +1620,23 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   turn's SDK `result` message — see "Known cost/latency characteristic"
   above. Appended only when the window has recorded any cache activity;
   byte-identical to today's output on a fresh deployment or before #522.
+- `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
+  spend)` line (issue #552) — how much of `usage_stats`' total spend the
+  opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
+  #523/#542) is responsible for. `respond()` — and, identically, each of the
+  three shortcut sends that can also resolve an auto-answer turn
+  (`sendKnowledgeShortcut`, `sendRepeatShortcut`,
+  `sendRepeatMaxTurnsShortcut`) — stamps `meta.autoAnswer: true` on an
+  outbound reply exactly when `replyConversationId` was populated by the
+  auto-answer path (origin thread creation or an in-thread follow-up) —
+  internal router state only, never derived from message content, so it
+  cannot be spoofed by a crafted member message. This counts **thread-
+  anchored auto-answer replies** specifically: if origin-thread creation
+  transiently fails, the router falls back to answering directly in the
+  channel and that reply is *not* tagged, so the figure is a close-but-not-
+  exact floor on true auto-answer spend, never a guaranteed total. Appended
+  only when the window has at least one tagged reply; byte-identical to
+  today's output on a deployment with auto-answer off or unused.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.
