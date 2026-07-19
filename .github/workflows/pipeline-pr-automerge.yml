@@ -1,0 +1,242 @@
+name: Pipeline PR auto-merge
+
+# Serialized AUTO-MERGE loop (see docs/PIPELINE.md). Drains the build-worker PR
+# backlog by merging ONE fully-vetted bot PR at a time, so a queue of green,
+# review-approved PRs doesn't sit waiting on a human — the throughput
+# bottleneck that let ~10 PRs pile up and pairwise-conflict on the shared
+# CHANGELOG.md / security-floor.json append points.
+#
+# This is a DELIBERATE, tightly-gated reversal of the pipeline's original
+# "no loop merges — a human merges" rule (docs/PIPELINE.md). It is safe to
+# automate ONLY because every merge is deterministic and multiply-gated:
+#
+#   * NO LLM / NO agent / NO Max-pool spend. Pure shell + `gh`. It reads
+#     untrusted PR content (titles/bodies/comments) only as jq DATA, never as
+#     instructions, and executes no PR-controlled code — so unlike the fix/
+#     resolve loops there is no prompt-injection or code-exec surface here.
+#   * BUILD-WORKER PRs ONLY: same-repo (never a fork), bot-authored, with a
+#     `Closes #<n>` body — the build worker's contract, the same signal the
+#     autofix / conflict / revise loops key on. Human PRs and unrelated bot
+#     PRs (e.g. a Dependabot bump) are left for a human to merge.
+#   * GREEN + APPROVED + CLEAN: every check on the PR head must be passing,
+#     the PR must be `MERGEABLE` (no conflict), and the LATEST automated
+#     review verdict must be "LGTM" AND newer than the head commit (a stale
+#     approval from before a later push never counts).
+#   * STOP LABELS: `needs-human` (any loop's escalation) and `no-auto-merge`
+#     (pin a PR out by hand) both exclude a PR — same policy shape as the
+#     conflict resolver's `no-auto-resolve`.
+#   * SERIALIZED: at most ONE merge per run, oldest PR first. After it merges,
+#     `main` has advanced, so the run dispatches the conflict resolver to
+#     rebase whatever it now conflicts with; those PRs re-run CI + re-review
+#     and only become eligible again once they are green against the NEW main.
+#     A PR is therefore never merged except against the exact `main` its checks
+#     last passed on for a conflicting change — the next one waits its turn.
+#   * ENFORCEABLE BACKSTOP: branch protection on `main` is the real guarantee
+#     (required checks + who may merge), exactly as it is for the push-based
+#     loops. This workflow raises the bar deterministically; it does not
+#     replace that setting. See docs/SECURITY.md.
+#
+# PREREQUISITE (until then inert): the same CLAUDE_CODE_OAUTH_TOKEN gate the
+# rest of the pipeline uses — with the pipeline off there are no automated
+# review verdicts, so nothing could pass the LGTM gate anyway; the explicit
+# inert check just makes "disabled" unambiguous. Branch protection must also
+# allow the GITHUB_TOKEN / Actions identity to merge (i.e. not require a human
+# approving REVIEW — the automated verdict is a comment, not a review). If it
+# doesn't, `gh pr merge` fails loudly and the PR is left untouched.
+
+on:
+  # Primary driver: a slow sweep. Every tick is a few seconds of shell, so a
+  # short interval is cheap; 15 min bounds how long an approved PR waits.
+  schedule:
+    - cron: '*/15 * * * *'
+  # Responsiveness: react as soon as a PR's CI or its review finishes (e.g. a
+  # freshly-rebased PR going green), instead of only on the next sweep. The job
+  # re-scans ALL open PRs regardless of which run woke it, so the trigger source
+  # never matters — it always picks the current oldest-eligible PR.
+  workflow_run:
+    workflows: ['CI', 'Pipeline PR review worker']
+    types: [completed]
+  workflow_dispatch:
+
+# Never run two merges at once: they would race on "which PR is oldest-eligible"
+# and could merge two PRs against the same pre-merge `main`, defeating the
+# serialization. cancel-in-progress:false so a queued tick waits rather than
+# being dropped.
+concurrency:
+  group: pipeline-automerge
+  cancel-in-progress: false
+
+permissions:
+  contents: write # merge the PR (push the merge commit to main)
+  pull-requests: write # merge/comment/label
+  actions: write # dispatch the conflict resolver to rebase the rest after a merge
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      # Merge-commit to match the existing `main` history ("Merge pull request
+      # #N …"). Change to `squash`/`rebase` only alongside the branch-protection
+      # "allowed merge methods" setting.
+      MERGE_METHOD: merge
+      # A merge blocked by branch protection (e.g. it requires a human approving
+      # review) posts ONE marker-guarded note explaining the likely cause,
+      # rather than silently doing nothing every tick.
+      BLOCKED_MARKER: '<!-- pipeline-automerge-blocked -->'
+      # Safety valve for rollout: set repository variable AUTOMERGE_DRY_RUN=true
+      # (Settings → Secrets and variables → Actions → Variables) to LOG the PR
+      # it would merge each run without merging, so the eligibility logic can be
+      # watched against real PRs first. Unset/anything-else = live merges.
+      DRY_RUN: ${{ vars.AUTOMERGE_DRY_RUN }}
+    steps:
+      - name: Inert notice (token not set)
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR auto-merge loop is inert (no automated review verdicts exist to gate on)."
+
+      - name: Merge the oldest fully-eligible bot PR (at most one)
+        if: env.HAS_TOKEN == 'true'
+        run: |
+          set -euo pipefail
+
+          # Candidates: open, oldest-first. All eligibility is re-checked per PR
+          # below from authoritative fields; this list is just the scan order.
+          candidates="$(gh pr list --repo "$REPO" --state open --limit 50 \
+            --json number,createdAt \
+            | jq -r 'sort_by(.createdAt) | .[].number')"
+
+          if [ -z "$candidates" ]; then
+            echo "No open PRs — nothing to merge."
+            exit 0
+          fi
+
+          for n in $candidates; do
+            echo "::group::Evaluating PR #$n"
+
+            # `mergeable` is computed asynchronously by GitHub and reads UNKNOWN
+            # until it settles — poll a bounded number of times, then defer to a
+            # later tick rather than guessing (same policy as the conflict
+            # resolver's discover job).
+            info='{}'; mergeable='UNKNOWN'
+            for _ in $(seq 1 8); do
+              info="$(gh pr view "$n" --repo "$REPO" \
+                --json number,isDraft,isCrossRepository,mergeable,author,labels,body,headRefOid,statusCheckRollup)"
+              mergeable="$(jq -r '.mergeable' <<<"$info")"
+              [ "$mergeable" != 'UNKNOWN' ] && break
+              sleep 3
+            done
+
+            # --- Structural contract: build-worker PR, not pinned/escalated ----
+            eligible="$(jq -r '
+              (.isDraft | not)
+              and (.isCrossRepository | not)
+              and (.author.is_bot == true)
+              and ((.body // "") | test("[Cc]loses #[0-9]+"))
+              and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-merge") | not))
+            ' <<<"$info")"
+            if [ "$eligible" != 'true' ]; then
+              echo "PR #$n: not an eligible build-worker PR (draft/fork/non-bot/no Closes #/stop-labelled) — skip."
+              echo "::endgroup::"; continue
+            fi
+
+            # --- Mergeable (no conflict) ---------------------------------------
+            if [ "$mergeable" != 'MERGEABLE' ]; then
+              echo "PR #$n: mergeable=$mergeable (conflicting or still unknown) — skip; the conflict resolver handles CONFLICTING."
+              echo "::endgroup::"; continue
+            fi
+
+            # --- Every check on the head is green ------------------------------
+            # Pass = at least one check AND every check COMPLETED with a
+            # non-failing conclusion (SUCCESS/NEUTRAL/SKIPPED). Any PENDING /
+            # QUEUED / IN_PROGRESS / FAILURE / CANCELLED / TIMED_OUT fails the
+            # gate, so an in-flight or red run defers the PR to a later tick.
+            checks_green="$(jq -r '
+              [ .statusCheckRollup[]?
+                | if (.__typename == "CheckRun")
+                  then (if .status == "COMPLETED" then (.conclusion // "PENDING") else "PENDING" end)
+                  else (.state // "PENDING") end
+              ] as $s
+              | (($s | length) > 0)
+                and ($s | all(. == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED"))
+            ' <<<"$info")"
+            if [ "$checks_green" != 'true' ]; then
+              echo "PR #$n: not all checks are green yet — skip."
+              echo "::endgroup::"; continue
+            fi
+
+            # --- Latest automated review verdict is LGTM, and is FRESH ---------
+            # The review worker posts a comment beginning "PR review (automated):"
+            # with a one-line verdict. Take the LATEST such comment; a no-output
+            # review posts a DIFFERENT first line, so it is naturally excluded.
+            latest_review="$(gh pr view "$n" --repo "$REPO" --json comments \
+              --jq '[.comments[] | select(.body | test("^PR review \\(automated\\):"))] | last // empty')"
+            if [ -z "$latest_review" ]; then
+              echo "PR #$n: no automated review verdict yet — skip."
+              echo "::endgroup::"; continue
+            fi
+            review_body="$(jq -r '.body' <<<"$latest_review")"
+            review_at="$(jq -r '.createdAt' <<<"$latest_review")"
+
+            # Verdict = first 4 lines minus bullet lines, so a phrase inside a
+            # finding can't be misread as the verdict (the exact parse the
+            # review worker uses to route). Require an explicit LGTM and the
+            # absence of the two non-approving verdicts.
+            verdict="$(printf '%s' "$review_body" | head -n 4 | grep -vE '^[[:space:]]*[-*]' || true)"
+            if printf '%s' "$verdict" | grep -qiE 'changes requested|needs a human decision' \
+               || ! printf '%s' "$verdict" | grep -qiE 'lgtm|ready for a human to merge'; then
+              echo "PR #$n: latest review verdict is not an LGTM approval — skip."
+              echo "::endgroup::"; continue
+            fi
+
+            # Freshness: the approval must be NEWER than the head commit, else a
+            # later push (e.g. an autofix/revise commit) invalidated it and the
+            # PR is awaiting re-review.
+            head_sha="$(jq -r '.headRefOid' <<<"$info")"
+            head_at="$(gh api "repos/$REPO/commits/$head_sha" --jq '.commit.committer.date')"
+            if [ "$(date -d "$review_at" +%s)" -lt "$(date -d "$head_at" +%s)" ]; then
+              echo "PR #$n: the LGTM review predates the current head commit — awaiting re-review, skip."
+              echo "::endgroup::"; continue
+            fi
+
+            # --- All gates passed ---------------------------------------------
+            if [ "$DRY_RUN" = 'true' ]; then
+              echo "PR #$n: DRY RUN — fully eligible; would merge (method: $MERGE_METHOD) but AUTOMERGE_DRY_RUN=true. No merge performed."
+              echo "::endgroup::"
+              exit 0
+            fi
+
+            # --- Merge exactly this one, then stop ----------------------------
+            echo "PR #$n: green + mergeable + fresh LGTM — merging (method: $MERGE_METHOD)."
+            if gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --delete-branch; then
+              echo "Merged PR #$n."
+              # main advanced — rebase whatever now conflicts. A GITHUB_TOKEN
+              # merge does NOT itself trigger the resolver's push-to-main
+              # trigger, so dispatch its discover run explicitly (empty input =
+              # discover). Best-effort; the resolver's hourly sweep is the
+              # backstop if this dispatch is unavailable.
+              gh workflow run pipeline-pr-conflict.yml --repo "$REPO" \
+                || echo "::warning::Could not dispatch the conflict resolver; its hourly sweep will rebase the rest."
+              echo "::endgroup::"
+              exit 0
+            fi
+
+            # Merge refused — almost always branch protection (e.g. a required
+            # human approving review, which the automated verdict is not). Post
+            # ONE marker-guarded note so it's visible without spamming every
+            # tick, and stop (do not fall through to merge a different PR under
+            # the same blocked policy).
+            echo "::warning::gh pr merge refused for PR #$n — likely branch protection."
+            already_noted="$(gh pr view "$n" --repo "$REPO" --json comments \
+              | jq -r --arg m "$BLOCKED_MARKER" '[.comments[].body] | any(startswith($m))')"
+            if [ "$already_noted" != 'true' ]; then
+              gh pr comment "$n" --repo "$REPO" --body "${BLOCKED_MARKER}
+          🤖 Auto-merge found this PR fully eligible (green, mergeable, review-approved) but \`gh pr merge\` was refused — most likely branch protection requires a human approving *review* (the automated verdict is a comment, not a review), or the Actions identity isn't allowed to merge. A maintainer can merge it directly, or adjust branch protection. See docs/PIPELINE.md (auto-merge loop)."
+            fi
+            echo "::endgroup::"
+            exit 0
+          done
+
+          echo "No fully-eligible PR to merge this run."

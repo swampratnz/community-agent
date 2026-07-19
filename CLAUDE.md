@@ -146,7 +146,24 @@ ownership rules:
   migrate, test against a real pgvector Postgres, build, test:security) BEFORE
   opening a PR, so "green locally" matches CI. Keep it that way when editing
   either `pipeline-build.yml` or `ci.yml` — they must run the same checks.
-- **No loop merges PRs** — a human merges.
+- The **auto-merge loop** (`pipeline-pr-automerge.yml`) merges fully-vetted
+  build-worker PRs, one at a time, so a backlog of green + approved PRs doesn't
+  stall on a human. It is a **deterministic, no-LLM, no-Max-pool** shell loop
+  (it reads PR titles/bodies/comments only as jq data, never as instructions,
+  and runs no PR-controlled code — so it has none of the fix/resolve loops'
+  injection/code-exec surface). It merges the OLDEST PR that is same-repo,
+  bot-authored, `Closes #`, has all checks green, is `MERGEABLE`, and whose
+  LATEST automated review verdict is an `LGTM` newer than the head commit —
+  never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
+  afterwards `main` has advanced, so it dispatches the conflict resolver to
+  rebase the rest, and the next PR only re-qualifies once it is green against
+  the new `main`. Branch protection on `main` is the enforceable backstop, as
+  for every other loop (see docs/SECURITY.md). Pin a PR out with
+  `no-auto-merge`.
+- **No loop OPENS or force-pushes over a human's PR, and no loop merges a
+  human PR** — only the deterministic auto-merge loop above merges, and only
+  its own build-worker PRs under the gate described there. A human still
+  merges anything that loop won't touch.
 - WIP caps: ≤3 open `status:draft`. Builds run **per-issue** (each issue its own
   `concurrency` group, so distinct issues run in parallel and none evicts
   another — a single shared group would silently *cancel* queued builds, and
