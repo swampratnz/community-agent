@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { fetch as undiciFetch } from 'undici';
+import { fetch as undiciFetch, Agent } from 'undici';
 
 // Knowledge link-rot check (issue #448). Classification/SSRF-guard tests are
 // pure (fetch + DNS lookup always injected, never real network); the
@@ -401,6 +401,69 @@ test('SECURITY: buildPinnedDispatcher connects a real socket straight to the pin
         res.status,
         200,
         'the request reached the local server via the pinned IP, without ever DNS-resolving the bogus hostname',
+      );
+      assert.equal(
+        receivedHost,
+        `${bogusHostname}:${port}`,
+        'the original hostname is still presented as the Host header even though the socket connected straight to the pinned IP',
+      );
+    } finally {
+      await res.body?.cancel();
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SECURITY: classifySourceUrl, with fetchImpl/buildDispatcher left at their DEFAULTS (never injected), routes through the real global `fetch` and a real `buildPinnedDispatcher`-built Agent — proves the code path that actually ships to production, not just the mechanism in isolation (every other classifySourceUrl test in this file injects a mock fetchImpl)', async () => {
+  const realFetch = globalThis.fetch;
+  let capturedUrl: string | undefined;
+  let capturedDispatcher: unknown;
+  let capturedMethod: string | undefined;
+  globalThis.fetch = (async (url: unknown, init?: { method?: string; dispatcher?: unknown }) => {
+    capturedUrl = String(url);
+    capturedMethod = init?.method;
+    capturedDispatcher = init?.dispatcher;
+    return fakeResponse(200);
+  }) as unknown as typeof fetch;
+  try {
+    const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    const outcome = await classifySourceUrl('https://public.example.com/page', { lookup });
+    assert.equal(outcome, 'reachable');
+    assert.equal(capturedUrl, 'https://public.example.com/page');
+    assert.equal(capturedMethod, 'HEAD');
+    assert.ok(
+      capturedDispatcher instanceof Agent,
+      'the dispatcher passed to the real global fetch must be a real Agent instance built by buildPinnedDispatcher from the separately npm-installed undici package — this is the exact wiring classifySourceUrl uses when nothing is overridden',
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("SECURITY: Node's own global `fetch` (not the `undici`-package fetch) honors a dispatcher built by buildPinnedDispatcher for a real socket connection — closes the gap the review flagged: the earlier real-socket test used undici's OWN fetch with undici's OWN Agent, which proves nothing about the global-fetch-plus-externally-installed-package-Agent combination classifySourceUrl's defaults actually use in production (two different module instances of undici)", async () => {
+  let receivedHost: string | undefined;
+  const server = http.createServer((req, res) => {
+    receivedHost = req.headers.host;
+    res.writeHead(200);
+    res.end('ok');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    // .invalid is reserved by RFC 2606 and guaranteed to never resolve — if
+    // the connector fell back to resolving this hostname instead of using
+    // the pinned IP, the request would fail outright rather than silently
+    // succeed against the wrong target.
+    const bogusHostname = 'this-hostname-does-not-resolve-globalfetch.invalid';
+    const res = await fetch(`http://${bogusHostname}:${port}/probe`, {
+      dispatcher: buildPinnedDispatcher('127.0.0.1') as unknown as RequestInit['dispatcher'],
+    });
+    try {
+      assert.equal(
+        res.status,
+        200,
+        "Node's global fetch reached the local server via the pinned IP, through a dispatcher built from the separately npm-installed undici package, without ever DNS-resolving the bogus hostname",
       );
       assert.equal(
         receivedHost,
