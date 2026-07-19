@@ -1442,14 +1442,26 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   previously dropped the message silently. `src/pendingAlertQueue.ts` is a
   small leaf module (no imports from `health.ts`/`backgroundJobs.ts`/
   `tools.ts`) holding one in-memory queue (capped at 5 combined across all
-  producers, oldest dropped first): `queuePendingAlert` pushes a message onto
-  it. Three call sites share it — `health.ts`'s own `alertSuperAdmins`
+  producers): `queuePendingAlert(message, priority)` pushes a message onto it.
+  Three call sites share it — `health.ts`'s own `alertSuperAdmins`
   (sustained-disconnect alert), `backgroundJobs.ts`'s `alertSuperAdmins`
   (background-job failure-threshold alert), and `tools.ts`'s
   `notifySuperAdmins` (the `report_content`/`appeal_moderation`/every other
   model-triggered admin-notification fan-out) — each finds nothing connected
   (all registered adapters, or all of `ALL_PLATFORMS` for `notifySuperAdmins`)
-  and queues instead of discarding, logging at `warn`. Flushing stays
+  and queues instead of discarding, logging at `warn`. **Eviction is
+  priority-aware, not plain oldest-dropped**, because the queue is shared
+  between the two `'system'` producers (`health.ts`/`backgroundJobs.ts`, only
+  ever triggered by the bot's own machinery) and one `'low'`, member-reachable
+  producer (`tools.ts`'s `notifySuperAdmins`, reached from member-tier
+  `report_content` — itself capped at exactly 5/24h, the queue cap — and
+  `appeal_moderation`). Without priority, a single member filing their daily
+  reports during an outbound outage could evict, via oldest-dropped, the very
+  disconnect/job-failure alerts admins need during that incident. So on
+  overflow the queue evicts the oldest `'low'` entry first; only when it holds
+  *nothing but* `'system'` alerts does a new `'system'` alert drop the oldest
+  (FIFO, bounded), and a new `'low'` alert is then rejected outright — a `'low'`
+  alert can never displace a `'system'` one (issue #545). Flushing stays
   `health.ts`'s job: its existing 30s poll already computes `justReconnected`
   per adapter, and the first reconnect (regardless of which producer queued
   the message) flushes every queued message through that adapter's

@@ -487,7 +487,10 @@ async function notifySuperAdmins(
       { message },
       'Super-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
     );
-    queuePendingAlert(`🔔 ${message}`);
+    // 'low': notifySuperAdmins is reachable from member-tier tools
+    // (report_content, appeal_moderation), so it must never evict a
+    // system-triggered disconnect/job-failure alert from the shared queue (#545).
+    queuePendingAlert(`🔔 ${message}`, 'low');
     return;
   }
   for (const platform of ALL_PLATFORMS) {

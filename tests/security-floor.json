@@ -69,6 +69,7 @@
   "outbound.test.ts": 4,
   "pauseNotice.router.test.ts": 2,
   "pendingActions.test.ts": 3,
+  "pendingAlertQueue.test.ts": 2,
   "personas.test.ts": 1,
   "rateLimitNotice.router.test.ts": 2,
   "rbac.test.ts": 43,

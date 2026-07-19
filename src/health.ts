@@ -77,7 +77,7 @@ export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], mes
       { message },
       'Health alert could not be delivered live — no connected adapter; queued for flush on reconnect',
     );
-    queuePendingAlert(message);
+    queuePendingAlert(message, 'system'); // disconnect alert — never evicted by a member-reachable alert (#545)
     return;
   }
   for (const adapter of connected) {

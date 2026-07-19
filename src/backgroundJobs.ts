@@ -109,7 +109,7 @@ async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: s
       { message },
       'Background job failure alert could not be delivered live — no connected adapter; queued for flush on reconnect',
     );
-    queuePendingAlert(message);
+    queuePendingAlert(message, 'system'); // job-failure alert — never evicted by a member-reachable alert (#545)
     return;
   }
   for (const adapter of adapters) {
