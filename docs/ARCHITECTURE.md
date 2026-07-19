@@ -1147,6 +1147,25 @@ from a hit's content body rather than the tool-computed citation clause.
    this is a coarse "any edit resets the clock" signal, not a content-diff;
    it fails toward under-counting after a metadata-only edit, never toward
    leaving a fixed entry flagged.
+8. `answerFeedbackOriginSummary` (issue #592) is a guild-wide split of
+   `answer_feedback` by delivery origin — auto-answered (issue #477's
+   unsummoned help-channel mode) vs addressed (@mention/DM/thread-reply) —
+   surfaced in the weekly admin digest as one append-only line ("Auto-answer
+   ratings: 82% helpful (9/11) vs 91% helpful (40/44) addressed.") whenever
+   the auto-answer bucket has at least one rating. It closes a gap #477 named
+   as its own measurability bar but never wired up: whether an unsummoned
+   drive-by answer lands as well as a deliberate one. It depends on
+   `meta.autoAnswer` (issue #552/#553): `replyConversationId !== undefined` in
+   `router.ts`'s `respond()`, `sendKnowledgeShortcut`, and the repeat-question
+   shortcuts — router-internal state gated by the vetted
+   `isAutoAnswerCandidate` check, never message content, so it can't be
+   spoofed by a rated reply's own text. Reuses the identical
+   `answer_feedback JOIN interactions` join and `count(*) FILTER (WHERE ...)`
+   shape as `listKnowledgeFeedbackSummary`/`countLowRatedKnowledge` (same
+   `ON DELETE SET NULL` purge exclusion), cumulative like
+   `countLowRatedKnowledge` rather than freshness-windowed — this is
+   #552's own `usageStats.autoAnswerUsage` **cost** split's answer-**quality**
+   counterpart, the same relationship #552 itself has to #477.
 
 ## Auto-moderation (Discord)
 

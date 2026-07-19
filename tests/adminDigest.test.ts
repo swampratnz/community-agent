@@ -1685,6 +1685,168 @@ test('buildAdminDigestMessage: the general-unhelpful-answers line trends via the
   );
 });
 
+// answerFeedbackOriginSummary origin-split line (issue #592) — #477's own
+// named helpful-ratio-vs-mention-mode success metric, finally surfaced.
+test('buildAdminDigestMessage: the auto-answer-ratings line renders only when the auto-answer bucket has at least one rating, with the exact bare-ratio wording (issue #592 acceptance criterion 3)', () => {
+  const quiet = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(quiet, null, 'zero auto-answer ratings AND every other signal zero -> no digest at all');
+
+  const withRatings = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    40,
+    4,
+  );
+  assert.ok(withRatings);
+  const line = withRatings.split('\n').find((l) => l.includes('📊'));
+  assert.equal(
+    line,
+    '📊 Auto-answer ratings: 82% helpful (9/11) vs 91% helpful (40/44) addressed.',
+    'exact bare-ratio wording matching the proposal example',
+  );
+});
+
+test('buildAdminDigestMessage: the auto-answer-ratings line still renders when there are zero addressed-mode ratings to compare against, degrading gracefully without a division by zero', () => {
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    3,
+    1,
+    0,
+    0,
+  );
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('📊'));
+  assert.equal(
+    line,
+    '📊 Auto-answer ratings: 75% helpful (3/4).',
+    'no "vs ... addressed" comparison clause when the addressed bucket is empty',
+  );
+});
+
+test('buildAdminDigestMessage: autoAnswerHelpful/autoAnswerUnhelpful/addressedHelpful/addressedUnhelpful omitted (default 0) -> output is byte-identical to the pre-#592 form (issue #592 acceptance criterion 4)', () => {
+  const before = buildAdminDigestMessage([], 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  const after = buildAdminDigestMessage(
+    [],
+    3,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(
+    before,
+    after,
+    'explicit zeros for the four new trailing params match the pre-#592 omitted-param output',
+  );
+  assert.ok(!before!.includes('📊'), 'no auto-answer-ratings line at the pre-#592 call shape');
+});
+
 test('SECURITY: buildAdminDigestMessage: previousCounts omitted -> byte-identical to the pre-#497 form, no trend suffix anywhere even with several non-zero signals (issue #497 acceptance criteria 1, 7)', () => {
   const before = buildAdminDigestMessage([], 3, 5, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 2, 0);
   const after = buildAdminDigestMessage(

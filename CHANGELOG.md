@@ -13,6 +13,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-20
 
 ### Added
+- **Weekly digest now shows auto-answer's own success metric: helpful ratio
+  vs mention-mode replies** (#592): auto-answer mode (#477) named its own
+  measurability bar at launch — "the `rate_answer` helpful ratio vs
+  mention-mode answers" — but nothing ever wired it up, even as four more
+  iterations shipped reply volume, cost, and rate-limiting telemetry on top.
+  The weekly admin digest now appends one line, only once a guild has
+  received at least one rating on an auto-answered reply: `Auto-answer
+  ratings: 82% helpful (9/11) vs 91% helpful (40/44) addressed.` Bare ratios
+  and counts only, matching every other digest line's no-content, no-PII
+  convention. Every guild that hasn't enabled auto-answer, or has but has
+  no ratings on it yet, sees no change to their digest.
 - **WebSearch query-level dedup guard** (#589): the admin+ `WebSearch`
   `PreToolUse` hook (#412's per-conversation rolling-hour cap) bounded call
   *volume* but never inspected the query, so an agentic turn could search,
