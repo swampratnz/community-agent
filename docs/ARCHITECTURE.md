@@ -743,11 +743,17 @@ weakening it:
    `community_info` tool (issue #92) answers "what can you do?" with
    `MEMBER_CAPABILITIES_TEXT`, a plain-language line for every `MEMBER_TOOLS`
    entry, pinned against drift by an anti-drift coverage test (issue #311).
-   An admin/super_admin caller additionally gets `ADMIN_CAPABILITIES_TEXT`
-   (issue #367) — the same discipline applied to `ADMIN_TOOLS`, replacing the
-   old one-line "ask what's new" pointer the grant DM (`ADMIN_APPROVED_MESSAGE`,
-   issue #201) had promised would give "a rundown, including your new admin
-   tools" but never did.
+   An admin caller additionally gets `ADMIN_CAPABILITIES_TEXT` (issue #367) —
+   the same discipline applied to `ADMIN_TOOLS`, replacing the old one-line
+   "ask what's new" pointer the grant DM (`ADMIN_APPROVED_MESSAGE`, issue
+   #201) had promised would give "a rundown, including your new admin tools"
+   but never did. A super_admin caller gets both of those plus
+   `SUPER_ADMIN_CAPABILITIES_TEXT` (issue #582) — the same discipline applied
+   to `SUPER_ADMIN_TOOLS`, its own anti-drift coverage test. #367 had
+   explicitly deferred the `SUPER_ADMIN_TOOLS` case as a named, separate
+   growth path ("no evidenced complaint... left as an explicit, separate
+   growth path"); #582 is that follow-up, closing the one tier `community_info`
+   previously under-served.
 
 ## Offline context builder
 
