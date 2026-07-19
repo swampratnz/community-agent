@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
+import { formatNzEventTime } from '../src/util/nzTime.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
@@ -5421,8 +5422,13 @@ test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose desc
   );
   assert.match(
     result.content[0].text,
-    new RegExp(EVENT_FUTURE_START.replace(/[+.]/g, '\\$&')),
-    'the CONFIRM text must quote the resolved ISO start time',
+    new RegExp(formatNzEventTime(EVENT_FUTURE_START).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'the CONFIRM text must quote the resolved start time in NZ-local time, not raw ISO (issue #577)',
+  );
+  assert.doesNotMatch(
+    result.content[0].text,
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    'the CONFIRM text must not contain a raw ISO timestamp (issue #577)',
   );
   assert.match(result.content[0].text, /rain/, 'the CONFIRM text must quote the reason');
   assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
@@ -5435,6 +5441,47 @@ test('SECURITY: cancel_event registers a CONFIRM-gated pending action whose desc
   assert.equal(calls[0].kind, 'cancel_event');
   assert.deepEqual(calls[0].params, { eventId: 'event-42', reason: 'rain' });
 });
+
+test(
+  "SECURITY: cancel_event's NZ-local CONFIRM-text rendering (issue #577) does not weaken CONFIRM " +
+    'gating — still registers a CONFIRM before any execution, the executed action still keys on the ' +
+    'same unchanged eventId, and the pending action still requires admin tier; only the human-readable ' +
+    'string changed',
+  async () => {
+    const conversationId = 'convo-cancel-confirm-577';
+    const calls: Array<{ kind: string; params?: Record<string, unknown> }> = [];
+    const adapter = cancelEventAdapter({
+      getScheduledEvent: async () => ({
+        name: 'Wellington Winter Meetup',
+        status: 'scheduled',
+        scheduledStartAt: EVENT_FUTURE_START,
+      }),
+      performAdminAction: async (action) => {
+        calls.push({ kind: action.kind, params: action.params });
+        return `Canceled event "${action.params?.eventId}".`;
+      },
+    });
+    const handler = cancelEventHandler({ conversationId, adapter });
+
+    const result = await handler.handler({ eventId: 'event-nz-577' });
+    assert.match(result.content[0].text, /CONFIRM/, 'must still ask for confirmation, not run immediately');
+    assert.equal(calls.length, 0, 'performAdminAction must not run before CONFIRM');
+
+    const pending = takePendingAction('discord', conversationId, 'admin-1');
+    assert.ok(pending, 'must still register a pending action');
+    assert.equal(pending?.minTier, 'admin', 'the pending action must still require admin tier');
+
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(calls.length, 1, 'CONFIRM must still gate exactly one execution');
+    assert.equal(calls[0].kind, 'cancel_event');
+    assert.deepEqual(
+      calls[0].params,
+      { eventId: 'event-nz-577', reason: undefined },
+      'the executed action must still key on the same unchanged eventId — only display text changed',
+    );
+  },
+);
 
 test(
   'set_community_guidelines lets an admin set and clear guidelines; community_guidelines reflects the change verbatim, not paraphrased or truncated (issue #212)',
@@ -10461,8 +10508,21 @@ test('list_events formats each event with id, name, start/end time, location, an
   const replyText = result.content[0]?.text ?? '';
   assert.equal(result.isError, false);
   assert.match(replyText, /Wellington Meetup/);
-  assert.match(replyText, /2099-06-01T19:00:00\.000Z/);
-  assert.match(replyText, /2099-06-01T21:00:00\.000Z/);
+  assert.doesNotMatch(
+    replyText,
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    'must render NZ-local time, not a raw ISO timestamp (issue #577)',
+  );
+  assert.match(
+    replyText,
+    new RegExp(formatNzEventTime('2099-06-01T19:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "must render the event's start in NZ-local time (issue #577)",
+  );
+  assert.match(
+    replyText,
+    new RegExp(formatNzEventTime('2099-06-01T21:00:00.000Z').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "must render the event's end in NZ-local time (issue #577)",
+  );
   assert.match(replyText, /Wellington Central Library/);
   assert.match(replyText, /Bring your laptop/);
   assert.match(replyText, /Auckland Hack Night/);

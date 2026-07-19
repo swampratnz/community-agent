@@ -28,6 +28,7 @@ import {
   ChannelType,
 } from 'discord.js';
 import { config } from '../../config.js';
+import { formatNzEventTime } from '../../util/nzTime.js';
 import { logger } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
@@ -1175,7 +1176,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
                 entityMetadata: { location: await this.filtered(rawLocation) },
               });
             })();
-        return `Created event "${created.name}" starting ${created.scheduledStartAt?.toISOString() ?? startTime}.`;
+        return `Created event "${created.name}" starting ${formatNzEventTime(created.scheduledStartAt ?? startTime)}.`;
       }
       case 'cancel_event': {
         // The tool layer already validates the event live and its Scheduled

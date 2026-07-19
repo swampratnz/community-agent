@@ -118,6 +118,7 @@ import {
   type JobStatus,
 } from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
+import { formatNzEventTime } from '../util/nzTime.js';
 import { buildAdminDigestForAdmin } from '../adminDigest.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
@@ -2135,8 +2136,8 @@ export function buildToolServer(
         events
           .map((e) => {
             const when = e.scheduledEndAt
-              ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
-              : e.scheduledStartAt;
+              ? `${formatNzEventTime(e.scheduledStartAt)} – ${formatNzEventTime(e.scheduledEndAt)}`
+              : formatNzEventTime(e.scheduledStartAt);
             const desc = e.description ? `: ${e.description}` : '';
             return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
           })
@@ -3556,7 +3557,7 @@ export function buildToolServer(
       // same discipline as create_event's own CONFIRM prompt — the human
       // confirms the actual artifact, not model-composed prose.
       return requireConfirm(
-        `cancel event "${event.name}" starting ${event.scheduledStartAt}` +
+        `cancel event "${event.name}" starting ${formatNzEventTime(event.scheduledStartAt)}` +
           `${args.reason ? ` (reason: ${args.reason})` : ''}`,
         'admin',
         async () => {
