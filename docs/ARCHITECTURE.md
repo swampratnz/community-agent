@@ -1610,6 +1610,37 @@ overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
 - No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
   decides.
 
+`src/usageCostDigest.ts` (off unless `USAGE_COST_DIGEST_ENABLED`, issue #578)
+adds a third, complementary signal: a **weekly $ trend**, rather than a
+reactive volume threshold or an on-demand pull.
+
+- Independent of `usageAlert.ts`'s threshold latch — this always reports the
+  trend on a weekly cadence; the latch continues to fire reactively on a
+  volume spike. Two non-overlapping signals sharing one data source
+  (`usageStats`) and one delivery path (`alertSuperAdmins`).
+- Routed through the shared `startTrackedJob` (same 6h outer tick as every
+  other opt-in job), so a throwing `runOnce` gets the existing consecutive-
+  failure alerting for free. The outer tick is faster than the real
+  cadence; each tick calls `wasUsageCostDigestSentRecently(7)` first and
+  is a no-op unless that returns false, the same "fast outer tick,
+  freshness-guarded inner cadence" shape `startAdminDigest` already uses —
+  guarded by a single global `usage_cost_digest_state` row (one aggregate
+  figure + `sent_at` timestamp, restart-safe) rather than
+  `admin_digest_sends`' per-admin rows, since every super admin sees the
+  identical figure.
+- When due, it reads `usageStats(7).costUsd + .backgroundCostUsd` (this
+  week's total, already computed on demand by the `usage_stats` tool),
+  compares it against the persisted previous total, and DMs every super
+  admin a two-line trend via the pure `formatUsageCostDigestMessage`
+  (unit-tested directly, same convention as `formatUsageAlertMessage`): the
+  current total plus a signed ▲/▼ delta, or a defined no-comparison form on
+  the very first run. The new total then overwrites the persisted row for
+  next week's delta.
+- Delivery rides the exact same `alertSuperAdmins`/`superAdminIds` path
+  `usageAlert.ts`/`departedAdminAlert.ts` already use — no new privileged
+  tool, no new RBAC surface. The DM carries exactly two aggregate dollar
+  figures, never a user id, conversation id, or message excerpt.
+
 ## Departed-admin alert
 
 `src/departedAdminAlert.ts` (off unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue

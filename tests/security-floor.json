@@ -84,6 +84,7 @@
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 10,
   "tools.test.ts": 172,
+  "usageCostDigest.test.ts": 3,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappCloudAdapter.test.ts": 16,
   "whatsappCloudWire.test.ts": 5,

@@ -144,6 +144,20 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the trigger — it's a coarse proxy for shared Max-pool draw that can't
   silently under-report the way `cost_usd` can (see below). No auto-pause;
   a super admin decides.
+- Optional weekly cost-trend DM (`USAGE_COST_DIGEST_ENABLED`, off by
+  default, issue #578): `src/usageCostDigest.ts` compares this week's
+  `usageStats(7)` total against last week's persisted total and DMs the
+  signed delta on a weekly cadence — complementary to the reactive
+  threshold alert above (a trend signal, not a volume spike). No new
+  privileged tool, no new RBAC tier — reuses the exact `alertSuperAdmins`/
+  `superAdminIds` recipient set every other super-admin alert in this
+  codebase uses, never `listAdmins()`/`community_users` admins. Persistence
+  is a single global row (`usage_cost_digest_state`: one aggregate dollar
+  figure + a `sent_at` freshness timestamp) — no per-user, per-conversation,
+  or message-content data, so `forget_me`/`purge_user_data` have nothing to
+  touch here. The DM text is two aggregate dollar figures only, produced by
+  a pure, unit-tested formatter — never a user id, conversation id, or
+  message excerpt.
 - `WebSearch` — the one metered, real-cost built-in Claude Code tool the bot
   grants (admin+ only) — carries its own per-conversation rolling-hour cap
   (`AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR`, default 20, issue #412), enforced

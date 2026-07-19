@@ -39,6 +39,7 @@ process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 process.env.ADMIN_DIGEST_ENABLED = 'true';
 process.env.DEPARTED_ADMIN_ALERT_ENABLED = 'true';
+process.env.USAGE_COST_DIGEST_ENABLED = 'true';
 
 const {
   startContextBuilder,
@@ -55,6 +56,7 @@ const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
+const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
@@ -116,6 +118,7 @@ const JOBS = [
   ['startEmbeddingHealthCheckJob', startEmbeddingHealthCheckJob],
   ['startAdminDigest', startAdminDigest],
   ['startDepartedAdminAlert', startDepartedAdminAlert],
+  ['startUsageCostDigest', startUsageCostDigest],
 ] as const;
 
 /** Maps each starter above to the BackgroundJobName key it records under in the shared job-health registry (issue #467). */
@@ -129,6 +132,7 @@ const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
   startEmbeddingHealthCheckJob: 'embedding-model',
   startAdminDigest: 'admin-digest',
   startDepartedAdminAlert: 'departed-admin-alert',
+  startUsageCostDigest: 'usage-cost-digest',
 };
 
 for (const [name, start] of JOBS) {
@@ -232,7 +236,7 @@ test("SECURITY: a job's registry entry after a failed run() never contains the c
   }
 });
 
-test('each of the nine jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
+test('each of the ten jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
   const { adapter, dms } = makeAdapter();
   const failOnce = async () => {
     throw new Error('sentinel-independent');
@@ -249,13 +253,14 @@ test('each of the nine jobs keeps an independent tracker: one failure each (belo
     startEmbeddingHealthCheckJob([adapter], failOnce),
     startAdminDigest([adapter], failOnce),
     startDepartedAdminAlert([adapter], failOnce),
+    startUsageCostDigest([adapter], failOnce),
   ];
   try {
     await flush();
     assert.equal(
       dms.length,
       0,
-      'nine distinct jobs each failing once (< threshold) never alerts — trackers are independent',
+      'ten distinct jobs each failing once (< threshold) never alerts — trackers are independent',
     );
   } finally {
     for (const timer of timers) if (timer) clearInterval(timer);
