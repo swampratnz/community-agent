@@ -1025,6 +1025,24 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Anthropic status check',
     category: 'Integrations',
   },
+  {
+    envVar: 'ENGAGEMENT_ALERT_ENABLED',
+    configPath: 'engagementAlert.enabled',
+    label: 'Weekly engagement alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'USAGE_COST_DIGEST_ENABLED',
+    configPath: 'usageCostDigest.enabled',
+    label: 'Weekly cost-trend DM',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'AUTO_RETRACT_REPLY_ENABLED',
+    configPath: 'behaviour.autoRetractReplyEnabled',
+    label: 'Auto-retract reply on member delete',
+    category: 'Moderation',
+  },
 ] as const;
 
 /**
@@ -1172,6 +1190,7 @@ const SUPER_ADMIN_CAPABILITIES_TEXT =
   'or check usage/engagement stats\n' +
   '- Erase all of a user\'s stored data on request ("purge their data")\n' +
   '- Change bot-wide policy settings, or trigger a redeploy of the bot\n' +
+  '- See which optional feature flags are currently on or off\n' +
   '- File a GitHub issue suggesting an improvement\n' +
   '- Dispatch a remote dev-team job to assess or deliver a change, check its status, fetch its result, ' +
   "turn a completed assessment into a tracked backlog, list an assessment's findings, or re-check one finding";

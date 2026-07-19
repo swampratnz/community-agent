@@ -2358,6 +2358,7 @@ const SUPER_ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__resume_bot', /pause or resume the bot/i],
   ['mcp__community__set_policy', /change bot-wide policy settings/i],
   ['mcp__community__redeploy_bot', /trigger a redeploy of the bot/i],
+  ['mcp__community__feature_flags', /which optional feature flags are currently on or off/i],
   ['mcp__community__suggest_issue', /file a github issue/i],
   ['mcp__community__dev_team_dispatch', /dispatch a remote dev-team job/i],
   ['mcp__community__dev_team_status', /check its status/i],
@@ -2428,7 +2429,7 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // growing into a wall of text. Own cap, distinct from the 2800-char admin
   // cap, since this reply is longer (member + admin + super_admin content).
   assert.ok(
-    superAdminReply.length < 3400,
+    superAdminReply.length < 3500,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -7079,8 +7080,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    28,
-    "the 28 count is the proposal's own pinned evidence — a change here is itself signal worth noticing",
+    31,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
