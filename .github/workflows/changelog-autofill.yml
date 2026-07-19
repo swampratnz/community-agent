@@ -114,7 +114,7 @@ jobs:
           # `gh` (GH_TOKEN env). No persisted git credential is needed anywhere.
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: env.HAS_TOKEN == 'true'
         with:
           node-version: 24
@@ -196,7 +196,7 @@ jobs:
         id: draft
         if: env.HAS_TOKEN == 'true' && steps.standing.outputs.proceed == 'true'
         continue-on-error: true # the scope-check step below is the source of truth
-        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342 # v1.0.171
+        uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1.0.177
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A scheduled run's actor is github-actions[bot]; the action rejects

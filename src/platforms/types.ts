@@ -155,8 +155,15 @@ export interface PlatformAdapter {
   /** Register the handler invoked for every incoming message. */
   onMessage(handler: MessageHandler): void;
 
-  /** Send a text reply to a conversation. */
-  sendMessage(out: OutgoingMessage): Promise<void>;
+  /**
+   * Send a text reply to a conversation. Returns the platform-native message
+   * id(s) of the sent reply when the platform can report them (issue #575,
+   * the auto-retraction feature) — `undefined` when it genuinely can't (e.g.
+   * WhatsApp Cloud). Adapters that chunk a long reply into multiple platform
+   * messages return EVERY chunk's id, in send order, so a retraction can
+   * delete all of them rather than just the last one.
+   */
+  sendMessage(out: OutgoingMessage): Promise<string[] | undefined>;
 
   /**
    * Best-effort "processing…" signal while an agent turn is in flight. Never
@@ -256,4 +263,18 @@ export interface PlatformAdapter {
 
   /** Perform a privileged moderation/management action. */
   performAdminAction(action: AdminAction): Promise<string>;
+
+  /**
+   * Retract (delete/revoke) a message this bot itself sent — the mechanism
+   * behind auto-retracting a reply when the member deletes the message it
+   * answered (issue #575). Distinct from `performAdminAction('delete_message')`:
+   * that's a privileged, CONFIRM-adjacent tool a human/model invokes against
+   * ANY message; this is server-side plumbing reacting to a native platform
+   * delete/revoke event, always targeting the bot's OWN prior send, never
+   * reachable from a chat command or the model. Optional — WhatsApp Cloud has
+   * no message-deletion/unsend endpoint at all (mirrors its existing
+   * `delete_message` capability gap), so it omits this and the router treats
+   * the absence as a no-op, same convention as `reactToMessage?`/`sendImage?`.
+   */
+  deleteOwnMessage?(conversationId: string, messageId: string): Promise<void>;
 }

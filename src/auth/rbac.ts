@@ -139,6 +139,13 @@ export const ADMIN_TOOLS = [
   // conversation-scoped boundary as clear_warnings/list_member_warnings;
   // never includes reason/excerpt.
   'mcp__community__list_muted_members',
+  // Durable queue for appeal_moderation (issue #554): a member appealing
+  // their own active warning(s)/mute is a self-scoped MEMBER_TOOLS write
+  // (appeal_moderation); reviewing/resolving the filed appeal is admin-tier,
+  // same guild-wide (not conversation-scoped) boundary as clear_warnings/
+  // list_member_warnings — warnings/mutes carry no conversation to scope by.
+  'mcp__community__list_appeals',
+  'mcp__community__resolve_appeal',
   'mcp__community__announce',
   'mcp__community__create_poll',
   // End a running poll early — same admin tier / conversation-scope / audit as
@@ -221,6 +228,12 @@ export const SUPER_ADMIN_TOOLS = [
   'mcp__community__admin_activity',
   'mcp__community__list_admins',
   'mcp__community__engagement_stats',
+  // Read-only, no CONFIRM, no DB/model call — reflects the fixed
+  // FEATURE_FLAG_MAP allowlist (issue #559) against the already-loaded
+  // config object. Super-admin only: several flags are security-relevant
+  // posture (e.g. moderation.llmAbuseEnabled), same least-privilege
+  // reasoning as engagement_stats/admin_activity's own super-admin floor.
+  'mcp__community__feature_flags',
   'mcp__community__pause_bot',
   'mcp__community__resume_bot',
   'mcp__community__set_policy',

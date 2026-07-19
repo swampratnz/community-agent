@@ -39,6 +39,8 @@ process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 process.env.ADMIN_DIGEST_ENABLED = 'true';
 process.env.DEPARTED_ADMIN_ALERT_ENABLED = 'true';
+process.env.USAGE_COST_DIGEST_ENABLED = 'true';
+process.env.ENGAGEMENT_ALERT_ENABLED = 'true';
 
 const {
   startContextBuilder,
@@ -55,12 +57,15 @@ const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
+const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
+const { startEngagementAlert } = await import('../src/engagementAlert.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
 
 after(async () => {
   await closeDb();
@@ -116,6 +121,8 @@ const JOBS = [
   ['startEmbeddingHealthCheckJob', startEmbeddingHealthCheckJob],
   ['startAdminDigest', startAdminDigest],
   ['startDepartedAdminAlert', startDepartedAdminAlert],
+  ['startUsageCostDigest', startUsageCostDigest],
+  ['startEngagementAlert', startEngagementAlert],
 ] as const;
 
 /** Maps each starter above to the BackgroundJobName key it records under in the shared job-health registry (issue #467). */
@@ -129,6 +136,8 @@ const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
   startEmbeddingHealthCheckJob: 'embedding-model',
   startAdminDigest: 'admin-digest',
   startDepartedAdminAlert: 'departed-admin-alert',
+  startUsageCostDigest: 'usage-cost-digest',
+  startEngagementAlert: 'engagement-alert',
 };
 
 for (const [name, start] of JOBS) {
@@ -232,7 +241,7 @@ test("SECURITY: a job's registry entry after a failed run() never contains the c
   }
 });
 
-test('each of the nine jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
+test('each of the ten jobs keeps an independent tracker: one failure each (below threshold) alerts zero times total', async (t) => {
   const { adapter, dms } = makeAdapter();
   const failOnce = async () => {
     throw new Error('sentinel-independent');
@@ -249,13 +258,15 @@ test('each of the nine jobs keeps an independent tracker: one failure each (belo
     startEmbeddingHealthCheckJob([adapter], failOnce),
     startAdminDigest([adapter], failOnce),
     startDepartedAdminAlert([adapter], failOnce),
+    startUsageCostDigest([adapter], failOnce),
+    startEngagementAlert([adapter], failOnce),
   ];
   try {
     await flush();
     assert.equal(
       dms.length,
       0,
-      'nine distinct jobs each failing once (< threshold) never alerts — trackers are independent',
+      'ten distinct jobs each failing once (< threshold) never alerts — trackers are independent',
     );
   } finally {
     for (const timer of timers) if (timer) clearInterval(timer);
@@ -478,6 +489,7 @@ for (const [jobName, start] of [
 }
 
 test('DM routing: the alert is delivered via sendDirectMessage + superAdminIds(platform), skipping any adapter whose isConnected() is false', async (t) => {
+  resetPendingAlertsForTests();
   const { adapter: connected, dms: connectedDms } = makeAdapter();
   const { adapter: disconnectedBase, dms: disconnectedDms } = makeAdapter();
   const disconnected: PlatformAdapter = { ...disconnectedBase, isConnected: () => false };
@@ -496,9 +508,89 @@ test('DM routing: the alert is delivered via sendDirectMessage + superAdminIds(p
     await flush(); // threshold reached
     assert.equal(connectedDms.length, 1, 'the connected adapter receives the alert DM');
     assert.equal(disconnectedDms.length, 0, 'a disconnected adapter is skipped, never DMed');
+    // SECURITY (issue #545): a single disconnected adapter among >=1
+    // connected is still just skipped — nothing is queued, byte-identical
+    // to pre-#545 behaviour.
+    assert.deepEqual(
+      getPendingAlertsForTests(),
+      [],
+      'with at least one connected adapter, nothing should be queued',
+    );
   } finally {
     clearInterval(timer!);
+    resetPendingAlertsForTests();
   }
+});
+
+test('alertSuperAdmins (via startDocsIngest): with zero connected adapters, the failure-threshold DM is queued instead of dropped, and no send is attempted (issue #545)', async (t) => {
+  resetPendingAlertsForTests();
+  const { adapter, dms } = makeAdapter();
+  adapter.isConnected = () => false;
+  const alwaysFail = async () => {
+    throw new Error('sentinel-queue-545');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDocsIngest([adapter], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.equal(dms.length, 0, 'no adapter is connected, so no send is attempted');
+    assert.equal(
+      getPendingAlertsForTests().length,
+      1,
+      'the failure-threshold alert should be queued instead of dropped',
+    );
+    assert.match(getPendingAlertsForTests()[0] ?? '', /docs-ingest/);
+  } finally {
+    clearInterval(timer!);
+    resetPendingAlertsForTests();
+  }
+});
+
+test('SECURITY: a queued failure-threshold alert (zero connected adapters) is byte-identical to what sendDirectMessage would have received on a live send (issue #545)', async (t) => {
+  resetPendingAlertsForTests();
+  const { adapter: connected, dms } = makeAdapter();
+  const { adapter: disconnected } = makeAdapter();
+  disconnected.isConnected = () => false;
+  const alwaysFail = async () => {
+    throw new Error('sentinel-byte-identical-545');
+  };
+
+  // First run: live send through the connected adapter, to capture what
+  // the real DM body looks like.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const liveTimer = startDocsIngest([connected], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+  } finally {
+    clearInterval(liveTimer!);
+  }
+  assert.equal(dms.length, 1);
+  const liveBody = dms[0].text;
+
+  // Second run, same shape but zero connected adapters: the queued entry
+  // must equal the live body exactly.
+  resetPendingAlertsForTests();
+  const queueTimer = startDocsIngest([disconnected], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+  } finally {
+    clearInterval(queueTimer!);
+  }
+  assert.deepEqual(getPendingAlertsForTests(), [liveBody]);
+  resetPendingAlertsForTests();
 });
 
 test('SECURITY: the alert DM body never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp)', async (t) => {
@@ -692,6 +784,68 @@ test('SECURITY: the alert DM body for departed-admin-alert never contains the ca
     assert.match(
       body,
       /^⚠️ Background job 'departed-admin-alert' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test("startEngagementAlert: a successful run after a failure streak resets that job's tracker, so a fresh streak of 3 further failures alerts again (not a one-shot latch, issue #568)", async (t) => {
+  const { adapter, dms } = makeAdapter();
+  let mode: 'fail' | 'succeed' = 'fail';
+  const runOnce = async () => {
+    if (mode === 'fail') throw new Error('sentinel-rearm-engagement');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startEngagementAlert([adapter], runOnce);
+  try {
+    await flush(); // failure 1
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alert
+    assert.equal(dms.length, 1, 'first streak of 3 consecutive failures alerts once');
+
+    mode = 'succeed';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // success -> silently resets the tracker
+    assert.equal(dms.length, 1, 'a successful run never itself sends a DM');
+
+    mode = 'fail';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 1 of the new streak
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alerts again
+    assert.equal(dms.length, 2, 'a fresh streak of 3 failures after recovery alerts again');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('SECURITY: the alert DM body for engagement-alert never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp) (issue #568)', async (t) => {
+  const sentinel = 'sentinel-secret-path-or-query-fragment-engagement';
+  const { adapter, dms } = makeAdapter();
+  const runOnce = async () => {
+    throw new Error(sentinel);
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startEngagementAlert([adapter], runOnce);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.equal(dms.length, 1, 'threshold reached, one alert sent');
+    const body = dms[0].text;
+    assert.ok(!body.includes(sentinel), 'the DM body must never contain the caught error message');
+    assert.match(
+      body,
+      /^⚠️ Background job 'engagement-alert' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
     );
   } finally {
     clearInterval(timer!);

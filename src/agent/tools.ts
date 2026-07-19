@@ -7,6 +7,7 @@ import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
+import { queuePendingAlert } from '../pendingAlertQueue.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
@@ -22,6 +23,7 @@ import {
   countRepliesToUser,
   createAnswerFeedback,
   createContentReport,
+  createModerationAppeal,
   createSuggestion,
   clearUserSessions,
   declineKnowledgeCandidate,
@@ -54,6 +56,7 @@ import {
   listAdmins,
   listAdminRoster,
   listAnswerFeedback,
+  listAppeals,
   listContextDigests,
   listKnowledge,
   listKnowledgeFeedbackSummary,
@@ -77,6 +80,7 @@ import {
   REPORT_RATE_LIMIT_PER_DAY,
   resolveContentReport,
   resolveDisplayName,
+  resolveModerationAppeal,
   resolveSuggestion,
   rosterCounts,
   resolveLinkedIdentities,
@@ -117,6 +121,7 @@ import {
   type JobStatus,
 } from '../devTeam/client.js';
 import { triggerRedeploy } from './redeploy.js';
+import { formatNzEventTime } from '../util/nzTime.js';
 import { buildAdminDigestForAdmin } from '../adminDigest.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
@@ -373,6 +378,17 @@ export const KNOWLEDGE_TIE_MARGIN = 0.03;
  * caller's actual low-rated data, so the caveat only ever reached members
  * through the narrow `sendKnowledgeShortcut` path in router.ts. With an
  * empty (default) set, output is byte-identical to pre-#432 behaviour.
+ *
+ * `lowRatedIds` also feeds the near-tie comparator itself (issue #562):
+ * within `KNOWLEDGE_TIE_MARGIN`, if exactly one of the pair is in
+ * `lowRatedIds`, the non-low-rated hit sorts first — checked *before* the
+ * staleness tie-break above, as a member-flagged "not helpful" signal (≥2
+ * distinct raters) is stronger, more deliberate evidence than inferred
+ * staleness. Both-low-rated and neither-low-rated pairs fall through to the
+ * staleness check unchanged. Outside the margin, a real relevance gap always
+ * wins regardless of rating, same as the staleness case. With an empty
+ * (default) `lowRatedIds`, this branch never fires and ordering stays
+ * byte-identical to pre-#562 behaviour.
  */
 export function formatKnowledgeSearchResults(
   hits: Array<
@@ -405,6 +421,9 @@ export function formatKnowledgeSearchResults(
       if (Math.abs(a.h.similarity - b.h.similarity) > KNOWLEDGE_TIE_MARGIN) {
         return b.h.similarity - a.h.similarity;
       }
+      const aLowRated = lowRatedIds.has(a.h.id);
+      const bLowRated = lowRatedIds.has(b.h.id);
+      if (aLowRated !== bLowRated) return aLowRated ? 1 : -1;
       const aStale = isKnowledgeStale(
         { updatedAt: a.h.updatedAt, lastRetrievedAt: a.h.lastRetrievedAt ?? null },
         staleDays,
@@ -469,13 +488,29 @@ const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
  * `router.ts`'s budget-check alert. `adapterFor` is the same per-platform
  * lookup `buildToolServer` already threads through for #157; a platform with
  * no registered or connected adapter is silently skipped, matching that
- * lookup's existing fallback behaviour.
+ * lookup's existing fallback behaviour. If NO platform has a connected
+ * adapter, the alert is queued (shared with health.ts/backgroundJobs.ts —
+ * see src/pendingAlertQueue.ts) instead of silently dropped, and flushed
+ * through the first adapter to reconnect via health.ts's existing
+ * flushPendingAlerts (issue #545).
  */
 async function notifySuperAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
 ): Promise<void> {
+  const anyConnected = ALL_PLATFORMS.some((platform) => adapterFor(platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Super-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    // 'low': notifySuperAdmins is reachable from member-tier tools
+    // (report_content, appeal_moderation), so it must never evict a
+    // system-triggered disconnect/job-failure alert from the shared queue (#545).
+    queuePendingAlert(`🔔 ${message}`, 'low');
+    return;
+  }
   for (const platform of ALL_PLATFORMS) {
     const target = adapterFor(platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
@@ -663,12 +698,27 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     .join(' · ');
   return (
     `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+    formatUsageByPlatformLine(s.byPlatform) +
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
-    formatCacheUsageLine(s.cacheUsage)
+    formatCacheUsageLine(s.cacheUsage) +
+    formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd)
   );
+}
+
+/**
+ * Renders the per-platform breakdown line (issue #580) — `usage_stats` was
+ * the last admin-insight tool still blending Discord and WhatsApp into one
+ * total. `s.byPlatform` is already ordered by volume desc (then platform
+ * name) by the repository query, so this only formats; a platform absent
+ * from the array (zero interactions in the window) is simply not rendered,
+ * matching this codebase's "quiet signal omitted" convention.
+ */
+function formatUsageByPlatformLine(byPlatform: Awaited<ReturnType<typeof usageStats>>['byPlatform']): string {
+  if (byPlatform.length === 0) return '';
+  return `By platform: ${byPlatform.map((p) => `${p.platform}: ${p.inbound} in / ${p.outbound} out, ~$${p.costUsd.toFixed(2)}`).join(' · ')}\n`;
 }
 
 /**
@@ -686,6 +736,26 @@ function formatCacheUsageLine(cacheUsage: Awaited<ReturnType<typeof usageStats>>
   if (totalTokens === 0) return '';
   const hitRate = Math.round((readTokens / totalTokens) * 100);
   return `\nPrompt cache: ${hitRate}% hit rate (${readTokens} read / ${creationTokens} new tokens).`;
+}
+
+/**
+ * Renders the auto-answer spend line (issue #552) — the operator-facing
+ * counterpart to `router.ts`'s `meta.autoAnswer` tag: how much of
+ * `usage_stats`' total spend the opt-in `AUTO_ANSWER_CHANNEL_IDS` feature is
+ * responsible for. Same "omit entirely when there's nothing to show"
+ * convention as `formatCacheUsageLine`/`formatShortcutHitsLine` above — a
+ * deployment with the feature off, or unused in the window, gets
+ * byte-identical output. The percentage clause is omitted (count/dollar
+ * only) when total spend is zero, to avoid a divide-by-zero.
+ */
+function formatAutoAnswerUsageLine(
+  autoAnswerUsage: Awaited<ReturnType<typeof usageStats>>['autoAnswerUsage'],
+  totalCostUsd: number,
+): string {
+  if (autoAnswerUsage.count === 0) return '';
+  const pctClause =
+    totalCostUsd > 0 ? `, ${Math.round((autoAnswerUsage.costUsd / totalCostUsd) * 100)}% of total spend` : '';
+  return `\nAuto-answer: ${autoAnswerUsage.count} replies (~$${autoAnswerUsage.costUsd.toFixed(2)}${pctClause}).`;
 }
 
 /**
@@ -763,6 +833,263 @@ export function formatEngagementStats(s: Awaited<ReturnType<typeof engagementSta
   );
 }
 
+/** One entry in the `feature_flags` allowlist (issue #559). */
+export interface FeatureFlagEntry {
+  /** Exact `X_ENABLED` env var identifier, as it appears in config.ts — lets the anti-drift test tie this allowlist back to the real env schema without ever touching runtime `config` shape reflection. */
+  envVar: string;
+  /** Dotted path into the in-memory `config` object, e.g. 'moderation.llmAbuseEnabled'. */
+  configPath: string;
+  label: string;
+  category: string;
+}
+
+/**
+ * Fixed, hand-maintained allowlist mapping the 28 existing boolean
+ * `*_ENABLED` config flags to a human label and category (issue #559).
+ * Deliberately NOT derived by walking `config` — a missing entry here only
+ * under-reports a flag, and can never over-expose a non-boolean field (a
+ * token, URL, or id) just by that field existing on `config`. When adding a
+ * 29th `*_ENABLED` flag, add a matching entry here or the anti-drift test
+ * (tests/tools.test.ts) fails CI.
+ */
+export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
+  // Moderation
+  {
+    envVar: 'DISCORD_MODERATION_ENABLED',
+    configPath: 'moderation.enabled',
+    label: 'Discord moderation (auto strikes)',
+    category: 'Moderation',
+  },
+  {
+    envVar: 'MODERATION_LLM_ABUSE_ENABLED',
+    configPath: 'moderation.llmAbuseEnabled',
+    label: 'LLM-based abuse detection',
+    category: 'Moderation',
+  },
+  // Knowledge & Learning
+  {
+    envVar: 'CONTEXT_BUILDER_ENABLED',
+    configPath: 'contextBuilder.enabled',
+    label: 'Nightly context builder',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'CONTEXT_CANDIDATES_ENABLED',
+    configPath: 'contextCandidates.enabled',
+    label: 'Context candidate extraction',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'KNOWLEDGE_REFRESH_ENABLED',
+    configPath: 'knowledgeRefresh.enabled',
+    label: 'Knowledge refresh',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'DOCS_INGEST_ENABLED',
+    configPath: 'docsIngest.enabled',
+    label: 'Docs ingest',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'KNOWLEDGE_LINK_CHECK_ENABLED',
+    configPath: 'knowledgeLinkCheck.enabled',
+    label: 'Knowledge link check',
+    category: 'Knowledge & Learning',
+  },
+  {
+    envVar: 'CONTEXT_EXPORT_ENABLED',
+    configPath: 'contextExport.enabled',
+    label: 'Context export',
+    category: 'Knowledge & Learning',
+  },
+  // Admin Alerts & Digest
+  {
+    envVar: 'ADMIN_DIGEST_ENABLED',
+    configPath: 'adminDigest.enabled',
+    label: 'Weekly admin digest',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'ADMIN_DIGEST_TRENDS_ENABLED',
+    configPath: 'adminDigest.trendsEnabled',
+    label: 'Admin digest trend lines',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'UPSTREAM_LIMIT_ALERT_ENABLED',
+    configPath: 'behaviour.upstreamLimitAlertEnabled',
+    label: 'Upstream rate-limit alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'DEPARTED_ADMIN_ALERT_ENABLED',
+    configPath: 'departedAdminAlert.enabled',
+    label: 'Departed admin alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'ACCESS_REQUEST_ALERT_ENABLED',
+    configPath: 'accessRequestAlert.enabled',
+    label: 'Access request alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'ESCALATION_TO_ADMIN_ENABLED',
+    configPath: 'behaviour.escalationToAdminEnabled',
+    label: 'Escalation to admin',
+    category: 'Admin Alerts & Digest',
+  },
+  // Onboarding
+  {
+    envVar: 'DISCORD_WELCOME_ENABLED',
+    configPath: 'discord.welcome.enabled',
+    label: 'Discord welcome message',
+    category: 'Onboarding',
+  },
+  // WhatsApp
+  {
+    envVar: 'WHATSAPP_WELCOME_ENABLED',
+    configPath: 'whatsapp.welcome.enabled',
+    label: 'WhatsApp welcome message (Baileys)',
+    category: 'WhatsApp',
+  },
+  {
+    envVar: 'WHATSAPP_VOICE_ENABLED',
+    configPath: 'whatsapp.voice.enabled',
+    label: 'WhatsApp voice message transcription',
+    category: 'WhatsApp',
+  },
+  {
+    envVar: 'WHATSAPP_CLOUD_WELCOME_ENABLED',
+    configPath: 'whatsapp.cloud.welcomeEnabled',
+    label: 'WhatsApp Cloud welcome message',
+    category: 'WhatsApp',
+  },
+  // Cost/Model
+  {
+    envVar: 'ACK_SHORTCUT_ENABLED',
+    configPath: 'behaviour.ackShortcutEnabled',
+    label: 'Acknowledgement shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'KNOWLEDGE_SHORTCUT_ENABLED',
+    configPath: 'behaviour.knowledgeShortcutEnabled',
+    label: 'Knowledge-match shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'GUEST_KNOWLEDGE_SHORTCUT_ENABLED',
+    configPath: 'behaviour.guestKnowledgeShortcutEnabled',
+    label: 'Guest knowledge shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'REPEAT_QUESTION_SHORTCUT_ENABLED',
+    configPath: 'behaviour.repeatQuestionShortcutEnabled',
+    label: 'Repeat-question shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'REPEAT_MAX_TURNS_SHORTCUT_ENABLED',
+    configPath: 'behaviour.repeatMaxTurnsShortcutEnabled',
+    label: 'Repeat-max-turns shortcut',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'DAILY_REPLY_BUDGET_WARN_ENABLED',
+    configPath: 'behaviour.dailyReplyBudgetWarnEnabled',
+    label: 'Daily reply budget warning',
+    category: 'Cost/Model',
+  },
+  // Integrations
+  {
+    envVar: 'IMAGE_GEN_ENABLED',
+    configPath: 'imageGen.enabled',
+    label: 'Image generation',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'GITHUB_ISSUE_ENABLED',
+    configPath: 'github.enabled',
+    label: 'GitHub issue filing',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'DEV_TEAM_ENABLED',
+    configPath: 'devTeam.enabled',
+    label: 'Dev-team service integration',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'STATUS_CHECK_ENABLED',
+    configPath: 'statusCheck.enabled',
+    label: 'Anthropic status check',
+    category: 'Integrations',
+  },
+  {
+    envVar: 'ENGAGEMENT_ALERT_ENABLED',
+    configPath: 'engagementAlert.enabled',
+    label: 'Weekly engagement alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'USAGE_COST_DIGEST_ENABLED',
+    configPath: 'usageCostDigest.enabled',
+    label: 'Weekly cost-trend DM',
+    category: 'Cost/Model',
+  },
+  {
+    envVar: 'AUTO_RETRACT_REPLY_ENABLED',
+    configPath: 'behaviour.autoRetractReplyEnabled',
+    label: 'Auto-retract reply on member delete',
+    category: 'Moderation',
+  },
+] as const;
+
+/**
+ * Only ever indexes a fixed, hand-written dotted path — never
+ * `Object.entries`/`Object.values`/spreads the object it's walking, so it
+ * cannot be used to enumerate or leak fields the caller didn't already name.
+ * Returns `undefined` (never throws) for a missing/non-boolean path, so a
+ * config-shape typo under-reports rather than crashing the tool.
+ */
+function getConfigBoolean(source: unknown, path: string): boolean | undefined {
+  const value = path.split('.').reduce<unknown>((node, key) => {
+    if (node && typeof node === 'object' && key in (node as Record<string, unknown>)) {
+      return (node as Record<string, unknown>)[key];
+    }
+    return undefined;
+  }, source);
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * Pure formatter for the `feature_flags` tool reply (issue #559). Takes the
+ * config-shaped object to read from as a parameter (defaulting to the real,
+ * already-loaded `config` singleton) purely so it's unit-testable against a
+ * fixture without mutating process env — it never reaches any other data
+ * source. A flag whose configPath resolves to a non-boolean or missing value
+ * renders as "Off" rather than throwing, so a fixture missing an unrelated
+ * branch doesn't break the whole listing.
+ */
+export function formatFeatureFlags(source: unknown = config): string {
+  const categories: string[] = [];
+  for (const entry of FEATURE_FLAG_MAP) {
+    if (!categories.includes(entry.category)) categories.push(entry.category);
+  }
+  const lines = [`Feature flags (${FEATURE_FLAG_MAP.length} total):`];
+  for (const category of categories) {
+    lines.push('', `${category}:`);
+    for (const entry of FEATURE_FLAG_MAP.filter((e) => e.category === category)) {
+      const value = getConfigBoolean(source, entry.configPath) ?? false;
+      lines.push(`- ${entry.label}: ${value ? 'On' : 'Off'}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** Shared zod shape for create_event's startTime/endTime — format only; future/ordering checks are cross-field and live in the handler. */
 function isoInstantSchema(description: string) {
   return z
@@ -788,6 +1115,16 @@ const MEMBER_APPROVED_MESSAGE =
 const MEMBER_APPROVED_MESSAGE_MI =
   'Kia ora! 👋 Kua whakaaetia koe — kua noho mema rēhita koe o NZ Claude Community. ' +
   'Whakapā mai ki ahau i ngā wā katoa. Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga poto.';
+
+/**
+ * Fixed, static note appended to `add_member`'s reply when
+ * `notifyMemberApproved` reports the confirmation DM did not land (issue
+ * #556) — so the acting admin isn't told the identical success text
+ * regardless of delivery. Deliberately never a function of the underlying
+ * adapter error (which can embed platform-specific detail): this is one of
+ * exactly two hardcoded strings, the other being `ADMIN_DM_FAILED_NOTE`.
+ */
+const MEMBER_DM_FAILED_NOTE = " (Couldn't DM them the welcome message — they may not know yet.)";
 
 /**
  * Plain-language rundown of what a member can ask the bot to do, named by
@@ -828,7 +1165,7 @@ const MEMBER_CAPABILITIES_TEXT =
  */
 const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
-  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
+  "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -839,6 +1176,27 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Set the community guidelines or the welcome message shown to new members\n' +
   '- Assign a Discord role, remove a Discord role, or list which roles are available to assign\n' +
   '- Generate an image, or check recent changes to the bot and community (the changelog)';
+
+/**
+ * Plain-language rundown of what a super admin can additionally ask the bot
+ * to do, on top of MEMBER_CAPABILITIES_TEXT and ADMIN_CAPABILITIES_TEXT above
+ * (issue #582) — every entry in SUPER_ADMIN_TOOLS gets a mention,
+ * consolidated into behaviourally-related bullets rather than 19 one-per-line
+ * entries, same discipline ADMIN_CAPABILITIES_TEXT already uses (issue #367).
+ * No interpolation of any runtime/tool argument — static text only, same
+ * trust level as its two siblings.
+ */
+const SUPER_ADMIN_CAPABILITIES_TEXT =
+  'As a super admin, you also have:\n' +
+  '- Grant or revoke admin status for a member\n' +
+  '- Pause or resume the bot, view audit logs, review admin activity, list current admins, ' +
+  'or check usage/engagement stats\n' +
+  '- Erase all of a user\'s stored data on request ("purge their data")\n' +
+  '- Change bot-wide policy settings, or trigger a redeploy of the bot\n' +
+  '- See which optional feature flags are currently on or off\n' +
+  '- File a GitHub issue suggesting an improvement\n' +
+  '- Dispatch a remote dev-team job to assess or deliver a change, check its status, fetch its result, ' +
+  "turn a completed assessment into a tracked backlog, list an assessment's findings, or re-check one finding";
 
 /**
  * Best-effort confirmation DM for a member grant. Fires only on an actual
@@ -854,6 +1212,11 @@ const ADMIN_CAPABILITIES_TEXT =
  * dropping the DM (issue #52's invariant, same shape as router.ts's
  * `getLangPref(...).catch(() => 'auto')`), distinct from the send's own
  * `.catch(logger.warn)` below.
+ *
+ * Returns `true` when the grant was already in place (nothing to attempt,
+ * so no failure) or the DM send resolved; `false` when a DM was attempted
+ * and the send threw/rejected (issue #556) — `add_member` uses this to tell
+ * the acting admin the confirmation DM didn't land, since today it can't.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -861,13 +1224,17 @@ export async function notifyMemberApproved(
   wasAlreadyMember: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
-): Promise<void> {
-  if (wasAlreadyMember) return;
+): Promise<boolean> {
+  if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const message = lang === 'mi' ? MEMBER_APPROVED_MESSAGE_MI : MEMBER_APPROVED_MESSAGE;
-  await adapter
+  return adapter
     .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId }, 'Approval DM failed'));
+    .then(() => true)
+    .catch((err) => {
+      logger.warn({ err, userId }, 'Approval DM failed');
+      return false;
+    });
 }
 
 /**
@@ -887,6 +1254,14 @@ const ADMIN_APPROVED_MESSAGE_MI =
   'Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga, tae atu ki ō rākau whakahaere hou.';
 
 /**
+ * Fixed, static note appended to `grant_admin`'s reply when
+ * `notifyAdminApproved` reports the promotion DM did not land (issue #556) —
+ * mirrors `MEMBER_DM_FAILED_NOTE`'s rationale exactly, with its own wording
+ * since this is a promotion, not a fresh membership.
+ */
+const ADMIN_DM_FAILED_NOTE = " (Couldn't DM them about the promotion — they may not know yet.)";
+
+/**
  * Best-effort orientation DM for an admin grant, mirroring notifyMemberApproved's
  * shape exactly: fires only on an actual transition into admin
  * (`wasAlreadyAdmin` false) so re-running `grant_admin` on an existing admin
@@ -896,6 +1271,10 @@ const ADMIN_APPROVED_MESSAGE_MI =
  * unit-testable without the MCP tool-call transport. Honours the target's
  * standing `'mi'` language preference identically to `notifyMemberApproved`
  * above (issue #331).
+ *
+ * Returns `true`/`false` on the same terms as `notifyMemberApproved` above
+ * (issue #556) — `grant_admin` uses this to tell the acting super admin the
+ * promotion DM didn't land.
  */
 export async function notifyAdminApproved(
   adapter: PlatformAdapter,
@@ -903,13 +1282,17 @@ export async function notifyAdminApproved(
   wasAlreadyAdmin: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
-): Promise<void> {
-  if (wasAlreadyAdmin) return;
+): Promise<boolean> {
+  if (wasAlreadyAdmin) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const message = lang === 'mi' ? ADMIN_APPROVED_MESSAGE_MI : ADMIN_APPROVED_MESSAGE;
-  await adapter
+  return adapter
     .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId }, 'Admin promotion DM failed'));
+    .then(() => true)
+    .catch((err) => {
+      logger.warn({ err, userId }, 'Admin promotion DM failed');
+      return false;
+    });
 }
 
 /**
@@ -1755,7 +2138,12 @@ export function buildToolServer(
       'do not answer that from general knowledge alone.',
     {},
     async () => {
-      if (caller.role === 'admin' || caller.role === 'super_admin') {
+      if (caller.role === 'super_admin') {
+        return text(
+          `${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`,
+        );
+      }
+      if (caller.role === 'admin') {
         return text(`${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}`);
       }
       return text(MEMBER_CAPABILITIES_TEXT);
@@ -1809,8 +2197,8 @@ export function buildToolServer(
         events
           .map((e) => {
             const when = e.scheduledEndAt
-              ? `${e.scheduledStartAt} – ${e.scheduledEndAt}`
-              : e.scheduledStartAt;
+              ? `${formatNzEventTime(e.scheduledStartAt)} – ${formatNzEventTime(e.scheduledEndAt)}`
+              : formatNzEventTime(e.scheduledStartAt);
             const desc = e.description ? `: ${e.description}` : '';
             return `- ${e.name} (${when}) @ ${e.location}${desc} [id: ${e.id}]`;
           })
@@ -2209,6 +2597,18 @@ export function buildToolServer(
           true,
         );
       }
+      // Durable record FIRST (issue #554) — a missed/dismissed DM must never
+      // erase the appeal with no trace. Awaited, not fire-and-forget: the
+      // whole point of this write is that it survives even when the DM
+      // below fails, so it must actually land before we report success.
+      await createModerationAppeal({
+        platform: caller.platform,
+        userId: caller.userId,
+        userName: caller.userName,
+        reason: args.reason,
+        activeWarnings: active,
+        strikeLimit: config.moderation.strikeLimit,
+      });
       void notifyAppealFiled(adapterFor, {
         callerUserId: caller.userId,
         callerName: caller.userName,
@@ -2548,10 +2948,10 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    "Perform a moderation action. warn_user sends immediately; timeout/kick/ban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite, and there is no unban_user counterpart in this bot; use Discord's own UI to unban. Admins can only act in conversations they are in.",
+    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. Admins can only act in conversations they are in.',
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'ban_user', 'delete_message', 'warn_user'])
+        .enum(['timeout_user', 'kick_user', 'ban_user', 'unban_user', 'delete_message', 'warn_user'])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
@@ -2799,6 +3199,66 @@ export function buildToolServer(
       );
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const listAppealsTool = tool(
+    'list_appeals',
+    "List members' filed appeals of their own auto-moderation warning(s)/mute (issue #554) — the durable " +
+      'queue `appeal_moderation` writes into, so a missed/dismissed admin DM no longer erases the record. ' +
+      'Each row snapshots the active-warning count and strike limit at filing time, plus the optional ' +
+      'reason. Admin only, guild-wide (not conversation-scoped, same as list_member_warnings/' +
+      'clear_warnings) — warnings/mutes carry no conversation boundary to scope by.',
+    {
+      status: z
+        .enum(['open', 'resolved', 'dismissed'])
+        .optional()
+        .describe('Filter by status (default: all statuses)'),
+      limit: z.number().optional().describe('Max entries (default 50)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_appeals');
+      const rows = await listAppeals(args.status, args.limit ?? 50);
+      if (rows.length === 0) return text('No appeals found.');
+      return text(
+        untrusted(
+          'Moderation appeals',
+          rows
+            .map(
+              (r) =>
+                `#${r.id} [${r.status}] ${r.platform} — ${r.userName ? sanitizeName(r.userName) : r.userId} ` +
+                `(${r.userId}), ${r.activeWarnings}/${r.strikeLimit} active warnings` +
+                `${r.reason ? `: ${r.reason}` : ''} (${r.createdAt.toISOString()})`,
+            )
+            .join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const resolveAppealTool = tool(
+    'resolve_appeal',
+    'Mark a filed moderation appeal as resolved or dismissed once triaged. Non-destructive status change ' +
+      '(no CONFIRM needed), audited. Does NOT itself clear the warnings or lift a mute — that stays ' +
+      "clear_warnings' job alone, a deliberate, separate admin judgement call. Admin only, guild-wide, " +
+      'same as list_appeals.',
+    {
+      id: z.number().describe('Appeal id (from list_appeals)'),
+      status: z.enum(['resolved', 'dismissed']).describe('New status'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'resolve_appeal');
+      const { success, result } = await audited({
+        actionKind: 'resolve_appeal',
+        params: { id: args.id, status: args.status },
+        run: async () => {
+          const row = await resolveModerationAppeal(args.id, args.status, caller.userId);
+          if (!row) throw new Error(`No appeal with id ${args.id}.`);
+          return `marked ${args.status}`;
+        },
+      });
+      return text(success ? `Appeal #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
+    },
   );
 
   const announce = tool(
@@ -3230,7 +3690,7 @@ export function buildToolServer(
       // same discipline as create_event's own CONFIRM prompt — the human
       // confirms the actual artifact, not model-composed prose.
       return requireConfirm(
-        `cancel event "${event.name}" starting ${event.scheduledStartAt}` +
+        `cancel event "${event.name}" starting ${formatNzEventTime(event.scheduledStartAt)}` +
           `${args.reason ? ` (reason: ${args.reason})` : ''}`,
         'admin',
         async () => {
@@ -3518,6 +3978,7 @@ export function buildToolServer(
         // (in-place UPDATE keeps no history) — recoverability if a bad/hostile
         // edit slips through.
         const prior = await getKnowledgeContentById(args.id);
+        const state: { similarEntry?: KnowledgeDuplicateMatch } = {};
         const { success, result } = await audited({
           actionKind: 'update_knowledge',
           params: {
@@ -3531,7 +3992,7 @@ export function buildToolServer(
             priorContent: prior?.content,
           },
           run: async () => {
-            const updated = await updateKnowledge({
+            const outcome = await updateKnowledge({
               id: args.id,
               title: args.title,
               content: args.content,
@@ -3540,11 +4001,20 @@ export function buildToolServer(
               sourceTitle: args.sourceTitle,
               callerPlatform: caller.platform,
             });
-            if (!updated) throw new Error(`No knowledge entry with id ${args.id}.`);
+            if (!outcome.updated) throw new Error(`No knowledge entry with id ${args.id}.`);
+            state.similarEntry = outcome.similarEntry;
             return 'updated';
           },
         });
-        return success ? `Updated knowledge entry #${args.id}.` : `Failed: ${result}`;
+        if (!success) return `Failed: ${result}`;
+        let reply = `Updated knowledge entry #${args.id}.`;
+        if (state.similarEntry) {
+          const { similarEntry } = state;
+          const pct = (similarEntry.similarity * 100).toFixed(0);
+          const label = similarEntry.title ? `"${similarEntry.title}"` : similarEntry.content.slice(0, 80);
+          reply += ` Note: this looks similar (${pct}%) to existing entry #${similarEntry.id} (${label}) — consider update_knowledge on #${similarEntry.id} instead if this is the same topic.`;
+        }
+        return reply;
       });
     },
   );
@@ -4257,9 +4727,19 @@ export function buildToolServer(
       await clearAccessRequest(platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
-      await notifyMemberApproved(adapter, userId, wasAlreadyMember, platform);
+      // Cross-platform approval DM (issue #157's pattern, extended by #548):
+      // routes through the TARGET's platform adapter, not the acting admin's
+      // current-turn one — degrades to a silent skip if that platform isn't
+      // registered in this deployment. Capture whether the DM was delivered
+      // (issue #556) so the reply can flag a failed send; an unregistered
+      // target attempts nothing, so it counts as delivered (no failure note).
+      const memberTarget = adapterFor(platform);
+      const dmDelivered = memberTarget
+        ? await notifyMemberApproved(memberTarget, userId, wasAlreadyMember, platform)
+        : true;
       const label = await resolveSanitizedLabel(platform, userId, args.displayName);
-      return text(`Added ${label} as ${finalRole} on ${platform}.`);
+      const note = dmDelivered ? '' : MEMBER_DM_FAILED_NOTE;
+      return text(`Added ${label} as ${finalRole} on ${platform}.${note}`);
     },
   );
 
@@ -4529,11 +5009,22 @@ export function buildToolServer(
             return 'granted';
           },
         });
+        let dmDelivered = true;
         if (success) {
           await resetSessionsForRoleChange(platform, userId, 'grant_admin');
-          await notifyAdminApproved(adapter, userId, wasAlreadyAdmin, platform);
+          // Cross-platform promotion DM (issue #157's pattern, extended by
+          // #548): routes through the TARGET's platform adapter, not the acting
+          // admin's current-turn one — degrades to a silent skip if that
+          // platform isn't registered here. Capture delivery (issue #556) for
+          // the failed-send note; an unregistered target attempts nothing, so
+          // it counts as delivered.
+          const adminTarget = adapterFor(platform);
+          dmDelivered = adminTarget
+            ? await notifyAdminApproved(adminTarget, userId, wasAlreadyAdmin, platform)
+            : true;
         }
-        return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
+        const note = dmDelivered ? '' : ADMIN_DM_FAILED_NOTE;
+        return success ? `Granted admin to ${label} on ${platform}.${note}` : `Failed: ${result}`;
       });
     },
   );
@@ -4696,6 +5187,19 @@ export function buildToolServer(
       assertAtLeast(caller.role, 'super_admin', 'engagement_stats');
       const s = await engagementStats(args.platform);
       return text(formatEngagementStats(s));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const featureFlagsTool = tool(
+    'feature_flags',
+    'List which of the optional, off-by-default behaviours (boolean *_ENABLED config flags — moderation, ' +
+      'knowledge/learning, admin alerts, onboarding, WhatsApp, cost-saving shortcuts, integrations) are ' +
+      'actually turned on right now, grouped by category. Super admin only.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'super_admin', 'feature_flags');
+      return text(formatFeatureFlags());
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -5258,6 +5762,8 @@ export function buildToolServer(
       clearWarningsTool,
       listMemberWarningsTool,
       listMutedMembersTool,
+      listAppealsTool,
+      resolveAppealTool,
       announce,
       createPoll,
       endPoll,
@@ -5307,6 +5813,7 @@ export function buildToolServer(
       adminActivityTool,
       listAdminsTool,
       engagementStatsTool,
+      featureFlagsTool,
       pauseBot,
       resumeBot,
       setPolicy,
