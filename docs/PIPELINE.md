@@ -105,10 +105,14 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   Max-pool spend**: pure shell + `gh` that reads PR titles/bodies/comments only
   as jq DATA (never as instructions) and runs no PR-controlled code, so it has
   none of the fix/resolve/revise loops' prompt-injection or code-execution
-  surface. It merges the OLDEST PR that is same-repo, bot-authored, `Closes #`,
-  has every check green, is `MERGEABLE` (no conflict), and whose LATEST
-  automated review verdict is an `LGTM` **newer than the head commit** (a stale
-  approval from before a later push never counts) — and is not labelled
+  surface. It merges the OLDEST PR that is same-repo, authored by the build
+  worker (`claude[bot]` — the exact identity, not merely any bot, since a bad
+  match here merges to `main`), `Closes #`, has every check green, is
+  `MERGEABLE` (no conflict), and whose LATEST automated review verdict is an
+  `LGTM` from `github-actions[bot]` (the review worker's identity — matched on
+  author, not just body text, so a public copy of the verdict phrasing can't
+  forge an approval) **newer than the head commit** (a stale approval from
+  before a later push never counts) — and is not labelled
   `needs-human` or `no-auto-merge` (pin a PR out by hand, same shape as
   `no-auto-resolve`). It merges **exactly one PR per run**: afterwards `main`
   has advanced, so it dispatches the conflict resolver to rebase whatever now

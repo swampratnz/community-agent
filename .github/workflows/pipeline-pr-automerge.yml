@@ -130,15 +130,22 @@ jobs:
             done
 
             # --- Structural contract: build-worker PR, not pinned/escalated ----
+            # Pin to the EXACT build-worker identity (`claude[bot]`, the App the
+            # build worker opens PRs as), NOT merely `.author.is_bot == true`.
+            # The fix/resolve/revise loops can accept any bot because a bad
+            # match there is reversible (a wrong rebase/nudge); here a bad match
+            # merges to `main`, so at these stakes the identity check must admit
+            # only the build worker, not any other bot account with same-repo
+            # write access (e.g. Dependabot).
             eligible="$(jq -r '
               (.isDraft | not)
               and (.isCrossRepository | not)
-              and (.author.is_bot == true)
+              and (.author.login == "claude[bot]")
               and ((.body // "") | test("[Cc]loses #[0-9]+"))
               and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-merge") | not))
             ' <<<"$info")"
             if [ "$eligible" != 'true' ]; then
-              echo "PR #$n: not an eligible build-worker PR (draft/fork/non-bot/no Closes #/stop-labelled) — skip."
+              echo "PR #$n: not an eligible build-worker PR (draft/fork/not claude[bot]/no Closes #/stop-labelled) — skip."
               echo "::endgroup::"; continue
             fi
 

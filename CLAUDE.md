@@ -152,8 +152,10 @@ ownership rules:
   (it reads PR titles/bodies/comments only as jq data, never as instructions,
   and runs no PR-controlled code — so it has none of the fix/resolve loops'
   injection/code-exec surface). It merges the OLDEST PR that is same-repo,
-  bot-authored, `Closes #`, has all checks green, is `MERGEABLE`, and whose
-  LATEST automated review verdict is an `LGTM` newer than the head commit —
+  authored by the build worker (`claude[bot]` — the exact identity, not merely
+  any bot), `Closes #`, has all checks green, is `MERGEABLE`, and whose
+  LATEST automated review verdict is an `LGTM` (from `github-actions[bot]`,
+  the review worker's identity) newer than the head commit —
   never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to
   rebase the rest, and the next PR only re-qualifies once it is green against
