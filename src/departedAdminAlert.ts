@@ -70,7 +70,13 @@ export function startDepartedAdminAlert(
   return startTrackedJob('departed-admin-alert', adapters, config.departedAdminAlert.enabled, runOnce);
 }
 
-async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
+/**
+ * Exported (issue #568) so `engagementAlert.ts` can reuse this exact
+ * super-admin-only, connected-adapters-only fan-out by import rather than a
+ * second copy — the adversarial-review note on #568 pins this as the single
+ * source of truth for "super admins only" DM delivery across both jobs.
+ */
+export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
   for (const adapter of adapters) {
     if (!adapter.isConnected()) continue; // can't send through a dead connection
     for (const id of superAdminIds(adapter.platform)) {
