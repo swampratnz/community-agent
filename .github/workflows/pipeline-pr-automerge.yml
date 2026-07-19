@@ -116,9 +116,17 @@ jobs:
 
           # Candidates: open, oldest-first. All eligibility is re-checked per PR
           # below from authoritative fields; this list is just the scan order.
-          candidates="$(gh pr list --repo "$REPO" --state open --limit 50 \
-            --json number,createdAt \
-            | jq -r 'sort_by(.createdAt) | .[].number')"
+          # `--limit 100` (gh's per-page max) with a truncation warning: since we
+          # merge OLDEST-first and gh returns newest-first, a silent cap could
+          # hide exactly the oldest PRs we most want to act on. 100 is far above
+          # the pipeline's WIP caps, so truncation should never happen — but warn
+          # loudly rather than silently skip if it ever does.
+          LIST_CAP=100
+          raw="$(gh pr list --repo "$REPO" --state open --limit "$LIST_CAP" --json number,createdAt)"
+          if [ "$(jq 'length' <<<"$raw")" -ge "$LIST_CAP" ]; then
+            echo "::warning::Open-PR list hit the --limit $LIST_CAP cap; PRs beyond the newest $LIST_CAP are not evaluated this run (unexpected given WIP caps — investigate)."
+          fi
+          candidates="$(jq -r 'sort_by(.createdAt) | .[].number' <<<"$raw")"
 
           if [ -z "$candidates" ]; then
             echo "No open PRs — nothing to merge."
@@ -299,22 +307,30 @@ jobs:
               exit 0
             fi
 
-            # Merge refused. Distinguish a TRANSIENT head-moved race (a push
-            # landed between the gate snapshot and the merge — --match-head-commit
-            # failed closed exactly as intended) from a PERSISTENT block (branch
-            # protection). A moved head just defers to the next tick, silently;
-            # only a genuine block posts the explanatory note.
-            current_head="$(gh pr view "$n" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+            # Merge refused. Distinguish TRANSIENT races (defer silently, the
+            # next tick re-evaluates) from a PERSISTENT block (branch protection,
+            # post the explanatory note). Two transient shapes: the PR head moved
+            # (--match-head-commit failed closed), OR `main` advanced so the PR is
+            # no longer MERGEABLE (base conflict) — both are re-fetched here so the
+            # note isn't a misleading "branch protection" for a mere race.
+            after="$(gh pr view "$n" --repo "$REPO" --json headRefOid,mergeable)"
+            current_head="$(jq -r '.headRefOid' <<<"$after")"
+            current_mergeable="$(jq -r '.mergeable' <<<"$after")"
             if [ "$current_head" != "$head_sha" ]; then
               echo "PR #$n: head moved ($head_sha -> $current_head) between the gate and the merge — fail-closed, no merge; a later tick re-evaluates the new head."
               echo "::endgroup::"
               exit 0
             fi
-            # Head unchanged, yet the merge was refused — almost always branch
-            # protection (e.g. a required human approving review, which the
-            # automated verdict is not). Post ONE marker-guarded note so it's
-            # visible without spamming every tick, and stop (do not fall through
-            # to merge a different PR under the same blocked policy).
+            if [ "$current_mergeable" != 'MERGEABLE' ]; then
+              echo "PR #$n: base advanced — no longer MERGEABLE (now $current_mergeable) between the gate and the merge — deferring; the conflict resolver will rebase it."
+              echo "::endgroup::"
+              exit 0
+            fi
+            # Head unchanged and still mergeable, yet the merge was refused —
+            # almost always branch protection (e.g. a required human approving
+            # review, which the automated verdict is not). Post ONE marker-guarded
+            # note so it's visible without spamming every tick, and stop (do not
+            # fall through to merge a different PR under the same blocked policy).
             echo "::warning::gh pr merge refused for PR #$n with head unchanged — likely branch protection."
             already_noted="$(gh pr view "$n" --repo "$REPO" --json comments \
               | jq -r --arg m "$BLOCKED_MARKER" '[.comments[].body] | any(startswith($m))')"
