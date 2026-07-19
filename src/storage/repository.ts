@@ -2477,6 +2477,7 @@ export async function usageStats(days = 7): Promise<{
   inbound: number;
   outbound: number;
   costUsd: number;
+  byPlatform: Array<{ platform: Platform; inbound: number; outbound: number; costUsd: number }>;
   topUsers: Array<{ userId: string; userName: string | null; messages: number }>;
   costByRole: Array<{ role: Tier; costUsd: number; replies: number }>;
   backgroundCostUsd: number;
@@ -2493,6 +2494,20 @@ export async function usageStats(days = 7): Promise<{
        count(*) FILTER (WHERE direction = 'outbound') AS outbound,
        coalesce(sum(cost_usd), 0) AS cost
      FROM interactions WHERE created_at > now() - $1::interval`,
+    [interval],
+  );
+  // Per-platform split of the same `totals` query above (issue #580) — same
+  // table/window/direction semantics, differing only by `GROUP BY platform`,
+  // so summed rows equal `totals` by construction. Ordered by volume desc
+  // (then platform name) so the tool's output line is deterministic.
+  const { rows: byPlatform } = await pool.query(
+    `SELECT platform,
+       count(*) FILTER (WHERE direction = 'inbound') AS inbound,
+       count(*) FILTER (WHERE direction = 'outbound') AS outbound,
+       coalesce(sum(cost_usd), 0) AS cost
+     FROM interactions WHERE created_at > now() - $1::interval
+     GROUP BY platform
+     ORDER BY count(*) DESC, platform`,
     [interval],
   );
   const { rows: top } = await pool.query(
@@ -2543,6 +2558,12 @@ export async function usageStats(days = 7): Promise<{
     inbound: Number(totals[0].inbound),
     outbound: Number(totals[0].outbound),
     costUsd: Number(totals[0].cost),
+    byPlatform: byPlatform.map((r) => ({
+      platform: r.platform as Platform,
+      inbound: Number(r.inbound),
+      outbound: Number(r.outbound),
+      costUsd: Number(r.cost),
+    })),
     topUsers: top.map((r) => ({ userId: r.user_id, userName: r.user_name, messages: Number(r.n) })),
     costByRole: byRole.map((r) => ({ role: r.role, costUsd: Number(r.cost), replies: Number(r.n) })),
     backgroundCostUsd: background.total,
