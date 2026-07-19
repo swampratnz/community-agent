@@ -650,6 +650,17 @@ const EnvSchema = z.object({
   // Always a positive count — unlike the "0 disabled" knobs above, disabling
   // this feature is DAILY_REPLY_BUDGET_WARN_ENABLED=false, not a 0 here.
   DAILY_REPLY_BUDGET_WARN_REMAINING: z.coerce.number().int().positive().default(5),
+  // Auto-retract the bot's own reply when the member deletes the message it
+  // answered (issue #575) — a native platform delete/revoke event, server-
+  // side plumbing only, never model-reachable. Off by default: with it
+  // unset, deleting a message the bot replied to leaves the reply untouched
+  // and calls no adapter deletion method (byte-identical to today). See
+  // src/replyRetraction.ts, src/router.ts, and the Discord/WhatsApp Baileys
+  // adapters' delete/revoke listeners.
+  AUTO_RETRACT_REPLY_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // How long shutdown() waits for in-flight per-conversation turns to settle
   // before proceeding to adapter.stop()/closeDb() (issue #210). Comfortably
   // inside systemd's default 90s TimeoutStopSec for community-agent.service
@@ -978,6 +989,7 @@ export const config = {
     escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
     dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
     dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,
+    autoRetractReplyEnabled: env.AUTO_RETRACT_REPLY_ENABLED ?? false,
     shutdownDrainTimeoutMs: env.SHUTDOWN_DRAIN_TIMEOUT_MS,
   },
   log: {

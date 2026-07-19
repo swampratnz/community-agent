@@ -22,6 +22,7 @@ import {
   takePendingAction,
 } from './agent/pendingActions.js';
 import { isPaused } from './storage/policies.js';
+import { recordReplyMapping } from './replyRetraction.js';
 import {
   countRepliesToUser,
   getLanguagePreference,
@@ -647,8 +648,8 @@ export class Router {
     conversationId: string,
     text: string,
     language?: 'mi',
-  ): Promise<void> {
-    await adapter.sendMessage({ conversationId, text, language });
+  ): Promise<string[] | undefined> {
+    return adapter.sendMessage({ conversationId, text, language });
   }
 
   /**
@@ -1173,13 +1174,13 @@ export class Router {
       );
       this.recordShortcutHit('ack').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
       const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
-      await this.enqueue(key, 'ack reply', () =>
-        this.send(
+      await this.enqueue(key, 'ack reply', async () => {
+        await this.send(
           adapter,
           replyConversationId ?? msg.conversationId,
           lang === 'mi' ? ACK_REPLY_TEXT_MI : ACK_REPLY_TEXT,
-        ),
-      );
+        );
+      });
       return;
     }
 
@@ -1595,7 +1596,30 @@ export class Router {
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
       // those are out of scope.
-      await this.send(adapter, target, outboundText, reply.languagePreference === 'mi' ? 'mi' : undefined);
+      const sentMessageIds = await this.send(
+        adapter,
+        target,
+        outboundText,
+        reply.languagePreference === 'mi' ? 'mi' : undefined,
+      );
+
+      // Auto-retraction mapping (issue #575): only for a genuine addressed
+      // message (msg.messageId set) that actually produced reply id(s) — this
+      // is the ONLY call site that ever writes to the map, so shortcut/ack
+      // replies and any other `this.send()` call site are never retractable,
+      // matching the proposal's "single top-level-message" v1 scope. Off by
+      // default (`autoRetractReplyEnabled` unset), so this is a no-op and the
+      // map stays empty — byte-identical behaviour to before this feature.
+      // `sentMessageIds` carries EVERY chunk id a platform's `sendMessage`
+      // split a long reply into (e.g. Discord's 2000-char cap), so a
+      // retraction later deletes all of them, not just the last chunk.
+      if (config.behaviour.autoRetractReplyEnabled && msg.messageId && sentMessageIds?.length) {
+        recordReplyMapping(msg.platform, msg.conversationId, msg.messageId, {
+          replyConversationId: target,
+          botReplyMessageIds: sentMessageIds,
+          senderId: msg.userId,
+        });
+      }
 
       // If the turn registered a NEW pending destructive action, the model
       // composed the reply above and could have hidden or misrepresented the

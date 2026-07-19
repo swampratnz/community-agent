@@ -26,6 +26,7 @@ import {
 } from '../../storage/repository.js';
 import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
 import { atLeast } from '../../auth/rbac.js';
+import { evictReplyMapping, peekReplyMapping } from '../../replyRetraction.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
 import {
   extractAudio,
@@ -452,8 +453,20 @@ export class BaileysAdapter implements PlatformAdapter {
     const protocolMessage = msg.message?.protocolMessage;
     const targetId = protocolMessage?.key?.id;
     if (!protocolMessage || !targetId) return false;
-    if (!this.inArchiveScope(remoteJid, isGroup)) return true;
     const isRevoke = protocolMessage.type === proto.Message.ProtocolMessage.Type.REVOKE;
+
+    // Auto-retract our own reply (issue #575) — deliberately INDEPENDENT of
+    // `inArchiveScope` below: this is the bot revoking its own prior send in
+    // reaction to the member's native revoke, not honouring a stored row, so
+    // it works even with ambient archiving off. Gated on its own flag, not on
+    // whether this chat is in archive scope.
+    if (isRevoke && config.behaviour.autoRetractReplyEnabled) {
+      await this.retractOwnReplyIfMapped(msg, remoteJid, targetId, isGroup).catch((err) =>
+        logger.warn({ err, messageId: targetId }, 'Reply retraction failed'),
+      );
+    }
+
+    if (!this.inArchiveScope(remoteJid, isGroup)) return true;
     const isEdit =
       protocolMessage.type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT &&
       !!protocolMessage.editedMessage;
@@ -544,6 +557,67 @@ export class BaileysAdapter implements PlatformAdapter {
       logger.warn({ err, groupJid }, 'Failed to fetch group metadata for admin check');
       return false;
     }
+  }
+
+  /**
+   * Retract the bot's own reply in response to the member revoking the
+   * message it answered (issue #575). `SECURITY:` WhatsApp servers don't
+   * validate revoke authorship any more than they do for the archived-row
+   * case above — a modified client can broadcast a revoke stanza keyed to
+   * ANOTHER participant's message id. Reuses the exact same discipline:
+   * honour it only when the revoker is the mapped message's own sender, or a
+   * group admin (legitimate "delete for everyone" moderation); otherwise
+   * fail safe and leave the reply in place. Unlike the archived-row check,
+   * this never depends on `getInteractionAuthorByMessageId` / an archived row
+   * existing — the reply-mapping entry itself already carries the original
+   * sender, captured for free when the router recorded it.
+   *
+   * Uses `peekReplyMapping`/`evictReplyMapping` rather than the unconditional
+   * `takeReplyMapping`: a FAILED authorship check must never consume the
+   * entry, or a single forged/non-author revoke could permanently deny a
+   * later legitimate retraction of the same reply (a griefing vector) — the
+   * entry is only evicted once a retraction is actually authorised.
+   */
+  private async retractOwnReplyIfMapped(
+    msg: WAMessage,
+    remoteJid: string,
+    targetId: string,
+    isGroup: boolean,
+  ): Promise<void> {
+    const mapping = peekReplyMapping('whatsapp', remoteJid, targetId);
+    if (!mapping) return;
+    const revokerId = this.resolveSenderId(msg, isGroup, remoteJid);
+    const authored = revokerId === mapping.senderId;
+    if (!authored && !(await this.isGroupAdmin(remoteJid, revokerId))) {
+      logger.warn(
+        { messageId: targetId, remoteJid },
+        'Ignoring reply-retraction revoke from a non-author, non-admin participant',
+      );
+      return;
+    }
+    evictReplyMapping('whatsapp', remoteJid, targetId);
+    await Promise.all(
+      mapping.botReplyMessageIds.map((id) =>
+        this.deleteOwnMessage(mapping.replyConversationId, id).catch((err) =>
+          logger.warn({ err, messageId: id }, 'Failed to retract own reply'),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Delete (revoke) a message this bot itself sent (issue #575's
+   * `deleteOwnMessage` capability) — a standard first-party "delete for
+   * everyone" on the bot's OWN send, distinct from `performAdminAction`'s
+   * `delete_message` (which revokes another user's message and requires
+   * `participant`). `fromMe: true` is sufficient for Baileys to address the
+   * bot's own message with no `participant` needed, in a group or a DM.
+   */
+  async deleteOwnMessage(conversationId: string, messageId: string): Promise<void> {
+    if (!this.sock) throw new Error('WhatsApp socket not connected');
+    await this.sock.sendMessage(conversationId, {
+      delete: { remoteJid: conversationId, id: messageId, fromMe: true },
+    });
   }
 
   /**
@@ -715,17 +789,19 @@ export class BaileysAdapter implements PlatformAdapter {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
   }
 
-  async sendMessage(out: OutgoingMessage): Promise<void> {
+  async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    this.remember(
-      await this.sock.sendMessage(out.conversationId, { text: await this.filtered(out.text, out.language) }),
-    );
+    const sent = await this.sock.sendMessage(out.conversationId, {
+      text: await this.filtered(out.text, out.language),
+    });
+    this.remember(sent);
     // Clear the "composing" indicator now that the reply has actually sent.
     // Best-effort: a presence update failing here must not affect the send
     // that already succeeded above.
     this.sock
       .sendPresenceUpdate('paused', out.conversationId)
       .catch((err) => logger.debug({ err }, 'Failed to clear WhatsApp presence'));
+    return sent?.key?.id ? [sent.key.id] : undefined;
   }
 
   /** Post an image (with an optional caption) to a conversation. */

@@ -82,6 +82,87 @@ for `protocolMessage` events in archived groups. Archiving is receive-side
 only — no new outbound/send behaviour, so it adds no new Baileys ToS/ban-risk
 surface (see SECURITY.md's Baileys section).
 
+## Auto-retracting the bot's own reply
+
+`AUTO_RETRACT_REPLY_ENABLED` (issue #575; **off by default**) makes the bot
+retract its OWN reply when the member deletes the message it answered — a
+member's native platform delete is a one-tap action that reasonably implies
+"make this exchange go away," but by default only the *stored* copy is ever
+touched by the ambient-archiving delete/edit honouring above; the *live*
+reply the platform actually shows stays public indefinitely. This feature is
+independent of (and composes with, rather than duplicates) that stored-row
+mechanism:
+
+- **Stored-row honouring** (`DISCORD_ARCHIVE_ALL_MESSAGES` /
+  `WHATSAPP_ARCHIVE_GROUP_JIDS`, above) keeps memory/digest recall coherent
+  with what's actually still visible — it has no awareness of, and never
+  touches, the bot's own outbound message.
+- **Reply retraction** (this feature) acts on the bot's own live send — it
+  has no awareness of, and never touches, the `interactions` table.
+
+A platform delete/revoke event can trigger either, both, or neither
+mechanism depending on which flags are on; they're deliberately two separate
+opt-ins (an operator may want stored-row coherence without touching live
+replies, or vice versa) rather than reusing one flag for both.
+
+**Mechanism.** `PlatformAdapter.sendMessage` returns EVERY platform-native
+message id of the reply it just sent, in send order (`undefined` when a
+platform genuinely can't report one) — a long reply that gets chunked (e.g.
+Discord's 2000-char cap via `chunkText`) returns one id per chunk, not just
+the last, so a retraction later removes the whole reply rather than leaving
+earlier chunks stranded. After the router sends the real-agent-turn main
+reply for an addressed message that carried an inbound `messageId`, it
+records an in-memory, TTL'd (30 min), size-capped (1000 entries, oldest-first
+eviction) mapping — `(platform, conversationId, inboundMessageId) →
+{ botReplyMessageIds, replyConversationId, senderId }` — in
+`src/replyRetraction.ts`. That module is a directly-imported shared singleton
+(not Router instance state, despite mirroring the shape of `Router`'s own
+`lastReply`/`pendingEscalations` maps): both the write side (the router,
+right after a send) and the read side (an adapter's own native delete/revoke
+listener) need direct access, and adapters hold no reference back to the
+Router — the same "shared module, imported by both call sites" convention
+`storage/repository.ts`'s `deleteInteractionByMessageId` already uses from
+the adapters directly.
+
+**Per-platform capability.** A new optional `PlatformAdapter.deleteOwnMessage?
+(conversationId, messageId)` capability retracts the bot's own prior send,
+mirroring the existing optional-capability convention (`reactToMessage?`,
+`sendImage?`, `canPostTo?`):
+
+- **Discord**: the existing `MessageDelete`/`MessageBulkDelete` listener
+  registration is extended from `archiveAllMessages` alone to
+  `archiveAllMessages || autoRetractReplyEnabled`; on a delete, the mapping is
+  looked up independently of archive scope and, if found, `deleteOwnMessage`
+  fetches and deletes EVERY chunk of the bot's own message — the exact
+  mechanism the admin-only `delete_message` moderation action already uses,
+  applied once per chunk id in `botReplyMessageIds`. No authorship check is
+  needed: Discord's gateway doesn't expose who triggered the delete, but a
+  `MessageDelete` event only ever fires for a delete Discord's own permission
+  model already allowed (the author, or a Manage Messages holder), so any
+  successful delete of the source message is itself a legitimate trigger.
+  `MessageBulkDelete` retraction is explicitly out of scope for v1 (a
+  moderator clearing a channel) — deferred as a mechanically trivial,
+  same-shape follow-up.
+- **WhatsApp Baileys**: the bot sends a REVOKE protocol message for its own
+  prior send — a standard first-party "delete for everyone" on the bot's OWN
+  message, distinct from *honouring* someone else's revoke (the archiving
+  mechanism above) or `performAdminAction('delete_message')` (which revokes
+  ANOTHER user's message and requires their `participant` in the key).
+  `fromMe: true` is enough for Baileys to address the bot's own send with no
+  `participant` needed, in a group or a DM. The revoke-authorship check
+  (below) is independent of `WHATSAPP_ARCHIVE_GROUP_JIDS` — it works even
+  with archiving off, since it depends only on the reply-mapping's own
+  recorded sender, never on an archived row existing.
+- **WhatsApp Cloud**: omitted entirely — the Cloud Business API has no
+  message-deletion/unsend endpoint, mirroring the existing `delete_message`
+  capability gap in `adminCapabilities`. Enabling the flag has no effect and
+  never throws: Cloud simply has no delete/revoke event source to react to in
+  the first place, so no code path there ever attempts a retraction.
+
+See docs/SECURITY.md for the WhatsApp revoke-authorship mitigation (the one
+genuinely security-sensitive surface this feature touches) and the
+privacy-positive framing.
+
 ## WhatsApp voice-note transcription
 
 `WHATSAPP_VOICE_ENABLED` (Baileys only; **off by default**) transcribes a

@@ -49,6 +49,7 @@ import {
   upsertRosterMember,
 } from '../../storage/repository.js';
 import { shouldNotifyMutedRoleOverwriteFailed } from '../../mutedRoleAlertNotice.js';
+import { takeReplyMapping } from '../../replyRetraction.js';
 import { chunkText } from '../textChunk.js';
 import {
   paramString,
@@ -177,16 +178,30 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // Delete/edit honouring for stored messages (issue #48): only wired when
     // ambient archiving is on, so the default-off posture is byte-identical
     // to before. A user deleting or editing their Discord message deletes or
-    // updates the stored copy.
-    if (config.discord.archiveAllMessages) {
+    // updates the stored copy. Extended (issue #575) to also wire up when
+    // AUTO_RETRACT_REPLY_ENABLED is on — a second, independent reason to
+    // listen for a delete: retracting the bot's OWN live reply, not honouring
+    // a stored row. MessageUpdate/MessageBulkDelete stay archiving-only:
+    // `onMessageUpdate` re-checks archive scope itself, and bulk-delete
+    // retraction is explicitly out of scope for #575 (deferred growth item).
+    if (config.discord.archiveAllMessages || config.behaviour.autoRetractReplyEnabled) {
       this.client.on(Events.MessageDelete, (message) => {
-        if (!this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId)))
-          return;
-        deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
-          logger.warn({ err, messageId: message.id }, 'Stored-message delete failed'),
-        );
+        if (
+          config.discord.archiveAllMessages &&
+          this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId))
+        ) {
+          deleteInteractionByMessageId('discord', message.channelId, message.id).catch((err) =>
+            logger.warn({ err, messageId: message.id }, 'Stored-message delete failed'),
+          );
+        }
+        if (config.behaviour.autoRetractReplyEnabled) {
+          this.retractReplyIfMapped(message.channelId, message.id).catch((err) =>
+            logger.warn({ err, messageId: message.id }, 'Reply retraction failed'),
+          );
+        }
       });
       this.client.on(Events.MessageBulkDelete, (messages) => {
+        if (!config.discord.archiveAllMessages) return;
         for (const message of messages.values()) {
           if (!this.inArchiveScope(message.guildId, this.scopeChannelId(message.channel, message.channelId)))
             continue;
@@ -195,6 +210,8 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
           );
         }
       });
+      // `onMessageUpdate` re-checks archive scope itself, so registering it
+      // here is a harmless no-op when only autoRetractReplyEnabled is on.
       this.client.on(Events.MessageUpdate, (_old, newMessage) => {
         this.onMessageUpdate(newMessage).catch((err) =>
           logger.warn({ err, messageId: newMessage.id }, 'Stored-message update failed'),
@@ -674,7 +691,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), undefined, language);
   }
 
-  async sendMessage(out: OutgoingMessage): Promise<void> {
+  async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     const channel = await this.client.channels.fetch(out.conversationId);
     if (!channel || !channel.isTextBased() || !('send' in channel)) {
       throw new Error(`Discord channel ${out.conversationId} is not sendable`);
@@ -682,13 +699,55 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // Discord caps messages at 2000 chars; chunk longer replies. Mentions are
     // never parsed so an injected "@everyone" can't mass-ping. SuppressEmbeds
     // stops Discord from expanding any links in the reply into preview cards.
+    // Every chunk's id is collected (issue #575) so a later retraction can
+    // delete ALL of them, not just the last chunk.
+    const messageIds: string[] = [];
     for (const chunk of chunkText(await this.filtered(out.text, out.language), MAX_DISCORD_LEN)) {
-      await channel.send({
+      const sent = await channel.send({
         content: chunk,
         allowedMentions: { parse: [] },
         flags: MessageFlags.SuppressEmbeds,
       });
+      if (sent?.id) messageIds.push(sent.id);
     }
+    return messageIds.length > 0 ? messageIds : undefined;
+  }
+
+  /**
+   * Retract the bot's own reply when the message it answered is deleted
+   * (issue #575) — independent of archiving scope (this acts on the bot's
+   * own live reply, not a stored row). No authorship check needed: Discord's
+   * gateway doesn't expose who triggered the delete, but a `MessageDelete`
+   * event only ever fires for a delete Discord's own permission model
+   * already allowed (the author, or a Manage Messages holder) — so any
+   * successful delete of the source message is itself a legitimate trigger.
+   * A long reply can span multiple chunks (`sendMessage` above); every
+   * chunk id in the mapping is deleted, not just one.
+   */
+  private async retractReplyIfMapped(conversationId: string, messageId: string): Promise<void> {
+    const mapping = takeReplyMapping('discord', conversationId, messageId);
+    if (!mapping) return;
+    await Promise.all(
+      mapping.botReplyMessageIds.map((id) =>
+        this.deleteOwnMessage(mapping.replyConversationId, id).catch((err) =>
+          logger.warn({ err, messageId: id }, 'Failed to retract own reply'),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Delete a message this bot itself sent (issue #575's `deleteOwnMessage`
+   * capability) — the exact mechanism `performAdminAction('delete_message')`
+   * already uses; a bot can always delete its own message with no extra
+   * permission.
+   */
+  async deleteOwnMessage(conversationId: string, messageId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(conversationId);
+    if (!channel || !channel.isTextBased())
+      throw new Error(`Discord channel ${conversationId} is not accessible`);
+    const msg = await channel.messages.fetch(messageId);
+    await msg.delete();
   }
 
   /** Best-effort typing indicator; Discord auto-clears it after ~10s or on the next message. */
