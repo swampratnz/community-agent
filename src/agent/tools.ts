@@ -7,6 +7,7 @@ import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
+import { queuePendingAlert } from '../pendingAlertQueue.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
@@ -469,13 +470,29 @@ const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
  * `router.ts`'s budget-check alert. `adapterFor` is the same per-platform
  * lookup `buildToolServer` already threads through for #157; a platform with
  * no registered or connected adapter is silently skipped, matching that
- * lookup's existing fallback behaviour.
+ * lookup's existing fallback behaviour. If NO platform has a connected
+ * adapter, the alert is queued (shared with health.ts/backgroundJobs.ts —
+ * see src/pendingAlertQueue.ts) instead of silently dropped, and flushed
+ * through the first adapter to reconnect via health.ts's existing
+ * flushPendingAlerts (issue #545).
  */
 async function notifySuperAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
 ): Promise<void> {
+  const anyConnected = ALL_PLATFORMS.some((platform) => adapterFor(platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Super-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    // 'low': notifySuperAdmins is reachable from member-tier tools
+    // (report_content, appeal_moderation), so it must never evict a
+    // system-triggered disconnect/job-failure alert from the shared queue (#545).
+    queuePendingAlert(`🔔 ${message}`, 'low');
+    return;
+  }
   for (const platform of ALL_PLATFORMS) {
     const target = adapterFor(platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
@@ -667,7 +684,8 @@ export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
-    formatCacheUsageLine(s.cacheUsage)
+    formatCacheUsageLine(s.cacheUsage) +
+    formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd)
   );
 }
 
@@ -686,6 +704,26 @@ function formatCacheUsageLine(cacheUsage: Awaited<ReturnType<typeof usageStats>>
   if (totalTokens === 0) return '';
   const hitRate = Math.round((readTokens / totalTokens) * 100);
   return `\nPrompt cache: ${hitRate}% hit rate (${readTokens} read / ${creationTokens} new tokens).`;
+}
+
+/**
+ * Renders the auto-answer spend line (issue #552) — the operator-facing
+ * counterpart to `router.ts`'s `meta.autoAnswer` tag: how much of
+ * `usage_stats`' total spend the opt-in `AUTO_ANSWER_CHANNEL_IDS` feature is
+ * responsible for. Same "omit entirely when there's nothing to show"
+ * convention as `formatCacheUsageLine`/`formatShortcutHitsLine` above — a
+ * deployment with the feature off, or unused in the window, gets
+ * byte-identical output. The percentage clause is omitted (count/dollar
+ * only) when total spend is zero, to avoid a divide-by-zero.
+ */
+function formatAutoAnswerUsageLine(
+  autoAnswerUsage: Awaited<ReturnType<typeof usageStats>>['autoAnswerUsage'],
+  totalCostUsd: number,
+): string {
+  if (autoAnswerUsage.count === 0) return '';
+  const pctClause =
+    totalCostUsd > 0 ? `, ${Math.round((autoAnswerUsage.costUsd / totalCostUsd) * 100)}% of total spend` : '';
+  return `\nAuto-answer: ${autoAnswerUsage.count} replies (~$${autoAnswerUsage.costUsd.toFixed(2)}${pctClause}).`;
 }
 
 /**
@@ -4267,7 +4305,12 @@ export function buildToolServer(
       await clearAccessRequest(platform, userId).catch((err) =>
         logger.warn({ err, userId }, 'Failed to clear access request'),
       );
-      await notifyMemberApproved(adapter, userId, wasAlreadyMember, platform);
+      // Cross-platform approval DM (issue #157's pattern, extended by #548):
+      // routes through the TARGET's platform adapter, not the acting admin's
+      // current-turn one — degrades to today's silent skip if that platform
+      // isn't registered in this deployment.
+      const memberTarget = adapterFor(platform);
+      if (memberTarget) await notifyMemberApproved(memberTarget, userId, wasAlreadyMember, platform);
       const label = await resolveSanitizedLabel(platform, userId, args.displayName);
       return text(`Added ${label} as ${finalRole} on ${platform}.`);
     },
@@ -4541,7 +4584,12 @@ export function buildToolServer(
         });
         if (success) {
           await resetSessionsForRoleChange(platform, userId, 'grant_admin');
-          await notifyAdminApproved(adapter, userId, wasAlreadyAdmin, platform);
+          // Cross-platform promotion DM (issue #157's pattern, extended by
+          // #548): routes through the TARGET's platform adapter, not the
+          // acting admin's current-turn one — degrades to today's silent
+          // skip if that platform isn't registered in this deployment.
+          const adminTarget = adapterFor(platform);
+          if (adminTarget) await notifyAdminApproved(adminTarget, userId, wasAlreadyAdmin, platform);
         }
         return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
       });

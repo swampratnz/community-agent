@@ -2503,6 +2503,7 @@ export async function usageStats(days = 7): Promise<{
   shortcutHits: { total: number; byKind: Array<{ kind: string; count: number }> };
   backgroundCostByJob: Array<{ job: string; costUsd: number }>;
   cacheUsage: { readTokens: number; creationTokens: number };
+  autoAnswerUsage: { count: number; costUsd: number };
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2543,6 +2544,19 @@ export async function usageStats(days = 7): Promise<{
      WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
     [interval],
   );
+  // Auto-answer cost visibility (issue #552): mirrors the cache-usage
+  // aggregate immediately above — same table/window/direction filter, one
+  // more pair of SUM()/COUNT() over the `meta->>'autoAnswer'` key
+  // `router.ts`'s `respond()` now stamps. Rows predating this change (or any
+  // non-auto-answer reply) carry no such key and contribute 0 via `coalesce`.
+  const { rows: autoAnswer } = await pool.query(
+    `SELECT
+       coalesce(count(*) FILTER (WHERE meta->>'autoAnswer' = 'true'), 0) AS count,
+       coalesce(sum(cost_usd) FILTER (WHERE meta->>'autoAnswer' = 'true'), 0) AS cost
+     FROM interactions
+     WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
+    [interval],
+  );
   const background = await sumBackgroundJobCosts(clampedDays);
   const shortcuts = await sumShortcutHits(clampedDays);
   return {
@@ -2557,6 +2571,10 @@ export async function usageStats(days = 7): Promise<{
     cacheUsage: {
       readTokens: Number(cache[0].read_tokens),
       creationTokens: Number(cache[0].creation_tokens),
+    },
+    autoAnswerUsage: {
+      count: Number(autoAnswer[0].count),
+      costUsd: Number(autoAnswer[0].cost),
     },
   };
 }
