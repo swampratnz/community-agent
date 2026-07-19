@@ -171,8 +171,17 @@ jobs:
             # The review worker posts a comment beginning "PR review (automated):"
             # with a one-line verdict. Take the LATEST such comment; a no-output
             # review posts a DIFFERENT first line, so it is naturally excluded.
+            #
+            # CRITICAL — match on the comment AUTHOR, not just the body. The
+            # verdict phrasing is fully public (it's on every prior PR), so a
+            # body-text-only filter would accept a comment from ANY user who can
+            # comment on the PR as a "fresh LGTM" and force an unreviewed merge.
+            # The real verdict is posted by pipeline-pr-review.yml via `gh pr
+            # comment` under the GITHUB_TOKEN, i.e. as `github-actions[bot]` — an
+            # identity a normal user CANNOT post as, so requiring it closes the
+            # forgery gap that text matching alone leaves open.
             latest_review="$(gh pr view "$n" --repo "$REPO" --json comments \
-              --jq '[.comments[] | select(.body | test("^PR review \\(automated\\):"))] | last // empty')"
+              --jq '[.comments[] | select(.author.login == "github-actions[bot]" and (.body | test("^PR review \\(automated\\):")))] | last // empty')"
             if [ -z "$latest_review" ]; then
               echo "PR #$n: no automated review verdict yet — skip."
               echo "::endgroup::"; continue
