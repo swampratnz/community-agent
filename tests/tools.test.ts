@@ -332,17 +332,18 @@ function stubEventsAdapter(events: UpcomingEvent[]): PlatformAdapter & { calls: 
   return result;
 }
 
-test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant', async () => {
+test('notifyMemberApproved sends exactly one confirmation DM on a fresh grant, and resolves true (issue #556)', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, text) => {
     calls.push([userId, text]);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', false, 'discord');
+  const delivered = await notifyMemberApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /approved/i);
+  assert.equal(delivered, true);
 });
 
 test('notifyMemberApproved signposts the community_info discovery path (issue #92)', async () => {
@@ -356,23 +357,26 @@ test('notifyMemberApproved signposts the community_info discovery path (issue #9
   assert.match(calls[0], /what can you do/i);
 });
 
-test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op)', async () => {
+test('notifyMemberApproved sends nothing when the user was already a member (re-add is a no-op), and resolves true — no failure occurred (issue #556)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
     calls.push(userId);
   });
 
-  await notifyMemberApproved(adapter, 'user-1', true, 'discord');
+  const delivered = await notifyMemberApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
+  assert.equal(delivered, true);
 });
 
-test('notifyMemberApproved swallows a DM failure rather than throwing (grant stays the source of truth)', async () => {
+test('notifyMemberApproved swallows a DM failure rather than throwing, and resolves false (issue #556)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyMemberApproved(adapter, 'user-1', false, 'discord'));
+  const delivered = await notifyMemberApproved(adapter, 'user-1', false, 'discord');
+
+  assert.equal(delivered, false);
 });
 
 test("notifyMemberApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
@@ -414,17 +418,18 @@ test("SECURITY: notifyMemberApproved degrades to the English default, rather tha
 
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
-test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion', async () => {
+test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion, and resolves true (issue #556)', async () => {
   const calls: Array<[string, string]> = [];
   const adapter = stubAdapter(async (userId, message) => {
     calls.push([userId, message]);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', false, 'discord');
+  const delivered = await notifyAdminApproved(adapter, 'user-1', false, 'discord');
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'user-1');
   assert.match(calls[0][1], /admin/i);
+  assert.equal(delivered, true);
 });
 
 test('notifyAdminApproved signposts the community_info discovery path rather than duplicating ADMIN_TOOLS (issue #201)', async () => {
@@ -438,23 +443,26 @@ test('notifyAdminApproved signposts the community_info discovery path rather tha
   assert.match(calls[0], /what can you do/i);
 });
 
-test('notifyAdminApproved sends nothing when the user was already an admin (re-grant is a no-op)', async () => {
+test('notifyAdminApproved sends nothing when the user was already an admin (re-grant is a no-op), and resolves true — no failure occurred (issue #556)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (userId) => {
     calls.push(userId);
   });
 
-  await notifyAdminApproved(adapter, 'user-1', true, 'discord');
+  const delivered = await notifyAdminApproved(adapter, 'user-1', true, 'discord');
 
   assert.equal(calls.length, 0);
+  assert.equal(delivered, true);
 });
 
-test('notifyAdminApproved swallows a DM failure rather than throwing (grant stays the source of truth)', async () => {
+test('notifyAdminApproved swallows a DM failure rather than throwing, and resolves false (issue #556)', async () => {
   const adapter = stubAdapter(async () => {
     throw new Error('DMs closed');
   });
 
-  await assert.doesNotReject(notifyAdminApproved(adapter, 'user-1', false, 'discord'));
+  const delivered = await notifyAdminApproved(adapter, 'user-1', false, 'discord');
+
+  assert.equal(delivered, false);
 });
 
 test("notifyAdminApproved sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
@@ -5703,6 +5711,202 @@ test(
       await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
         targetUserId,
       ]);
+    }
+  },
+);
+
+// add_member's reply now reflects DM delivery (issue #556): a fixed note is
+// appended iff notifyMemberApproved reports the confirmation DM did not
+// land, and the reply is byte-identical to today when it succeeded or when
+// no DM was attempted (already a member). DB-backed like the grant_admin
+// test above, since add_member's execute path runs upsertMember/audited/
+// clearAccessRequest for real.
+test(
+  "add_member's reply appends a fixed note iff the welcome DM failed, and is byte-identical to today otherwise (issue #556)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-add-member-${targetUserId}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    try {
+      // 1. DM fails on the fresh grant: the note is appended.
+      shouldFail = true;
+      const failed = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(
+        failed.content[0].text,
+        `Added ${targetUserId} as member on discord. (Couldn't DM them the welcome message — they may not know yet.)`,
+      );
+
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+
+      // 2. DM succeeds on the fresh grant: byte-identical to today, no note.
+      shouldFail = false;
+      const succeeded = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(succeeded.content[0].text, `Added ${targetUserId} as member on discord.`);
+
+      // 3. Already a member: no DM attempted, byte-identical to today.
+      const alreadyMember = await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      assert.equal(alreadyMember.content[0].text, `Added ${targetUserId} as member on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+// grant_admin's reply now reflects DM delivery too (issue #556), same shape
+// as add_member above but inside the CONFIRM-gated execute path.
+test(
+  "grant_admin's reply appends a fixed note iff the promotion DM failed, and is byte-identical to today otherwise (issue #556)",
+  { skip },
+  async () => {
+    const targetUserId = `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const conversationId = `convo-grant-admin-dm-${targetUserId}`;
+    let shouldFail = false;
+    const adapter = stubAdapter(async () => {
+      if (shouldFail) throw new Error('DMs closed');
+    });
+    const caller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId,
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      // 1. DM fails on the fresh promotion: the note is appended.
+      shouldFail = true;
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingFailed = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingFailed);
+      const failedReply = await pendingFailed?.execute();
+      assert.equal(
+        failedReply,
+        `Granted admin to ${targetUserId} on discord. (Couldn't DM them about the promotion — they may not know yet.)`,
+      );
+
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+
+      // 2. DM succeeds on the fresh promotion: byte-identical to today, no note.
+      shouldFail = false;
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingSucceeded = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingSucceeded);
+      const succeededReply = await pendingSucceeded?.execute();
+      assert.equal(succeededReply, `Granted admin to ${targetUserId} on discord.`);
+
+      // 3. Already an admin: no DM attempted, byte-identical to today.
+      await registeredTool.handler({ userId: targetUserId, platform: 'discord' });
+      const pendingAlready = takePendingAction('discord', conversationId, 'super-1');
+      assert.ok(pendingAlready);
+      const alreadyReply = await pendingAlready?.execute();
+      assert.equal(alreadyReply, `Granted admin to ${targetUserId} on discord.`);
+    } finally {
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        targetUserId,
+      ]);
+    }
+  },
+);
+
+test(
+  'SECURITY: the appended DM-failure note is always one of two static strings, never a function of the underlying adapter error (issue #556) — a fake secret-shaped token in the error never reaches either tool reply',
+  { skip },
+  async () => {
+    const secretToken = 'sk-ant-faketoken123';
+    const conversationId = `convo-dm-note-leak-${Date.now()}`;
+    const adapter = stubAdapter(async () => {
+      throw new Error(`upstream rejected: token ${secretToken} is invalid`);
+    });
+
+    const memberTargetId = `${Date.now()}1${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const memberCaller = {
+      platform: 'discord' as const,
+      userId: 'admin-1',
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${conversationId}-member`,
+    };
+    const memberServer = buildToolServer(memberCaller, adapter);
+    const addMemberTool = (
+      memberServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+        >;
+      }
+    )._registeredTools['add_member'];
+
+    const adminTargetId = `${Date.now()}2${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+    const superCaller = {
+      platform: 'discord' as const,
+      userId: 'super-1',
+      userName: 'SuperAdmin',
+      role: 'super_admin' as const,
+      conversationId: `${conversationId}-admin`,
+    };
+    const superServer = buildToolServer(superCaller, adapter);
+    const grantAdminTool = (
+      superServer.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: object) => Promise<unknown> }>;
+      }
+    )._registeredTools['grant_admin'];
+
+    try {
+      const memberResult = await addMemberTool.handler({ userId: memberTargetId, platform: 'discord' });
+      const memberText = memberResult.content[0].text;
+      assert.doesNotMatch(memberText, /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.equal(
+        memberText,
+        `Added ${memberTargetId} as member on discord. (Couldn't DM them the welcome message — they may not know yet.)`,
+      );
+
+      await grantAdminTool.handler({ userId: adminTargetId, platform: 'discord' });
+      const pending = takePendingAction('discord', `${conversationId}-admin`, 'super-1');
+      assert.ok(pending);
+      const adminText = await pending?.execute();
+      assert.doesNotMatch(String(adminText), /sk-ant-faketoken123|upstream rejected|token .* is invalid/);
+      assert.equal(
+        adminText,
+        `Granted admin to ${adminTargetId} on discord. (Couldn't DM them about the promotion — they may not know yet.)`,
+      );
+    } finally {
+      await pool.query(
+        `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1::text[])`,
+        [[memberTargetId, adminTargetId]],
+      );
     }
   },
 );

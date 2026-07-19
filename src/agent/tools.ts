@@ -828,6 +828,16 @@ const MEMBER_APPROVED_MESSAGE_MI =
   'Whakapā mai ki ahau i ngā wā katoa. Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga poto.';
 
 /**
+ * Fixed, static note appended to `add_member`'s reply when
+ * `notifyMemberApproved` reports the confirmation DM did not land (issue
+ * #556) — so the acting admin isn't told the identical success text
+ * regardless of delivery. Deliberately never a function of the underlying
+ * adapter error (which can embed platform-specific detail): this is one of
+ * exactly two hardcoded strings, the other being `ADMIN_DM_FAILED_NOTE`.
+ */
+const MEMBER_DM_FAILED_NOTE = " (Couldn't DM them the welcome message — they may not know yet.)";
+
+/**
  * Plain-language rundown of what a member can ask the bot to do, named by
  * behaviour rather than tool id (issue #92) — every entry in MEMBER_TOOLS
  * gets a line, most safety-relevant (report_content) first. Kept to a few
@@ -892,6 +902,11 @@ const ADMIN_CAPABILITIES_TEXT =
  * dropping the DM (issue #52's invariant, same shape as router.ts's
  * `getLangPref(...).catch(() => 'auto')`), distinct from the send's own
  * `.catch(logger.warn)` below.
+ *
+ * Returns `true` when the grant was already in place (nothing to attempt,
+ * so no failure) or the DM send resolved; `false` when a DM was attempted
+ * and the send threw/rejected (issue #556) — `add_member` uses this to tell
+ * the acting admin the confirmation DM didn't land, since today it can't.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -899,13 +914,17 @@ export async function notifyMemberApproved(
   wasAlreadyMember: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
-): Promise<void> {
-  if (wasAlreadyMember) return;
+): Promise<boolean> {
+  if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const message = lang === 'mi' ? MEMBER_APPROVED_MESSAGE_MI : MEMBER_APPROVED_MESSAGE;
-  await adapter
+  return adapter
     .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId }, 'Approval DM failed'));
+    .then(() => true)
+    .catch((err) => {
+      logger.warn({ err, userId }, 'Approval DM failed');
+      return false;
+    });
 }
 
 /**
@@ -925,6 +944,14 @@ const ADMIN_APPROVED_MESSAGE_MI =
   'Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga, tae atu ki ō rākau whakahaere hou.';
 
 /**
+ * Fixed, static note appended to `grant_admin`'s reply when
+ * `notifyAdminApproved` reports the promotion DM did not land (issue #556) —
+ * mirrors `MEMBER_DM_FAILED_NOTE`'s rationale exactly, with its own wording
+ * since this is a promotion, not a fresh membership.
+ */
+const ADMIN_DM_FAILED_NOTE = " (Couldn't DM them about the promotion — they may not know yet.)";
+
+/**
  * Best-effort orientation DM for an admin grant, mirroring notifyMemberApproved's
  * shape exactly: fires only on an actual transition into admin
  * (`wasAlreadyAdmin` false) so re-running `grant_admin` on an existing admin
@@ -934,6 +961,10 @@ const ADMIN_APPROVED_MESSAGE_MI =
  * unit-testable without the MCP tool-call transport. Honours the target's
  * standing `'mi'` language preference identically to `notifyMemberApproved`
  * above (issue #331).
+ *
+ * Returns `true`/`false` on the same terms as `notifyMemberApproved` above
+ * (issue #556) — `grant_admin` uses this to tell the acting super admin the
+ * promotion DM didn't land.
  */
 export async function notifyAdminApproved(
   adapter: PlatformAdapter,
@@ -941,13 +972,17 @@ export async function notifyAdminApproved(
   wasAlreadyAdmin: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
-): Promise<void> {
-  if (wasAlreadyAdmin) return;
+): Promise<boolean> {
+  if (wasAlreadyAdmin) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
   const message = lang === 'mi' ? ADMIN_APPROVED_MESSAGE_MI : ADMIN_APPROVED_MESSAGE;
-  await adapter
+  return adapter
     .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId }, 'Admin promotion DM failed'));
+    .then(() => true)
+    .catch((err) => {
+      logger.warn({ err, userId }, 'Admin promotion DM failed');
+      return false;
+    });
 }
 
 /**
@@ -4297,12 +4332,17 @@ export function buildToolServer(
       );
       // Cross-platform approval DM (issue #157's pattern, extended by #548):
       // routes through the TARGET's platform adapter, not the acting admin's
-      // current-turn one — degrades to today's silent skip if that platform
-      // isn't registered in this deployment.
+      // current-turn one — degrades to a silent skip if that platform isn't
+      // registered in this deployment. Capture whether the DM was delivered
+      // (issue #556) so the reply can flag a failed send; an unregistered
+      // target attempts nothing, so it counts as delivered (no failure note).
       const memberTarget = adapterFor(platform);
-      if (memberTarget) await notifyMemberApproved(memberTarget, userId, wasAlreadyMember, platform);
+      const dmDelivered = memberTarget
+        ? await notifyMemberApproved(memberTarget, userId, wasAlreadyMember, platform)
+        : true;
       const label = await resolveSanitizedLabel(platform, userId, args.displayName);
-      return text(`Added ${label} as ${finalRole} on ${platform}.`);
+      const note = dmDelivered ? '' : MEMBER_DM_FAILED_NOTE;
+      return text(`Added ${label} as ${finalRole} on ${platform}.${note}`);
     },
   );
 
@@ -4572,16 +4612,22 @@ export function buildToolServer(
             return 'granted';
           },
         });
+        let dmDelivered = true;
         if (success) {
           await resetSessionsForRoleChange(platform, userId, 'grant_admin');
           // Cross-platform promotion DM (issue #157's pattern, extended by
-          // #548): routes through the TARGET's platform adapter, not the
-          // acting admin's current-turn one — degrades to today's silent
-          // skip if that platform isn't registered in this deployment.
+          // #548): routes through the TARGET's platform adapter, not the acting
+          // admin's current-turn one — degrades to a silent skip if that
+          // platform isn't registered here. Capture delivery (issue #556) for
+          // the failed-send note; an unregistered target attempts nothing, so
+          // it counts as delivered.
           const adminTarget = adapterFor(platform);
-          if (adminTarget) await notifyAdminApproved(adminTarget, userId, wasAlreadyAdmin, platform);
+          dmDelivered = adminTarget
+            ? await notifyAdminApproved(adminTarget, userId, wasAlreadyAdmin, platform)
+            : true;
         }
-        return success ? `Granted admin to ${label} on ${platform}.` : `Failed: ${result}`;
+        const note = dmDelivered ? '' : ADMIN_DM_FAILED_NOTE;
+        return success ? `Granted admin to ${label} on ${platform}.${note}` : `Failed: ${result}`;
       });
     },
   );
