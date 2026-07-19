@@ -39,6 +39,7 @@ process.env.INTERACTION_RETENTION_DAYS = '7';
 process.env.ROSTER_DEPARTED_RETENTION_DAYS = '30';
 process.env.ADMIN_DIGEST_ENABLED = 'true';
 process.env.DEPARTED_ADMIN_ALERT_ENABLED = 'true';
+process.env.USAGE_COST_DIGEST_ENABLED = 'true';
 process.env.ENGAGEMENT_ALERT_ENABLED = 'true';
 
 const {
@@ -56,6 +57,7 @@ const { startRetentionPurge } = await import('../src/interactionRetention.js');
 const { startRosterRetentionPurge } = await import('../src/rosterRetention.js');
 const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
+const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
 const { startEngagementAlert } = await import('../src/engagementAlert.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
@@ -119,6 +121,7 @@ const JOBS = [
   ['startEmbeddingHealthCheckJob', startEmbeddingHealthCheckJob],
   ['startAdminDigest', startAdminDigest],
   ['startDepartedAdminAlert', startDepartedAdminAlert],
+  ['startUsageCostDigest', startUsageCostDigest],
   ['startEngagementAlert', startEngagementAlert],
 ] as const;
 
@@ -133,6 +136,7 @@ const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
   startEmbeddingHealthCheckJob: 'embedding-model',
   startAdminDigest: 'admin-digest',
   startDepartedAdminAlert: 'departed-admin-alert',
+  startUsageCostDigest: 'usage-cost-digest',
   startEngagementAlert: 'engagement-alert',
 };
 
@@ -254,6 +258,7 @@ test('each of the ten jobs keeps an independent tracker: one failure each (below
     startEmbeddingHealthCheckJob([adapter], failOnce),
     startAdminDigest([adapter], failOnce),
     startDepartedAdminAlert([adapter], failOnce),
+    startUsageCostDigest([adapter], failOnce),
     startEngagementAlert([adapter], failOnce),
   ];
   try {

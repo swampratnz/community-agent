@@ -3927,6 +3927,51 @@ export async function getLastDigestCounts(
   return rows.length > 0 ? rows[0].last_counts : null;
 }
 
+// --- Weekly cost-trend digest state (issue #578) ----------------------------
+
+/**
+ * True if the weekly cost-trend DM was already sent within the last `days`
+ * — the restart-safe check `src/usageCostDigest.ts` uses so a redeploy mid-
+ * week can't double-send, same shape as `wasAdminDigestSentRecently` but
+ * over the single global `usage_cost_digest_state` row rather than a
+ * per-admin one.
+ */
+export async function wasUsageCostDigestSentRecently(days: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM usage_cost_digest_state
+      WHERE sent_at > now() - ($1 || ' days')::interval`,
+    [days],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Last week's persisted total (`costUsd + backgroundCostUsd`), or `null`
+ * when no row exists yet (first-ever run) — the read half of the trend
+ * delta `formatUsageCostDigestMessage` renders.
+ */
+export async function getLastUsageCostDigestTotal(): Promise<number | null> {
+  const { rows } = await pool.query<{ total_cost_usd: string }>(
+    `SELECT total_cost_usd FROM usage_cost_digest_state WHERE id = true`,
+  );
+  return rows.length > 0 ? Number(rows[0].total_cost_usd) : null;
+}
+
+/**
+ * Record that the weekly cost-trend DM was just sent, persisting this
+ * week's total for next week's delta and advancing the freshness guard.
+ * Upserts the single global row (`id = true`) rather than inserting a new
+ * one, matching the "one aggregate figure" shape documented on the table.
+ */
+export async function recordUsageCostDigestSent(totalCostUsd: number): Promise<void> {
+  await pool.query(
+    `INSERT INTO usage_cost_digest_state (id, total_cost_usd, sent_at)
+     VALUES (true, $1, now())
+     ON CONFLICT (id) DO UPDATE SET total_cost_usd = EXCLUDED.total_cost_usd, sent_at = now()`,
+    [totalCostUsd],
+  );
+}
+
 // --- Engagement-alert freshness guard (issue #568) --------------------------
 
 /**
