@@ -87,6 +87,8 @@ const {
   listRoster,
   rosterCounts,
   engagementStats,
+  wasEngagementAlertSentRecently,
+  recordEngagementAlertSent,
   purgeDepartedRoster,
   addMemberNote,
   listMemberNotes,
@@ -3035,6 +3037,95 @@ test(
 );
 
 test(
+  'repository: usageStats().byPlatform sums inbound/outbound/cost per platform, consistent with the top-level totals, ordered by volume desc then platform (issue #580)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-platform-split`;
+    const discordUser = `${RUN}-platform-discord`;
+    const whatsappUser = `${RUN}-platform-whatsapp`;
+
+    const days = 1;
+    const before = await usageStats(days);
+    const beforeByPlatform = new Map(before.byPlatform.map((r) => [r.platform, r]));
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: discordUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'discord question',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: discordUser,
+      role: 'member',
+      direction: 'outbound',
+      content: 'discord reply',
+      costUsd: 1.2,
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: whatsappUser,
+      role: 'member',
+      direction: 'inbound',
+      content: 'whatsapp question',
+    });
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId,
+      userId: whatsappUser,
+      role: 'member',
+      direction: 'outbound',
+      content: 'whatsapp reply',
+      costUsd: 0.3,
+    });
+
+    const after = await usageStats(days);
+    const afterByPlatform = new Map(after.byPlatform.map((r) => [r.platform, r]));
+
+    const discordBefore = beforeByPlatform.get('discord');
+    const discordAfter = afterByPlatform.get('discord');
+    assert.ok(discordAfter, 'discord appears in byPlatform after seeding a discord row');
+    assert.equal(discordAfter.inbound - (discordBefore?.inbound ?? 0), 1);
+    assert.equal(discordAfter.outbound - (discordBefore?.outbound ?? 0), 1);
+    assert.equal(discordAfter.costUsd - (discordBefore?.costUsd ?? 0), 1.2);
+
+    const whatsappBefore = beforeByPlatform.get('whatsapp');
+    const whatsappAfter = afterByPlatform.get('whatsapp');
+    assert.ok(whatsappAfter, 'whatsapp appears in byPlatform after seeding a whatsapp row');
+    assert.equal(whatsappAfter.inbound - (whatsappBefore?.inbound ?? 0), 1);
+    assert.equal(whatsappAfter.outbound - (whatsappBefore?.outbound ?? 0), 1);
+    assert.equal(whatsappAfter.costUsd - (whatsappBefore?.costUsd ?? 0), 0.3);
+
+    // Criterion 3: summing byPlatform must equal the top-level totals exactly (same
+    // table/window/direction semantics as `totals`, differing only by GROUP BY platform).
+    const sumInbound = after.byPlatform.reduce((a, r) => a + r.inbound, 0);
+    const sumOutbound = after.byPlatform.reduce((a, r) => a + r.outbound, 0);
+    const sumCost = after.byPlatform.reduce((a, r) => a + r.costUsd, 0);
+    assert.equal(sumInbound, after.inbound);
+    assert.equal(sumOutbound, after.outbound);
+    assert.ok(Math.abs(sumCost - after.costUsd) < 1e-9);
+
+    // Criterion 5: deterministic ordering by volume (inbound+outbound) desc, then platform name.
+    for (let i = 1; i < after.byPlatform.length; i++) {
+      const prev = after.byPlatform[i - 1];
+      const curr = after.byPlatform[i];
+      const prevVolume = prev.inbound + prev.outbound;
+      const currVolume = curr.inbound + curr.outbound;
+      assert.ok(
+        prevVolume > currVolume || (prevVolume === currVolume && prev.platform < curr.platform),
+        'byPlatform is ordered by volume desc, then platform asc as a deterministic tiebreaker',
+      );
+    }
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   'repository: usageStats clamps an out-of-range days window to [1, 365] (issue #110)',
   { skip },
   async () => {
@@ -5563,6 +5654,66 @@ test(
 
     await pool.query(`DELETE FROM server_roster WHERE user_id = ANY($1)`, [[engaged, lurker, departed]]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: wasEngagementAlertSentRecently is true within the freshness window, false past it and before any send (issue #568) — same restart-safe shape as wasAdminDigestSentRecently',
+  { skip },
+  async () => {
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+
+    assert.equal(await wasEngagementAlertSentRecently(7), false, 'no send recorded yet — not fresh');
+
+    await recordEngagementAlertSent(42);
+    assert.equal(
+      await wasEngagementAlertSentRecently(7),
+      true,
+      'a send just recorded is within the 7-day freshness window',
+    );
+
+    await pool.query(`UPDATE engagement_alert_sends SET sent_at = now() - interval '8 days' WHERE id = 1`);
+    assert.equal(
+      await wasEngagementAlertSentRecently(7),
+      false,
+      'a send older than the window no longer counts as fresh',
+    );
+
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+  },
+);
+
+test(
+  'repository: recordEngagementAlertSent upserts the single guild-wide row (id = 1) — a second call updates sent_at/last_percentage rather than inserting a second row (issue #568)',
+  { skip },
+  async () => {
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+
+    await recordEngagementAlertSent(10);
+    await recordEngagementAlertSent(55);
+
+    const { rows } = await pool.query(`SELECT id, last_percentage FROM engagement_alert_sends`);
+    assert.equal(rows.length, 1, 'exactly one row ever exists — the singleton guard');
+    assert.equal(rows[0].id, 1);
+    assert.equal(Number(rows[0].last_percentage), 55, "the latest call's percentage wins");
+
+    await pool.query(`DELETE FROM engagement_alert_sends WHERE id = 1`);
+  },
+);
+
+test(
+  'SECURITY: repository: engagement_alert_sends holds no user/admin identifier column — only sent_at and an aggregate percentage, so forget_me/purge_user_data have nothing user-scoped to purge here (issue #568)',
+  { skip },
+  async () => {
+    const { rows } = await pool.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'engagement_alert_sends'`,
+    );
+    const columns = new Set(rows.map((r) => r.column_name));
+    assert.deepEqual(
+      columns,
+      new Set(['id', 'sent_at', 'last_percentage']),
+      'no platform/platform_user_id/display_name column exists on this table',
+    );
   },
 );
 
