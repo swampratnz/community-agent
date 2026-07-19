@@ -225,8 +225,15 @@ jobs:
             fi
 
             # --- Merge exactly this one, then stop ----------------------------
-            echo "PR #$n: green + mergeable + fresh LGTM — merging (method: $MERGE_METHOD)."
-            if gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --delete-branch; then
+            # PIN THE HEAD COMMIT: every gate above (mergeable, checks-green,
+            # fresh-LGTM) was evaluated against `head_sha`. `--match-head-commit`
+            # makes GitHub refuse the merge if the branch has moved since — so a
+            # push landing in the window (autofix/revise/conflict-resolver, or a
+            # maintainer) can NEVER slip an ungated commit through this gate; the
+            # merge fails closed and the next tick re-evaluates the new head.
+            echo "PR #$n: green + mergeable + fresh LGTM — merging (method: $MERGE_METHOD, head $head_sha)."
+            if gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" \
+              --match-head-commit "$head_sha" --delete-branch; then
               echo "Merged PR #$n."
               # main advanced — rebase whatever now conflicts. A GITHUB_TOKEN
               # merge does NOT itself trigger the resolver's push-to-main
@@ -239,12 +246,23 @@ jobs:
               exit 0
             fi
 
-            # Merge refused — almost always branch protection (e.g. a required
-            # human approving review, which the automated verdict is not). Post
-            # ONE marker-guarded note so it's visible without spamming every
-            # tick, and stop (do not fall through to merge a different PR under
-            # the same blocked policy).
-            echo "::warning::gh pr merge refused for PR #$n — likely branch protection."
+            # Merge refused. Distinguish a TRANSIENT head-moved race (a push
+            # landed between the gate snapshot and the merge — --match-head-commit
+            # failed closed exactly as intended) from a PERSISTENT block (branch
+            # protection). A moved head just defers to the next tick, silently;
+            # only a genuine block posts the explanatory note.
+            current_head="$(gh pr view "$n" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+            if [ "$current_head" != "$head_sha" ]; then
+              echo "PR #$n: head moved ($head_sha -> $current_head) between the gate and the merge — fail-closed, no merge; a later tick re-evaluates the new head."
+              echo "::endgroup::"
+              exit 0
+            fi
+            # Head unchanged, yet the merge was refused — almost always branch
+            # protection (e.g. a required human approving review, which the
+            # automated verdict is not). Post ONE marker-guarded note so it's
+            # visible without spamming every tick, and stop (do not fall through
+            # to merge a different PR under the same blocked policy).
+            echo "::warning::gh pr merge refused for PR #$n with head unchanged — likely branch protection."
             already_noted="$(gh pr view "$n" --repo "$REPO" --json comments \
               | jq -r --arg m "$BLOCKED_MARKER" '[.comments[].body] | any(startswith($m))')"
             if [ "$already_noted" != 'true' ]; then
