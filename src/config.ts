@@ -431,6 +431,19 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Weekly member-facing digest post (issue #645): widens the audience of
+  // already-admin-visible k-floored `context_digests` topics + curated
+  // "new in the knowledge base" titles to a Discord channel, so a member who
+  // missed the week can see what was discussed without asking. Off by
+  // default — no timer, no send, byte-identical to today when unset (same
+  // convention as every other proactive push above). MEMBER_DIGEST_CHANNEL_ID
+  // is config-set only — never model- or message-supplied — and is the
+  // Discord channel the weekly post targets.
+  MEMBER_DIGEST_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  MEMBER_DIGEST_CHANNEL_ID: z.string().optional(),
   // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
   // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
   // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
@@ -1005,6 +1018,10 @@ export const config = {
   },
   usageCostDigest: {
     enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
+  },
+  memberDigest: {
+    enabled: env.MEMBER_DIGEST_ENABLED ?? false,
+    channelId: env.MEMBER_DIGEST_CHANNEL_ID,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

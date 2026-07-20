@@ -1023,6 +1023,45 @@ periodically points `CONTEXT_EXPORT_PATH` at `docs/COMMUNITY-CONTEXT.md`,
 runs `npm run export:context` against production, reviews, and commits —
 which the research loop then reads (file-only, no DB access).
 
+## Member-facing weekly digest
+
+Every push summary above (`admin_digest`, `list_context_digests`) is
+admin-only — a member who missed a week's discussion has no way to learn
+what came up without scrolling history or knowing to ask
+`knowledge_search`/`catch_up`. `src/memberDigest.ts` (issue #645) widens the
+*audience* of the already admin-visible, aggregate-by-construction data
+above — never the underlying data itself — to a single Discord channel, off
+unless `MEMBER_DIGEST_ENABLED` (default off, zero behaviour change on
+upgrade).
+
+- **Content, deterministic — no model call**: this week's `context_digests`
+  rows (`listContextDigests`), rendered as **topic title + question count
+  only** — deliberately narrower than `list_context_digests`'s admin view,
+  which also shows the model-written `summary`; the member surface renders
+  only the shorter, more predictable topic label. Plus a "new in the
+  knowledge base" line: the count and titles of knowledge entries created
+  that week via `listCuratedKnowledgeCreatedSince`, which reuses
+  `listKnowledgeTopics`'s exact `created_by_role != 'auto'` apparent-authority
+  boundary (issue #214) — an unreviewed, machine-researched entry can never
+  appear here either. A week with zero digests and zero new curated entries
+  posts nothing (`formatMemberDigestMessage` returns `null`) — silence over
+  noise, matching every other digest job's quiet-week convention.
+- **Send path**: `MEMBER_DIGEST_CHANNEL_ID` (config-set only — never model-
+  or message-supplied) is posted to via the first connected **Discord**
+  adapter's `sendMessage`, the same `OutgoingMessage` path every other
+  channel post uses — outbound filtering (secret redaction, code policy) and
+  `SuppressEmbeds` apply automatically, with no bespoke handling needed here.
+  Never WhatsApp; never a platform/id derived from anything but this fixed
+  config value.
+- **Cadence**: routed through the shared `startTrackedJob` (6h outer tick,
+  same consecutive-failure alerting as every other opt-in job), gated by a
+  single-row `member_digest_sends` freshness guard
+  (`wasMemberDigestSentRecently`/`recordMemberDigestSent`) — guild-wide, not
+  per-recipient (there is one post, not one per member), mirroring
+  `engagement_alert_sends`'s singleton shape. A quiet week deliberately
+  leaves the freshness row untouched, so a week that starts quiet but gains
+  content partway through can still post on a later tick.
+
 ## Anthropic status check
 
 `src/status/anthropicStatus.ts` (issue #206, off unless

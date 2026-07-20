@@ -794,3 +794,18 @@ CREATE TABLE IF NOT EXISTS engagement_alert_sends (
   last_percentage NUMERIC,
   CONSTRAINT engagement_alert_sends_singleton CHECK (id = 1)
 );
+
+-- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard for the weekly member-facing digest post
+-- (issue #645): a push companion, to a wider audience, of the same
+-- `context_digests`/curated-`knowledge` data `list_context_digests`/
+-- `list_knowledge_topics` already expose to admins. SINGLE-ROW/guild-wide
+-- like `engagement_alert_sends` above — one post per week to one configured
+-- channel, nothing to key per recipient. No user/admin identifier column:
+-- forget_me/purge_user_data have nothing to touch here.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_digest_sends (
+  id      SMALLINT    PRIMARY KEY DEFAULT 1,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT member_digest_sends_singleton CHECK (id = 1)
+);

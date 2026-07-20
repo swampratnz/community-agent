@@ -4201,6 +4201,60 @@ export async function getLastEngagementAlertPercentage(): Promise<number | null>
   return rows.length > 0 && rows[0].last_percentage !== null ? Number(rows[0].last_percentage) : null;
 }
 
+// --- Member-facing weekly digest freshness guard (issue #645) --------------
+
+/**
+ * True if the single-row, guild-wide `member_digest_sends` guard was
+ * stamped within the last `days` — the restart-safe check `src/memberDigest.ts`
+ * uses so a redeploy mid-week can't double-post, mirroring
+ * `wasEngagementAlertSentRecently`'s shape exactly (no identity to key on;
+ * one post to one configured channel).
+ */
+export async function wasMemberDigestSentRecently(days: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM member_digest_sends
+      WHERE id = 1 AND sent_at > now() - ($1 || ' days')::interval`,
+    [days],
+  );
+  return rows.length > 0;
+}
+
+/** Record that the weekly member digest was just posted. Always the same `id = 1` row, so this is an upsert. */
+export async function recordMemberDigestSent(): Promise<void> {
+  await pool.query(
+    `INSERT INTO member_digest_sends (id, sent_at) VALUES (1, now())
+     ON CONFLICT (id) DO UPDATE SET sent_at = now()`,
+  );
+}
+
+/**
+ * Titles of curated (non-`auto`-provenance) knowledge entries created since
+ * `since` — the "new in the knowledge base" line of the weekly member
+ * digest. Reuses `listKnowledgeTopics`'s exact `created_by_role != 'auto'`
+ * apparent-authority boundary (issue #214) so an unreviewed, machine-
+ * researched entry can never appear in a member-facing surface either —
+ * only an admin-accepted `save_knowledge`/`accept_knowledge_candidate`/
+ * `update_knowledge` entry, or a trusted `'docs'` backfill, ever qualifies.
+ * Guild-wide/unscoped (like `countDuplicateKnowledge`/`countStaleKnowledge`)
+ * rather than caller-conversation-scoped like `listKnowledgeTopics` itself —
+ * there is no single caller here, just one weekly post to one configured
+ * channel. Null and blank titles are excluded, same as `listKnowledgeTopics`.
+ */
+export async function listCuratedKnowledgeCreatedSince(since: Date, limit: number): Promise<string[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query<{ title: string }>(
+    `SELECT title FROM knowledge
+      WHERE created_at > $1
+        AND created_by_role != 'auto'
+        AND title IS NOT NULL
+        AND trim(title) != ''
+      ORDER BY created_at ASC
+      LIMIT $2`,
+    [since, clampedLimit],
+  );
+  return rows.map((r) => r.title);
+}
+
 // --- Standing response-style preference (issue #126) ------------------------
 
 export type ResponseStyle = 'standard' | 'plain';
