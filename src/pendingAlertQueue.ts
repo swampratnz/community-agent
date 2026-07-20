@@ -37,7 +37,10 @@ export const PENDING_ALERT_QUEUE_CAP = 5;
 // alert.
 //   'system' — health.ts disconnect + backgroundJobs.ts job-failure alerts,
 //              only ever triggered by the bot's own health/job machinery.
-//   'low'    — tools.ts `notifySuperAdmins`, reachable from member-tier tools.
+//   'low'    — tools.ts `notifySuperAdmins`, reachable from member-tier
+//              tools, and (issue #625) `notifyAdmins`, reachable from the
+//              router's rate-limited but still member-facing
+//              escalation-confirmation intercept.
 export type AlertPriority = 'system' | 'low';
 
 /** A single recipient, platform-qualified since a queued entry's audience may span platforms. */

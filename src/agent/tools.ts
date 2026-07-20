@@ -583,16 +583,23 @@ async function notifySuperAdmins(
  * `listAdmins()` failure or a single admin's DM failure is logged and never
  * prevents alerting the rest.
  *
- * If NO resolved admin has a connected adapter (issue #625 — previously this
- * silently finished having sent nothing), the alert is queued with the
- * resolved recipient set (minus `excludeUserId`) via the shared
- * pendingAlertQueue and flushed through the first adapter to reconnect
- * (`health.ts`'s `flushPendingAlerts`) — mirroring `notifySuperAdmins`'s
- * `anyConnected` shape above, but computed over the *resolved admin list's*
- * platforms rather than `ALL_PLATFORMS`, since this function's audience is
- * `listAdmins()`, not every platform's super admins. If at least one
- * resolved admin's adapter is connected, behaviour is unchanged: the loop
- * below still just skips any individually-disconnected admin.
+ * If NO resolved admin (other than `excludeUserId`) has a connected adapter
+ * (issue #625 — previously this silently finished having sent nothing), the
+ * alert is queued with the resolved recipient set (minus `excludeUserId`)
+ * via the shared pendingAlertQueue and flushed through the first adapter to
+ * reconnect (`health.ts`'s `flushPendingAlerts`) — mirroring
+ * `notifySuperAdmins`'s `anyConnected` shape above, but computed over the
+ * *resolved admin list's* platforms rather than `ALL_PLATFORMS`, since this
+ * function's audience is `listAdmins()`, not every platform's super admins.
+ * If at least one OTHER resolved admin's adapter is connected, behaviour is
+ * unchanged: the loop below still just skips any individually-disconnected
+ * admin. Queued at `'low'` priority, not `'system'`: this function's only
+ * caller is the router's member-facing escalation-confirmation intercept
+ * (`ESCALATION_RATE_LIMIT_PER_HOUR`-gated, but still member-reachable), the
+ * same reachability class `notifySuperAdmins`'s `'low'` exists for — a
+ * `'system'` label here would let a member's escalation confirmations evict
+ * genuine bot/health-originated alerts from the shared queue (issue #545's
+ * priority-inversion class).
  */
 export async function notifyAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
@@ -606,7 +613,10 @@ export async function notifyAdmins(
     logger.warn({ err }, 'listAdmins failed; escalation admin alert skipped');
     return;
   }
-  const anyConnected = admins.some((admin) => adapterFor(admin.platform)?.isConnected());
+  if (admins.length === 0) return;
+  const anyConnected = admins.some(
+    (admin) => admin.platformUserId !== excludeUserId && adapterFor(admin.platform)?.isConnected(),
+  );
   if (!anyConnected) {
     logger.warn(
       { message },
@@ -614,7 +624,7 @@ export async function notifyAdmins(
     );
     queuePendingAlert(
       `🔔 ${message}`,
-      'system', // escalations are bot/router-originated, never member-reachable (see live-path priority below)
+      'low', // member-reachable via the router's escalation-confirmation intercept — see doc comment above
       admins
         .filter((admin) => admin.platformUserId !== excludeUserId)
         .map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),

@@ -1718,13 +1718,22 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   now optionally carry a `recipients: {platform, platformUserId}[]` array,
   frozen at queue time. `notifyAdmins` computes its own `anyConnected` check
   over the *resolved admin list's* platforms (not every platform, since its
-  audience is `listAdmins()`, not `superAdminIds()`); if none are connected,
-  it queues with the resolved recipient set (minus `excludeUserId`) instead
-  of silently finishing with nothing sent. On flush, an entry with
-  `recipients` is delivered only to those recipients, filtered to the
-  reconnected adapter's platform — never to `superAdminIds()`. The recipient
-  set is deliberately NOT re-resolved via `listAdmins()` at flush time (a
-  moments-stale roster is an accepted tradeoff — see issue #625's
+  audience is `listAdmins()`, not `superAdminIds()`), excluding
+  `excludeUserId` from that check the same way the delivery loop below it
+  already excludes them — otherwise an escalating admin's own live
+  connection would count as "reachable" even though the delivery loop skips
+  them, silently dropping the alert; if no OTHER resolved admin is
+  connected, it queues with the resolved recipient set (minus
+  `excludeUserId`) instead of silently finishing with nothing sent, at
+  `'low'` priority — this producer's only caller is the router's member-
+  facing escalation-confirmation intercept, the same member-reachability
+  class `notifySuperAdmins`'s `'low'` exists for (a `'system'` label would
+  let a member's escalation confirmations evict genuine bot/health-
+  originated alerts, issue #545's priority-inversion class). On flush, an
+  entry with `recipients` is delivered only to those recipients, filtered to
+  the reconnected adapter's platform — never to `superAdminIds()`. The
+  recipient set is deliberately NOT re-resolved via `listAdmins()` at flush
+  time (a moments-stale roster is an accepted tradeoff — see issue #625's
   adversarial review — rather than coupling this leaf-ish flush to the
   repository/roles layer). Every recipient-less entry (from any of the six
   producers above) is unaffected: `recipients` stays absent and flush still
