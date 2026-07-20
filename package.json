@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "overrides": {
+    "adm-zip": "^0.6.0",
     "undici": "^6.27.0"
   },
   "scripts": {
