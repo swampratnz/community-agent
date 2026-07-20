@@ -7,7 +7,7 @@ import { sanitizeName } from './systemPrompt.js';
 import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
-import { queuePendingAlert } from '../pendingAlertQueue.js';
+import { queuePendingAlert, type AlertPriority } from '../pendingAlertQueue.js';
 import { WindowClosedError } from '../platforms/whatsapp/cloudAdapter.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
@@ -493,6 +493,11 @@ const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
  * `flushWindowReopenQueue`). Any other rejection (a Discord/Baileys send, or
  * a genuine non-recoverable Cloud API failure) falls through to today's
  * unchanged log-and-drop — this never widens what gets queued.
+ *
+ * `priority` is the alert's producer trust level, threaded from the caller so
+ * the per-recipient window-reopen queue evicts by the same #545 rule as the
+ * shared pending-alert queue: a member-reachable 'low' alert can never evict a
+ * 'system' one (admin-action audit / escalation).
  */
 function handleAdminAlertSendFailure(
   target: PlatformAdapter,
@@ -501,9 +506,10 @@ function handleAdminAlertSendFailure(
   message: string,
   err: unknown,
   logLabel: string,
+  priority: AlertPriority,
 ): void {
   if (err instanceof WindowClosedError && target.queueForWindowReopen) {
-    target.queueForWindowReopen(id, message);
+    target.queueForWindowReopen(id, message, priority);
     logger.warn({ id, platform }, `${logLabel}: recipient's window is closed, queued for reopen`);
     return;
   }
@@ -527,6 +533,7 @@ async function notifySuperAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
   message: string,
   excludeUserId: string,
+  priority: AlertPriority,
 ): Promise<void> {
   const anyConnected = ALL_PLATFORMS.some((platform) => adapterFor(platform)?.isConnected());
   if (!anyConnected) {
@@ -534,10 +541,11 @@ async function notifySuperAdmins(
       { message },
       'Super-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
     );
-    // 'low': notifySuperAdmins is reachable from member-tier tools
-    // (report_content, appeal_moderation), so it must never evict a
-    // system-triggered disconnect/job-failure alert from the shared queue (#545).
-    queuePendingAlert(`🔔 ${message}`, 'low');
+    // notifySuperAdmins is reachable from member-tier tools (report_content,
+    // appeal_moderation) at 'low', but also from the bot's own privileged-
+    // action audit at 'system' — the caller-supplied priority decides eviction
+    // so a 'low' alert never evicts a 'system' one from the shared queue (#545).
+    queuePendingAlert(`🔔 ${message}`, priority);
     return;
   }
   for (const platform of ALL_PLATFORMS) {
@@ -549,7 +557,15 @@ async function notifySuperAdmins(
       target
         .sendDirectMessage(id, alertText)
         .catch((err) =>
-          handleAdminAlertSendFailure(target, id, platform, alertText, err, 'Super-admin alert failed'),
+          handleAdminAlertSendFailure(
+            target,
+            id,
+            platform,
+            alertText,
+            err,
+            'Super-admin alert failed',
+            priority,
+          ),
         );
     }
   }
@@ -583,18 +599,20 @@ export async function notifyAdmins(
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
     const alertText = `🔔 ${message}`;
-    target
-      .sendDirectMessage(admin.platformUserId, alertText)
-      .catch((err) =>
-        handleAdminAlertSendFailure(
-          target,
-          admin.platformUserId,
-          admin.platform,
-          alertText,
-          err,
-          'Admin alert failed',
-        ),
-      );
+    target.sendDirectMessage(admin.platformUserId, alertText).catch((err) =>
+      handleAdminAlertSendFailure(
+        target,
+        admin.platformUserId,
+        admin.platform,
+        alertText,
+        err,
+        'Admin alert failed',
+        // Escalations (issue #479) are bot/router-originated, never
+        // member-reachable — 'system', so they can't be evicted by a
+        // member's queued report/appeal for the same recipient.
+        'system',
+      ),
+    );
   }
 }
 
@@ -1490,7 +1508,9 @@ export async function notifyReportFiled(
         'review with list_reports as super admin.',
     );
   }
-  await notifySuperAdmins(adapterFor, lines.join('\n'), report.reporterUserId);
+  // 'low': report_content is a member-tier tool, so a queued report alert must
+  // never evict a 'system' escalation/audit for the same window-closed recipient.
+  await notifySuperAdmins(adapterFor, lines.join('\n'), report.reporterUserId, 'low');
 }
 
 /**
@@ -1514,6 +1534,7 @@ export async function notifyReportWithdrawn(
     `Report${plural ? 's' : ''} ${list} withdrawn by the reporter ${info.reporterName ?? info.reporterUserId}. ` +
       `Marked 'withdrawn' and kept on record — no action needed unless you want to check in.`,
     info.reporterUserId,
+    'low', // member-reachable (a member withdrawing their own report)
   );
 }
 
@@ -1543,7 +1564,8 @@ export async function notifyAppealFiled(
       `(${appeal.activeWarnings}/${appeal.strikeLimit} active warnings).`,
     `Reason given: ${appeal.reason ? `"${appeal.reason}"` : 'no reason given'}`,
   ];
-  await notifySuperAdmins(adapterFor, lines.join('\n'), appeal.callerUserId);
+  // 'low': appeal_moderation is a member-tier tool.
+  await notifySuperAdmins(adapterFor, lines.join('\n'), appeal.callerUserId, 'low');
 }
 
 /**
@@ -2190,6 +2212,10 @@ export function buildToolServer(
         adapterFor,
         `${caller.userName} (${caller.role}) ran ${input.actionKind}${input.targetUserId ? ` on ${input.targetUserId}` : ''}: ${result}`,
         caller.userId,
+        // 'system': a privileged-action audit is bot-originated, never
+        // member-reachable — it must never be evicted by a member's queued
+        // report/appeal for the same window-closed super-admin (#545).
+        'system',
       );
     }
     logger.info({ action: input.actionKind, success, actor: hashId(caller.userId) }, 'Privileged action');

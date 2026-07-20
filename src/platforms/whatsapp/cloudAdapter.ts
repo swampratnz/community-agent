@@ -6,6 +6,7 @@ import {
 } from 'node:http';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
+import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
@@ -61,10 +62,11 @@ const SEND_FAILURE_THRESHOLD = 3;
 const SEND_RETRY_DEFAULT_BACKOFF_MS = 1_000;
 /**
  * Cap on messages held per-recipient in `windowReopenQueue` (issue #602),
- * oldest-evicted-on-overflow. `notifySuperAdmins` (tools.ts) is reachable
- * from member-tier tools (`report_content`, `appeal_moderation`), so this is
- * what bounds member-triggered per-recipient state, mirroring
- * `pendingAlertQueue.ts`'s bounded/oldest-evicted convention.
+ * evicted on overflow per the same priority rule `pendingAlertQueue.ts` uses
+ * (#545): `notifySuperAdmins` (tools.ts) is reachable from member-tier tools
+ * (`report_content`, `appeal_moderation`), so this is what bounds
+ * member-triggered per-recipient state — and a member-reachable `'low'` alert
+ * must never evict a `'system'` one (admin-action audit / escalation).
  */
 const WINDOW_REOPEN_QUEUE_CAP = 3;
 /**
@@ -163,13 +165,15 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * Messages queued per-recipient (issue #602) after a live admin-alert send
    * rejected with `WindowClosedError` — the recipient's own 24h
    * customer-service window was closed, not a genuine failure. Bounded at
-   * `WINDOW_REOPEN_QUEUE_CAP` per recipient, oldest-evicted-on-overflow.
+   * `WINDOW_REOPEN_QUEUE_CAP` per recipient; on overflow it evicts by the same
+   * priority rule as the shared `pendingAlertQueue` (#545), so a member-reachable
+   * `'low'` alert can never displace a `'system'` one (see `queueForWindowReopen`).
    * Flushed the instant that exact recipient's own next inbound message
    * updates `lastInboundAt` (see `onCloudMessage`) — never on a timer or
    * reconnect, so nothing is ever sent outside Meta's window. In-memory
    * only; clears on restart, same tradeoff as every other queue here.
    */
-  private readonly windowReopenQueue = new Map<string, string[]>();
+  private readonly windowReopenQueue = new Map<string, { message: string; priority: AlertPriority }[]>();
 
   /**
    * Consecutive `sendChunk` (real message send) failures, process-wide. Only
@@ -436,14 +440,43 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * window reopens (issue #602) — called by `agent/tools.ts`'s
    * `notifyAdmins`/`notifySuperAdmins` when a live `sendDirectMessage`
    * rejected with `WindowClosedError`. Bounded per-recipient at
-   * `WINDOW_REOPEN_QUEUE_CAP`, oldest-evicted-on-overflow. Optional on
-   * `PlatformAdapter` — only this adapter has a window to reopen.
+   * `WINDOW_REOPEN_QUEUE_CAP`. Optional on `PlatformAdapter` — only this
+   * adapter has a window to reopen.
+   *
+   * Overflow eviction mirrors `pendingAlertQueue.ts`'s #545 priority rule
+   * (here keyed per-recipient rather than shared): under the cap, append.
+   * When full, evict the OLDEST `'low'` (member-reachable) entry to make room,
+   * so a `'system'` alert never displaces another `'system'` alert while a
+   * `'low'` one can be dropped instead — and, crucially, a `'low'` alert never
+   * displaces a `'system'` one. When the recipient's queue is entirely
+   * `'system'`, a new `'system'` alert still bounds it FIFO (drops the oldest),
+   * but a new `'low'` alert is REJECTED rather than evicting a system alert.
+   * Without this a member filing `report_content`/`appeal_moderation` alerts
+   * (rate-capped above the cap of 3) could silently evict a queued escalation
+   * or admin-action audit for a super-admin whose window is closed —
+   * reintroducing exactly the inversion #545 fixed in the shared queue.
    */
-  queueForWindowReopen(userId: string, message: string): void {
+  queueForWindowReopen(userId: string, message: string, priority: AlertPriority): void {
     const queued = this.windowReopenQueue.get(userId) ?? [];
-    queued.push(message);
-    if (queued.length > WINDOW_REOPEN_QUEUE_CAP) queued.shift();
-    this.windowReopenQueue.set(userId, queued);
+    if (queued.length < WINDOW_REOPEN_QUEUE_CAP) {
+      queued.push({ message, priority });
+      this.windowReopenQueue.set(userId, queued);
+      return;
+    }
+    const oldestLow = queued.findIndex((e) => e.priority === 'low');
+    if (oldestLow !== -1) {
+      queued.splice(oldestLow, 1);
+      queued.push({ message, priority });
+      this.windowReopenQueue.set(userId, queued);
+      return;
+    }
+    // Entirely 'system' entries. A new 'system' alert still bounds the backlog
+    // FIFO; a new 'low' alert is dropped rather than displacing a system one.
+    if (priority === 'system') {
+      queued.shift();
+      queued.push({ message, priority });
+      this.windowReopenQueue.set(userId, queued);
+    }
   }
 
   /**
@@ -460,7 +493,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     const queued = this.windowReopenQueue.get(userId);
     if (!queued || queued.length === 0) return;
     this.windowReopenQueue.delete(userId);
-    for (const message of queued) {
+    for (const { message } of queued) {
       try {
         await this.sendText(userId, message);
       } catch (err) {

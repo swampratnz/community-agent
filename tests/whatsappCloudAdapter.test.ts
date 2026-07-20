@@ -105,7 +105,9 @@ function dedupInternals(adapter: InstanceType<typeof WhatsAppCloudAdapter>) {
 
 /** Exposes the adapter's private window-reopen queue (issue #602) for direct inspection. */
 function windowReopenQueueInternals(adapter: InstanceType<typeof WhatsAppCloudAdapter>) {
-  return adapter as unknown as { windowReopenQueue: Map<string, string[]> };
+  return adapter as unknown as {
+    windowReopenQueue: Map<string, { message: string; priority: 'system' | 'low' }[]>;
+  };
 }
 
 function cloudMessage(overrides: Partial<CloudInboundMessage> = {}): CloudInboundMessage {
@@ -882,23 +884,67 @@ test('outside the 24h customer-service window: the rejection is a WindowClosedEr
 
 test('queueForWindowReopen: caps at 3 messages per recipient, oldest evicted on overflow (acceptance criterion 2)', () => {
   const adapter = new WhatsAppCloudAdapter();
-  adapter.queueForWindowReopen('64211234567', 'msg-1');
-  adapter.queueForWindowReopen('64211234567', 'msg-2');
-  adapter.queueForWindowReopen('64211234567', 'msg-3');
-  adapter.queueForWindowReopen('64211234567', 'msg-4');
+  // All same priority, so overflow is plain FIFO oldest-evicted.
+  adapter.queueForWindowReopen('64211234567', 'msg-1', 'low');
+  adapter.queueForWindowReopen('64211234567', 'msg-2', 'low');
+  adapter.queueForWindowReopen('64211234567', 'msg-3', 'low');
+  adapter.queueForWindowReopen('64211234567', 'msg-4', 'low');
 
   const { windowReopenQueue } = windowReopenQueueInternals(adapter);
   assert.deepEqual(
-    windowReopenQueue.get('64211234567'),
+    windowReopenQueue.get('64211234567')?.map((e) => e.message),
     ['msg-2', 'msg-3', 'msg-4'],
     'exactly the newest 3 messages remain — the oldest (msg-1) was evicted',
   );
 });
 
+test('SECURITY: queueForWindowReopen — a member-reachable low alert never evicts a system alert for the same recipient, mirroring pendingAlertQueue #545 (issue #602)', () => {
+  const adapter = new WhatsAppCloudAdapter();
+  // A recipient's queue fills with system alerts (escalations / admin-action audits).
+  adapter.queueForWindowReopen('64211234567', 'sys-1', 'system');
+  adapter.queueForWindowReopen('64211234567', 'sys-2', 'system');
+  adapter.queueForWindowReopen('64211234567', 'sys-3', 'system'); // at the cap of 3
+
+  // A member floods low-priority alerts (report_content / appeal_moderation).
+  // report_content is rate-capped above 3/day, comfortably past the cap — NONE
+  // may displace a system alert.
+  for (let i = 1; i <= 6; i++) adapter.queueForWindowReopen('64211234567', `low-flood-${i}`, 'low');
+
+  const { windowReopenQueue } = windowReopenQueueInternals(adapter);
+  assert.deepEqual(
+    windowReopenQueue.get('64211234567')?.map((e) => e.message),
+    ['sys-1', 'sys-2', 'sys-3'],
+    'every system alert survives; no low-flood alert entered the full system queue',
+  );
+});
+
+test('SECURITY: queueForWindowReopen — at cap, a new alert evicts the OLDEST low entry first, preserving every system alert (issue #602)', () => {
+  const adapter = new WhatsAppCloudAdapter();
+  // Interleave so oldest-overall would be a low, proving it targets low not merely oldest.
+  adapter.queueForWindowReopen('r', 'low-old', 'low');
+  adapter.queueForWindowReopen('r', 'sys-a', 'system');
+  adapter.queueForWindowReopen('r', 'low-mid', 'low'); // at cap (3): [low-old, sys-a, low-mid]
+
+  const { windowReopenQueue } = windowReopenQueueInternals(adapter);
+  adapter.queueForWindowReopen('r', 'sys-new', 'system'); // full → evict oldest low (low-old)
+  assert.deepEqual(
+    windowReopenQueue.get('r')?.map((e) => e.message),
+    ['sys-a', 'low-mid', 'sys-new'],
+    'oldest low (low-old) evicted, both systems kept',
+  );
+
+  adapter.queueForWindowReopen('r', 'sys-newer', 'system'); // full → evict the remaining low (low-mid)
+  assert.deepEqual(
+    windowReopenQueue.get('r')?.map((e) => e.message),
+    ['sys-a', 'sys-new', 'sys-newer'],
+    'the last low entry is evicted before any system alert; no system alert ever dropped while a low remained',
+  );
+});
+
 test("flush on window reopen: queued messages send via sendText, in order, and the recipient's queue clears once their inbound message arrives (acceptance criterion 3)", async () => {
   const adapter = new WhatsAppCloudAdapter();
-  adapter.queueForWindowReopen('64211234567', 'queued message one');
-  adapter.queueForWindowReopen('64211234567', 'queued message two');
+  adapter.queueForWindowReopen('64211234567', 'queued message one', 'low');
+  adapter.queueForWindowReopen('64211234567', 'queued message two', 'low');
 
   const { calls, fetchMock } = mockFetch([{ ok: true }, { ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -921,7 +967,7 @@ test("flush on window reopen: queued messages send via sendText, in order, and t
 
 test('flush on window reopen: a failed flush send is logged and dropped, never re-queued (acceptance criterion 4)', async () => {
   const adapter = new WhatsAppCloudAdapter();
-  adapter.queueForWindowReopen('64211234567', 'will fail to flush');
+  adapter.queueForWindowReopen('64211234567', 'will fail to flush', 'low');
 
   const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
   const originalFetch = globalThis.fetch;
@@ -943,8 +989,8 @@ test('flush on window reopen: a failed flush send is logged and dropped, never r
 
 test("SECURITY: flush on window reopen — recipient isolation: recipient A's reopened window never sends recipient B's queued messages, and B's queue stays untouched (acceptance criterion 5)", async () => {
   const adapter = new WhatsAppCloudAdapter();
-  adapter.queueForWindowReopen('64211111111', 'message for A');
-  adapter.queueForWindowReopen('64222222222', 'message for B');
+  adapter.queueForWindowReopen('64211111111', 'message for A', 'low');
+  adapter.queueForWindowReopen('64222222222', 'message for B', 'low');
 
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -960,7 +1006,9 @@ test("SECURITY: flush on window reopen — recipient isolation: recipient A's re
   assert.equal(JSON.parse(calls[0].body).text.body, 'message for A');
   assert.equal(JSON.parse(calls[0].body).to, '64211111111');
   assert.deepEqual(
-    windowReopenQueueInternals(adapter).windowReopenQueue.get('64222222222'),
+    windowReopenQueueInternals(adapter)
+      .windowReopenQueue.get('64222222222')
+      ?.map((e) => e.message),
     ['message for B'],
     "B's queue entry must be completely untouched by A's flush",
   );
@@ -968,7 +1016,7 @@ test("SECURITY: flush on window reopen — recipient isolation: recipient A's re
 
 test("SECURITY: a queued message is never sent by the mere passage of time or another recipient's inbound message — only that exact recipient's own inbound message triggers a flush (acceptance criterion 7)", async () => {
   const adapter = new WhatsAppCloudAdapter();
-  adapter.queueForWindowReopen('64211111111', 'must not leak out early');
+  adapter.queueForWindowReopen('64211111111', 'must not leak out early', 'low');
 
   const { calls, fetchMock } = mockFetch([{ ok: true }]);
   const originalFetch = globalThis.fetch;
@@ -986,7 +1034,9 @@ test("SECURITY: a queued message is never sent by the mere passage of time or an
       "another recipient's inbound message must never flush this recipient's queue",
     );
     assert.deepEqual(
-      windowReopenQueueInternals(adapter).windowReopenQueue.get('64211111111'),
+      windowReopenQueueInternals(adapter)
+        .windowReopenQueue.get('64211111111')
+        ?.map((e) => e.message),
       ['must not leak out early'],
       "the queue entry survives untouched until the exact recipient's own inbound message arrives",
     );

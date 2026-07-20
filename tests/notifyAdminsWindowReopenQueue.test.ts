@@ -58,7 +58,7 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
  */
 function makeFakeCloudAdapter(rejections: Record<string, unknown>) {
   const sends: Array<{ userId: string; text: string }> = [];
-  const queued: Array<{ userId: string; message: string }> = [];
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
   const adapter: PlatformAdapter = {
     platform: 'whatsapp',
     adminCapabilities: new Set(),
@@ -71,8 +71,8 @@ function makeFakeCloudAdapter(rejections: Record<string, unknown>) {
       if (userId in rejections) throw rejections[userId];
       sends.push({ userId, text });
     },
-    queueForWindowReopen(userId: string, message: string) {
-      queued.push({ userId, message });
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
     },
     async conversationsForUser() {
       return [];
@@ -153,6 +153,38 @@ test('notifyAdmins: a WindowClosedError rejection queues via queueForWindowReope
   assert.equal(queued.length, 1);
   assert.equal(queued[0]?.userId, 'admin-closed');
   assert.match(queued[0]?.message ?? '', /escalation alert/);
+});
+
+test("SECURITY: the producer's trust level is threaded to queueForWindowReopen so the per-recipient queue can enforce #545 — a member-reachable report_content alert queues 'low', a bot-originated escalation queues 'system' (issue #602)", async (t) => {
+  const { notifyReportFiled, notifyAdmins, WindowClosedError } = await modules(t);
+
+  // report_content → notifyReportFiled → notifySuperAdmins: member-reachable, must be 'low'.
+  const report = makeFakeCloudAdapter({ 'super-2': new WindowClosedError('super-2') });
+  await notifyReportFiled((platform) => (platform === 'whatsapp' ? report.adapter : undefined), {
+    id: 700,
+    reporterUserId: 'reporter-1',
+    reporterName: 'Reporter One',
+    conversationId: 'convo-1',
+    reason: 'member-reachable low alert',
+  });
+  assert.deepEqual(
+    report.queued.map((q) => ({ userId: q.userId, priority: q.priority })),
+    [{ userId: 'super-2', priority: 'low' }],
+    "a member-tier report_content alert is queued 'low' so it can never evict a system alert",
+  );
+
+  // escalation → notifyAdmins: bot/router-originated, must be 'system'.
+  const escalation = makeFakeCloudAdapter({ 'admin-closed': new WindowClosedError('admin-closed') });
+  await notifyAdmins(
+    (platform) => (platform === 'whatsapp' ? escalation.adapter : undefined),
+    'escalation alert',
+    '',
+  );
+  assert.deepEqual(
+    escalation.queued.map((q) => ({ userId: q.userId, priority: q.priority })),
+    [{ userId: 'admin-closed', priority: 'system' }],
+    "a bot-originated escalation is queued 'system' so a member's queued report can never evict it",
+  );
 });
 
 test('SECURITY: notifyAdmins — a rejection that is NOT a WindowClosedError (a generic Graph API failure) is never queued via queueForWindowReopen; it stays logged-and-dropped exactly as today (acceptance criterion 6)', async (t) => {

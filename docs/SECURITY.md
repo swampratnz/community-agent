@@ -1657,15 +1657,23 @@ ARCHITECTURE.md, and not the `/healthz` zero-adapter queue below either.
 `assertWithinCustomerServiceWindow` throws an exported `WindowClosedError`
 (carrying the recipient id) rather than a bare `Error`, so
 `notifySuperAdmins`/`notifyAdmins` (`agent/tools.ts`) can queue via the
-adapter's optional `queueForWindowReopen(userId, message)` instead of only
-logging and dropping — any other rejection (a genuine Graph API failure,
-missing config, or a Discord/Baileys send) is unaffected and still
+adapter's optional `queueForWindowReopen(userId, message, priority)` instead
+of only logging and dropping — any other rejection (a genuine Graph API
+failure, missing config, or a Discord/Baileys send) is unaffected and still
 logged-and-dropped exactly as before, so an unrelated/transient failure can
 never accumulate state here (`SECURITY:` test). The queue is a
-`Map<recipientId, message[]>` bounded at 3 per recipient,
-oldest-evicted-on-overflow — the cap that bounds member-reachable state,
-since `notifySuperAdmins` is reachable via `report_content`/
-`appeal_moderation` (`SECURITY:` test). It flushes ONLY when that exact
+`Map<recipientId, {message, priority}[]>` bounded at 3 per recipient. Because
+`notifySuperAdmins` is reachable via member-tier `report_content`/
+`appeal_moderation`, this queue carries the SAME #545 priority protection as
+the shared pending-alert queue, keyed per-recipient: the caller threads the
+producer trust level (`'low'` for member-reachable reports/appeals, `'system'`
+for bot-originated escalations and admin-action audits), and on overflow the
+oldest `'low'` entry is evicted first — a `'low'` alert can never displace a
+`'system'` one (when the queue is entirely `'system'`, a new `'low'` is
+rejected outright). So a member filing reports can't silently evict a queued
+escalation for a window-closed super-admin (`SECURITY:` tests pin both the
+per-recipient cross-priority eviction and the caller-threaded priority). It
+flushes ONLY when that exact
 recipient's own next inbound message updates `lastInboundAt` — never on a
 timer, a reconnect, or any other recipient's inbound message (`SECURITY:`
 test pins recipient isolation: a flush for recipient A never touches

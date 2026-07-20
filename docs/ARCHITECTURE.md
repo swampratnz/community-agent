@@ -1673,14 +1673,19 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   instead of a bare `Error`, so the two `tools.ts` fan-outs can tell "window
   closed, recoverable" apart from a genuine send failure. On a
   `WindowClosedError` rejection, the fan-out calls the adapter's optional
-  `queueForWindowReopen(userId, message)` — implemented only by
+  `queueForWindowReopen(userId, message, priority)` — implemented only by
   `WhatsAppCloudAdapter`; Discord and Baileys have no such window and simply
   omit the method, so their admin-alert paths are byte-identical to today.
-  The Cloud adapter holds a small `Map<recipientId, message[]>`, capped at 3
-  per recipient with oldest-evicted-on-overflow — bounding the
-  member-reachable `notifySuperAdmins` path (`report_content`/
-  `appeal_moderation`), mirroring the shared queue's own bounded/
-  oldest-evicted convention above. It flushes the instant that EXACT
+  The Cloud adapter holds a small `Map<recipientId, {message, priority}[]>`,
+  capped at 3 per recipient — bounding the member-reachable
+  `notifySuperAdmins` path (`report_content`/`appeal_moderation`) and applying
+  the SAME #545 priority protection the shared queue has, keyed per-recipient:
+  on overflow it evicts the oldest `'low'` entry, and when the recipient's
+  queue is entirely `'system'` a new `'low'` alert is rejected rather than
+  displacing a system one. So a member's queued `report_content`/
+  `appeal_moderation` alert (`'low'`, threaded from the caller) can never evict
+  a bot-originated escalation or admin-action audit (`'system'`) for a
+  window-closed super-admin. It flushes the instant that EXACT
   recipient's own next inbound message updates `lastInboundAt` (the same
   per-sender timestamp `assertWithinCustomerServiceWindow` already checks) —
   never on a timer or reconnect, so nothing is ever sent outside Meta's

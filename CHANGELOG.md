@@ -58,11 +58,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
   messaged the bot in the last day rejected on Meta's own 24h free-form-reply
   rule and was silently logged-and-dropped — even though the adapter itself
   stayed connected. That send failure is now distinguished from a genuine
-  error and queued (capped per-recipient, oldest-evicted) instead of
+  error and queued (capped per-recipient, priority-aware eviction) instead of
   dropped, then delivered automatically the next time that admin messages
-  the bot and reopens their own window. No change for Discord or Baileys
-  admins, and no change to Meta's window rule itself — nothing is ever sent
-  outside it.
+  the bot and reopens their own window. The queue carries the same #545
+  priority protection the shared pending-alert queue has, keyed per-recipient:
+  a member-reachable `report_content`/`appeal_moderation` alert (`'low'`) can
+  never evict a bot-originated escalation or admin-action audit (`'system'`),
+  so a member filing reports can't silently displace a queued escalation for a
+  window-closed super-admin. No change for Discord or Baileys admins, and no
+  change to Meta's window rule itself — nothing is ever sent outside it.
 
 ### Security
 - **Closed a DNS-rebinding/TOCTOU gap in the knowledge link-check's SSRF
