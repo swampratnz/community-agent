@@ -171,6 +171,15 @@ jobs:
             You are the BUILD worker for the NZ Claude Community agent pipeline.
             Issue #${{ github.event.issue.number }} was just labelled `status:approved`.
 
+            HARD RULE, before anything else: run EVERY command in the
+            FOREGROUND. Never pass run_in_background to Bash, never launch a
+            command and end your turn expecting a notification when it
+            finishes — this is a one-shot CI job with no wakeups, so a turn
+            that ends "waiting" simply dies at the job timeout with no PR
+            (the 2026-07-19/20 stall pattern: "I'll stop polling and wait for
+            the notification" ended three consecutive attempts). A slow
+            foreground `npm test` is correct; a backgrounded one is fatal.
+
             Read CLAUDE.md (conventions + security posture you must not regress) and
             docs/PIPELINE.md (ownership rules) first, then:
             0. Read the FULL proposal before anything else:
@@ -318,10 +327,14 @@ jobs:
           # once retries are exhausted, not on every flake. Keep this `>= 3` cap
           # in sync with the `< 3` guard in pipeline-build-retry.yml.
           if [ "${{ github.run_attempt }}" -ge 3 ]; then
-            # Escalate as a LANE, not a flag: drop status:building so the item
-            # leaves the automated queue for a human (matches the state machine
-            # in docs/PIPELINE.md — a proposal is in exactly one lane).
-            gh issue edit "${ISSUE_NUMBER}" --add-label needs-human --remove-label status:building || true
+            # Escalate as a LANE, not a flag: drop status:building AND
+            # status:approved so the item leaves the automated queue entirely
+            # (matches the state machine in docs/PIPELINE.md — a proposal is in
+            # exactly one lane). Leaving status:approved behind let the hourly
+            # fallback build lane re-claim escalated issues and silently wipe
+            # needs-human (the 2026-07-19 #591 loop) — a human re-queues by
+            # removing needs-human and re-adding status:approved.
+            gh issue edit "${ISSUE_NUMBER}" --add-label needs-human --remove-label status:building --remove-label status:approved || true
 
             # Surface WHY, so a maintainer doesn't have to dig through run logs:
             # pull the build agent's own final summary from its execution log
@@ -332,7 +345,7 @@ jobs:
               summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
             fi
             {
-              printf '🤖 Build worker produced **no pull request** after %s attempts (auto-retried) — a persistent failure, not a flake. Cleared `status:building`; labelled `needs-human`.\n\nLatest run: %s\n' "${{ github.run_attempt }}" "${run_url}"
+              printf '🤖 Build worker produced **no pull request** after %s attempts (auto-retried) — a persistent failure, not a flake. Cleared `status:building`/`status:approved`; labelled `needs-human`. Re-queue by removing `needs-human` and re-adding `status:approved`.\n\nLatest run: %s\n' "${{ github.run_attempt }}" "${run_url}"
               if [ -n "${summary}" ]; then
                 printf '\n<details><summary>Build worker'\''s final summary (what it says blocked it)</summary>\n\n%s\n\n</details>\n' "${summary}"
               else
