@@ -32,6 +32,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
   new tool, no new tier, no raw ID/list rendering — reuses `feature_flags`'s
   existing `super_admin` gate.
 
+### Security
+- **Quarantine-block entries can no longer spoof extra lines via embedded
+  newlines** (PR #617 review follow-up): `renderConversationTail` and
+  `renderMemoryContext` stripped angle brackets from message content but kept
+  newlines, so a crafted multi-line message could render a fake
+  `[outbound by CommunityAgent] ...` line inside the untrusted block,
+  visually indistinguishable from a genuine prior bot statement. Entry
+  content now collapses all whitespace to single spaces (the same discipline
+  `sanitizeName` already applies to author names), so every entry is exactly
+  one line and the leading `[direction by Name]` tag can't be forged onto a
+  new one. Applies to both recall and the new session-rollover tail backfill.
+
 ## 2026-07-20
 
 ### Added

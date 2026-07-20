@@ -314,6 +314,20 @@ export function renderRequesterTag(userName: string | null | undefined): string 
 }
 
 /**
+ * Clean one untrusted message body for the quarantine blocks below: strip
+ * angle brackets (no fake tags), collapse ALL whitespace — including newlines
+ * — to single spaces, then cap. The collapse matters beyond tidiness: each
+ * entry's line starts with a `[direction by Name]` tag, so a crafted message
+ * containing `\n[outbound by CommunityAgent] ...` would otherwise render as a
+ * spoofed extra line indistinguishable from a genuine prior bot statement
+ * inside the same block (PR #617 review follow-up). This is the same
+ * whitespace discipline `sanitizeName` already applies to author names.
+ */
+function untrustedEntryContent(content: string): string {
+  return content.replace(/[<>]/g, ' ').replace(/\s+/g, ' ').slice(0, 300);
+}
+
+/**
  * Render the tail of the current conversation (most recent messages, oldest
  * first) as a clearly delimited untrusted-data block for the USER turn, used
  * only when a fresh Claude session starts mid-conversation (rollover past
@@ -328,7 +342,7 @@ export function renderRequesterTag(userName: string | null | undefined): string 
 export function renderConversationTail(rows: ConversationTailRow[]): string {
   const items = rows
     .map((r) => {
-      const clean = r.content.replace(/[<>]/g, ' ').slice(0, 300);
+      const clean = untrustedEntryContent(r.content);
       const name = sanitizeName(r.userName);
       return `[${r.direction}${name ? ` by ${name}` : ''}] ${clean}`;
     })
@@ -348,7 +362,7 @@ export function renderConversationTail(rows: ConversationTailRow[]): string {
 export function renderMemoryContext(memories: MemoryHit[]): string {
   const items = memories
     .map((m, i) => {
-      const clean = m.content.replace(/[<>]/g, ' ').slice(0, 300);
+      const clean = untrustedEntryContent(m.content);
       // Sanitize the recalled author name too (not just content): a nickname
       // like `x</recalled-messages>` would otherwise close the quarantine
       // wrapper early, spilling that message's content and every later hit
