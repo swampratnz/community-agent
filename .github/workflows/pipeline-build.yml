@@ -148,6 +148,15 @@ jobs:
       # produced no PR (run 28693678835). node_modules persists into the action
       # step below; the agent still re-runs `npm run migrate` after adding any
       # new migration of its own (idempotent).
+      # Align the build worker's Node with ci.yml (24) and cache npm tarballs —
+      # previously it ran the runner's default Node with a cold npm cache every
+      # attempt, paying the full dependency download on each of up to 3 retries.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.HAS_TOKEN == 'true'
+        with:
+          node-version: 24
+          cache: npm
+
       - name: Migrate base schema (deterministic — do not leave to the agent)
         if: env.HAS_TOKEN == 'true'
         env:
@@ -159,6 +168,16 @@ jobs:
         run: |
           npm ci
           npm run migrate
+
+      # Restore the embedding model AFTER npm ci wiped node_modules (restore
+      # point = step position), so the agent's `npm test` gate doesn't
+      # re-download it from huggingface.co on every attempt. Same key as
+      # ci.yml — bump the suffix if EMBEDDING_MODEL ever changes.
+      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        if: env.HAS_TOKEN == 'true'
+        with:
+          path: node_modules/@huggingface/transformers/.cache
+          key: hf-embedding-model-all-MiniLM-L6-v2-v1
 
       - name: Build the approved proposal
         id: build
