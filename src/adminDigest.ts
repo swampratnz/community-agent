@@ -12,6 +12,7 @@ import {
   countLowRatedKnowledge,
   countMaxTurnsFailures,
   countMutedMembers,
+  countOpenAppeals,
   countOpenReports,
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
@@ -167,6 +168,13 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * ratios/counts only — no message content, no rater identity. Four
  * append-only trailing params, default 0, so every existing call site is
  * unaffected and the quiet case is byte-identical to the pre-#592 form.
+ * `openAppealsCount` (issue #631) comes from `countOpenAppeals`, a dedicated
+ * `COUNT(*)` read guild-wide by platform, same shape as `mutedMembersCount`
+ * — the digest line #554 and #622 both named and deferred as a follow-up.
+ * Rendered only when `> 0`; bare integer only, never an appellant's
+ * `user_name`/`reason`/`user_id`. Append-only trailing param, default 0, so
+ * every existing call site is unaffected and the quiet case is
+ * byte-identical to the pre-#631 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -257,6 +265,11 @@ export function buildAdminDigestMessage(
   autoAnswerUnhelpful: number = 0,
   addressedHelpful: number = 0,
   addressedUnhelpful: number = 0,
+  // Guild-wide-by-platform count of open moderation appeals
+  // (`countOpenAppeals`, issue #631) — the digest line #554 and #622 both
+  // named and deferred as a follow-up. Append-only trailing param, default
+  // 0, so every existing call site is unaffected.
+  openAppealsCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -277,7 +290,8 @@ export function buildAdminDigestMessage(
     notMembersCount === 0 &&
     generalUnhelpfulCount === 0 &&
     autoAnswerHelpful === 0 &&
-    autoAnswerUnhelpful === 0
+    autoAnswerUnhelpful === 0 &&
+    openAppealsCount === 0
   )
     return null;
 
@@ -470,6 +484,13 @@ export function buildAdminDigestMessage(
         trendSuffix('conflictCandidateCount', conflictCandidateCount, previousCounts),
     );
   }
+  if (openAppealsCount > 0) {
+    // Bare integer only — no appellant user_name/reason/user_id ever reaches the DM (#631).
+    sections.push(
+      `📋 ${openAppealsCount} open moderation appeal(s) awaiting review — run \`list_appeals\` to review.` +
+        trendSuffix('openAppealsCount', openAppealsCount, previousCounts),
+    );
+  }
   return sections.join('\n');
 }
 
@@ -528,6 +549,7 @@ export async function buildAdminDigestForAdmin(
     oldestPendingSuggestionAge,
     generalUnhelpfulCount,
     answerOriginSummary,
+    openAppealsCount,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -599,6 +621,10 @@ export async function buildAdminDigestForAdmin(
     // that count — the auto-answer-vs-addressed origin split #477 named as
     // its own success metric but never wired up (issue #592).
     answerFeedbackOriginSummary(scope),
+    // Guild-wide by platform like countMutedMembers/rosterCounts
+    // (moderation_appeals has no conversation_id) — the digest backlog line
+    // #554 and #622 both named and deferred (issue #631).
+    countOpenAppeals(platform),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -629,6 +655,7 @@ export async function buildAdminDigestForAdmin(
     notMembersCount,
     escalatedKnowledgeGapsCount,
     generalUnhelpfulCount,
+    openAppealsCount,
   };
   const previousCounts = config.adminDigest.trendsEnabled
     ? ((await getLastDigestCounts(platform, platformUserId)) ?? undefined)
@@ -664,6 +691,7 @@ export async function buildAdminDigestForAdmin(
     answerOriginSummary.autoAnswer.unhelpful,
     answerOriginSummary.addressed.helpful,
     answerOriginSummary.addressed.unhelpful,
+    openAppealsCount,
   );
   return { message, currentCounts };
 }
@@ -729,7 +757,11 @@ export async function buildAdminDigestForAdmin(
  * conversation scope either. `answerFeedbackOriginSummary(scope)` is
  * conversation-scoped like `countLowRatedKnowledge` (`answer_feedback` has a
  * conversation_id); cumulative, no freshness window — the origin split #477
- * named as its own success metric and issue #592 finally wires up. The freshness guard
+ * named as its own success metric and issue #592 finally wires up.
+ * `countOpenAppeals(admin.platform)` is guild-wide by platform like
+ * `countMutedMembers` (`moderation_appeals` has no conversation_id) — the
+ * digest backlog line #554 and #622 both named and deferred (issue #631).
+ * The freshness guard
  * (`admin_digest_sends`) is a durable per-admin timestamp, so a restart
  * mid-week cannot cause a duplicate send within the same window. Super
  * admins are not enrolled — `listAdmins` only returns `community_users`
@@ -814,17 +846,19 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
  * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
  * knowledge-pair, conflict-candidate-knowledge-pair, general-knowledge-
- * unhelpful-rating, auto-answer-vs-addressed helpful-ratio, and (in `'gated'`
+ * unhelpful-rating, auto-answer-vs-addressed helpful-ratio, open-moderation-
+ * appeal, and (in `'gated'`
  * access mode) onboarding-queue counts, plus (when at least one request is
  * pending) the oldest pending access request's age in days (issue #21's
  * deferred proactive follow-up, extended by issue #133, issue #193, issue
  * #199, issue #284, issue #324, issue #344, issue #357, issue #378, issue
- * #403, issue #460, issue #515, issue #563, and issue #592) — the same signals
+ * #403, issue #460, issue #515, issue #563, issue #592, and issue #631) — the
+ * same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/
- * `list_duplicate_knowledge`/`list_knowledge_conflicts` already compute on
- * demand.
+ * `list_duplicate_knowledge`/`list_knowledge_conflicts`/`list_appeals`
+ * already compute on demand.
  *
  * Routed through `startTrackedJob` (issue #385) rather than a hand-rolled
  * `setInterval`, wiring this job into the same consecutive-scheduled-failure

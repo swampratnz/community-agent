@@ -139,6 +139,7 @@ const {
   createModerationAppeal,
   listAppeals,
   resolveModerationAppeal,
+  countOpenAppeals,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -9366,6 +9367,70 @@ test(
     assert.equal(otherRows.rows.length, 1, "another user's moderation_appeals rows are untouched");
 
     await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [otherAppeal.id]);
+  },
+);
+
+test(
+  'repository: countOpenAppeals counts only same-platform open rows, excluding resolved/dismissed and other platforms (issue #631)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-count`;
+    // Baselines rather than absolute counts — moderation_appeals has no
+    // per-run scoping column, and other concurrently-running test files
+    // (tools.test.ts's appeal_moderation suite) may hold their own
+    // in-flight 'discord' rows, so only the DELTA our own fixtures cause is
+    // a safe assertion.
+    const baselineDiscord = await countOpenAppeals('discord');
+    const baselineWhatsapp = await countOpenAppeals('whatsapp');
+
+    const open = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'A',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const resolved = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'B',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(resolved.id, 'resolved', 'admin-1');
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'C',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(dismissed.id, 'dismissed', 'admin-1');
+    const otherPlatformOpen = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'D',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const afterDiscord = await countOpenAppeals('discord');
+    assert.equal(
+      afterDiscord,
+      baselineDiscord + 1,
+      'only the genuinely open discord row is counted — the resolved and dismissed rows are excluded',
+    );
+
+    const afterWhatsapp = await countOpenAppeals('whatsapp');
+    assert.equal(
+      afterWhatsapp,
+      baselineWhatsapp + 1,
+      'the whatsapp open row is counted only under its own platform, not leaked into/from discord',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
+      [open.id, resolved.id, dismissed.id, otherPlatformOpen.id],
+    ]);
   },
 );
 
