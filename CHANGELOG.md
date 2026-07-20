@@ -38,6 +38,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
   distinct query is never false-positived. In-memory only, same durability
   class as the sibling `reserve*Slot` caps; fails closed on a thrown check,
   and the query text is never persisted or logged.
+- **Week-over-week trend on the weekly engagement alert** (#597): the
+  super-admin-only weekly engagement DM now appends a `▲`/`▼`/"No change"
+  percentage-point delta against last week's snapshot, the same convention
+  `formatUsageCostDigestMessage` (#578) uses for dollars and the admin-digest
+  trend (#497) uses elsewhere. The prior percentage is read from
+  `engagement_alert_sends.last_percentage` before this run's value is
+  persisted, so the delta always compares against last week's figure. A
+  first-ever run (no prior row) renders a defined "No prior week recorded
+  yet to compare against." message instead of `NaN`/`undefined`. No new
+  tool, RBAC tier, or user-identifying data — still a single aggregate
+  percentage.
 
 ### Fixed
 - **WhatsApp Cloud API admin alerts no longer vanish when a recipient's 24h
