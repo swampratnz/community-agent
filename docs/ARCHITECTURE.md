@@ -305,12 +305,20 @@ memory**:
    the highest accuracy-risk bucket the bot produces (VISION's answer-quality
    theme). No new tool — the digest line points an admin at the existing
    `list_answer_feedback` (`unhelpfulOnly: true`) to drill in. A bare integer
-   only, no question text, answer content, comment, or user id. All these
+   only, no question text, answer content, comment, or user id.
+   Plus (issue #631) a guild-wide count of open moderation appeals,
+   sourced from `countOpenAppeals(admin.platform)` — the same
+   guild-wide-by-platform shape as the muted-members count above
+   (`moderation_appeals` has no `conversation_id` either), and the digest
+   backlog line `#554`/`#622` both named and deferred as a follow-up until
+   now. Points an admin at the existing `list_appeals` tool; a bare integer
+   only, never an appellant's `user_name`/`reason`/`user_id`. All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
-   `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`)
+   `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
+   `countOpenAppeals`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Three of these queue lines also

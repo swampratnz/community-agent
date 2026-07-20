@@ -31,6 +31,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   or bounded-integer knobs that carry no identifying/secret information. No
   new tool, no new tier, no raw ID/list rendering — reuses `feature_flags`'s
   existing `super_admin` gate.
+- **Weekly admin digest now surfaces open moderation appeals** (#631, the
+  named follow-up #554 and #622 both deferred): admins previously had to
+  proactively run `list_appeals` to learn a member had filed an appeal — the
+  weekly digest had zero visibility into it. Adds a guild-wide-by-platform
+  `📋 N open moderation appeal(s) awaiting review` line, shown only when
+  there's at least one, pointing admins at `list_appeals`. Bare integer
+  only — no appellant name, reason, or warning history ever reaches the
+  digest DM, matching every other backlog signal's privacy floor. No new
+  tool, table, or tier — reuses the `moderation_appeals` table #554 already
+  built and privacy-reviewed.
 
 ### Security
 - **Quarantine-block entries can no longer spoof extra lines via embedded

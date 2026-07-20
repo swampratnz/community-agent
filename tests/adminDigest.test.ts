@@ -54,6 +54,7 @@ const {
   countStaleMutedMembers,
   getLastDigestCounts,
   recordAdminDigestSnapshot,
+  createModerationAppeal,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -1845,6 +1846,165 @@ test('buildAdminDigestMessage: autoAnswerHelpful/autoAnswerUnhelpful/addressedHe
     'explicit zeros for the four new trailing params match the pre-#592 omitted-param output',
   );
   assert.ok(!before!.includes('📊'), 'no auto-answer-ratings line at the pre-#592 call shape');
+});
+
+test('buildAdminDigestMessage: open-appeals line appears only when openAppealsCount > 0, and all TWENTY signals zero -> null (issue #631 acceptance criteria 2, 3)', () => {
+  assert.equal(
+    buildAdminDigestMessage(
+      [],
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      undefined,
+      null,
+      null,
+      null,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+    ),
+    null,
+    'all twenty signals zero — including open appeals — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+  );
+  assert.ok(message, 'a non-zero open-appeals count alone still produces a DM');
+  const appealLines = message.split('\n').filter((l) => l.includes('📋'));
+  assert.equal(appealLines.length, 1, 'exactly one open-appeals line');
+  assert.match(
+    appealLines[0],
+    /^📋 3 open moderation appeal\(s\) awaiting review — run `list_appeals` to review\.$/,
+  );
+
+  const zeroMessage = buildAdminDigestMessage(
+    [],
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(!zeroMessage!.includes('📋'), 'no open-appeals line when the count is zero');
+});
+
+test('buildAdminDigestMessage: open-appeals line carries the standard trendSuffix delta (issue #631 acceptance criterion 4)', () => {
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { openAppealsCount: 1 },
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+  );
+  assert.ok(message);
+  const appealLine = message.split('\n').find((l) => l.includes('📋'));
+  assert.equal(
+    appealLine,
+    '📋 3 open moderation appeal(s) awaiting review — run `list_appeals` to review. (▲+2 since last week)',
+    'previous 1 -> current 3 renders exactly ▲+2, the same trendSuffix convention every other signal gets',
+  );
 });
 
 test('SECURITY: buildAdminDigestMessage: previousCounts omitted -> byte-identical to the pre-#497 form, no trend suffix anywhere even with several non-zero signals (issue #497 acceptance criteria 1, 7)', () => {
@@ -4075,6 +4235,138 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[dupAId, dupBId]]);
+    await pool.query(
+      `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
+      [[admin1Id, admin2Id]],
+    );
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = ANY($1)`, [
+      [admin1Id, admin2Id],
+    ]);
+  },
+);
+
+// countOpenAppeals (issue #631): the digest backlog line #554 and #622 both
+// named and deferred — a guild-wide-by-platform COUNT(*), same shape as
+// countMutedMembers.
+
+test(
+  'SECURITY: runAdminDigestOnce: the open-appeals line carries only the bare count — never an appellant user_name, reason, or user_id (issue #631 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-appealpriv-admin`;
+    const appellantUserId = `${RUN}-run-appealpriv-user`;
+    const secretUserName = 'Very Identifiable Appellant Name';
+    const secretReason = 'a very identifiable, specific appeal reason string';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const { id: appealId } = await createModerationAppeal({
+      platform: 'discord',
+      userId: appellantUserId,
+      userName: secretUserName,
+      reason: secretReason,
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({
+      platform: 'discord',
+      conversationIds: [`${RUN}-c-appealpriv-empty`],
+      sent,
+    });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the open appeal alone triggers a digest');
+    const appealLine = sent[0].text.split('\n').find((l) => l.includes('📋'));
+    assert.ok(appealLine, 'the open-appeals line is present');
+    assert.match(
+      appealLine,
+      /^📋 \d+ open moderation appeal\(s\) awaiting review — run `list_appeals` to review\./,
+    );
+    assert.ok(
+      !sent[0].text.includes(secretUserName),
+      "SECURITY: the appellant's user_name must never appear in the digest DM",
+    );
+    assert.ok(
+      !sent[0].text.includes(secretReason),
+      'SECURITY: the raw appeal reason must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(appellantUserId),
+      "SECURITY: the appellant's user_id must never appear in the digest DM",
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appealId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'runAdminDigestOnce: the open-appeals count is guild-wide, not conversation/admin-scoped — two admins on the same platform with disjoint conversation scopes see the identical count (issue #631)',
+  { skip },
+  async () => {
+    const admin1Id = `${RUN}-run-appealscope-admin1`;
+    const admin2Id = `${RUN}-run-appealscope-admin2`;
+    const convo1 = `${RUN}-c-appealscope-1`;
+    const convo2 = `${RUN}-c-appealscope-2`;
+    const appellantUserId = `${RUN}-run-appealscope-user`;
+    await upsertMember({ platform: 'discord', userId: admin1Id, role: 'admin', addedBy: `${RUN}-actor` });
+    await upsertMember({ platform: 'discord', userId: admin2Id, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const { id: appealId } = await createModerationAppeal({
+      platform: 'discord',
+      userId: appellantUserId,
+      userName: 'Scope Test Appellant',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const scopeByAdmin: Record<string, string[]> = { [admin1Id]: [convo1], [admin2Id]: [convo2] };
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      adminCapabilities: new Set(),
+      async start() {},
+      async stop() {},
+      isConnected: () => true,
+      onMessage() {},
+      async sendMessage() {},
+      async sendDirectMessage(userId, text) {
+        if (!userId.startsWith(RUN)) return;
+        sent.push({ userId, text });
+      },
+      async conversationsForUser(userId) {
+        return scopeByAdmin[userId] ?? [];
+      },
+      async performAdminAction() {
+        return '';
+      },
+    };
+
+    await runAdminDigestOnce([adapter]);
+
+    const admin1Msg = sent.find((s) => s.userId === admin1Id);
+    const admin2Msg = sent.find((s) => s.userId === admin2Id);
+    assert.ok(admin1Msg, 'admin 1 receives a digest despite zero clusters/reports in their own scope');
+    assert.ok(admin2Msg, 'admin 2 receives a digest despite zero clusters/reports in their own scope');
+
+    const appealLine = (text: string) => text.split('\n').find((l) => l.includes('📋'));
+    const line1 = appealLine(admin1Msg.text);
+    const line2 = appealLine(admin2Msg.text);
+    assert.ok(line1, 'admin 1 sees the open-appeals line');
+    assert.ok(line2, 'admin 2 sees the open-appeals line');
+    assert.equal(
+      line1,
+      line2,
+      'SECURITY: the open-appeals count must be identical across admins with disjoint conversation scopes — ' +
+        "derived from admin.platform, never from the admin's conversation scope",
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appealId]);
     await pool.query(
       `DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = ANY($1)`,
       [[admin1Id, admin2Id]],

@@ -5127,6 +5127,21 @@ export async function resolveModerationAppeal(
   return rows[0] ? mapModerationAppeal(rows[0]) : null;
 }
 
+/**
+ * Guild-wide-by-platform count of open appeals, for the admin digest backlog
+ * signal #554/#622 both deferred (issue #631) — same shape as
+ * `countMutedMembers`: a dedicated `COUNT(*)` read, bound parameters only,
+ * never interpolated. Excludes `resolved`/`dismissed` rows and other
+ * platforms' rows, same boundary `listAppeals` draws.
+ */
+export async function countOpenAppeals(platform: string): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM moderation_appeals WHERE platform = $1 AND status = 'open'`,
+    [platform],
+  );
+  return rows[0]?.n ?? 0;
+}
+
 // --- Answer feedback (member rating of the bot's own answers, issue #118) ---
 
 /** Per-rater cap on new ratings within a rolling 24h window (DB-backed, same pattern as reports/suggestions). */
