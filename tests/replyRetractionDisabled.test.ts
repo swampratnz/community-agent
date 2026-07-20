@@ -1,5 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { Events } from 'discord.js';
 import type { IncomingMessage } from '../src/platforms/types.js';
 
 // Issue #575's auto-retraction feature, flag OFF (AUTO_RETRACT_REPLY_ENABLED
@@ -8,6 +9,14 @@ import type { IncomingMessage } from '../src/platforms/types.js';
 // behaviour in tests/replyRetractionRouter.test.ts can't leak into this
 // file's "byte-identical" assertions, mirroring the split already used for
 // tests/ambientArchiving.test.ts / tests/ambientArchivingOff.test.ts.
+//
+// DISCORD_ARCHIVE_ALL_MESSAGES is turned ON here (issue #595): it makes the
+// MessageDelete/MessageBulkDelete listeners actually get registered (the
+// registration gate is `archiveAllMessages || autoRetractReplyEnabled`) even
+// though retraction itself is off, so the "regardless of archiveAllMessages"
+// half of acceptance criterion 1/5 is exercised for real instead of trivially
+// passing because the listener was never wired up.
+process.env.DISCORD_ARCHIVE_ALL_MESSAGES = 'true';
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
@@ -29,11 +38,17 @@ after(async () => {
   await closeDb();
 });
 
-// Sanity: this whole file's premise depends on the flag actually being off.
+// Sanity: this whole file's premise depends on the flag actually being off
+// (and, for the bulk-delete SECURITY test below, archiving actually being on).
 assert.equal(
   config.behaviour.autoRetractReplyEnabled,
   false,
   'AUTO_RETRACT_REPLY_ENABLED must be unset for this file',
+);
+assert.equal(
+  config.discord.archiveAllMessages,
+  true,
+  'DISCORD_ARCHIVE_ALL_MESSAGES must be on for this file (issue #595)',
 );
 
 type DiscordAdapterInstance = InstanceType<typeof DiscordAdapter>;
@@ -194,3 +209,64 @@ test('SECURITY: with AUTO_RETRACT_REPLY_ENABLED unset, deleting/revoking a messa
   );
   assert.equal(deleteCalls.length, 0);
 });
+
+test(
+  'SECURITY: firing the REAL client MessageBulkDelete gateway listener with AUTO_RETRACT_REPLY_ENABLED unset ' +
+    'never calls deleteOwnMessage, even though DISCORD_ARCHIVE_ALL_MESSAGES is on for this file (so the ' +
+    'listener IS registered and its archive-scoped branch DOES fire) — acceptance criteria 1 + 5 (issue #595)',
+  async (t) => {
+    const router = new Router(async () => ({ text: 'here is your answer', ok: true }), 1_000_000);
+    const adapter = new DiscordAdapter();
+    const { sentMessages } = stubDiscordChannel(adapter);
+    router.register(adapter);
+    const handler = getHandler(adapter);
+    const deleteSpy = t.mock.method(adapter, 'deleteOwnMessage');
+
+    const client = (
+      adapter as unknown as {
+        client: {
+          emit: (event: string, ...args: unknown[]) => void;
+          login: (token: string) => Promise<void>;
+        };
+      }
+    ).client;
+    // start() wires the real gateway listeners under test but also logs in
+    // for real — stub the login call, mirroring the enabled-flag file's
+    // wiring test.
+    client.login = async () => {};
+    await adapter.start();
+
+    const conversationId = `${RUN}-chan-bulk`;
+    const messageId = `${RUN}-origin-bulk`;
+    await handler({
+      platform: 'discord',
+      conversationId,
+      userId: 'super-575-off-discord',
+      userName: 'Admin',
+      text: `${RUN} question`,
+      isDirect: false,
+      addressedToBot: true,
+      messageId,
+      timestamp: Date.now(),
+    });
+
+    assert.equal(sentMessages.size, 1, 'the reply is still sent normally — byte-identical happy path');
+    const [replyId] = [...sentMessages.keys()];
+
+    // guildId '1' matches DISCORD_GUILD_ID above, so the archive branch's
+    // `inArchiveScope` check passes and it genuinely runs (attempting —
+    // and failing harmlessly against the unreachable test DATABASE_URL —
+    // a `deleteInteractionByMessageId` call), proving retraction staying
+    // off is independent of the archive branch firing, not just untested.
+    const messages = new Map([[messageId, { channelId: conversationId, id: messageId, guildId: '1' }]]);
+    client.emit(Events.MessageBulkDelete, messages, { id: conversationId });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(
+      deleteSpy.mock.calls.length,
+      0,
+      'SECURITY: the real MessageBulkDelete listener must never call deleteOwnMessage when the flag is off',
+    );
+    assert.equal(sentMessages.get(replyId)?.deleted, false, "the bot's reply remains untouched");
+  },
+);
