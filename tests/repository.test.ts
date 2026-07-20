@@ -166,6 +166,13 @@ async function retryOnSharedTableInterference(attempts: number, run: () => Promi
       return;
     } catch (err) {
       if (attempt >= attempts) throw err;
+      // Loud, not silent (PR #643 review): a persistently-interfered-but-
+      // eventually-passing test should be visible in CI output, so a real
+      // ordering bug that only mostly-fails can't hide behind the retries.
+      console.warn(
+        `retryOnSharedTableInterference: attempt ${attempt}/${attempts} hit interference, retrying:`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 }
@@ -3520,6 +3527,13 @@ test(
     // "122 !== 121"). Retry the full read-write-read sequence, cleaning the
     // seeded hit between attempts (see retryOnSharedTableInterference above).
     await retryOnSharedTableInterference(4, async () => {
+      // Watermark BEFORE seeding so cleanup can be scoped to rows this attempt
+      // created (id > watermark), instead of the old blanket one-hour window —
+      // which, run up to 4x under retry, could delete a concurrently-running
+      // file's 'ack' rows mid-window and CAUSE the interference this wrapper
+      // exists to absorb (PR #643 review).
+      const { rows: wm } = await pool.query(`SELECT coalesce(max(id), 0) AS watermark FROM shortcut_hits`);
+      const watermark = Number(wm[0].watermark);
       try {
         const before = await usageStats(days);
 
@@ -3559,9 +3573,7 @@ test(
           'existing backgroundCostUsd field is unchanged by a shortcut-hit write',
         );
       } finally {
-        await pool.query(
-          `DELETE FROM shortcut_hits WHERE kind = 'ack' AND created_at > now() - interval '1 hour'`,
-        );
+        await pool.query(`DELETE FROM shortcut_hits WHERE kind = 'ack' AND id > $1`, [watermark]);
       }
     });
   },
