@@ -89,17 +89,27 @@ export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], mes
   }
 }
 
-// Sends every queued message through the just-reconnected adapter to every
-// super admin, then clears the queue. A throwing send is logged and the
-// message dropped — never re-queued — so a persistently-broken send path
-// can't accumulate forever. Exported so tests can drive it directly.
+// Sends every queued message through the just-reconnected adapter, then
+// clears the queue. An entry with no `recipients` (the common case) goes to
+// every super admin, as before. An entry WITH `recipients` (issue #625 —
+// `tools.ts`'s `notifyAdmins`, whose audience is `listAdmins()`, not
+// `superAdminIds()`) goes only to those recipients, filtered to this
+// adapter's platform — the set is frozen at queue time and deliberately NOT
+// re-resolved here (would couple this leaf-ish flush to the repository/roles
+// layer; a moments-stale recipient list is an accepted tradeoff, see issue
+// #625's adversarial review). A throwing send is logged and the message
+// dropped — never re-queued — so a persistently-broken send path can't
+// accumulate forever. Exported so tests can drive it directly.
 export async function flushPendingAlerts(adapter: PlatformAdapter): Promise<void> {
   const queued = drainPendingAlerts();
   if (queued.length === 0) return;
-  for (const message of queued) {
-    for (const id of superAdminIds(adapter.platform)) {
+  for (const entry of queued) {
+    const ids = entry.recipients
+      ? entry.recipients.filter((r) => r.platform === adapter.platform).map((r) => r.platformUserId)
+      : superAdminIds(adapter.platform);
+    for (const id of ids) {
       try {
-        await adapter.sendDirectMessage(id, message);
+        await adapter.sendDirectMessage(id, entry.message);
       } catch (err) {
         logger.warn({ err, platform: adapter.platform, id }, 'Queued health alert flush failed; dropping');
       }

@@ -1,10 +1,24 @@
+import type { Platform } from './platforms/types.js';
+
 // Shared best-effort queue for super-admin alerts that couldn't be delivered
 // live because every relevant adapter was disconnected. Originally owned by
 // health.ts (issue #534); extracted into this leaf module (no imports from
 // health.ts/backgroundJobs.ts/tools.ts) so those three producers can share
 // one bounded queue instead of each dropping the alert on the floor (issue
 // #545). Flushing stays health.ts's job — it owns the reconnect-detection
-// logic (`flushPendingAlerts`) that drains this queue.
+// logic (`flushPendingAlerts`) that drains this queue. `platforms/types.ts`
+// is imported for the `Platform` type only — it's dependency-free itself, so
+// this doesn't reintroduce the health.ts/backgroundJobs.ts/tools.ts cycle the
+// comment above guards against.
+//
+// `recipients` (issue #625) lets a producer with a distinct, non-superAdmin
+// audience (`tools.ts`'s `notifyAdmins`, sourced from `listAdmins()`) queue an
+// entry that preserves that recipient set through a total-outage window
+// instead of silently dropping. Every other producer omits it, and
+// `flushPendingAlerts` keeps flushing those entries to `superAdminIds()`
+// exactly as before — this is additive, not a behaviour change for anyone
+// else. The set is frozen at queue time (not re-resolved at flush) — see
+// health.ts's `flushPendingAlerts` for why.
 
 // Bounded so a persistently-disconnected deployment can't accumulate an
 // unbounded backlog; on overflow an entry is evicted per the priority rule in
@@ -23,12 +37,25 @@ export const PENDING_ALERT_QUEUE_CAP = 5;
 // alert.
 //   'system' — health.ts disconnect + backgroundJobs.ts job-failure alerts,
 //              only ever triggered by the bot's own health/job machinery.
-//   'low'    — tools.ts `notifySuperAdmins`, reachable from member-tier tools.
+//   'low'    — tools.ts `notifySuperAdmins`, reachable from member-tier
+//              tools, and (issue #625) `notifyAdmins`, reachable from the
+//              router's rate-limited but still member-facing
+//              escalation-confirmation intercept.
 export type AlertPriority = 'system' | 'low';
 
-interface PendingAlert {
+/** A single recipient, platform-qualified since a queued entry's audience may span platforms. */
+export interface PendingAlertRecipient {
+  platform: Platform;
+  platformUserId: string;
+}
+
+export interface PendingAlert {
   message: string;
   priority: AlertPriority;
+  // Absent (the common case) = today's superAdminIds(adapter.platform) flush
+  // behaviour. Present = deliver only to these recipients, filtered to the
+  // reconnected adapter's platform (issue #625).
+  recipients?: PendingAlertRecipient[];
 }
 
 // Messages that couldn't be delivered live because every adapter was
@@ -38,9 +65,13 @@ interface PendingAlert {
 // codebase. Insertion order is preserved so the flush delivers roughly FIFO.
 const pendingAlerts: PendingAlert[] = [];
 
-export function queuePendingAlert(message: string, priority: AlertPriority): void {
+export function queuePendingAlert(
+  message: string,
+  priority: AlertPriority,
+  recipients?: PendingAlertRecipient[],
+): void {
   if (pendingAlerts.length < PENDING_ALERT_QUEUE_CAP) {
-    pendingAlerts.push({ message, priority });
+    pendingAlerts.push({ message, priority, recipients });
     return;
   }
   // Full. Evict the OLDEST 'low' (member-reachable) entry to make room — so a
@@ -50,7 +81,7 @@ export function queuePendingAlert(message: string, priority: AlertPriority): voi
   const oldestLow = pendingAlerts.findIndex((a) => a.priority === 'low');
   if (oldestLow !== -1) {
     pendingAlerts.splice(oldestLow, 1);
-    pendingAlerts.push({ message, priority });
+    pendingAlerts.push({ message, priority, recipients });
     return;
   }
   // The queue is entirely 'system' alerts (a genuine multi-failure outage). A
@@ -60,7 +91,7 @@ export function queuePendingAlert(message: string, priority: AlertPriority): voi
   // off than it was pre-#545, when tools.ts alerts were dropped outright.
   if (priority === 'system') {
     pendingAlerts.shift();
-    pendingAlerts.push({ message, priority });
+    pendingAlerts.push({ message, priority, recipients });
   }
 }
 
@@ -69,15 +100,27 @@ export function getPendingAlertsForTests(): readonly string[] {
   return pendingAlerts.map((a) => a.message);
 }
 
+/**
+ * Shallow copy of the full queued ENTRIES (including `recipients`) for read
+ * — tests can assert a recipient-less producer's entries carry no
+ * `recipients` field without draining (and thereby clearing) the queue.
+ * `getPendingAlertsForTests` above is left returning message-only strings so
+ * every existing deepEqual-against-strings test stays byte-identical.
+ */
+export function getPendingAlertEntriesForTests(): readonly PendingAlert[] {
+  return pendingAlerts.map((a) => ({ ...a }));
+}
+
 export function resetPendingAlertsForTests(): void {
   pendingAlerts.length = 0;
 }
 
 /**
- * Drains and returns every queued message, clearing the queue. Exported so
+ * Drains and returns every queued entry, clearing the queue. Exported so
  * health.ts's `flushPendingAlerts` can consume the shared queue without
- * reaching into this module's private array.
+ * reaching into this module's private array. Returns the full structured
+ * entry (not just the message) so flush can see `recipients`.
  */
-export function drainPendingAlerts(): string[] {
-  return pendingAlerts.splice(0, pendingAlerts.length).map((a) => a.message);
+export function drainPendingAlerts(): PendingAlert[] {
+  return pendingAlerts.splice(0, pendingAlerts.length);
 }

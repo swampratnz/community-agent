@@ -5,12 +5,16 @@ import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js
 // Regression coverage for issue #593's binding acceptance criterion 6:
 // tools.ts's notifyAdmins and router.ts's notifyAccessRequest source
 // recipients from the broader, guild-wide listAdmins() rather than
-// superAdminIds(), and the shared pending-alert queue's bare-string entries
-// can't preserve that distinct recipient set on flush (issue #571's
-// rejection rationale) — so #593 deliberately does NOT extend the queue to
-// either site. This file pins that they still drop-on-full-disconnect,
-// unqueued, so a future change can't silently narrow #571's rejected scope
-// back in.
+// superAdminIds(), and (at the time) the shared pending-alert queue's
+// bare-string entries couldn't preserve that distinct recipient set on flush
+// (issue #571's rejection rationale) — so #593 deliberately did NOT extend
+// the queue to either site.
+//
+// Issue #625 closes that gap for notifyAdmins specifically, via a structured
+// queue entry that carries its own recipient set (see src/pendingAlertQueue.ts
+// and src/health.ts's flushPendingAlerts) — the reviewer-named fix #571 was
+// rejected for lacking. notifyAccessRequest (router.ts) is an explicit,
+// scoped-out growth path and stays unchanged/passing below.
 //
 // listAdmins() is a static import inside agent/tools.ts, so it must be
 // mocked before anything imports that module (same trap as
@@ -20,12 +24,31 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
+// Deliberately disjoint from the mocked admin roster below (admin-1/admin-2/
+// admin-wa) so the disjoint-roster SECURITY test can assert super admins
+// never receive a flushed notifyAdmins alert.
+process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1,super-2';
+
+let listAdminsCalls = 0;
+
+// Mutable so individual tests (empty roster, sole-admin-on-a-platform) can
+// override the resolved admin list without needing a separate mocked module
+// instance — reset in each such test's `finally`.
+let adminRoster: Array<{ platform: 'discord' | 'whatsapp'; platformUserId: string }> = [
+  { platform: 'discord', platformUserId: 'admin-1' },
+  { platform: 'discord', platformUserId: 'admin-2' },
+  { platform: 'whatsapp', platformUserId: 'admin-wa' },
+];
 
 let modulesPromise: Promise<{
   notifyAdmins: typeof import('../src/agent/tools.js').notifyAdmins;
   notifyAccessRequest: typeof import('../src/router.js').notifyAccessRequest;
+  flushPendingAlerts: typeof import('../src/health.js').flushPendingAlerts;
   getPendingAlertsForTests: typeof import('../src/pendingAlertQueue.js').getPendingAlertsForTests;
+  getPendingAlertEntriesForTests: typeof import('../src/pendingAlertQueue.js').getPendingAlertEntriesForTests;
   resetPendingAlertsForTests: typeof import('../src/pendingAlertQueue.js').resetPendingAlertsForTests;
+  queuePendingAlert: typeof import('../src/pendingAlertQueue.js').queuePendingAlert;
+  PENDING_ALERT_QUEUE_CAP: number;
 }> | null = null;
 async function modules(t: { mock: { module: (specifier: string, opts: unknown) => void } }) {
   if (!modulesPromise) {
@@ -34,36 +57,48 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
       t.mock.module('../src/storage/repository.js', {
         namedExports: {
           ...realRepo,
-          listAdmins: async () => [{ platform: 'discord' as const, platformUserId: 'admin-1' }],
+          listAdmins: async () => {
+            listAdminsCalls++;
+            return [...adminRoster];
+          },
         },
       });
-      const [{ notifyAdmins }, { notifyAccessRequest }, pendingAlertQueue] = await Promise.all([
-        import('../src/agent/tools.js'),
-        import('../src/router.js'),
-        import('../src/pendingAlertQueue.js'),
-      ]);
+      const [{ notifyAdmins }, { notifyAccessRequest }, { flushPendingAlerts }, pendingAlertQueue] =
+        await Promise.all([
+          import('../src/agent/tools.js'),
+          import('../src/router.js'),
+          import('../src/health.js'),
+          import('../src/pendingAlertQueue.js'),
+        ]);
       return {
         notifyAdmins,
         notifyAccessRequest,
+        flushPendingAlerts,
         getPendingAlertsForTests: pendingAlertQueue.getPendingAlertsForTests,
+        getPendingAlertEntriesForTests: pendingAlertQueue.getPendingAlertEntriesForTests,
         resetPendingAlertsForTests: pendingAlertQueue.resetPendingAlertsForTests,
+        queuePendingAlert: pendingAlertQueue.queuePendingAlert,
+        PENDING_ALERT_QUEUE_CAP: pendingAlertQueue.PENDING_ALERT_QUEUE_CAP,
       };
     })();
   }
   return modulesPromise;
 }
 
-function makeDisconnectedAdapter(): {
+function makeAdapter(
+  platform: 'discord' | 'whatsapp',
+  connected: boolean,
+): {
   adapter: PlatformAdapter;
   dms: Array<{ userId: string; text: string }>;
 } {
   const dms: Array<{ userId: string; text: string }> = [];
   const adapter: PlatformAdapter = {
-    platform: 'discord',
+    platform,
     adminCapabilities: new Set(),
     async start() {},
     async stop() {},
-    isConnected: () => false,
+    isConnected: () => connected,
     onMessage() {},
     async sendMessage(_out: OutgoingMessage) {},
     async sendDirectMessage(userId: string, text: string) {
@@ -79,25 +114,280 @@ function makeDisconnectedAdapter(): {
   return { adapter, dms };
 }
 
-test('SECURITY: notifyAdmins (tools.ts) with every adapter disconnected still drops the alert — never queued (issue #571/#593)', async (t) => {
+function makeDisconnectedAdapter(): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+} {
+  return makeAdapter('discord', false);
+}
+
+test('notifyAdmins: with every resolved admin’s adapter disconnected, queues the alert with the resolved recipient set instead of dropping it (issue #625 acceptance criterion 2)', async (t) => {
   const { notifyAdmins, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
   resetPendingAlertsForTests();
-  const { adapter, dms } = makeDisconnectedAdapter();
+  const { adapter: discordDown } = makeAdapter('discord', false);
+  const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
 
   await notifyAdmins(
-    (platform) => (platform === 'discord' ? adapter : undefined),
+    (platform) => (platform === 'discord' ? discordDown : whatsappDown),
     'admin-audience alert',
     '',
   );
 
-  assert.equal(dms.length, 0, 'no send is attempted through the disconnected adapter');
+  const queued = getPendingAlertsForTests();
+  assert.equal(queued.length, 1, 'the escalation must be queued, not dropped');
+  assert.match(queued[0] ?? '', /admin-audience alert/);
+  resetPendingAlertsForTests();
+});
+
+test(
+  'SECURITY: notifyAdmins — a queued alert is flushed through the reconnected adapter to exactly the ' +
+    "resolved recipients, filtered to that adapter's platform, and never to superAdminIds() (issue #625 " +
+    'acceptance criteria 3–4)',
+  async (t) => {
+    const { notifyAdmins, flushPendingAlerts, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const { adapter: discordDown } = makeAdapter('discord', false);
+    const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
+
+    await notifyAdmins(
+      (platform) => (platform === 'discord' ? discordDown : whatsappDown),
+      'disjoint-roster alert',
+      '',
+    );
+
+    const { adapter: reconnectedDiscord, dms } = makeAdapter('discord', true);
+    await flushPendingAlerts(reconnectedDiscord);
+
+    assert.deepEqual(
+      dms.map((d) => d.userId).sort(),
+      ['admin-1', 'admin-2'],
+      'only the resolved discord admins receive the flush — not the whatsapp admin (wrong platform) and ' +
+        'not either super admin',
+    );
+    resetPendingAlertsForTests();
+  },
+);
+
+test('SECURITY: notifyAdmins — excludeUserId is honoured on the flush path (issue #625 acceptance criterion 5)', async (t) => {
+  const { notifyAdmins, flushPendingAlerts, resetPendingAlertsForTests } = await modules(t);
+  resetPendingAlertsForTests();
+  const { adapter: discordDown } = makeAdapter('discord', false);
+  const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
+
+  await notifyAdmins(
+    (platform) => (platform === 'discord' ? discordDown : whatsappDown),
+    'exclude-triggering-admin alert',
+    'admin-2',
+  );
+
+  const { adapter: reconnectedDiscord, dms } = makeAdapter('discord', true);
+  await flushPendingAlerts(reconnectedDiscord);
+
   assert.deepEqual(
-    getPendingAlertsForTests(),
-    [],
-    'notifyAdmins must remain drop-on-full-disconnect — its listAdmins() recipient set cannot survive the shared bare-string queue',
+    dms.map((d) => d.userId),
+    ['admin-1'],
+    'the excluded admin (the escalation trigger) never receives their own flushed DM',
   );
   resetPendingAlertsForTests();
 });
+
+test(
+  'SECURITY: notifyAdmins — the flushed recipient set is frozen at queue time, not re-resolved via ' +
+    'listAdmins() on flush (issue #625 acceptance criterion 6)',
+  async (t) => {
+    const { notifyAdmins, flushPendingAlerts, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const { adapter: discordDown } = makeAdapter('discord', false);
+    const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
+
+    const callsBeforeQueue = listAdminsCalls;
+    await notifyAdmins(
+      (platform) => (platform === 'discord' ? discordDown : whatsappDown),
+      'frozen-set alert',
+      '',
+    );
+    assert.equal(
+      listAdminsCalls,
+      callsBeforeQueue + 1,
+      'notifyAdmins resolves listAdmins() exactly once, at queue time',
+    );
+
+    const { adapter: reconnectedDiscord, dms } = makeAdapter('discord', true);
+    await flushPendingAlerts(reconnectedDiscord);
+
+    assert.equal(
+      listAdminsCalls,
+      callsBeforeQueue + 1,
+      'flushPendingAlerts must NOT re-resolve listAdmins() — the flushed set is exactly the one captured at queue time',
+    );
+    assert.deepEqual(dms.map((d) => d.userId).sort(), ['admin-1', 'admin-2']);
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  'SECURITY: notifyAdmins — when at least one resolved admin’s adapter is connected, behaviour is ' +
+    'byte-identical to today: an individually-disconnected admin is still just skipped, and nothing is ' +
+    'queued (issue #625 acceptance criterion 7)',
+  async (t) => {
+    const { notifyAdmins, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const { adapter: discordUp, dms } = makeAdapter('discord', true);
+
+    await notifyAdmins(
+      (platform) => (platform === 'discord' ? discordUp : undefined),
+      'mixed-connectivity alert',
+      '',
+    );
+
+    assert.deepEqual(
+      dms.map((d) => d.userId).sort(),
+      ['admin-1', 'admin-2'],
+      'both discord admins are still delivered live',
+    );
+    assert.deepEqual(
+      getPendingAlertsForTests(),
+      [],
+      'the whatsapp admin (no registered/connected adapter) is individually skipped, exactly as before — nothing is queued',
+    );
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  "SECURITY: notifyAdmins queues its escalation alert at 'low' priority, never 'system' — its only " +
+    "caller is the router's member-facing escalation-confirmation intercept, so a 'system' label would " +
+    'reopen the exact queue-starvation class #545 was designed to prevent (issue #625 review)',
+  async (t) => {
+    const { notifyAdmins, getPendingAlertEntriesForTests, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const { adapter: discordDown } = makeAdapter('discord', false);
+    const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
+
+    await notifyAdmins(
+      (platform) => (platform === 'discord' ? discordDown : whatsappDown),
+      'priority-check alert',
+      '',
+    );
+
+    const entries = getPendingAlertEntriesForTests();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.priority, 'low');
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  'SECURITY: a flood of notifyAdmins escalation-confirmation queue entries can never evict a genuine ' +
+    "'system' alert from the shared queue — the exact queue-starvation scenario the automated review " +
+    'flagged for issue #625',
+  async (t) => {
+    const {
+      notifyAdmins,
+      queuePendingAlert,
+      getPendingAlertsForTests,
+      resetPendingAlertsForTests,
+      PENDING_ALERT_QUEUE_CAP,
+    } = await modules(t);
+    resetPendingAlertsForTests();
+    queuePendingAlert('genuine health/job alert', 'system');
+    const { adapter: discordDown } = makeAdapter('discord', false);
+    const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
+
+    for (let i = 0; i < PENDING_ALERT_QUEUE_CAP + 2; i++) {
+      await notifyAdmins(
+        (platform) => (platform === 'discord' ? discordDown : whatsappDown),
+        `member-triggered escalation ${i}`,
+        '',
+      );
+    }
+
+    assert.ok(
+      getPendingAlertsForTests().includes('genuine health/job alert'),
+      'the system alert must survive a flood of member-reachable escalation confirmations',
+    );
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  'SECURITY: notifyAdmins — anyConnected excludes excludeUserId, so an escalating admin who is the sole ' +
+    'admin on their own (connected) platform still gets the alert queued, not silently dropped, when every ' +
+    'OTHER platform is disconnected (issue #625 review)',
+  async (t) => {
+    const { notifyAdmins, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const previousRoster = adminRoster;
+    adminRoster = [
+      { platform: 'discord', platformUserId: 'self-admin' },
+      { platform: 'whatsapp', platformUserId: 'admin-wa' },
+    ];
+    try {
+      const { adapter: discordUp, dms } = makeAdapter('discord', true);
+      const { adapter: whatsappDown } = makeAdapter('whatsapp', false);
+
+      await notifyAdmins(
+        (platform) => (platform === 'discord' ? discordUp : whatsappDown),
+        'self-escalation alert',
+        'self-admin',
+      );
+
+      assert.equal(dms.length, 0, 'the escalating admin is excluded from delivery, same as before');
+      assert.equal(
+        getPendingAlertsForTests().length,
+        1,
+        "the escalating admin's own connected adapter must not count toward anyConnected — otherwise the " +
+          'alert is silently lost with nobody to deliver it to and nothing queued',
+      );
+    } finally {
+      adminRoster = previousRoster;
+      resetPendingAlertsForTests();
+    }
+  },
+);
+
+test('notifyAdmins: an empty admin roster is a no-op — no queue slot is consumed for an entry nobody can ever receive (issue #625 review)', async (t) => {
+  const { notifyAdmins, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
+  resetPendingAlertsForTests();
+  const previousRoster = adminRoster;
+  adminRoster = [];
+  try {
+    const { adapter: discordDown } = makeAdapter('discord', false);
+    await notifyAdmins((platform) => (platform === 'discord' ? discordDown : undefined), 'nobody alert', '');
+    assert.deepEqual(getPendingAlertsForTests(), [], 'an empty roster must not queue an undeliverable entry');
+  } finally {
+    adminRoster = previousRoster;
+    resetPendingAlertsForTests();
+  }
+});
+
+test(
+  'SECURITY: notifyAdmins — a non-empty roster where the escalating user is the sole resolved admin is a ' +
+    'no-op, same as an empty roster: excluding excludeUserId must not queue a truthy-but-empty recipients ' +
+    'array that health.ts would flush to nobody forever (issue #625 review, attempt 2)',
+  async (t) => {
+    const { notifyAdmins, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const previousRoster = adminRoster;
+    adminRoster = [{ platform: 'discord', platformUserId: 'sole-admin' }];
+    try {
+      const { adapter: discordDown } = makeAdapter('discord', false);
+      await notifyAdmins(
+        (platform) => (platform === 'discord' ? discordDown : undefined),
+        'sole-admin-is-escalator alert',
+        'sole-admin',
+      );
+      assert.deepEqual(
+        getPendingAlertsForTests(),
+        [],
+        'excluding the sole admin must not consume a queue slot for an entry with empty recipients',
+      );
+    } finally {
+      adminRoster = previousRoster;
+      resetPendingAlertsForTests();
+    }
+  },
+);
 
 test('SECURITY: notifyAccessRequest (router.ts) with every adapter disconnected still drops the alert — never queued (issue #571/#593)', async (t) => {
   const { notifyAccessRequest, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);

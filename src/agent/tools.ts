@@ -582,6 +582,24 @@ async function notifySuperAdmins(
  * admin sees data already visible via the digest. Best-effort throughout: a
  * `listAdmins()` failure or a single admin's DM failure is logged and never
  * prevents alerting the rest.
+ *
+ * If NO resolved admin (other than `excludeUserId`) has a connected adapter
+ * (issue #625 — previously this silently finished having sent nothing), the
+ * alert is queued with the resolved recipient set (minus `excludeUserId`)
+ * via the shared pendingAlertQueue and flushed through the first adapter to
+ * reconnect (`health.ts`'s `flushPendingAlerts`) — mirroring
+ * `notifySuperAdmins`'s `anyConnected` shape above, but computed over the
+ * *resolved admin list's* platforms rather than `ALL_PLATFORMS`, since this
+ * function's audience is `listAdmins()`, not every platform's super admins.
+ * If at least one OTHER resolved admin's adapter is connected, behaviour is
+ * unchanged: the loop below still just skips any individually-disconnected
+ * admin. Queued at `'low'` priority, not `'system'`: this function's only
+ * caller is the router's member-facing escalation-confirmation intercept
+ * (`ESCALATION_RATE_LIMIT_PER_HOUR`-gated, but still member-reachable), the
+ * same reachability class `notifySuperAdmins`'s `'low'` exists for — a
+ * `'system'` label here would let a member's escalation confirmations evict
+ * genuine bot/health-originated alerts from the shared queue (issue #545's
+ * priority-inversion class).
  */
 export async function notifyAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
@@ -595,8 +613,28 @@ export async function notifyAdmins(
     logger.warn({ err }, 'listAdmins failed; escalation admin alert skipped');
     return;
   }
-  for (const admin of admins) {
-    if (admin.platformUserId === excludeUserId) continue;
+  if (admins.length === 0) return;
+  // Excluding excludeUserId can empty the roster (e.g. a single-admin guild
+  // where the escalating user is that admin) — nobody left to notify or
+  // queue for, so bail out before anyConnected/queuePendingAlert see a
+  // truthy-but-empty recipients array (which health.ts's flush would treat
+  // as "deliver to nobody", wasting a queue slot forever).
+  const recipients = admins.filter((admin) => admin.platformUserId !== excludeUserId);
+  if (recipients.length === 0) return;
+  const anyConnected = recipients.some((admin) => adapterFor(admin.platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Admin escalation alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(
+      `🔔 ${message}`,
+      'low', // member-reachable via the router's escalation-confirmation intercept — see doc comment above
+      recipients.map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),
+    );
+    return;
+  }
+  for (const admin of recipients) {
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
     const alertText = `🔔 ${message}`;

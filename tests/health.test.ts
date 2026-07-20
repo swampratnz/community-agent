@@ -25,6 +25,8 @@ const {
   getPendingAlertsForTests,
   resetPendingAlertsForTests,
 } = await import('../src/health.js');
+const { getPendingAlertEntriesForTests, queuePendingAlert: queueRawPendingAlert } =
+  await import('../src/pendingAlertQueue.js');
 const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { logger } = await import('../src/logger.js');
 // Cross-producer cap test below (issue #545) drives the OTHER two shared-
@@ -232,6 +234,77 @@ test(
     assert.deepEqual(getPendingAlertsForTests(), [], 'the queue is cleared after the flush');
   },
 );
+
+// --- issue #625: structured recipients on the shared queue --------------
+
+test(
+  "SECURITY: health.ts's own alertSuperAdmins and tools.ts's notifySuperAdmins (via notifyReportFiled) " +
+    'queue entries with no `recipients` field — issue #625 only added an opt-in recipient set for ' +
+    'notifyAdmins; these producers are unaffected and still flush to superAdminIds()',
+  async () => {
+    resetPendingAlertsForTests();
+
+    const { adapter: disconnectedHealth } = makeFakeAdapter(false);
+    await alertSuperAdmins([disconnectedHealth], 'from-health-625');
+
+    const disconnectedTools = { ...makeFakeAdapter(false).adapter, platform: 'whatsapp' as const };
+    await notifyReportFiled((platform) => (platform === 'whatsapp' ? disconnectedTools : undefined), {
+      id: 625,
+      reporterUserId: 'reporter-1',
+      reporterName: 'Reporter One',
+      conversationId: 'convo-1',
+      reason: 'from-tools-625',
+    });
+
+    const entries = getPendingAlertEntriesForTests();
+    assert.equal(entries.length, 2);
+    assert.ok(
+      entries.every((e) => e.recipients === undefined),
+      'neither recipient-less producer should populate `recipients`',
+    );
+    resetPendingAlertsForTests();
+  },
+);
+
+test(
+  'flushPendingAlerts: an entry queued WITH recipients (issue #625) is delivered only to those recipients, ' +
+    "filtered to the reconnected adapter's platform — never to superAdminIds()",
+  async () => {
+    resetPendingAlertsForTests();
+
+    queueRawPendingAlert('🔔 structured-entry alert', 'system', [
+      { platform: 'discord', platformUserId: 'admin-discord-1' },
+      { platform: 'discord', platformUserId: 'admin-discord-2' },
+      { platform: 'whatsapp', platformUserId: 'admin-whatsapp-1' },
+    ]);
+
+    const { adapter: reconnectedDiscord, dms } = makeFakeAdapter(true);
+    await flushPendingAlerts(reconnectedDiscord);
+
+    assert.deepEqual(
+      dms.map((d) => d.userId).sort(),
+      ['admin-discord-1', 'admin-discord-2'],
+      'only the recipients captured at queue time, filtered to the reconnected platform, are delivered — ' +
+        'the whatsapp recipient is excluded (wrong platform) and neither configured super admin ' +
+        "(super-1/super-2) receives anything, since this entry's recipients are never superAdminIds()",
+    );
+    assert.deepEqual(getPendingAlertsForTests(), [], 'the queue is cleared after the flush');
+  },
+);
+
+test('flushPendingAlerts: a queued entry with an empty recipients array (all recipients filtered out for this platform) sends nothing and does not throw', async () => {
+  resetPendingAlertsForTests();
+
+  queueRawPendingAlert('🔔 whatsapp-only alert', 'system', [
+    { platform: 'whatsapp', platformUserId: 'admin-whatsapp-1' },
+  ]);
+
+  const { adapter: reconnectedDiscord, dms } = makeFakeAdapter(true);
+  await flushPendingAlerts(reconnectedDiscord);
+
+  assert.deepEqual(dms, [], 'no discord recipient matches, so nothing is sent through the discord adapter');
+  assert.deepEqual(getPendingAlertsForTests(), [], 'the queue is still cleared after the flush');
+});
 
 test('flushPendingAlerts: a throwing sendDirectMessage during flush is logged and the message dropped, not re-queued', async (t) => {
   resetPendingAlertsForTests();

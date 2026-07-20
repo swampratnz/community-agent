@@ -65,7 +65,8 @@ const { config } = await import('../src/config.js');
 const pgvector = (await import('pgvector/pg')).default;
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
-const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
+const { getPendingAlertsForTests, getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
+  await import('../src/pendingAlertQueue.js');
 
 after(async () => {
   await closeDb();
@@ -545,6 +546,31 @@ test('alertSuperAdmins (via startDocsIngest): with zero connected adapters, the 
       'the failure-threshold alert should be queued instead of dropped',
     );
     assert.match(getPendingAlertsForTests()[0] ?? '', /docs-ingest/);
+  } finally {
+    clearInterval(timer!);
+    resetPendingAlertsForTests();
+  }
+});
+
+test("SECURITY: backgroundJobs.ts's failure-threshold alert queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; this producer is unaffected and still flushes to superAdminIds()", async (t) => {
+  resetPendingAlertsForTests();
+  const { adapter } = makeAdapter();
+  adapter.isConnected = () => false;
+  const alwaysFail = async () => {
+    throw new Error('sentinel-queue-625');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startDocsIngest([adapter], alwaysFail);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    const entries = getPendingAlertEntriesForTests();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.recipients, undefined);
   } finally {
     clearInterval(timer!);
     resetPendingAlertsForTests();

@@ -45,6 +45,7 @@ async function mockUsageStats(): Promise<UsageStats> {
 let modulesPromise: Promise<{
   startUsageAlert: typeof import('../src/usageAlert.js').startUsageAlert;
   getPendingAlertsForTests: typeof import('../src/pendingAlertQueue.js').getPendingAlertsForTests;
+  getPendingAlertEntriesForTests: typeof import('../src/pendingAlertQueue.js').getPendingAlertEntriesForTests;
   resetPendingAlertsForTests: typeof import('../src/pendingAlertQueue.js').resetPendingAlertsForTests;
   queuePendingAlert: typeof import('../src/pendingAlertQueue.js').queuePendingAlert;
   PENDING_ALERT_QUEUE_CAP: number;
@@ -58,11 +59,18 @@ async function modules(t: { mock: { module: (specifier: string, opts: unknown) =
       });
       const [
         { startUsageAlert },
-        { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP },
+        {
+          getPendingAlertsForTests,
+          getPendingAlertEntriesForTests,
+          resetPendingAlertsForTests,
+          queuePendingAlert,
+          PENDING_ALERT_QUEUE_CAP,
+        },
       ] = await Promise.all([import('../src/usageAlert.js'), import('../src/pendingAlertQueue.js')]);
       return {
         startUsageAlert,
         getPendingAlertsForTests,
+        getPendingAlertEntriesForTests,
         resetPendingAlertsForTests,
         queuePendingAlert,
         PENDING_ALERT_QUEUE_CAP,
@@ -106,7 +114,12 @@ function flush(): Promise<void> {
 }
 
 test('startUsageAlert: with zero connected adapters, a threshold-crossing alert is queued exactly once instead of dropped (issue #593)', async (t) => {
-  const { startUsageAlert, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
+  const {
+    startUsageAlert,
+    getPendingAlertsForTests,
+    getPendingAlertEntriesForTests,
+    resetPendingAlertsForTests,
+  } = await modules(t);
   resetPendingAlertsForTests();
   outbound = 15;
   const { adapter, dms } = makeAdapter(false);
@@ -122,6 +135,25 @@ test('startUsageAlert: with zero connected adapters, a threshold-crossing alert 
       'the threshold-crossing alert is queued exactly once, not dropped',
     );
     assert.match(getPendingAlertsForTests()[0] ?? '', /Usage alert/);
+  } finally {
+    clearInterval(timer!);
+    resetPendingAlertsForTests();
+  }
+});
+
+test('SECURITY: startUsageAlert queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; usageAlert.ts is unaffected and still flushes to superAdminIds()', async (t) => {
+  const { startUsageAlert, getPendingAlertEntriesForTests, resetPendingAlertsForTests } = await modules(t);
+  resetPendingAlertsForTests();
+  outbound = 15;
+  const { adapter } = makeAdapter(false);
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startUsageAlert([adapter]);
+  try {
+    await flush();
+    const entries = getPendingAlertEntriesForTests();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.recipients, undefined);
   } finally {
     clearInterval(timer!);
     resetPendingAlertsForTests();

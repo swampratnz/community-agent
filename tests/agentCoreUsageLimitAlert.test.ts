@@ -279,6 +279,32 @@ test('runAgentTurn: a usage-limit alert with EVERY platform disconnected is queu
   resetPendingAlertsForTests();
 });
 
+test("SECURITY: agent/core.ts's usage-limit alert queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; this producer is unaffected and still flushes to superAdminIds()", async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
+    await import('../src/pendingAlertQueue.js');
+  resetPendingAlertsForTests();
+  const { adapter } = makeAdapter('discord', false);
+  const { adapter: waAdapter } = makeAdapter('whatsapp', false);
+  const caller = makeCaller();
+  const getAdapter = (platform: 'discord' | 'whatsapp') => (platform === 'whatsapp' ? waAdapter : undefined);
+
+  const { adapter: resetAdapter } = makeAdapter('discord', true);
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', resetAdapter, () => undefined);
+  await flush();
+  resetPendingAlertsForTests();
+
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', adapter, getAdapter);
+  await flush();
+
+  const entries = getPendingAlertEntriesForTests();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.recipients, undefined);
+  resetPendingAlertsForTests();
+});
+
 test('runAgentTurn: with at least one connected platform, behaviour stays byte-identical to before #593 — live send, nothing queued', async (t) => {
   const { runAgentTurn } = await core(t);
   const { getPendingAlertsForTests, resetPendingAlertsForTests } =

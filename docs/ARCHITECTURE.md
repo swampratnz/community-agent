@@ -1706,13 +1706,46 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   `alertSuperAdmins` (which also covers `engagementAlert.ts`, since it reuses
   that exact function — issue #568), `agent/core.ts`'s `noteUsageLimitOutcome`,
   and `router.ts`'s `alertSuperAdminsBudgetCheckFailed`. All four queue at
-  `'system'` priority, same as `health.ts`/`backgroundJobs.ts`. Deliberately
-  NOT extended to `tools.ts`'s `notifyAdmins` or `router.ts`'s
-  `notifyAccessRequest` — both source recipients from the broader,
-  guild-wide `listAdmins()` rather than `superAdminIds()`, and the shared
-  queue's bare-string entries can't preserve that distinct recipient set on
-  flush (issue #571's rejection rationale) — a documented growth path, not
-  built here.
+  `'system'` priority, same as `health.ts`/`backgroundJobs.ts`. At the time
+  (issue #593), this was deliberately NOT extended to `tools.ts`'s
+  `notifyAdmins` or `router.ts`'s `notifyAccessRequest` — both source
+  recipients from the broader, guild-wide `listAdmins()` rather than
+  `superAdminIds()`, and the shared queue's bare-string entries couldn't
+  preserve that distinct recipient set on flush (issue #571's rejection
+  rationale).
+
+  Issue #625 closed that gap for `notifyAdmins`: `PendingAlert` entries may
+  now optionally carry a `recipients: {platform, platformUserId}[]` array,
+  frozen at queue time. `notifyAdmins` computes its own `anyConnected` check
+  over the *resolved admin list's* platforms (not every platform, since its
+  audience is `listAdmins()`, not `superAdminIds()`), excluding
+  `excludeUserId` from that check the same way the delivery loop below it
+  already excludes them — otherwise an escalating admin's own live
+  connection would count as "reachable" even though the delivery loop skips
+  them, silently dropping the alert. Excluding `excludeUserId` can itself
+  empty the resolved roster (e.g. a single-admin guild where the escalating
+  user is that admin) — that case is a no-op, same as an empty roster from
+  `listAdmins()` itself, rather than queuing a truthy-but-empty `recipients`
+  array that flush would deliver to nobody, forever occupying one of the
+  five shared queue slots. Otherwise, if no OTHER resolved admin is
+  connected, it queues with the resolved recipient set (minus
+  `excludeUserId`) instead of silently finishing with nothing sent, at
+  `'low'` priority — this producer's only caller is the router's member-
+  facing escalation-confirmation intercept, the same member-reachability
+  class `notifySuperAdmins`'s `'low'` exists for (a `'system'` label would
+  let a member's escalation confirmations evict genuine bot/health-
+  originated alerts, issue #545's priority-inversion class). On flush, an
+  entry with `recipients` is delivered only to those recipients, filtered to
+  the reconnected adapter's platform — never to `superAdminIds()`. The
+  recipient set is deliberately NOT re-resolved via `listAdmins()` at flush
+  time (a moments-stale roster is an accepted tradeoff — see issue #625's
+  adversarial review — rather than coupling this leaf-ish flush to the
+  repository/roles layer). Every recipient-less entry (from any of the six
+  producers above) is unaffected: `recipients` stays absent and flush still
+  targets `superAdminIds(adapter.platform)`, byte-identical to before.
+  `router.ts`'s `notifyAccessRequest` remains the sole item still on this
+  growth path — same underlying defect and fix shape, deliberately deferred
+  to keep #625's diff reviewable.
 - **Per-recipient window-reopen queue for the WhatsApp Cloud
   connected-but-window-closed case** (issue #602) — a DISTINCT failure class
   from the zero-connected-adapter queue just above: the Cloud adapter stays
