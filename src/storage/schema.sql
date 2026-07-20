@@ -576,6 +576,20 @@ CREATE INDEX IF NOT EXISTS answer_feedback_conversation_idx
 CREATE INDEX IF NOT EXISTS answer_feedback_user_rate_idx
   ON answer_feedback (platform, user_id, created_at DESC);
 
+-- One-time de-dup of legacy duplicate rows before the unique index below,
+-- issue #619: this schema is applied idempotently against the live
+-- production DB on every deploy (see migrate.ts), and the very bug this
+-- migration fixes — a single rater double-tapping rate_answer — is exactly
+-- what could have already left duplicate (interaction_id, user_id) rows
+-- there. Keep the most recent row (highest id) per pair, drop the rest, so
+-- the unique index below can always be created. Idempotent: once no
+-- duplicates remain, this deletes zero rows on every subsequent run.
+DELETE FROM answer_feedback a USING answer_feedback b
+ WHERE a.interaction_id IS NOT NULL
+   AND a.interaction_id = b.interaction_id
+   AND a.user_id = b.user_id
+   AND a.id < b.id;
+
 -- One vote per (interaction, rater), issue #619: without this, a single
 -- member calling rate_answer twice on the same bot reply inserted two rows,
 -- inflating every downstream count (usage_stats' helpful ratio, the weekly

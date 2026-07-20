@@ -7438,6 +7438,89 @@ test(
 );
 
 test(
+  "repository: schema.sql's answer_feedback dedup DELETE removes pre-existing duplicate (interaction_id, " +
+    'user_id) rows — keeping the most recent — before the partial unique index statement runs, so redeploying ' +
+    "against a production DB that already has the pre-fix double-tap bug's duplicates (issue #619) succeeds " +
+    'instead of failing on a duplicate-key error',
+  { skip },
+  async () => {
+    // Exercised against a connection-private TEMP TABLE, not the real
+    // shared `answer_feedback` table: dropping the live production unique
+    // index to simulate a pre-migration DB would race with every OTHER
+    // test file's concurrent createAnswerFeedback calls (Node's test
+    // runner runs files in parallel), risking spurious "no unique or
+    // exclusion constraint matching ON CONFLICT" failures elsewhere in the
+    // suite. A temp table is invisible to every other session, so this
+    // reproduces the exact statements from schema.sql with zero blast
+    // radius on concurrently-running tests.
+    const client = await pool.connect();
+    try {
+      await client.query(`
+        CREATE TEMP TABLE answer_feedback_dedup_fixture (
+          id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          interaction_id BIGINT,
+          user_id        TEXT NOT NULL,
+          helpful        BOOLEAN NOT NULL
+        )
+      `);
+
+      // Simulate a production DB that predates this migration: two
+      // duplicate rows for the same (interaction_id, user_id) pair, exactly
+      // what the pre-fix double-tap bug could already have left behind.
+      const { rows: dupRows } = await client.query(`
+        INSERT INTO answer_feedback_dedup_fixture (interaction_id, user_id, helpful) VALUES
+          (42, 'legacy-rater', true),
+          (42, 'legacy-rater', false)
+        RETURNING id, helpful
+      `);
+      assert.equal(
+        dupRows.length,
+        2,
+        'both legacy duplicate rows insert cleanly with no unique index present',
+      );
+      const newerRowId = Number(dupRows.find((r) => r.helpful === false)?.id);
+
+      // The exact dedup statement from schema.sql: keep the highest-id
+      // (most recent) row per (interaction_id, user_id), drop the rest.
+      await client.query(`
+        DELETE FROM answer_feedback_dedup_fixture a USING answer_feedback_dedup_fixture b
+         WHERE a.interaction_id IS NOT NULL
+           AND a.interaction_id = b.interaction_id
+           AND a.user_id = b.user_id
+           AND a.id < b.id
+      `);
+
+      // The exact unique index statement from schema.sql must now succeed
+      // against the de-duped data, not fail with a duplicate-key error.
+      await assert.doesNotReject(
+        client.query(
+          `CREATE UNIQUE INDEX ON answer_feedback_dedup_fixture (interaction_id, user_id) WHERE interaction_id IS NOT NULL`,
+        ),
+        'the unique index must be creatable after the dedup DELETE runs, even though duplicates pre-existed',
+      );
+
+      const { rows: survivingRows } = await client.query(
+        `SELECT id, helpful FROM answer_feedback_dedup_fixture`,
+      );
+      assert.equal(survivingRows.length, 1, 'exactly one row survives the de-dup');
+      assert.equal(
+        Number(survivingRows[0].id),
+        newerRowId,
+        'the surviving row is the most recent (highest id) one',
+      );
+      assert.equal(
+        survivingRows[0].helpful,
+        false,
+        "the surviving row's data matches the most recent duplicate",
+      );
+    } finally {
+      await client.query(`DROP TABLE IF EXISTS answer_feedback_dedup_fixture`);
+      client.release();
+    }
+  },
+);
+
+test(
   'SECURITY: repository: listAnswerFeedback scopes by conversation and filters by unhelpfulOnly',
   { skip },
   async () => {
