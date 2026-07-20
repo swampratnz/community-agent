@@ -15,6 +15,7 @@ import {
   type ResponseStyle,
 } from '../storage/repository.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
+import { queuePendingAlert } from '../pendingAlertQueue.js';
 import { buildSystemPrompt, renderMemoryContext, renderRequesterTag } from './systemPrompt.js';
 import { selectPersona } from './personas.js';
 import { buildToolServer, reserveWebSearchSlot, type ToolServerTurnState } from './tools.js';
@@ -506,6 +507,11 @@ const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
  * exclude — this is a system-condition alert, not a member-initiated one — so
  * every id in each connected platform's `superAdminIds(platform)` is DMed.
  */
+const USAGE_LIMIT_ALERT_MESSAGE =
+  '⚠️ The bot just hit an upstream Claude usage-limit/overload condition — members are seeing a ' +
+  "degraded reply. This isn't a bug and should clear once the shared quota resets; consider " +
+  'pause_bot if it persists.';
+
 function noteUsageLimitOutcome(
   hitUsageLimit: boolean,
   adapter: PlatformAdapter,
@@ -520,18 +526,22 @@ function noteUsageLimitOutcome(
     { conversationId, platform: adapter.platform },
     'Upstream Claude usage-limit/overload detected',
   );
-  for (const platform of ALL_PLATFORMS) {
-    const target = platform === adapter.platform ? adapter : getAdapter?.(platform);
-    if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
-    for (const id of superAdminIds(platform)) {
+  const targets = ALL_PLATFORMS.map((platform) =>
+    platform === adapter.platform ? adapter : getAdapter?.(platform),
+  ).filter((target): target is PlatformAdapter => target != null && target.isConnected());
+  if (targets.length === 0) {
+    logger.warn(
+      { conversationId },
+      'Usage-limit alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(USAGE_LIMIT_ALERT_MESSAGE, 'system'); // super-admin-only alert — never evicted by a member-reachable alert (#545)
+    return;
+  }
+  for (const target of targets) {
+    for (const id of superAdminIds(target.platform)) {
       target
-        .sendDirectMessage(
-          id,
-          '⚠️ The bot just hit an upstream Claude usage-limit/overload condition — members are seeing a ' +
-            "degraded reply. This isn't a bug and should clear once the shared quota resets; consider " +
-            'pause_bot if it persists.',
-        )
-        .catch((err) => logger.warn({ err, platform, id }, 'Usage-limit alert DM failed'));
+        .sendDirectMessage(id, USAGE_LIMIT_ALERT_MESSAGE)
+        .catch((err) => logger.warn({ err, platform: target.platform, id }, 'Usage-limit alert DM failed'));
     }
   }
 }

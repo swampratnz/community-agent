@@ -21,6 +21,7 @@ process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 
 const { formatEngagementAlertMessage, makeDefaultEngagementAlertRun, startEngagementAlert } =
   await import('../src/engagementAlert.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
 
 type EngagementStats = {
   total: number;
@@ -172,4 +173,36 @@ test('SECURITY: makeDefaultEngagementAlertRun delivers only to super admins on c
 test('startEngagementAlert: ENGAGEMENT_ALERT_ENABLED unset (default) creates no timer', () => {
   const timer = startEngagementAlert([]);
   assert.equal(timer, null, 'disabled by default — no timer, no extra queries');
+});
+
+// engagementAlert.ts reuses departedAdminAlert.ts's exact `alertSuperAdmins`
+// (issue #568), so extending that function's disconnect-handling (issue
+// #593) fans out here too, intentionally — asserted directly rather than
+// left implicit, per the #593 adversarial review's binding criterion 7.
+test('makeDefaultEngagementAlertRun: with zero connected adapters, the weekly snapshot is queued instead of dropped (issue #593 fan-out via departedAdminAlert.ts)', async () => {
+  resetPendingAlertsForTests();
+  const disconnected: PlatformAdapter = { ...makeAdapter().adapter, isConnected: () => false };
+  const disconnectedDms: Array<{ userId: string; text: string }> = [];
+  disconnected.sendDirectMessage = async (userId: string, text: string) => {
+    disconnectedDms.push({ userId, text });
+  };
+
+  const runOnce = makeDefaultEngagementAlertRun(
+    [disconnected],
+    async () => stats({ percentage: 55 }),
+    async () => false,
+    async () => {},
+  );
+
+  await runOnce();
+  await flush();
+
+  assert.equal(disconnectedDms.length, 0, 'no send is attempted through the disconnected adapter');
+  assert.equal(
+    getPendingAlertsForTests().length,
+    1,
+    'the weekly snapshot is queued exactly once, not dropped',
+  );
+  assert.match(getPendingAlertsForTests()[0] ?? '', /55%/);
+  resetPendingAlertsForTests();
 });

@@ -1599,10 +1599,19 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   from `tools.ts`'s `notifySuperAdmins` loses its per-call `excludeUserId` on
   flush (the queue holds bare strings), so the recipient set becomes all
   super admins — an accepted tradeoff (structured queue entries were
-  deliberately left out of scope). Deliberately not extended to `tools.ts`'s
-  `notifyAdmins`, `usageAlert.ts`, `departedAdminAlert.ts`, `agent/core.ts`'s
-  `noteUsageLimitOutcome`, or `router.ts`'s alert sites — a documented growth
-  path, not built here.
+  deliberately left out of scope). Extended (issue #593) to the other four
+  `superAdminIds`-only producers on the same disconnect-drop shape:
+  `usageAlert.ts`'s `alertSuperAdmins`, `departedAdminAlert.ts`'s
+  `alertSuperAdmins` (which also covers `engagementAlert.ts`, since it reuses
+  that exact function — issue #568), `agent/core.ts`'s `noteUsageLimitOutcome`,
+  and `router.ts`'s `alertSuperAdminsBudgetCheckFailed`. All four queue at
+  `'system'` priority, same as `health.ts`/`backgroundJobs.ts`. Deliberately
+  NOT extended to `tools.ts`'s `notifyAdmins` or `router.ts`'s
+  `notifyAccessRequest` — both source recipients from the broader,
+  guild-wide `listAdmins()` rather than `superAdminIds()`, and the shared
+  queue's bare-string entries can't preserve that distinct recipient set on
+  flush (issue #571's rejection rationale) — a documented growth path, not
+  built here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.

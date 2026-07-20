@@ -244,3 +244,106 @@ test("SECURITY: the all-platform usage-limit alert only ever reaches ids in that
     'an adapter instance never returned by getAdapter must receive nothing',
   );
 });
+
+// --- Shared pending-alert queue extension (issue #593) ---
+
+test('runAgentTurn: a usage-limit alert with EVERY platform disconnected is queued exactly ONCE (not once per platform), and no send is attempted anywhere (issue #593)', async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { getPendingAlertsForTests, resetPendingAlertsForTests } =
+    await import('../src/pendingAlertQueue.js');
+  resetPendingAlertsForTests();
+  const { adapter, dms } = makeAdapter('discord', false);
+  const { adapter: waAdapter, dms: waDms } = makeAdapter('whatsapp', false);
+  const caller = makeCaller();
+  const getAdapter = (platform: 'discord' | 'whatsapp') => (platform === 'whatsapp' ? waAdapter : undefined);
+
+  // Reset the module-wide debounce latch to "recovered" first, via a
+  // connected adapter so the reset turn itself doesn't queue anything.
+  const { adapter: resetAdapter } = makeAdapter('discord', true);
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', resetAdapter, () => undefined);
+  await flush();
+  resetPendingAlertsForTests();
+
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', adapter, getAdapter);
+  await flush();
+
+  assert.equal(dms.length, 0, 'no send is attempted through the disconnected origin adapter');
+  assert.equal(waDms.length, 0, 'no send is attempted through the disconnected fanned-out adapter');
+  assert.equal(
+    getPendingAlertsForTests().length,
+    1,
+    'the alert is queued exactly once across the whole outage, not once per platform',
+  );
+  resetPendingAlertsForTests();
+});
+
+test('runAgentTurn: with at least one connected platform, behaviour stays byte-identical to before #593 — live send, nothing queued', async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { getPendingAlertsForTests, resetPendingAlertsForTests } =
+    await import('../src/pendingAlertQueue.js');
+  resetPendingAlertsForTests();
+  const { adapter, dms } = makeAdapter('discord', true);
+  const caller = makeCaller();
+
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', adapter, () => undefined);
+  await flush();
+  dms.length = 0;
+  resetPendingAlertsForTests();
+
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', adapter, () => undefined);
+  await flush();
+
+  assert.equal(dms.length, 1, 'the connected origin adapter still receives the alert live, as before');
+  assert.deepEqual(
+    getPendingAlertsForTests(),
+    [],
+    'nothing is queued when at least one platform is connected',
+  );
+  resetPendingAlertsForTests();
+});
+
+test('SECURITY: the usage-limit alert queues the message byte-identical to its live-send text, at "system" priority, surviving a low-priority flood (issue #593)', async (t) => {
+  const { runAgentTurn } = await core(t);
+  const { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP } =
+    await import('../src/pendingAlertQueue.js');
+  resetPendingAlertsForTests();
+  const caller = makeCaller();
+
+  // Capture the live-send text via a connected adapter.
+  const { adapter: liveAdapter, dms: liveDms } = makeAdapter('discord', true);
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', liveAdapter, () => undefined);
+  await flush();
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', liveAdapter, () => undefined);
+  await flush();
+  const liveText = liveDms[0]?.text;
+  assert.ok(liveText, 'a live send happened to capture the exact text');
+  resetPendingAlertsForTests();
+
+  // Same condition with every adapter disconnected must queue byte-identical text.
+  const { adapter: downAdapter } = makeAdapter('discord', false);
+  behavior = { mode: 'success', text: 'reset' };
+  await runAgentTurn(caller, 'reset', downAdapter, () => undefined);
+  await flush();
+  resetPendingAlertsForTests();
+  behavior = { mode: 'throw', message: 'overloaded_error: Overloaded' };
+  await runAgentTurn(caller, 'hello', downAdapter, () => undefined);
+  await flush();
+
+  assert.deepEqual(getPendingAlertsForTests(), [liveText], 'queued text is byte-identical to the live text');
+
+  // Simulate tools.ts's notifySuperAdmins (member-reachable, 'low' priority)
+  // flooding the shared queue past its cap — this system-priority alert must
+  // never be evicted (issue #545's fix).
+  for (let i = 0; i < PENDING_ALERT_QUEUE_CAP * 2; i++) queuePendingAlert(`low-flood-${i}`, 'low');
+  assert.ok(
+    getPendingAlertsForTests().includes(liveText),
+    'the system-priority usage-limit alert survives a low-priority flood',
+  );
+  resetPendingAlertsForTests();
+});

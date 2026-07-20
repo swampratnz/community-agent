@@ -4,6 +4,7 @@ import { superAdminIds } from './auth/roles.js';
 import { listAdminRoster, type AdminRosterEntry } from './storage/repository.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { initialUsageAlertTracker, stepUsageAlertTracker } from './usageAlert.js';
+import { queuePendingAlert } from './pendingAlertQueue.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 /**
@@ -74,11 +75,21 @@ export function startDepartedAdminAlert(
  * Exported (issue #568) so `engagementAlert.ts` can reuse this exact
  * super-admin-only, connected-adapters-only fan-out by import rather than a
  * second copy — the adversarial-review note on #568 pins this as the single
- * source of truth for "super admins only" DM delivery across both jobs.
+ * source of truth for "super admins only" DM delivery across both jobs. That
+ * makes this function's disconnect-handling (issue #593) apply to both
+ * producers by construction, not by duplicating the fix.
  */
 export async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  for (const adapter of adapters) {
-    if (!adapter.isConnected()) continue; // can't send through a dead connection
+  const connected = adapters.filter((adapter) => adapter.isConnected());
+  if (connected.length === 0) {
+    logger.warn(
+      { message },
+      'Departed-admin alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(message, 'system'); // super-admin-only alert — never evicted by a member-reachable alert (#545)
+    return;
+  }
+  for (const adapter of connected) {
     for (const id of superAdminIds(adapter.platform)) {
       adapter
         .sendDirectMessage(id, message)
