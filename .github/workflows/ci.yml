@@ -69,6 +69,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The local embedding model (transformers.js) downloads into
+      # node_modules/@huggingface/transformers/.cache, which npm ci wipes — so
+      # every run re-fetched it from huggingface.co (wall-clock + an external
+      # fetch that can flake). actions/cache restores at THIS step's position
+      # (after npm ci), so the restored files survive; save happens post-job.
+      # Bump the key suffix if EMBEDDING_MODEL ever changes.
+      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        with:
+          path: node_modules/@huggingface/transformers/.cache
+          key: hf-embedding-model-all-MiniLM-L6-v2-v1
       - run: npm run typecheck
       - run: npm run migrate
       - run: npm test
@@ -122,4 +132,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The local embedding model (transformers.js) downloads into
+      # node_modules/@huggingface/transformers/.cache, which npm ci wipes — so
+      # every run re-fetched it from huggingface.co (wall-clock + an external
+      # fetch that can flake). actions/cache restores at THIS step's position
+      # (after npm ci), so the restored files survive; save happens post-job.
+      # Bump the key suffix if EMBEDDING_MODEL ever changes.
+      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        with:
+          path: node_modules/@huggingface/transformers/.cache
+          key: hf-embedding-model-all-MiniLM-L6-v2-v1
       - run: npm run test:security

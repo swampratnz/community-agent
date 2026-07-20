@@ -183,7 +183,8 @@ ownership rules:
   human PR** — only the deterministic auto-merge loop above merges, and only
   its own build-worker PRs under the gate described there. A human still
   merges anything that loop won't touch.
-- WIP caps: ≤3 open `status:draft`. Builds run **per-issue** (each issue its own
+- WIP caps: ≤5 open `status:draft` (raised from 3 on the Max 20x pool). Builds
+  run **per-issue** (each issue its own
   `concurrency` group, so distinct issues run in parallel and none evicts
   another — a single shared group would silently *cancel* queued builds, and
   cancellations aren't retried). Every run draws on the shared Max pool, so
