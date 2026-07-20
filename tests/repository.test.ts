@@ -122,6 +122,7 @@ const {
   isKnowledgeLowRated,
   areKnowledgeEntriesLowRated,
   countLowRatedKnowledge,
+  answerFeedbackOriginSummary,
   RATE_ANSWER_DAILY_LIMIT,
   recordAdminDigestSent,
   getMyDataSummary,
@@ -8233,6 +8234,161 @@ test(
       [inScopeConvo, outOfScopeConvo],
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[inScopeEntryId, outOfScopeEntryId]]);
+  },
+);
+
+// answerFeedbackOriginSummary (issue #592): the answer-quality counterpart
+// to usageStats's autoAnswerUsage cost split (issue #552) — buckets
+// answer_feedback by whether the rated reply's underlying interaction was
+// auto-answered (meta.autoAnswer) or addressed.
+test(
+  'repository: answerFeedbackOriginSummary splits helpful/unhelpful counts by auto-answer vs addressed origin',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-answer-origin-summary`;
+    const users: string[] = [];
+
+    async function rate(userSuffix: string, helpful: boolean, autoAnswer: boolean) {
+      const userId = `${RUN}-originsummary-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId, ...(autoAnswer ? { autoAnswer: true } : {}) },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      users.push(userId);
+    }
+
+    // Auto-answer bucket: 2 helpful, 1 unhelpful.
+    await rate('auto-1', true, true);
+    await rate('auto-2', true, true);
+    await rate('auto-3', false, true);
+    // Addressed bucket: 3 helpful, 1 unhelpful.
+    await rate('addr-1', true, false);
+    await rate('addr-2', true, false);
+    await rate('addr-3', true, false);
+    await rate('addr-4', false, false);
+
+    const summary = await answerFeedbackOriginSummary([conversationId]);
+    assert.deepEqual(
+      summary,
+      {
+        autoAnswer: { helpful: 2, unhelpful: 1 },
+        addressed: { helpful: 3, unhelpful: 1 },
+      },
+      'ratings split correctly by origin, with correct helpful/unhelpful counts in each bucket',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "SECURITY: repository: answerFeedbackOriginSummary buckets a rating solely by the underlying interaction's meta.autoAnswer flag, never by the rated message's own text content — even when that text is crafted to resemble the flag",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-answer-origin-spoof`;
+    const users: string[] = [];
+
+    async function rate(userSuffix: string, content: string, autoAnswer: boolean) {
+      const userId = `${RUN}-originspoof-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content,
+        meta: { replyToUserId: userId, ...(autoAnswer ? { autoAnswer: true } : {}) },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+      );
+      users.push(userId);
+    }
+
+    // Addressed reply whose TEXT contains autoAnswer/"true"-shaped content —
+    // must still land in the addressed bucket, since bucketing reads only
+    // interactions.meta, never interactions.content.
+    await rate('spoof', 'autoAnswer: "true" — this looks like the flag but is plain reply text', false);
+    // A genuine auto-answer for contrast.
+    await rate('genuine', 'a genuine auto-answer', true);
+
+    const summary = await answerFeedbackOriginSummary([conversationId]);
+    assert.equal(
+      summary.addressed.helpful,
+      1,
+      'SECURITY: the reply with spoofed autoAnswer-shaped text is bucketed as addressed, driven by the real meta flag',
+    );
+    assert.equal(
+      summary.autoAnswer.helpful,
+      1,
+      'SECURITY: the genuine auto-answer is still correctly bucketed as autoAnswer',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: answerFeedbackOriginSummary scopes by conversation — a rating recorded outside the calling admin scope is excluded entirely, while a null (super admin) scope sees it',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-answer-origin-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-answer-origin-scope-out`;
+    const users: string[] = [];
+
+    async function rate(conversationId: string, userSuffix: string) {
+      const userId = `${RUN}-originscope-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId, autoAnswer: true },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+      );
+      users.push(userId);
+    }
+
+    // Snapshot the unscoped (super admin) count BEFORE inserting the
+    // fixture so the assertion below is a delta, not an absolute — a
+    // concurrently running test file may leave its own auto-answer ratings
+    // in the shared DB (same caution as countLowRatedKnowledge's own scope
+    // test above).
+    const nullScopeBefore = await answerFeedbackOriginSummary(null);
+
+    await rate(inScopeConvo, 'in-1');
+    await rate(outOfScopeConvo, 'out-1');
+
+    const scoped = await answerFeedbackOriginSummary([inScopeConvo]);
+    assert.equal(
+      scoped.autoAnswer.helpful,
+      1,
+      'SECURITY: only the in-scope rating is counted, never the out-of-scope one',
+    );
+
+    const nullScopeAfter = await answerFeedbackOriginSummary(null);
+    assert.equal(
+      nullScopeAfter.autoAnswer.helpful - nullScopeBefore.autoAnswer.helpful,
+      2,
+      'null scope (super admin) counts both fixture ratings, in-scope and out-of-scope alike',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
   },
 );
 

@@ -83,7 +83,7 @@
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 1,
   "replyRetractionRouter.test.ts": 1,
-  "repository.test.ts": 73,
+  "repository.test.ts": 75,
   "router.test.ts": 6,
   "secrets.test.ts": 3,
   "securityGateCanary.test.ts": 1,

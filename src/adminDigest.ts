@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import {
+  answerFeedbackOriginSummary,
   countAccessRequests,
   countDuplicateKnowledge,
   countEscalatedKnowledgeGaps,
@@ -155,6 +156,17 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * case (count 0, or a caller that hasn't wired it through) is byte-identical to
  * the pre-#563 form. Bare integer only, same privacy convention as every signal
  * above.
+ * `autoAnswerHelpful`/`autoAnswerUnhelpful`/`addressedHelpful`/`addressedUnhelpful`
+ * (issue #592) come from `answerFeedbackOriginSummary`, the origin-split
+ * (auto-answered vs addressed) complement to `generalUnhelpfulCount`'s
+ * grounded-vs-ungrounded axis — #477's own named success metric, never wired
+ * up until now. Cumulative, not freshness-windowed, matching
+ * `lowRatedKnowledgeCount`'s own cumulative shape. Rendered only when
+ * `autoAnswerHelpful + autoAnswerUnhelpful > 0` (i.e. only once a guild both
+ * runs auto-answer AND has received at least one rating on it), as bare
+ * ratios/counts only — no message content, no rater identity. Four
+ * append-only trailing params, default 0, so every existing call site is
+ * unaffected and the quiet case is byte-identical to the pre-#592 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -237,6 +249,14 @@ export function buildAdminDigestMessage(
   // (issue #563). Append-only trailing param, default 0, so every existing
   // call site is unaffected.
   generalUnhelpfulCount: number = 0,
+  // Origin-split (auto-answered vs addressed) `answer_feedback` counts from
+  // `answerFeedbackOriginSummary` (issue #592) — #477's own named
+  // helpful-ratio-vs-mention-mode success metric. Four append-only trailing
+  // params, default 0, so every existing call site is unaffected.
+  autoAnswerHelpful: number = 0,
+  autoAnswerUnhelpful: number = 0,
+  addressedHelpful: number = 0,
+  addressedUnhelpful: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -255,7 +275,9 @@ export function buildAdminDigestMessage(
     conflictCandidateCount === 0 &&
     staleMutedMembersCount === 0 &&
     notMembersCount === 0 &&
-    generalUnhelpfulCount === 0
+    generalUnhelpfulCount === 0 &&
+    autoAnswerHelpful === 0 &&
+    autoAnswerUnhelpful === 0
   )
     return null;
 
@@ -413,6 +435,25 @@ export function buildAdminDigestMessage(
         trendSuffix('generalUnhelpfulCount', generalUnhelpfulCount, previousCounts),
     );
   }
+  if (autoAnswerHelpful + autoAnswerUnhelpful > 0) {
+    // Bare ratios/counts only — no message content, question text, or rater
+    // identity ever reaches the DM, same privacy convention as every other
+    // digest line (issue #592). The "vs ... addressed" comparison is only
+    // appended when there's at least one addressed-mode rating to compare
+    // against, so a guild with auto-answer ratings but none yet on addressed
+    // replies still gets a well-formed line.
+    const autoTotal = autoAnswerHelpful + autoAnswerUnhelpful;
+    const autoPct = Math.round((autoAnswerHelpful / autoTotal) * 100);
+    const addressedTotal = addressedHelpful + addressedUnhelpful;
+    const comparisonFragment =
+      addressedTotal > 0
+        ? ` vs ${Math.round((addressedHelpful / addressedTotal) * 100)}% helpful ` +
+          `(${addressedHelpful}/${addressedTotal}) addressed`
+        : '';
+    sections.push(
+      `📊 Auto-answer ratings: ${autoPct}% helpful (${autoAnswerHelpful}/${autoTotal})${comparisonFragment}.`,
+    );
+  }
   if (duplicateKnowledgeCount > 0) {
     // Bare integer only — no pair id, title, or content ever reaches the DM (#378).
     sections.push(
@@ -486,6 +527,7 @@ export async function buildAdminDigestForAdmin(
     oldestOpenReportAge,
     oldestPendingSuggestionAge,
     generalUnhelpfulCount,
+    answerOriginSummary,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -552,6 +594,11 @@ export async function buildAdminDigestForAdmin(
     // `knowledgeEntryId IS NULL` complement of lowRatedKnowledgeCount
     // (issue #563).
     countGeneralUnhelpfulAnswers(scope, FRESHNESS_DAYS),
+    // Conversation-scoped like lowRatedKnowledgeCount (answer_feedback has a
+    // conversation_id); cumulative, no freshness window, same rationale as
+    // that count — the auto-answer-vs-addressed origin split #477 named as
+    // its own success metric but never wired up (issue #592).
+    answerFeedbackOriginSummary(scope),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -613,6 +660,10 @@ export async function buildAdminDigestForAdmin(
     oldestOpenReportAge,
     oldestPendingSuggestionAge,
     generalUnhelpfulCount,
+    answerOriginSummary.autoAnswer.helpful,
+    answerOriginSummary.autoAnswer.unhelpful,
+    answerOriginSummary.addressed.helpful,
+    answerOriginSummary.addressed.unhelpful,
   );
   return { message, currentCounts };
 }
@@ -675,7 +726,10 @@ export async function buildAdminDigestForAdmin(
  * `countDuplicateKnowledge()`/`countKnowledgeConflictCandidates()`
  * are guild-wide, unscoped calls (issue #378) — matching `countStaleKnowledge`/
  * `countPendingKnowledgeCandidates`, since the pair self-joins carry no
- * conversation scope either. The freshness guard
+ * conversation scope either. `answerFeedbackOriginSummary(scope)` is
+ * conversation-scoped like `countLowRatedKnowledge` (`answer_feedback` has a
+ * conversation_id); cumulative, no freshness window — the origin split #477
+ * named as its own success metric and issue #592 finally wires up. The freshness guard
  * (`admin_digest_sends`) is a durable per-admin timestamp, so a restart
  * mid-week cannot cause a duplicate send within the same window. Super
  * admins are not enrolled — `listAdmins` only returns `community_users`
@@ -760,12 +814,12 @@ export async function runAdminDigestOnce(adapters: readonly PlatformAdapter[]): 
  * knowledge-candidate, low-rated-knowledge, roster joined/left-this-week,
  * currently-muted-member, upper-bound stale-muted-member, near-duplicate-
  * knowledge-pair, conflict-candidate-knowledge-pair, general-knowledge-
- * unhelpful-rating, and (in `'gated'`
+ * unhelpful-rating, auto-answer-vs-addressed helpful-ratio, and (in `'gated'`
  * access mode) onboarding-queue counts, plus (when at least one request is
  * pending) the oldest pending access request's age in days (issue #21's
  * deferred proactive follow-up, extended by issue #133, issue #193, issue
  * #199, issue #284, issue #324, issue #344, issue #357, issue #378, issue
- * #403, issue #460, issue #515, and issue #563) — the same signals
+ * #403, issue #460, issue #515, issue #563, and issue #592) — the same signals
  * `question_digest`/`list_access_requests`/`list_reports`/
  * `list_suggestions`/`list_knowledge`/`list_knowledge_candidates`/
  * `list_low_rated_knowledge`/`list_roster`/`moderation_history`/
