@@ -39,6 +39,7 @@ const {
   notifyReportFiled,
   notifyReportWithdrawn,
   notifyAppealFiled,
+  notifyAppealResolved,
   buildToolServer,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
@@ -151,6 +152,7 @@ const KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-knowledge-lexical-not-invoke
 const KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-knowledge-lexical-fallback`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
+const RESOLVE_APPEAL_HANDLER_USER = `${RUN}-resolve-appeal-handler`;
 const REPORT_CONTENT_HANDLER_USER = `${RUN}-report-content-handler`;
 const REMEMBER_SEARCH_HANDLER_SCOPE = `${RUN}-remember-search-handler`;
 const CATCH_UP_HANDLER_SCOPE = `${RUN}-catch-up-handler`;
@@ -730,6 +732,128 @@ test("SECURITY: notifyReportResolved degrades to the English default, rather tha
   });
 
   await notifyReportResolved(adapter, 'user-1', 'resolved', 'reason', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+// notifyAppealResolved holds all of resolve_appeal's new (issue #622)
+// notification behaviour — the missing half of #554's own stated intent to
+// "mirror the content_reports pattern" — tested directly here the same way
+// notifyReportResolved is above.
+test('notifyAppealResolved sends a DM naming the outcome, wording differing per status', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'resolved', 'my mute was a mistake', 'discord');
+  await notifyAppealResolved(adapter, 'user-1', 'dismissed', 'my mute was a mistake', 'discord');
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /resolved/i);
+  assert.match(calls[0][1], /my mute was a mistake/);
+  assert.notEqual(calls[0][1], calls[1][1], 'resolved and dismissed get distinct wording');
+});
+
+test('notifyAppealResolved keeps the dismissed-path wording neutral-to-supportive, not a bare rejection (issue #622)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'dismissed', 'my mute was a mistake', 'discord');
+
+  assert.match(calls[0], /thanks/i, 'dismissed copy still acknowledges the appellant');
+  assert.doesNotMatch(
+    calls[0],
+    /frivolous|invalid|wrong|denied/i,
+    'dismissed copy must not read as the bot being dismissive of the underlying grievance',
+  );
+});
+
+test('notifyAppealResolved truncates a long appeal reason in the echoed confirmation', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longReason = 'x'.repeat(500);
+
+  await notifyAppealResolved(adapter, 'user-1', 'resolved', longReason, 'discord');
+
+  assert.ok(!calls[0].includes(longReason), 'the full 500-char reason must not appear verbatim');
+  assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed reason is truncated with an ellipsis');
+});
+
+test('notifyAppealResolved omits the quoted line entirely for a reasonless appeal, rather than echoing an empty string (issue #622 acceptance criterion #1)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'resolved', null, 'discord');
+
+  assert.match(calls[0], /reviewed and resolved/);
+  assert.doesNotMatch(calls[0], /""/, 'no empty quoted line when reason is null');
+});
+
+test('notifyAppealResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyAppealResolved(adapter, 'user-1', 'resolved', 'reason', 'discord'));
+});
+
+test("notifyAppealResolved sends the te reo Māori variant for each status for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'resolved',
+    'my mute was a mistake',
+    'discord',
+    async () => 'mi',
+  );
+  await notifyAppealResolved(
+    adapter,
+    'user-1',
+    'dismissed',
+    'my mute was a mistake',
+    'discord',
+    async () => 'mi',
+  );
+
+  assert.match(calls[0], /kua whakatauhia/);
+  assert.match(calls[1], /kāore he mahi anō/);
+  calls.forEach((c) => assert.match(c, /my mute was a mistake/, 'the echoed reason stays untranslated'));
+});
+
+test("notifyAppealResolved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'resolved', 'reason', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /reviewed and resolved/);
+});
+
+test("SECURITY: notifyAppealResolved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAppealResolved(adapter, 'user-1', 'resolved', 'reason', 'discord', async () => {
     throw new Error('DB unreachable');
   });
 
@@ -12986,16 +13110,21 @@ function listAppealsHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-
   )._registeredTools['list_appeals'];
 }
 
-function resolveAppealHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-resolve-appeal') {
+function resolveAppealHandler(
+  role: 'member' | 'admin' = 'admin',
+  userId = 'admin-resolve-appeal',
+  opts: { platform?: 'discord' | 'whatsapp'; adapter?: PlatformAdapter; getAdapter?: AdapterLookup } = {},
+) {
   const server = buildToolServer(
     {
-      platform: 'discord' as const,
+      platform: opts.platform ?? 'discord',
       userId,
       userName: 'Admin',
       role,
       conversationId: 'convo-resolve-appeal',
     },
-    stubAdapter(async () => {}),
+    opts.adapter ?? stubAdapter(async () => {}),
+    opts.getAdapter,
   );
   return (
     server.instance as unknown as {
@@ -13126,6 +13255,169 @@ test(
     });
     assert.equal(result.isError, true);
     assert.match(result.content[0]?.text ?? '', /^Failed/);
+  },
+);
+
+// resolve_appeal's resolution DM (issue #622, cross-platform routing issue
+// #157): notifyAppealResolved itself is unit-tested above without the MCP
+// transport; these exercise the handler's wiring — the origin-platform
+// routing in particular — against a real resolved row, which requires the
+// DB. Same pattern as resolveReportHandler/resolveSuggestionHandler above.
+test(
+  'resolve_appeal sends the appellant a DM when resolved on their own platform (issue #622)',
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'same-platform resolution',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, text) => {
+      calls.push([userId, text]);
+    });
+
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-dm', {
+      platform: 'discord',
+      adapter,
+    }).handler({ id, status: 'resolved' });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+    assert.equal(calls.length, 1, 'the appellant is notified when the admin is on the same platform');
+    assert.equal(calls[0][0], RESOLVE_APPEAL_HANDLER_USER);
+    assert.match(calls[0][1], /resolved/i);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  "SECURITY: resolve_appeal routes a cross-platform DM through the appeal's origin adapter, never the resolving admin's current-turn adapter, and no resolve_appeal argument can redirect it (issue #157, #622 acceptance criterion #8)",
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: "cross-platform resolution must reach the origin platform, not the admin's current one",
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    // The appeal was filed on whatsapp; the admin resolving it is calling
+    // from discord, and resolve_appeal's own args (id, status) carry no
+    // identity/platform field at all — the DM must go out through the
+    // whatsapp adapter (looked up via getAdapter) resolved from the
+    // persisted row, never through the discord adapter the current turn
+    // happens to be using.
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-cross-platform', {
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    }).handler({ id, status: 'resolved' });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const appellantCalls = originCalls.filter(([userId]) => userId === RESOLVE_APPEAL_HANDLER_USER);
+    assert.equal(appellantCalls.length, 1, "the appellant is notified via the appeal's origin platform");
+    assert.match(appellantCalls[0][1], /resolved/i);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'resolve_appeal falls back to a silent skip when the origin platform has no adapter registered (issue #622 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'origin platform not configured in this deployment',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // whatsapp isn't registered in this deployment (getAdapter returns
+    // undefined) — must degrade to silence, never throw and never fall back
+    // to the resolving admin's own (wrong) adapter.
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-unregistered', {
+      platform: 'discord',
+      adapter,
+      getAdapter: () => undefined,
+    }).handler({ id, status: 'resolved' });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolution itself still succeeds');
+    assert.equal(calls.length, 0, 'no adapter registered for the origin platform means no notification');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  "resolve_appeal's own reported outcome is unaffected by a DM delivery failure (issue #622 acceptance criterion #6)",
+  { skip },
+  async () => {
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId: RESOLVE_APPEAL_HANDLER_USER,
+      userName: 'Member',
+      reason: 'DM will fail to send',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-dm-fails', {
+      platform: 'discord',
+      adapter,
+    }).handler({ id, status: 'resolved' });
+
+    assert.match(result.content[0]?.text ?? '', /marked resolved/, 'resolve_appeal still reports success');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'resolve_appeal sends no DM and reports failure for an unknown appeal id (issue #622)',
+  { skip },
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    const result = await resolveAppealHandler('admin', 'admin-resolve-appeal-unknown-dm', {
+      platform: 'discord',
+      adapter,
+    }).handler({ id: 999_999_999, status: 'resolved' });
+
+    assert.match(result.content[0]?.text ?? '', /Failed/);
+    assert.equal(calls.length, 0, 'no row resolved means no notification');
   },
 );
 

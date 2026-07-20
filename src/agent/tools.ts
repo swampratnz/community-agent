@@ -67,6 +67,7 @@ import {
   listRoster,
   listSuggestions,
   MODERATION_ACTION_KINDS,
+  type ModerationAppeal,
   purgeUserData,
   RATE_ANSWER_DAILY_LIMIT,
   recentAuditEntries,
@@ -1679,6 +1680,46 @@ export async function notifyAppealFiled(
   ];
   // 'low': appeal_moderation is a member-tier tool.
   await notifySuperAdmins(adapterFor, lines.join('\n'), appeal.callerUserId, 'low');
+}
+
+/**
+ * Best-effort confirmation DM to a member when their moderation appeal is
+ * resolved — closes the gap #554 left open: `resolve_appeal` deliberately
+ * never touches `member_warnings`/mute state, so without this the appellant
+ * has no signal at all that their appeal was even looked at (issue #622).
+ * Mirrors `notifyReportResolved`'s shape exactly: fire-and-forget,
+ * `.catch(logger.warn)`, never blocks or changes `resolve_appeal`'s own
+ * reported outcome, same neutral-to-supportive `dismissed` wording (a
+ * dismissed appeal must not read as the bot being dismissive of the
+ * underlying grievance). `reason` is nullable on `ModerationAppeal` (a
+ * member can appeal without giving one) — echoed via `truncateForEcho` when
+ * present, the quoted line omitted entirely otherwise. Exported separately
+ * so it's unit-testable without the MCP tool-call transport, same
+ * convention as `notifyReportResolved`. Honours the appellant's standing
+ * `'mi'` language preference (issue #331), same degrade-to-`'auto'`-on-
+ * failure shape.
+ */
+export async function notifyAppealResolved(
+  adapter: PlatformAdapter,
+  userId: string,
+  status: 'resolved' | 'dismissed',
+  reason: string | null,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+): Promise<void> {
+  const echoed = reason ? truncateForEcho(reason) : null;
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message =
+    lang === 'mi'
+      ? status === 'dismissed'
+        ? `Kua arotakehia tō pīra. I muri i te wātea, kāore he mahi anō i mahia — ngā mihi mō tō whakamōhio mai.${echoed ? ` "${echoed}"` : ''}`
+        : `Kua arotakehia, kua whakatauhia hoki tō pīra — ngā mihi mō tō whakamōhio mai.${echoed ? ` "${echoed}"` : ''}`
+      : status === 'dismissed'
+        ? `Your appeal has been reviewed. After triage, no further action was taken — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
+        : `Your appeal has been reviewed and resolved — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`;
+  await adapter
+    .sendDirectMessage(userId, message)
+    .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Appeal resolution DM failed'));
 }
 
 /**
@@ -3500,15 +3541,34 @@ export function buildToolServer(
     },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'resolve_appeal');
+      const state: { row: ModerationAppeal | null } = { row: null };
       const { success, result } = await audited({
         actionKind: 'resolve_appeal',
         params: { id: args.id, status: args.status },
         run: async () => {
           const row = await resolveModerationAppeal(args.id, args.status, caller.userId);
           if (!row) throw new Error(`No appeal with id ${args.id}.`);
+          state.row = row;
           return `marked ${args.status}`;
         },
       });
+      // Cross-platform resolution DM (issue #157's mechanism, issue #622's
+      // missing half of #554's own "mirror content_reports" pattern): routes
+      // through the appeal's ORIGIN platform's adapter, degrading to a
+      // silent skip if that platform isn't registered in this deployment.
+      // The target is always state.row's own userId/platform — never any
+      // resolve_appeal argument — so no caller-supplied value can redirect it.
+      if (success && state.row) {
+        const target = adapterFor(state.row.platform);
+        if (target)
+          await notifyAppealResolved(
+            target,
+            state.row.userId,
+            args.status,
+            state.row.reason,
+            state.row.platform,
+          );
+      }
       return text(success ? `Appeal #${args.id} marked ${args.status}.` : `Failed: ${result}`, !success);
     },
   );
