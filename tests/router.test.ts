@@ -705,16 +705,26 @@ test('drain(): a message arriving mid-drain starts a new chain that drain() does
   const turn1 = new Promise<AgentReply>((resolve) => {
     resolveTurn1 = resolve;
   });
+  // Same started-signal discipline as the drain tests above for message 1 —
+  // its chain MUST be registered before drain() is called or the test goes
+  // vacuous (drain of an empty map resolves instantly).
+  let turn1Started!: () => void;
+  const started = new Promise<void>((resolve) => {
+    turn1Started = resolve;
+  });
   const router = new Router(async () => {
     turnCalls += 1;
-    if (turnCalls === 1) return turn1;
+    if (turnCalls === 1) {
+      turn1Started();
+      return turn1;
+    }
     return new Promise<AgentReply>(() => {}); // message 2's turn hangs forever
   }, 1_000_000);
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
   void trigger(makeMessage({ messageId: 'm1' }));
-  await sleep(50); // let message 1 register its chain
+  await started; // message 1's chain is registered once its turn callback runs
 
   const drainPromise = router.drain(2_000);
 
@@ -722,7 +732,14 @@ test('drain(): a message arriving mid-drain starts a new chain that drain() does
   // message can start a new chain for the same conversation. drain() must
   // not be extended to cover it.
   void trigger(makeMessage({ messageId: 'm2', text: 'second message while draining' }));
-  await sleep(50); // let message 2 chain behind message 1 in the map
+  // A bounded sleep (not a signal) is deliberate here and safe, unlike the
+  // pre-drain wait above: message 2's turn callback is queued BEHIND message
+  // 1's unresolved chain, so no started-signal can fire until turn 1
+  // resolves — registration is unobservable from outside. If this wait ever
+  // proves too short, message 2 registers late and the test degrades to a
+  // trivially-true pass (drain still resolves on message 1's chain); it can
+  // never produce a false FAILURE, so there is no flake risk to eliminate.
+  await sleep(50);
 
   resolveTurn1(makeReply('answer to message 1'));
 
