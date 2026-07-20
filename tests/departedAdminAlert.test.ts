@@ -19,8 +19,14 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 
-const { formatDepartedAdminAlertMessage, makeDefaultDepartedAdminAlertRun, startDepartedAdminAlert } =
-  await import('../src/departedAdminAlert.js');
+const {
+  formatDepartedAdminAlertMessage,
+  makeDefaultDepartedAdminAlertRun,
+  startDepartedAdminAlert,
+  alertSuperAdmins,
+} = await import('../src/departedAdminAlert.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP } =
+  await import('../src/pendingAlertQueue.js');
 
 type AdminRosterEntry = {
   platform: 'discord' | 'whatsapp';
@@ -29,14 +35,17 @@ type AdminRosterEntry = {
   leftServer: boolean;
 };
 
-function makeAdapter(): { adapter: PlatformAdapter; dms: Array<{ userId: string; text: string }> } {
+function makeAdapter(connected = true): {
+  adapter: PlatformAdapter;
+  dms: Array<{ userId: string; text: string }>;
+} {
   const dms: Array<{ userId: string; text: string }> = [];
   const adapter: PlatformAdapter = {
     platform: 'discord',
     adminCapabilities: new Set(),
     async start() {},
     async stop() {},
-    isConnected: () => true,
+    isConnected: () => connected,
     onMessage() {},
     async sendMessage(_out: OutgoingMessage) {},
     async sendDirectMessage(userId: string, text: string) {
@@ -186,4 +195,57 @@ test('makeDefaultDepartedAdminAlertRun: the latch re-arms only once the count re
 test('startDepartedAdminAlert: DEPARTED_ADMIN_ALERT_ENABLED unset (default) creates no timer', () => {
   const timer = startDepartedAdminAlert([]);
   assert.equal(timer, null, 'disabled by default — no timer, no extra queries');
+});
+
+// --- Shared pending-alert queue extension (issue #593) ---
+
+test('alertSuperAdmins: with zero connected adapters, the message is queued exactly once instead of dropped (issue #593)', async () => {
+  resetPendingAlertsForTests();
+  const { adapter, dms } = makeAdapter(false);
+
+  await alertSuperAdmins([adapter], 'departed-admin alert while disconnected');
+
+  assert.equal(dms.length, 0, 'no send is attempted through the disconnected adapter');
+  assert.deepEqual(
+    getPendingAlertsForTests(),
+    ['departed-admin alert while disconnected'],
+    'the alert is queued exactly once, not dropped',
+  );
+  resetPendingAlertsForTests();
+});
+
+test('alertSuperAdmins: with at least one connected adapter, behaviour is byte-identical to before #593 — live send, nothing queued', async () => {
+  resetPendingAlertsForTests();
+  const { adapter, dms } = makeAdapter(true);
+
+  await alertSuperAdmins([adapter], 'departed-admin alert while connected');
+
+  assert.equal(dms.length, 1, 'the connected adapter still receives the alert as before');
+  assert.equal(dms[0].text, 'departed-admin alert while connected');
+  assert.deepEqual(
+    getPendingAlertsForTests(),
+    [],
+    'nothing is queued when at least one adapter is connected',
+  );
+  resetPendingAlertsForTests();
+});
+
+test('SECURITY: alertSuperAdmins queues the message byte-identical to what a live send would have received, at "system" priority, surviving a low-priority flood (issue #593)', async () => {
+  resetPendingAlertsForTests();
+  const { adapter } = makeAdapter(false);
+  const message = 'departed-admin alert — byte-identical check';
+
+  await alertSuperAdmins([adapter], message);
+  assert.deepEqual(getPendingAlertsForTests(), [message]);
+
+  // Simulate tools.ts's notifySuperAdmins (member-reachable, 'low' priority)
+  // flooding the shared queue past its cap — the departed-admin alert, queued
+  // at 'system' priority, must never be evicted (issue #545's fix).
+  for (let i = 0; i < PENDING_ALERT_QUEUE_CAP * 2; i++) queuePendingAlert(`low-flood-${i}`, 'low');
+
+  assert.ok(
+    getPendingAlertsForTests().includes(message),
+    'the system-priority departed-admin alert survives a low-priority flood',
+  );
+  resetPendingAlertsForTests();
 });

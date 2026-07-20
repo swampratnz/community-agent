@@ -10,6 +10,7 @@ import {
   stepJobFailureTracker,
   type JobFailureTracker,
 } from './backgroundJobHealth.js';
+import { queuePendingAlert } from './pendingAlertQueue.js';
 import type { PlatformAdapter } from './platforms/types.js';
 
 type UsageAlertStats = Awaited<ReturnType<typeof usageStats>>;
@@ -121,8 +122,16 @@ export function startUsageAlert(adapters: readonly PlatformAdapter[]): ReturnTyp
 }
 
 async function alertSuperAdmins(adapters: readonly PlatformAdapter[], message: string): Promise<void> {
-  for (const adapter of adapters) {
-    if (!adapter.isConnected()) continue; // can't send through a dead connection
+  const connected = adapters.filter((adapter) => adapter.isConnected());
+  if (connected.length === 0) {
+    logger.warn(
+      { message },
+      'Usage alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(message, 'system'); // super-admin-only alert — never evicted by a member-reachable alert (#545)
+    return;
+  }
+  for (const adapter of connected) {
     for (const id of superAdminIds(adapter.platform)) {
       adapter
         .sendDirectMessage(id, message)

@@ -309,6 +309,95 @@ test("Discord: one chunk failing to delete (e.g. already manually removed) does 
   }
 });
 
+test(
+  'Discord: firing the REAL client MessageBulkDelete gateway listener retracts a mapped reply within the batch, ' +
+    'even with archiveAllMessages off (config default in this file) — pins the actual listener-registration ' +
+    "wiring, not just the retraction primitive (acceptance criteria 2 + 3, issue #595's MessageDelete follow-up)",
+  async (t) => {
+    const router = makeReplyRouter();
+    const adapter = new DiscordAdapter();
+    const { sentMessages } = stubDiscordChannel(adapter);
+    router.register(adapter);
+    const handler = getHandler(adapter);
+    const deleteSpy = t.mock.method(adapter, 'deleteOwnMessage');
+
+    const client = (
+      adapter as unknown as {
+        client: {
+          emit: (event: string, ...args: unknown[]) => void;
+          login: (token: string) => Promise<void>;
+        };
+      }
+    ).client;
+    client.login = async () => {};
+    await adapter.start();
+
+    const conversationId = `${RUN}-chan-bulk`;
+    const messageId = `${RUN}-origin-bulk`;
+    await handler(discordMessage({ conversationId, messageId }));
+
+    assert.equal(sentMessages.size, 1, 'exactly one reply was sent');
+    const [replyId] = [...sentMessages.keys()];
+
+    // Dispatch the actual discord.js `MessageBulkDelete` gateway event — a
+    // moderator clearing several messages at once, one of which is the
+    // mapped origin message. `archiveAllMessages` is unset (false) in this
+    // file, so this also proves retraction fires independently of archiving.
+    const messages = new Map([[messageId, { channelId: conversationId, id: messageId, guildId: null }]]);
+    client.emit(Events.MessageBulkDelete, messages, { id: conversationId });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(deleteSpy.mock.calls.length, 1, 'exactly one deleteOwnMessage call for the mapped reply');
+    assert.deepEqual(deleteSpy.mock.calls[0].arguments, [conversationId, replyId]);
+    assert.equal(sentMessages.get(replyId)?.deleted, true, 'the bot reply was actually retracted');
+  },
+);
+
+test(
+  'Discord: a MessageBulkDelete batch mixing one mapped message with several unmapped/ambient messages ' +
+    'retracts only the mapped one (acceptance criterion 4, issue #595)',
+  async (t) => {
+    const router = makeReplyRouter();
+    const adapter = new DiscordAdapter();
+    const { sentMessages } = stubDiscordChannel(adapter);
+    router.register(adapter);
+    const handler = getHandler(adapter);
+    const deleteSpy = t.mock.method(adapter, 'deleteOwnMessage');
+
+    const client = (
+      adapter as unknown as {
+        client: {
+          emit: (event: string, ...args: unknown[]) => void;
+          login: (token: string) => Promise<void>;
+        };
+      }
+    ).client;
+    client.login = async () => {};
+    await adapter.start();
+
+    const conversationId = `${RUN}-chan-bulk-mixed`;
+    const messageId = `${RUN}-origin-bulk-mixed`;
+    await handler(discordMessage({ conversationId, messageId }));
+
+    assert.equal(sentMessages.size, 1, 'exactly one reply was sent');
+    const [replyId] = [...sentMessages.keys()];
+
+    const ambient1 = `${RUN}-ambient-1`;
+    const ambient2 = `${RUN}-ambient-2`;
+    const messages = new Map([
+      [ambient1, { channelId: conversationId, id: ambient1, guildId: null }],
+      [messageId, { channelId: conversationId, id: messageId, guildId: null }],
+      [ambient2, { channelId: conversationId, id: ambient2, guildId: null }],
+    ]);
+    client.emit(Events.MessageBulkDelete, messages, { id: conversationId });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(deleteSpy.mock.calls.length, 1, 'only the mapped message triggers a retraction');
+    assert.deepEqual(deleteSpy.mock.calls[0].arguments, [conversationId, replyId]);
+    assert.equal(sentMessages.get(replyId)?.deleted, true);
+  },
+);
+
 // ---------------------------------------------------------------------------
 // WhatsApp Baileys (SECURITY acceptance criterion 4)
 // ---------------------------------------------------------------------------

@@ -5389,6 +5389,75 @@ export async function countLowRatedKnowledge(
   return Number(rows[0].n);
 }
 
+export interface AnswerFeedbackOriginSummary {
+  autoAnswer: { helpful: number; unhelpful: number };
+  addressed: { helpful: number; unhelpful: number };
+}
+
+/**
+ * Guild-wide (by `conversationIds` scope) split of `answer_feedback` ratings
+ * by delivery origin — auto-answered (issue #477, unsummoned) vs addressed
+ * (@mention/DM/thread-reply) — the answer-**quality** counterpart to
+ * `usageStats`'s `autoAnswerUsage` **cost** split (issue #552), which reads
+ * the SAME `meta.autoAnswer` flag from the opposite side (a plain SUM/COUNT
+ * over `interactions` alone, vs this one joining through `answer_feedback`).
+ * Reuses the identical `answer_feedback JOIN interactions` join and
+ * `count(*) FILTER (WHERE ...)` aggregate shape `listKnowledgeFeedbackSummary`/
+ * `countLowRatedKnowledge` already use — no schema change, no migration.
+ *
+ * Cumulative (no freshness window), matching `countLowRatedKnowledge`'s own
+ * cumulative-backlog shape rather than a rolling-window count — a helpful
+ * ratio is more meaningful over the whole history than reset weekly against a
+ * handful of ratings.
+ *
+ * `conversationIds` scoping mirrors every other admin-tier aggregate here
+ * (`listAnswerFeedback`/`listKnowledgeFeedbackSummary`/`countLowRatedKnowledge`):
+ * `null` means unrestricted (super admin); otherwise only ratings whose
+ * `answer_feedback.conversation_id` is in the given list are counted, so an
+ * admin never counts a rating from a conversation they don't participate in.
+ *
+ * SECURITY: bucketing is driven SOLELY by `interactions.meta->>'autoAnswer'`
+ * — router-internal state set only from `replyConversationId !== undefined`
+ * (issue #552/#553), never from message content — so a rated reply whose
+ * text happens to resemble the flag can never move it between buckets. A
+ * rating whose `interaction_id` was cleared (`ON DELETE SET NULL`, e.g. after
+ * `forget_me`/`purge_user_data`) has no interaction row left to join against
+ * and is excluded from BOTH buckets, matching `listKnowledgeFeedbackSummary`'s
+ * own INNER JOIN exclusion of a purged interaction.
+ */
+export async function answerFeedbackOriginSummary(
+  conversationIds: readonly string[] | null,
+): Promise<AnswerFeedbackOriginSummary> {
+  const params: unknown[] = [];
+  const filters: string[] = [];
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    filters.push(`answer_feedback.conversation_id = ANY($${params.length})`);
+  }
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+  const { rows } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE (interactions.meta->>'autoAnswer') IS NOT NULL AND answer_feedback.helpful)
+         AS auto_helpful,
+       count(*) FILTER (WHERE (interactions.meta->>'autoAnswer') IS NOT NULL AND NOT answer_feedback.helpful)
+         AS auto_unhelpful,
+       count(*) FILTER (WHERE (interactions.meta->>'autoAnswer') IS NULL AND answer_feedback.helpful)
+         AS addressed_helpful,
+       count(*) FILTER (WHERE (interactions.meta->>'autoAnswer') IS NULL AND NOT answer_feedback.helpful)
+         AS addressed_unhelpful
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+       ${where}`,
+    params,
+  );
+  const r = rows[0];
+  return {
+    autoAnswer: { helpful: Number(r.auto_helpful), unhelpful: Number(r.auto_unhelpful) },
+    addressed: { helpful: Number(r.addressed_helpful), unhelpful: Number(r.addressed_unhelpful) },
+  };
+}
+
 // --- Dev-team completion-DM watches (super-admin dev_team_dispatch) ----------
 
 export interface DevTeamWatchInput {
