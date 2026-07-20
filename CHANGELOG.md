@@ -50,6 +50,24 @@ for anything after ~noon NZST/NZDT). Get today's date with
   tool, RBAC tier, or user-identifying data — still a single aggregate
   percentage.
 
+### Fixed
+- **WhatsApp Cloud API admin alerts no longer vanish when a recipient's 24h
+  messaging window is closed** (#602): `notifyAdmins`/`notifySuperAdmins`
+  (escalations, `report_content`/`appeal_moderation` notices) DM every
+  admin/super-admin, but on the Cloud API a send to a recipient who hasn't
+  messaged the bot in the last day rejected on Meta's own 24h free-form-reply
+  rule and was silently logged-and-dropped — even though the adapter itself
+  stayed connected. That send failure is now distinguished from a genuine
+  error and queued (capped per-recipient, priority-aware eviction) instead of
+  dropped, then delivered automatically the next time that admin messages
+  the bot and reopens their own window. The queue carries the same #545
+  priority protection the shared pending-alert queue has, keyed per-recipient:
+  a member-reachable `report_content`/`appeal_moderation` alert (`'low'`) can
+  never evict a bot-originated escalation or admin-action audit (`'system'`),
+  so a member filing reports can't silently displace a queued escalation for a
+  window-closed super-admin. No change for Discord or Baileys admins, and no
+  change to Meta's window rule itself — nothing is ever sent outside it.
+
 ### Security
 - **Closed a DNS-rebinding/TOCTOU gap in the knowledge link-check's SSRF
   guard** (#587): the weekly link-rot checker's SSRF guard resolved a
