@@ -5046,7 +5046,7 @@ export function buildToolServer(
       if (!(await getMemberRole(caller.platform, args.userId))) {
         return text(`Refusing: "${args.userId}" is not a known community member (add_member first).`, true);
       }
-      const label = (await resolveDisplayName(caller.platform, args.userId)) ?? args.userId;
+      const label = await resolveSanitizedLabel(caller.platform, args.userId);
       return requireConfirm(`assign community role ${args.roleId} to ${label}`, 'admin', async () => {
         const { success, result } = await audited({
           actionKind: 'assign_community_role',
@@ -5079,7 +5079,7 @@ export function buildToolServer(
       if (!(await getMemberRole(caller.platform, args.userId))) {
         return text(`Refusing: "${args.userId}" is not a known community member (add_member first).`, true);
       }
-      const label = (await resolveDisplayName(caller.platform, args.userId)) ?? args.userId;
+      const label = await resolveSanitizedLabel(caller.platform, args.userId);
       return requireConfirm(`remove community role ${args.roleId} from ${label}`, 'admin', async () => {
         const { success, result } = await audited({
           actionKind: 'remove_community_role',

@@ -38,32 +38,36 @@
 
 ## 3. Findings table
 
-| ID | Severity | Location | Description |
-|----|----------|----------|-------------|
-| H1 | HIGH | `scripts/check-security-test-count.mjs:129`; `.github/workflows/pipeline-pr-automerge.yml:175-179`; `.github/CODEOWNERS` | Security-test deletion + floor edit passes CI and is auto-merge-eligible with no forced human review |
-| M1 | MEDIUM | `src/router.ts:862-865, 937-940` | CONFIRM/CANCEL & escalation-yes unmatchable for actions raised in an auto-answer thread |
-| M2 | MEDIUM | `src/agent/secrets.ts:8-18`; `src/agent/outbound.ts:11` | Fine-grained GitHub PAT exempt from both outbound-redaction layers |
-| M3 | MEDIUM | `src/agent/tools.ts:5049, 5082` | `assign/remove_community_role` inject a raw display name into the trusted CONFIRM notice |
-| M4 | MEDIUM | `src/platforms/discord/adapter.ts:292-316` | `connected` flag can stick `false` after an unresumable gateway reconnect (no `ShardReady` handler) |
-| M5 | MEDIUM | `src/platforms/whatsapp/baileysAdapter.ts:175-266` | Baileys reconnect handlers have no socket-identity guard; stale-socket `close` can churn a healthy socket |
-| M6 | MEDIUM | `src/backgroundJobs.ts:559-581` | Dev-team watch poller (1-min tick) has no re-entrancy latch → overlap → duplicate completion DMs |
-| M7 | MEDIUM | `.github/workflows/ci.yml` (no `permissions:`) | Fork-PR-triggered CI runs untrusted code with the repo-default `GITHUB_TOKEN` scope |
-| M8 | MEDIUM | `src/context/linkCheck.ts:73-79` | SSRF v4 denylist omits `100.64.0.0/10` (CGNAT / Tailscale) — the tailnet this deploy uses |
-| L1 | LOW | `src/storage/repository.ts:1950-1955, 2050-2091` | Bare `ROLLBACK` (no `.catch`) can mask root error and return a poisoned client to the pool |
-| L2 | LOW | `src/router.ts:692-700` | Per-conversation queue has unbounded depth (staleness/memory under load) |
-| L3 | LOW | `src/platforms/textChunk.ts:11-16` | Hard-cut chunk can split a surrogate pair → `�` / Meta rejects body |
-| L4 | LOW | `src/platforms/discord/adapter.ts:745-765` | Partial multi-chunk send discards ids of chunks already delivered (no retraction/budget record) |
-| L5 | LOW | `src/index.ts:124-152` | Shutdown not idempotent; second signal double-ends the pool; only drain is time-bounded |
-| L6 | LOW | `src/agent/core.ts:704-707` | `resumeFailed` regex `/session|resume/i` false-positives → discards healthy session |
-| L7 | LOW | `src/router.ts:1024, 1047, 1091, 1586` | Notice debounce latch set *before* send; a failed send suppresses retry for the whole window |
-| L8 | LOW | `src/agent/tools.ts:2556-2559` | `report_content` accepts an unverified `targetUserId` → member can hide a report from an accused admin |
-| L9 | LOW | `deploy/setup-ubuntu.sh:27, 46-54` | `curl | bash` as root (NodeSource); unquoted `DB_USER`/`DB_NAME` in `psql` heredoc |
-| L10 | LOW | `deploy/community-agent.service`; `-redeploy.service` | systemd hardening incomplete; redeploy unit runs as root unhardened |
-| L11 | LOW | `.github/workflows/pipeline-pr-automerge.yml:178` | Governance-path check reads `gh pr view --json files` (≤100 cap) → fails open on >100-file PR |
-| L12 | LOW | `tsconfig.json`; `eslint.config.js` | `no-unsafe-*` family off, `noUncheckedIndexedAccess` off — no `any`-guard on untrusted-input paths |
-| L13 | LOW | `src/storage/migrate.ts` + `schema.sql` | No migrations table; re-applies schema with 18 in-place ALTERs → fresh-vs-upgraded parity by convention |
-| L14 | LOW | `src/agent/tools.ts` (5,970 ln); `repository.ts` (5,621 ln); `router.ts` (1,728 ln) | God modules: 3 files = 48% of `src/`; `buildToolServer` ≈3,800 lines |
-| L15 | LOW | `src/rateLimitNotice.ts:32` +3; `router.ts` (~8×); tests (53× `makeAdapter`) | Duplication: 4-way debounce clone, ~8× inlined i18n ladder, no shared test harness |
+**Resolution status:** H1 + M1–M8 are all **✅ resolved** in this PR (see the
+per-finding **Status** lines in §4 and §5). The 15 LOW items are **⬜ deferred**
+(hygiene/robustness, out of scope for this pass).
+
+| ID | Severity | Status | Location | Description |
+|----|----------|--------|----------|-------------|
+| H1 | HIGH | ✅ Resolved | `scripts/check-security-test-count.mjs:129`; `.github/workflows/pipeline-pr-automerge.yml:175-179`; `.github/CODEOWNERS` | Security-test deletion + floor edit passes CI and is auto-merge-eligible with no forced human review |
+| M1 | MEDIUM | ✅ Resolved | `src/router.ts:862-865, 937-940` | CONFIRM/CANCEL & escalation-yes unmatchable for actions raised in an auto-answer thread |
+| M2 | MEDIUM | ✅ Resolved | `src/agent/secrets.ts:8-18`; `src/agent/outbound.ts:11` | Fine-grained GitHub PAT exempt from both outbound-redaction layers |
+| M3 | MEDIUM | ✅ Resolved | `src/agent/tools.ts:5049, 5082` | `assign/remove_community_role` inject a raw display name into the trusted CONFIRM notice |
+| M4 | MEDIUM | ✅ Resolved | `src/platforms/discord/adapter.ts:292-316` | `connected` flag can stick `false` after an unresumable gateway reconnect (no `ShardReady` handler) |
+| M5 | MEDIUM | ✅ Resolved | `src/platforms/whatsapp/baileysAdapter.ts:175-266` | Baileys reconnect handlers have no socket-identity guard; stale-socket `close` can churn a healthy socket |
+| M6 | MEDIUM | ✅ Resolved | `src/backgroundJobs.ts:559-581` | Dev-team watch poller (1-min tick) has no re-entrancy latch → overlap → duplicate completion DMs |
+| M7 | MEDIUM | ✅ Resolved | `.github/workflows/ci.yml` (no `permissions:`) | Fork-PR-triggered CI runs untrusted code with the repo-default `GITHUB_TOKEN` scope |
+| M8 | MEDIUM | ✅ Resolved | `src/context/linkCheck.ts:73-79` | SSRF v4 denylist omits `100.64.0.0/10` (CGNAT / Tailscale) — the tailnet this deploy uses |
+| L1 | LOW | ⬜ Deferred | `src/storage/repository.ts:1950-1955, 2050-2091` | Bare `ROLLBACK` (no `.catch`) can mask root error and return a poisoned client to the pool |
+| L2 | LOW | ⬜ Deferred | `src/router.ts:692-700` | Per-conversation queue has unbounded depth (staleness/memory under load) |
+| L3 | LOW | ⬜ Deferred | `src/platforms/textChunk.ts:11-16` | Hard-cut chunk can split a surrogate pair → `�` / Meta rejects body |
+| L4 | LOW | ⬜ Deferred | `src/platforms/discord/adapter.ts:745-765` | Partial multi-chunk send discards ids of chunks already delivered (no retraction/budget record) |
+| L5 | LOW | ⬜ Deferred | `src/index.ts:124-152` | Shutdown not idempotent; second signal double-ends the pool; only drain is time-bounded |
+| L6 | LOW | ⬜ Deferred | `src/agent/core.ts:704-707` | `resumeFailed` regex `/session|resume/i` false-positives → discards healthy session |
+| L7 | LOW | ⬜ Deferred | `src/router.ts:1024, 1047, 1091, 1586` | Notice debounce latch set *before* send; a failed send suppresses retry for the whole window |
+| L8 | LOW | ⬜ Deferred | `src/agent/tools.ts:2556-2559` | `report_content` accepts an unverified `targetUserId` → member can hide a report from an accused admin |
+| L9 | LOW | ⬜ Deferred | `deploy/setup-ubuntu.sh:27, 46-54` | `curl | bash` as root (NodeSource); unquoted `DB_USER`/`DB_NAME` in `psql` heredoc |
+| L10 | LOW | ⬜ Deferred | `deploy/community-agent.service`; `-redeploy.service` | systemd hardening incomplete; redeploy unit runs as root unhardened |
+| L11 | LOW | ⬜ Deferred | `.github/workflows/pipeline-pr-automerge.yml:178` | Governance-path check reads `gh pr view --json files` (≤100 cap) → fails open on >100-file PR |
+| L12 | LOW | ⬜ Deferred | `tsconfig.json`; `eslint.config.js` | `no-unsafe-*` family off, `noUncheckedIndexedAccess` off — no `any`-guard on untrusted-input paths |
+| L13 | LOW | ⬜ Deferred | `src/storage/migrate.ts` + `schema.sql` | No migrations table; re-applies schema with 18 in-place ALTERs → fresh-vs-upgraded parity by convention |
+| L14 | LOW | ⬜ Deferred | `src/agent/tools.ts` (5,970 ln); `repository.ts` (5,621 ln); `router.ts` (1,728 ln) | God modules: 3 files = 48% of `src/`; `buildToolServer` ≈3,800 lines |
+| L15 | LOW | ⬜ Deferred | `src/rateLimitNotice.ts:32` +3; `router.ts` (~8×); tests (53× `makeAdapter`) | Duplication: 4-way debounce clone, ~8× inlined i18n ladder, no shared test harness |
 
 ---
 
@@ -73,6 +77,8 @@
 
 **Location:** `scripts/check-security-test-count.mjs:126-142`; `.github/workflows/pipeline-pr-automerge.yml:165-182`; `.github/CODEOWNERS:6-12`
 **Category:** CI/CD governance · OBSERVED (composed from three verified facts)
+
+**Status:** ✅ Resolved in this PR. (2) `/tests/security-floor.json` and `/scripts/` added to `CODEOWNERS`. (3) `check-security-test-count.mjs` now refuses a per-file count that is LOWERED vs the PR base (`SECURITY_FLOOR_BASELINE_REF`, wired from `ci.yml` on `pull_request` with `fetch-depth: 0`) unless an explicit `allow-security-floor-lower` label is set — so a deleted SECURITY test + lowered manifest can no longer pass CI green. Fix (1) — adding `security-floor.json` to the auto-merge governance regex — was intentionally NOT applied: the loop deliberately excludes per-PR data files, and the CI lowering guard closes the actual hole precisely (for both auto- and human-merged PRs) without forcing a human merge on every count-*raising* PR. The branch-protection "require human review" setting remains the enforceable backstop.
 
 The plain `test:security` gate CI runs enforces an **exact** match, not a floor:
 
@@ -99,6 +105,8 @@ This composes with two coverage gaps, both verified:
 
 **Location:** `src/router.ts:862-865` (confirm intercept) and `:937-940` (escalation intercept); registration at `src/agent/tools.ts:2235`
 **Category:** State-keying correctness · OBSERVED (logic traced end-to-end); user impact INFERRED
+
+**Status:** ✅ Resolved in this PR. Both intercepts (`router.ts` confirm + escalation) now prefer the message’s OWN conversation id and fall back to the parent only on a miss, so a CONFIRM/escalation-yes typed inside an auto-answer thread resolves the thread-keyed action instead of a guaranteed miss. Pinned by a new `SECURITY:` regression test in `autoAnswerThreadFollowupRouter.test.ts` (and the origin-post fallback case is preserved).
 
 The confirm intercept unconditionally rewrites a message from a known auto-answer thread back to the **parent** channel before lookup:
 
@@ -130,6 +138,8 @@ const pendingConversationId = hasHere
 **Location:** `src/agent/secrets.ts:8-18`; `src/agent/outbound.ts:11`
 **Category:** DLP / secret handling · OBSERVED (defense-in-depth backstop gap)
 
+**Status:** ✅ Resolved in this PR. `config.github.token` added to `runtimeSecrets()`, and `/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g` added to `SECRET_PATTERNS`. Two new `SECURITY:` tests in `secrets.test.ts` cover the exact-value and pattern layers.
+
 `runtimeSecrets()` enumerates seven exact-value secrets that must never leave the process — but **`config.github.token` is not among them.** The pattern layer matches classic tokens only:
 
 ```ts
@@ -148,6 +158,8 @@ const pendingConversationId = hasHere
 
 **Location:** `src/agent/tools.ts:5049` and `:5082`
 **Category:** Prompt-injection / UI-forgery · OBSERVED
+
+**Status:** ✅ Resolved in this PR. Both role tools now build the CONFIRM label via `resolveSanitizedLabel(...)`, so a newline in a nickname can no longer forge a line in the router’s trusted `⚠️ Pending` notice. Pinned by a new `SECURITY:` test in `tools.test.ts`.
 
 Every target-labelling tool resolves the label through `resolveSanitizedLabel()` (`tools.ts:168-175`, which strips `[<>\r\n]` — the issue #227 quarantine-escape class) — verified at `:4879, 4893, 4984, 5130, 5178`. The two cosmetic-role tools bypass it:
 
@@ -169,6 +181,8 @@ return requireConfirm(`assign community role ${args.roleId} to ${label}`, 'admin
 **Location:** `src/platforms/discord/adapter.ts:292-316`
 **Category:** Reliability / operational readiness · OBSERVED (handler set); storm INFERRED
 
+**Status:** ✅ Resolved in this PR. An `Events.ShardReady` handler now sets `connected = true`, so a re-identify (not just a resume) restores the flag.
+
 Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`) and `ShardResume` (`:313`) mutate `this.connected`. discord.js emits `ShardResume` only for a *resumed* session; when the gateway forces a re-identify (invalid session — common after a longer outage) the shard comes back via `ShardReady`, which has **no handler here**, and `ClientReady` never re-fires because it was `once`.
 
 **Failure scenario:** a network blip long enough to invalidate the session → `ShardDisconnect` sets `connected=false` → discord.js re-identifies and messages flow again → `ShardResume` never fires → `isConnected()` returns `false` indefinitely. `/healthz` reports degraded forever, `startDisconnectAlerts` fires a false "sustained disconnect" super-admin DM, and every alert path gated on `isConnected()` (`notifyAdmins`, `alertSuperAdmins`, job-failure alerts, `notifyAccessRequest`) skips a working adapter or queues into a `pendingAlertQueue` that never flushes over Discord.
@@ -182,6 +196,8 @@ Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`)
 **Location:** `src/platforms/whatsapp/baileysAdapter.ts:175-266` (esp. `:202, 223-252`)
 **Category:** Reliability / event-handler lifecycle · OBSERVED (missing guard); storm INFERRED (Baileys 6.7.23 re-emit behaviour)
 
+**Status:** ✅ Resolved in this PR. `connection.update` and `messages.upsert` closures now early-return when `this.sock !== sock`, and the pending reconnect timer is tracked and cleared on a successful open (and collapsed on re-schedule), so a stale socket’s `close` can’t churn a healthy one.
+
 `connect()` attaches `connection.update` / `messages.upsert` to each new socket, never removes the previous socket's listeners, and the handlers mutate shared state (`this.connected`, `scheduleReconnect()`) without checking `sock === this.sock`. The teardown `this.sock?.end(undefined)` may emit `close` on the *old* socket after replacement socket B is open.
 
 **Failure scenario:** a late `close` from socket A flips `this.connected=false` while B is healthy, and `scheduleReconnect()` queues a `connect()` that will `end()` healthy B — whose own close handler schedules yet another reconnect. Worst case is periodic churn of healthy sockets; best case is a transiently wrong `isConnected()` (queued alerts, degraded `/healthz`). Two overlapping scheduled reconnects (possible when `connect()` throws and re-schedules at `:181-186`) make it more likely.
@@ -194,6 +210,8 @@ Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`)
 **Location:** `src/backgroundJobs.ts:559-581` (scheduler) and `:467-532` (`runDevTeamWatchOnce`)
 **Category:** Idempotency / job scheduling · OBSERVED
 
+**Status:** ✅ Resolved in this PR. An `inFlight` re-entrancy latch now skips a tick while the previous pass is still running, so overlapping passes can’t double-send completion DMs.
+
 `startDevTeamWatchPoller` fires from a bare `setInterval` every `watchPollMinutes` (**default 1 minute**) with no in-flight guard. Each pass does, per watch, a sequential `getStatus` (+ `getResult`) + `sendDirectMessage` + `markNotified`, and the DM is sent **before** the stamp (`:518-530`). With several watches and a slow tailnet/Graph round-trip a pass can exceed 60 s, so two passes run concurrently, both read the same unnotified rows before either stamps, and the "rare duplicate DM" the comment allows becomes systematic under latency.
 **Trigger:** `DEV_TEAM_ENABLED` with multiple in-flight watches and normal tailnet latency.
 **Fix:** add a re-entrancy latch (`if (running) return;` / `try … finally { running=false }`) around the interval body — the same pattern the other pollers would benefit from.
@@ -204,6 +222,8 @@ Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`)
 
 **Location:** `.github/workflows/ci.yml` (triggers on `pull_request`, `:6`; no `permissions:` key anywhere — verified)
 **Category:** CI/CD least-privilege · OBSERVED (missing block); token scope INFERRED (depends on repo default)
+
+**Status:** ✅ Resolved in this PR. A top-level `permissions: { contents: read }` block added to `ci.yml` (all three jobs are read-only).
 
 `ci.yml` triggers on `pull_request` (includes forks) and executes attacker-controlled code: `npm ci` (runs PR `package.json` lifecycle scripts), `npm run migrate`, `npm test`, `npm run build`. With no `permissions:` block the job inherits the **repo/org default** `GITHUB_TOKEN` scope, which on older repos is read/write across all scopes.
 
@@ -216,6 +236,8 @@ Mitigations present and verified: every checkout uses `persist-credentials: fals
 
 **Location:** `src/context/linkCheck.ts:73-79`
 **Category:** SSRF · OBSERVED
+
+**Status:** ✅ Resolved in this PR. `100.64.0.0/10` (CGNAT/Tailscale) plus `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, multicast `224.0.0.0/4`, and reserved `240.0.0.0/4` added to `DISALLOWED_V4_CIDRS`. The existing `SECURITY:` denylist test was extended to cover them (and the just-outside-range publics).
 
 The IPv4 denylist covers loopback/RFC-1918/link-local but omits **`100.64.0.0/10`** (CGNAT — the Tailscale address space), plus `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, and multicast/reserved. This repo *explicitly* runs a bearer-token dev-team service on the tailnet (`config.ts` dev-team block; `.env.example:129-137`).
 

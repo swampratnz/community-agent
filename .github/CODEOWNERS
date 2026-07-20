@@ -3,10 +3,12 @@
 # (see the proposal in issue #43). GitHub still auto-requests these owners
 # and shows them on the relevant files/PRs.
 
-/.github/                    @swampratnz
-/src/auth/                   @swampratnz
-/src/agent/core.ts           @swampratnz
-/src/agent/outbound.ts       @swampratnz
-/src/agent/pendingActions.ts @swampratnz
-/src/storage/schema.sql      @swampratnz
-/docs/SECURITY.md            @swampratnz
+/.github/                     @swampratnz
+/scripts/                     @swampratnz
+/src/auth/                    @swampratnz
+/src/agent/core.ts            @swampratnz
+/src/agent/outbound.ts        @swampratnz
+/src/agent/pendingActions.ts  @swampratnz
+/src/storage/schema.sql       @swampratnz
+/tests/security-floor.json    @swampratnz
+/docs/SECURITY.md             @swampratnz

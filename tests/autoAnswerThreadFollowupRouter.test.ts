@@ -332,9 +332,12 @@ test('SECURITY: parent is preserved unchanged across refreshes — a CONFIRM typ
   let executed = false;
   const router = new Router(async (caller) => {
     // Only the origin-post turn registers the pending action, against the
-    // PARENT channel (caller.conversationId) — exactly as a real
-    // requireConfirm-gated tool would.
-    if (!executed) {
+    // PARENT channel — exactly as a real requireConfirm-gated tool would. Keyed
+    // on `caller.conversationId === AUTO_CHAN` so the later in-thread follow-up
+    // turn does NOT also register a (thread-keyed) action; this test is
+    // specifically about the parent action surviving refreshes, which is the
+    // origin-post fallback path preserved by the audit-M1 own-id-first fix.
+    if (caller.conversationId === AUTO_CHAN && !executed) {
       registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
         description: `${RUN} delete your data`,
         minTier: 'guest',
@@ -383,6 +386,71 @@ test('SECURITY: parent is preserved unchanged across refreshes — a CONFIRM typ
     hasPendingAction('discord', AUTO_CHAN, userId),
     false,
     'the pending action (still keyed on the original parent) is consumed once confirmed',
+  );
+});
+
+test('SECURITY: a CONFIRM typed inside an auto-answer thread resolves a pending action registered UNDER THE THREAD by an in-thread follow-up — never silently dropped by translating to the parent (audit M1)', async () => {
+  const userId = `${RUN}-member-m1-thread`;
+  let executed = false;
+  let registered = false;
+  const router = new Router(async (caller) => {
+    // Register the confirm-gated action ONLY on the in-thread follow-up turn,
+    // where caller.conversationId is the THREAD id — exactly as a
+    // requireConfirm-gated tool invoked from a #519 follow-up would key it. The
+    // origin-post turn just answers. Before the audit-M1 fix the confirm
+    // intercept unconditionally translated thread → parent before lookup, so
+    // this thread-keyed action was unconfirmable anywhere (a guaranteed miss).
+    if (caller.conversationId !== AUTO_CHAN && !registered) {
+      registered = true;
+      registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
+        description: `${RUN} delete your data`,
+        minTier: 'guest',
+        execute: async () => {
+          executed = true;
+          return 'Deleted.';
+        },
+      });
+    }
+    return makeReply('Are you sure?');
+  }, 20);
+  const { adapter, threadCalls, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // Origin post opens the thread.
+  await trigger(makeMessage({ userId, messageId: 'origin-m1' }));
+  const threadId = threadCalls[0].threadId;
+
+  // A follow-up typed INSIDE the thread registers the pending action under the thread id.
+  await trigger(
+    makeMessage({
+      userId,
+      conversationId: threadId,
+      messageId: 'followup-m1',
+      text: `${RUN} please delete my data`,
+    }),
+  );
+  assert.equal(
+    hasPendingAction('discord', threadId, userId),
+    true,
+    'the follow-up registered the pending action against the THREAD id',
+  );
+  assert.equal(
+    hasPendingAction('discord', AUTO_CHAN, userId),
+    false,
+    'nothing is registered against the parent channel in this scenario',
+  );
+
+  // CONFIRM typed inside the thread must resolve the thread-keyed action.
+  await trigger(makeMessage({ userId, conversationId: threadId, messageId: 'confirm-m1', text: 'CONFIRM' }));
+  assert.equal(
+    executed,
+    true,
+    'CONFIRM in-thread must execute the action registered under the thread id (audit M1 regression)',
+  );
+  assert.equal(
+    hasPendingAction('discord', threadId, userId),
+    false,
+    'the thread-keyed pending action is consumed once confirmed',
   );
 });
 

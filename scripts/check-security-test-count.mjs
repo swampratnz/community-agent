@@ -186,6 +186,57 @@ for (const f of testFileNames) {
   }
 }
 
+// ---- CI-only: refuse a SILENT LOWERING of the manifest vs the PR base ------
+// The exact-match check above is satisfied by a PR that DELETES a SECURITY:
+// test AND lowers that file's manifest entry in the same diff (actual ==
+// expected → green). That is the one way this gate can be neutered without a
+// loud failure — the HIGH finding in the 2026-07-20 audit (H1). When a base
+// ref is provided (CI sets SECURITY_FLOOR_BASELINE_REF on pull_request; unset
+// on local/push/merge_group runs, which are then unaffected), compare each
+// per-file count against the base manifest and FAIL on any decrease — or an
+// entry removed while its test file still exists — unless
+// ALLOW_SECURITY_FLOOR_LOWER is set. That override is wired from an explicit
+// 'allow-security-floor-lower' PR label, so a genuine removal still stops for a
+// human to consciously apply the label and explain it, mirroring the
+// `--write --allow-lower` guard on the regeneration path.
+const baselineRef = process.env.SECURITY_FLOOR_BASELINE_REF?.trim();
+if (baselineRef && process.env.ALLOW_SECURITY_FLOOR_LOWER !== 'true') {
+  const show = spawnSync('git', ['show', `${baselineRef}:tests/security-floor.json`], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  if (show.status === 0) {
+    const baseline = (() => {
+      try {
+        return JSON.parse(show.stdout);
+      } catch {
+        return null;
+      }
+    })();
+    if (baseline && typeof baseline === 'object') {
+      for (const [file, baseCount] of Object.entries(baseline)) {
+        const nowCount = manifest[file] ?? 0;
+        // A whole test FILE that is genuinely gone (deleted/renamed) is a
+        // legitimate removal — only flag a count that dropped while the test
+        // file still exists (or an entry silently zeroed for a live file).
+        const fileStillExists = testFileNames.includes(file);
+        if (nowCount < baseCount && (fileStillExists || nowCount > 0)) {
+          problems.push(
+            `${file}: security-floor entry LOWERED ${baseCount} → ${nowCount} vs the PR base — a SECURITY: ` +
+              `test was removed. Refused by default (audit H1). If the removal is intentional, add the ` +
+              `'allow-security-floor-lower' label (which sets ALLOW_SECURITY_FLOOR_LOWER) and explain it in the PR.`,
+          );
+        }
+      }
+    }
+  } else {
+    console.warn(
+      `check-security-test-count: could not read the baseline manifest at ${baselineRef} ` +
+        `(${(show.stderr ?? '').trim()}); skipping the lowering guard this run.`,
+    );
+  }
+}
+
 if (problems.length > 0) {
   console.error('check-security-test-count: manifest mismatch:');
   for (const p of problems) console.error(`  ${p}`);

@@ -112,6 +112,10 @@ export class BaileysAdapter implements PlatformAdapter {
   private stopped = false;
   private connected = false;
   private reconnectAttempts = 0;
+  // Handle for the pending reconnect timer, so a successful open (or a fresh
+  // schedule) can cancel a still-queued one and avoid two overlapping
+  // reconnects both calling connect() (audit M5).
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly membershipCache = new Map<string, { expires: number; ids: string[] }>();
   /**
    * Opportunistic LID-local-part -> phone-number mapping, learned for free in
@@ -174,10 +178,14 @@ export class BaileysAdapter implements PlatformAdapter {
 
   private scheduleReconnect(): void {
     if (this.stopped) return;
+    // Collapse a duplicate schedule onto one pending timer — two overlapping
+    // reconnects would each build a socket and end() the other's (audit M5).
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectAttempts += 1;
     const delay = Math.min(3_000 * 2 ** (this.reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS);
     logger.warn({ attempt: this.reconnectAttempts, delayMs: delay }, 'Scheduling WhatsApp reconnect');
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect().catch((err) => {
         // connect() can itself fail (e.g. network still down) — keep retrying
         // with backoff instead of dying permanently.
@@ -221,6 +229,10 @@ export class BaileysAdapter implements PlatformAdapter {
     });
 
     sock.ev.on('connection.update', (update) => {
+      // Ignore events from a socket we've already replaced (audit M5): a late
+      // `close` from a torn-down socket must not flip `connected`/schedule a
+      // reconnect that would end() the healthy current socket.
+      if (this.sock !== sock) return;
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
         logger.info('Scan this QR with WhatsApp > Linked Devices to link the bot number:');
@@ -229,6 +241,12 @@ export class BaileysAdapter implements PlatformAdapter {
       if (connection === 'open') {
         this.connected = true;
         this.reconnectAttempts = 0;
+        // A queued reconnect from an earlier `close` would end() this healthy
+        // socket — cancel it now that we're open (audit M5).
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.botNumber = jidLocalPart(sock.user?.id);
         this.botLid = jidLocalPart((sock.user as { lid?: string } | undefined)?.lid);
         logger.info({ number: this.botNumber }, 'WhatsApp connected');
@@ -252,6 +270,7 @@ export class BaileysAdapter implements PlatformAdapter {
     });
 
     sock.ev.on('messages.upsert', ({ messages, type }) => {
+      if (this.sock !== sock) return; // stale socket — see connection.update (audit M5)
       if (type !== 'notify') return;
       for (const msg of messages) {
         this.onWhatsappMessage(msg).catch((err) => logger.error({ err }, 'WA message handling failed'));
