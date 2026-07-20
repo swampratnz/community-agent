@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentReply } from '../src/agent/core.js';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
+import type { IncomingMessage, OutgoingMessage, Platform, PlatformAdapter } from '../src/platforms/types.js';
 
 // Regression cover for issue #519: the summon gate that decides whether an
 // unaddressed post gets a reply only ever matched the CHANNEL a message was
@@ -452,6 +452,70 @@ test('SECURITY: a CONFIRM typed inside an auto-answer thread resolves a pending 
     false,
     'the thread-keyed pending action is consumed once confirmed',
   );
+});
+
+test("SECURITY: an escalation 'yes' typed inside an auto-answer thread resolves an offer registered UNDER THE THREAD — the escalation intercept prefers the thread id, not translating to the parent and losing it (audit M1, escalation path)", async () => {
+  const wasFlag = config.behaviour.escalationToAdminEnabled;
+  (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = true;
+  const notifyCalls: { message: string; excludeUserId: string }[] = [];
+  const router = new Router(
+    async () => makeReply('answer'),
+    20,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (
+      _adapterFor: (p: Platform) => PlatformAdapter | undefined,
+      message: string,
+      excludeUserId: string,
+    ) => {
+      notifyCalls.push({ message, excludeUserId });
+    },
+    async (_platform: Platform, _conversationId: string, _userId: string, _query: string) => ({ id: 1 }),
+  );
+  const { adapter, threadCalls, trigger } = makeAdapter();
+  router.register(adapter);
+  const userId = `${RUN}-member-m1-escal`;
+  try {
+    // Origin auto-answer opens the thread (populates autoAnswerThreadParents).
+    await trigger(makeMessage({ userId, messageId: 'origin-m1-escal' }));
+    const threadId = threadCalls[0].threadId;
+
+    // A #479 escalation offer made on an in-thread follow-up is keyed under the
+    // THREAD id. Inject it directly — the offer-REGISTRATION path is unchanged
+    // by M1 and covered elsewhere; this pins the intercept's key RESOLUTION.
+    const internals = router as unknown as {
+      pendingEscalations: Map<string, { query: string; at: number }>;
+    };
+    const threadKey = `discord:${threadId}:${userId}`;
+    internals.pendingEscalations.set(threadKey, { query: 'how do I do X', at: Date.now() });
+
+    // "yes" typed INSIDE the thread must resolve the thread-keyed offer. Before
+    // the M1 fix the intercept translated thread → parent and looked up the
+    // parent key — a guaranteed miss, so the offer was silently un-confirmable.
+    await trigger(makeMessage({ userId, conversationId: threadId, messageId: 'yes-m1-escal', text: 'yes' }));
+
+    assert.equal(
+      notifyCalls.length,
+      1,
+      "the in-thread 'yes' resolved the thread-keyed escalation offer and notified admins",
+    );
+    assert.equal(
+      internals.pendingEscalations.has(threadKey),
+      false,
+      'the thread-keyed escalation entry is consumed once confirmed (single-shot)',
+    );
+  } finally {
+    (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = wasFlag;
+  }
 });
 
 test('SECURITY: a refreshed follow-up still consumes the shared per-channel cap keyed on the PARENT — once exhausted, further follow-ups are dropped even with a live, refreshed thread entry (issue #542, AC5)', async () => {
