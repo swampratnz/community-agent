@@ -75,7 +75,7 @@ jobs:
       # fetch that can flake). actions/cache restores at THIS step's position
       # (after npm ci), so the restored files survive; save happens post-job.
       # Bump the key suffix if EMBEDDING_MODEL ever changes.
-      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: node_modules/@huggingface/transformers/.cache
           key: hf-embedding-model-all-MiniLM-L6-v2-v1
@@ -138,7 +138,7 @@ jobs:
       # fetch that can flake). actions/cache restores at THIS step's position
       # (after npm ci), so the restored files survive; save happens post-job.
       # Bump the key suffix if EMBEDDING_MODEL ever changes.
-      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: node_modules/@huggingface/transformers/.cache
           key: hf-embedding-model-all-MiniLM-L6-v2-v1
