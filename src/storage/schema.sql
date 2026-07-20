@@ -740,6 +740,13 @@ CREATE TABLE IF NOT EXISTS usage_cost_digest_state (
   total_cost_usd NUMERIC     NOT NULL,
   sent_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Last week's prompt-cache hit rate (issue #608), persisted alongside
+-- total_cost_usd above so the same weekly DM can also render a cache-hit-rate
+-- trend line. Nullable: a quiet week (zero cache activity, or no row yet)
+-- must not force a 0/NaN comparison next week — the write is skipped
+-- entirely in that case, same "omit rather than corrupt" convention as
+-- formatCacheUsageLine's own zero-activity check.
+ALTER TABLE usage_cost_digest_state ADD COLUMN IF NOT EXISTS last_cache_hit_rate NUMERIC;
 
 -- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard for the proactive engagement-percentage alert

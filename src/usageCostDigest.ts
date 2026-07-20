@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { superAdminIds } from './auth/roles.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import {
+  getLastUsageCostDigestCacheHitRate,
   getLastUsageCostDigestTotal,
   recordUsageCostDigestSent,
   usageStats,
@@ -26,22 +27,55 @@ const FRESHNESS_DAYS = 7;
 export function formatUsageCostDigestMessage(
   currentTotalUsd: number,
   previousTotalUsd: number | null,
+  cacheUsage: { readTokens: number; creationTokens: number },
+  previousCacheHitRate: number | null,
 ): string {
   const current = `~$${currentTotalUsd.toFixed(2)}`;
-  if (previousTotalUsd === null) {
-    return (
-      `💰 Weekly cost trend: ${current} this week (conversational + background). ` +
-      'No prior week recorded yet to compare against.'
-    );
+  const costLine =
+    previousTotalUsd === null
+      ? `💰 Weekly cost trend: ${current} this week (conversational + background). ` +
+        'No prior week recorded yet to compare against.'
+      : (() => {
+          const diff = currentTotalUsd - previousTotalUsd;
+          const trend =
+            diff > 0
+              ? `▲ $${diff.toFixed(2)} vs last week.`
+              : diff < 0
+                ? `▼ $${Math.abs(diff).toFixed(2)} vs last week.`
+                : 'No change vs last week.';
+          return `💰 Weekly cost trend: ${current} this week (conversational + background). ${trend}`;
+        })();
+
+  const totalCacheTokens = cacheUsage.readTokens + cacheUsage.creationTokens;
+  if (totalCacheTokens === 0) return costLine; // no cache activity this week — omit rather than persist a corrupt 0%
+
+  const currentHitRate = Math.round((cacheUsage.readTokens / totalCacheTokens) * 100);
+  return `${costLine}\n${formatCacheHitRateTrendLine(currentHitRate, previousCacheHitRate)}`;
+}
+
+/**
+ * Pure cache-hit-rate trend line (issue #608) — same `▲/▼/No change` shape
+ * as the cost trend above and #597's `formatEngagementAlertMessage`, using
+ * the identical `hitRate = round(read / (read + creation) * 100)` calc
+ * `formatCacheUsageLine` (`src/agent/tools.ts`) already uses for the
+ * pull-only `usage_stats` tool. `previousHitRate === null` (first-ever run,
+ * or last week was quiet and skipped the persist) renders a defined
+ * no-comparison clause — never `NaN`/`undefined`. Only ever a percentage and
+ * a signed percentage-point delta — never a user id, conversation id, or
+ * platform handle.
+ */
+export function formatCacheHitRateTrendLine(currentHitRate: number, previousHitRate: number | null): string {
+  if (previousHitRate === null) {
+    return `Prompt cache: ${currentHitRate}% hit rate this week. No prior week recorded yet to compare against.`;
   }
-  const diff = currentTotalUsd - previousTotalUsd;
+  const diff = currentHitRate - previousHitRate;
   const trend =
     diff > 0
-      ? `▲ $${diff.toFixed(2)} vs last week.`
+      ? `▲ ${diff}pp vs last week.`
       : diff < 0
-        ? `▼ $${Math.abs(diff).toFixed(2)} vs last week.`
+        ? `▼ ${Math.abs(diff)}pp vs last week.`
         : 'No change vs last week.';
-  return `💰 Weekly cost trend: ${current} this week (conversational + background). ${trend}`;
+  return `Prompt cache: ${currentHitRate}% hit rate this week. ${trend}`;
 }
 
 /**
@@ -56,12 +90,18 @@ export function makeDefaultUsageCostDigestRun(
   deps: {
     wasSentRecently?: (days: number) => Promise<boolean>;
     getLastTotal?: () => Promise<number | null>;
-    recordSent?: (totalCostUsd: number) => Promise<void>;
-    getStats?: (days: number) => Promise<{ costUsd: number; backgroundCostUsd: number }>;
+    getLastCacheHitRate?: () => Promise<number | null>;
+    recordSent?: (totalCostUsd: number, cacheHitRate: number | null) => Promise<void>;
+    getStats?: (days: number) => Promise<{
+      costUsd: number;
+      backgroundCostUsd: number;
+      cacheUsage: { readTokens: number; creationTokens: number };
+    }>;
   } = {},
 ): () => Promise<void> {
   const wasSentRecently = deps.wasSentRecently ?? wasUsageCostDigestSentRecently;
   const getLastTotal = deps.getLastTotal ?? getLastUsageCostDigestTotal;
+  const getLastCacheHitRate = deps.getLastCacheHitRate ?? getLastUsageCostDigestCacheHitRate;
   const recordSent = deps.recordSent ?? recordUsageCostDigestSent;
   const getStats = deps.getStats ?? usageStats;
 
@@ -71,10 +111,19 @@ export function makeDefaultUsageCostDigestRun(
     const stats = await getStats(FRESHNESS_DAYS);
     const currentTotal = stats.costUsd + stats.backgroundCostUsd;
     const previousTotal = await getLastTotal();
+    const previousCacheHitRate = await getLastCacheHitRate();
 
     logger.info({ currentTotal, previousTotal }, 'Weekly cost-trend digest');
-    void alertSuperAdmins(adapters, formatUsageCostDigestMessage(currentTotal, previousTotal));
-    await recordSent(currentTotal);
+    void alertSuperAdmins(
+      adapters,
+      formatUsageCostDigestMessage(currentTotal, previousTotal, stats.cacheUsage, previousCacheHitRate),
+    );
+
+    // Zero cache activity this window persists `null` (see recordUsageCostDigestSent) rather than a corrupt 0%.
+    const totalCacheTokens = stats.cacheUsage.readTokens + stats.cacheUsage.creationTokens;
+    const currentHitRate =
+      totalCacheTokens > 0 ? Math.round((stats.cacheUsage.readTokens / totalCacheTokens) * 100) : null;
+    await recordSent(currentTotal, currentHitRate);
   };
 }
 

@@ -24,15 +24,22 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 
-const { formatUsageCostDigestMessage, makeDefaultUsageCostDigestRun, startUsageCostDigest } =
-  await import('../src/usageCostDigest.js');
+const {
+  formatUsageCostDigestMessage,
+  formatCacheHitRateTrendLine,
+  makeDefaultUsageCostDigestRun,
+  startUsageCostDigest,
+} = await import('../src/usageCostDigest.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const {
   wasUsageCostDigestSentRecently,
   getLastUsageCostDigestTotal,
+  getLastUsageCostDigestCacheHitRate,
   recordUsageCostDigestSent,
   upsertMember,
 } = await import('../src/storage/repository.js');
+
+const NO_CACHE_ACTIVITY = { readTokens: 0, creationTokens: 0 };
 
 after(async () => {
   await closeDb();
@@ -72,12 +79,12 @@ function flush(): Promise<void> {
 
 test('formatUsageCostDigestMessage: no prior total (first-ever run) renders a defined no-comparison form, never NaN/undefined', () => {
   assert.equal(
-    formatUsageCostDigestMessage(12.5, null),
+    formatUsageCostDigestMessage(12.5, null, NO_CACHE_ACTIVITY, null),
     '💰 Weekly cost trend: ~$12.50 this week (conversational + background). ' +
       'No prior week recorded yet to compare against.',
   );
   assert.equal(
-    formatUsageCostDigestMessage(0, null),
+    formatUsageCostDigestMessage(0, null, NO_CACHE_ACTIVITY, null),
     '💰 Weekly cost trend: ~$0.00 this week (conversational + background). ' +
       'No prior week recorded yet to compare against.',
   );
@@ -85,39 +92,99 @@ test('formatUsageCostDigestMessage: no prior total (first-ever run) renders a de
 
 test('formatUsageCostDigestMessage: a higher total than last week renders the exact ▲ delta', () => {
   assert.equal(
-    formatUsageCostDigestMessage(15.5, 10),
+    formatUsageCostDigestMessage(15.5, 10, NO_CACHE_ACTIVITY, null),
     '💰 Weekly cost trend: ~$15.50 this week (conversational + background). ▲ $5.50 vs last week.',
   );
 });
 
 test('formatUsageCostDigestMessage: a lower total than last week renders the exact ▼ delta (absolute value)', () => {
   assert.equal(
-    formatUsageCostDigestMessage(8.25, 10.75),
+    formatUsageCostDigestMessage(8.25, 10.75, NO_CACHE_ACTIVITY, null),
     '💰 Weekly cost trend: ~$8.25 this week (conversational + background). ▼ $2.50 vs last week.',
   );
 });
 
 test('formatUsageCostDigestMessage: an unchanged total renders "No change", not ▲$0.00/▼$0.00', () => {
   assert.equal(
-    formatUsageCostDigestMessage(10, 10),
+    formatUsageCostDigestMessage(10, 10, NO_CACHE_ACTIVITY, null),
     '💰 Weekly cost trend: ~$10.00 this week (conversational + background). No change vs last week.',
   );
 });
 
-test('SECURITY: formatUsageCostDigestMessage is a fixed template carrying only dollar figures — never a user id, conversation id, display name, or message excerpt', () => {
-  const cases: Array<[number, number | null]> = [
-    [0, null],
-    [12.345, null],
-    [15.5, 10],
-    [8.25, 10.75],
-    [10, 10],
-  ];
-  for (const [current, previous] of cases) {
-    const message = formatUsageCostDigestMessage(current, previous);
+// --- Cache-hit-rate trend line (issue #608) ---------------------------------
+
+test('formatCacheHitRateTrendLine: no prior hit rate (first-ever run) renders a defined no-comparison form, never NaN/undefined', () => {
+  const line = formatCacheHitRateTrendLine(75, null);
+  assert.equal(line, 'Prompt cache: 75% hit rate this week. No prior week recorded yet to compare against.');
+  assert.doesNotMatch(line, /NaN|undefined/);
+});
+
+test('formatCacheHitRateTrendLine: a higher hit rate than last week renders the exact ▲ Npp delta', () => {
+  assert.equal(
+    formatCacheHitRateTrendLine(80, 65),
+    'Prompt cache: 80% hit rate this week. ▲ 15pp vs last week.',
+  );
+});
+
+test('formatCacheHitRateTrendLine: a lower hit rate than last week renders the exact ▼ Npp delta (absolute value)', () => {
+  assert.equal(
+    formatCacheHitRateTrendLine(50, 70),
+    'Prompt cache: 50% hit rate this week. ▼ 20pp vs last week.',
+  );
+});
+
+test('formatCacheHitRateTrendLine: an unchanged hit rate renders "No change", not ▲0pp/▼0pp', () => {
+  assert.equal(
+    formatCacheHitRateTrendLine(60, 60),
+    'Prompt cache: 60% hit rate this week. No change vs last week.',
+  );
+});
+
+test('formatUsageCostDigestMessage: appends the cache-trend line when the window has cache activity', () => {
+  const message = formatUsageCostDigestMessage(10, 10, { readTokens: 80, creationTokens: 20 }, 50);
+  assert.equal(
+    message,
+    '💰 Weekly cost trend: ~$10.00 this week (conversational + background). No change vs last week.\n' +
+      'Prompt cache: 80% hit rate this week. ▲ 30pp vs last week.',
+  );
+});
+
+test('formatUsageCostDigestMessage: zero cache activity in the window omits the cache-trend line entirely', () => {
+  const message = formatUsageCostDigestMessage(10, 10, NO_CACHE_ACTIVITY, 50);
+  assert.equal(
+    message,
+    '💰 Weekly cost trend: ~$10.00 this week (conversational + background). No change vs last week.',
+  );
+  assert.doesNotMatch(message, /Prompt cache/);
+});
+
+test('SECURITY: formatUsageCostDigestMessage (and its appended cache-trend line) is a fixed template carrying only dollar/percentage figures — never a user id, conversation id, display name, or message excerpt', () => {
+  const cases: Array<[number, number | null, { readTokens: number; creationTokens: number }, number | null]> =
+    [
+      [0, null, NO_CACHE_ACTIVITY, null],
+      [12.345, null, NO_CACHE_ACTIVITY, null],
+      [15.5, 10, NO_CACHE_ACTIVITY, null],
+      [8.25, 10.75, NO_CACHE_ACTIVITY, null],
+      [10, 10, NO_CACHE_ACTIVITY, null],
+      [10, 10, { readTokens: 80, creationTokens: 20 }, null],
+      [10, 10, { readTokens: 80, creationTokens: 20 }, 50],
+      [10, 10, { readTokens: 20, creationTokens: 80 }, 90],
+      [10, 10, { readTokens: 50, creationTokens: 50 }, 50],
+    ];
+  const costLinePattern =
+    /^💰 Weekly cost trend: ~\$\d+\.\d{2} this week \(conversational \+ background\)\. (No prior week recorded yet to compare against\.|▲ \$\d+\.\d{2} vs last week\.|▼ \$\d+\.\d{2} vs last week\.|No change vs last week\.)/;
+  const cacheLinePattern =
+    /Prompt cache: \d+% hit rate this week\. (No prior week recorded yet to compare against\.|▲ \d+pp vs last week\.|▼ \d+pp vs last week\.|No change vs last week\.)$/;
+  for (const [current, previous, cacheUsage, previousCacheHitRate] of cases) {
+    const message = formatUsageCostDigestMessage(current, previous, cacheUsage, previousCacheHitRate);
+    const totalCacheTokens = cacheUsage.readTokens + cacheUsage.creationTokens;
     assert.match(
       message,
-      /^💰 Weekly cost trend: ~\$\d+\.\d{2} this week \(conversational \+ background\)\. (No prior week recorded yet to compare against\.|▲ \$\d+\.\d{2} vs last week\.|▼ \$\d+\.\d{2} vs last week\.|No change vs last week\.)$/,
+      totalCacheTokens === 0 ? new RegExp(costLinePattern.source + '$') : costLinePattern,
     );
+    if (totalCacheTokens > 0) assert.match(message, cacheLinePattern);
+    // No identifier-shaped substring can ever appear — only figures and the fixed template text.
+    assert.doesNotMatch(message, /\buser[-_]?id\b|\bconversation[-_]?id\b|discord|whatsapp|@\w+/i);
   }
 });
 
@@ -127,15 +194,20 @@ test('makeDefaultUsageCostDigestRun: inside the freshness window, runOnce is a n
   const { adapter, dms } = makeAdapter();
   let statsCalled = false;
   let getLastCalled = false;
+  let getLastCacheHitRateCalled = false;
   let recordCalled = false;
   const runOnce = makeDefaultUsageCostDigestRun([adapter], {
     wasSentRecently: async () => true,
     getStats: async () => {
       statsCalled = true;
-      return { costUsd: 1, backgroundCostUsd: 1 };
+      return { costUsd: 1, backgroundCostUsd: 1, cacheUsage: NO_CACHE_ACTIVITY };
     },
     getLastTotal: async () => {
       getLastCalled = true;
+      return null;
+    },
+    getLastCacheHitRate: async () => {
+      getLastCacheHitRateCalled = true;
       return null;
     },
     recordSent: async () => {
@@ -153,6 +225,11 @@ test('makeDefaultUsageCostDigestRun: inside the freshness window, runOnce is a n
     false,
     'the persisted previous total is never read inside the freshness window',
   );
+  assert.equal(
+    getLastCacheHitRateCalled,
+    false,
+    'the persisted previous cache hit rate is never read inside the freshness window',
+  );
   assert.equal(recordCalled, false, 'nothing is recorded inside the freshness window');
 });
 
@@ -161,8 +238,9 @@ test('makeDefaultUsageCostDigestRun: past the freshness window with no prior tot
   let recordedTotal: number | null = null;
   const runOnce = makeDefaultUsageCostDigestRun([adapter], {
     wasSentRecently: async () => false,
-    getStats: async () => ({ costUsd: 7, backgroundCostUsd: 3 }),
+    getStats: async () => ({ costUsd: 7, backgroundCostUsd: 3, cacheUsage: NO_CACHE_ACTIVITY }),
     getLastTotal: async () => null,
+    getLastCacheHitRate: async () => null,
     recordSent: async (total) => {
       recordedTotal = total;
     },
@@ -188,8 +266,9 @@ test('makeDefaultUsageCostDigestRun: past the freshness window with a prior tota
   const { adapter, dms } = makeAdapter();
   const runOnce = makeDefaultUsageCostDigestRun([adapter], {
     wasSentRecently: async () => false,
-    getStats: async () => ({ costUsd: 4, backgroundCostUsd: 1 }),
+    getStats: async () => ({ costUsd: 4, backgroundCostUsd: 1, cacheUsage: NO_CACHE_ACTIVITY }),
     getLastTotal: async () => 3,
+    getLastCacheHitRate: async () => null,
     recordSent: async () => {},
   });
 
@@ -203,12 +282,71 @@ test('makeDefaultUsageCostDigestRun: past the freshness window with a prior tota
   );
 });
 
+test('makeDefaultUsageCostDigestRun: cache activity in the window appends the cache-trend line and persists the computed hit rate', async () => {
+  const { adapter, dms } = makeAdapter();
+  let recordedCacheHitRate: number | null | undefined;
+  const runOnce = makeDefaultUsageCostDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getStats: async () => ({
+      costUsd: 4,
+      backgroundCostUsd: 1,
+      cacheUsage: { readTokens: 90, creationTokens: 10 },
+    }),
+    getLastTotal: async () => 3,
+    getLastCacheHitRate: async () => 70,
+    recordSent: async (_total, cacheHitRate) => {
+      recordedCacheHitRate = cacheHitRate;
+    },
+  });
+
+  await runOnce();
+  await flush();
+
+  assert.equal(dms.length, 1);
+  assert.equal(
+    dms[0].text,
+    '💰 Weekly cost trend: ~$5.00 this week (conversational + background). ▲ $2.00 vs last week.\n' +
+      'Prompt cache: 90% hit rate this week. ▲ 20pp vs last week.',
+  );
+  assert.equal(recordedCacheHitRate, 90, "this week's computed hit rate is persisted for next week's delta");
+});
+
+test('makeDefaultUsageCostDigestRun: zero cache activity in the window omits the cache-trend line and persists null (does not overwrite)', async () => {
+  const { adapter, dms } = makeAdapter();
+  let recordedCacheHitRate: number | null | undefined;
+  const runOnce = makeDefaultUsageCostDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getStats: async () => ({ costUsd: 4, backgroundCostUsd: 1, cacheUsage: NO_CACHE_ACTIVITY }),
+    getLastTotal: async () => 3,
+    getLastCacheHitRate: async () => 70,
+    recordSent: async (_total, cacheHitRate) => {
+      recordedCacheHitRate = cacheHitRate;
+    },
+  });
+
+  await runOnce();
+  await flush();
+
+  assert.equal(dms.length, 1);
+  assert.equal(
+    dms[0].text,
+    '💰 Weekly cost trend: ~$5.00 this week (conversational + background). ▲ $2.00 vs last week.',
+    'no cache-trend line is appended when the window had zero cache activity',
+  );
+  assert.equal(
+    recordedCacheHitRate,
+    null,
+    'recordSent receives null for the cache hit rate — the repository upsert preserves the prior persisted value rather than overwriting it',
+  );
+});
+
 test('SECURITY: makeDefaultUsageCostDigestRun sends the DM to exactly the configured super admin id and no other recipient, even with an adapter registered on another platform', async () => {
   const { adapter, dms } = makeAdapter();
   const runOnce = makeDefaultUsageCostDigestRun([adapter], {
     wasSentRecently: async () => false,
-    getStats: async () => ({ costUsd: 1, backgroundCostUsd: 0 }),
+    getStats: async () => ({ costUsd: 1, backgroundCostUsd: 0, cacheUsage: NO_CACHE_ACTIVITY }),
     getLastTotal: async () => null,
+    getLastCacheHitRate: async () => null,
     recordSent: async () => {},
   });
 
@@ -238,7 +376,7 @@ test(
 
     assert.equal(await wasUsageCostDigestSentRecently(7), false, 'no send recorded yet — not fresh');
 
-    await recordUsageCostDigestSent(9.99);
+    await recordUsageCostDigestSent(9.99, null);
     assert.equal(
       await wasUsageCostDigestSentRecently(7),
       true,
@@ -264,7 +402,7 @@ test(
 
     assert.equal(await getLastUsageCostDigestTotal(), null, 'a first-ever run has no prior total at all');
 
-    await recordUsageCostDigestSent(42.5);
+    await recordUsageCostDigestSent(42.5, null);
     assert.equal(await getLastUsageCostDigestTotal(), 42.5, 'the exact total passed in is persisted');
 
     await pool.query('DELETE FROM usage_cost_digest_state');
@@ -277,9 +415,9 @@ test(
   async () => {
     await pool.query('DELETE FROM usage_cost_digest_state');
 
-    await recordUsageCostDigestSent(1);
-    await recordUsageCostDigestSent(2);
-    await recordUsageCostDigestSent(3);
+    await recordUsageCostDigestSent(1, null);
+    await recordUsageCostDigestSent(2, null);
+    await recordUsageCostDigestSent(3, null);
 
     const { rows } = await pool.query('SELECT total_cost_usd FROM usage_cost_digest_state');
     assert.equal(
@@ -294,6 +432,52 @@ test(
 );
 
 test(
+  'repository: getLastUsageCostDigestCacheHitRate is null with no row, then the persisted rate after recordUsageCostDigestSent',
+  { skip },
+  async () => {
+    await pool.query('DELETE FROM usage_cost_digest_state');
+
+    assert.equal(
+      await getLastUsageCostDigestCacheHitRate(),
+      null,
+      'a first-ever run has no prior hit rate at all',
+    );
+
+    await recordUsageCostDigestSent(42.5, 88);
+    assert.equal(await getLastUsageCostDigestCacheHitRate(), 88, 'the exact hit rate passed in is persisted');
+
+    await pool.query('DELETE FROM usage_cost_digest_state');
+  },
+);
+
+test(
+  'repository: recordUsageCostDigestSent with cacheHitRate=null (a quiet week) preserves the previously-persisted hit rate rather than overwriting it',
+  { skip },
+  async () => {
+    await pool.query('DELETE FROM usage_cost_digest_state');
+
+    await recordUsageCostDigestSent(1, 65);
+    assert.equal(await getLastUsageCostDigestCacheHitRate(), 65, 'the real rate is persisted first');
+
+    await recordUsageCostDigestSent(2, null);
+    assert.equal(
+      await getLastUsageCostDigestCacheHitRate(),
+      65,
+      'a quiet week (null cacheHitRate) does not corrupt the previously-persisted rate',
+    );
+
+    await recordUsageCostDigestSent(3, 70);
+    assert.equal(
+      await getLastUsageCostDigestCacheHitRate(),
+      70,
+      'a subsequent real rate still overwrites normally',
+    );
+
+    await pool.query('DELETE FROM usage_cost_digest_state');
+  },
+);
+
+test(
   'SECURITY: usage_cost_digest_state carries no per-admin identity — a community_users admin row existing alongside it has no bearing on the freshness guard or trend total',
   { skip },
   async () => {
@@ -301,14 +485,14 @@ test(
     await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${adminId}-actor` });
     await pool.query('DELETE FROM usage_cost_digest_state');
 
-    await recordUsageCostDigestSent(5);
+    await recordUsageCostDigestSent(5, 42);
     const { rows } = await pool.query('SELECT * FROM usage_cost_digest_state');
     assert.equal(rows.length, 1);
     const columns = Object.keys(rows[0]);
     assert.deepEqual(
       columns.sort(),
-      ['id', 'sent_at', 'total_cost_usd'].sort(),
-      'the table has exactly its three documented columns — no platform/user-id column ever added',
+      ['id', 'sent_at', 'total_cost_usd', 'last_cache_hit_rate'].sort(),
+      'the table has exactly its four documented columns — no platform/user-id column ever added',
     );
 
     await pool.query('DELETE FROM usage_cost_digest_state');
