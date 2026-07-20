@@ -361,6 +361,34 @@ test('notifyAdmins: an empty admin roster is a no-op — no queue slot is consum
   }
 });
 
+test(
+  'SECURITY: notifyAdmins — a non-empty roster where the escalating user is the sole resolved admin is a ' +
+    'no-op, same as an empty roster: excluding excludeUserId must not queue a truthy-but-empty recipients ' +
+    'array that health.ts would flush to nobody forever (issue #625 review, attempt 2)',
+  async (t) => {
+    const { notifyAdmins, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
+    resetPendingAlertsForTests();
+    const previousRoster = adminRoster;
+    adminRoster = [{ platform: 'discord', platformUserId: 'sole-admin' }];
+    try {
+      const { adapter: discordDown } = makeAdapter('discord', false);
+      await notifyAdmins(
+        (platform) => (platform === 'discord' ? discordDown : undefined),
+        'sole-admin-is-escalator alert',
+        'sole-admin',
+      );
+      assert.deepEqual(
+        getPendingAlertsForTests(),
+        [],
+        'excluding the sole admin must not consume a queue slot for an entry with empty recipients',
+      );
+    } finally {
+      adminRoster = previousRoster;
+      resetPendingAlertsForTests();
+    }
+  },
+);
+
 test('SECURITY: notifyAccessRequest (router.ts) with every adapter disconnected still drops the alert — never queued (issue #571/#593)', async (t) => {
   const { notifyAccessRequest, getPendingAlertsForTests, resetPendingAlertsForTests } = await modules(t);
   resetPendingAlertsForTests();

@@ -614,9 +614,14 @@ export async function notifyAdmins(
     return;
   }
   if (admins.length === 0) return;
-  const anyConnected = admins.some(
-    (admin) => admin.platformUserId !== excludeUserId && adapterFor(admin.platform)?.isConnected(),
-  );
+  // Excluding excludeUserId can empty the roster (e.g. a single-admin guild
+  // where the escalating user is that admin) — nobody left to notify or
+  // queue for, so bail out before anyConnected/queuePendingAlert see a
+  // truthy-but-empty recipients array (which health.ts's flush would treat
+  // as "deliver to nobody", wasting a queue slot forever).
+  const recipients = admins.filter((admin) => admin.platformUserId !== excludeUserId);
+  if (recipients.length === 0) return;
+  const anyConnected = recipients.some((admin) => adapterFor(admin.platform)?.isConnected());
   if (!anyConnected) {
     logger.warn(
       { message },
@@ -625,14 +630,11 @@ export async function notifyAdmins(
     queuePendingAlert(
       `🔔 ${message}`,
       'low', // member-reachable via the router's escalation-confirmation intercept — see doc comment above
-      admins
-        .filter((admin) => admin.platformUserId !== excludeUserId)
-        .map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),
+      recipients.map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),
     );
     return;
   }
-  for (const admin of admins) {
-    if (admin.platformUserId === excludeUserId) continue;
+  for (const admin of recipients) {
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
     const alertText = `🔔 ${message}`;

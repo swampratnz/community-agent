@@ -1722,7 +1722,12 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   `excludeUserId` from that check the same way the delivery loop below it
   already excludes them — otherwise an escalating admin's own live
   connection would count as "reachable" even though the delivery loop skips
-  them, silently dropping the alert; if no OTHER resolved admin is
+  them, silently dropping the alert. Excluding `excludeUserId` can itself
+  empty the resolved roster (e.g. a single-admin guild where the escalating
+  user is that admin) — that case is a no-op, same as an empty roster from
+  `listAdmins()` itself, rather than queuing a truthy-but-empty `recipients`
+  array that flush would deliver to nobody, forever occupying one of the
+  five shared queue slots. Otherwise, if no OTHER resolved admin is
   connected, it queues with the resolved recipient set (minus
   `excludeUserId`) instead of silently finishing with nothing sent, at
   `'low'` priority — this producer's only caller is the router's member-
