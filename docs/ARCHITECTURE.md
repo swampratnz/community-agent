@@ -483,7 +483,13 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),
 and an outbound filter on every reply — secret redaction plus the
-`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`). A
+`code_answers` policy (`off`/`snippets`/`full`, set via `set_policy`). When a
+turn can't resume a prior session (cap rollover, a cleared session, or a
+failed resume), the conversation's recent tail (`SESSION_ROLLOVER_TAIL_COUNT`
+most recent messages, bounded by the session age window) is quoted into the
+first turn as a quarantined untrusted block — same framing as recall — so the
+bot keeps thread continuity across the reset instead of going amnesiac
+mid-conversation. A
 member/guest may also set their own standing `response_style`
 (`standard`/`plain`, via `set_response_style`) — a per-caller preference
 (`response_style_prefs`, keyed like `admin_digest_sends`) read alongside

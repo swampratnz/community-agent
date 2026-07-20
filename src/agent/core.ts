@@ -9,14 +9,21 @@ import {
   getClaudeSession,
   getLanguagePreference,
   getResponseStyle,
+  recentConversationTail,
   searchMemory,
   setClaudeSessionId,
+  type ConversationTailRow,
   type LanguagePreference,
   type ResponseStyle,
 } from '../storage/repository.js';
 import { getCodeAnswersPolicy } from '../storage/policies.js';
 import { queuePendingAlert } from '../pendingAlertQueue.js';
-import { buildSystemPrompt, renderMemoryContext, renderRequesterTag } from './systemPrompt.js';
+import {
+  buildSystemPrompt,
+  renderConversationTail,
+  renderMemoryContext,
+  renderRequesterTag,
+} from './systemPrompt.js';
 import { selectPersona } from './personas.js';
 import {
   buildToolServer,
@@ -465,7 +472,6 @@ export async function runAgentTurn(
   // role in the same conversation, which is the real precondition for an
   // Anthropic prompt-cache hit at the system block's trailing breakpoint.
   const memoryBlock = memories.length > 0 ? renderMemoryContext(memories) : '';
-  const prompt = [renderRequesterTag(caller.userName), memoryBlock, userText].filter(Boolean).join('\n\n');
 
   // Session hygiene: cap resumed-session length and age so context (and any
   // accumulated injection) can't grow without bound.
@@ -484,19 +490,52 @@ export async function runAgentTurn(
     );
   }
 
+  // Fresh-session continuity backfill: a turn with no resumable session
+  // (first contact, cap rollover above, a role-change/purge-cleared session,
+  // or the failed-resume retry below) has lost the in-session conversation
+  // history, and semantic recall alone can't reconstruct it — it keys on the
+  // CURRENT message text, so a follow-up like "why didn't you do that?"
+  // recalls nothing useful and the bot goes amnesiac between two adjacent
+  // messages. Quote the conversation's recent tail into the user turn as
+  // quarantined reference data (same untrusted framing as recall; a resumed
+  // session gets none — its history is already in-session). The tail may
+  // racily include the current inbound message (the router records it
+  // fire-and-forget before this turn runs) — a harmless duplicate of the
+  // message text below, not a correctness problem.
+  const tailLimit = config.behaviour.sessionRolloverTailCount;
+  const fetchTail = () => recentConversationTail(caller.platform, caller.conversationId, tailLimit);
+  const assemblePrompt = (tail: ConversationTailRow[]) =>
+    [
+      renderRequesterTag(caller.userName),
+      tail.length > 0 ? renderConversationTail(tail) : '',
+      memoryBlock,
+      userText,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  const prompt = assemblePrompt(priorSession ? [] : await fetchTail());
+
   const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession, getAdapter);
   let outcome = first;
 
   // If resuming a stale/foreign session failed (session files are CLI-local
   // disk state), drop the stored id and retry once with a fresh session so
-  // the conversation doesn't brick itself.
+  // the conversation doesn't brick itself. The retry is a fresh session too,
+  // so it gets the same tail backfill the rollover path above does.
   if (!first.ok && first.resumeFailed && priorSession) {
     logger.warn(
       { conversationId: caller.conversationId, priorSession },
       'Session resume failed; clearing stored session and retrying fresh',
     );
     await clearClaudeSessionId(caller.platform, caller.conversationId).catch(() => {});
-    outcome = await execTurn(caller, prompt, systemPrompt, adapter, null, getAdapter);
+    outcome = await execTurn(
+      caller,
+      assemblePrompt(await fetchTail()),
+      systemPrompt,
+      adapter,
+      null,
+      getAdapter,
+    );
   }
 
   if (outcome.sessionId) {
