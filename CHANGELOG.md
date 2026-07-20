@@ -42,7 +42,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
   tool, table, or tier — reuses the `moderation_appeals` table #554 already
   built and privacy-reviewed.
 
-### Security
+### Fixed
+- **Access-request alerts no longer vanish during a total admin-adapter
+  outage** (#639, the deliberately-deferred remainder of #625): `router.ts`'s
+  `notifyAccessRequest` DMs every admin (`listAdmins()`) the moment a gated
+  guest's first message creates a fresh access request, but if every
+  admin's adapter was disconnected at that instant the alert was silently
+  dropped — no queue, no retry, nothing until the passive weekly digest
+  count caught up. It now mirrors `notifyAdmins`' #625 fix exactly: with no
+  connected recipient, the alert is queued (`'low'` priority, so a flood of
+  guest-triggered requests during an outage still can't evict a genuine
+  `'system'` health/job alert) and delivered to that frozen recipient set
+  once an adapter reconnects. An empty admin roster and the
+  at-least-one-connected-admin path are unchanged. This was the last item on
+  the `listAdmins()`-recipient-preserving-queue growth path (#545/#593/#625).
 - **Quarantine-block entries can no longer spoof extra lines via embedded
   newlines** (PR #617 review follow-up): `renderConversationTail` and
   `renderMemoryContext` stripped angle brackets from message content but kept
