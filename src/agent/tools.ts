@@ -582,6 +582,17 @@ async function notifySuperAdmins(
  * admin sees data already visible via the digest. Best-effort throughout: a
  * `listAdmins()` failure or a single admin's DM failure is logged and never
  * prevents alerting the rest.
+ *
+ * If NO resolved admin has a connected adapter (issue #625 — previously this
+ * silently finished having sent nothing), the alert is queued with the
+ * resolved recipient set (minus `excludeUserId`) via the shared
+ * pendingAlertQueue and flushed through the first adapter to reconnect
+ * (`health.ts`'s `flushPendingAlerts`) — mirroring `notifySuperAdmins`'s
+ * `anyConnected` shape above, but computed over the *resolved admin list's*
+ * platforms rather than `ALL_PLATFORMS`, since this function's audience is
+ * `listAdmins()`, not every platform's super admins. If at least one
+ * resolved admin's adapter is connected, behaviour is unchanged: the loop
+ * below still just skips any individually-disconnected admin.
  */
 export async function notifyAdmins(
   adapterFor: (platform: Platform) => PlatformAdapter | undefined,
@@ -593,6 +604,21 @@ export async function notifyAdmins(
     admins = await listAdmins();
   } catch (err) {
     logger.warn({ err }, 'listAdmins failed; escalation admin alert skipped');
+    return;
+  }
+  const anyConnected = admins.some((admin) => adapterFor(admin.platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Admin escalation alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(
+      `🔔 ${message}`,
+      'system', // escalations are bot/router-originated, never member-reachable (see live-path priority below)
+      admins
+        .filter((admin) => admin.platformUserId !== excludeUserId)
+        .map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),
+    );
     return;
   }
   for (const admin of admins) {

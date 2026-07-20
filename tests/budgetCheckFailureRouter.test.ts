@@ -24,8 +24,13 @@ const { Router } = await import('../src/router.js');
 const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI, DAILY_BUDGET_NOTICE_TEXT_PLAIN } =
   await import('../src/dailyBudgetNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
-const { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP } =
-  await import('../src/pendingAlertQueue.js');
+const {
+  getPendingAlertsForTests,
+  getPendingAlertEntriesForTests,
+  resetPendingAlertsForTests,
+  queuePendingAlert,
+  PENDING_ALERT_QUEUE_CAP,
+} = await import('../src/pendingAlertQueue.js');
 
 await embed('warmup').catch(() => {});
 
@@ -198,6 +203,27 @@ test('router (budget check failure): with the only registered adapter disconnect
     'the budget-check-failure alert is queued exactly once, not dropped',
   );
   assert.match(getPendingAlertsForTests()[0] ?? '', /daily reply-budget check failed/i);
+  resetPendingAlertsForTests();
+});
+
+test("SECURITY: router.ts's budget-check-failure alert queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; this producer is unaffected and still flushes to superAdminIds()", async () => {
+  resetPendingAlertsForTests();
+  const router = new Router(
+    async () => makeReply('reply despite budget-check failure'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    failingCountReplies,
+  );
+  const { adapter, trigger } = makeAdapter({ isConnected: () => false });
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  const entries = getPendingAlertEntriesForTests();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.recipients, undefined);
   resetPendingAlertsForTests();
 });
 

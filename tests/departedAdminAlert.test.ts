@@ -25,8 +25,13 @@ const {
   startDepartedAdminAlert,
   alertSuperAdmins,
 } = await import('../src/departedAdminAlert.js');
-const { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP } =
-  await import('../src/pendingAlertQueue.js');
+const {
+  getPendingAlertsForTests,
+  getPendingAlertEntriesForTests,
+  resetPendingAlertsForTests,
+  queuePendingAlert,
+  PENDING_ALERT_QUEUE_CAP,
+} = await import('../src/pendingAlertQueue.js');
 
 type AdminRosterEntry = {
   platform: 'discord' | 'whatsapp';
@@ -227,6 +232,18 @@ test('alertSuperAdmins: with at least one connected adapter, behaviour is byte-i
     [],
     'nothing is queued when at least one adapter is connected',
   );
+  resetPendingAlertsForTests();
+});
+
+test("SECURITY: departedAdminAlert.ts's alertSuperAdmins queues an entry with no `recipients` field — issue #625 only added an opt-in recipient set for notifyAdmins; this producer is unaffected and still flushes to superAdminIds()", async () => {
+  resetPendingAlertsForTests();
+  const { adapter } = makeAdapter(false);
+
+  await alertSuperAdmins([adapter], 'departed-admin alert while disconnected');
+
+  const entries = getPendingAlertEntriesForTests();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.recipients, undefined);
   resetPendingAlertsForTests();
 });
 
