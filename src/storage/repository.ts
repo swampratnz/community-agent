@@ -5227,8 +5227,17 @@ async function resolveAnswerFeedbackTarget(
  * to them in this conversation. Enforces a DB-backed rolling-24h cap per
  * rater (`RATE_ANSWER_DAILY_LIMIT`), the same restart-proof
  * COUNT(*)-inside-the-insert pattern as createSuggestion/createContentReport
- * (never an in-memory counter). Returns:
- *  - `{ id }` on success
+ * (never an in-memory counter). A second rating from the same rater on the
+ * same interaction (no new bot reply in between) is not a second vote: the
+ * `ON CONFLICT` on `answer_feedback_interaction_rater_idx` (issue #619)
+ * updates the existing row's helpful/comment/created_at in place instead of
+ * inserting a duplicate — preserving "member changed their mind" while
+ * keeping every downstream count (usage_stats, the weekly digest, and the
+ * >= 2-rater low-rated-caveat floor) to at most one vote per (rater,
+ * answer). The `WHERE interaction_id IS NOT NULL` predicate on the conflict
+ * target must match the partial index exactly, or Postgres can't infer it.
+ * Returns:
+ *  - `{ id }` on success (insert OR update-in-place)
  *  - `'no_recent_answer'` when there is no outbound interaction to bind to
  *    yet (e.g. the member has not been answered in this conversation)
  *  - `'rate_limited'` when the caller is at/over the cap
@@ -5253,6 +5262,8 @@ export async function createAnswerFeedback(input: {
      INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful, comment)
      SELECT $1, $3, $2, $4, $5, $7
       WHERE (SELECT n FROM recent) < $6
+     ON CONFLICT (interaction_id, user_id) WHERE interaction_id IS NOT NULL
+     DO UPDATE SET helpful = EXCLUDED.helpful, comment = EXCLUDED.comment, created_at = now()
      RETURNING id`,
     [
       input.platform,

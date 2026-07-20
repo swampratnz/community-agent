@@ -576,6 +576,19 @@ CREATE INDEX IF NOT EXISTS answer_feedback_conversation_idx
 CREATE INDEX IF NOT EXISTS answer_feedback_user_rate_idx
   ON answer_feedback (platform, user_id, created_at DESC);
 
+-- One vote per (interaction, rater), issue #619: without this, a single
+-- member calling rate_answer twice on the same bot reply inserted two rows,
+-- inflating every downstream count (usage_stats' helpful ratio, the weekly
+-- digest, and — most seriously — bypassing the >= 2 "more than one
+-- identifiable person" floor on the low-rated caveat, config.ts's
+-- MIN_KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL). Partial (WHERE interaction_id
+-- IS NOT NULL) because forget_me/purge_user_data's ON DELETE SET NULL above
+-- leaves multiple NULL-interaction_id rows for the same or different raters,
+-- which must keep coexisting. createAnswerFeedback's ON CONFLICT clause must
+-- repeat this exact predicate for Postgres to infer the partial index.
+CREATE UNIQUE INDEX IF NOT EXISTS answer_feedback_interaction_rater_idx
+  ON answer_feedback (interaction_id, user_id) WHERE interaction_id IS NOT NULL;
+
 -- Optional free-text reason alongside the boolean (issue #354, the follow-up
 -- #118 explicitly deferred). Nullable, no backfill: a rating with no
 -- accompanying reason stores NULL exactly as before. Deleted along with the

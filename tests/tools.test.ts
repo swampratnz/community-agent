@@ -10980,21 +10980,35 @@ test(
   async () => {
     const userId = `${RATE_ANSWER_HANDLER_USER}-cap`;
     const conversationId = `${RATE_ANSWER_HANDLER_USER}-convo-cap`;
+
+    // A fresh outbound reply (and therefore a fresh interaction_id) per
+    // rating: repeated ratings against the SAME interaction now dedup to one
+    // row (issue #619), so the cap must be exercised across DISTINCT
+    // interactions to genuinely test the spam cap rather than collide with
+    // that dedup.
+    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `the repeatedly-rated answer ${i}`,
+        meta: { replyToUserId: userId },
+      });
+      const ok = await rateAnswerHandler(userId, conversationId).handler({ helpful: i % 2 === 0 });
+      assert.notEqual(ok.isError, true, `rating ${i} within the cap should succeed`);
+    }
+
     await recordInteraction({
       platform: 'discord',
       conversationId,
       userId: 'bot',
       role: 'member',
       direction: 'outbound',
-      content: 'the repeatedly-rated answer',
+      content: 'one answer too many',
       meta: { replyToUserId: userId },
     });
-
-    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
-      const ok = await rateAnswerHandler(userId, conversationId).handler({ helpful: i % 2 === 0 });
-      assert.notEqual(ok.isError, true, `rating ${i} within the cap should succeed`);
-    }
-
     const overCap = await rateAnswerHandler(userId, conversationId).handler({ helpful: true });
     assert.equal(overCap.isError, true);
     assert.match(overCap.content[0]?.text ?? '', /already rated/i);
