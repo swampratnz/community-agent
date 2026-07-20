@@ -91,6 +91,14 @@ const EnvSchema = z.object({
     .transform((v) => v === 'true'),
   // Fallback text channel to post the welcome in if the DM fails (e.g. DMs closed).
   DISCORD_WELCOME_CHANNEL_ID: z.string().optional(),
+  // Auto-enroll (issue #605): on every non-bot Discord join, grant standing
+  // member-tier `community_users` access instead of leaving the joiner a
+  // gated guest until an admin runs `add_member`. A genuine RBAC-posture
+  // change (see .env.example) — off by default.
+  DISCORD_AUTO_ENROLL_MEMBERS: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Ambient archiving (issue #48): store EVERY message in allowed guild
   // channels — including from gated-mode guests — not just messages that
   // address the bot. A deliberate privacy-posture change; requires visible
@@ -858,6 +866,7 @@ export const config = {
       enabled: env.DISCORD_WELCOME_ENABLED ?? false,
       channelId: env.DISCORD_WELCOME_CHANNEL_ID,
     },
+    autoEnrollMembers: env.DISCORD_AUTO_ENROLL_MEMBERS ?? false,
     archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
     assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
     autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),

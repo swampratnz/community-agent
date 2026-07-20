@@ -765,6 +765,28 @@ weakening it:
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
    previously under-served.
+7. **Opt-in auto-enroll** (issue #605, off unless
+   `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
+   `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls
+   `upsertMember` directly (the same repository function `add_member`'s tool
+   handler calls) with `role: 'member'` and `added_by:
+   'system:discord_auto_enroll'`, right after the existing roster upsert —
+   a deterministic DB write, never routed through the agent/model. No
+   app-level pre-check: `upsertMember`'s `ON CONFLICT` `CASE` already
+   refuses to downgrade an existing `admin` row to `member`, so a rejoining
+   admin keeps their role. The write produces its own `admin_audit` row
+   (`recordAdminAction`, not the tool layer's `audited()` helper, since
+   there's no admin caller for a join event) distinguishable from a human
+   grant by the `system:discord_auto_enroll` actor/added_by sentinel. Does
+   **not** send `notifyMemberApproved`/the approval DM — that stays an
+   admin-initiated notice, not an unprompted per-join one; the enrollee
+   simply gets answered instead of gated on their next message. **Discord
+   only** — WhatsApp has no join event, so this doesn't extend there.
+   **Interacts with `remove_member`**: that tool only revokes bot access (a
+   soft, in-app gate), so a removed member who rejoins the Discord server
+   while this flag is on is re-enrolled — the durable way to keep someone out
+   is Discord's own `ban_user`, which is unaffected (a banned user can't
+   rejoin).
 
 ## Offline context builder
 

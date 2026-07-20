@@ -46,7 +46,9 @@ import {
   deleteInteractionByMessageId,
   getLanguagePreference,
   markRosterLeave,
+  recordAdminAction,
   updateInteractionByMessageId,
+  upsertMember,
   upsertRosterMember,
 } from '../../storage/repository.js';
 import { shouldNotifyMutedRoleOverwriteFailed } from '../../mutedRoleAlertNotice.js';
@@ -109,6 +111,11 @@ export const WELCOME_MESSAGE_OPEN =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context — " +
   'go ahead and message me any time, no admin approval needed. Ask me "what can you do?" any time for ' +
   'a quick rundown.';
+
+// `added_by` / `admin_audit.actor_user_id` sentinel for a DISCORD_AUTO_ENROLL_MEMBERS
+// grant (issue #605) — distinguishes an auto-enrolled join from a human
+// `add_member` grant (whose added_by/actor is the acting admin's platform id).
+const DISCORD_AUTO_ENROLL_ACTOR = 'system:discord_auto_enroll';
 
 export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   readonly platform = 'discord' as const;
@@ -473,6 +480,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
         displayName: member.displayName,
       }).catch((err) => logger.warn({ err, userId: member.id }, 'Roster join record failed'));
 
+      if (config.discord.autoEnrollMembers) {
+        await this.autoEnrollMember(member).catch((err) =>
+          logger.warn({ err, userId: member.id }, 'Auto-enroll failed'),
+        );
+      }
+
       // Closes the "leave/rejoin sheds the muted role" gap (see SECURITY.md):
       // re-mute before any welcome-message logic runs, gated the same as the
       // rest of moderation.
@@ -514,6 +527,48 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     } catch (err) {
       logger.warn({ err, userId: member.id, channelId }, 'Welcome channel fallback failed');
     }
+  }
+
+  /**
+   * Opt-in auto-enroll (issue #605, `DISCORD_AUTO_ENROLL_MEMBERS`): grants a
+   * fresh Discord joiner standing member-tier `community_users` access
+   * instead of leaving them a gated guest until an admin runs `add_member`.
+   * Deterministic — a direct `upsertMember` call, never routed through the
+   * agent/model — and race-free: `upsertMember`'s `ON CONFLICT` `CASE`
+   * already refuses to downgrade an existing `admin` row to `member`, so no
+   * app-level "does a row exist" pre-check is needed (and one would only add
+   * a TOCTOU gap against a concurrent human `add_member`).
+   *
+   * Writes its own `admin_audit` row via `recordAdminAction` rather than the
+   * tool layer's `audited()` helper: that helper is scoped to an
+   * admin-tier `CallerContext` from an in-turn tool call, and this write has
+   * no admin caller — it's triggered by a platform join event. The audit
+   * row's `actor_user_id`/params carry `DISCORD_AUTO_ENROLL_ACTOR` so it's
+   * distinguishable from a human `add_member` grant.
+   *
+   * Deliberately does NOT send `notifyMemberApproved`/the approval DM — that
+   * message is an admin-initiated "you've been approved" notice; sending it
+   * unprompted on every join would conflate the join and admin-approval UX
+   * moments. The joiner simply gets answered instead of gated next message.
+   */
+  private async autoEnrollMember(member: GuildMember): Promise<void> {
+    const role = await upsertMember({
+      platform: 'discord',
+      userId: member.id,
+      role: 'member',
+      addedBy: DISCORD_AUTO_ENROLL_ACTOR,
+      displayName: member.displayName,
+    });
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: DISCORD_AUTO_ENROLL_ACTOR,
+      actorName: 'system',
+      actionKind: 'auto_enroll_member',
+      targetUserId: member.id,
+      params: { role: 'member', addedBy: DISCORD_AUTO_ENROLL_ACTOR },
+      result: `registered as ${role}`,
+      success: true,
+    });
   }
 
   /**

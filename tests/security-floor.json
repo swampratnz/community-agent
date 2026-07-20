@@ -47,7 +47,7 @@
   "devTeamTools.test.ts": 10,
   "devTeamWatch.test.ts": 7,
   "devTeamWatchAlert.test.ts": 1,
-  "discordAdapter.test.ts": 47,
+  "discordAdapter.test.ts": 52,
   "discordThreadArchive.test.ts": 1,
   "docsIngest.test.ts": 2,
   "embeddingHealthCheck.test.ts": 2,
