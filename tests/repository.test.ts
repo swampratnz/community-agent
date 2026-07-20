@@ -147,6 +147,29 @@ const {
 // a developer's real local instance.
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
+/**
+ * Retry an assertion block that reads shared, cross-file-visible aggregates.
+ * usageStats/sumShortcutHits read the WHOLE interactions/shortcut_hits tables
+ * over a sliding now()-anchored window, and the Node test runner executes
+ * test FILES in parallel against this one database — so another file's
+ * insert can land between a block's before/after reads and shift an exact
+ * delta (the 2026-07-20 CI flakes: byPlatform delta "2 !== 1", shortcut-hit
+ * inbound "122 !== 121"). Re-running the whole read-seed-read sequence gets
+ * a quiet window with overwhelming probability, while a REAL regression
+ * fails deterministically on every attempt — so retrying masks nothing, and
+ * the final attempt's assertion error propagates with real values.
+ */
+async function retryOnSharedTableInterference(attempts: number, run: () => Promise<void>): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run();
+      return;
+    } catch (err) {
+      if (attempt >= attempts) throw err;
+    }
+  }
+}
+
 after(async () => {
   await closeDb();
 });
@@ -3146,83 +3169,91 @@ test(
     const whatsappUser = `${RUN}-platform-whatsapp`;
 
     const days = 1;
-    const before = await usageStats(days);
-    const beforeByPlatform = new Map(before.byPlatform.map((r) => [r.platform, r]));
+    // Exact-delta assertions over whole-table aggregates race with other test
+    // FILES writing interactions concurrently (parallel file execution, one
+    // shared DB) — retry the full read-seed-read sequence, cleaning seeds
+    // between attempts (see retryOnSharedTableInterference above).
+    await retryOnSharedTableInterference(4, async () => {
+      try {
+        const before = await usageStats(days);
+        const beforeByPlatform = new Map(before.byPlatform.map((r) => [r.platform, r]));
 
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: discordUser,
-      role: 'member',
-      direction: 'inbound',
-      content: 'discord question',
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: discordUser,
+          role: 'member',
+          direction: 'inbound',
+          content: 'discord question',
+        });
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: discordUser,
+          role: 'member',
+          direction: 'outbound',
+          content: 'discord reply',
+          costUsd: 1.2,
+        });
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId,
+          userId: whatsappUser,
+          role: 'member',
+          direction: 'inbound',
+          content: 'whatsapp question',
+        });
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId,
+          userId: whatsappUser,
+          role: 'member',
+          direction: 'outbound',
+          content: 'whatsapp reply',
+          costUsd: 0.3,
+        });
+
+        const after = await usageStats(days);
+        const afterByPlatform = new Map(after.byPlatform.map((r) => [r.platform, r]));
+
+        const discordBefore = beforeByPlatform.get('discord');
+        const discordAfter = afterByPlatform.get('discord');
+        assert.ok(discordAfter, 'discord appears in byPlatform after seeding a discord row');
+        assert.equal(discordAfter.inbound - (discordBefore?.inbound ?? 0), 1);
+        assert.equal(discordAfter.outbound - (discordBefore?.outbound ?? 0), 1);
+        assert.equal(discordAfter.costUsd - (discordBefore?.costUsd ?? 0), 1.2);
+
+        const whatsappBefore = beforeByPlatform.get('whatsapp');
+        const whatsappAfter = afterByPlatform.get('whatsapp');
+        assert.ok(whatsappAfter, 'whatsapp appears in byPlatform after seeding a whatsapp row');
+        assert.equal(whatsappAfter.inbound - (whatsappBefore?.inbound ?? 0), 1);
+        assert.equal(whatsappAfter.outbound - (whatsappBefore?.outbound ?? 0), 1);
+        assert.equal(whatsappAfter.costUsd - (whatsappBefore?.costUsd ?? 0), 0.3);
+
+        // Criterion 3: summing byPlatform must equal the top-level totals exactly (same
+        // table/window/direction semantics as `totals`, differing only by GROUP BY platform).
+        const sumInbound = after.byPlatform.reduce((a, r) => a + r.inbound, 0);
+        const sumOutbound = after.byPlatform.reduce((a, r) => a + r.outbound, 0);
+        const sumCost = after.byPlatform.reduce((a, r) => a + r.costUsd, 0);
+        assert.equal(sumInbound, after.inbound);
+        assert.equal(sumOutbound, after.outbound);
+        assert.ok(Math.abs(sumCost - after.costUsd) < 1e-9);
+
+        // Criterion 5: deterministic ordering by volume (inbound+outbound) desc, then platform name.
+        for (let i = 1; i < after.byPlatform.length; i++) {
+          const prev = after.byPlatform[i - 1];
+          const curr = after.byPlatform[i];
+          const prevVolume = prev.inbound + prev.outbound;
+          const currVolume = curr.inbound + curr.outbound;
+          assert.ok(
+            prevVolume > currVolume || (prevVolume === currVolume && prev.platform < curr.platform),
+            'byPlatform is ordered by volume desc, then platform asc as a deterministic tiebreaker',
+          );
+        }
+      } finally {
+        await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      }
     });
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: discordUser,
-      role: 'member',
-      direction: 'outbound',
-      content: 'discord reply',
-      costUsd: 1.2,
-    });
-    await recordInteraction({
-      platform: 'whatsapp',
-      conversationId,
-      userId: whatsappUser,
-      role: 'member',
-      direction: 'inbound',
-      content: 'whatsapp question',
-    });
-    await recordInteraction({
-      platform: 'whatsapp',
-      conversationId,
-      userId: whatsappUser,
-      role: 'member',
-      direction: 'outbound',
-      content: 'whatsapp reply',
-      costUsd: 0.3,
-    });
-
-    const after = await usageStats(days);
-    const afterByPlatform = new Map(after.byPlatform.map((r) => [r.platform, r]));
-
-    const discordBefore = beforeByPlatform.get('discord');
-    const discordAfter = afterByPlatform.get('discord');
-    assert.ok(discordAfter, 'discord appears in byPlatform after seeding a discord row');
-    assert.equal(discordAfter.inbound - (discordBefore?.inbound ?? 0), 1);
-    assert.equal(discordAfter.outbound - (discordBefore?.outbound ?? 0), 1);
-    assert.equal(discordAfter.costUsd - (discordBefore?.costUsd ?? 0), 1.2);
-
-    const whatsappBefore = beforeByPlatform.get('whatsapp');
-    const whatsappAfter = afterByPlatform.get('whatsapp');
-    assert.ok(whatsappAfter, 'whatsapp appears in byPlatform after seeding a whatsapp row');
-    assert.equal(whatsappAfter.inbound - (whatsappBefore?.inbound ?? 0), 1);
-    assert.equal(whatsappAfter.outbound - (whatsappBefore?.outbound ?? 0), 1);
-    assert.equal(whatsappAfter.costUsd - (whatsappBefore?.costUsd ?? 0), 0.3);
-
-    // Criterion 3: summing byPlatform must equal the top-level totals exactly (same
-    // table/window/direction semantics as `totals`, differing only by GROUP BY platform).
-    const sumInbound = after.byPlatform.reduce((a, r) => a + r.inbound, 0);
-    const sumOutbound = after.byPlatform.reduce((a, r) => a + r.outbound, 0);
-    const sumCost = after.byPlatform.reduce((a, r) => a + r.costUsd, 0);
-    assert.equal(sumInbound, after.inbound);
-    assert.equal(sumOutbound, after.outbound);
-    assert.ok(Math.abs(sumCost - after.costUsd) < 1e-9);
-
-    // Criterion 5: deterministic ordering by volume (inbound+outbound) desc, then platform name.
-    for (let i = 1; i < after.byPlatform.length; i++) {
-      const prev = after.byPlatform[i - 1];
-      const curr = after.byPlatform[i];
-      const prevVolume = prev.inbound + prev.outbound;
-      const currVolume = curr.inbound + curr.outbound;
-      assert.ok(
-        prevVolume > currVolume || (prevVolume === currVolume && prev.platform < curr.platform),
-        'byPlatform is ordered by volume desc, then platform asc as a deterministic tiebreaker',
-      );
-    }
-
-    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
@@ -3483,43 +3514,56 @@ test(
   { skip },
   async () => {
     const days = 1;
-    const before = await usageStats(days);
+    // The unchanged-field equalities compare two whole-table aggregate reads
+    // taken moments apart — a concurrent test FILE inserting an interaction
+    // in that window shifts them (the 2026-07-20 CI flake: inbound
+    // "122 !== 121"). Retry the full read-write-read sequence, cleaning the
+    // seeded hit between attempts (see retryOnSharedTableInterference above).
+    await retryOnSharedTableInterference(4, async () => {
+      try {
+        const before = await usageStats(days);
 
-    await recordShortcutHit('ack');
+        await recordShortcutHit('ack');
 
-    const [after, shortcuts] = await Promise.all([usageStats(days), sumShortcutHits(days)]);
+        const [after, shortcuts] = await Promise.all([usageStats(days), sumShortcutHits(days)]);
 
-    assert.deepEqual(after.shortcutHits, shortcuts, 'usageStats.shortcutHits mirrors the same-window sum');
-    assert.equal(
-      after.shortcutHits.total - before.shortcutHits.total,
-      1,
-      'the newly recorded shortcut hit is reflected',
-    );
-    assert.equal(
-      after.inbound,
-      before.inbound,
-      'existing inbound field is unchanged by a shortcut-hit write',
-    );
-    assert.equal(
-      after.outbound,
-      before.outbound,
-      'existing outbound field is unchanged by a shortcut-hit write',
-    );
-    assert.equal(
-      after.costUsd,
-      before.costUsd,
-      'existing costUsd field is unchanged by a shortcut-hit write',
-    );
-    assert.deepEqual(after.costByRole, before.costByRole, 'existing costByRole field is unchanged');
-    assert.equal(
-      after.backgroundCostUsd,
-      before.backgroundCostUsd,
-      'existing backgroundCostUsd field is unchanged by a shortcut-hit write',
-    );
-
-    await pool.query(
-      `DELETE FROM shortcut_hits WHERE kind = 'ack' AND created_at > now() - interval '1 hour'`,
-    );
+        assert.deepEqual(
+          after.shortcutHits,
+          shortcuts,
+          'usageStats.shortcutHits mirrors the same-window sum',
+        );
+        assert.equal(
+          after.shortcutHits.total - before.shortcutHits.total,
+          1,
+          'the newly recorded shortcut hit is reflected',
+        );
+        assert.equal(
+          after.inbound,
+          before.inbound,
+          'existing inbound field is unchanged by a shortcut-hit write',
+        );
+        assert.equal(
+          after.outbound,
+          before.outbound,
+          'existing outbound field is unchanged by a shortcut-hit write',
+        );
+        assert.equal(
+          after.costUsd,
+          before.costUsd,
+          'existing costUsd field is unchanged by a shortcut-hit write',
+        );
+        assert.deepEqual(after.costByRole, before.costByRole, 'existing costByRole field is unchanged');
+        assert.equal(
+          after.backgroundCostUsd,
+          before.backgroundCostUsd,
+          'existing backgroundCostUsd field is unchanged by a shortcut-hit write',
+        );
+      } finally {
+        await pool.query(
+          `DELETE FROM shortcut_hits WHERE kind = 'ack' AND created_at > now() - interval '1 hour'`,
+        );
+      }
+    });
   },
 );
 
