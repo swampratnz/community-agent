@@ -80,6 +80,11 @@ jobs:
 
             # An open same-repo PR closing this issue means the build lane is
             # legitimately in flight (review/revise/autofix own it now) — skip.
+            # Deliberately no PR-author check (unlike autofix/auto-merge, which
+            # gate on the build worker's bot identity): isCrossRepository
+            # already excludes forks, so a matching PR requires push access to
+            # THIS repo, and the worst a crafted "Closes #N" PR achieves here
+            # is delaying an escalation. Revisit if push access ever broadens.
             has_pr="$(jq --arg n "${num}" \
               '[.[] | select(test("[Cc]loses #" + $n + "\\b"))] | length' <<<"${pr_bodies}")"
             if [ "${has_pr}" -gt 0 ]; then
