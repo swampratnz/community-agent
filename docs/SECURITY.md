@@ -1608,6 +1608,76 @@ the "Secret exposure" controls (§2) above rather than assumed covered by them:
   same shape as the `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage
   pins (issues #311/#367).
 
+### 17. Discord auto-enroll for new joiners (`DISCORD_AUTO_ENROLL_MEMBERS`, opt-in, Discord-only, issue #605)
+
+Gated-mode enrollment was manual (`add_member` per person, or bulk SQL) — a
+genuine joiner sat as a gated guest, unable to reach any member-tier tool,
+until an admin noticed and enrolled them. With this flag on, every non-bot
+Discord join is granted standing member-tier `community_users` access
+automatically, right alongside the existing server-roster join record. This is
+a genuine RBAC-posture change — every joiner gets tool access with **no
+per-person admin review** — so it is off by default and should only be
+enabled for a server the operator actually intends to be open-enrollment:
+
+- **Off by default, byte-identical.** Unset/`false` `DISCORD_AUTO_ENROLL_MEMBERS`
+  means `onGuildMemberAdd` never calls the enroll path — pinned by a
+  `SECURITY:` test.
+- **Identity from the platform, never message content.** The grant is keyed on
+  `member.id`, the Discord-provided id of the account that triggered the
+  `guildMemberAdd` event — the same identity-from-platform-only invariant as
+  every other role/tier decision in this codebase (§1). Nothing in the
+  message/profile content is trusted.
+- **Capped at `member`, never `admin`, and never a downgrade.** The write
+  always requests `role: 'member'`, and reuses `upsertMember`'s existing
+  `ON CONFLICT ... CASE`, which structurally refuses to downgrade an existing
+  `admin` row to `member` — a removed-then-rejoining admin (or one manually
+  restored) keeps `admin`. This is a property of the shared upsert, not
+  app-level logic in the auto-enroll path, so there's no TOCTOU window against
+  a concurrent human `add_member`/`remove_member` call. Pinned by a
+  repository-level `SECURITY:` test against a real DB.
+- **Deterministic, never routed through the agent/model.** `autoEnrollMember`
+  is a direct repository call from the adapter's join handler — the joiner's
+  display name/profile never reaches a prompt or tool-call path. Pinned by a
+  `SECURITY:` test asserting the adapter file never imports the Agent SDK.
+- **Grant and audit row are atomic.** The member upsert and its `admin_audit`
+  row are written inside one Postgres transaction
+  (`autoEnrollMemberWithAudit`/`repository.ts`) — they commit together or not
+  at all, so a transient failure on the audit insert can never leave a member
+  with standing access and no audit trail (an earlier non-transactional
+  version of this feature was caught and fixed in review before merge).
+  Pinned by both a mocked-adapter test and a real-DB repository test covering
+  the commit and rollback paths.
+- **Distinguishable from a human grant.** The audit row's `actor_user_id` is
+  the `AUTO_ENROLL_ACTOR` sentinel (`system:discord_auto_enroll`,
+  `repository.ts`), not a real user id, so every auto-enrolled join is
+  identifiable in `admin_audit`/`audit_view` after the fact and never
+  conflated with an admin's own `add_member` action.
+- **Excluded from `admin_activity`'s ranking, not from the audit trail.** The
+  super-admin `admin_activity` tool ranks actors by privileged-action volume
+  to answer "who is doing moderation/curation work" — on an active
+  open-enrollment server, an unfiltered ranking would be dominated by the
+  system sentinel and bury genuine human admin activity. `adminActivitySummary`
+  filters out `AUTO_ENROLL_ACTOR` specifically from that rollup; the rows
+  remain fully visible and unfiltered in `admin_audit` and `audit_view` for
+  anyone who queries them directly — this narrows one summary view, not the
+  underlying record.
+- **No approval DM.** `autoEnrollMember` deliberately does not send the
+  `notifyMemberApproved` DM that a human `add_member` approval triggers —
+  that message is framed as an admin-initiated "you've been approved" notice,
+  and sending it unprompted on every join would conflate the join moment with
+  admin-approval UX. The joiner is simply answered on their next message
+  instead of gated. Pinned by a `SECURITY:` test.
+- **Re-mute-on-rejoin still runs first.** `onGuildMemberAdd` checks and
+  reapplies a muted role (the leave/rejoin "shed the mute" bypass documented
+  below under Discord platform notes) *before* auto-enroll runs, so the extra
+  DB round-trip auto-enroll adds never widens that race window.
+- **A removed member who rejoins is re-enrolled.** This flag does not change
+  Discord-level moderation — a removed `community_users` row (via
+  `remove_member`) is not a Discord ban, so if the person can still join the
+  guild, rejoining re-triggers auto-enroll. An operator who wants someone kept
+  out durably must use Discord's own ban, not just `remove_member`, while this
+  flag is on.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
@@ -2015,6 +2085,11 @@ number could reach an unrelated person).
       rest of the bot's permissions minimal. `MODERATION_LLM_ABUSE_ENABLED`
       (Stage 2) additionally spends the shared Max pool per escalated message —
       leave it off until you want it.
+- [ ] **Before enabling `DISCORD_AUTO_ENROLL_MEMBERS`**: the operator actually
+      intends the server to be open-enrollment — every new joiner gets standing
+      member-tier tool access with no per-person admin review. To keep someone
+      out durably once this is on, use Discord's own ban; `remove_member` alone
+      does not stop a rejoin from being re-enrolled.
 - [ ] A retention/deletion policy is defined (`forget_me`/`purge_user_data`
       for per-user requests; `INTERACTION_RETENTION_DAYS` for age-based purge).
 - [ ] `journalctl -u community-agent` reviewed for redaction leaks.
