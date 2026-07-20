@@ -1774,9 +1774,17 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   repository/roles layer). Every recipient-less entry (from any of the six
   producers above) is unaffected: `recipients` stays absent and flush still
   targets `superAdminIds(adapter.platform)`, byte-identical to before.
-  `router.ts`'s `notifyAccessRequest` remains the sole item still on this
-  growth path — same underlying defect and fix shape, deliberately deferred
-  to keep #625's diff reviewable.
+
+  Issue #639 closed the remaining item on this growth path, `router.ts`'s
+  `notifyAccessRequest`, the same way: it computes `anyConnected` over the
+  resolved `listAdmins()` roster's platforms (there is no `excludeUserId` on
+  this path — the guest triggering the alert is never an admin) and, if none
+  are connected, queues at `'low'` priority with the resolved recipient set
+  instead of silently finishing with nothing sent. An empty roster stays a
+  no-op, exactly as before. Every `superAdminIds()` producer (issues
+  #545/#593) and every `listAdmins()` producer (`notifyAdmins` #625,
+  `notifyAccessRequest` here) now shares the same total-outage protection —
+  this growth path is closed.
 - **Per-recipient window-reopen queue for the WhatsApp Cloud
   connected-but-window-closed case** (issue #602) — a DISTINCT failure class
   from the zero-connected-adapter queue just above: the Cloud adapter stays

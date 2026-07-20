@@ -72,7 +72,7 @@
   "lowRatedCaveatRouter.test.ts": 1,
   "moderation.test.ts": 12,
   "moderationRepo.test.ts": 4,
-  "notifyAdminsAccessRequestUnqueued.test.ts": 9,
+  "notifyAdminsAccessRequestUnqueued.test.ts": 13,
   "notifyAdminsWindowReopenQueue.test.ts": 3,
   "outbound.test.ts": 5,
   "pauseNotice.router.test.ts": 2,

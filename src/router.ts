@@ -227,6 +227,23 @@ export async function notifyAccessRequest(
   if (admins.length === 0) return;
   const name = guest.userName ? sanitizeName(guest.userName) : '';
   const message = `🔔 New access request from ${name || guest.userId} on ${guest.platform}. Use add_member to let them in.`;
+  const anyConnected = admins.some((admin) => adapterFor(admin.platform)?.isConnected());
+  if (!anyConnected) {
+    logger.warn(
+      { message },
+      'Access-request alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+    );
+    queuePendingAlert(
+      message,
+      // Guest-reachable (any gated guest's first message triggers this,
+      // rate-limited by ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR) — mirrors
+      // notifyAdmins' (#625) 'low' rationale so a flood of access requests
+      // during an outage can never evict a genuine 'system' alert (#545).
+      'low',
+      admins.map((admin) => ({ platform: admin.platform, platformUserId: admin.platformUserId })),
+    );
+    return;
+  }
   for (const admin of admins) {
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue;
