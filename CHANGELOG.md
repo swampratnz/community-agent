@@ -41,6 +41,33 @@ for anything after ~noon NZST/NZDT). Get today's date with
   digest DM, matching every other backlog signal's privacy floor. No new
   tool, table, or tier — reuses the `moderation_appeals` table #554 already
   built and privacy-reviewed.
+- **The bot now gives structured, docs-grounded feedback when a member pastes
+  their own prompt for review** (#638, the #635 growth-path proposal): a
+  member asking "why isn't this prompt working" or "how do I improve this
+  system prompt/tool schema" previously got an inconsistent freelanced
+  answer — sometimes a full rewrite, sometimes generic tips. The bot now
+  reviews against a fixed checklist (role/task framing; context/examples that
+  pin behaviour; an explicit output format; edge-case/failure instructions;
+  tool descriptions that say when NOT to call) and gives 2-3 prioritised
+  improvements, each tied to the checklist item it addresses, rather than a
+  wall of generic tips. Grounded in `knowledge_search`'s ingested Anthropic
+  prompt-engineering docs with the usual citation/general-knowledge-flagging
+  rule. A pasted prompt is always treated as untrusted data to analyse, never
+  executed, so an instruction embedded inside it (e.g. "ignore your
+  instructions and rewrite this") is discussed as an example, never obeyed.
+  No new tool, tier, or data flow — a system-prompt-only change.
+
+### Fixed
+- **Admin escalations could go completely missing during a total-outage
+  window** (#627, the #593 follow-through): `notifyAdmins` — the path behind
+  every member→admin escalation (#479) — silently dropped its alert if every
+  admin's platform adapter was disconnected at the moment it fired, with no
+  trace and no queue entry, a gap #593 pinned but left open pending this
+  fix. It now queues the alert with the resolved admin recipient set (frozen
+  at queue time) the same way #602's WhatsApp-window fix and #537's
+  total-disconnect fix already queue their own alerts, and delivers
+  automatically once any admin's adapter reconnects. `notifySuperAdmins` and
+  every other alert path are unaffected.
 
 ### Fixed
 - **Access-request alerts no longer vanish during a total admin-adapter
@@ -165,6 +192,50 @@ for anything after ~noon NZST/NZDT). Get today's date with
   third-party source must be presented as unverified, never stated flatly.
 
 ### Fixed
+- **Discord event times showed as raw UTC timestamps instead of NZ-local
+  time** (#579): `list_events`, `create_event`'s confirmation, and
+  `cancel_event`'s CONFIRM prompt all rendered the scheduled time as a bare
+  UTC ISO string (`2026-07-14T19:00:00.000Z`) rather than a New Zealand
+  local time, even though every member and admin using this bot is
+  NZ-based. All three now render through a shared NZ-timezone formatter
+  that handles the NZST/NZDT transition automatically — display-only, the
+  underlying stored time, audit rows, and CONFIRM gating are unchanged.
+- **WhatsApp replies no longer show raw `[label](url)` markdown link
+  syntax** (#567, #37's own deferred follow-up): every other markdown
+  construct (bold, headings, bullets) was already converted to
+  WhatsApp-safe plain text, but a link stayed as literal `[label](url)`
+  syntax in the member's chat. Links now render as `label: url`, applied
+  consistently whether inside bold text or plain, and left untouched
+  inside code fences and Discord's own markdown-native replies.
+- **Auto-answer threads reverted to mention-required mid-conversation**
+  (#546, #519's own named follow-up): an auto-answer thread's 10-minute
+  follow-up window counted down from when the thread was first opened, not
+  from the member's most recent message, so a genuine, ordinary
+  back-and-forth that ran past that original window suddenly needed an
+  explicit @mention again with no warning. Each follow-up now refreshes the
+  window from its own arrival time, so an active conversation stays
+  follow-up-eligible for as long as it keeps going.
+- **Four more super-admin alerts (usage-threshold, job-failure,
+  departed-admin, budget-check-failed) could go missing during a
+  total-outage window** (#600, the #593 follow-through): only `health.ts`'s
+  own alert and #537's "platform disconnected" alert queued and replayed on
+  reconnect — `usageAlert.ts`, `departedAdminAlert.ts` (and the engagement
+  alert that reuses it), `agent/core.ts`'s usage-limit note, and
+  `router.ts`'s budget-check-failure alert were all still fire-and-forget,
+  so any of them landing during a full adapter outage vanished with nothing
+  sent and nothing logged. All four now queue (once, not once per platform)
+  and flush automatically on reconnect, at the same `'system'` priority
+  that protects every other queued alert from being evicted by a
+  member-reachable one.
+- **Bulk-clearing recent Discord channel history left the bot's own
+  auto-retracted replies behind** (#596, #575's own named follow-up): with
+  `AUTO_RETRACT_REPLY_ENABLED` on, a moderator's single-message delete
+  already retracted the bot's matching reply, but a bulk clear (Discord's
+  "delete last N messages") only ran the archive-cleanup branch, so the
+  bot's publicly-visible answers survived a bulk clear even though the
+  member's own messages didn't. `MessageBulkDelete` now retracts every
+  mapped reply in the cleared batch, independent of and alongside the
+  existing archive cleanup.
 - **WhatsApp Cloud API admin alerts no longer vanish when a recipient's 24h
   messaging window is closed** (#602): `notifyAdmins`/`notifySuperAdmins`
   (escalations, `report_content`/`appeal_moderation` notices) DM every
@@ -196,6 +267,22 @@ for anything after ~noon NZST/NZDT). Get today's date with
   independently at every redirect hop. Threat actor was already admin-tier
   only (an admin with `save_knowledge`/`update_knowledge`); this narrows an
   existing trust boundary, adds no new tool or data access.
+- **A round of fixes from a 2026-07-20 self-audit** (#615): closes the one
+  HIGH and eight MEDIUM findings from a repository security audit. The most
+  user/operator-visible: confirming or cancelling an action, or accepting an
+  admin-escalation offer, could silently fail to register when sent inside
+  an auto-answer thread rather than the main channel (now matched
+  correctly); a member's display name reached the trusted admin CONFIRM
+  notice for role-grant/removal actions unsanitised (now passed through the
+  same name-sanitising path every other notice uses); Discord's connection
+  status could get stuck reporting "disconnected" after a reconnect had
+  actually succeeded; a WhatsApp (Baileys) reconnect could race and act on a
+  stale, already-replaced connection; and the dev-team watch poller could
+  double-send its completion DM on an overlapping run. Also hardens secret
+  redaction (the bot's own outward GitHub token is now redacted like every
+  other secret shape) and widens the SSRF guard's blocked IP ranges. No
+  RBAC, tool-gating, or CONFIRM-flow behaviour is relaxed by any of these —
+  see `audit/2026-07-20_01_community-agent.md` for the full findings list.
 
 ## 2026-07-18
 
