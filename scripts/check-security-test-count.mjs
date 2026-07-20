@@ -216,9 +216,12 @@ if (baselineRef && process.env.ALLOW_SECURITY_FLOOR_LOWER !== 'true') {
     if (baseline && typeof baseline === 'object') {
       for (const [file, baseCount] of Object.entries(baseline)) {
         const nowCount = manifest[file] ?? 0;
-        // A whole test FILE that is genuinely gone (deleted/renamed) is a
-        // legitimate removal — only flag a count that dropped while the test
-        // file still exists (or an entry silently zeroed for a live file).
+        // Per-file check: precise message for the common straight-lowering
+        // case. A whole test FILE genuinely gone is a legitimate removal, so
+        // only flag a count that dropped while the test file still exists (or
+        // an entry silently zeroed for a live file). This alone MISSES a
+        // rename-with-drop (old key vanishes, new key isn't in the baseline) —
+        // the global-sum check below is the rename-proof backstop.
         const fileStillExists = testFileNames.includes(file);
         if (nowCount < baseCount && (fileStillExists || nowCount > 0)) {
           problems.push(
@@ -227,6 +230,24 @@ if (baselineRef && process.env.ALLOW_SECURITY_FLOOR_LOWER !== 'true') {
               `'allow-security-floor-lower' label (which sets ALLOW_SECURITY_FLOOR_LOWER) and explain it in the PR.`,
           );
         }
+      }
+      // Global-sum backstop (rename-proof): the per-file loop only walks OLD
+      // keys, so renaming alpha.test.ts (3 tests) → zeta.test.ts while dropping
+      // one to 2 — with a matching zeta:2 manifest entry — slips past it (old
+      // key reads as a legit deletion, new key never inspected). The TOTAL
+      // count, however, still falls (baseTotal 3 → nowTotal 2), which this
+      // catches regardless of per-file key churn. A pure rename (no test
+      // removed) leaves the sum unchanged and passes; only a NET drop is
+      // flagged, mirroring the `--write --allow-lower` guard's intent.
+      const numeric = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+      const baseTotal = Object.values(baseline).reduce((a, b) => a + numeric(b), 0);
+      const nowTotal = Object.values(manifest).reduce((a, b) => a + numeric(b), 0);
+      if (nowTotal < baseTotal) {
+        problems.push(
+          `total SECURITY: test count DROPPED ${baseTotal} → ${nowTotal} vs the PR base — the NET number of ` +
+            `SECURITY: tests fell (a deletion, or a rename that dropped one). Refused by default (audit H1). ` +
+            `If intentional, add the 'allow-security-floor-lower' label and explain it in the PR.`,
+        );
       }
     }
   } else {

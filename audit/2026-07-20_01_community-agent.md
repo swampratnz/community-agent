@@ -78,7 +78,7 @@ per-finding **Status** lines in §4 and §5). The 15 LOW items are **⬜ deferre
 **Location:** `scripts/check-security-test-count.mjs:126-142`; `.github/workflows/pipeline-pr-automerge.yml:165-182`; `.github/CODEOWNERS:6-12`
 **Category:** CI/CD governance · OBSERVED (composed from three verified facts)
 
-**Status:** ✅ Resolved in this PR. (2) `/tests/security-floor.json` and `/scripts/` added to `CODEOWNERS`. (3) `check-security-test-count.mjs` now refuses a per-file count that is LOWERED vs the PR base (`SECURITY_FLOOR_BASELINE_REF`, wired from `ci.yml` on `pull_request` with `fetch-depth: 0`) unless an explicit `allow-security-floor-lower` label is set — so a deleted SECURITY test + lowered manifest can no longer pass CI green. Fix (1) — adding `security-floor.json` to the auto-merge governance regex — was intentionally NOT applied: the loop deliberately excludes per-PR data files, and the CI lowering guard closes the actual hole precisely (for both auto- and human-merged PRs) without forcing a human merge on every count-*raising* PR. The branch-protection "require human review" setting remains the enforceable backstop.
+**Status:** ✅ Resolved in this PR. (2) `/tests/security-floor.json` and `/scripts/` added to `CODEOWNERS`. (3) `check-security-test-count.mjs` now refuses a per-file count that is LOWERED vs the PR base (`SECURITY_FLOOR_BASELINE_REF`, wired from `ci.yml` on `pull_request` with `fetch-depth: 0`) unless an explicit `allow-security-floor-lower` label is set — so a deleted SECURITY test + lowered manifest can no longer pass CI green. The guard combines a per-file check with a rename-proof global-sum backstop (a net drop in total count fails too), after a review caught that a rename-with-drop slipped past the per-file check alone. Fix (1) — adding `security-floor.json` to the auto-merge governance regex — was intentionally NOT applied: the loop deliberately excludes per-PR data files, and the CI lowering guard closes the actual hole precisely (for both auto- and human-merged PRs) without forcing a human merge on every count-*raising* PR. The branch-protection "require human review" setting remains the enforceable backstop.
 
 The plain `test:security` gate CI runs enforces an **exact** match, not a floor:
 
@@ -181,7 +181,7 @@ return requireConfirm(`assign community role ${args.roleId} to ${label}`, 'admin
 **Location:** `src/platforms/discord/adapter.ts:292-316`
 **Category:** Reliability / operational readiness · OBSERVED (handler set); storm INFERRED
 
-**Status:** ✅ Resolved in this PR. An `Events.ShardReady` handler now sets `connected = true`, so a re-identify (not just a resume) restores the flag.
+**Status:** ✅ Resolved in this PR. An `Events.ShardReady` handler now sets `connected = true`, so a re-identify (not just a resume) restores the flag. Pinned by a regression test in `discordAdapter.test.ts`.
 
 Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`) and `ShardResume` (`:313`) mutate `this.connected`. discord.js emits `ShardResume` only for a *resumed* session; when the gateway forces a re-identify (invalid session — common after a longer outage) the shard comes back via `ShardReady`, which has **no handler here**, and `ClientReady` never re-fires because it was `once`.
 
@@ -196,7 +196,7 @@ Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`)
 **Location:** `src/platforms/whatsapp/baileysAdapter.ts:175-266` (esp. `:202, 223-252`)
 **Category:** Reliability / event-handler lifecycle · OBSERVED (missing guard); storm INFERRED (Baileys 6.7.23 re-emit behaviour)
 
-**Status:** ✅ Resolved in this PR. `connection.update` and `messages.upsert` closures now early-return when `this.sock !== sock`, and the pending reconnect timer is tracked and cleared on a successful open (and collapsed on re-schedule), so a stale socket’s `close` can’t churn a healthy one.
+**Status:** ✅ Resolved in this PR. `connection.update` and `messages.upsert` closures now early-return when `this.sock !== sock`, and the pending reconnect timer is tracked and cleared on a successful open (and collapsed on re-schedule), so a stale socket’s `close` can’t churn a healthy one. Pinned by a new `tests/baileysReconnect.test.ts` (mocks the baileys module, drives two sockets, fires the stale one’s `close`).
 
 `connect()` attaches `connection.update` / `messages.upsert` to each new socket, never removes the previous socket's listeners, and the handlers mutate shared state (`this.connected`, `scheduleReconnect()`) without checking `sock === this.sock`. The teardown `this.sock?.end(undefined)` may emit `close` on the *old* socket after replacement socket B is open.
 
@@ -210,7 +210,7 @@ Only `ClientReady` (registered with `.once`, `:292`), `ShardDisconnect` (`:309`)
 **Location:** `src/backgroundJobs.ts:559-581` (scheduler) and `:467-532` (`runDevTeamWatchOnce`)
 **Category:** Idempotency / job scheduling · OBSERVED
 
-**Status:** ✅ Resolved in this PR. An `inFlight` re-entrancy latch now skips a tick while the previous pass is still running, so overlapping passes can’t double-send completion DMs.
+**Status:** ✅ Resolved in this PR. An `inFlight` re-entrancy latch now skips a tick while the previous pass is still running, so overlapping passes can’t double-send completion DMs. Pinned by a regression test in `devTeamWatch.test.ts` (mock timers, an in-flight pass, an overlapping tick).
 
 `startDevTeamWatchPoller` fires from a bare `setInterval` every `watchPollMinutes` (**default 1 minute**) with no in-flight guard. Each pass does, per watch, a sequential `getStatus` (+ `getResult`) + `sendDirectMessage` + `markNotified`, and the DM is sent **before** the stamp (`:518-530`). With several watches and a slow tailnet/Graph round-trip a pass can exceed 60 s, so two passes run concurrently, both read the same unnotified rows before either stamps, and the "rare duplicate DM" the comment allows becomes systematic under latency.
 **Trigger:** `DEV_TEAM_ENABLED` with multiple in-flight watches and normal tailnet latency.

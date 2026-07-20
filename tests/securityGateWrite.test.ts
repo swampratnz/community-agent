@@ -207,3 +207,51 @@ test('SECURITY: check mode refuses a per-file count LOWERED vs the PR base (a de
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('SECURITY: check mode catches a RENAME-with-drop that slips past the per-file check, via the global-sum backstop — audit H1 (review follow-up)', () => {
+  // Baseline: alpha declares 3 SECURITY tests, manifest agrees.
+  const dir = setup({ 'alpha.test.ts': 3 }, { 'alpha.test.ts': 3 });
+  const git = (args: string[]) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  try {
+    git(['init', '-q']);
+    git(['config', 'user.email', 'ci@example.com']);
+    git(['config', 'user.name', 'CI']);
+    git(['add', '.']);
+    git(['commit', '-q', '--no-gpg-sign', '-m', 'baseline']);
+
+    // Rename alpha.test.ts → zeta.test.ts AND drop one test (3 → 2), with a
+    // matching zeta:2 manifest entry. The exact-match check passes (2==2 for
+    // the new name) and the per-file baseline check sees alpha vanish as a
+    // legit deletion — only the global-sum backstop (3 → 2) catches it.
+    rmSync(path.join(dir, 'tests', 'alpha.test.ts'));
+    writeFileSync(path.join(dir, 'tests', 'zeta.test.ts'), fixtureContent(2));
+    writeFileSync(
+      path.join(dir, 'tests', 'security-floor.json'),
+      JSON.stringify({ 'zeta.test.ts': 2 }, null, 2) + '\n',
+    );
+
+    const check = (env: Record<string, string>) =>
+      spawnSync('node', [path.join(dir, 'scripts', 'check-security-test-count.mjs')], {
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
+      });
+
+    const blocked = check({ SECURITY_FLOOR_BASELINE_REF: 'HEAD' });
+    assert.notEqual(blocked.status, 0, 'a rename-with-drop must fail the check');
+    assert.match(
+      blocked.stderr,
+      /total SECURITY: test count DROPPED 3 . 2/,
+      'the net-drop backstop names it',
+    );
+    assert.match(blocked.stderr, /allow-security-floor-lower/);
+
+    const overridden = check({ SECURITY_FLOOR_BASELINE_REF: 'HEAD', ALLOW_SECURITY_FLOOR_LOWER: 'true' });
+    assert.doesNotMatch(
+      overridden.stderr ?? '',
+      /DROPPED/,
+      'the explicit override suppresses the net-drop block',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

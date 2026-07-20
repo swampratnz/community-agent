@@ -89,7 +89,7 @@
   "router.test.ts": 6,
   "secrets.test.ts": 5,
   "securityGateCanary.test.ts": 1,
-  "securityGateWrite.test.ts": 6,
+  "securityGateWrite.test.ts": 7,
   "statusCheckAlert.test.ts": 1,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 10,
