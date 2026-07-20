@@ -47,6 +47,8 @@ const {
   formatEngagementStats,
   formatFeatureFlags,
   FEATURE_FLAG_MAP,
+  formatOtherConfiguredKnobs,
+  OTHER_CONFIGURED_KNOBS,
   resolveSanitizedLabel,
   formatKnowledgeCitationNote,
   formatRelativeAge,
@@ -7132,6 +7134,125 @@ test('SECURITY: feature_flags handler makes no repository or query() call — sy
     /pool\.|query\(|await\s/,
     'handler must be a synchronous read of in-memory config — no DB/model call',
   );
+});
+
+// --- issue #616: feature_flags' "Other configured knobs" section -----------
+
+test('feature_flags: "Other configured knobs" renders exact lines against a default/empty fixture (issue #616)', () => {
+  const fixture = {
+    discord: { autoAnswerChannelIds: [], autoAnswerRateLimitPerHour: 10 },
+    whatsapp: { voice: { minRole: 'super_admin', rateLimitPerHour: 0 } },
+    adminDigest: { knowledgeStaleDays: 0 },
+  };
+
+  const rendered = formatOtherConfiguredKnobs(fixture);
+
+  assert.equal(
+    rendered,
+    [
+      'Other configured knobs:',
+      '- Auto-answer channels: Off',
+      '- WhatsApp voice min role: super_admin',
+      '- WhatsApp voice rate limit/hour: 0',
+      '- Auto-answer rate limit/hour: 10',
+      '- Knowledge stale threshold (days): 0',
+    ].join('\n'),
+  );
+});
+
+test('feature_flags: "Other configured knobs" renders exact lines against a values-set fixture (issue #616)', () => {
+  const fixture = {
+    discord: { autoAnswerChannelIds: ['chan-1', 'chan-2', 'chan-3'], autoAnswerRateLimitPerHour: 25 },
+    whatsapp: { voice: { minRole: 'admin', rateLimitPerHour: 5 } },
+    adminDigest: { knowledgeStaleDays: 60 },
+  };
+
+  const rendered = formatOtherConfiguredKnobs(fixture);
+
+  assert.equal(
+    rendered,
+    [
+      'Other configured knobs:',
+      '- Auto-answer channels: 3 configured',
+      '- WhatsApp voice min role: admin',
+      '- WhatsApp voice rate limit/hour: 5',
+      '- Auto-answer rate limit/hour: 25',
+      '- Knowledge stale threshold (days): 60',
+    ].join('\n'),
+  );
+});
+
+test('feature_flags: "Other configured knobs" section is appended to the tool output, both sections present (issue #616)', () => {
+  const rendered = `${formatFeatureFlags(config)}\n\n${formatOtherConfiguredKnobs(config)}`;
+  assert.match(rendered, new RegExp(`Feature flags \\(${FEATURE_FLAG_MAP.length} total\\):`));
+  assert.match(rendered, /Other configured knobs:/);
+  assert.equal(
+    rendered.indexOf('Feature flags') < rendered.indexOf('Other configured knobs:'),
+    true,
+    'the feature-flags section must precede the appended knobs section',
+  );
+});
+
+test('SECURITY: feature_flags "Other configured knobs" count-kind structural safety — a planted array of identifying-looking ids never reaches rendered output, only its length (issue #616)', () => {
+  const plantedId = 'discord-channel-id-planted-should-never-render-1234567890';
+  const fixture = {
+    discord: { autoAnswerChannelIds: [plantedId, 'another-planted-id-2'], autoAnswerRateLimitPerHour: 10 },
+    whatsapp: { voice: { minRole: 'super_admin', rateLimitPerHour: 0 } },
+    adminDigest: { knowledgeStaleDays: 0 },
+  };
+
+  const rendered = formatOtherConfiguredKnobs(fixture);
+
+  assert.doesNotMatch(rendered, new RegExp(plantedId));
+  assert.match(rendered, /- Auto-answer channels: 2 configured/);
+});
+
+test('SECURITY: feature_flags "Other configured knobs" allowlist purity — a planted secret/token-shaped field not on either allowlist never reaches rendered output (issue #616)', () => {
+  const plantedSecret = 'sk-ant-oat-planted-fake-super-secret-token-should-never-render';
+  const fixture = {
+    llm: { oauthToken: plantedSecret },
+    discord: { botToken: plantedSecret, autoAnswerChannelIds: [], autoAnswerRateLimitPerHour: 10 },
+    whatsapp: {
+      cloud: { accessToken: plantedSecret },
+      voice: { minRole: 'super_admin', rateLimitPerHour: 0 },
+    },
+    adminDigest: { knowledgeStaleDays: 0 },
+  };
+
+  const rendered = formatOtherConfiguredKnobs(fixture);
+
+  assert.doesNotMatch(rendered, new RegExp(plantedSecret.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')));
+});
+
+test('feature_flags: OTHER_CONFIGURED_KNOBS has exactly the 5 knobs named by the #616 adversarial verdict (anti-scope-creep pin)', () => {
+  assert.equal(OTHER_CONFIGURED_KNOBS.length, 5);
+  assert.deepEqual(OTHER_CONFIGURED_KNOBS.map((e) => e.envVar).sort(), [
+    'AUTO_ANSWER_CHANNEL_IDS',
+    'AUTO_ANSWER_RATE_LIMIT_PER_HOUR',
+    'KNOWLEDGE_STALE_DAYS',
+    'WHATSAPP_VOICE_MIN_ROLE',
+    'WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR',
+  ]);
+  const countKindEntries = OTHER_CONFIGURED_KNOBS.filter((e) => e.kind === 'count');
+  assert.deepEqual(
+    countKindEntries.map((e) => e.envVar),
+    ['AUTO_ANSWER_CHANNEL_IDS'],
+    'exactly one knob is list-shaped and must render only via getConfigArrayLength',
+  );
+});
+
+test('feature_flags: every OTHER_CONFIGURED_KNOBS entry resolves against the real, already-loaded config without throwing (issue #616)', () => {
+  const rendered = formatOtherConfiguredKnobs(config);
+  const renderedLabelLines = rendered.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(renderedLabelLines.length, OTHER_CONFIGURED_KNOBS.length);
+});
+
+test('SECURITY: feature_flags handler + "Other configured knobs" formatter never call Object.entries/Object.values/spread on the object they read (issue #616)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const formatterStart = source.indexOf('export function formatOtherConfiguredKnobs(');
+  assert.notEqual(formatterStart, -1, 'formatOtherConfiguredKnobs not found');
+  const region = source.slice(formatterStart, source.indexOf('\n}\n', formatterStart) + 3);
+  assert.doesNotMatch(region, /Object\.entries\(|Object\.values\(|\.\.\.(source|config)\b/);
 });
 
 test('formatKnowledgeSearchResults returns "no matching" when every hit is below the relevance threshold, even though hits exist', () => {

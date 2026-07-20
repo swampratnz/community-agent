@@ -1148,6 +1148,119 @@ export function formatFeatureFlags(source: unknown = config): string {
   return lines.join('\n');
 }
 
+/**
+ * One entry in the `feature_flags` "Other configured knobs" allowlist (issue
+ * #616) — #559's own named growth path, extending feature_flags to non-boolean
+ * knobs. Same discipline as FeatureFlagEntry: a fixed, hand-written path, never
+ * derived by walking `config`. The `kind` is declared per entry up front so
+ * the renderer's *shape* — not a per-entry judgement call at render time —
+ * decides whether contents or just a length are ever eligible to reach
+ * output: `count` entries can only ever render an array's `.length`, never
+ * its elements; `value` entries render a scalar directly and must only be
+ * used for closed-enum or bounded-integer knobs that carry no
+ * identifying/secret information.
+ */
+export interface OtherConfiguredKnobEntry {
+  /** Exact env var identifier, as it appears in config.ts. */
+  envVar: string;
+  /** Dotted path into the in-memory `config` object. */
+  configPath: string;
+  label: string;
+  kind: 'count' | 'value';
+}
+
+/**
+ * Fixed, hand-maintained allowlist of the 5 non-boolean config knobs named by
+ * issue #616's adversarial verdict. Deliberately NOT derived by walking
+ * `config` — a missing entry here only under-reports a knob, and can never
+ * over-expose a non-allowlisted field (a token, URL, or id list) just by that
+ * field existing on `config`.
+ */
+export const OTHER_CONFIGURED_KNOBS: readonly OtherConfiguredKnobEntry[] = [
+  {
+    envVar: 'AUTO_ANSWER_CHANNEL_IDS',
+    configPath: 'discord.autoAnswerChannelIds',
+    label: 'Auto-answer channels',
+    kind: 'count',
+  },
+  {
+    envVar: 'WHATSAPP_VOICE_MIN_ROLE',
+    configPath: 'whatsapp.voice.minRole',
+    label: 'WhatsApp voice min role',
+    kind: 'value',
+  },
+  {
+    envVar: 'WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR',
+    configPath: 'whatsapp.voice.rateLimitPerHour',
+    label: 'WhatsApp voice rate limit/hour',
+    kind: 'value',
+  },
+  {
+    envVar: 'AUTO_ANSWER_RATE_LIMIT_PER_HOUR',
+    configPath: 'discord.autoAnswerRateLimitPerHour',
+    label: 'Auto-answer rate limit/hour',
+    kind: 'value',
+  },
+  {
+    envVar: 'KNOWLEDGE_STALE_DAYS',
+    configPath: 'adminDigest.knowledgeStaleDays',
+    label: 'Knowledge stale threshold (days)',
+    kind: 'value',
+  },
+] as const;
+
+/**
+ * Structurally reads only the `.length` of an array value at `path` — never
+ * an element — so a `count`-kind entry cannot be made to leak array contents
+ * no matter what identifying-looking data lives on the real config object at
+ * that path. Returns 0 for a missing/non-array path.
+ */
+function getConfigArrayLength(source: unknown, path: string): number {
+  const value = path.split('.').reduce<unknown>((node, key) => {
+    if (node && typeof node === 'object' && key in (node as Record<string, unknown>)) {
+      return (node as Record<string, unknown>)[key];
+    }
+    return undefined;
+  }, source);
+  return Array.isArray(value) ? value.length : 0;
+}
+
+/**
+ * Reads a string- or number-typed leaf at `path` only — never an
+ * object/array — so a `value`-kind entry can only ever render a scalar.
+ * Returns `undefined` for a missing/differently-typed path, so a
+ * config-shape typo under-reports rather than crashing the tool.
+ */
+function getConfigPrimitive(source: unknown, path: string): string | number | undefined {
+  const value = path.split('.').reduce<unknown>((node, key) => {
+    if (node && typeof node === 'object' && key in (node as Record<string, unknown>)) {
+      return (node as Record<string, unknown>)[key];
+    }
+    return undefined;
+  }, source);
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
+
+/**
+ * Pure formatter for feature_flags' "Other configured knobs" section (issue
+ * #616), appended to `formatFeatureFlags`'s output by the tool handler. Same
+ * fixture-testable shape as `formatFeatureFlags` — never reaches any data
+ * source but the `source` object passed in.
+ */
+export function formatOtherConfiguredKnobs(source: unknown = config): string {
+  const lines = ['Other configured knobs:'];
+  for (const entry of OTHER_CONFIGURED_KNOBS) {
+    if (entry.kind === 'count') {
+      const count = getConfigArrayLength(source, entry.configPath);
+      lines.push(`- ${entry.label}: ${count > 0 ? `${count} configured` : 'Off'}`);
+    } else {
+      const value = getConfigPrimitive(source, entry.configPath);
+      lines.push(`- ${entry.label}: ${value ?? 'Off'}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** Shared zod shape for create_event's startTime/endTime — format only; future/ordering checks are cross-field and live in the handler. */
 function isoInstantSchema(description: string) {
   return z
@@ -5334,11 +5447,12 @@ export function buildToolServer(
     'feature_flags',
     'List which of the optional, off-by-default behaviours (boolean *_ENABLED config flags — moderation, ' +
       'knowledge/learning, admin alerts, onboarding, WhatsApp, cost-saving shortcuts, integrations) are ' +
-      'actually turned on right now, grouped by category. Super admin only.',
+      'actually turned on right now, grouped by category, plus a small set of non-boolean operator knobs ' +
+      '(a count or bounded value only — never raw ids/tokens). Super admin only.',
     {},
     async () => {
       assertAtLeast(caller.role, 'super_admin', 'feature_flags');
-      return text(formatFeatureFlags());
+      return text(`${formatFeatureFlags()}\n\n${formatOtherConfiguredKnobs()}`);
     },
     { annotations: { readOnlyHint: true } },
   );

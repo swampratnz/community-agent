@@ -10,6 +10,28 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-21
+
+### Added
+- **`feature_flags` now also reports 5 non-boolean operator knobs** (#616,
+  #559's own named growth path): the super-admin `feature_flags` tool
+  answered "which boolean flags are on?" but had no visibility into
+  non-boolean config — an operator couldn't tell from chat whether
+  `AUTO_ANSWER_CHANNEL_IDS` was actually set for any channel, or whether
+  `WHATSAPP_VOICE_MIN_ROLE` had been lowered from its safe `super_admin`
+  default. Output now gains an appended "Other configured knobs" section
+  covering exactly 5 hand-picked knobs — `AUTO_ANSWER_CHANNEL_IDS`,
+  `WHATSAPP_VOICE_MIN_ROLE`, `WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`,
+  `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, `KNOWLEDGE_STALE_DAYS` — from a second
+  fixed, hand-maintained allowlist (never a `config` reflection). Each entry
+  declares a `count` or `value` render kind up front: a `count`-kind entry
+  (the one list-shaped knob, channel ids) can only ever render an array's
+  `.length`, never its elements, so channel ids themselves are never
+  reachable through this tool; `value`-kind entries render only closed-enum
+  or bounded-integer knobs that carry no identifying/secret information. No
+  new tool, no new tier, no raw ID/list rendering — reuses `feature_flags`'s
+  existing `super_admin` gate.
+
 ## 2026-07-20
 
 ### Added
