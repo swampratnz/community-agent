@@ -613,12 +613,24 @@ test('drain(): waits for an in-flight turn to settle — including its send — 
   const turnPromise = new Promise<AgentReply>((resolve) => {
     resolveTurn = resolve;
   });
-  const router = new Router(async () => turnPromise, 1_000_000);
+  // Signal when the turn callback actually runs: enqueue() stores the chain in
+  // the map synchronously BEFORE the task executes, so the callback running
+  // proves the chain is registered. A fixed sleep raced handle()'s pre-enqueue
+  // awaits under CI load (2026-07-20 flake: drain() saw an empty map and
+  // returned in 0ms).
+  let turnStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    turnStarted = resolve;
+  });
+  const router = new Router(async () => {
+    turnStarted();
+    return turnPromise;
+  }, 1_000_000);
   const { adapter, sent, trigger } = makeAdapter();
   router.register(adapter);
 
   void trigger(makeMessage());
-  await sleep(50); // let handle() run through to enqueue() registering the chain
+  await started; // the chain is registered once the turn callback runs
 
   const drainPromise = router.drain(5_000);
   assert.equal(
@@ -640,12 +652,22 @@ test('drain(): waits for an in-flight turn to settle — including its send — 
 
 test('drain(): resolves at the timeout boundary if a chain never settles — never hangs forever (issue #210)', async (t) => {
   const infoLog = t.mock.method(logger, 'info');
-  const router = new Router(async () => new Promise<AgentReply>(() => {}), 1_000_000); // turn hangs forever
+  // Same started-signal discipline as the settle test above: the hanging turn
+  // callback running proves enqueue() registered the chain, where a fixed
+  // sleep raced handle()'s pre-enqueue awaits under CI load.
+  let turnStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    turnStarted = resolve;
+  });
+  const router = new Router(async () => {
+    turnStarted();
+    return new Promise<AgentReply>(() => {}); // turn hangs forever
+  }, 1_000_000);
   const { adapter, trigger } = makeAdapter();
   router.register(adapter);
 
   void trigger(makeMessage());
-  await sleep(50); // let the chain register
+  await started; // the chain is registered once the turn callback runs
 
   const start = Date.now();
   await router.drain(150);
