@@ -28,6 +28,7 @@ const {
 const { insertDevTeamWatch, listUnnotifiedDevTeamWatches, markDevTeamWatchNotified } =
   await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
+const { config } = await import('../src/config.js');
 
 after(async () => {
   await closeDb();
@@ -183,6 +184,51 @@ test('SECURITY: startDevTeamWatchPoller returns null (no timer) when DEV_TEAM_EN
   const adapter = stubAdapter('discord');
   const timer = startDevTeamWatchPoller([adapter]);
   assert.equal(timer, null, 'the poller must not run while the dev-team feature is disabled');
+});
+
+test('startDevTeamWatchPoller: an in-flight pass is not re-entered by the next tick — the re-entrancy latch prevents overlap/double-send (audit M6)', async (t) => {
+  const wasEnabled = config.devTeam.enabled;
+  const wasMinutes = config.devTeam.watchPollMinutes;
+  config.devTeam.enabled = true;
+  config.devTeam.watchPollMinutes = 1;
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  const runOnce = async () => {
+    calls += 1;
+    await gate; // hold this pass "in flight" past the next tick
+  };
+  let timer: ReturnType<typeof setInterval> | null = null;
+  try {
+    // The poller fires an immediate `void run()`, which enters runOnce (calls=1)
+    // and suspends on `gate` — the pass is now in flight.
+    timer = startDevTeamWatchPoller([], runOnce);
+    assert.ok(timer, 'the poller runs when the feature is enabled');
+    await Promise.resolve();
+    assert.equal(calls, 1, 'the immediate pass started');
+
+    // A tick arrives WHILE the first pass is still in flight. Without the latch
+    // this would start a second overlapping pass; with it, the tick is skipped.
+    t.mock.timers.tick(60_000);
+    await Promise.resolve();
+    assert.equal(calls, 1, 'the overlapping tick must NOT re-enter runOnce (re-entrancy latch)');
+
+    // Let the first pass finish; a subsequent tick is now free to run.
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+    t.mock.timers.tick(60_000);
+    await Promise.resolve();
+    assert.equal(calls, 2, 'once the in-flight pass completes, the next tick runs normally');
+  } finally {
+    if (timer) clearInterval(timer);
+    t.mock.timers.reset();
+    config.devTeam.enabled = wasEnabled;
+    config.devTeam.watchPollMinutes = wasMinutes;
+  }
 });
 
 test('formatDevTeamCompletionDm is a fixed template over identity + job metadata + terminal state (caps the error)', () => {

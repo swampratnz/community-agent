@@ -8,7 +8,8 @@ import type { CodeAnswersPolicy } from '../storage/policies.js';
 const SECRET_PATTERNS: RegExp[] = [
   /\bsk-ant-[\w-]{8,}\b/g, // Anthropic keys/tokens
   /\bsk-[A-Za-z0-9]{20,}\b/g, // generic sk- API keys
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, // GitHub tokens
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, // GitHub classic tokens (ghp_/gho_/…)
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, // GitHub fine-grained PATs (audit M2)
   /\bxox[baprs]-[\w-]{10,}\b/g, // Slack tokens
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access keys
   /\bpostgres(?:ql)?:\/\/\S+/gi, // connection strings

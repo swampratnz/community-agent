@@ -257,6 +257,38 @@ export async function recentConversationHistory(
     .reverse();
 }
 
+/** The subset of a ConversationHistoryEntry the session-rollover backfill renders (renderConversationTail). */
+export type ConversationTailRow = Pick<
+  ConversationHistoryEntry,
+  'content' | 'userName' | 'direction' | 'createdAt'
+>;
+
+/**
+ * Fail-open tail fetch for the fresh-session backfill (core.ts): the most
+ * recent `limit` messages in this conversation within the last
+ * SESSION_MAX_AGE_HOURS, oldest→newest. Same query (and same
+ * exact-conversation scoping contract) as `catch_up`'s
+ * recentConversationHistory above, but degrading to [] on any DB failure —
+ * losing the backfill must never fail the turn (issue #52's fail-open
+ * invariant), exactly like searchMemory. The window is deliberately tied to
+ * the session age cap: a fresh session should inherit at most what a live
+ * session could still have held, not week-old history.
+ */
+export async function recentConversationTail(
+  platform: Platform,
+  conversationId: string,
+  limit: number,
+): Promise<ConversationTailRow[]> {
+  if (limit <= 0) return [];
+  const since = new Date(Date.now() - config.behaviour.sessionMaxAgeHours * 3_600_000);
+  try {
+    return await recentConversationHistory(platform, conversationId, since, limit);
+  } catch (err) {
+    logger.warn({ err }, 'Conversation-tail lookup failed; starting the fresh session without backfill');
+    return [];
+  }
+}
+
 /** A pooled connection or a transaction client — both expose `query`. */
 type Queryable = Pick<PoolClient, 'query'>;
 

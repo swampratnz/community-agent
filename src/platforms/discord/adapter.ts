@@ -314,6 +314,17 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       this.connected = true;
       logger.info('Discord shard resumed');
     });
+    // A longer outage forces the gateway to re-IDENTIFY rather than RESUME; the
+    // shard then comes back via ShardReady, NOT ShardResume, and ClientReady
+    // was registered with `.once` so it never re-fires. Without this handler
+    // `connected` would stick `false` after a re-identify even though messages
+    // are flowing again — a permanently-degraded /healthz, false disconnect
+    // alerts, and alert paths gated on isConnected() skipping a live adapter
+    // (audit M4).
+    this.client.on(Events.ShardReady, () => {
+      this.connected = true;
+      logger.info('Discord shard ready (re-identified)');
+    });
 
     await this.client.login(config.discord.botToken);
   }

@@ -854,13 +854,16 @@ export class Router {
     // actor has a pending action in this conversation, so it never steals
     // normal messages. Never reaches the model: injection can request, only
     // a human can confirm.
-    // A CONFIRM/CANCEL typed inside an auto-answer thread (issue #477) carries
-    // the thread's id, but the action was registered against the parent
-    // channel — resolve back to it for the lookup so the confirm the bot's own
-    // notice asked for isn't silently dropped. Non-thread messages pass through
-    // unchanged.
-    const pendingConversationId =
-      this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId;
+    // A CONFIRM/CANCEL typed inside an auto-answer thread (issue #477) may key
+    // its pending action EITHER under the thread's own id — when a follow-up
+    // typed inside the thread registered the action (issue #519) — OR under the
+    // parent channel, when the action came from the origin post. Prefer the
+    // message's OWN conversation id and only fall back to the parent on a miss,
+    // so a confirm the bot's own notice invited is never dropped in-thread
+    // (audit M1). Non-thread messages resolve to their own id either way.
+    const pendingConversationId = hasPendingAction(msg.platform, msg.conversationId, msg.userId)
+      ? msg.conversationId
+      : (this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId);
     const verdict = classifyConfirmReply(msg.text);
     if (verdict && hasPendingAction(msg.platform, pendingConversationId, msg.userId)) {
       if (verdict === 'cancel') {
@@ -931,11 +934,15 @@ export class Router {
     // through — the text is passed to the model as an ordinary message,
     // never mistaken for a confirmation.
     if (config.behaviour.escalationToAdminEnabled && classifyEscalationConfirm(msg.text)) {
-      // Same auto-answer-thread translation as the CONFIRM/CANCEL intercept
-      // above: an escalation "yes" typed inside the thread resolves back to the
-      // parent channel the offer was registered against (issue #477 × #479).
-      const escalationConversationId =
-        this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId;
+      // Same own-id-first resolution as the CONFIRM/CANCEL intercept above
+      // (audit M1): an escalation offer made on a follow-up typed inside an
+      // auto-answer thread is keyed under the THREAD id, so prefer that and only
+      // fall back to the parent channel (the origin-post offer) on a miss —
+      // otherwise a "yes" typed in-thread would never match its offer.
+      const threadEscalationKey = `${msg.platform}:${msg.conversationId}:${msg.userId}`;
+      const escalationConversationId = this.pendingEscalations.has(threadEscalationKey)
+        ? msg.conversationId
+        : (this.autoAnswerThreadParents.get(msg.conversationId)?.parent ?? msg.conversationId);
       const escalationKey = `${msg.platform}:${escalationConversationId}:${msg.userId}`;
       const pendingEscalation = this.pendingEscalations.get(escalationKey);
       if (pendingEscalation && Date.now() - pendingEscalation.at < ESCALATION_WINDOW_MS) {

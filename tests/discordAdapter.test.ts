@@ -3384,3 +3384,27 @@ test(
     );
   },
 );
+
+test('isConnected() recovers after a re-identify: ShardReady restores connected, not only ShardResume (audit M4)', async () => {
+  const adapter = new DiscordAdapter();
+  const client = (
+    adapter as unknown as {
+      client: { emit: (event: string, ...args: unknown[]) => void; login: (token: string) => Promise<void> };
+    }
+  ).client;
+  client.login = async () => {}; // network-free; ClientReady (once) never fires
+  await adapter.start();
+
+  // A longer outage: the shard disconnects, then the gateway forces a
+  // re-IDENTIFY — which comes back via ShardReady, NOT ShardResume, and
+  // ClientReady was registered `.once` so it never re-fires.
+  client.emit(Events.ShardDisconnect, {}, 0);
+  assert.equal(adapter.isConnected(), false, 'a disconnect marks the adapter not-connected');
+
+  client.emit(Events.ShardReady, 0);
+  assert.equal(
+    adapter.isConnected(),
+    true,
+    'ShardReady (re-identify) must restore connected — otherwise it would stick false and false-alarm /healthz',
+  );
+});

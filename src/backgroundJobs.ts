@@ -556,7 +556,17 @@ export function startDevTeamWatchPoller(
   let lastSuccessAt: number | null = null;
   const threshold = statusCheckAlertThreshold(config.devTeam.watchPollMinutes);
 
+  // Re-entrancy latch (audit M6): the poll tick is 1 minute by default, but a
+  // pass does a sequential per-watch getStatus/getResult/DM/markNotified over
+  // the tailnet, and the DM is sent BEFORE the notified stamp — so under normal
+  // latency a pass can exceed the interval. Without this guard two passes run
+  // concurrently, both read the same unnotified rows before either stamps, and
+  // the completion DM is sent twice. Skip a tick entirely while the previous
+  // pass is still in flight rather than overlap.
+  let inFlight = false;
   const run = async () => {
+    if (inFlight) return;
+    inFlight = true;
     let failed = false;
     try {
       await runOnce();
@@ -564,6 +574,8 @@ export function startDevTeamWatchPoller(
     } catch (err) {
       failed = true;
       logger.error({ err }, 'dev-team watch poller run failed');
+    } finally {
+      inFlight = false;
     }
     const step = stepJobFailureTracker(tracker, failed, threshold);
     tracker = step.tracker;

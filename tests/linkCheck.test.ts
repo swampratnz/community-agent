@@ -58,10 +58,32 @@ test('SECURITY: isDisallowedIp blocks every loopback/private/link-local/cloud-me
     '192.168.255.255',
     '169.254.0.1',
     '169.254.169.254', // the common cloud metadata address
+    // Added by audit M8:
+    '0.0.0.0',
+    '0.255.255.255',
+    '100.64.0.1', // CGNAT / Tailscale (RFC 6598) — this deploy's tailnet range
+    '100.127.255.255',
+    '192.0.0.1', // IETF protocol assignments
+    '198.18.0.1', // benchmarking range
+    '198.19.255.255',
+    '224.0.0.1', // multicast
+    '239.255.255.255',
+    '240.0.0.1', // reserved / future use
+    '255.255.255.255',
   ];
   for (const ip of blockedV4) assert.equal(isDisallowedIp(ip, 4), true, `${ip} must be blocked`);
 
-  const publicV4 = ['8.8.8.8', '1.1.1.1', '172.32.0.1', '172.15.255.255', '11.0.0.1'];
+  // 100.63.x and 100.128.x sit just OUTSIDE 100.64.0.0/10 and must stay public.
+  const publicV4 = [
+    '8.8.8.8',
+    '1.1.1.1',
+    '172.32.0.1',
+    '172.15.255.255',
+    '11.0.0.1',
+    '100.63.255.255',
+    '100.128.0.0',
+    '223.255.255.255',
+  ];
   for (const ip of publicV4) assert.equal(isDisallowedIp(ip, 4), false, `${ip} must NOT be blocked`);
 
   const blockedV6 = [

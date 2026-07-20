@@ -35,6 +35,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-20
 
 ### Added
+- **Fresh-session conversation-tail backfill** (`SESSION_ROLLOVER_TAIL_COUNT`,
+  default 10): when a turn couldn't resume its Claude session (rollover past
+  `SESSION_MAX_TURNS`/`_AGE_HOURS`, a cleared session, or a failed resume),
+  the bot silently lost the whole conversation and had only semantic recall —
+  keyed on the CURRENT message text — to reconstruct it, so a follow-up like
+  "why did you not do that?" one message after its own answer drew a blank.
+  A fresh session now quotes the conversation's most recent messages (bounded
+  by the session age window) into its first turn as a quarantined untrusted
+  block, same framing and sanitisation as recall, so thread continuity
+  survives the reset. Resumed sessions are unchanged — their history is
+  already in-session. Set to 0 to disable.
 - **Weekly cost-trend digest now also reports prompt-cache hit-rate trend**
   (#608): the super-admin-only weekly cost-trend DM (#578) reported only the
   aggregate dollar total and its week-over-week delta — a $ increase from a
@@ -99,6 +110,24 @@ for anything after ~noon NZST/NZDT). Get today's date with
   yet to compare against." message instead of `NaN`/`undefined`. No new
   tool, RBAC tier, or user-identifying data — still a single aggregate
   percentage.
+
+### Changed
+- **Members and guests are now told up front when a question needs web
+  access they don't have**: the member/guest system-prompt notes previously
+  said to mention the no-web-search limitation only "if asked", so a member
+  asking about current pricing/plans got a hedged answer with no hint the
+  limitation was tier-based — which read as the bot choosing not to research.
+  The bot now discloses the limitation proactively for clearly
+  current-information questions and points out that an admin can ask it to
+  look the answer up.
+- **Admin web-search answers must now weigh source authority**: the admin and
+  super-admin notes told the model to treat search results as untrusted
+  *instructions* but said nothing about which results deserve *belief*, so
+  specifics from SEO/aggregator blogs could be relayed as fact. Claims about
+  Anthropic products, plans, or pricing must now be grounded in official
+  pages (anthropic.com / claude.com / support.claude.com, or the relevant
+  vendor's own docs); a figure, date, or dollar amount that appears only in a
+  third-party source must be presented as unverified, never stated flatly.
 
 ### Fixed
 - **WhatsApp Cloud API admin alerts no longer vanish when a recipient's 24h
