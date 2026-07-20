@@ -185,6 +185,26 @@ async function defaultFetchText(url: string): Promise<string> {
   }
 }
 
+/**
+ * Group failed-fetch URLs by their doc-path directory (all but the leaf page
+ * segment) for a by-prefix rollup — e.g. a batch of dead `api/terraform/beta/*`
+ * pages collapses into one `N× api/terraform/beta` line instead of N separate
+ * warn lines (issue #613). Falls back to the full path for a single-segment
+ * page (no '/' to split on).
+ */
+function rollupByPathPrefix(urls: readonly string[]): Array<{ prefix: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const url of urls) {
+    const path = docPathOf(url);
+    const idx = path.lastIndexOf('/');
+    const prefix = idx === -1 ? path : path.slice(0, idx);
+    counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([prefix, count]) => ({ prefix, count }))
+    .sort((a, b) => b.count - a.count || a.prefix.localeCompare(b.prefix));
+}
+
 /** Run `worker` over `items` with at most `concurrency` in flight. */
 async function runPool<T>(
   items: readonly T[],
@@ -274,13 +294,21 @@ export async function runDocsIngest(
   }
 
   const seen = new Set<string>();
+  // Failed-fetch URLs, collected as the pool runs so they can be batched into
+  // ONE warn-level summary after the run instead of one warn line per page
+  // (issue #613 — an upstream index listing a large dead-link tranche, e.g.
+  // 157/586 pages under api/terraform/beta/*, otherwise buries any genuine new
+  // failure class in near-identical lines). Full per-page detail is still
+  // emitted at debug level, unchanged in shape.
+  const failedFetchUrls: string[] = [];
   const worker = async (url: string): Promise<void> => {
     let md: string;
     try {
       md = await fetchText(url);
       result.fetched += 1;
     } catch (err) {
-      logger.warn({ err, url }, 'Docs ingest: page fetch failed');
+      logger.debug({ err, url }, 'Docs ingest: page fetch failed');
+      failedFetchUrls.push(url);
       result.failed += 1;
       return;
     }
@@ -308,6 +336,21 @@ export async function runDocsIngest(
   };
 
   await runPool(urls, config.docsIngest.concurrency, worker);
+
+  if (failedFetchUrls.length > 0) {
+    const rollup = rollupByPathPrefix(failedFetchUrls)
+      .map(({ prefix, count }) => `${count}× ${prefix}`)
+      .join(', ');
+    logger.warn(
+      {
+        failed: failedFetchUrls.length,
+        attempted: urls.length,
+        sample: failedFetchUrls.slice(0, 5),
+        rollup,
+      },
+      'Docs ingest: page fetch failures',
+    );
+  }
 
   // Prune docs chunks whose PAGE no longer appears in the index. Keyed off the
   // index (`urls`), NOT off which pages we managed to fetch this run — a page

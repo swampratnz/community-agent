@@ -156,6 +156,147 @@ test('runDocsIngest: index reachable but EVERY page fetch fails — indexFetchFa
   assert.equal(res.failed, 2, 'both page fetches are counted as failures');
 });
 
+// --- fetch-failure log batching (issue #613) — the first three run before
+// any DB call, so they run regardless of DATABASE_URL.
+
+test('runDocsIngest: F failed page fetches emit exactly ONE warn-level summary line (not F), with count/sample/rollup, plus one debug line per failure', async (t) => {
+  const { logger } = await import('../src/logger.js');
+  const warn = t.mock.method(logger, 'warn');
+  const debug = t.mock.method(logger, 'debug');
+
+  const ok = 'https://platform.claude.com/docs/en/api/messages.md';
+  const dead = Array.from(
+    { length: 3 },
+    (_, i) => `https://platform.claude.com/docs/en/api/terraform/beta/page-${i}.md`,
+  );
+  const index = `- [ok](${ok})\n` + dead.map((u) => `- [d](${u})`).join('\n');
+  const fetchText = async (url: string): Promise<string> => {
+    if (url === config.docsIngest.indexUrl) return index;
+    if (url === ok) return 'Messages API.';
+    throw new Error(`404 ${url}`);
+  };
+
+  const res = await runDocsIngest(fetchText);
+
+  assert.equal(res.failed, 3);
+  assert.equal(res.fetched, 1);
+
+  const fetchFailureWarns = warn.mock.calls.filter(
+    (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
+  );
+  assert.equal(
+    fetchFailureWarns.length,
+    1,
+    'exactly one warn call for fetch failures, however many pages failed',
+  );
+  const payload = fetchFailureWarns[0].arguments[0] as {
+    failed: number;
+    attempted: number;
+    sample: string[];
+    rollup: string;
+  };
+  assert.equal(payload.failed, 3);
+  assert.equal(payload.attempted, 4);
+  assert.equal(payload.sample.length, 3, 'sample capped at <=5 (here, all 3 failures)');
+  assert.match(
+    payload.rollup,
+    /3× api\/terraform\/beta/,
+    'by-prefix rollup groups the dead tranche together',
+  );
+
+  assert.equal(debug.mock.calls.length, 3, 'one debug line per failed URL, unchanged shape');
+  for (const call of debug.mock.calls) {
+    assert.equal(call.arguments[1], 'Docs ingest: page fetch failed');
+    assert.ok((call.arguments[0] as { url: string }).url, 'debug payload still carries the url');
+  }
+});
+
+test('runDocsIngest: the fetch-failure summary sample is capped at 5 URLs even with many more failures', async (t) => {
+  const { logger } = await import('../src/logger.js');
+  const warn = t.mock.method(logger, 'warn');
+
+  const dead = Array.from(
+    { length: 8 },
+    (_, i) => `https://platform.claude.com/docs/en/api/terraform/beta/page-${i}.md`,
+  );
+  const index = dead.map((u) => `- [d](${u})`).join('\n');
+  const fetchText = async (url: string): Promise<string> => {
+    if (url === config.docsIngest.indexUrl) return index;
+    throw new Error(`404 ${url}`);
+  };
+
+  const res = await runDocsIngest(fetchText);
+  assert.equal(res.failed, 8);
+
+  const fetchFailureWarns = warn.mock.calls.filter(
+    (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
+  );
+  assert.equal(fetchFailureWarns.length, 1);
+  const payload = fetchFailureWarns[0].arguments[0] as { sample: string[]; failed: number };
+  assert.equal(payload.failed, 8, 'the full count is reported even though the sample is capped');
+  assert.equal(payload.sample.length, 5, 'sample capped at <=5 URLs');
+});
+
+test('runDocsIngest: zero failed fetches emit no fetch-failure warning (unchanged from today)', async (t) => {
+  const { logger } = await import('../src/logger.js');
+  const warn = t.mock.method(logger, 'warn');
+
+  const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+  const fetchText = async (url: string): Promise<string> => {
+    if (url === config.docsIngest.indexUrl) return `- [a](${u1})`;
+    return 'Messages API.';
+  };
+
+  const res = await runDocsIngest(fetchText);
+  assert.equal(res.failed, 0);
+
+  const fetchFailureWarns = warn.mock.calls.filter(
+    (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
+  );
+  assert.equal(fetchFailureWarns.length, 0, 'no fetch-failure summary when nothing failed');
+});
+
+test(
+  'runDocsIngest: chunk-upsert failures are untouched by the fetch-failure summary — still one warn per upsert failure, at the pre-existing message',
+  { skip },
+  async (t) => {
+    const { pool } = await import('../src/storage/db.js');
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+
+    // Fail only syncGlobalKnowledgeByProvenance's lookup SELECT — the prune
+    // step's own queries (listGlobalKnowledgeTitlesByProvenance /
+    // deleteProvenancedKnowledgeByTitles) still hit the real DB.
+    const origQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', async (sql: string, params?: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes(`FROM knowledge WHERE title = $1 AND scope = 'global'`)) {
+        throw new Error('simulated write failure');
+      }
+      return origQuery(sql, params);
+    });
+
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${u1})`;
+      return 'Messages API.';
+    };
+
+    const res = await runDocsIngest(fetchText);
+    assert.equal(res.failed, 1, 'the chunk-upsert failure still counts toward failed');
+    assert.equal(res.fetched, 1, 'the page fetch itself succeeded');
+
+    const upsertWarns = warn.mock.calls.filter((c) => c.arguments[1] === 'Docs ingest: chunk upsert failed');
+    assert.equal(upsertWarns.length, 1, 'the pre-existing per-upsert warn is unchanged by this proposal');
+    const fetchFailureWarns = warn.mock.calls.filter(
+      (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
+    );
+    assert.equal(fetchFailureWarns.length, 0, 'no fetch-failure summary — the page fetch itself succeeded');
+
+    await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
+  },
+);
+
 // --- DB-backed, injected fetcher -------------------------------------------
 
 /** Build an injected fetchText from an index page-list + a per-URL body map. */

@@ -95,6 +95,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
   so a member filing reports can't silently displace a queued escalation for a
   window-closed super-admin. No change for Discord or Baileys admins, and no
   change to Meta's window rule itself — nothing is ever sent outside it.
+- **Docs-ingest page-fetch failures now log as one run-end summary instead of
+  one line per page** (#613): a weekly docs-ingest run whose upstream index
+  lists a batch of dead links (observed: 157/586 page fetches 404ing under a
+  single `api/terraform/beta/*` prefix) previously logged one near-identical
+  `warn` line per failed page, burying any genuine new failure class (a real
+  outage, a broken selector) in the noise. Fetch failures are now collected as
+  the run proceeds and, once it completes, reported as a single `warn` line
+  with the total failed/attempted count, a capped sample of up to 5 failing
+  URLs, and a by-directory rollup (e.g. `157× api/terraform/beta`). Full
+  per-page detail is unchanged in shape and still available at `debug` level.
+  Purely a logging change — every `DocsIngestResult` count, and the separate,
+  rarer chunk-upsert-failure warning, are untouched.
 
 ### Security
 - **Closed a DNS-rebinding/TOCTOU gap in the knowledge link-check's SSRF
