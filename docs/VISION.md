@@ -13,8 +13,14 @@ bot should help members:
 - get unstuck on Claude / the Anthropic API quickly and accurately,
 - find what the community already discussed instead of re-asking,
 - feel welcomed and know how to participate,
+- grow their Claude/API skills and connect with other NZ builders working on
+  similar things,
 
 and help admins moderate and curate with minimal manual effort.
+
+The bot is a *community* agent, not just an answer service: the best features
+create member→member and member→community value (members learning from,
+finding, and contributing to each other), not only bot→member value.
 
 ## Who we serve
 
@@ -38,6 +44,27 @@ Score each idea on:
 Prefer **high-impact, high-reach, low-effort, low-risk**. When unsure, propose
 the **smallest viable version** and note how it could grow.
 
+## North-star metrics
+
+"Measurable" needs an anchor. These are the community-level signals success
+looks like, all derivable from data the bot already stores (no new tracking
+is implied — and per the guardrails below, none should be proposed that
+expands member-data collection):
+
+- **Answer quality** — `rate_answer` helpful-rate trending up; thumbs-down
+  themes shrinking in the digests.
+- **Knowledge leverage** — knowledge-shortcut hit rate up; repeat-question
+  clusters (context digests) shrinking; time-to-first-answer in auto-answer
+  channels down.
+- **Participation** — weekly distinct askers up; and once flywheel features
+  exist, member contributions (accepted candidate entries, showcased
+  projects) becoming a routine occurrence rather than zero.
+- **Admin leverage** — moderation/curation actions per admin holding steady
+  or falling while the member base grows.
+
+A strong proposal names the metric it moves and how we'd read the change;
+"nice but unmeasurable" is a rubric fail, not a footnote.
+
 ## Ground proposals in evidence
 
 Propose from observed need, not imagination. Signal sources (in rough order):
@@ -58,6 +85,15 @@ Each research run is memoryless, so deliberately vary across:
 - **Onboarding & welcome** — first-run experience, help, discoverability.
 - **Knowledge quality & recall** — better curation, search, freshness, sourcing.
 - **Answer quality** — accuracy, citations, NZ context, handling "I don't know".
+- **Member growth & connection** — helping members get *better* at building
+  with Claude (docs-grounded feedback on their prompts/tool schemas, "where do
+  I start with X" paths) and helping them find each other (opt-in,
+  self-declared interests/projects; never inferred from message content).
+- **Community flywheel** — members contributing durable value back: member-
+  suggested knowledge entries flowing through the existing admin-reviewed
+  candidate queue, project showcases, member-facing digests of what the
+  community discussed. Contributions are always admin-gated before they can
+  influence answers.
 - **Moderation & safety** — lighter, safer admin workflows; abuse handling.
 - **Admin insight** — analytics, digests, what the community is asking about.
 - **Reliability & ops** — resilience, observability, graceful degradation.
