@@ -71,11 +71,20 @@ async function defaultLookup(hostname: string): Promise<Array<{ address: string;
 }
 
 const DISALLOWED_V4_CIDRS: ReadonlyArray<readonly [string, number]> = [
+  ['0.0.0.0', 8], // "this network" / 0.0.0.0 → localhost on many stacks
   ['127.0.0.0', 8],
   ['10.0.0.0', 8],
+  // CGNAT (RFC 6598) — the Tailscale/tailnet address space this deploy runs a
+  // bearer-token dev-team service on, so a sourceUrl resolving here would be a
+  // blind host/port probe oracle over the tailnet (audit M8).
+  ['100.64.0.0', 10],
   ['172.16.0.0', 12],
+  ['192.0.0.0', 24], // IETF protocol assignments
   ['192.168.0.0', 16],
+  ['198.18.0.0', 15], // benchmarking range
   ['169.254.0.0', 16], // includes 169.254.169.254, the common cloud metadata address
+  ['224.0.0.0', 4], // multicast
+  ['240.0.0.0', 4], // reserved / "future use" (includes 255.255.255.255)
 ];
 
 function ipv4ToInt(ip: string): number {
