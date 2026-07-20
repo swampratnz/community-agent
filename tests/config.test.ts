@@ -551,6 +551,65 @@ test('SECURITY: AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR rejects a non-positive valu
   assert.match(result.stderr, /AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR/);
 });
 
+test('config: AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS defaults to 300 and AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE to 3 (issue #589)', () => {
+  assert.equal(config.llm.webSearchDedupWindowSeconds, 300);
+  assert.equal(config.llm.webSearchDedupHistorySize, 3);
+});
+
+test('SECURITY: AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS rejects a non-positive value — fail-fast rather than a silently disabled dedup window (issue #589)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS: '0',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS=0 must fail config validation, not load',
+  );
+  assert.match(result.stderr, /AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS/);
+});
+
+test('SECURITY: AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE rejects a non-positive value — fail-fast rather than a silently disabled dedup guard (issue #589)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE: '-1',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE=-1 must fail config validation, not load',
+  );
+  assert.match(result.stderr, /AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE/);
+});
+
 test('config: DB pool timeouts default to 15000/15000/10000ms (statement/query/connect, issue #502)', () => {
   assert.equal(config.db.statementTimeoutMs, 15_000);
   assert.equal(config.db.queryTimeoutMs, 15_000);

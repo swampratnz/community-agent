@@ -105,6 +105,9 @@ const {
   countAccessRequests,
   countActiveWarnings,
   clearWarnings,
+  createModerationAppeal,
+  listAppeals,
+  resolveModerationAppeal,
   countRepliesToUser,
   linkMembers,
   getMyDataSummary,
@@ -257,6 +260,18 @@ after(async () => {
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'ban_user' AND target_user_id LIKE $1`, [
       `${RUN}-ban-%`,
     ]);
+    // Safety net for the moderation appeals tests (issue #554): tests clean
+    // up their own rows inline, this just catches anything an assertion
+    // failure left behind mid-test.
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [
+      `${APPEAL_MODERATION_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [`${RUN}%appeal%`]);
+    await pool.query(
+      `DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND actor_user_id LIKE $1`,
+      [`${RUN}%`],
+    );
+    await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${RUN}%appeal%`]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [`${RUN}-unban-%`]);
     await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'unban_user' AND target_user_id LIKE $1`, [
       `${RUN}-unban-%`,
@@ -2065,7 +2080,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
 
   const expectedAdminCapabilitiesText =
     'As an admin, you also have:\n' +
-    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, or list everyone who's currently muted\n" +
+    "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
     "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
@@ -2208,6 +2223,8 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__clear_warnings', /clear a member's warnings/i],
   ['mcp__community__list_member_warnings', /full warning history/i],
   ['mcp__community__list_muted_members', /list everyone who's currently muted/i],
+  ['mcp__community__list_appeals', /review .*filed appeals/i],
+  ['mcp__community__resolve_appeal', /resolve filed appeals/i],
   ['mcp__community__announce', /make an announcement/i],
   ['mcp__community__create_poll', /create a poll/i],
   ['mcp__community__end_poll', /end one poll early/i],
@@ -2299,12 +2316,14 @@ test('community_info anti-drift pin fails loudly for an uncovered admin tool (is
 test('community_info: admin reply stays under a hard char cap, not a wall of text (issue #367)', async () => {
   const adminReply = (await communityInfoHandler('admin')).content[0]?.text ?? '';
 
-  // 44 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
+  // 46 ADMIN_TOOLS entries consolidated into behaviourally-related bullets
   // (same discipline as the member cap at the ~1200-char member test above) —
   // a hard cap, not a soft heuristic: a future admin tool added without
   // consolidation should fail this rather than silently growing into a wall
-  // of text. Bumped alongside the member cap for issue #437.
-  assert.ok(adminReply.length < 2800, `admin reply should stay short; was ${adminReply.length} chars`);
+  // of text. Bumped alongside the member cap for issue #437; bumped again for
+  // issue #554's list_appeals/resolve_appeal (consolidated into the existing
+  // moderation bullet, not a new one).
+  assert.ok(adminReply.length < 2860, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -11645,6 +11664,242 @@ test(
   },
 );
 
+test(
+  'update_knowledge appends the same near-duplicate nudge save_knowledge uses when a converging edit lands on a different entry, and stays byte-identical to today when it does not (issue #584)',
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id: anchorId } = await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    // AC4/regression: an edit with no near-duplicate above threshold returns
+    // exactly `Updated knowledge entry #${id}.` — byte-identical to today.
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      content: 'We meet monthly on the SECOND Tuesday at the community hall.',
+    });
+    const noMatchReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.equal(noMatchReply, `Updated knowledge entry #${editedId}.`);
+
+    // AC2: converging editedId's content onto anchorId's topic appends the
+    // same nudge format save_knowledge uses.
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    const nudgeReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(
+      nudgeReply ?? '',
+      new RegExp(`^Updated knowledge entry #${editedId}\\.`),
+      'the base reply is unchanged, the nudge is appended after it',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      /Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/,
+      'the nudge uses the same format save_knowledge uses',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      new RegExp(`existing entry #${anchorId}\\b`),
+      'nudge points at the other entry',
+    );
+    assert.match(
+      nudgeReply ?? '',
+      /\("WhatsApp linking steps"\)/,
+      'nudge names the other entry by its title',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  'update_knowledge excludes the edited entry from its own near-duplicate candidate set — a near-no-op edit never self-nudges (issue #584)',
+  { skip },
+  async () => {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-self-nudge-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-self-nudge-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+
+    const { id } = await saveKnowledge({
+      title: `${RUN} self-nudge fixture`,
+      content: 'A stable fact that should never be flagged as a duplicate of itself.',
+    });
+
+    // A whitespace-only edit re-embeds to ~1.0 similarity against its OWN
+    // pre-edit content — without excludeId this would always self-nudge.
+    await tools['update_knowledge'].handler({
+      id,
+      content: 'A stable fact that should never be flagged as a duplicate of itself. ',
+    });
+    const reply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.equal(
+      reply,
+      `Updated knowledge entry #${id}.`,
+      'SECURITY: an edit must never be reported as a near-duplicate of its own pre-edit content',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's near-duplicate nudge exposes only {id, title/label, similarity%} — the identical field set save_knowledge's nudge already surfaces, no additional entry fields (issue #584)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-parity-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-parity-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-parity-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    // The exact same regex, anchored at both ends of the nudge clause, so a
+    // match against BOTH replies pins that neither surfaces any field beyond
+    // {id, title/label, similarity%} — widening either would break the match.
+    const nudgeClause =
+      / Note: this looks similar \(\d+%\) to existing entry #\d+ \(.+\) — consider update_knowledge on #\d+ instead if this is the same topic\.$/;
+
+    await tools['save_knowledge'].handler({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+
+    const dupSaveResult = await tools['save_knowledge'].handler({
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+      scope,
+    });
+    const dupSaveReply = dupSaveResult.content[0]?.text ?? '';
+    assert.match(dupSaveReply, nudgeClause, 'save_knowledge nudge matches the shared field-set regex');
+
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+    await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    const updateReply = await takePendingAction('discord', caller.conversationId, caller.userId)?.execute();
+    assert.match(
+      updateReply ?? '',
+      nudgeClause,
+      'update_knowledge nudge matches the identical shared field-set regex — no additional fields',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
+test(
+  "SECURITY: update_knowledge's CONFIRM-gating, admin-tier requirement, and audit trail are unchanged by the near-duplicate nudge — an unconfirmed call produces no nudge and does not touch the KB (issue #584)",
+  { skip },
+  async () => {
+    const scope = `${RUN}-update-knowledge-nudge-security-scope`;
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-update-knowledge-nudge-security-admin`,
+      userName: 'Admin',
+      role: 'admin' as const,
+      conversationId: `${RUN}-update-knowledge-nudge-security-convo`,
+    };
+    const server = buildToolServer(caller, adapter);
+    const tools = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }
+        >;
+      }
+    )._registeredTools;
+
+    await saveKnowledge({
+      title: 'WhatsApp linking steps',
+      content: 'To link WhatsApp, open settings and scan the QR code shown in the admin panel.',
+      scope,
+    });
+    const { id: editedId } = await saveKnowledge({
+      title: 'Meetup schedule',
+      content: 'We meet monthly on the first Tuesday at the community hall.',
+      scope,
+    });
+
+    const pendingResult = await tools['update_knowledge'].handler({
+      id: editedId,
+      title: 'How to link WhatsApp',
+      content: 'To link WhatsApp, go to settings and scan the QR code from the admin panel.',
+    });
+    assert.match(pendingResult.content[0]?.text ?? '', /CONFIRM/, 'still asks for out-of-band confirmation');
+    assert.doesNotMatch(
+      pendingResult.content[0]?.text ?? '',
+      /looks similar/,
+      'SECURITY: the nudge must never appear before the edit is confirmed — it only decorates the success reply',
+    );
+
+    const unedited = await pool.query(`SELECT title, content FROM knowledge WHERE id = $1`, [editedId]);
+    assert.equal(
+      unedited.rows[0].title,
+      'Meetup schedule',
+      'SECURITY: an unconfirmed call must not touch the KB',
+    );
+
+    cancelPendingAction('discord', caller.conversationId, caller.userId);
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [scope]);
+  },
+);
+
 // list_knowledge_candidates / accept_knowledge_candidate / decline_knowledge_candidate
 // (issue #102): the review queue that turns a context-builder digest into a
 // durable knowledge entry. RBAC gating itself is pinned in rbac.test.ts; these
@@ -12471,6 +12726,328 @@ test(
     const after = await countActiveWarnings('whatsapp', userId);
 
     assert.equal(after, before, "appeal_moderation must not alter the caller's own warning count");
+  },
+);
+
+// Durable persistence (issue #554): appeal_moderation was, until now,
+// entirely fire-and-forget — nothing survived a missed/dismissed
+// notifyAppealFiled DM. These pin the new moderation_appeals write alongside
+// the unchanged notification behaviour above.
+test(
+  'appeal_moderation persists exactly one moderation_appeals row, snapshotting platform/user id/name/reason/active warnings/strike limit, status open (issue #554 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const result = await appealModerationHandler(adapter, userId).handler({
+      reason: 'I was not actually spamming',
+    });
+    assert.equal(result.isError, false);
+
+    const rows = await listAppeals();
+    const matching = rows.filter((r) => r.userId === userId);
+    assert.equal(matching.length, 1, 'exactly one moderation_appeals row was written');
+    const row = matching[0];
+    assert.equal(row.platform, 'whatsapp');
+    assert.equal(row.userName, 'Appealing Member');
+    assert.equal(row.reason, 'I was not actually spamming');
+    assert.equal(row.activeWarnings, 1);
+    assert.equal(row.strikeLimit, config.moderation.strikeLimit);
+    assert.equal(row.status, 'open');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'appeal_moderation with zero active warnings writes no moderation_appeals row (issue #554 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist-clean`;
+    const result = await appealModerationHandler(
+      stubAdapter(async () => {}),
+      userId,
+    ).handler({});
+    assert.equal(result.isError, true);
+
+    const rows = await listAppeals();
+    assert.equal(
+      rows.filter((r) => r.userId === userId).length,
+      0,
+      'an ineligible (no active warnings) call must insert no moderation_appeals row',
+    );
+  },
+);
+
+test(
+  'appeal_moderation refused by the per-caller cooldown writes no second moderation_appeals row (issue #554 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const userId = `${APPEAL_MODERATION_HANDLER_USER}-persist-cooldown`;
+    await addWarning({
+      platform: 'whatsapp',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const first = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(first.isError, false);
+
+    const second = await appealModerationHandler(adapter, userId).handler({});
+    assert.equal(second.isError, true);
+    assert.match(second.content[0]?.text ?? '', /already asked for a review recently/i);
+
+    const rows = await listAppeals();
+    assert.equal(
+      rows.filter((r) => r.userId === userId).length,
+      1,
+      'the cooldown-refused second call must not insert a second moderation_appeals row',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id = $1`, [userId]);
+  },
+);
+
+// list_appeals / resolve_appeal (issue #554): the admin-tier read/resolve
+// pair over the durable appeal queue appeal_moderation now writes into. Same
+// tier/guild-wide (not conversation-scoped) shape as
+// list_member_warnings/clear_warnings — see those fixtures above.
+function listAppealsHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-list-appeals') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-list-appeals',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { status?: 'open' | 'resolved' | 'dismissed'; limit?: number }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['list_appeals'];
+}
+
+function resolveAppealHandler(role: 'member' | 'admin' = 'admin', userId = 'admin-resolve-appeal') {
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Admin',
+      role,
+      conversationId: 'convo-resolve-appeal',
+    },
+    stubAdapter(async () => {}),
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: { id: number; status: 'resolved' | 'dismissed' }) => Promise<{
+            content: Array<{ type: string; text: string }>;
+            isError?: boolean;
+          }>;
+        }
+      >;
+    }
+  )._registeredTools['resolve_appeal'];
+}
+
+test(
+  'list_appeals round-trips filed appeals and its status filter narrows results (issue #554 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-appeals-target`;
+    const open = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      reason: 'please review',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(dismissed.id, 'dismissed', 'admin-1');
+
+    const all = await listAppealsHandler().handler({});
+    assert.equal(all.isError, false);
+    const allText = all.content[0]?.text ?? '';
+    assert.match(allText, new RegExp(`#${open.id}\\b`));
+    assert.match(allText, new RegExp(`#${dismissed.id}\\b`));
+
+    const openOnly = await listAppealsHandler().handler({ status: 'open' });
+    const openText = openOnly.content[0]?.text ?? '';
+    assert.match(openText, new RegExp(`#${open.id}\\b`));
+    assert.ok(
+      !new RegExp(`#${dismissed.id}\\b`).test(openText),
+      'the status filter excludes the dismissed appeal',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[open.id, dismissed.id]]);
+  },
+);
+
+test(
+  'list_appeals is read-only (readOnlyHint annotation) and reports a clean empty result',
+  { skip },
+  async () => {
+    const result = await listAppealsHandler().handler({ status: 'dismissed' });
+    // Not asserting zero globally (other tests may leave rows), just that a
+    // filtered, plausibly-empty call never errors.
+    assert.equal(result.isError, false);
+  },
+);
+
+test(
+  'resolve_appeal flips only status/resolved_by/resolved_at, writes exactly one admin_audit row with actionKind resolve_appeal, and never touches member_warnings (issue #554 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-target`;
+    await addWarning({
+      platform: 'discord',
+      userId,
+      reason: 'test',
+      excerpt: null,
+      source: 'auto',
+      issuedBy: null,
+    });
+    const before = await countActiveWarnings('discord', userId);
+
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: before,
+      strikeLimit: 3,
+    });
+
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-admin`).handler({
+      id,
+      status: 'resolved',
+    });
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /marked resolved/);
+
+    const resolvedRow = (await listAppeals('resolved')).find((r) => r.id === id);
+    assert.ok(resolvedRow);
+    assert.equal(resolvedRow?.resolvedBy, `${RUN}-resolve-appeal-admin`);
+    assert.ok(resolvedRow?.resolvedAt);
+
+    const after = await countActiveWarnings('discord', userId);
+    assert.equal(after, before, 'resolve_appeal must never itself clear member_warnings');
+
+    const { rows: auditRows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit
+        WHERE action_kind = 'resolve_appeal' AND actor_user_id = $1 AND params->>'id' = $2`,
+      [`${RUN}-resolve-appeal-admin`, String(id)],
+    );
+    assert.equal(Number(auditRows[0].n), 1, 'exactly one admin_audit row is written for this resolution');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM member_warnings WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM admin_audit WHERE action_kind = 'resolve_appeal' AND actor_user_id = $1`, [
+      `${RUN}-resolve-appeal-admin`,
+    ]);
+  },
+);
+
+test(
+  'resolve_appeal reports failure for an unknown appeal id, writing no member_warnings change',
+  { skip },
+  async () => {
+    const result = await resolveAppealHandler('admin', `${RUN}-resolve-appeal-unknown-admin`).handler({
+      id: 999_999_999,
+      status: 'resolved',
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /^Failed/);
+  },
+);
+
+test(
+  'SECURITY: list_appeals and resolve_appeal are reachable by any admin regardless of conversation membership — guild-wide, not conversation-scoped, same as list_member_warnings/clear_warnings (issue #554 acceptance criterion #5)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-appeal-guild-wide-target`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    // A DIFFERENT admin, in a conversation entirely unrelated to where the
+    // appeal originated (there is no conversation on the row at all) — an
+    // admin with zero conversation overlap must still see and resolve it.
+    const listResult = await listAppealsHandler('admin', `${RUN}-appeal-guild-wide-other-admin`).handler({});
+    assert.match(listResult.content[0]?.text ?? '', new RegExp(`#${id}\\b`));
+
+    const resolveResult = await resolveAppealHandler('admin', `${RUN}-appeal-guild-wide-other-admin`).handler(
+      { id, status: 'dismissed' },
+    );
+    assert.equal(resolveResult.isError, false);
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
+  },
+);
+
+test('SECURITY: list_appeals rejects a caller below admin tier (issue #554 acceptance criterion #6)', async () => {
+  const registeredTool = listAppealsHandler('member');
+  await assert.rejects(() => registeredTool.handler({}), /Permission denied/);
+});
+
+test(
+  'SECURITY: resolve_appeal rejects a caller below admin tier, before any DB read/write (issue #554 acceptance criterion #6)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-resolve-appeal-tier-floor`;
+    const { id } = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Member',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    const registeredTool = resolveAppealHandler('member');
+    await assert.rejects(() => registeredTool.handler({ id, status: 'resolved' }), /Permission denied/);
+
+    const rows = await listAppeals();
+    const row = rows.find((r) => r.id === id);
+    assert.equal(row?.status, 'open', 'a below-tier caller must not have mutated the appeal row');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [id]);
   },
 );
 

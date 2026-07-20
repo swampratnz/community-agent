@@ -1,5 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import tls from 'node:tls';
+import { fetch as undiciFetch, Agent } from 'undici';
 
 // Knowledge link-rot check (issue #448). Classification/SSRF-guard tests are
 // pure (fetch + DNS lookup always injected, never real network); the
@@ -19,8 +22,13 @@ const skip = hasDb
 
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { saveKnowledge, listKnowledge } = await import('../src/storage/repository.js');
-const { shouldRunKnowledgeLinkCheck, classifySourceUrl, runKnowledgeLinkCheck, isDisallowedIp } =
-  await import('../src/context/linkCheck.js');
+const {
+  shouldRunKnowledgeLinkCheck,
+  classifySourceUrl,
+  runKnowledgeLinkCheck,
+  isDisallowedIp,
+  buildPinnedDispatcher,
+} = await import('../src/context/linkCheck.js');
 
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
@@ -271,6 +279,265 @@ test('SECURITY: classifySourceUrl re-applies the SSRF guard to a redirect hop �
   });
   assert.equal(outcome, 'refused');
   assert.equal(fetchCalls, 1, 'only the first (public) hop is ever requested');
+});
+
+// --- DNS-rebinding/TOCTOU pin (issue #587, SECURITY) ------------------------
+
+test('SECURITY: classifySourceUrl connects via a dispatcher pinned to the guard-resolved IP — the connection layer, not just the request URL, carries the vetted address', async () => {
+  const dispatcherCalls: string[] = [];
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  const buildDispatcher = (pinnedAddress: string) => {
+    dispatcherCalls.push(pinnedAddress);
+    return { pinnedAddress };
+  };
+  const fetchImpl = async (_url: URL, init: { dispatcher?: { pinnedAddress?: string } }) => {
+    assert.equal(
+      init.dispatcher?.pinnedAddress,
+      '93.184.216.34',
+      'the connection-layer dispatcher, not just the request URL, must carry the guard-resolved IP',
+    );
+    return fakeResponse(200);
+  };
+  const outcome = await classifySourceUrl('https://public.example.com/page', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    buildDispatcher: buildDispatcher as unknown as (pinnedAddress: string) => unknown,
+  });
+  assert.equal(outcome, 'reachable');
+  assert.deepEqual(
+    dispatcherCalls,
+    ['93.184.216.34'],
+    'exactly one pinned dispatcher is built for the single hop',
+  );
+});
+
+test('SECURITY: classifySourceUrl never re-resolves DNS after the guard passes — the pinned connection is anchored to the FIRST (guard-checked) address even though a hypothetical second resolution would return a denylisted one. This is the core rebinding/TOCTOU regression test: it fails against a `requestOnce` that lets the request layer do its own independent DNS resolution, and passes once the request is pinned to the single guard-resolved IP', async () => {
+  let lookupCalls = 0;
+  const lookup = async () => {
+    lookupCalls++;
+    // A rebinding attacker: the FIRST resolution (the one the guard sees and
+    // must pin to) is public; any SECOND, independent resolution would be a
+    // cloud-metadata address the guard would have refused outright.
+    return lookupCalls === 1
+      ? [{ address: '93.184.216.34', family: 4 }]
+      : [{ address: '169.254.169.254', family: 4 }];
+  };
+  const buildDispatcher = (pinnedAddress: string) => ({ pinnedAddress });
+  const fetchImpl = async (_url: URL, init: { dispatcher?: { pinnedAddress?: string } }) => {
+    assert.equal(
+      init.dispatcher?.pinnedAddress,
+      '93.184.216.34',
+      'the request must connect to the address the guard already vetted, never a fresh resolution',
+    );
+    return fakeResponse(200);
+  };
+  const outcome = await classifySourceUrl('https://rebinding.example.com/page', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    buildDispatcher: buildDispatcher as unknown as (pinnedAddress: string) => unknown,
+  });
+  assert.equal(outcome, 'reachable');
+  assert.equal(
+    lookupCalls,
+    1,
+    'DNS is resolved exactly once per hop — the request path never triggers a second, independent resolution',
+  );
+});
+
+test("SECURITY: classifySourceUrl pins each redirect hop to its OWN guard-resolved IP, not the first hop's", async () => {
+  const dispatcherCalls: string[] = [];
+  const lookup = async (hostname: string) =>
+    hostname === 'first.example.com'
+      ? [{ address: '93.184.216.34', family: 4 }]
+      : [{ address: '198.51.100.7', family: 4 }];
+  const buildDispatcher = (pinnedAddress: string) => {
+    dispatcherCalls.push(pinnedAddress);
+    return { pinnedAddress };
+  };
+  const fetchImpl = async (url: URL, init: { dispatcher?: { pinnedAddress?: string } }) => {
+    if (url.hostname === 'first.example.com') {
+      assert.equal(init.dispatcher?.pinnedAddress, '93.184.216.34');
+      return fakeResponse(302, { location: 'https://second.example.com/dest' });
+    }
+    assert.equal(
+      init.dispatcher?.pinnedAddress,
+      '198.51.100.7',
+      "the second hop must be pinned to its OWN guard-resolved IP, not the first hop's",
+    );
+    return fakeResponse(200);
+  };
+  const outcome = await classifySourceUrl('https://first.example.com/redirector', {
+    lookup,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    buildDispatcher: buildDispatcher as unknown as (pinnedAddress: string) => unknown,
+  });
+  assert.equal(outcome, 'reachable');
+  assert.deepEqual(
+    dispatcherCalls,
+    ['93.184.216.34', '198.51.100.7'],
+    'each hop builds its own pinned dispatcher, in order',
+  );
+});
+
+test('SECURITY: buildPinnedDispatcher connects a real socket straight to the pinned IP literal and never DNS-resolves the hostname — proves the pin works against undici (Node global fetch is undici, which ignores a Node http(s).Agent)', async () => {
+  let receivedHost: string | undefined;
+  const server = http.createServer((req, res) => {
+    receivedHost = req.headers.host;
+    res.writeHead(200);
+    res.end('ok');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    // .invalid is reserved by RFC 2606 and guaranteed to never resolve — if
+    // the connector fell back to resolving this hostname instead of using
+    // the pinned IP, the request would fail outright rather than silently
+    // succeed against the wrong target.
+    const bogusHostname = 'this-hostname-does-not-resolve.invalid';
+    const res = await undiciFetch(`http://${bogusHostname}:${port}/probe`, {
+      dispatcher: buildPinnedDispatcher('127.0.0.1'),
+    });
+    try {
+      assert.equal(
+        res.status,
+        200,
+        'the request reached the local server via the pinned IP, without ever DNS-resolving the bogus hostname',
+      );
+      assert.equal(
+        receivedHost,
+        `${bogusHostname}:${port}`,
+        'the original hostname is still presented as the Host header even though the socket connected straight to the pinned IP',
+      );
+    } finally {
+      await res.body?.cancel();
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SECURITY: classifySourceUrl, with fetchImpl/buildDispatcher left at their DEFAULTS (never injected), routes through the real global `fetch` and a real `buildPinnedDispatcher`-built Agent — proves the code path that actually ships to production, not just the mechanism in isolation (every other classifySourceUrl test in this file injects a mock fetchImpl)', async () => {
+  const realFetch = globalThis.fetch;
+  let capturedUrl: string | undefined;
+  let capturedDispatcher: unknown;
+  let capturedMethod: string | undefined;
+  globalThis.fetch = (async (url: unknown, init?: { method?: string; dispatcher?: unknown }) => {
+    capturedUrl = String(url);
+    capturedMethod = init?.method;
+    capturedDispatcher = init?.dispatcher;
+    return fakeResponse(200);
+  }) as unknown as typeof fetch;
+  try {
+    const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    const outcome = await classifySourceUrl('https://public.example.com/page', { lookup });
+    assert.equal(outcome, 'reachable');
+    assert.equal(capturedUrl, 'https://public.example.com/page');
+    assert.equal(capturedMethod, 'HEAD');
+    assert.ok(
+      capturedDispatcher instanceof Agent,
+      'the dispatcher passed to the real global fetch must be a real Agent instance built by buildPinnedDispatcher from the separately npm-installed undici package — this is the exact wiring classifySourceUrl uses when nothing is overridden',
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("SECURITY: Node's own global `fetch` (not the `undici`-package fetch) honors a dispatcher built by buildPinnedDispatcher for a real socket connection — closes the gap the review flagged: the earlier real-socket test used undici's OWN fetch with undici's OWN Agent, which proves nothing about the global-fetch-plus-externally-installed-package-Agent combination classifySourceUrl's defaults actually use in production (two different module instances of undici)", async () => {
+  let receivedHost: string | undefined;
+  const server = http.createServer((req, res) => {
+    receivedHost = req.headers.host;
+    res.writeHead(200);
+    res.end('ok');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    // .invalid is reserved by RFC 2606 and guaranteed to never resolve — if
+    // the connector fell back to resolving this hostname instead of using
+    // the pinned IP, the request would fail outright rather than silently
+    // succeed against the wrong target.
+    const bogusHostname = 'this-hostname-does-not-resolve-globalfetch.invalid';
+    const res = await fetch(`http://${bogusHostname}:${port}/probe`, {
+      dispatcher: buildPinnedDispatcher('127.0.0.1') as unknown as RequestInit['dispatcher'],
+    });
+    try {
+      assert.equal(
+        res.status,
+        200,
+        "Node's global fetch reached the local server via the pinned IP, through a dispatcher built from the separately npm-installed undici package, without ever DNS-resolving the bogus hostname",
+      );
+      assert.equal(
+        receivedHost,
+        `${bogusHostname}:${port}`,
+        'the original hostname is still presented as the Host header even though the socket connected straight to the pinned IP',
+      );
+    } finally {
+      await res.body?.cancel();
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+// A throwaway self-signed EC cert, used only so tls.createServer has a context;
+// its identity is irrelevant to this test (global fetch rejects it after the
+// handshake — see below), so it need not match any hostname.
+const SNI_TEST_KEY =
+  '-----BEGIN PRIVATE KEY-----\n' +
+  'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJujgnnFZY6PGSuMb\n' +
+  '9NbJoP42FT+IJFJgrMzsX+8JPAWhRANCAAROfYmW45fJW9HpTy0yOjZoLbSBaxKD\n' +
+  't1iN5uHU4inlHIj2ddJV4660ykJ3OFIJ8Xn3b5TSa5Gu2DytimhPqeZJ\n' +
+  '-----END PRIVATE KEY-----\n';
+const SNI_TEST_CERT =
+  '-----BEGIN CERTIFICATE-----\n' +
+  'MIIBjjCCATWgAwIBAgIUPFPDzlx8MSuIoRWTIBlH8Cy82+kwCgYIKoZIzj0EAwIw\n' +
+  'HTEbMBkGA1UEAwwSbGlua2NoZWNrLXNuaS10ZXN0MB4XDTI2MDcxOTIwNDExM1oX\n' +
+  'DTM2MDcxNjIwNDExM1owHTEbMBkGA1UEAwwSbGlua2NoZWNrLXNuaS10ZXN0MFkw\n' +
+  'EwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETn2JluOXyVvR6U8tMjo2aC20gWsSg7dY\n' +
+  'jebh1OIp5RyI9nXSVeOutMpCdzhSCfF592+U0muRrtg8rYpoT6nmSaNTMFEwHQYD\n' +
+  'VR0OBBYEFPC47B4m1hFDRKSTHRFn7YYUfgcuMB8GA1UdIwQYMBaAFPC47B4m1hFD\n' +
+  'RKSTHRFn7YYUfgcuMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDRwAwRAIg\n' +
+  'YO1Jh0S6gGXu50ZlsF3gTVKauvb5kgvgGRjgWJOCFWsCIAPehaDkjuT0tET7TidP\n' +
+  'WJI7YUkggKDUSzBZeU3UCFQn\n' +
+  '-----END CERTIFICATE-----\n';
+
+test('SECURITY: the pinned dispatcher presents the ORIGINAL hostname as the TLS SNI, never the pinned IP literal — a real TLS handshake proves the novel claim this PR rests on (issue #587)', async () => {
+  // guardTarget only ever allows https:, so buildPinnedDispatcher is exercised
+  // exclusively against TLS in production — yet the other real-socket proofs use
+  // http and so never verify SNI. SNICallback fires on the ClientHello (before
+  // the client validates the cert), so the throwaway self-signed cert being
+  // untrusted is fine: global fetch rejects it AFTER the handshake, but the
+  // server has already captured the presented SNI by then.
+  const seenSni: (string | false)[] = [];
+  const server = tls.createServer(
+    {
+      key: SNI_TEST_KEY,
+      cert: SNI_TEST_CERT,
+      SNICallback: (servername, cb) => {
+        seenSni.push(servername);
+        cb(null);
+      },
+    },
+    (socket) => socket.destroy(),
+  );
+  // The client will abort on the untrusted cert; swallow the resulting
+  // server-side TLS error so it isn't an unhandled 'error' event.
+  server.on('tlsClientError', () => {});
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const bogusHostname = 'sni-pin-proof.invalid';
+    await fetch(`https://${bogusHostname}:${port}/`, {
+      dispatcher: buildPinnedDispatcher('127.0.0.1') as unknown as RequestInit['dispatcher'],
+    }).catch(() => undefined); // cert is untrusted — the SNI was already captured
+    assert.ok(
+      seenSni.includes(bogusHostname),
+      `the TLS SNI must present the ORIGINAL hostname (${bogusHostname}), not the pinned IP — proving pinnedConnect overrides only the socket address, never the servername; saw ${JSON.stringify(seenSni)}`,
+    );
+    assert.ok(!seenSni.includes('127.0.0.1'), 'the pinned IP literal must never leak into the TLS SNI');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 // --- runKnowledgeLinkCheck (DB-backed) --------------------------------------

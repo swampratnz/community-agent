@@ -582,6 +582,40 @@ export interface KnowledgeDuplicateMatch {
 }
 
 /**
+ * Shared near-duplicate lookup used by both `saveKnowledge` and
+ * `updateKnowledge` (issue #584) — the one place the 0.92 threshold and the
+ * `ORDER BY embedding <=> $1` query are written, so the two write paths can
+ * never drift apart. `excludeId` lets `updateKnowledge` exclude the entry
+ * being edited from its own candidate set (it would otherwise always match
+ * itself at ~1.0 similarity).
+ */
+async function findNearDuplicateKnowledge(
+  scope: string,
+  embedding: number[],
+  excludeId?: number,
+): Promise<KnowledgeDuplicateMatch | undefined> {
+  const vec = pgvector.toSql(embedding);
+  const { rows: matches } = await pool.query(
+    `SELECT id, title, content, 1 - (embedding <=> $1) AS similarity
+       FROM knowledge
+      WHERE scope = $2 AND embedding IS NOT NULL ${excludeId !== undefined ? 'AND id != $3' : ''}
+      ORDER BY embedding <=> $1
+      LIMIT 1`,
+    excludeId !== undefined ? [vec, scope, excludeId] : [vec, scope],
+  );
+  const top = matches[0];
+  if (top && Number(top.similarity) >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD) {
+    return {
+      id: Number(top.id),
+      title: top.title,
+      content: top.content,
+      similarity: Number(top.similarity),
+    };
+  }
+  return undefined;
+}
+
+/**
  * Machine-ingestion provenance stored in `knowledge.created_by_role` alongside
  * the human RBAC tiers. 'auto' = daily web-research (quarantined untrusted at
  * retrieval); 'docs' = official Anthropic docs backfill (trusted, verbatim).
@@ -620,27 +654,7 @@ export async function saveKnowledge(input: {
     logger.warn({ err }, 'Embedding failed for knowledge entry');
   }
 
-  let similarEntry: KnowledgeDuplicateMatch | undefined;
-  if (embedding) {
-    const vec = pgvector.toSql(embedding);
-    const { rows: matches } = await pool.query(
-      `SELECT id, title, content, 1 - (embedding <=> $1) AS similarity
-         FROM knowledge
-        WHERE scope = $2 AND embedding IS NOT NULL
-        ORDER BY embedding <=> $1
-        LIMIT 1`,
-      [vec, scope],
-    );
-    const top = matches[0];
-    if (top && Number(top.similarity) >= KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD) {
-      similarEntry = {
-        id: Number(top.id),
-        title: top.title,
-        content: top.content,
-        similarity: Number(top.similarity),
-      };
-    }
-  }
+  const similarEntry = embedding ? await findNearDuplicateKnowledge(scope, embedding) : undefined;
 
   const createdByRole = input.createdByRole ?? 'admin';
   const { rows } = await pool.query(
@@ -1221,12 +1235,12 @@ export async function updateKnowledge(input: {
   // saveKnowledge's callerPlatform, only for scoping automatic
   // knowledge-gap resolution below; never stored on the knowledge row.
   callerPlatform?: Platform;
-}): Promise<boolean> {
+}): Promise<{ updated: boolean; similarEntry?: KnowledgeDuplicateMatch }> {
   const { rows: existingRows } = await pool.query(
     `SELECT title, content, scope, source_url, source_title, created_by_role FROM knowledge WHERE id = $1`,
     [input.id],
   );
-  if (existingRows.length === 0) return false;
+  if (existingRows.length === 0) return { updated: false };
 
   const title = input.title !== undefined ? input.title : existingRows[0].title;
   const content = input.content !== undefined ? input.content : existingRows[0].content;
@@ -1241,6 +1255,12 @@ export async function updateKnowledge(input: {
   } catch (err) {
     logger.warn({ err }, 'Embedding failed for knowledge update');
   }
+
+  // Same near-duplicate check saveKnowledge runs, excluding this entry from
+  // its own candidate set (issue #584) — an ordinary curation edit that
+  // converges this entry's wording onto another entry's topic otherwise
+  // produces no signal until the weekly digest.
+  const similarEntry = embedding ? await findNearDuplicateKnowledge(scope, embedding, input.id) : undefined;
 
   const { rowCount } = await pool.query(
     `UPDATE knowledge
@@ -1271,7 +1291,7 @@ export async function updateKnowledge(input: {
     }
   }
 
-  return (rowCount ?? 0) > 0;
+  return { updated: (rowCount ?? 0) > 0, similarEntry };
 }
 
 /**
@@ -2170,6 +2190,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM dev_team_watches WHERE requester_platform = $1 AND requester_user_id = $2`,
       [platform, userId],
     );
+    // moderation_appeals (issue #554) is keyed the same way — purge coherence
+    // for a member's own filed appeal(s), same treatment as member_warnings.
+    const { rowCount: moderationAppeals } = await client.query(
+      `DELETE FROM moderation_appeals WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -2186,7 +2212,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       candidates +
       (answerFeedback ?? 0) +
       (knowledgeGaps ?? 0) +
-      (devTeamWatches ?? 0)
+      (devTeamWatches ?? 0) +
+      (moderationAppeals ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2202,8 +2229,9 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * submitted* as reporter, their server_roster row, admin notes kept *about*
  * them (member_notes), suggestions they filed, their response-style and
  * language preferences, answer ratings *they submitted* (issue #118), any context
- * digest built over their purged interactions, and any still-pending
- * knowledge_candidates drafted from an invalidated digest (issue #102) —
+ * digest built over their purged interactions, any still-pending
+ * knowledge_candidates drafted from an invalidated digest (issue #102), and
+ * any moderation appeal(s) *they filed* (issue #554) —
  * across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
@@ -4815,6 +4843,140 @@ export async function listOwnReports(
     [platform, reporterUserId, clampedLimit],
   );
   return rows.map(mapContentReport);
+}
+
+// --- Moderation appeals (durable record of appeal_moderation, issue #554) --
+
+export type ModerationAppealStatus = 'open' | 'resolved' | 'dismissed';
+
+export interface ModerationAppeal {
+  id: number;
+  platform: Platform;
+  userId: string;
+  userName: string | null;
+  reason: string | null;
+  activeWarnings: number;
+  strikeLimit: number;
+  status: ModerationAppealStatus;
+  createdAt: Date;
+  resolvedBy: string | null;
+  resolvedAt: Date | null;
+}
+
+function mapModerationAppeal(r: {
+  id: number | string;
+  platform: string;
+  user_id: string;
+  user_name: string | null;
+  reason: string | null;
+  active_warnings: number | string;
+  strike_limit: number | string;
+  status: string;
+  created_at: Date;
+  resolved_by: string | null;
+  resolved_at: Date | null;
+}): ModerationAppeal {
+  return {
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    userName: r.user_name,
+    reason: r.reason,
+    activeWarnings: Number(r.active_warnings),
+    strikeLimit: Number(r.strike_limit),
+    status: r.status as ModerationAppealStatus,
+    createdAt: r.created_at,
+    resolvedBy: r.resolved_by,
+    resolvedAt: r.resolved_at,
+  };
+}
+
+/**
+ * Record a member's appeal of their own active auto-moderation warning(s) —
+ * the durable counterpart to the best-effort `notifyAppealFiled` DM
+ * (`appeal_moderation`, issue #554). Called only after the tool's own
+ * eligibility (`countActiveWarnings > 0`) and cooldown (`reserveAppealSlot`)
+ * gates pass, so this insert can't be flooded by a repeat caller — see
+ * `appeal_moderation` in tools.ts, which is the only caller.
+ * `activeWarnings`/`strikeLimit` are a point-in-time snapshot, matching what
+ * the accompanying DM already reports, not a live join to `member_warnings`.
+ */
+export async function createModerationAppeal(input: {
+  platform: Platform;
+  userId: string;
+  userName: string | null;
+  reason?: string;
+  activeWarnings: number;
+  strikeLimit: number;
+}): Promise<{ id: number }> {
+  const { rows } = await pool.query(
+    `INSERT INTO moderation_appeals
+       (platform, user_id, user_name, reason, active_warnings, strike_limit)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      input.userName,
+      input.reason ?? null,
+      input.activeWarnings,
+      input.strikeLimit,
+    ],
+  );
+  return { id: Number(rows[0].id) };
+}
+
+/**
+ * Admin-tier, guild-wide read of filed appeals (issue #554) — deliberately
+ * NOT conversation-scoped, matching `list_member_warnings`/`clear_warnings`:
+ * warnings/mutes are guild-wide state, so an appeal about one carries no
+ * conversation boundary to scope by. Optional `status` filter, newest first.
+ */
+export async function listAppeals(status?: ModerationAppealStatus, limit = 50): Promise<ModerationAppeal[]> {
+  const params: unknown[] = [];
+  const filters: string[] = [];
+  if (status) {
+    params.push(status);
+    filters.push(`status = $${params.length}`);
+  }
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+  params.push(clampedLimit);
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, user_name, reason, active_warnings, strike_limit,
+            status, created_at, resolved_by, resolved_at
+       FROM moderation_appeals
+       ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map(mapModerationAppeal);
+}
+
+/**
+ * Flip an appeal's status (resolved/dismissed) once triaged — non-destructive
+ * (only `status`/`resolved_by`/`resolved_at` change), no CONFIRM needed,
+ * mirroring `resolveContentReport`. Deliberately never touches
+ * `member_warnings` or mute state — that stays `clear_warnings`' job alone
+ * (issue #554's scope guardrail: no automatic linkage). Guild-wide, same
+ * non-conversation-scoped boundary as `listAppeals`. Returns null if no
+ * matching row was found (unknown id).
+ */
+export async function resolveModerationAppeal(
+  id: number,
+  status: 'resolved' | 'dismissed',
+  resolvedBy: string,
+): Promise<ModerationAppeal | null> {
+  const { rows } = await pool.query(
+    `UPDATE moderation_appeals
+        SET status = $2, resolved_by = $3, resolved_at = now()
+      WHERE id = $1
+      RETURNING id, platform, user_id, user_name, reason, active_warnings, strike_limit,
+                status, created_at, resolved_by, resolved_at`,
+    [id, status, resolvedBy],
+  );
+  return rows[0] ? mapModerationAppeal(rows[0]) : null;
 }
 
 // --- Answer feedback (member rating of the bot's own answers, issue #118) ---

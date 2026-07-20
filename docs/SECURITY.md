@@ -167,7 +167,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `canUseTool`. Same sliding-window shape as the four `reserve*Slot` caps
   below; fails closed on a hook error (denies rather than letting the call
   through). Never constructed for member/guest turns — those tiers have no
-  WebSearch access to begin with.
+  WebSearch access to begin with. The same hook also denies an
+  exact-normalized repeat of a recent query in the same conversation
+  (`isDuplicateWebSearchQuery`/`recordWebSearchQuery`, `src/agent/tools.ts`,
+  issue #589): the volume cap bounds call count but never inspected the
+  query, so a reformulate-and-retry agentic loop could burn a second metered
+  call plus its redundant result tokens for no new information. The dedup
+  check runs BEFORE the volume-cap check and a match denies without
+  consuming a volume slot; the query is only recorded into the dedup history
+  once BOTH checks pass and the call is actually going to proceed, so a call
+  later denied by the volume cap can never poison the dedup history for a
+  retry of that same (never-searched) query. Both checks share one
+  try/catch, so a thrown error from either fails closed identically.
+  In-memory only (`AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS`, default 300s;
+  `AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE`, default 3) — the query text is never
+  written to `interactions`/`admin_audit` or logged.
 - A thrown `query()` error whose message matches a small, anchored
   usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
   honest member-facing reply instead of the generic internal-error one, and
@@ -503,27 +517,29 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   body is cancelled unread) — this is a pure reachability probe, not
   `WebFetch` (still disallowed for every tier; no model is ever in this
   loop). Bounds: a redirect-hop cap, a per-request timeout, and a ~weekly
-  freshness guard mirroring docs-ingest's cadence. **Disclosed, accepted
-  residual risk**: the guard is a standard deny-list-plus-redirect-recheck
-  design, not connection-level IP pinning — it resolves the hostname once via
-  an injectable `lookup`, checks those IPs, then `fetch()` performs its own
-  independent DNS resolution for the actual request. A host with a very
+  freshness guard mirroring docs-ingest's cadence. **DNS-rebinding/TOCTOU gap
+  closed** (issue #587): the guard resolves each hop's hostname exactly once
+  via the injectable `lookup`, and the request for that hop connects to that
+  SAME guard-checked IP literal — pinned via a custom undici connector (Node's
+  global `fetch` is undici, which ignores a Node `http(s).Agent`) that
+  connects by IP while presenting the original hostname as the TLS SNI and
+  `Host` header (`buildPinnedDispatcher`, `src/context/linkCheck.ts`). This
+  pin is applied independently at every redirect hop, not just the initial
+  URL. Previously, `fetch()` performed its own independent DNS resolution for
+  the actual request after the guard's check, so a host with a very
   low/zero DNS TTL could in principle resolve to a public IP for the guard's
-  check and a different (internal) IP for the real request moments later
-  (DNS rebinding / TOCTOU), bypassing the guard. This is accepted because the
-  threat actor here is admin-only (an admin who already has the
-  `save_knowledge` tool) and the blast radius is a reachability boolean, not
-  response content — but a stricter deployment wanting to close this gap
-  entirely would need to pin the guard-resolved IP into the actual request
-  (e.g. via a custom `dns.lookup` override or connecting by IP with the
-  original hostname sent as the TLS SNI/Host header), which this PR does not
-  implement. The admin-only `list_knowledge(sourceUnreachable: true)` filter
-  surfaces flagged entries for re-verification; it is parameterized SQL,
-  composes with existing filters, and re-asserts the tier gate. All of the
-  above — the guard's denylist coverage, the non-https rejection, the
-  per-redirect-hop re-guard, the `'refused'`-never-persists invariant, and
-  the body-never-read behaviour — are pinned by `SECURITY:` tests in
-  `tests/linkCheck.test.ts` and `tests/tools.test.ts`.
+  check and a different (internal) IP for the real request moments later —
+  that gap no longer exists: the connection layer never re-resolves the
+  hostname, so there is no second, independent resolution for a rebinding
+  attacker to race. The admin-only `list_knowledge(sourceUnreachable: true)`
+  filter surfaces flagged entries for re-verification; it is parameterized
+  SQL, composes with existing filters, and re-asserts the tier gate. All of
+  the above — the guard's denylist coverage, the non-https rejection, the
+  per-redirect-hop re-guard and pin, the `'refused'`-never-persists
+  invariant, the body-never-read behaviour, and the DNS-rebinding closure
+  itself (proven both by dependency-injected wiring tests and a real local
+  socket connecting through the pinned dispatcher) — are pinned by
+  `SECURITY:` tests in `tests/linkCheck.test.ts` and `tests/tools.test.ts`.
 - **Community-context export** (`docs/COMMUNITY-CONTEXT.md`, issue #53):
   the one place DB-derived content deliberately leaves the database — an
   aggregate rendering of `context_digests` for the research loop. The
@@ -1783,8 +1799,9 @@ base, unlike the other two's fixed-format extraction.
   are never purged regardless of this setting.
 - **forget_me/purge scope**: deletes the user's messages, replies to them,
   knowledge entries *sourced from* them, content reports *they submitted
-  as reporter*, their response-style preference, and their auto-moderation
-  warning history (`member_warnings`). Membership rows, the
+  as reporter*, their response-style preference, their auto-moderation
+  warning history (`member_warnings`), and moderation appeals *they filed*
+  (`moderation_appeals`, issue #554). Membership rows, the
   admin audit log, and reports where the user is only the *target* (not the
   reporter) are retained deliberately
   (accountability) — the same precedent already applied to `admin_audit`. If
@@ -1891,6 +1908,36 @@ base, unlike the other two's fixed-format extraction.
   Worst-case abuse from a hijacked/injected member turn: one unwanted admin
   DM per cooldown window naming the real, self-identified caller — the same
   residual bound every other non-CONFIRM member-notification tool carries.
+- **`moderation_appeals` durable persistence (issue #554)**: before this,
+  `appeal_moderation` was entirely fire-and-forget — only the best-effort
+  `notifyAppealFiled` DM, no durable record, so a missed DM (adapter
+  disconnected, admin DMs off, admin AFK) erased the appeal with no trace and
+  no admin could prove it was ever reviewed. `appeal_moderation` now also
+  inserts one `moderation_appeals` row in the same call, gated by the SAME
+  eligibility (`countActiveWarnings > 0`) and cooldown (`reserveAppealSlot`)
+  checks that already gate the DM — a no-warning refusal or a cooldown-refused
+  repeat call writes nothing, so the new table inherits the DM's existing
+  anti-flood bound rather than opening a new one. No new tier, no new
+  untrusted-input path, and no new data category: everything persisted
+  (platform, user id/name, snapshotted active-warning count/strike limit, the
+  already-length-capped `reason`) is exactly what the plaintext super-admin DM
+  already carries. `list_appeals`/`resolve_appeal` are admin-tier, guild-wide
+  (not conversation-scoped — same boundary as `list_member_warnings`/
+  `clear_warnings`, since warnings/mutes carry no conversation to scope by),
+  read via `list_appeals` (optional `status` filter, output wrapped in
+  `untrusted()` exactly like `list_reports`, so a hostile reason/user name
+  can't smuggle a fresh instruction line into the admin transcript) and
+  resolved via `resolve_appeal(id, 'resolved' | 'dismissed')` — a
+  non-destructive status flip, no CONFIRM (mirrors `resolve_report`), audited
+  via `admin_audit` with `actionKind: 'resolve_appeal'`.
+  `resolve_appeal` deliberately never mutates `member_warnings` or mute state
+  — `clear_warnings` remains the only way an admin lifts a mute, a scope
+  guardrail keeping appeal-triage and warning-clearing as two separate admin
+  judgement calls (an appeal being marked resolved is not itself evidence the
+  warning was wrong). Deletable: `forget_me`/`purge_user_data` remove the
+  caller's own filed `moderation_appeals` row(s) in the same transaction as
+  their `content_reports`/`suggestions`/`member_warnings` rows, pinned by a
+  `SECURITY:` test.
 - **The `claude` CLI subprocess** still has network access (it must reach the
   Anthropic API). OS-level egress filtering is the next hardening step if
   needed.

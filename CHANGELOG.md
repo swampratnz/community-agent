@@ -10,6 +10,83 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-20
+
+### Added
+- **WebSearch query-level dedup guard** (#589): the admin+ `WebSearch`
+  `PreToolUse` hook (#412's per-conversation rolling-hour cap) bounded call
+  *volume* but never inspected the query, so an agentic turn could search,
+  get an unsatisfying result, reformulate almost identically, and search
+  again — a second real metered call plus its redundant result tokens
+  re-entering context, for no new information. The same hook now also denies
+  an exact-normalized (trimmed, whitespace-collapsed, casefolded) repeat of
+  one of the last `AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE` (default 3) queries
+  in the same conversation within `AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS`
+  (default 300s), running before and additively alongside the existing
+  volume cap — a denied duplicate doesn't consume a volume slot, and a
+  distinct query is never false-positived. In-memory only, same durability
+  class as the sibling `reserve*Slot` caps; fails closed on a thrown check,
+  and the query text is never persisted or logged.
+
+### Security
+- **Closed a DNS-rebinding/TOCTOU gap in the knowledge link-check's SSRF
+  guard** (#587): the weekly link-rot checker's SSRF guard resolved a
+  `sourceUrl`'s hostname once to check it against a deny-list of
+  loopback/private/link-local/cloud-metadata ranges, but the actual HTTP
+  request that followed re-resolved the hostname independently — so a
+  host with a very low DNS TTL could in principle resolve to a public IP
+  for the guard's check and a different (internal) IP for the real
+  request moments later, bypassing the guard entirely. The request is now
+  pinned to the exact IP the guard already vetted (connecting by IP with
+  the original hostname presented via TLS SNI/the `Host` header), applied
+  independently at every redirect hop. Threat actor was already admin-tier
+  only (an admin with `save_knowledge`/`update_knowledge`); this narrows an
+  existing trust boundary, adds no new tool or data access.
+
+## 2026-07-18
+
+### Added
+- **Unusable tools are now filtered out of `allowedTools`** (#536): every tool already refused defensively at call time when it couldn't run — a `generate_image` call with `IMAGE_GEN_ENABLED` off, `list_events`/`create_event`/`cancel_event` on a WhatsApp deployment (Discord-only, Scheduled Events has no WhatsApp equivalent) — but the model was still shown that tool's full name, description, and schema on every turn regardless. `toolsForRole` now also drops tools gated by an off feature flag (`generate_image`, `suggest_issue`, the six `dev_team_*` tools) or by platform (the Discord-only event tools, on WhatsApp), purely subtractively — nothing becomes usable that wasn't before, and every handler keeps its own refusal check as defense in depth. For a default-config deployment this trims over 1,000 tokens of dead tool schema from every fresh prompt-cache write.
+
+### Changed
+- **te reo Māori parity on the CONFIRM-flow success shell** (#539): the fixed `Failed: ` prefix on a `requireConfirm` outcome already rendered in te reo for a caller with a standing `'mi'` preference (#490) — its successful sibling, the `Done: ` shell, was the one gap that fix named and deferred. A member confirming an action now sees `Kua oti: ` in place of `Done: ` when `'mi'` is set, with the dynamic result text after it untouched; bespoke, non-`Done:`-templated success strings stay English-only, the same boundary the failure-side fix already drew.
+
+### Fixed
+- **Editing a flagged knowledge entry now actually clears its low-rated signal** (#541): every one of the four places that decide whether a knowledge entry is "currently a problem" — the member-facing shortcut and `knowledge_search` caveats, `list_low_rated_knowledge`, and the weekly admin-digest count — kept counting unhelpful ratings from *before* an admin fixed the entry via `update_knowledge`, so the one documented remediation for a flagged entry had no visible effect on the signal that flagged it in the first place. Ratings now only count if they came from an interaction served after the entry's most recent edit, so a genuinely-fixed entry drops out of every one of those views instead of staying flagged forever on stale feedback.
+- **The bot's most important alert — "your platform has disconnected" — could go completely missing** (#537): if every registered adapter dropped at once (the single-platform deployment shape most operators run), the sustained-disconnect alert had nowhere to send and was silently discarded, with nothing sent and nothing logged. It's now queued (capped at 5) and logged as a warning the moment that happens, then automatically flushed to every super admin the instant the platform reconnects — so a total outage is no longer the one failure mode this alert couldn't tell anyone about.
+## 2026-07-19
+
+### Added
+- **Moderation appeals are now persisted, not just DM'd** (#554):
+  `appeal_moderation` was entirely fire-and-forget — it only fired a
+  best-effort admin DM (`notifyAppealFiled`), so a missed DM erased the
+  appeal with no trace and no admin could show it was ever reviewed. It now
+  also writes a durable `moderation_appeals` row (mirroring the
+  `content_reports` shape) alongside the unchanged DM, gated by the same
+  eligibility/cooldown checks so it can't be flooded. New admin-tier,
+  guild-wide tools `list_appeals` (optional `status` filter) and
+  `resolve_appeal(id, 'resolved' | 'dismissed')` — same non-destructive,
+  audited, no-CONFIRM shape as `list_reports`/`resolve_report`.
+  `resolve_appeal` never itself clears warnings or lifts a mute — that stays
+  `clear_warnings`' job alone. Deletable via `forget_me`/`purge_user_data`.
+  See docs/ARCHITECTURE.md and docs/SECURITY.md.
+## 2026-07-20
+
+### Added
+- **`update_knowledge` now nudges on a converging edit** (#584): `save_knowledge`
+  has warned an admin since #93 when a new entry looks like a near-duplicate
+  (≥92% similar) of an existing one — but editing an entry via
+  `update_knowledge` so its wording converged onto a different entry's topic
+  produced no signal at all, a gap #316 named as its own natural follow-up.
+  Both write paths now share one `findNearDuplicateKnowledge` lookup;
+  `update_knowledge` excludes the entry being edited from its own candidate
+  set and appends the identical advisory note `save_knowledge` uses when a
+  match is found, otherwise the reply is unchanged. Purely advisory (the edit
+  always proceeds, per #93's nudge-not-block decision) — no new tool, tier,
+  schema, or config knob, and `update_knowledge` stays admin-tier and
+  CONFIRM-gated exactly as before. See docs/ARCHITECTURE.md's knowledge
+  section.
+
 ## 2026-07-19
 
 ### Added
