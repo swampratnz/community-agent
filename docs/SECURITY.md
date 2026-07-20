@@ -1608,6 +1608,46 @@ the "Secret exposure" controls (§2) above rather than assumed covered by them:
   same shape as the `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage
   pins (issues #311/#367).
 
+### 17. Opt-in Discord auto-enroll (`DISCORD_AUTO_ENROLL_MEMBERS`, off by default, issue #605)
+
+Gated-mode enrollment is normally per-person: an admin runs `add_member` after
+reviewing a joiner. This flag (Discord-only, off by default) instead grants
+**every** non-bot joiner standing member-tier `community_users` access
+automatically on join — a genuine RBAC-posture change, so it is called out here
+in the same spirit as `DISCORD_ARCHIVE_ALL_MESSAGES` (§6):
+
+- **Opt-in, default-off, and capped at `member`.** Nothing changes unless an
+  operator sets it. The grant is always `role: 'member'` — never `admin` — and
+  `upsertMember`'s `ON CONFLICT ... CASE` structurally refuses to downgrade an
+  existing `admin` row to `member`, so a rejoining admin keeps their tier (no
+  app-level pre-check, no TOCTOU against a concurrent human `add_member`).
+  Pinned by a real-DB `SECURITY:` repository test.
+- **Removes the per-person review gate — enable only for open enrollment.**
+  With it on, standing member-tier tool access is no longer an admin decision
+  per joiner; anyone who can join the Discord server is a member. Turn it on
+  only if you intend the server to be open-enrollment. `remove_member` only
+  revokes the in-app grant, so a removed member who **rejoins** while the flag
+  is on is re-enrolled — the durable way to keep someone out is Discord's own
+  `ban_user` (a banned account can't rejoin), which is unaffected.
+- **Deterministic, never model-reachable.** The write is a direct
+  `autoEnrollMemberWithAudit` repository call from the platform join event
+  (`onGuildMemberAdd`), never routed through the agent/model loop — pinned by a
+  `SECURITY:` test asserting the adapter never imports the Agent SDK. Identity
+  comes only from `member.id`/`member.displayName` (Discord-provided), never
+  message content.
+- **Traceable and atomic.** The grant and its `admin_audit` row are written in
+  **one transaction**, so a failed audit insert rolls the grant back rather than
+  leaving a member with standing access and no audit trail. The audit row
+  carries the `AUTO_ENROLL_ACTOR` (`system:discord_auto_enroll`) sentinel, so it
+  is distinguishable from a human `add_member` grant, and is fully visible via
+  `audit_view`/unfiltered `admin_audit`. It is excluded **only** from the
+  `admin_activity` volume ranking (so the per-join system rows can't bury human
+  moderation activity in that report) — not hidden. Both the atomicity (commit
+  and rollback) and the sentinel/exclusion behaviour are pinned by tests.
+- **No approval DM.** This path deliberately does not send
+  `notifyMemberApproved` — that stays an admin-initiated notice, not an
+  unprompted per-join message. Pinned by a `SECURITY:` test.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
@@ -2001,6 +2041,12 @@ number could reach an unrelated person).
       archiving notice (see "Data protection" above) is posted visibly
       (server rules / pinned message). Enabling the flag without notice
       violates the collection-notice expectations this deployment relies on.
+- [ ] **Before enabling `DISCORD_AUTO_ENROLL_MEMBERS`** (§17): confirm you
+      intend **open enrollment** — every non-bot Discord joiner is granted
+      standing member-tier access automatically, with no per-person admin
+      review. Leave it off to keep the gated per-person `add_member` flow. To
+      keep a specific person out durably, use Discord's own `ban_user`;
+      `remove_member` alone is re-undone if they rejoin while the flag is on.
 - [ ] **Before adding a group's JID to `WHATSAPP_ARCHIVE_GROUP_JIDS`**: the
       WhatsApp ambient-archiving notice (see "Data protection" above) is
       posted visibly in *that group*. Do this per group, before each JID is

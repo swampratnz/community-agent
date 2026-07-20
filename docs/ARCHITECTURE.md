@@ -765,6 +765,35 @@ weakening it:
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
    previously under-served.
+7. **Opt-in auto-enroll** (issue #605, off unless
+   `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
+   `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls
+   `autoEnrollMemberWithAudit` (a repository function), right after the
+   existing roster upsert and after the rejoin re-mute check — a deterministic
+   DB write, never routed through the agent/model. It grants `role: 'member'`
+   with `added_by: 'system:discord_auto_enroll'` via the same `upsertMember`
+   logic `add_member`'s tool handler uses, and writes the grant and its
+   `admin_audit` row in ONE transaction, so the "traceable, never silent"
+   guarantee is structural: an audit-insert failure rolls back the grant rather
+   than leaving a member with standing access and no audit trail. No app-level
+   pre-check: `upsertMember`'s `ON CONFLICT` `CASE` already refuses to downgrade
+   an existing `admin` row to `member`, so a rejoining admin keeps their role.
+   The audit row uses `recordAdminAction` (not the tool layer's `audited()`
+   helper, since there's no admin caller for a join event) and is
+   distinguishable from a human grant by the `system:discord_auto_enroll`
+   actor/added_by sentinel (`AUTO_ENROLL_ACTOR`) — which is also **excluded from
+   the `admin_activity` rollup**, so the system actor's per-join rows can't bury
+   genuine human moderation/curation activity in that super-admin report (the
+   rows stay visible via `audit_view`). Does **not** send
+   `notifyMemberApproved`/the approval DM — that stays an admin-initiated
+   notice, not an unprompted per-join one; the enrollee simply gets answered
+   instead of gated on their next message. **Discord only** — WhatsApp has no
+   join event, so this doesn't extend there.
+   **Interacts with `remove_member`**: that tool only revokes bot access (a
+   soft, in-app gate), so a removed member who rejoins the Discord server
+   while this flag is on is re-enrolled — the durable way to keep someone out
+   is Discord's own `ban_user`, which is unaffected (a banned user can't
+   rejoin).
 
 ## Offline context builder
 

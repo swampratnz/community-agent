@@ -1716,14 +1716,17 @@ export async function resolveDisplayName(platform: Platform, userId: string): Pr
  * Upsert a membership grant. Never downgrades: adding an existing admin as a
  * member keeps them admin (downgrades go through revoke_admin explicitly).
  */
-export async function upsertMember(input: {
-  platform: Platform;
-  userId: string;
-  role: StoredRole;
-  addedBy: string;
-  displayName?: string;
-}): Promise<StoredRole> {
-  const { rows } = await pool.query(
+export async function upsertMember(
+  input: {
+    platform: Platform;
+    userId: string;
+    role: StoredRole;
+    addedBy: string;
+    displayName?: string;
+  },
+  db: Queryable = pool,
+): Promise<StoredRole> {
+  const { rows } = await db.query(
     `INSERT INTO community_users (platform, platform_user_id, display_name, role, added_by)
      VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (platform, platform_user_id)
@@ -1736,6 +1739,68 @@ export async function upsertMember(input: {
     [input.platform, input.userId, input.displayName ?? null, input.role, input.addedBy],
   );
   return rows[0].role as StoredRole;
+}
+
+/**
+ * Sentinel `actor_user_id`/`added_by` for an opt-in auto-enroll write (issue
+ * #605), so its `admin_audit` row is distinguishable from a human `add_member`
+ * grant. Owned here — the single source of truth shared by the write
+ * (`autoEnrollMemberWithAudit`) and the `adminActivitySummary` rollup that
+ * excludes it — so the exclusion filter can never drift from the value written.
+ */
+export const AUTO_ENROLL_ACTOR = 'system:discord_auto_enroll';
+
+/**
+ * Auto-enroll a joiner (issue #605, `DISCORD_AUTO_ENROLL_MEMBERS`) and write its
+ * `admin_audit` row in ONE transaction, so the "every auto-enrollment is
+ * traceable, never silent" invariant is structural rather than best-effort: the
+ * member grant and the audit row commit together or not at all. Without the
+ * transaction the two writes were independent, so an audit-insert failure after
+ * a successful grant left a member with standing access and no audit trail (the
+ * PR-review finding on #606). Reuses `upsertMember`'s no-downgrade `ON CONFLICT`
+ * `CASE` (a rejoining admin keeps `admin`) and `recordAdminAction`'s insert via
+ * the shared transaction client, so there's a single source of truth for both
+ * statements. Returns the resulting role.
+ */
+export async function autoEnrollMemberWithAudit(input: {
+  platform: Platform;
+  userId: string;
+  displayName?: string;
+}): Promise<StoredRole> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const role = await upsertMember(
+      {
+        platform: input.platform,
+        userId: input.userId,
+        role: 'member',
+        addedBy: AUTO_ENROLL_ACTOR,
+        displayName: input.displayName,
+      },
+      client,
+    );
+    await recordAdminAction(
+      {
+        platform: input.platform,
+        actorUserId: AUTO_ENROLL_ACTOR,
+        actorName: 'system',
+        actionKind: 'auto_enroll_member',
+        targetUserId: input.userId,
+        params: { role: 'member', addedBy: AUTO_ENROLL_ACTOR },
+        result: `registered as ${role}`,
+        success: true,
+      },
+      client,
+    );
+    await client.query('COMMIT');
+    return role;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** Explicit downgrade of an admin to member. Returns false if not an admin. */
@@ -2479,6 +2544,13 @@ export async function adminActivitySummary(days = 30): Promise<
   }>
 > {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 30, 1), 365);
+  // Exclude the auto-enroll sentinel (issue #606 review): this rollup exists to
+  // rank HUMAN moderation/curation work by volume, but with
+  // DISCORD_AUTO_ENROLL_MEMBERS on, every join writes a system-actor audit row.
+  // On an active server that actor would dominate the top of the report and
+  // bury real admin activity — the opposite of what the tool is for. The rows
+  // stay in admin_audit (still visible via audit_view); they're only kept out
+  // of this ranking.
   const { rows } = await pool.query(
     `SELECT platform, actor_user_id,
             count(*) AS action_count,
@@ -2487,9 +2559,10 @@ export async function adminActivitySummary(days = 30): Promise<
             max(created_at) AS last_action_at
        FROM admin_audit
       WHERE created_at >= now() - $1::interval
+        AND actor_user_id <> $2
       GROUP BY platform, actor_user_id
       ORDER BY count(*) DESC`,
-    [`${clampedDays} days`],
+    [`${clampedDays} days`, AUTO_ENROLL_ACTOR],
   );
   return rows.map((r) => ({
     platform: r.platform as Platform,
@@ -2673,18 +2746,21 @@ export async function sumShortcutHits(
 
 // --- Admin audit -----------------------------------------------------------
 
-export async function recordAdminAction(input: {
-  platform: Platform;
-  actorUserId: string;
-  actorName?: string;
-  actionKind: string;
-  targetUserId?: string;
-  conversationId?: string;
-  params?: Record<string, unknown>;
-  result?: string;
-  success: boolean;
-}): Promise<void> {
-  await pool.query(
+export async function recordAdminAction(
+  input: {
+    platform: Platform;
+    actorUserId: string;
+    actorName?: string;
+    actionKind: string;
+    targetUserId?: string;
+    conversationId?: string;
+    params?: Record<string, unknown>;
+    result?: string;
+    success: boolean;
+  },
+  db: Queryable = pool,
+): Promise<void> {
+  await db.query(
     `INSERT INTO admin_audit
        (platform, actor_user_id, actor_name, action_kind, target_user_id,
         conversation_id, params, result, success)
