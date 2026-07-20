@@ -2041,6 +2041,12 @@ number could reach an unrelated person).
       archiving notice (see "Data protection" above) is posted visibly
       (server rules / pinned message). Enabling the flag without notice
       violates the collection-notice expectations this deployment relies on.
+- [ ] **Before enabling `DISCORD_AUTO_ENROLL_MEMBERS`** (§17): confirm you
+      intend **open enrollment** — every non-bot Discord joiner is granted
+      standing member-tier access automatically, with no per-person admin
+      review. Leave it off to keep the gated per-person `add_member` flow. To
+      keep a specific person out durably, use Discord's own `ban_user`;
+      `remove_member` alone is re-undone if they rejoin while the flag is on.
 - [ ] **Before adding a group's JID to `WHATSAPP_ARCHIVE_GROUP_JIDS`**: the
       WhatsApp ambient-archiving notice (see "Data protection" above) is
       posted visibly in *that group*. Do this per group, before each JID is
