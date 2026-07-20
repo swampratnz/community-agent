@@ -1577,7 +1577,10 @@ test('onGuildMemberAdd: the rejoin re-mute runs before any welcome-message logic
  * survives an incoming 'member' write) so assertions reflect production
  * behaviour, not just what got INSERTed.
  */
-function stubAutoEnrollQueries(opts: { storedRole?: 'admin' | 'member'; activeWarnings?: number } = {}) {
+function stubAutoEnrollQueries(
+  t: { mock: { method: typeof import('node:test').mock.method } },
+  opts: { storedRole?: 'admin' | 'member'; activeWarnings?: number; failAuditInsert?: boolean } = {},
+) {
   const calls = {
     memberUpserts: [] as Array<{ role: string; addedBy: string | null; userId: string }>,
     auditInserts: [] as Array<{
@@ -1587,8 +1590,16 @@ function stubAutoEnrollQueries(opts: { storedRole?: 'admin' | 'member'; activeWa
       params: unknown;
       success: boolean;
     }>,
+    // BEGIN/COMMIT/ROLLBACK issued on the transaction client, in order — lets a
+    // test assert the enroll+audit writes are wrapped in one transaction and
+    // that a failed audit insert rolls back rather than partially committing.
+    txn: [] as string[],
   };
   const query = async (sql: string, params?: unknown[]) => {
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+      calls.txn.push(sql);
+      return { rows: [], rowCount: 0 };
+    }
     if (sql.includes('INSERT INTO server_roster')) return { rows: [], rowCount: 1 };
     if (sql.includes('INSERT INTO community_users')) {
       const userId = params?.[1] as string;
@@ -1599,6 +1610,7 @@ function stubAutoEnrollQueries(opts: { storedRole?: 'admin' | 'member'; activeWa
       return { rows: [{ role: finalRole }], rowCount: 1 };
     }
     if (sql.includes('INSERT INTO admin_audit')) {
+      if (opts.failAuditInsert) throw new Error('simulated admin_audit insert failure');
       calls.auditInserts.push({
         actorUserId: params?.[1] as string,
         actionKind: params?.[3] as string,
@@ -1614,7 +1626,15 @@ function stubAutoEnrollQueries(opts: { storedRole?: 'admin' | 'member'; activeWa
     }
     return { rows: [], rowCount: 0 };
   };
-  return { query, calls };
+  // autoEnrollMemberWithAudit runs its enroll+audit writes inside a single
+  // transaction (issue #606 review), so it takes a pooled client via
+  // pool.connect() and issues BEGIN/…/COMMIT on it — route that client's query
+  // through the SAME handler so the mock captures the writes, and mock connect
+  // alongside query. BEGIN/COMMIT/ROLLBACK fall through to the no-op default.
+  const client = { query, release: () => {} };
+  t.mock.method(pool, 'query', query);
+  t.mock.method(pool, 'connect', async () => client as unknown as Awaited<ReturnType<typeof pool.connect>>);
+  return calls;
 }
 
 /** Toggles config.discord.autoEnrollMembers for the duration of a test, restoring it after. */
@@ -1630,8 +1650,7 @@ async function withAutoEnroll(enabled: boolean, fn: () => Promise<void>): Promis
 
 test('onGuildMemberAdd: DISCORD_AUTO_ENROLL_MEMBERS unset/false leaves the join handler byte-identical — no community_users write', async (t) => {
   await withAutoEnroll(false, async () => {
-    const { query, calls } = stubAutoEnrollQueries();
-    t.mock.method(pool, 'query', query);
+    const calls = stubAutoEnrollQueries(t);
     const adapter = new DiscordAdapter();
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-no-flag', guildId: config.discord.guildId });
@@ -1643,8 +1662,7 @@ test('onGuildMemberAdd: DISCORD_AUTO_ENROLL_MEMBERS unset/false leaves the join 
 
 test('onGuildMemberAdd: with the flag true, a non-bot join with no existing community_users row is auto-enrolled as a member', async (t) => {
   await withAutoEnroll(true, async () => {
-    const { query, calls } = stubAutoEnrollQueries();
-    t.mock.method(pool, 'query', query);
+    const calls = stubAutoEnrollQueries(t);
     const adapter = new DiscordAdapter();
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-fresh-join', guildId: config.discord.guildId });
@@ -1657,8 +1675,7 @@ test('onGuildMemberAdd: with the flag true, a non-bot join with no existing comm
 
 test('SECURITY: with the flag true, a rejoining admin (leave + rejoin) keeps their admin role — the auto-enroll write never downgrades', async (t) => {
   await withAutoEnroll(true, async () => {
-    const { query, calls } = stubAutoEnrollQueries({ storedRole: 'admin' });
-    t.mock.method(pool, 'query', query);
+    const calls = stubAutoEnrollQueries(t, { storedRole: 'admin' });
     const adapter = new DiscordAdapter();
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-admin-rejoin', guildId: config.discord.guildId });
@@ -1678,8 +1695,7 @@ test('SECURITY: with the flag true, a rejoining admin (leave + rejoin) keeps the
 
 test('SECURITY: a bot account joining never triggers an auto-enroll write, regardless of the flag', async (t) => {
   await withAutoEnroll(true, async () => {
-    const { query, calls } = stubAutoEnrollQueries();
-    t.mock.method(pool, 'query', query);
+    const calls = stubAutoEnrollQueries(t);
     const adapter = new DiscordAdapter();
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-bot', guildId: config.discord.guildId, bot: true });
@@ -1691,8 +1707,7 @@ test('SECURITY: a bot account joining never triggers an auto-enroll write, regar
 
 test('SECURITY: every auto-enroll write produces an admin_audit row without requiring an admin caller, distinguishable from a human add_member grant', async (t) => {
   await withAutoEnroll(true, async () => {
-    const { query, calls } = stubAutoEnrollQueries();
-    t.mock.method(pool, 'query', query);
+    const calls = stubAutoEnrollQueries(t);
     const adapter = new DiscordAdapter();
     stubMuteGuild(adapter);
     const member = fakeGuildMember({ id: 'user-audited', guildId: config.discord.guildId });
@@ -1713,10 +1728,44 @@ test('SECURITY: every auto-enroll write produces an admin_audit row without requ
   });
 });
 
+test('SECURITY: auto-enroll is atomic — the grant and its audit row are wrapped in one transaction, and an audit-insert failure rolls back rather than committing a member grant with no audit trail (issue #606)', async (t) => {
+  await withAutoEnroll(true, async () => {
+    const calls = stubAutoEnrollQueries(t, { failAuditInsert: true });
+    const adapter = new DiscordAdapter();
+    stubMuteGuild(adapter);
+    const member = fakeGuildMember({ id: 'user-audit-fails', guildId: config.discord.guildId });
+    // onGuildMemberAdd's own .catch swallows the failure (best-effort join
+    // handling), so the join handler must not throw even though the audit
+    // insert did.
+    await fireGuildMemberAdd(adapter, member);
+    assert.ok(calls.txn.includes('BEGIN'), 'the enroll+audit writes are wrapped in a transaction');
+    assert.ok(
+      calls.txn.includes('ROLLBACK'),
+      'a failed audit insert must roll the transaction back — the grant is never committed without its audit row',
+    );
+    assert.ok(
+      !calls.txn.includes('COMMIT'),
+      'the transaction must not commit when the audit insert failed (no partial "granted but untraceable" state)',
+    );
+  });
+});
+
+test('auto-enroll commits the grant and audit row together in one transaction (BEGIN … COMMIT) on the happy path (issue #606)', async (t) => {
+  await withAutoEnroll(true, async () => {
+    const calls = stubAutoEnrollQueries(t);
+    const adapter = new DiscordAdapter();
+    stubMuteGuild(adapter);
+    const member = fakeGuildMember({ id: 'user-txn-ok', guildId: config.discord.guildId });
+    await fireGuildMemberAdd(adapter, member);
+    assert.deepEqual(calls.txn, ['BEGIN', 'COMMIT'], 'exactly one transaction, committed once');
+    assert.equal(calls.memberUpserts.length, 1, 'the grant was written inside the transaction');
+    assert.equal(calls.auditInserts.length, 1, 'the audit row was written inside the same transaction');
+  });
+});
+
 test('SECURITY: onGuildMemberAdd never sends the member-approval DM/notification from the auto-enroll path', async (t) => {
   await withAutoEnroll(true, async () => {
-    const { query, calls } = stubAutoEnrollQueries();
-    t.mock.method(pool, 'query', query);
+    const calls = stubAutoEnrollQueries(t);
     const adapter = new DiscordAdapter();
     stubMuteGuild(adapter);
     let dmSent = false;
