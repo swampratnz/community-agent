@@ -2606,7 +2606,10 @@ export async function adminActivitySummary(days = 30): Promise<
   }));
 }
 
-export async function usageStats(days = 7): Promise<{
+export async function usageStats(
+  days = 7,
+  platform?: Platform,
+): Promise<{
   inbound: number;
   outbound: number;
   costUsd: number;
@@ -2621,18 +2624,33 @@ export async function usageStats(days = 7): Promise<{
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
+  // Optional platform scoping (issue #647), mirroring `engagementStats`'s
+  // dynamic-placeholder pattern: only `totals`/`top`/`byRole` — the three
+  // fields named by #580's growth path — take the filter. `byPlatform` and
+  // the background/cache/shortcut/auto-answer aggregates below stay
+  // global-only by design (they aren't platform-attributed, or scoping them
+  // is out of scope per the approved proposal).
+  const scopeParams: unknown[] = [interval];
+  let scopeFilter = '';
+  if (platform) {
+    scopeParams.push(platform);
+    scopeFilter = ` AND platform = $${scopeParams.length}`;
+  }
   const { rows: totals } = await pool.query(
     `SELECT
        count(*) FILTER (WHERE direction = 'inbound') AS inbound,
        count(*) FILTER (WHERE direction = 'outbound') AS outbound,
        coalesce(sum(cost_usd), 0) AS cost
-     FROM interactions WHERE created_at > now() - $1::interval`,
-    [interval],
+     FROM interactions WHERE created_at > now() - $1::interval${scopeFilter}`,
+    scopeParams,
   );
   // Per-platform split of the same `totals` query above (issue #580) — same
   // table/window/direction semantics, differing only by `GROUP BY platform`,
   // so summed rows equal `totals` by construction. Ordered by volume desc
-  // (then platform name) so the tool's output line is deterministic.
+  // (then platform name) so the tool's output line is deterministic. Always
+  // computed unfiltered — `formatUsageStats` omits rendering it when a
+  // `platform` filter is active (issue #647), since a single-platform view
+  // makes the breakdown line redundant.
   const { rows: byPlatform } = await pool.query(
     `SELECT platform,
        count(*) FILTER (WHERE direction = 'inbound') AS inbound,
@@ -2646,16 +2664,16 @@ export async function usageStats(days = 7): Promise<{
   const { rows: top } = await pool.query(
     `SELECT user_id, max(user_name) AS user_name, count(*) AS n
        FROM interactions
-      WHERE direction = 'inbound' AND created_at > now() - $1::interval
+      WHERE direction = 'inbound' AND created_at > now() - $1::interval${scopeFilter}
       GROUP BY user_id ORDER BY n DESC LIMIT 5`,
-    [interval],
+    scopeParams,
   );
   const { rows: byRole } = await pool.query(
     `SELECT role, coalesce(sum(cost_usd), 0) AS cost, count(*) AS n
        FROM interactions
-      WHERE direction = 'outbound' AND created_at > now() - $1::interval
+      WHERE direction = 'outbound' AND created_at > now() - $1::interval${scopeFilter}
       GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
-    [interval],
+    scopeParams,
   );
   // Cache-hit/-write token telemetry (issue #522): sums the `meta` JSONB
   // keys `core.ts`/`router.ts` write per outbound row (issue #508's read,

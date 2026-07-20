@@ -3265,6 +3265,136 @@ test(
 );
 
 test(
+  'repository: usageStats(days, platform) scopes topUsers/costByRole/totals to one platform, leaves byPlatform/backgroundCostByJob/cacheUsage/shortcutHits/autoAnswerUsage unaffected, and per-platform-scoped deltas reconcile to the unscoped delta (issue #647)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-platform-filter`;
+    const discordUser = `${RUN}-filter-discord`;
+    const whatsappUser = `${RUN}-filter-whatsapp`;
+
+    const days = 1;
+    // Exact-delta assertions over whole-table aggregates race with other test
+    // FILES writing interactions concurrently (parallel file execution, one
+    // shared DB) — retry the full read-seed-read sequence, cleaning seeds
+    // between attempts (see retryOnSharedTableInterference above).
+    await retryOnSharedTableInterference(4, async () => {
+      try {
+        const beforeAll = await usageStats(days);
+        const beforeDiscord = await usageStats(days, 'discord');
+        const beforeWhatsapp = await usageStats(days, 'whatsapp');
+
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: discordUser,
+          userName: 'DiscordFilterUser',
+          role: 'member',
+          direction: 'inbound',
+          content: 'discord question',
+        });
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: discordUser,
+          role: 'member',
+          direction: 'outbound',
+          content: 'discord reply',
+          costUsd: 1.2,
+        });
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId,
+          userId: whatsappUser,
+          userName: 'WhatsappFilterUser',
+          role: 'admin',
+          direction: 'inbound',
+          content: 'whatsapp question',
+        });
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId,
+          userId: whatsappUser,
+          role: 'admin',
+          direction: 'outbound',
+          content: 'whatsapp reply',
+          costUsd: 0.3,
+        });
+
+        const afterAll = await usageStats(days);
+        const afterDiscord = await usageStats(days, 'discord');
+        const afterWhatsapp = await usageStats(days, 'whatsapp');
+
+        // Criterion 2: a discord-scoped call reflects only discord rows.
+        assert.equal(afterDiscord.inbound - beforeDiscord.inbound, 1);
+        assert.equal(afterDiscord.outbound - beforeDiscord.outbound, 1);
+        assert.ok(Math.abs(afterDiscord.costUsd - beforeDiscord.costUsd - 1.2) < 1e-9);
+        assert.ok(
+          afterDiscord.topUsers.some((u) => u.userId === discordUser),
+          'discord-scoped topUsers includes the seeded discord user',
+        );
+        assert.ok(
+          !afterDiscord.topUsers.some((u) => u.userId === whatsappUser),
+          'discord-scoped topUsers must never include a whatsapp-only user',
+        );
+        const discordAfterByRole = new Map(afterDiscord.costByRole.map((r) => [r.role, r.costUsd]));
+        const discordBeforeByRole = new Map(beforeDiscord.costByRole.map((r) => [r.role, r.costUsd]));
+        assert.equal((discordAfterByRole.get('member') ?? 0) - (discordBeforeByRole.get('member') ?? 0), 1.2);
+        assert.equal(
+          (discordAfterByRole.get('admin') ?? 0) - (discordBeforeByRole.get('admin') ?? 0),
+          0,
+          'discord-scoped costByRole must not pick up the whatsapp admin reply cost',
+        );
+
+        // A whatsapp-scoped call reflects only whatsapp rows.
+        assert.equal(afterWhatsapp.inbound - beforeWhatsapp.inbound, 1);
+        assert.equal(afterWhatsapp.outbound - beforeWhatsapp.outbound, 1);
+        assert.ok(Math.abs(afterWhatsapp.costUsd - beforeWhatsapp.costUsd - 0.3) < 1e-9);
+        assert.ok(
+          afterWhatsapp.topUsers.some((u) => u.userId === whatsappUser),
+          'whatsapp-scoped topUsers includes the seeded whatsapp user',
+        );
+        assert.ok(
+          !afterWhatsapp.topUsers.some((u) => u.userId === discordUser),
+          'whatsapp-scoped topUsers must never include a discord-only user',
+        );
+
+        // Criterion 3: reconciliation — summing the per-platform-scoped
+        // deltas for the same window must equal the unscoped delta exactly
+        // (no double counting, no dropped rows).
+        assert.equal(
+          afterDiscord.inbound - beforeDiscord.inbound + (afterWhatsapp.inbound - beforeWhatsapp.inbound),
+          afterAll.inbound - beforeAll.inbound,
+        );
+        assert.equal(
+          afterDiscord.outbound - beforeDiscord.outbound + (afterWhatsapp.outbound - beforeWhatsapp.outbound),
+          afterAll.outbound - beforeAll.outbound,
+        );
+        assert.ok(
+          Math.abs(
+            afterDiscord.costUsd -
+              beforeDiscord.costUsd +
+              (afterWhatsapp.costUsd - beforeWhatsapp.costUsd) -
+              (afterAll.costUsd - beforeAll.costUsd),
+          ) < 1e-9,
+        );
+
+        // Criterion 4: fields the filter deliberately never touches stay
+        // identical to the unscoped call, regardless of the platform arg —
+        // scoping can't silently mislabel a global aggregate as scoped.
+        assert.deepEqual(afterDiscord.byPlatform, afterAll.byPlatform);
+        assert.deepEqual(afterWhatsapp.byPlatform, afterAll.byPlatform);
+        assert.deepEqual(afterDiscord.backgroundCostByJob, afterAll.backgroundCostByJob);
+        assert.deepEqual(afterDiscord.cacheUsage, afterAll.cacheUsage);
+        assert.deepEqual(afterDiscord.shortcutHits, afterAll.shortcutHits);
+        assert.deepEqual(afterDiscord.autoAnswerUsage, afterAll.autoAnswerUsage);
+      } finally {
+        await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      }
+    });
+  },
+);
+
+test(
   'repository: usageStats clamps an out-of-range days window to [1, 365] (issue #110)',
   { skip },
   async () => {
