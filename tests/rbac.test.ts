@@ -727,6 +727,13 @@ test('super admin gets the full surface', () => {
   }
 });
 
+test('SECURITY: issue #635 (prompt-review GUIDELINES clause) adds no tool — toolsForRole is exactly MEMBER_TOOLS/ADMIN_TOOLS/SUPER_ADMIN_TOOLS for every tier, unchanged by a system-prompt-only clause', () => {
+  assert.deepEqual(toolsForRole('guest'), [...MEMBER_TOOLS]);
+  assert.deepEqual(toolsForRole('member'), [...MEMBER_TOOLS]);
+  assert.deepEqual(toolsForRole('admin'), [...MEMBER_TOOLS, ...ADMIN_TOOLS]);
+  assert.deepEqual(toolsForRole('super_admin'), [...MEMBER_TOOLS, ...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]);
+});
+
 test('assertAtLeast enforces the hierarchy', () => {
   assert.throws(() => assertAtLeast('member', 'admin', 'announce'), /Permission denied/);
   assert.throws(() => assertAtLeast('admin', 'super_admin', 'grant_admin'), /Permission denied/);

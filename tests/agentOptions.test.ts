@@ -86,6 +86,21 @@ test('SECURITY: allowedTools tracks toolsForRole exactly, modulo feature-flag/pl
   }
 });
 
+test('SECURITY: issue #635 (prompt-review GUIDELINES clause) adds no tool — buildQueryOptions.allowedTools is exactly toolsForRole(role) plus tier-gated WebSearch, minus feature-flagged tools, for every tier', () => {
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
+    const webSearch = role === 'admin' || role === 'super_admin';
+    const expected = [...toolsForRole(role, 'discord'), ...(webSearch ? ['WebSearch'] : [])].filter(
+      (t) => !(FEATURE_FLAGGED_TOOLS as readonly string[]).includes(t),
+    );
+    assert.deepEqual(
+      [...opts.allowedTools].sort(),
+      [...expected].sort(),
+      `${role} allowedTools must be unaffected by a system-prompt-only GUIDELINES clause`,
+    );
+  }
+});
+
 test('SECURITY: acceptance criterion 1 — default config excludes all 9 feature-flagged tools from a super_admin turn', () => {
   const opts = buildQueryOptions('super_admin', 'prompt', {}, null, 'conv-1', 'discord');
   for (const t of FEATURE_FLAGGED_TOOLS) {
