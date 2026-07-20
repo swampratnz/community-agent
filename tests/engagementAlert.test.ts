@@ -335,6 +335,7 @@ test('makeDefaultEngagementAlertRun: with zero connected adapters, the weekly sn
     async () => stats({ percentage: 55 }),
     async () => false,
     async () => {},
+    async () => null, // stub the #597 prior-percentage read so this stays a DB-free unit test
   );
 
   await runOnce();
