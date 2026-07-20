@@ -22,6 +22,7 @@ const { embed } = await import('../src/storage/embeddings.js');
 const pgvector = (await import('pgvector/pg')).default;
 const {
   recordInteraction,
+  recentConversationTail,
   searchMemory,
   setClaudeSessionId,
   getClaudeSession,
@@ -9248,5 +9249,49 @@ test(
     );
 
     await pool.query(`DELETE FROM interactions WHERE id = ANY($1)`, [[inScopeId, outOfScopeId]]);
+  },
+);
+
+test(
+  'repository: recentConversationTail returns the most recent in-window rows for ONE conversation, oldest-first; limit 0 disables it',
+  { skip },
+  async () => {
+    const conv = `${RUN}-c-tail`;
+    const otherConv = `${RUN}-c-tail-other`;
+    const userId = `${RUN}-tail-user`;
+
+    const insert = (conversationId: string, content: string, interval: string) =>
+      pool.query(
+        `INSERT INTO interactions (platform, conversation_id, user_id, user_name, role, direction, content, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7, now() - interval '${interval}')`,
+        ['discord', conversationId, userId, 'Tail Tester', 'member', 'inbound', content],
+      );
+    await insert(conv, 'oldest in-window', '3 minutes');
+    await insert(conv, 'middle in-window', '2 minutes');
+    await insert(conv, 'newest in-window', '1 minute');
+    // Outside the SESSION_MAX_AGE_HOURS window (default 24h in this test env):
+    // a fresh session inherits at most what a live session could have held.
+    await insert(conv, 'out of window — must be excluded', '25 hours');
+    await insert(otherConv, 'other conversation — must never leak in', '1 minute');
+
+    const tail = await recentConversationTail('discord', conv, 2);
+    assert.deepEqual(
+      tail.map((r) => r.content),
+      ['middle in-window', 'newest in-window'],
+      'limit takes the MOST RECENT rows and returns them oldest-first',
+    );
+    assert.equal(tail[0]?.userName, 'Tail Tester');
+    assert.equal(tail[0]?.direction, 'inbound');
+
+    const all = await recentConversationTail('discord', conv, 10);
+    assert.deepEqual(
+      all.map((r) => r.content),
+      ['oldest in-window', 'middle in-window', 'newest in-window'],
+      'the age window excludes stale rows, and other conversations are scoped out',
+    );
+
+    assert.deepEqual(await recentConversationTail('discord', conv, 0), [], 'limit 0 disables the backfill');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[conv, otherConv]]);
   },
 );

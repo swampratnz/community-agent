@@ -361,6 +361,13 @@ const EnvSchema = z.object({
   // Session hygiene: start a fresh Claude session past either cap.
   SESSION_MAX_TURNS: z.coerce.number().int().positive().default(30),
   SESSION_MAX_AGE_HOURS: z.coerce.number().positive().default(24),
+  // Fresh-session continuity: when a turn can't resume a prior session
+  // (rollover past either cap above, a cleared session, or a failed resume),
+  // backfill this many of the conversation's most recent messages into the
+  // first turn as quarantined reference context — otherwise the bot goes
+  // amnesiac mid-conversation, with only semantic recall (keyed on the
+  // CURRENT message text) to reconstruct what was just said. 0 = disabled.
+  SESSION_ROLLOVER_TAIL_COUNT: z.coerce.number().int().nonnegative().default(10),
   // Age-based purge of raw `interactions` content. Unset/0 = disabled (no
   // behaviour change on upgrade). knowledge/admin_audit/sessions are never
   // touched by this — see storage/repository.ts:purgeOldInteractions.
@@ -1005,6 +1012,7 @@ export const config = {
     dailyReplyLimitPerUser: env.DAILY_REPLY_LIMIT_PER_USER,
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
+    sessionRolloverTailCount: env.SESSION_ROLLOVER_TAIL_COUNT,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
     rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
