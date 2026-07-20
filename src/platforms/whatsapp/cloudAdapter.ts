@@ -60,6 +60,14 @@ const SEND_FAILURE_THRESHOLD = 3;
  */
 const SEND_RETRY_DEFAULT_BACKOFF_MS = 1_000;
 /**
+ * Cap on messages held per-recipient in `windowReopenQueue` (issue #602),
+ * oldest-evicted-on-overflow. `notifySuperAdmins` (tools.ts) is reachable
+ * from member-tier tools (`report_content`, `appeal_moderation`), so this is
+ * what bounds member-triggered per-recipient state, mirroring
+ * `pendingAlertQueue.ts`'s bounded/oldest-evicted convention.
+ */
+const WINDOW_REOPEN_QUEUE_CAP = 3;
+/**
  * Hard clamp on any 429 retry delay, including a `Retry-After` value derived
  * from the header — so an extreme or malformed header can't block the
  * webhook handler for an extended period.
@@ -72,6 +80,27 @@ const SEND_RETRY_MAX_BACKOFF_MS = 5_000;
 export const WHATSAPP_CLOUD_WELCOME_MESSAGE =
   'Kia ora! 👋 Thanks for messaging the NZ Claude Community bot. I can help answer Claude/Anthropic ' +
   "questions here in our 1:1 chat. If you're new, an admin may need to register you as a member first.";
+
+/**
+ * Thrown by `assertWithinCustomerServiceWindow` (issue #602) instead of a
+ * bare `Error`, so a caller can tell "this recipient's 24h window is closed,
+ * a recoverable/expected condition" apart from a genuine send failure (a
+ * Graph API 5xx, missing config, etc). `agent/tools.ts`'s `notifyAdmins`/
+ * `notifySuperAdmins` use this to decide whether to queue the message via
+ * `queueForWindowReopen` instead of only logging and dropping it.
+ */
+export class WindowClosedError extends Error {
+  readonly recipientId: string;
+
+  constructor(recipientId: string) {
+    super(
+      `Cannot send free-form WhatsApp message to ${recipientId}: outside the 24h customer-service window ` +
+        '(no recent inbound message from this user). Only pre-approved message templates can be sent here.',
+    );
+    this.name = 'WindowClosedError';
+    this.recipientId = recipientId;
+  }
+}
 
 // Selected instead of WHATSAPP_CLOUD_WELCOME_MESSAGE when
 // config.rbac.accessMode.whatsapp is 'open' (issue #351) — same
@@ -129,6 +158,18 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
    * conversation in the DB, so the backstop still prevents a re-welcome).
    */
   private readonly welcomedThisRun = new Map<string, number>();
+
+  /**
+   * Messages queued per-recipient (issue #602) after a live admin-alert send
+   * rejected with `WindowClosedError` — the recipient's own 24h
+   * customer-service window was closed, not a genuine failure. Bounded at
+   * `WINDOW_REOPEN_QUEUE_CAP` per recipient, oldest-evicted-on-overflow.
+   * Flushed the instant that exact recipient's own next inbound message
+   * updates `lastInboundAt` (see `onCloudMessage`) — never on a timer or
+   * reconnect, so nothing is ever sent outside Meta's window. In-memory
+   * only; clears on restart, same tradeoff as every other queue here.
+   */
+  private readonly windowReopenQueue = new Map<string, string[]>();
 
   /**
    * Consecutive `sendChunk` (real message send) failures, process-wide. Only
@@ -298,6 +339,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     this.seenMessageIds.set(msg.id, Date.now());
 
     this.lastInboundAt.set(msg.from, Date.now());
+    await this.flushWindowReopenQueue(msg.from);
     if (!this.handler) return;
     if (!isAllowedSender(msg.from, config.whatsapp.allowedJids)) return;
 
@@ -390,6 +432,47 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   }
 
   /**
+   * Queue `message` for delivery to `userId` once their 24h customer-service
+   * window reopens (issue #602) — called by `agent/tools.ts`'s
+   * `notifyAdmins`/`notifySuperAdmins` when a live `sendDirectMessage`
+   * rejected with `WindowClosedError`. Bounded per-recipient at
+   * `WINDOW_REOPEN_QUEUE_CAP`, oldest-evicted-on-overflow. Optional on
+   * `PlatformAdapter` — only this adapter has a window to reopen.
+   */
+  queueForWindowReopen(userId: string, message: string): void {
+    const queued = this.windowReopenQueue.get(userId) ?? [];
+    queued.push(message);
+    if (queued.length > WINDOW_REOPEN_QUEUE_CAP) queued.shift();
+    this.windowReopenQueue.set(userId, queued);
+  }
+
+  /**
+   * Flushes every message queued for `userId` (see `queueForWindowReopen`)
+   * via `sendText`, then clears their entry — called from `onCloudMessage`
+   * immediately after `lastInboundAt` records a fresh inbound message from
+   * that exact sender, which is what reopens their window. The entry is
+   * removed BEFORE sending, so a flush send that throws is logged and
+   * dropped rather than re-queued (no unbounded retry loop). Keyed strictly
+   * per-recipient: this can only ever touch the queue for `userId`, never
+   * any other recipient's entry.
+   */
+  private async flushWindowReopenQueue(userId: string): Promise<void> {
+    const queued = this.windowReopenQueue.get(userId);
+    if (!queued || queued.length === 0) return;
+    this.windowReopenQueue.delete(userId);
+    for (const message of queued) {
+      try {
+        await this.sendText(userId, message);
+      } catch (err) {
+        logger.warn(
+          { err, userId },
+          'WhatsApp Cloud: window-reopen flush send failed, dropped (not re-queued)',
+        );
+      }
+    }
+  }
+
+  /**
    * Meta exposes typing indicators via the mark-as-read call: marking the
    * inbound message read with `typing_indicator` set shows "typing…" for up
    * to ~25s. Bound to a single inbound wamid — unlike Discord's `sendTyping`,
@@ -431,10 +514,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     const lastInbound = this.lastInboundAt.get(to);
     const withinWindow = lastInbound !== undefined && Date.now() - lastInbound < CUSTOMER_SERVICE_WINDOW_MS;
     if (!withinWindow) {
-      throw new Error(
-        `Cannot send free-form WhatsApp message to ${to}: outside the 24h customer-service window ` +
-          '(no recent inbound message from this user). Only pre-approved message templates can be sent here.',
-      );
+      throw new WindowClosedError(to);
     }
   }
 

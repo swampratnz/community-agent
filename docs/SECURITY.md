@@ -1650,6 +1650,30 @@ parsed before that check passes. `WHATSAPP_CLOUD_ACCESS_TOKEN` and
 delivery metadata for Cloud API traffic are additionally retained by Meta
 per their own terms, on top of this project's own storage.
 
+A second, distinct in-memory queue exists specifically for this adapter's
+own connected-but-recipient-window-closed failure (issue #602) — not the
+zero-connected-adapter case documented under "Health & monitoring" in
+ARCHITECTURE.md, and not the `/healthz` zero-adapter queue below either.
+`assertWithinCustomerServiceWindow` throws an exported `WindowClosedError`
+(carrying the recipient id) rather than a bare `Error`, so
+`notifySuperAdmins`/`notifyAdmins` (`agent/tools.ts`) can queue via the
+adapter's optional `queueForWindowReopen(userId, message)` instead of only
+logging and dropping — any other rejection (a genuine Graph API failure,
+missing config, or a Discord/Baileys send) is unaffected and still
+logged-and-dropped exactly as before, so an unrelated/transient failure can
+never accumulate state here (`SECURITY:` test). The queue is a
+`Map<recipientId, message[]>` bounded at 3 per recipient,
+oldest-evicted-on-overflow — the cap that bounds member-reachable state,
+since `notifySuperAdmins` is reachable via `report_content`/
+`appeal_moderation` (`SECURITY:` test). It flushes ONLY when that exact
+recipient's own next inbound message updates `lastInboundAt` — never on a
+timer, a reconnect, or any other recipient's inbound message (`SECURITY:`
+test pins recipient isolation: a flush for recipient A never touches
+recipient B's queue) — so this can never send outside Meta's window;
+`assertWithinCustomerServiceWindow` itself is unchanged. In-memory only,
+clears on restart, same posture as every other best-effort queue in this
+codebase.
+
 ### `/healthz` endpoint
 Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this
 pipeline's "new surface is opt-in" pattern). Unauthenticated by design, but

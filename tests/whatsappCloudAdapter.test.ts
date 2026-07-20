@@ -19,8 +19,12 @@ process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ??= 'test-access-token';
 process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ??= 'test-verify-token';
 process.env.WHATSAPP_CLOUD_APP_SECRET ??= 'test-app-secret';
 
-const { WhatsAppCloudAdapter, WHATSAPP_CLOUD_WELCOME_MESSAGE, WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN } =
-  await import('../src/platforms/whatsapp/cloudAdapter.js');
+const {
+  WhatsAppCloudAdapter,
+  WHATSAPP_CLOUD_WELCOME_MESSAGE,
+  WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN,
+  WindowClosedError,
+} = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
@@ -97,6 +101,11 @@ function dedupInternals(adapter: InstanceType<typeof WhatsAppCloudAdapter>) {
     seenMessageIds: Map<string, number>;
     sweepLastInboundAt(): void;
   };
+}
+
+/** Exposes the adapter's private window-reopen queue (issue #602) for direct inspection. */
+function windowReopenQueueInternals(adapter: InstanceType<typeof WhatsAppCloudAdapter>) {
+  return adapter as unknown as { windowReopenQueue: Map<string, string[]> };
 }
 
 function cloudMessage(overrides: Partial<CloudInboundMessage> = {}): CloudInboundMessage {
@@ -855,6 +864,143 @@ test('outside the 24h customer-service window: throws before any Graph API call,
     globalThis.fetch = originalFetch;
   }
   assert.equal(calls.length, 0);
+});
+
+test('outside the 24h customer-service window: the rejection is a WindowClosedError carrying the recipient id (issue #602)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  await assert.rejects(
+    () => adapter.sendDirectMessage('64299999999', 'hi'),
+    (err: unknown) => {
+      assert.ok(err instanceof WindowClosedError, 'must be a WindowClosedError, not a bare Error');
+      assert.equal(err.recipientId, '64299999999');
+      return true;
+    },
+  );
+});
+
+// --- Per-recipient window-reopen queue (issue #602) -----
+
+test('queueForWindowReopen: caps at 3 messages per recipient, oldest evicted on overflow (acceptance criterion 2)', () => {
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.queueForWindowReopen('64211234567', 'msg-1');
+  adapter.queueForWindowReopen('64211234567', 'msg-2');
+  adapter.queueForWindowReopen('64211234567', 'msg-3');
+  adapter.queueForWindowReopen('64211234567', 'msg-4');
+
+  const { windowReopenQueue } = windowReopenQueueInternals(adapter);
+  assert.deepEqual(
+    windowReopenQueue.get('64211234567'),
+    ['msg-2', 'msg-3', 'msg-4'],
+    'exactly the newest 3 messages remain — the oldest (msg-1) was evicted',
+  );
+});
+
+test("flush on window reopen: queued messages send via sendText, in order, and the recipient's queue clears once their inbound message arrives (acceptance criterion 3)", async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.queueForWindowReopen('64211234567', 'queued message one');
+  adapter.queueForWindowReopen('64211234567', 'queued message two');
+
+  const { calls, fetchMock } = mockFetch([{ ok: true }, { ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64211234567', id: 'wamid.FLUSH1' }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 2, 'both queued messages were flushed via sendText');
+  assert.equal(JSON.parse(calls[0].body).text.body, 'queued message one');
+  assert.equal(JSON.parse(calls[1].body).text.body, 'queued message two');
+  assert.equal(
+    windowReopenQueueInternals(adapter).windowReopenQueue.has('64211234567'),
+    false,
+    "the recipient's queue entry must clear once flushed",
+  );
+});
+
+test('flush on window reopen: a failed flush send is logged and dropped, never re-queued (acceptance criterion 4)', async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.queueForWindowReopen('64211234567', 'will fail to flush');
+
+  const { fetchMock } = mockFetch([{ ok: false, status: 500 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    await dedupInternals(adapter).onCloudMessage(
+      cloudMessage({ from: '64211234567', id: 'wamid.FLUSHFAIL' }),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(
+    windowReopenQueueInternals(adapter).windowReopenQueue.has('64211234567'),
+    false,
+    'a failed flush send must not leave the message re-queued (no unbounded retry loop)',
+  );
+});
+
+test("SECURITY: flush on window reopen — recipient isolation: recipient A's reopened window never sends recipient B's queued messages, and B's queue stays untouched (acceptance criterion 5)", async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.queueForWindowReopen('64211111111', 'message for A');
+  adapter.queueForWindowReopen('64222222222', 'message for B');
+
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    // Only A's inbound message arrives.
+    await dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64211111111', id: 'wamid.ISOA' }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1, "exactly one send — only A's queued message");
+  assert.equal(JSON.parse(calls[0].body).text.body, 'message for A');
+  assert.equal(JSON.parse(calls[0].body).to, '64211111111');
+  assert.deepEqual(
+    windowReopenQueueInternals(adapter).windowReopenQueue.get('64222222222'),
+    ['message for B'],
+    "B's queue entry must be completely untouched by A's flush",
+  );
+});
+
+test("SECURITY: a queued message is never sent by the mere passage of time or another recipient's inbound message — only that exact recipient's own inbound message triggers a flush (acceptance criterion 7)", async () => {
+  const adapter = new WhatsAppCloudAdapter();
+  adapter.queueForWindowReopen('64211111111', 'must not leak out early');
+
+  const { calls, fetchMock } = mockFetch([{ ok: true }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchMock as typeof fetch;
+  try {
+    // Simulate time passing (the sweep, which runs periodically) — must not flush anything.
+    dedupInternals(adapter).sweepLastInboundAt();
+    assert.equal(calls.length, 0, 'the sweep (mere passage of time) must never flush a queued message');
+
+    // A DIFFERENT recipient's inbound message arrives — must not flush the first recipient's queue either.
+    await dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64299999999', id: 'wamid.OTHER' }));
+    assert.equal(
+      calls.length,
+      0,
+      "another recipient's inbound message must never flush this recipient's queue",
+    );
+    assert.deepEqual(
+      windowReopenQueueInternals(adapter).windowReopenQueue.get('64211111111'),
+      ['must not leak out early'],
+      "the queue entry survives untouched until the exact recipient's own inbound message arrives",
+    );
+
+    // Now the recipient's OWN inbound message arrives — only now does it flush.
+    await dedupInternals(adapter).onCloudMessage(cloudMessage({ from: '64211111111', id: 'wamid.SELF' }));
+    assert.equal(
+      calls.length,
+      1,
+      "the recipient's own inbound message is the only thing that ever flushes it",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('sendImage: posts exactly two Graph API calls in order — a media upload, then a message send referencing the returned media id (issue #356)', async () => {

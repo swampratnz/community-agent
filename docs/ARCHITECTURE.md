@@ -1659,6 +1659,37 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   queue's bare-string entries can't preserve that distinct recipient set on
   flush (issue #571's rejection rationale) — a documented growth path, not
   built here.
+- **Per-recipient window-reopen queue for the WhatsApp Cloud
+  connected-but-window-closed case** (issue #602) — a DISTINCT failure class
+  from the zero-connected-adapter queue just above: the Cloud adapter stays
+  `isConnected() === true` throughout, and only one recipient's own 24h
+  customer-service window (see "WhatsApp Cloud API webhook" in
+  SECURITY.md) happens to be closed, so `notifySuperAdmins`/`notifyAdmins`'s
+  per-recipient `sendDirectMessage` rejects for that one recipient while
+  every other admin is still delivered live — the trigger the shared queue
+  above never fires for, and (per #571/#593, directly above) was named as an
+  explicitly uncovered growth path. `assertWithinCustomerServiceWindow`
+  (`cloudAdapter.ts`) now throws an exported `WindowClosedError(recipientId)`
+  instead of a bare `Error`, so the two `tools.ts` fan-outs can tell "window
+  closed, recoverable" apart from a genuine send failure. On a
+  `WindowClosedError` rejection, the fan-out calls the adapter's optional
+  `queueForWindowReopen(userId, message)` — implemented only by
+  `WhatsAppCloudAdapter`; Discord and Baileys have no such window and simply
+  omit the method, so their admin-alert paths are byte-identical to today.
+  The Cloud adapter holds a small `Map<recipientId, message[]>`, capped at 3
+  per recipient with oldest-evicted-on-overflow — bounding the
+  member-reachable `notifySuperAdmins` path (`report_content`/
+  `appeal_moderation`), mirroring the shared queue's own bounded/
+  oldest-evicted convention above. It flushes the instant that EXACT
+  recipient's own next inbound message updates `lastInboundAt` (the same
+  per-sender timestamp `assertWithinCustomerServiceWindow` already checks) —
+  never on a timer or reconnect, so nothing is ever sent outside Meta's
+  window — delivering every queued message via `sendText` and clearing that
+  recipient's entry; a flush send that throws is logged and dropped, never
+  re-queued, same convention as the shared queue's own flush-failure
+  handling. Keyed strictly per-recipient, so a flush triggered by admin A's
+  reopened window can never touch admin B's queued messages. In-memory only,
+  clears on restart, same tradeoff as every other queue here.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.

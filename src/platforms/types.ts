@@ -178,6 +178,18 @@ export interface PlatformAdapter {
   sendDirectMessage(userId: string, text: string): Promise<void>;
 
   /**
+   * Queue `message` for delivery to `userId` once a platform-specific
+   * delivery window reopens (issue #602) — the WhatsApp Cloud adapter's
+   * recovery path for a `sendDirectMessage` rejected because that recipient's
+   * 24h customer-service window is closed (a `WindowClosedError`, distinct
+   * from a genuine send failure). Optional: only `WhatsAppCloudAdapter`
+   * implements it, since Discord and Baileys have no such window and simply
+   * omit the method — callers must feature-check before use, same convention
+   * as `sendImage?`/`reactToMessage?`/`canPostTo?`.
+   */
+  queueForWindowReopen?(userId: string, message: string): void;
+
+  /**
    * Create a thread anchored to `messageId` in `conversationId` and return
    * the new thread's id, so the router's auto-answer mode (issue #477) can
    * contain its reply in a thread on the originating post rather than

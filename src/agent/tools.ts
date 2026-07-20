@@ -8,6 +8,7 @@ import { isSuperAdmin, resolveRole, superAdminIds } from '../auth/roles.js';
 import { config } from '../config.js';
 import { logger, hashId } from '../logger.js';
 import { queuePendingAlert } from '../pendingAlertQueue.js';
+import { WindowClosedError } from '../platforms/whatsapp/cloudAdapter.js';
 import { memoryHitJumpLink } from './discordLink.js';
 import { manualWarnBlockedAlertText } from '../moderation/moderator.js';
 import {
@@ -482,6 +483,34 @@ export function formatKnowledgeTopics(titles: string[], totalCount: number): str
 const ALL_PLATFORMS: readonly Platform[] = ['discord', 'whatsapp'];
 
 /**
+ * Shared per-recipient rejection handler for `notifySuperAdmins`/
+ * `notifyAdmins` below (issue #602). A rejection that is SPECIFICALLY a
+ * `WindowClosedError` — the WhatsApp Cloud adapter's "adapter connected, this
+ * one recipient's 24h window is closed" failure — is queued via the
+ * adapter's optional `queueForWindowReopen` instead of only logged and
+ * dropped, so it's delivered once that exact recipient's own next inbound
+ * message reopens their window (`cloudAdapter.ts`'s `onCloudMessage` /
+ * `flushWindowReopenQueue`). Any other rejection (a Discord/Baileys send, or
+ * a genuine non-recoverable Cloud API failure) falls through to today's
+ * unchanged log-and-drop — this never widens what gets queued.
+ */
+function handleAdminAlertSendFailure(
+  target: PlatformAdapter,
+  id: string,
+  platform: Platform,
+  message: string,
+  err: unknown,
+  logLabel: string,
+): void {
+  if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+    target.queueForWindowReopen(id, message);
+    logger.warn({ id, platform }, `${logLabel}: recipient's window is closed, queued for reopen`);
+    return;
+  }
+  logger.warn({ err, id, platform }, logLabel);
+}
+
+/**
  * Alerts every super admin on every platform, not just the one the triggering
  * event happened on (issue #288) — mirrors the loop-every-connected-adapter
  * pattern already used by `usageAlert.ts`'s `alertSuperAdmins` and
@@ -516,9 +545,12 @@ async function notifySuperAdmins(
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
     for (const id of superAdminIds(platform)) {
       if (id === excludeUserId) continue;
+      const alertText = `🔔 ${message}`;
       target
-        .sendDirectMessage(id, `🔔 ${message}`)
-        .catch((err) => logger.warn({ err, id, platform }, 'Super-admin alert failed'));
+        .sendDirectMessage(id, alertText)
+        .catch((err) =>
+          handleAdminAlertSendFailure(target, id, platform, alertText, err, 'Super-admin alert failed'),
+        );
     }
   }
 }
@@ -550,10 +582,18 @@ export async function notifyAdmins(
     if (admin.platformUserId === excludeUserId) continue;
     const target = adapterFor(admin.platform);
     if (!target || !target.isConnected()) continue; // can't send through a dead/unregistered connection
+    const alertText = `🔔 ${message}`;
     target
-      .sendDirectMessage(admin.platformUserId, `🔔 ${message}`)
+      .sendDirectMessage(admin.platformUserId, alertText)
       .catch((err) =>
-        logger.warn({ err, id: admin.platformUserId, platform: admin.platform }, 'Admin alert failed'),
+        handleAdminAlertSendFailure(
+          target,
+          admin.platformUserId,
+          admin.platform,
+          alertText,
+          err,
+          'Admin alert failed',
+        ),
       );
   }
 }
