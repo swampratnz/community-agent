@@ -24,7 +24,7 @@
   "autoAnswerGatedRouter.test.ts": 1,
   "autoAnswerRepeatShortcutRouter.test.ts": 1,
   "autoAnswerRouter.test.ts": 4,
-  "autoAnswerThreadFollowupRouter.test.ts": 7,
+  "autoAnswerThreadFollowupRouter.test.ts": 8,
   "autoAnswerUsageRouter.test.ts": 1,
   "backgroundJobCost.test.ts": 3,
   "backgroundJobHealth.test.ts": 1,
