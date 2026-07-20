@@ -381,6 +381,25 @@ at the operator floor. An anti-drift test ties `FEATURE_FLAG_MAP` to every
 isn't consciously surfaced (or exempted) fails CI loudly, mirroring the
 `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage pins (issues #311/#367).
 
+`feature_flags`'s output also carries a second, appended "Other configured
+knobs" section (issue #616) — #559's own named growth path — covering 5
+hand-picked **non-boolean** operator knobs via a second fixed allowlist,
+`OTHER_CONFIGURED_KNOBS`: `AUTO_ANSWER_CHANNEL_IDS`, `WHATSAPP_VOICE_MIN_ROLE`,
+`WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`, `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`, and
+`KNOWLEDGE_STALE_DAYS`. Each entry declares its render `kind` up front —
+`count` or `value` — so the renderer's *shape*, not a per-entry judgement call
+at render time, decides what's reachable: a `count`-kind entry (currently only
+`AUTO_ANSWER_CHANNEL_IDS`) is only ever passed through `getConfigArrayLength`,
+which structurally reads `.length` and nothing else, so a list-shaped knob's
+contents (channel ids) are never readable through this path — only whether/how
+many are configured. A `value`-kind entry is only ever passed through
+`getConfigPrimitive`, which reads a string/number leaf directly, and is
+reserved for closed-enum or bounded-integer knobs that carry no
+identifying/secret information (a role name, a rate limit, a day count) — never
+a token, URL, or free-form id. Same allowlist discipline as `FEATURE_FLAG_MAP`:
+hand-written, never a `config` reflection, so a missing entry only
+under-reports.
+
 Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
 passed back as `resume` on the next turn.
@@ -477,7 +496,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `grant_admin` / `revoke_admin`, `purge_user_data`, `audit_view`, `usage_stats`, `pause_bot`, `set_policy` | ❌ | ❌ | ❌ | ✅ |
 | `list_admins` (current admin-tier roster, read-only, no arguments — flags an admin whose `server_roster` row shows they've left the server/group; issue #428) | ❌ | ❌ | ❌ | ✅ |
 | `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
-| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags, from a fixed boolean-only allowlist; no arguments, read-only, no CONFIRM; issue #559) | ❌ | ❌ | ❌ | ✅ |
+| `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags plus a small "Other configured knobs" section of 5 non-boolean knobs, both from fixed allowlists; no arguments, read-only, no CONFIRM; issues #559, #616) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
 
 Behaviour guardrails on top: per-user daily reply budget

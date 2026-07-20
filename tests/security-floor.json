@@ -93,7 +93,7 @@
   "statusCheckAlert.test.ts": 1,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 10,
-  "tools.test.ts": 193,
+  "tools.test.ts": 196,
   "usageAlertPendingQueue.test.ts": 1,
   "usageCostDigest.test.ts": 3,
   "whatsappAmbientArchiving.test.ts": 3,

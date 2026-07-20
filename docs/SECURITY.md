@@ -1595,8 +1595,8 @@ the "Secret exposure" controls (§2) above rather than assumed covered by them:
   spread on the object they read.
 - **Booleans only, V1.** Output is `label: On/Off` per flag, grouped by
   category — no raw values, channel-id lists, numeric thresholds, tokens, or
-  URLs. A future non-boolean summary (e.g. "configured (3 channels)" without
-  the ids) is an explicitly deferred growth path, not this tool.
+  URLs. A non-boolean summary is added below by #616, as a second, separately
+  gated allowlist rather than a relaxation of this one.
 - **No new untrusted input, no state change.** No arguments, no CONFIRM, no
   DB/model call — a synchronous read of the already-parsed `config` object
   every running process already has in memory. Pinned by a `SECURITY:` test
@@ -1607,6 +1607,45 @@ the "Secret exposure" controls (§2) above rather than assumed covered by them:
   fails CI loudly instead of `feature_flags` silently under-reporting it —
   same shape as the `community_info`/`MEMBER_TOOLS`/`ADMIN_TOOLS` coverage
   pins (issues #311/#367).
+
+#### 16a. Non-boolean knob visibility (`feature_flags`'s "Other configured knobs" section, issue #616)
+
+#559 explicitly deferred non-boolean config visibility (the "Booleans only,
+V1" bullet above). This is that named growth path, not a new tool or tier: a
+second, small "Other configured knobs" section appended to `feature_flags`'s
+existing output, covering exactly 5 hand-picked non-boolean knobs —
+`AUTO_ANSWER_CHANNEL_IDS`, `WHATSAPP_VOICE_MIN_ROLE`,
+`WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR`, `AUTO_ANSWER_RATE_LIMIT_PER_HOUR`,
+`KNOWLEDGE_STALE_DAYS`.
+
+- **Same super-admin floor, same tool, no new gate.** Reuses `feature_flags`'s
+  existing `assertAtLeast(caller.role, 'super_admin', ...)` check — no new
+  tier, no new tool registration.
+- **Second hand-maintained allowlist, not a `config` reflection.**
+  `OTHER_CONFIGURED_KNOBS` (`src/agent/tools.ts`) is a fixed
+  `{ envVar, configPath, label, kind }` list, same discipline as
+  `FEATURE_FLAG_MAP`: a missing entry only under-reports a knob, never
+  over-exposes a field (e.g. `DISCORD_BOT_TOKEN`, `WHATSAPP_CLOUD_ACCESS_TOKEN`)
+  just by that field existing on `config`.
+- **Structural count-vs-value safety, not a per-entry judgement call.** Each
+  entry declares its render `kind` — `count` or `value` — up front. A
+  `count`-kind entry (`AUTO_ANSWER_CHANNEL_IDS`) is only ever passed through
+  `getConfigArrayLength`, which reads `.length` and nothing else off the
+  resolved value — there is no code path from a `count`-kind entry to an
+  array element, so the channel ids themselves are never reachable through
+  this tool, only whether/how many are configured. A `value`-kind entry is
+  only ever passed through `getConfigPrimitive`, which reads a string/number
+  leaf directly and is reserved for closed-enum (`WHATSAPP_VOICE_MIN_ROLE`,
+  4 known values) or bounded-non-negative-integer (the 3 rate-limit/
+  stale-days knobs) fields — never a token, URL, or free-form id. Pinned by a
+  `SECURITY:` test that plants a fake array of identifying-looking values on
+  a `count`-kind entry's fixture path and asserts only a length, never an
+  element, reaches rendered output.
+- **Allowlist purity, mirroring #559's own test.** A second `SECURITY:` test
+  plants a fake secret/token-shaped field not present on either allowlist and
+  asserts it never appears in the rendered output.
+- **No new untrusted input, no state change, no new DB/model call** — same
+  synchronous in-memory `config` read as the rest of `feature_flags`.
 
 ### 17. Opt-in Discord auto-enroll (`DISCORD_AUTO_ENROLL_MEMBERS`, off by default, issue #605)
 
