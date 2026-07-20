@@ -93,7 +93,7 @@
   "securityGateWrite.test.ts": 7,
   "statusCheckAlert.test.ts": 1,
   "suggestIssue.test.ts": 3,
-  "systemPrompt.test.ts": 15,
+  "systemPrompt.test.ts": 16,
   "tools.test.ts": 199,
   "usageAlertPendingQueue.test.ts": 1,
   "usageCostDigest.test.ts": 3,

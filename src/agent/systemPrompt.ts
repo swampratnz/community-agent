@@ -247,11 +247,17 @@ function codePolicyNote(policy: PromptPolicy['codeAnswers']): string {
 const MAX_NAME_CHARS = 40;
 export function sanitizeName(name: string | null | undefined): string {
   if (!name) return '';
-  return name
-    .replace(/[<>[\]]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, MAX_NAME_CHARS);
+  return (
+    name
+      .replace(/[<>[\]]/g, ' ')
+      // U+0085 (NEL) is a Unicode line terminator that JS's \s does NOT match
+      // (unlike LF/CR/LS/PS), so without naming it explicitly an invisible NEL
+      // would survive the collapse and could still render as a line break —
+      // the exact spoof this collapse exists to prevent (PR #626 review).
+      .replace(/[\s\u0085]+/g, ' ')
+      .trim()
+      .slice(0, MAX_NAME_CHARS)
+  );
 }
 
 const NZ_DATE_FORMAT = new Intl.DateTimeFormat('en-NZ', {
@@ -322,9 +328,16 @@ export function renderRequesterTag(userName: string | null | undefined): string 
  * spoofed extra line indistinguishable from a genuine prior bot statement
  * inside the same block (PR #617 review follow-up). This is the same
  * whitespace discipline `sanitizeName` already applies to author names.
+ * U+0085 (NEL) is named explicitly because it is a Unicode line terminator
+ * JS's \s does NOT match (unlike LF/CR/LS/PS) — an invisible NEL would
+ * otherwise survive the collapse and could still render as a line break
+ * (PR #626 review).
  */
 function untrustedEntryContent(content: string): string {
-  return content.replace(/[<>]/g, ' ').replace(/\s+/g, ' ').slice(0, 300);
+  return content
+    .replace(/[<>]/g, ' ')
+    .replace(/[\s\u0085]+/g, ' ')
+    .slice(0, 300);
 }
 
 /**
