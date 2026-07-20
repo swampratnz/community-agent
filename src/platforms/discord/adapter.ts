@@ -42,6 +42,7 @@ import { createModerator, type ModerationEnforcer, type Moderator } from '../../
 import { atLeast } from '../../auth/rbac.js';
 import { resolveRole, superAdminIds } from '../../auth/roles.js';
 import {
+  autoEnrollMemberWithAudit,
   countActiveWarnings,
   deleteInteractionByMessageId,
   getLanguagePreference,
@@ -475,10 +476,18 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
 
       // Closes the "leave/rejoin sheds the muted role" gap (see SECURITY.md):
       // re-mute before any welcome-message logic runs, gated the same as the
-      // rest of moderation.
+      // rest of moderation. Runs BEFORE auto-enroll (issue #606 review): remute
+      // is the security-sensitive check, so it must not wait on auto-enroll's
+      // extra DB round-trips, which would only widen the mute-shed race window.
       if (config.moderation.enabled) {
         await this.remuteOnRejoinIfNeeded(member).catch((err) =>
           logger.warn({ err, userId: member.id }, 'Rejoin re-mute check failed'),
+        );
+      }
+
+      if (config.discord.autoEnrollMembers) {
+        await this.autoEnrollMember(member).catch((err) =>
+          logger.warn({ err, userId: member.id }, 'Auto-enroll failed'),
         );
       }
     }
@@ -514,6 +523,38 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     } catch (err) {
       logger.warn({ err, userId: member.id, channelId }, 'Welcome channel fallback failed');
     }
+  }
+
+  /**
+   * Opt-in auto-enroll (issue #605, `DISCORD_AUTO_ENROLL_MEMBERS`): grants a
+   * fresh Discord joiner standing member-tier `community_users` access
+   * instead of leaving them a gated guest until an admin runs `add_member`.
+   * Deterministic — a direct `autoEnrollMemberWithAudit` repository call, never
+   * routed through the agent/model — and race-free: `upsertMember`'s
+   * `ON CONFLICT` `CASE` already refuses to downgrade an existing `admin` row
+   * to `member`, so no app-level "does a row exist" pre-check is needed (and
+   * one would only add a TOCTOU gap against a concurrent human `add_member`).
+   *
+   * The grant and its `admin_audit` row are written in ONE transaction
+   * (`autoEnrollMemberWithAudit`) so the "traceable, never silent" invariant is
+   * structural: a failed audit insert can't leave a member with standing access
+   * and no audit trail (issue #606 review). The audit row carries the
+   * `AUTO_ENROLL_ACTOR` sentinel, so it's distinguishable from a human
+   * `add_member` grant — this write has no admin caller (it's a platform join
+   * event), so it deliberately doesn't use the tool layer's `audited()` helper,
+   * which is scoped to an admin-tier in-turn `CallerContext`.
+   *
+   * Deliberately does NOT send `notifyMemberApproved`/the approval DM — that
+   * message is an admin-initiated "you've been approved" notice; sending it
+   * unprompted on every join would conflate the join and admin-approval UX
+   * moments. The joiner simply gets answered instead of gated next message.
+   */
+  private async autoEnrollMember(member: GuildMember): Promise<void> {
+    await autoEnrollMemberWithAudit({
+      platform: 'discord',
+      userId: member.id,
+      displayName: member.displayName,
+    });
   }
 
   /**

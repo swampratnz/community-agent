@@ -64,6 +64,8 @@ const {
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
   recentModerationEntries,
   adminActivitySummary,
+  autoEnrollMemberWithAudit,
+  AUTO_ENROLL_ACTOR,
   usageStats,
   recordBackgroundJobCost,
   sumBackgroundJobCosts,
@@ -2863,6 +2865,99 @@ test(
     );
 
     await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[actorA, actorB]]);
+  },
+);
+
+test(
+  'repository: adminActivitySummary excludes the auto-enroll sentinel actor, so it never buries genuine human admin activity however many joins it logs (issue #606)',
+  { skip },
+  async () => {
+    const human = `${RUN}-aas-human`;
+    // The sentinel floods MORE rows than the human — if it weren't excluded it
+    // would top the count-descending ranking and bury the human's one action.
+    for (let i = 0; i < 5; i++) {
+      await recordAdminAction({
+        platform: 'discord',
+        actorUserId: AUTO_ENROLL_ACTOR,
+        actionKind: 'auto_enroll_member',
+        targetUserId: `${RUN}-enrolled-${i}`,
+        result: 'registered as member',
+        success: true,
+      });
+    }
+    await recordAdminAction({
+      platform: 'discord',
+      actorUserId: human,
+      actionKind: 'warn_user',
+      result: 'warned',
+      success: true,
+    });
+
+    const rows = await adminActivitySummary(1);
+    assert.ok(
+      !rows.some((r) => r.actorUserId === AUTO_ENROLL_ACTOR),
+      'the auto-enroll system actor must never appear in the human-activity rollup, however many rows it has',
+    );
+    assert.ok(
+      rows.some((r) => r.actorUserId === human),
+      'a genuine human admin action still appears in the rollup',
+    );
+
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1 AND target_user_id LIKE $2`, [
+      AUTO_ENROLL_ACTOR,
+      `${RUN}-%`,
+    ]);
+    await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = $1`, [human]);
+  },
+);
+
+test(
+  'repository: autoEnrollMemberWithAudit commits the member grant and its audit row atomically, returns the role, and never downgrades a rejoining admin (issue #606)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-auto-enroll-user`;
+
+    const role = await autoEnrollMemberWithAudit({
+      platform: 'discord',
+      userId,
+      displayName: 'Fresh Joiner',
+    });
+    assert.equal(role, 'member', 'a first-ever joiner is enrolled as a member');
+
+    const { rows: cu } = await pool.query(
+      `SELECT role, added_by FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`,
+      [userId],
+    );
+    assert.equal(cu.length, 1, 'the member grant was committed');
+    assert.equal(cu[0].role, 'member');
+    assert.equal(cu[0].added_by, AUTO_ENROLL_ACTOR, 'added_by carries the auto-enroll sentinel');
+
+    const { rows: aa } = await pool.query(
+      `SELECT actor_user_id, success FROM admin_audit
+        WHERE target_user_id = $1 AND action_kind = 'auto_enroll_member'`,
+      [userId],
+    );
+    assert.equal(aa.length, 1, 'the audit row was committed in the SAME transaction as the grant');
+    assert.equal(aa[0].actor_user_id, AUTO_ENROLL_ACTOR);
+    assert.equal(aa[0].success, true);
+
+    // A rejoining admin must keep 'admin' — the no-downgrade ON CONFLICT CASE
+    // holds inside the transaction too.
+    await pool.query(
+      `UPDATE community_users SET role = 'admin' WHERE platform = 'discord' AND platform_user_id = $1`,
+      [userId],
+    );
+    const rejoinRole = await autoEnrollMemberWithAudit({
+      platform: 'discord',
+      userId,
+      displayName: 'Fresh Joiner',
+    });
+    assert.equal(rejoinRole, 'admin', 'a rejoining admin is never downgraded to member by auto-enroll');
+
+    await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      userId,
+    ]);
   },
 );
 

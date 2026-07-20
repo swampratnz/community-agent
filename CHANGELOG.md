@@ -13,6 +13,22 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-20
 
 ### Added
+- **Opt-in Discord auto-enroll for new joiners** (`DISCORD_AUTO_ENROLL_MEMBERS`,
+  #605): gated-mode enrollment was manual (`add_member` per person, or bulk
+  SQL) — a genuine joiner sat as a gated guest until an admin noticed and
+  enrolled them. With the flag on, every non-bot Discord join is granted
+  standing member-tier access automatically, right alongside the existing
+  server-roster join record. Off by default; enabling it is a real
+  RBAC-posture change (see `.env.example`), so only turn it on if you intend
+  the server to be open-enrollment. A rejoining admin is never downgraded,
+  no approval DM is sent, and every auto-enrollment writes its grant and its
+  audit row in one transaction — so the "traceable, never silent" guarantee is
+  atomic: a member can never be granted access without a matching audit row.
+  Auto-enroll audit rows are tagged distinctly from a human `add_member` grant
+  (so admins can always tell the two apart) and are excluded from the
+  `admin_activity` rollup, so the system actor's per-join rows never bury
+  genuine human moderation activity in that report. Discord-only — WhatsApp has
+  no join event.
 - **Weekly digest now shows auto-answer's own success metric: helpful ratio
   vs mention-mode replies** (#592): auto-answer mode (#477) named its own
   measurability bar at launch — "the `rate_answer` helpful ratio vs
