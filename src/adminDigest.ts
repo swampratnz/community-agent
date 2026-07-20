@@ -19,6 +19,7 @@ import {
   countStaleKnowledge,
   countStaleMutedMembers,
   countStalePendingKnowledgeCandidates,
+  countUnreachableSourceKnowledge,
   getLastDigestCounts,
   listAdmins,
   oldestAccessRequestAgeDays,
@@ -175,6 +176,19 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * `user_name`/`reason`/`user_id`. Append-only trailing param, default 0, so
  * every existing call site is unaffected and the quiet case is
  * byte-identical to the pre-#631 form.
+ * `unreachableSourceKnowledgeCount` (issue #624) comes from
+ * `countUnreachableSourceKnowledge`, a dedicated `COUNT(*)` of
+ * `source_unreachable = true` rows — the digest fold-in #448 itself deferred
+ * for the weekly link-rot checker, same shape as `staleKnowledgeCount`.
+ * `buildAdminDigestForAdmin` resolves this to `0` (line omitted) without
+ * issuing the query whenever `config.knowledgeLinkCheck.enabled` is false, so
+ * a deployment that hasn't opted into the underlying check is byte-identical
+ * to today regardless of stray `source_unreachable` rows. Rendered only when
+ * `> 0`; bare integer only, never a URL, title, or entry id — the pointer
+ * text directs the admin to the existing `list_knowledge({ sourceUnreachable:
+ * true })` filter. Append-only trailing param, default 0, so every existing
+ * call site is unaffected and the quiet case is byte-identical to the
+ * pre-#624 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -270,6 +284,11 @@ export function buildAdminDigestMessage(
   // named and deferred as a follow-up. Append-only trailing param, default
   // 0, so every existing call site is unaffected.
   openAppealsCount: number = 0,
+  // Guild-wide count of knowledge entries flagged `source_unreachable = true`
+  // by the weekly link-rot checker (`countUnreachableSourceKnowledge`, issue
+  // #624) — #448's own named, deferred digest fold-in. Append-only trailing
+  // param, default 0, so every existing call site is unaffected.
+  unreachableSourceKnowledgeCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -291,7 +310,8 @@ export function buildAdminDigestMessage(
     generalUnhelpfulCount === 0 &&
     autoAnswerHelpful === 0 &&
     autoAnswerUnhelpful === 0 &&
-    openAppealsCount === 0
+    openAppealsCount === 0 &&
+    unreachableSourceKnowledgeCount === 0
   )
     return null;
 
@@ -491,6 +511,14 @@ export function buildAdminDigestMessage(
         trendSuffix('openAppealsCount', openAppealsCount, previousCounts),
     );
   }
+  if (unreachableSourceKnowledgeCount > 0) {
+    // Bare integer only — no source URL, entry title, or entry id ever reaches the DM (#624).
+    sections.push(
+      `🔗 ${unreachableSourceKnowledgeCount} knowledge entr${unreachableSourceKnowledgeCount === 1 ? 'y' : 'ies'} ` +
+        'with an unreachable source link — run `list_knowledge` (filter: sourceUnreachable) to review.' +
+        trendSuffix('unreachableSourceKnowledgeCount', unreachableSourceKnowledgeCount, previousCounts),
+    );
+  }
   return sections.join('\n');
 }
 
@@ -550,6 +578,7 @@ export async function buildAdminDigestForAdmin(
     generalUnhelpfulCount,
     answerOriginSummary,
     openAppealsCount,
+    unreachableSourceKnowledgeCount,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -625,6 +654,13 @@ export async function buildAdminDigestForAdmin(
     // (moderation_appeals has no conversation_id) — the digest backlog line
     // #554 and #622 both named and deferred (issue #631).
     countOpenAppeals(platform),
+    // Guild-wide, unscoped like countStaleKnowledge — only runs the extra
+    // COUNT(*) when the underlying weekly link-rot checker is enabled,
+    // matching countStaleKnowledge's own opt-in gating above. With the flag
+    // off, source_unreachable is never set true on any row, so resolving to
+    // 0 here (rather than issuing the query) keeps the digest byte-identical
+    // to today regardless of stray rows (issue #624).
+    config.knowledgeLinkCheck.enabled ? countUnreachableSourceKnowledge() : Promise.resolve(0),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -656,6 +692,7 @@ export async function buildAdminDigestForAdmin(
     escalatedKnowledgeGapsCount,
     generalUnhelpfulCount,
     openAppealsCount,
+    unreachableSourceKnowledgeCount,
   };
   const previousCounts = config.adminDigest.trendsEnabled
     ? ((await getLastDigestCounts(platform, platformUserId)) ?? undefined)
@@ -692,6 +729,7 @@ export async function buildAdminDigestForAdmin(
     answerOriginSummary.addressed.helpful,
     answerOriginSummary.addressed.unhelpful,
     openAppealsCount,
+    unreachableSourceKnowledgeCount,
   );
   return { message, currentCounts };
 }

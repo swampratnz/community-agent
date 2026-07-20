@@ -132,6 +132,7 @@ const {
   addWarning,
   countActiveWarnings,
   countStaleKnowledge,
+  countUnreachableSourceKnowledge,
   isKnownMessage,
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
@@ -4659,6 +4660,55 @@ test(
       [retrievedRecently, editedRecently, bothOld, neverRetrievedButOld],
     ]);
     assert.equal(await countStaleKnowledge(30), before, 'cleanup restores the prior stale count');
+  },
+);
+
+test(
+  'repository: countUnreachableSourceKnowledge counts only source_unreachable = true rows, independent of staleness/rating/candidate status on those same rows (issue #624 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const before = await countUnreachableSourceKnowledge();
+
+    const { id: unreachableId } = await saveKnowledge({
+      content: `${RUN} entry with a dead source link`,
+      title: 'unreachable-source-check-flagged',
+      scope: 'global',
+      sourceUrl: 'https://example.com/dead-link',
+    });
+    // Also stale (400 days untouched) — proves the count never cross-
+    // contaminates with countStaleKnowledge's own definition.
+    await pool.query(
+      `UPDATE knowledge SET source_unreachable = true, source_checked_at = now(),
+         updated_at = now() - interval '400 days'
+       WHERE id = $1`,
+      [unreachableId],
+    );
+
+    const { id: reachableId } = await saveKnowledge({
+      content: `${RUN} entry with a healthy source link`,
+      title: 'unreachable-source-check-healthy',
+      scope: 'global',
+      sourceUrl: 'https://example.com/healthy-link',
+    });
+    await pool.query(
+      `UPDATE knowledge SET source_unreachable = false, source_checked_at = now() WHERE id = $1`,
+      [reachableId],
+    );
+
+    const { id: uncheckedId } = await saveKnowledge({
+      content: `${RUN} entry never checked (source_unreachable NULL)`,
+      title: 'unreachable-source-check-unchecked',
+      scope: 'global',
+    });
+
+    assert.equal(
+      await countUnreachableSourceKnowledge(),
+      before + 1,
+      'only the one entry with source_unreachable = true counts — never the healthy (false) or never-checked (NULL) rows',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [[unreachableId, reachableId, uncheckedId]]);
+    assert.equal(await countUnreachableSourceKnowledge(), before, 'cleanup restores the prior count');
   },
 );
 

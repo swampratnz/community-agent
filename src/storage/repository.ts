@@ -1251,6 +1251,20 @@ export async function latestKnowledgeSourceCheckAt(): Promise<Date | null> {
 }
 
 /**
+ * Exact count of knowledge entries the weekly link-rot checker (issue #448)
+ * flagged unreachable, for the admin digest fold-in (issue #624) —
+ * `countStaleKnowledge`'s exact `COUNT(*)` shape. Counts only
+ * `source_unreachable = true` rows, independent of any given row's
+ * staleness/rating/duplicate/candidate status, so it can never cross-
+ * contaminate the other digest counts. Guild-wide, unscoped, matching
+ * `list_knowledge`'s own unscoped `sourceUnreachable` filter this mirrors.
+ */
+export async function countUnreachableSourceKnowledge(): Promise<number> {
+  const { rows } = await pool.query(`SELECT count(*) AS n FROM knowledge WHERE source_unreachable = true`);
+  return Number(rows[0].n);
+}
+
+/**
  * Update a knowledge entry's title/content/scope and re-embed. Returns false
  * if no row matched. `sourceUrl`/`sourceTitle` (issue #214) follow the same
  * "undefined = leave unchanged" convention as title/content; supplying

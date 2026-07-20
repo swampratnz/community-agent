@@ -36,6 +36,7 @@ const {
   countMaxTurnsFailures,
   countPendingSuggestions,
   countStaleKnowledge,
+  countUnreachableSourceKnowledge,
   countPendingKnowledgeCandidates,
   createContentReport,
   createSuggestion,
@@ -2003,6 +2004,211 @@ test('buildAdminDigestMessage: open-appeals line carries the standard trendSuffi
   assert.equal(
     appealLine,
     '📋 3 open moderation appeal(s) awaiting review — run `list_appeals` to review. (▲+2 since last week)',
+    'previous 1 -> current 3 renders exactly ▲+2, the same trendSuffix convention every other signal gets',
+  );
+});
+
+test('buildAdminDigestMessage: unreachable-source-knowledge line appears only when unreachableSourceKnowledgeCount > 0, and all TWENTY-ONE signals zero -> null (issue #624 acceptance criteria 2, 3)', () => {
+  assert.equal(
+    buildAdminDigestMessage(
+      [],
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      undefined,
+      null,
+      null,
+      null,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+    ),
+    null,
+    'all twenty-one signals zero — including unreachable-source-knowledge — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    4,
+  );
+  assert.ok(message, 'a non-zero unreachable-source-knowledge count alone still produces a DM');
+  const linkLines = message.split('\n').filter((l) => l.includes('🔗'));
+  assert.equal(linkLines.length, 1, 'exactly one unreachable-source-knowledge line');
+  assert.match(
+    linkLines[0],
+    /^🔗 4 knowledge entries with an unreachable source link — run `list_knowledge` \(filter: sourceUnreachable\) to review\.$/,
+  );
+
+  const zeroMessage = buildAdminDigestMessage(
+    [],
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(!zeroMessage!.includes('🔗'), 'no unreachable-source-knowledge line when the count is zero');
+});
+
+test('buildAdminDigestMessage: unreachable-source-knowledge line singular/plural and trendSuffix delta (issue #624)', () => {
+  const singular = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+  );
+  assert.ok(singular);
+  const singularLine = singular.split('\n').find((l) => l.includes('🔗'));
+  assert.match(
+    singularLine!,
+    /^🔗 1 knowledge entry with an unreachable source link — run `list_knowledge` \(filter: sourceUnreachable\) to review\.$/,
+    'singular "entry" wording at count 1',
+  );
+
+  const withTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { unreachableSourceKnowledgeCount: 1 },
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+  );
+  assert.ok(withTrend);
+  const trendLine = withTrend.split('\n').find((l) => l.includes('🔗'));
+  assert.equal(
+    trendLine,
+    '🔗 3 knowledge entries with an unreachable source link — run `list_knowledge` (filter: sourceUnreachable) to review. (▲+2 since last week)',
     'previous 1 -> current 3 renders exactly ▲+2, the same trendSuffix convention every other signal gets',
   );
 });
@@ -4849,6 +5055,127 @@ test(
       );
     }
 
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+// --- issue #624: fold the weekly link-check's broken-source count into the
+// admin digest — #448's own named, deferred follow-up. Mirrors
+// countStaleKnowledge's exact opt-in gating shape: the extra COUNT(*) is only
+// ever issued when config.knowledgeLinkCheck.enabled is true.
+
+test(
+  'runAdminDigestOnce: the unreachable-source-knowledge line renders with the exact count when config.knowledgeLinkCheck.enabled is true and >=1 entry is flagged (issue #624 acceptance criteria 2, 5)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-linkcheckon-admin`;
+    const conversationId = `${RUN}-c-run-linkcheckon`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const before = await countUnreachableSourceKnowledge();
+
+    const { id: unreachableId } = await saveKnowledge({
+      content: `${RUN} entry with a dead source link (link-check-on case)`,
+      title: 'linkcheckon-flagged-entry',
+      scope: 'global',
+      sourceUrl: 'https://example.com/dead-link-on',
+    });
+    await pool.query(
+      `UPDATE knowledge SET source_unreachable = true, source_checked_at = now() WHERE id = $1`,
+      [unreachableId],
+    );
+
+    const wasEnabled = config.knowledgeLinkCheck.enabled;
+    config.knowledgeLinkCheck.enabled = true;
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.knowledgeLinkCheck.enabled = wasEnabled;
+    }
+
+    assert.equal(sent.length, 1, 'the flagged entry alone triggers a digest');
+    const linkLines = sent[0].text.split('\n').filter((l) => l.includes('🔗'));
+    assert.equal(linkLines.length, 1, 'exactly one unreachable-source-knowledge line');
+    assert.match(
+      linkLines[0],
+      new RegExp(`^🔗 ${before + 1} knowledge entr`),
+      'the line reports the current exact count, including this newly-flagged entry',
+    );
+    assert.match(
+      linkLines[0],
+      /run `list_knowledge` \(filter: sourceUnreachable\) to review\.$/,
+      'the pointer directs to the existing list_knowledge tool — no new tool surface',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [unreachableId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: the unreachable-source-knowledge line never renders when config.knowledgeLinkCheck.enabled is false, even when source_unreachable = true rows exist in the table — and the underlying COUNT(*) is never issued (issue #624 acceptance criteria 4, 6)',
+  { skip },
+  async (t) => {
+    const adminId = `${RUN}-run-linkcheckoff-admin`;
+    const conversationId = `${RUN}-c-run-linkcheckoff`;
+    const requesterId = `${RUN}-run-linkcheckoff-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const { id: unreachableId } = await saveKnowledge({
+      content: `${RUN} entry with a dead source link (link-check-off case)`,
+      title: 'linkcheckoff-flagged-entry',
+      scope: 'global',
+      sourceUrl: 'https://example.com/dead-link-off',
+    });
+    await pool.query(
+      `UPDATE knowledge SET source_unreachable = true, source_checked_at = now() WHERE id = $1`,
+      [unreachableId],
+    );
+
+    // A pending access request (guild-wide) guarantees a non-null message so
+    // "no line renders" is a meaningful assertion, not just "no message sent".
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'tester' });
+
+    const wasEnabled = config.knowledgeLinkCheck.enabled;
+    config.knowledgeLinkCheck.enabled = false;
+    const querySpy = t.mock.method(pool, 'query');
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    try {
+      await runAdminDigestOnce([adapter]);
+    } finally {
+      config.knowledgeLinkCheck.enabled = wasEnabled;
+    }
+
+    assert.equal(sent.length, 1, 'the pending access request alone still triggers a digest');
+    assert.ok(
+      !sent[0].text.includes('🔗'),
+      'SECURITY: no unreachable-source-knowledge line renders when the flag is off, even with a flagged row present',
+    );
+
+    const issuedSourceUnreachableQuery = querySpy.mock.calls.some((call) =>
+      String(call.arguments[0]).includes('source_unreachable'),
+    );
+    assert.ok(
+      !issuedSourceUnreachableQuery,
+      'SECURITY: the source_unreachable COUNT(*) is never issued while the flag is off — fail-safe by ' +
+        'construction (config.knowledgeLinkCheck.enabled resolves straight to Promise.resolve(0)), not merely a zero result',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [unreachableId]);
+    await clearAccessRequest('discord', requesterId);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
