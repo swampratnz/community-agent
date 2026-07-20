@@ -13,6 +13,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-20
 
 ### Added
+- **Weekly cost-trend digest now also reports prompt-cache hit-rate trend**
+  (#608): the super-admin-only weekly cost-trend DM (#578) reported only the
+  aggregate dollar total and its week-over-week delta — a $ increase from a
+  prompt-cache regression (the exact failure mode #342 shipped and #508 later
+  fixed) was indistinguishable from one caused by higher volume or a
+  model-tier change. The DM now appends a second line, only when the trailing
+  7 days saw cache activity: this week's hit rate and its ▲/▼/no-change delta
+  vs last week, using the identical calculation the pull-only `usage_stats`
+  tool already exposes (#522). A quiet week (zero cache activity) omits the
+  line and leaves the persisted rate untouched rather than corrupting the
+  next real comparison. No new query, no new tool, no new RBAC surface — only
+  a percentage and a percentage-point delta are ever rendered.
 - **Opt-in Discord auto-enroll for new joiners** (`DISCORD_AUTO_ENROLL_MEMBERS`,
   #605): gated-mode enrollment was manual (`add_member` per person, or bulk
   SQL) — a genuine joiner sat as a gated guest until an admin noticed and

@@ -4083,17 +4083,44 @@ export async function getLastUsageCostDigestTotal(): Promise<number | null> {
 }
 
 /**
+ * Last week's persisted prompt-cache hit rate (issue #608), or `null` when
+ * no row exists yet OR the last write was a quiet week that deliberately
+ * skipped the column (see `recordUsageCostDigestSent`) — the read half of
+ * the cache-trend delta `formatUsageCostDigestMessage` renders, sibling to
+ * `getLastUsageCostDigestTotal`.
+ */
+export async function getLastUsageCostDigestCacheHitRate(): Promise<number | null> {
+  const { rows } = await pool.query<{ last_cache_hit_rate: string | null }>(
+    `SELECT last_cache_hit_rate FROM usage_cost_digest_state WHERE id = true`,
+  );
+  return rows.length > 0 && rows[0].last_cache_hit_rate !== null ? Number(rows[0].last_cache_hit_rate) : null;
+}
+
+/**
  * Record that the weekly cost-trend DM was just sent, persisting this
  * week's total for next week's delta and advancing the freshness guard.
  * Upserts the single global row (`id = true`) rather than inserting a new
  * one, matching the "one aggregate figure" shape documented on the table.
+ *
+ * `cacheHitRate` is `null` on a quiet week (zero cache activity in the
+ * window, issue #608) — the `COALESCE` in the `ON CONFLICT` clause keeps
+ * the previously-persisted rate in that case rather than overwriting it
+ * with `null`, so a quiet week can't corrupt the next real comparison. On
+ * a genuine first-ever insert this has no prior value to preserve, so a
+ * quiet first week simply persists `null`, same as never having a rate yet.
  */
-export async function recordUsageCostDigestSent(totalCostUsd: number): Promise<void> {
+export async function recordUsageCostDigestSent(
+  totalCostUsd: number,
+  cacheHitRate: number | null,
+): Promise<void> {
   await pool.query(
-    `INSERT INTO usage_cost_digest_state (id, total_cost_usd, sent_at)
-     VALUES (true, $1, now())
-     ON CONFLICT (id) DO UPDATE SET total_cost_usd = EXCLUDED.total_cost_usd, sent_at = now()`,
-    [totalCostUsd],
+    `INSERT INTO usage_cost_digest_state (id, total_cost_usd, last_cache_hit_rate, sent_at)
+     VALUES (true, $1, $2, now())
+     ON CONFLICT (id) DO UPDATE SET
+       total_cost_usd = EXCLUDED.total_cost_usd,
+       last_cache_hit_rate = COALESCE(EXCLUDED.last_cache_hit_rate, usage_cost_digest_state.last_cache_hit_rate),
+       sent_at = now()`,
+    [totalCostUsd, cacheHitRate],
   );
 }
 

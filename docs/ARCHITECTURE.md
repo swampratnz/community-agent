@@ -1937,6 +1937,16 @@ reactive volume threshold or an on-demand pull.
   `usageAlert.ts`/`departedAdminAlert.ts` already use — no new privileged
   tool, no new RBAC surface. The DM carries exactly two aggregate dollar
   figures, never a user id, conversation id, or message excerpt.
+- Issue #608 appends a second, independent line: this week's prompt-cache
+  hit rate and its week-over-week ▲/▼/no-change delta, using the identical
+  `hitRate = round(readTokens / (readTokens + creationTokens) * 100)` calc
+  `formatCacheUsageLine` (`usage_stats`, #522) already uses — computed from
+  the same single `usageStats(7)` read (`cacheUsage`), no new query. A
+  nullable `last_cache_hit_rate` column on `usage_cost_digest_state` persists
+  it alongside `total_cost_usd`; a quiet week (zero cache activity) omits
+  the line and leaves the persisted rate untouched rather than overwriting
+  it with a corrupt 0%, so the next real comparison isn't corrupted. Same
+  no-PII guarantee as the cost line: only a percentage and a pp delta.
 
 ## Departed-admin alert
 
