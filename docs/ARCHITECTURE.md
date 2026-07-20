@@ -1904,13 +1904,16 @@ super admin only sees it if they think to run the tool again.
   super admin via `alertSuperAdmins`, imported from `departedAdminAlert.ts`
   rather than re-implemented, so "super admins only, connected adapters
   only" has one implementation shared by both jobs.
-- No new tool, no new RBAC tier, no LLM/embedding call, and no
-  week-over-week trend in v1: `engagement_alert_sends.last_percentage` is
-  written every send for forward-compat only (the named, deferred growth
-  path) but is never read back in this PR.
-- Nothing user-scoped: the new table stores only a timestamp and an
-  aggregate percentage, never a user id, so `forget_me`/`purge_user_data`
-  have nothing to reach here.
+- No new tool and no new RBAC tier. Week-over-week trend (issue #597):
+  `engagement_alert_sends.last_percentage` is read back via
+  `getLastEngagementAlertPercentage()` before each send and rendered as a
+  `▲`/`▼`/"No change" percentage-point suffix on the snapshot, the same
+  convention `formatUsageCostDigestMessage` (#578) uses for dollars. A
+  first-ever run (no prior row) renders a defined no-comparison form instead
+  of `NaN`/`undefined`.
+- Nothing user-scoped: the table stores only a timestamp and an aggregate
+  percentage, never a user id, so `forget_me`/`purge_user_data` have nothing
+  to reach here.
 
 ## Switching WhatsApp providers
 

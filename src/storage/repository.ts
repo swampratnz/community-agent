@@ -4040,8 +4040,8 @@ export async function wasEngagementAlertSentRecently(days: number): Promise<bool
 
 /**
  * Record that the engagement alert was just sent, stamping the freshness
- * guard and this run's percentage (forward-compat only — see schema.sql;
- * nothing in this PR reads `last_percentage` back). Always the same `id = 1`
+ * guard and this run's percentage for next week's delta (issue #597 reads
+ * this back via `getLastEngagementAlertPercentage`). Always the same `id = 1`
  * row, so this is an upsert, not an insert.
  */
 export async function recordEngagementAlertSent(percentage: number): Promise<void> {
@@ -4051,6 +4051,19 @@ export async function recordEngagementAlertSent(percentage: number): Promise<voi
      ON CONFLICT (id) DO UPDATE SET sent_at = now(), last_percentage = EXCLUDED.last_percentage`,
     [percentage],
   );
+}
+
+/**
+ * Last week's persisted engagement percentage, or `null` when no row exists
+ * yet (first-ever run) — the read half of the trend delta issue #597's
+ * `formatEngagementAlertMessage` renders, mirroring
+ * `getLastUsageCostDigestTotal`'s shape.
+ */
+export async function getLastEngagementAlertPercentage(): Promise<number | null> {
+  const { rows } = await pool.query<{ last_percentage: string | null }>(
+    `SELECT last_percentage FROM engagement_alert_sends WHERE id = 1`,
+  );
+  return rows.length > 0 && rows[0].last_percentage !== null ? Number(rows[0].last_percentage) : null;
 }
 
 // --- Standing response-style preference (issue #126) ------------------------
