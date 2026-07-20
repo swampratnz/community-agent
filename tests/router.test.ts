@@ -96,6 +96,27 @@ function makeReply(text: string): AgentReply {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Await a turn-started signal, failing LOUDLY (with a diagnosis) rather than
+ * hanging if it never fires. The signal proves enqueue() registered the
+ * chain, but handle() can legitimately never reach the agent callback when a
+ * pre-enqueue dependency is down (e.g. the reply-budget check fails closed
+ * against an unreachable local DB) — and an unsettled await here doesn't
+ * fail, it HANGS the test, which the runner reports as "promise resolution
+ * still pending" and cancels every remaining test in the file (the exact
+ * cascade the started-signal fix exists to eliminate). CI's real Postgres
+ * makes the agent path deterministic, so this timeout never fires there.
+ */
+const awaitTurnStarted = (started: Promise<void>) =>
+  Promise.race([
+    started,
+    sleep(10_000).then(() => {
+      throw new Error(
+        'turn callback never ran within 10s — handle() failed before enqueue() (unreachable DB in this environment?)',
+      );
+    }),
+  ]);
+
 test('respond(): fires the typing indicator immediately and re-fires periodically while the turn is in flight', async () => {
   let resolveTurn!: (r: AgentReply) => void;
   const turnPromise = new Promise<AgentReply>((resolve) => {
@@ -630,7 +651,7 @@ test('drain(): waits for an in-flight turn to settle — including its send — 
   router.register(adapter);
 
   void trigger(makeMessage());
-  await started; // the chain is registered once the turn callback runs
+  await awaitTurnStarted(started); // chain registered once the turn callback runs
 
   const drainPromise = router.drain(5_000);
   assert.equal(
@@ -667,7 +688,7 @@ test('drain(): resolves at the timeout boundary if a chain never settles — nev
   router.register(adapter);
 
   void trigger(makeMessage());
-  await started; // the chain is registered once the turn callback runs
+  await awaitTurnStarted(started); // chain registered once the turn callback runs
 
   const start = Date.now();
   await router.drain(150);
@@ -724,7 +745,7 @@ test('drain(): a message arriving mid-drain starts a new chain that drain() does
   router.register(adapter);
 
   void trigger(makeMessage({ messageId: 'm1' }));
-  await started; // message 1's chain is registered once its turn callback runs
+  await awaitTurnStarted(started); // message 1's chain registered once its turn callback runs
 
   const drainPromise = router.drain(2_000);
 
