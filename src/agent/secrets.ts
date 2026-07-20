@@ -14,5 +14,10 @@ export function runtimeSecrets(): string[] {
     config.whatsapp.cloud.verifyToken ?? '',
     config.whatsapp.cloud.appSecret ?? '',
     config.devTeam.authToken ?? '',
+    // The fine-grained GitHub PAT (issue filing) is the bot's only outward
+    // WRITE credential — include it here so the exact-value backstop covers any
+    // future/unknown egress path, not just the one send site that redacts it
+    // today (audit M2).
+    config.github.token ?? '',
   ];
 }

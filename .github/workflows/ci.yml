@@ -23,6 +23,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Least privilege (audit M7): this workflow runs on `pull_request`, which
+# includes forks and executes attacker-controlled PR code (npm lifecycle
+# scripts, migrate, test, build). All three jobs are read-only, so pin the
+# GITHUB_TOKEN to `contents: read` rather than inheriting the repo/org default
+# (read/write on older repos) — one settings change should not be able to
+# re-widen what a fork-triggered run can do.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -95,10 +104,19 @@ jobs:
       DISCORD_BOT_TOKEN: ci-dummy-token
       DISCORD_GUILD_ID: ci-dummy-guild
       WHATSAPP_PROVIDER: disabled
+      # Base ref for the security-floor lowering guard (audit H1). Empty on
+      # push/merge_group (guard inactive there); the PR base commit on
+      # pull_request. `allow-security-floor-lower` label forces the override so
+      # a genuine SECURITY-test removal is a conscious, labelled human act.
+      SECURITY_FLOOR_BASELINE_REF: ${{ github.event.pull_request.base.sha }}
+      ALLOW_SECURITY_FLOOR_LOWER: ${{ contains(github.event.pull_request.labels.*.name, 'allow-security-floor-lower') }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          # Full history so the lowering guard can `git show <base>:…` the base
+          # manifest (audit H1); a shallow clone wouldn't have the base commit.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
