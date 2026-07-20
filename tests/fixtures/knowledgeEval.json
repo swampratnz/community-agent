@@ -68,6 +68,14 @@
     {
       "title": "Knowledge staleness window",
       "content": "The bot gently flags an answer as possibly outdated once a knowledge entry has gone this many days without being edited or looked up again; admins tune that window with the KNOWLEDGE_STALE_DAYS setting so the nudge fires neither too eagerly nor too rarely."
+    },
+    {
+      "title": "Prompt engineering: giving Claude a clear role and task",
+      "content": "Open your system prompt by telling Claude what role it's playing and exactly what task it's doing, then give explicit step-by-step instructions rather than a vague goal; this framing cuts down on inconsistent output far more than tweaking individual sentences later."
+    },
+    {
+      "title": "Prompt engineering: examples pin down edge-case behaviour",
+      "content": "Including a handful of concrete input/output examples, especially ones covering edge cases and failure modes, teaches Claude the exact pattern you want far more reliably than describing that pattern in the abstract; this technique is often called few-shot prompting."
     }
   ],
   "queries": [
@@ -149,6 +157,16 @@
     {
       "query": "which model size makes sense for a simple high-throughput task",
       "expectedTitle": "Choosing a Claude model for a new project",
+      "core": false
+    },
+    {
+      "query": "why does spelling out who the assistant is meant to be and what job it's doing at the top of my system prompt make such a difference",
+      "expectedTitle": "Prompt engineering: giving Claude a clear role and task",
+      "core": false
+    },
+    {
+      "query": "will showing the model a couple of sample inputs and outputs make it handle tricky situations more consistently than just explaining the rule in words",
+      "expectedTitle": "Prompt engineering: examples pin down edge-case behaviour",
       "core": false
     }
   ],
