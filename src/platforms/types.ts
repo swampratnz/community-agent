@@ -190,7 +190,7 @@ export interface PlatformAdapter {
    * `priority` is the trust level of the alert's PRODUCER, structurally the
    * same `'system' | 'low'` union as `pendingAlertQueue.ts`'s `AlertPriority`
    * (kept inline here so types.ts stays dependency-free — see the note above
-   * `Role`). It drives per-recipient eviction exactly as the shared
+   * `Tier`). It drives per-recipient eviction exactly as the shared
    * pending-alert queue does (#545): a member-reachable `'low'` alert
    * (`report_content`/`appeal_moderation`) can never evict a `'system'` one
    * (admin-action audit / escalation).
