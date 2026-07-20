@@ -23,6 +23,7 @@ import {
 } from './agent/pendingActions.js';
 import { isPaused } from './storage/policies.js';
 import { recordReplyMapping } from './replyRetraction.js';
+import { queuePendingAlert } from './pendingAlertQueue.js';
 import {
   countRepliesToUser,
   getLanguagePreference,
@@ -663,8 +664,16 @@ export class Router {
   private async alertSuperAdminsBudgetCheckFailed(): Promise<void> {
     const message =
       '⚠️ Daily reply-budget check failed (DB error) — the per-user daily limit is not being enforced until this clears. Check logs / DB health.';
-    for (const adapter of this.adapters.values()) {
-      if (!adapter.isConnected()) continue; // can't send through a dead connection
+    const connected = [...this.adapters.values()].filter((adapter) => adapter.isConnected());
+    if (connected.length === 0) {
+      logger.warn(
+        { message },
+        'Budget check failure alert could not be delivered live — no connected adapter; queued for flush on reconnect',
+      );
+      queuePendingAlert(message, 'system'); // super-admin-only alert — never evicted by a member-reachable alert (#545)
+      return;
+    }
+    for (const adapter of connected) {
       for (const id of superAdminIds(adapter.platform)) {
         adapter
           .sendDirectMessage(id, message)

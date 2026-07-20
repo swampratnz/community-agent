@@ -24,6 +24,8 @@ const { Router } = await import('../src/router.js');
 const { DAILY_BUDGET_NOTICE_TEXT, DAILY_BUDGET_NOTICE_TEXT_MI, DAILY_BUDGET_NOTICE_TEXT_PLAIN } =
   await import('../src/dailyBudgetNotice.js');
 const { embed } = await import('../src/storage/embeddings.js');
+const { getPendingAlertsForTests, resetPendingAlertsForTests, queuePendingAlert, PENDING_ALERT_QUEUE_CAP } =
+  await import('../src/pendingAlertQueue.js');
 
 await embed('warmup').catch(() => {});
 
@@ -170,6 +172,76 @@ test('router (budget check failure): no DM at all when countRepliesToUser succee
 
   assert.equal(sent.length, 1);
   assert.equal(dms.length, 0, 'a successful budget check must never alert');
+});
+
+// --- Shared pending-alert queue extension (issue #593) ---
+
+test('router (budget check failure): with the only registered adapter disconnected, the alert is queued exactly once instead of dropped (issue #593)', async () => {
+  resetPendingAlertsForTests();
+  const router = new Router(
+    async () => makeReply('reply despite budget-check failure'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    failingCountReplies,
+  );
+  const { adapter, dms, trigger } = makeAdapter({ isConnected: () => false });
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(dms.length, 0, 'no send is attempted through the disconnected adapter');
+  assert.equal(
+    getPendingAlertsForTests().length,
+    1,
+    'the budget-check-failure alert is queued exactly once, not dropped',
+  );
+  assert.match(getPendingAlertsForTests()[0] ?? '', /daily reply-budget check failed/i);
+  resetPendingAlertsForTests();
+});
+
+test('SECURITY: the budget-check-failure alert queues the message byte-identical to its live-send text, at "system" priority, surviving a low-priority flood (issue #593)', async () => {
+  resetPendingAlertsForTests();
+
+  const liveRouter = new Router(
+    async () => makeReply('ok'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    failingCountReplies,
+  );
+  const { adapter: liveAdapter, dms: liveDms, trigger: liveTrigger } = makeAdapter();
+  liveRouter.register(liveAdapter);
+  await liveTrigger(makeMessage());
+  const liveText = liveDms[0]?.text;
+  assert.ok(liveText, 'a live send happened to capture the exact text');
+  resetPendingAlertsForTests();
+
+  const downRouter = new Router(
+    async () => makeReply('ok'),
+    20,
+    async () => false,
+    undefined,
+    undefined,
+    failingCountReplies,
+  );
+  const { adapter: downAdapter, trigger: downTrigger } = makeAdapter({ isConnected: () => false });
+  downRouter.register(downAdapter);
+  await downTrigger(makeMessage());
+
+  assert.deepEqual(getPendingAlertsForTests(), [liveText], 'queued text is byte-identical to the live text');
+
+  // Simulate tools.ts's notifySuperAdmins (member-reachable, 'low' priority)
+  // flooding the shared queue past its cap — this system-priority alert must
+  // never be evicted (issue #545's fix).
+  for (let i = 0; i < PENDING_ALERT_QUEUE_CAP * 2; i++) queuePendingAlert(`low-flood-${i}`, 'low');
+  assert.ok(
+    getPendingAlertsForTests().includes(liveText),
+    'the system-priority budget-check-failure alert survives a low-priority flood',
+  );
+  resetPendingAlertsForTests();
 });
 
 test('router (budget check failure): does not cross-talk with the unrelated budget-exceeded notice', async () => {

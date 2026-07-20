@@ -31,6 +31,10 @@ const { logger } = await import('../src/logger.js');
 // queue producers directly, without their own test files' env/setup.
 const { startTrackedJob } = await import('../src/backgroundJobs.js');
 const { notifyReportFiled } = await import('../src/agent/tools.js');
+// One of #593's four new pending-alert-queue producers, imported directly to
+// prove the flush path (unmodified since #545) also drains a message queued
+// from a NEW producer, not just the original three.
+const { alertSuperAdmins: departedAdminAlertSuperAdmins } = await import('../src/departedAdminAlert.js');
 
 function makeFakeAdapter(connected: boolean): {
   adapter: PlatformAdapter;
@@ -202,6 +206,30 @@ test(
       [],
       'the shared queue must be fully cleared after the flush',
     );
+  },
+);
+
+test(
+  "flushPendingAlerts: a message queued from one of issue #593's new producers " +
+    '(departedAdminAlert.ts) with every adapter disconnected is delivered to every super admin ' +
+    "through the reconnected adapter, via health.ts's existing flush path, unmodified",
+  async () => {
+    resetPendingAlertsForTests();
+
+    const { adapter: disconnected } = makeFakeAdapter(false);
+    await departedAdminAlertSuperAdmins([disconnected], 'from-departed-admin-alert-593');
+
+    assert.equal(getPendingAlertsForTests().length, 1, 'the new producer queued exactly one entry');
+
+    const { adapter: reconnected, dms } = makeFakeAdapter(true);
+    await flushPendingAlerts(reconnected);
+
+    assert.equal(dms.length, 2, 'one queued message x two super admins');
+    assert.ok(
+      dms.every((d) => d.text === 'from-departed-admin-alert-593'),
+      "the new producer's message was flushed to every super admin, unmodified",
+    );
+    assert.deepEqual(getPendingAlertsForTests(), [], 'the queue is cleared after the flush');
   },
 );
 
