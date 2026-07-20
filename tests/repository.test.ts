@@ -7258,6 +7258,268 @@ test(
   },
 );
 
+// Per-(interaction, rater) dedup (issue #619): before this fix, a member
+// calling rate_answer twice on the same bot reply inserted two rows,
+// inflating every downstream count and bypassing the >= 2 low-rated-caveat
+// floor tested separately below.
+test(
+  'repository: createAnswerFeedback dedups repeated ratings from the same rater on the same interaction via ON CONFLICT DO UPDATE, converges concurrent writes to one row, and still inserts independently for a NEW interaction (issue #619)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-rate-answer-dedup-user`;
+    const conversationId = `${RUN}-c-rate-answer-dedup`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'first answer',
+      meta: { replyToUserId: userId },
+    });
+
+    const firstId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+    );
+    const secondId = expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId,
+        helpful: false,
+        comment: 'changed my mind',
+      }),
+    );
+    assert.equal(
+      secondId,
+      firstId,
+      'a second rating on the same interaction updates the SAME row (same id), not a new one',
+    );
+
+    const rowsForFirst = await pool.query(`SELECT helpful, comment FROM answer_feedback WHERE user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(rowsForFirst.rows.length, 1, 'exactly one row exists for this (interaction, rater) pair');
+    assert.equal(rowsForFirst.rows[0].helpful, false, "the row's helpful flag reflects the LATEST verdict");
+    assert.equal(
+      rowsForFirst.rows[0].comment,
+      'changed my mind',
+      "the row's comment reflects the LATEST verdict",
+    );
+
+    // Two near-simultaneous writes for the same (interaction, rater) pair
+    // must still converge to exactly one row (a check-then-act race would
+    // risk a duplicate; ON CONFLICT DO UPDATE is atomic at the row level).
+    const [concurrentA, concurrentB] = await Promise.all([
+      createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+      createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+    ]);
+    expectFeedbackId(concurrentA, 'concurrent write A should still succeed');
+    expectFeedbackId(concurrentB, 'concurrent write B should still succeed');
+    const rowsAfterConcurrent = await pool.query(
+      `SELECT count(*) AS n FROM answer_feedback WHERE user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      Number(rowsAfterConcurrent.rows[0].n),
+      1,
+      'two near-simultaneous writes on the same (interaction, rater) pair still converge to exactly one row',
+    );
+
+    // A NEW outbound reply means a NEW interaction_id — a rating against it
+    // must insert independently (dedup is per-answer, not per-rater-globally).
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'second, different answer',
+      meta: { replyToUserId: userId },
+    });
+    const thirdId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true }),
+    );
+    assert.notEqual(thirdId, firstId, 'a rating on a NEW interaction inserts a new, independent row');
+
+    const totalRows = await pool.query(`SELECT count(*) AS n FROM answer_feedback WHERE user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(
+      Number(totalRows.rows[0].n),
+      2,
+      'one row per distinct interaction, not per rate_answer call',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: one rater double-tapping rate_answer(helpful:false) on the same answer cannot alone cross isKnowledgeLowRated/areKnowledgeEntriesLowRated\'s >= 2 "more than one identifiable rater" floor (issue #619)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-low-rated-single-rater`;
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} single-rater low-rated entry content` });
+    const soleRater = `${RUN}-low-rated-sole-rater`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'shortcut answer for sole rater',
+      meta: { replyToUserId: soleRater, knowledgeShortcut: true, knowledgeEntryId: entryId },
+    });
+
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: soleRater, helpful: false }),
+    );
+    // A second 👎 tap from the SAME rater on the SAME answer, before any new
+    // bot reply — must dedup to the same row (see the dedup test above), not
+    // add a second "identifiable person's opinion".
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: soleRater, helpful: false }),
+    );
+
+    const rowCount = await pool.query(`SELECT count(*) AS n FROM answer_feedback WHERE user_id = $1`, [
+      soleRater,
+    ]);
+    assert.equal(Number(rowCount.rows[0].n), 1, 'one rater tapping twice yields exactly one row, not two');
+
+    const single = await isKnowledgeLowRated(entryId, 2);
+    assert.equal(
+      single,
+      false,
+      'SECURITY: one rater tapping unhelpful twice must NOT cross the >= 2 floor alone — the floor exists ' +
+        'specifically so no single identifiable rater can trigger it',
+    );
+    const batched = await areKnowledgeEntriesLowRated([entryId], 2);
+    assert.deepEqual(
+      batched,
+      new Set(),
+      'SECURITY: the batched sibling must agree — one rater alone must not cross the threshold',
+    );
+
+    // A genuinely SECOND, distinct rater tapping unhelpful now legitimately
+    // crosses the floor — proving this isn't permanently stuck at zero.
+    const secondRater = `${RUN}-low-rated-second-rater`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'shortcut answer for second rater',
+      meta: { replyToUserId: secondRater, knowledgeShortcut: true, knowledgeEntryId: entryId },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: secondRater,
+        helpful: false,
+      }),
+    );
+    const withSecondRater = await isKnowledgeLowRated(entryId, 2);
+    assert.equal(
+      withSecondRater,
+      true,
+      'a genuinely SECOND distinct rater legitimately crosses the >= 2 floor',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[soleRater, secondRater]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  "repository: schema.sql's answer_feedback dedup DELETE removes pre-existing duplicate (interaction_id, " +
+    'user_id) rows — keeping the most recent — before the partial unique index statement runs, so redeploying ' +
+    "against a production DB that already has the pre-fix double-tap bug's duplicates (issue #619) succeeds " +
+    'instead of failing on a duplicate-key error',
+  { skip },
+  async () => {
+    // Exercised against a connection-private TEMP TABLE, not the real
+    // shared `answer_feedback` table: dropping the live production unique
+    // index to simulate a pre-migration DB would race with every OTHER
+    // test file's concurrent createAnswerFeedback calls (Node's test
+    // runner runs files in parallel), risking spurious "no unique or
+    // exclusion constraint matching ON CONFLICT" failures elsewhere in the
+    // suite. A temp table is invisible to every other session, so this
+    // reproduces the exact statements from schema.sql with zero blast
+    // radius on concurrently-running tests.
+    const client = await pool.connect();
+    try {
+      await client.query(`
+        CREATE TEMP TABLE answer_feedback_dedup_fixture (
+          id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          interaction_id BIGINT,
+          user_id        TEXT NOT NULL,
+          helpful        BOOLEAN NOT NULL
+        )
+      `);
+
+      // Simulate a production DB that predates this migration: two
+      // duplicate rows for the same (interaction_id, user_id) pair, exactly
+      // what the pre-fix double-tap bug could already have left behind.
+      const { rows: dupRows } = await client.query(`
+        INSERT INTO answer_feedback_dedup_fixture (interaction_id, user_id, helpful) VALUES
+          (42, 'legacy-rater', true),
+          (42, 'legacy-rater', false)
+        RETURNING id, helpful
+      `);
+      assert.equal(
+        dupRows.length,
+        2,
+        'both legacy duplicate rows insert cleanly with no unique index present',
+      );
+      const newerRowId = Number(dupRows.find((r) => r.helpful === false)?.id);
+
+      // The exact dedup statement from schema.sql: keep the highest-id
+      // (most recent) row per (interaction_id, user_id), drop the rest.
+      await client.query(`
+        DELETE FROM answer_feedback_dedup_fixture a USING answer_feedback_dedup_fixture b
+         WHERE a.interaction_id IS NOT NULL
+           AND a.interaction_id = b.interaction_id
+           AND a.user_id = b.user_id
+           AND a.id < b.id
+      `);
+
+      // The exact unique index statement from schema.sql must now succeed
+      // against the de-duped data, not fail with a duplicate-key error.
+      await assert.doesNotReject(
+        client.query(
+          `CREATE UNIQUE INDEX ON answer_feedback_dedup_fixture (interaction_id, user_id) WHERE interaction_id IS NOT NULL`,
+        ),
+        'the unique index must be creatable after the dedup DELETE runs, even though duplicates pre-existed',
+      );
+
+      const { rows: survivingRows } = await client.query(
+        `SELECT id, helpful FROM answer_feedback_dedup_fixture`,
+      );
+      assert.equal(survivingRows.length, 1, 'exactly one row survives the de-dup');
+      assert.equal(
+        Number(survivingRows[0].id),
+        newerRowId,
+        'the surviving row is the most recent (highest id) one',
+      );
+      assert.equal(
+        survivingRows[0].helpful,
+        false,
+        "the surviving row's data matches the most recent duplicate",
+      );
+    } finally {
+      await client.query(`DROP TABLE IF EXISTS answer_feedback_dedup_fixture`);
+      client.release();
+    }
+  },
+);
+
 test(
   'SECURITY: repository: listAnswerFeedback scopes by conversation and filters by unhelpfulOnly',
   { skip },
@@ -8623,6 +8885,41 @@ test(
       0,
       "the rater's own feedback rows — including the stored comment (issue #354) — are gone after their purge",
     );
+  },
+);
+
+test(
+  'SECURITY: repository: multiple NULL-interaction_id answer_feedback rows (as ON DELETE SET NULL leaves behind post-purge) coexist without a unique violation, for the same and for different raters (issue #619)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-feedback-null-interaction`;
+    const raterA = `${RUN}-feedback-null-a`;
+    const raterB = `${RUN}-feedback-null-b`;
+
+    // The partial unique index on (interaction_id, user_id) is scoped to
+    // `WHERE interaction_id IS NOT NULL` precisely so post-purge rows (whose
+    // FK was nulled by ON DELETE SET NULL, exercised end-to-end just above)
+    // never collide with each other — several NULL rows for the SAME rater,
+    // and rows across DIFFERENT raters, must all coexist.
+    await pool.query(
+      `INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful) VALUES
+         ($1,$2,$3,NULL,true),
+         ($1,$2,$3,NULL,false),
+         ($1,$2,$4,NULL,true)`,
+      ['discord', conversationId, raterA, raterB],
+    );
+
+    const rows = await pool.query(
+      `SELECT user_id FROM answer_feedback WHERE conversation_id = $1 ORDER BY id`,
+      [conversationId],
+    );
+    assert.equal(
+      rows.rows.length,
+      3,
+      'all three NULL-interaction_id rows coexist without a unique violation',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
