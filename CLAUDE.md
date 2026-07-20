@@ -133,10 +133,23 @@ ownership rules:
 - The **build-retry loop** (`pipeline-build-retry.yml`) auto-re-runs a build
   worker run that failed to produce a PR, via `gh run rerun`, bounded by
   `run_attempt` (≤3 total attempts). The build worker escalates `needs-human`
-  only on its final attempt, so transient/infra failures recover unattended and
-  a human is pinged only for persistent ones — don't re-add manual re-trigger
-  steps for build failures. (A GITHUB_TOKEN label toggle can't re-trigger the
-  build worker, which is why this uses rerun, not a label change.)
+  only on its final attempt — clearing BOTH `status:building` and
+  `status:approved`, so the escalated issue fully leaves the automated lanes
+  and the hourly fallback can't re-claim it — so transient/infra failures
+  recover unattended and a human is pinged only for persistent ones — don't
+  re-add manual re-trigger steps for build failures. (A GITHUB_TOKEN label
+  toggle can't re-trigger the build worker, which is why this uses rerun, not
+  a label change.)
+- The **groundskeeper sweep** (`pipeline-groundskeeper.yml`) is the
+  deterministic, no-LLM hourly reconciler for zombie pipeline state: any open
+  `status:building` issue with no open same-repo PR closing it and no
+  activity for 3h+ is escalated `needs-human` (both status labels cleared).
+  It exists because a build job that hits its 120-min timeout reports
+  `cancelled` — invisible to both the failure-keyed retry loop and the
+  final-attempt escalation — and a dead fallback-Routine claim leaves no run
+  at all; either way the issue previously sat `status:building` forever,
+  wedging the fallback lane and starving the approved queue. Like auto-merge
+  it reads issue/PR fields only as jq data and runs no PR-controlled code.
 - The **ci-retry loop** (`ci-retry.yml`) gives a failed CI run one blind
   machine rerun (`gh run rerun --failed`, `run_attempt` < 2) before any agent
   engages — transient npm-registry/runner failures recover for zero agent

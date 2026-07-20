@@ -1,0 +1,107 @@
+name: Pipeline groundskeeper
+
+# Deterministic, no-LLM, no-Max-pool reconciliation sweep for pipeline label
+# state, in the same trust class as the auto-merge loop: plain shell + gh +
+# jq, reading issue/PR fields only as data (never as instructions), running
+# no PR-controlled code.
+#
+# Why it exists (2026-07-20 incident): a `status:building` issue whose build
+# dies WITHOUT reaching the build workflow's own verify/escalate step zombies
+# forever. The two ways that happens:
+#   - the build job hits `timeout-minutes` — GitHub reports the run as
+#     `cancelled`, which the failure-keyed retry loop
+#     (pipeline-build-retry.yml, `conclusion == 'failure'`) never re-runs and
+#     the final-attempt escalation never sees;
+#   - a fallback-Routine claim (docs/PIPELINE.md §4) whose session dies leaves
+#     no workflow run at all.
+# Four issues sat `status:building` with zero open PRs; the fallback lane
+# "continued" them forever and the `status:approved` queue starved behind
+# them. This sweep enforces the invariant the state machine promises: an
+# issue is `status:building` ONLY while a build is genuinely in flight.
+#
+# Rule: any open `status:building` issue with NO open same-repo PR closing it
+# and NO activity for STALE_HOURS is moved to the `needs-human` lane, with
+# BOTH `status:building` and `status:approved` removed — so neither the
+# label-triggered build worker nor the hourly fallback can silently re-claim
+# it. A human re-queues by removing `needs-human` and re-adding
+# `status:approved`.
+#
+# STALE_HOURS (3) deliberately exceeds the build job's 120-min
+# `timeout-minutes` plus claim-comment lag: each build attempt re-claims with
+# a fresh comment (bumping the issue's updatedAt), so an issue quiet for 3h
+# cannot have a live build attempt behind it.
+
+on:
+  schedule:
+    - cron: '17 * * * *' # hourly; minute offset avoids the top-of-hour Actions rush
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: pipeline-groundskeeper
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      STALE_HOURS: 3
+    steps:
+      - name: Escalate zombie status:building issues
+        run: |
+          set -euo pipefail
+          now="$(date +%s)"
+          stale_secs="$(( STALE_HOURS * 3600 ))"
+
+          # Open same-repo PR bodies, fetched once, held strictly as jq data.
+          pr_bodies="$(gh pr list -R "${REPO}" --state open --limit 100 \
+            --json body,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not) | .body // ""]')"
+
+          issues="$(gh issue list -R "${REPO}" --state open \
+            --label status:building --limit 20 --json number,updatedAt \
+            --jq '.[] | "\(.number) \(.updatedAt)"')"
+
+          if [ -z "${issues}" ]; then
+            echo "No status:building issues — nothing to reconcile."
+            exit 0
+          fi
+
+          while read -r num updated; do
+            [ -z "${num}" ] && continue
+            updated_epoch="$(date -d "${updated}" +%s)"
+            age=$(( now - updated_epoch ))
+
+            # An open same-repo PR closing this issue means the build lane is
+            # legitimately in flight (review/revise/autofix own it now) — skip.
+            # Deliberately no PR-author check (unlike autofix/auto-merge, which
+            # gate on the build worker's bot identity): isCrossRepository
+            # already excludes forks, so a matching PR requires push access to
+            # THIS repo, and the worst a crafted "Closes #N" PR achieves here
+            # is delaying an escalation. Revisit if push access ever broadens.
+            has_pr="$(jq --arg n "${num}" \
+              '[.[] | select(test("[Cc]loses #" + $n + "\\b"))] | length' <<<"${pr_bodies}")"
+            if [ "${has_pr}" -gt 0 ]; then
+              echo "#${num}: open PR closes it — healthy, skipping."
+              continue
+            fi
+
+            if [ "${age}" -lt "${stale_secs}" ]; then
+              echo "#${num}: no PR yet but last activity only $(( age / 60 ))m ago — a build may still be running, skipping."
+              continue
+            fi
+
+            echo "#${num}: status:building for $(( age / 3600 ))h with no open PR — escalating to needs-human."
+            gh issue edit "${num}" -R "${REPO}" \
+              --add-label needs-human \
+              --remove-label status:building \
+              --remove-label status:approved || true
+            gh issue comment "${num}" -R "${REPO}" --body \
+              "🧹 Groundskeeper: \`status:building\` for over ${STALE_HOURS}h with no open PR closing this issue — the build died without reaching its own escalation step (a timed-out job reports \`cancelled\`, which the failure-keyed retry loop never re-runs). Moved to \`needs-human\`; re-queue by removing \`needs-human\` and re-adding \`status:approved\`." || true
+          done <<< "${issues}"
