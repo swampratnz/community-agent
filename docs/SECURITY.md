@@ -2169,7 +2169,12 @@ number could reach an unrelated person).
       `CLAUDE.md`/`docs/PIPELINE.md`/`docs/SECURITY.md` docs — so the loop can
       never auto-merge a change to its *own* gates or to what "green" means (which
       matters because `pull_request` CI runs the workflow version from the PR
-      branch); any PR can be pinned out with `no-auto-merge`; and branch
+      branch). A governance-path PR that passes every *other* gate is escalated
+      rather than silently skipped — a `human-merge-ready` label plus one
+      marker-guarded comment — but the merge itself stays a human's; the
+      escalation adds only a label and fixed-text comment (no PR-controlled
+      content interpolated), so it widens no injection surface. Any PR can be
+      pinned out with `no-auto-merge`; and branch
       protection's required checks + who-may-merge still bound it. If you require
       the strict "no code reaches `main` without a human even if a worker is
       prompt-injected" guarantee, leave `AUTOMERGE_MODE` unset (or require a human
