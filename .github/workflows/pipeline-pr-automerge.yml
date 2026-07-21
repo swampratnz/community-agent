@@ -69,6 +69,7 @@ concurrency:
 permissions:
   contents: write # merge the PR (push the merge commit to main)
   pull-requests: write # merge/comment/label
+  issues: write # `gh label create` (ensure human-merge-ready exists) uses the issues API
   actions: write # dispatch the conflict resolver to rebase the rest after a merge
 
 jobs:
@@ -87,6 +88,10 @@ jobs:
       # review) posts ONE marker-guarded note explaining the likely cause,
       # rather than silently doing nothing every tick.
       BLOCKED_MARKER: '<!-- pipeline-automerge-blocked -->'
+      # A governance-path PR that passes every other gate (green, mergeable,
+      # fresh LGTM) is labelled `human-merge-ready` + gets ONE marker-guarded
+      # comment asking a human to merge it, rather than being skipped silently.
+      READY_MARKER: '<!-- pipeline-automerge-human-ready -->'
       # OPT-IN mode gate (repository variable AUTOMERGE_MODE — Settings → Secrets
       # and variables → Actions → Variables). The default (unset) is INERT, so
       # merging this workflow onto `main` never auto-merges anything until an
@@ -181,10 +186,19 @@ jobs:
             # (Deliberately NOT including tests/security-floor.json or CHANGELOG.md
             # — those are per-PR DATA nearly every PR touches; excluding them
             # would merge nothing. This list is the files that change the RULES.)
+            #
+            # A governance hit does NOT stop evaluation, only the merge: the
+            # pipeline's own acceptance criteria make most feature PRs document
+            # themselves in docs/SECURITY.md, so a silent skip here stranded
+            # fully-vetted PRs with no signal to anyone (2026-07-21). Instead,
+            # keep evaluating; if the PR passes EVERY other gate it is labelled
+            # `human-merge-ready` with one marker-guarded comment, so the human
+            # merge it requires actually gets requested.
             files="$(gh pr view "$n" --repo "$REPO" --json files --jq '.files[].path')"
+            governance_hit='false'
             if printf '%s\n' "$files" | grep -qE '^(\.github/|scripts/|CLAUDE\.md$|docs/PIPELINE\.md$|docs/SECURITY\.md$|package(-lock)?\.json$|tsconfig([.-].*)?\.json$|eslint\.config\.|\.prettier)'; then
-              echo "PR #$n: touches a governance/CI/config path (workflows, check machinery, or governance docs) — requires human merge, skip."
-              echo "::endgroup::"; continue
+              governance_hit='true'
+              echo "PR #$n: touches a governance/CI/config path (workflows, check machinery, or governance docs) — will never auto-merge; still evaluating for the human-merge-ready escalation."
             fi
 
             # Only NOW (structurally eligible) resolve the state GitHub computes
@@ -292,6 +306,38 @@ jobs:
               --jq '[.labels[].name] | any(. == "needs-human" or . == "no-auto-merge")')"
             if [ "$has_stop" = 'true' ]; then
               echo "PR #$n: a stop label (needs-human/no-auto-merge) appeared during evaluation — aborting before merge."
+              echo "::endgroup::"; continue
+            fi
+
+            # --- Governance path: fully vetted, but the merge itself is a
+            # human's. Escalate LOUDLY (label + one marker-guarded comment)
+            # instead of the old silent skip, then keep scanning so a
+            # non-governance PR later in the queue can still merge this run.
+            # The label/comment are idempotent and posted at most once per PR;
+            # they persist across later pushes deliberately — the label means
+            # "auto-merge will never take this one", which stays true.
+            if [ "$governance_hit" = 'true' ]; then
+              if [ "$MODE" != 'live' ]; then
+                echo "PR #$n: DRY RUN (AUTOMERGE_MODE=$MODE) — fully vetted but governance-path; would label human-merge-ready."
+                echo "::endgroup::"; continue
+              fi
+              already_flagged="$(gh pr view "$n" --repo "$REPO" --json comments \
+                | jq -r --arg m "$READY_MARKER" '[.comments[].body] | any(startswith($m))')"
+              if [ "$already_flagged" != 'true' ]; then
+                echo "PR #$n: fully vetted (green + mergeable + fresh LGTM) but governance-path — flagging human-merge-ready."
+                # --force makes create idempotent (updates if it exists); the
+                # label also lives in scripts/setup-labels.sh with the rest.
+                gh label create human-merge-ready --repo "$REPO" \
+                  --color '8250DF' --description 'Fully vetted by auto-merge but touches a governance path; a human must merge' --force \
+                  || echo "::warning::Could not ensure the human-merge-ready label exists."
+                gh pr edit "$n" --repo "$REPO" --add-label human-merge-ready \
+                  || echo "::warning::Could not add the human-merge-ready label to PR #$n."
+                gh pr comment "$n" --repo "$REPO" --body "${READY_MARKER}
+          🤖 Auto-merge evaluated this PR as **fully vetted** — every check green, \`MERGEABLE\`, and a fresh automated \`LGTM\` — but it touches a governance/CI/config path (\`.github/\`, \`scripts/\`, \`package.json\`, check config, or the \`CLAUDE.md\`/\`docs/PIPELINE.md\`/\`docs/SECURITY.md\` governance docs), which always requires a **human merge** (see docs/PIPELINE.md, auto-merge loop). Labelled \`human-merge-ready\` — a maintainer just needs to press merge." \
+                  || echo "::warning::Could not post the human-merge-ready comment on PR #$n."
+              else
+                echo "PR #$n: fully vetted but governance-path — already flagged human-merge-ready, nothing to do."
+              fi
               echo "::endgroup::"; continue
             fi
 

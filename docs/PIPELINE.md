@@ -121,7 +121,14 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   `docs/SECURITY.md` governance docs — so the pipeline can never auto-merge a
   change to its own guardrails or to what "green" means (and since
   `pull_request` CI runs the workflow version from the PR branch, a PR could
-  otherwise weaken a check and still show it "passing"). It merges **exactly one
+  otherwise weaken a check and still show it "passing"). Because the pipeline's
+  own acceptance criteria make most feature PRs document themselves in
+  `docs/SECURITY.md`, a governance hit is common and is NOT a silent skip: a
+  governance-path PR that passes **every other** gate (green, mergeable, fresh
+  LGTM, no stop labels) is labelled `human-merge-ready` and gets one
+  marker-guarded comment asking a maintainer to press merge — the loop still
+  never merges it itself, and it keeps scanning so a non-governance PR later
+  in the queue can still merge that run. It merges **exactly one
   PR per run**: afterwards `main` has advanced, so it dispatches the conflict
   resolver to rebase whatever now conflicts, and the next PR only re-qualifies
   once it is green against the new `main` — so a PR is never merged except
