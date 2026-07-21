@@ -149,11 +149,17 @@ jobs:
             # match there is reversible (a wrong rebase/nudge); here a bad match
             # merges to `main`, so at these stakes the identity check must admit
             # only the build worker, not any other bot account with same-repo
-            # write access (e.g. Dependabot).
+            # write access (e.g. Dependabot). The gh CLI (GraphQL) renders the
+            # App's login as "app/claude" while REST renders "claude[bot]" —
+            # match both (a human login can contain neither "/" nor "[bot]",
+            # so each form uniquely names the App). The original REST-only
+            # literal matched nothing under gh, silently skipping every bot PR
+            # the first time the loop went live (2026-07-21).
             eligible="$(jq -r '
               (.isDraft | not)
               and (.isCrossRepository | not)
-              and (.author.login == "claude[bot]")
+              and (.author.is_bot == true)
+              and (.author.login == "claude[bot]" or .author.login == "app/claude")
               and ((.body // "") | test("[Cc]loses #[0-9]+"))
               and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-merge") | not))
             ' <<<"$struct")"
