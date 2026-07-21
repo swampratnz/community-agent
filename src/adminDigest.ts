@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import {
   answerFeedbackOriginSummary,
+  answerFeedbackWeeklySummary,
   countAccessRequests,
   countDuplicateKnowledge,
   countEscalatedKnowledgeGaps,
@@ -189,6 +190,22 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * true })` filter. Append-only trailing param, default 0, so every existing
  * call site is unaffected and the quiet case is byte-identical to the
  * pre-#624 form.
+ * `overallAnswerHelpful`/`overallAnswerTotal` (issue #653) come from
+ * `answerFeedbackWeeklySummary`, VISION's own named answer-quality north
+ * star ("`rate_answer` helpful-rate trending up") made visible for the first
+ * time — every rated answer this week, unfiltered by knowledge-grounding or
+ * origin, the distinct denominator neither `generalUnhelpfulCount`'s
+ * ungrounded-only slice nor `autoAnswerHelpful`/`addressedHelpful`'s origin
+ * split covers. Conversation-scoped and windowed identically to
+ * `generalUnhelpfulCount`. Rendered only when `overallAnswerTotal > 0`, as a
+ * derived percentage plus the bare `helpful`/`total` integers — no question
+ * text, answer content, rating comment, or user id, same privacy convention
+ * as every other signal above. Unlike `autoAnswerHelpful`'s cumulative,
+ * untrended line, this one DOES carry a `trendSuffix` (on
+ * `overallAnswerTotal`) so an admin can see the week's rating volume moving,
+ * not just this week's isolated rate. Two append-only trailing params,
+ * default 0, so every existing call site is unaffected and the quiet case is
+ * byte-identical to the pre-#653 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -289,6 +306,13 @@ export function buildAdminDigestMessage(
   // #624) — #448's own named, deferred digest fold-in. Append-only trailing
   // param, default 0, so every existing call site is unaffected.
   unreachableSourceKnowledgeCount: number = 0,
+  // Overall this-week `answer_feedback` helpful/total counts from
+  // `answerFeedbackWeeklySummary` (issue #653) — VISION's own named
+  // answer-quality north star, unfiltered by knowledge-grounding or origin.
+  // Two append-only trailing params, default 0, so every existing call site
+  // is unaffected.
+  overallAnswerHelpful: number = 0,
+  overallAnswerTotal: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -311,7 +335,8 @@ export function buildAdminDigestMessage(
     autoAnswerHelpful === 0 &&
     autoAnswerUnhelpful === 0 &&
     openAppealsCount === 0 &&
-    unreachableSourceKnowledgeCount === 0
+    unreachableSourceKnowledgeCount === 0 &&
+    overallAnswerTotal === 0
   )
     return null;
 
@@ -469,6 +494,20 @@ export function buildAdminDigestMessage(
         trendSuffix('generalUnhelpfulCount', generalUnhelpfulCount, previousCounts),
     );
   }
+  if (overallAnswerTotal > 0) {
+    // Bare percentage plus the underlying integer counts only — no question
+    // text, answer content, rating comment, or user id ever reaches the DM
+    // (#653), same privacy convention as every other digest line. This is
+    // the single number VISION names as the answer-quality north star, made
+    // visible for the first time: every rated answer this week, unfiltered
+    // by knowledge-grounding (unlike generalUnhelpfulCount above) or origin
+    // (unlike the auto-answer/addressed split below).
+    const overallPct = Math.round((overallAnswerHelpful / overallAnswerTotal) * 100);
+    sections.push(
+      `✅ Overall answer helpful-rate this week: ${overallPct}% (${overallAnswerHelpful}/${overallAnswerTotal} ratings)` +
+        trendSuffix('overallAnswerTotal', overallAnswerTotal, previousCounts),
+    );
+  }
   if (autoAnswerHelpful + autoAnswerUnhelpful > 0) {
     // Bare ratios/counts only — no message content, question text, or rater
     // identity ever reaches the DM, same privacy convention as every other
@@ -579,6 +618,7 @@ export async function buildAdminDigestForAdmin(
     answerOriginSummary,
     openAppealsCount,
     unreachableSourceKnowledgeCount,
+    overallAnswerSummary,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -661,6 +701,11 @@ export async function buildAdminDigestForAdmin(
     // 0 here (rather than issuing the query) keeps the digest byte-identical
     // to today regardless of stray rows (issue #624).
     config.knowledgeLinkCheck.enabled ? countUnreachableSourceKnowledge() : Promise.resolve(0),
+    // Conversation-scoped like generalUnhelpfulCount (answer_feedback has a
+    // conversation_id), over the same freshness window — the overall,
+    // unfiltered-by-grounding-or-origin this-week helpful-rate VISION names
+    // as the answer-quality north star (issue #653).
+    answerFeedbackWeeklySummary(scope, FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -693,6 +738,8 @@ export async function buildAdminDigestForAdmin(
     generalUnhelpfulCount,
     openAppealsCount,
     unreachableSourceKnowledgeCount,
+    overallAnswerHelpful: overallAnswerSummary.helpful,
+    overallAnswerTotal: overallAnswerSummary.total,
   };
   const previousCounts = config.adminDigest.trendsEnabled
     ? ((await getLastDigestCounts(platform, platformUserId)) ?? undefined)
@@ -730,6 +777,8 @@ export async function buildAdminDigestForAdmin(
     answerOriginSummary.addressed.unhelpful,
     openAppealsCount,
     unreachableSourceKnowledgeCount,
+    overallAnswerSummary.helpful,
+    overallAnswerSummary.total,
   );
   return { message, currentCounts };
 }

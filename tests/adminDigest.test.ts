@@ -29,6 +29,7 @@ const {
   purgeUserData,
   recordAccessRequest,
   clearAccessRequest,
+  answerFeedbackWeeklySummary,
   countAccessRequests,
   countGeneralUnhelpfulAnswers,
   countKnowledgeGaps,
@@ -1683,6 +1684,492 @@ test('buildAdminDigestMessage: the general-unhelpful-answers line trends via the
   assert.equal(
     noTrendLine,
     '⚠️ 4 general-knowledge answers rated unhelpful this week (no knowledge-base grounding) — run `list_answer_feedback` (unhelpfulOnly) to review.',
+    'no previousCounts -> no suffix, same as every other signal',
+  );
+});
+
+// answerFeedbackWeeklySummary overall helpful-rate line (issue #653) —
+// VISION's own named answer-quality north star, unfiltered by
+// knowledge-grounding or origin (the distinct denominator neither
+// generalUnhelpfulCount above nor the auto-answer/addressed split below
+// covers).
+test('buildAdminDigestMessage: the overall-answer-helpful-rate line appears only when overallAnswerTotal > 0, and all TWENTY-THREE signals zero -> null (issue #653 acceptance criteria 2, 3)', () => {
+  assert.equal(
+    buildAdminDigestMessage(
+      [],
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      undefined,
+      null,
+      null,
+      null,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+    ),
+    null,
+    'all twenty-three signals zero — including the overall answer helpful-rate — is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    8,
+    10,
+  );
+  assert.ok(message, 'a non-zero overall answer total alone still produces a DM');
+  const lines = message.split('\n').filter((l) => l.includes('✅'));
+  assert.equal(lines.length, 1, 'exactly one overall-answer-helpful-rate line');
+  assert.equal(
+    lines[0],
+    '✅ Overall answer helpful-rate this week: 80% (8/10 ratings)',
+    'exact bare-percentage-plus-counts wording',
+  );
+
+  const zeroMessage = buildAdminDigestMessage(
+    [],
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(
+    !zeroMessage!.includes('✅'),
+    'no overall-answer-helpful-rate line when overallAnswerTotal is zero',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: a week with zero overall answer ratings renders no line and does not crash — byte-identical to the quiet-week convention every other signal follows, and a nonzero total with zero helpful ratings renders 0% rather than NaN (issue #653 acceptance criterion 8)', () => {
+  const quiet = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(
+    quiet,
+    null,
+    'zero overall answer ratings alongside every other signal at zero remains a quiet week',
+  );
+
+  const allUnhelpful = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+  );
+  assert.ok(allUnhelpful);
+  const line = allUnhelpful.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    line,
+    '✅ Overall answer helpful-rate this week: 0% (0/5 ratings)',
+    'SECURITY: a week with ratings but zero helpful ones renders 0%, never NaN/crash from the 0-over-total division',
+  );
+});
+
+test('SECURITY: the overall-answer-helpful-rate line is a deterministic function of overallAnswerHelpful/overallAnswerTotal only, and never carries question text, answer content, comment text, or user id (issue #653 acceptance criterion 6)', () => {
+  const secretQuestion = 'a very identifiable question about a secret internal system';
+  const secretAnswer = 'a very identifiable answer text that must never leak';
+  const secretComment = 'a very identifiable rater comment explaining why it was unhelpful';
+  const secretUserId = 'discord-user-1234567890';
+
+  const a = buildAdminDigestMessage(
+    [{ representative: secretQuestion, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+    4,
+  );
+  const b = buildAdminDigestMessage(
+    [{ representative: `${secretAnswer} ${secretComment} ${secretUserId}`, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+    4,
+  );
+  assert.ok(a && b);
+  const line = (m: string) => m.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    line(a),
+    line(b),
+    'the overall-answer-helpful-rate line is unaffected by unrelated content passed through other parameters',
+  );
+  assert.match(line(a)!, /^✅ Overall answer helpful-rate this week: 75% \(3\/4 ratings\)$/);
+  assert.ok(
+    !line(a)!.includes(secretQuestion) &&
+      !line(a)!.includes(secretAnswer) &&
+      !line(a)!.includes(secretComment) &&
+      !line(a)!.includes(secretUserId),
+    'SECURITY: no question text, answer content, comment text, or user id ever appears in the overall-answer-helpful-rate line — bare percentage and counts only',
+  );
+});
+
+test('buildAdminDigestMessage: overallAnswerHelpful/overallAnswerTotal omitted (default 0) -> output is byte-identical to the pre-#653 form (issue #653 acceptance criterion 5)', () => {
+  const before = buildAdminDigestMessage(
+    [],
+    3,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    2,
+    9,
+    2,
+    40,
+    4,
+    1,
+    4,
+  );
+  const after = buildAdminDigestMessage(
+    [],
+    3,
+    5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    2,
+    9,
+    2,
+    40,
+    4,
+    1,
+    4,
+    0,
+    0,
+  );
+  assert.equal(
+    before,
+    after,
+    'an explicit 0 for both new trailing params matches the pre-#653 omitted-param output',
+  );
+  assert.ok(!before!.includes('✅'), 'no overall-answer-helpful-rate line at the pre-#653 call shape');
+});
+
+test('buildAdminDigestMessage: the overall-answer-helpful-rate line trends via the existing trendSuffix mechanism on overallAnswerTotal, and renders no suffix when previousCounts is omitted (issue #653 acceptance criterion 4)', () => {
+  const withTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { overallAnswerTotal: 6 },
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+    9,
+  );
+  assert.ok(withTrend);
+  const trendLine = withTrend.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    trendLine,
+    '✅ Overall answer helpful-rate this week: 33% (3/9 ratings) (▲+3 since last week)',
+    'the trend suffix appends exactly as every other signal line does',
+  );
+
+  const withoutTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+    9,
+  );
+  assert.ok(withoutTrend);
+  const noTrendLine = withoutTrend.split('\n').find((l) => l.includes('✅'));
+  assert.equal(
+    noTrendLine,
+    '✅ Overall answer helpful-rate this week: 33% (3/9 ratings)',
     'no previousCounts -> no suffix, same as every other signal',
   );
 });
@@ -4150,6 +4637,134 @@ test(
   },
 );
 
+// answerFeedbackWeeklySummary (issue #653): the overall, unfiltered-by-
+// knowledge-grounding-or-origin denominator neither countGeneralUnhelpfulAnswers
+// (#563) nor answerFeedbackOriginSummary (#592) covers — VISION's own named
+// answer-quality north star.
+test(
+  'repository: answerFeedbackWeeklySummary counts every in-window, in-scope rating regardless of knowledge-grounding or origin — helpful and total, excluding out-of-window ratings and rows with a purged (NULL) interaction_id (issue #653)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-overallrate`;
+    const users: string[] = [];
+
+    async function rate(userSuffix: string, helpful: boolean, knowledgeEntryId?: number) {
+      const userId = `${RUN}-overallrate-${userSuffix}`;
+      users.push(userId);
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta:
+          knowledgeEntryId !== undefined
+            ? { replyToUserId: userId, knowledgeEntryId }
+            : { replyToUserId: userId },
+      });
+      return expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }),
+        `feedback recorded for ${userId}`,
+      );
+    }
+
+    // (a) KB-attributed, helpful — counted (countGeneralUnhelpfulAnswers would
+    // exclude this row entirely, since it only ever counts unhelpful+ungrounded).
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} overallrate KB entry content` });
+    await rate('kb-helpful', true, entryId);
+    // (b) KB-attributed, unhelpful — counted.
+    await rate('kb-unhelpful', false, entryId);
+    // (c) general-knowledge (ungrounded), helpful — counted.
+    await rate('general-helpful', true);
+    // (d) general-knowledge (ungrounded), unhelpful — counted.
+    await rate('general-unhelpful', false);
+    // (e) a genuine rating, but backdated outside the window — excluded.
+    const outOfWindowId = await rate('out-of-window', true);
+    await pool.query(`UPDATE answer_feedback SET created_at = now() - interval '10 days' WHERE id = $1`, [
+      outOfWindowId,
+    ]);
+    // (f) a row whose interaction_id is NULL (as if the rated reply had since
+    // been purged via forget_me/purge_user_data, which sets interaction_id to
+    // NULL on delete per schema.sql) — excluded, there's no interaction left
+    // to join.
+    const purgedUserId = `${RUN}-overallrate-purged`;
+    users.push(purgedUserId);
+    await pool.query(
+      `INSERT INTO answer_feedback (platform, conversation_id, user_id, interaction_id, helpful)
+       VALUES ('discord', $1, $2, NULL, true)`,
+      [conversationId, purgedUserId],
+    );
+
+    assert.deepEqual(
+      await answerFeedbackWeeklySummary([conversationId], 7),
+      { helpful: 2, total: 4 },
+      'counts all 4 in-window rows (2 KB-attributed + 2 general) regardless of grounding — excludes the out-of-window and purged-interaction rows',
+    );
+    assert.deepEqual(
+      await answerFeedbackWeeklySummary([], 7),
+      { helpful: 0, total: 0 },
+      'an empty scope counts nothing, matching countGeneralUnhelpfulAnswers/countMaxTurnsFailures',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+test(
+  'SECURITY: repository: answerFeedbackWeeklySummary scopes by conversation — a rating recorded outside the calling admin scope is never counted (issue #653 acceptance criterion 7)',
+  { skip },
+  async () => {
+    const inScope = `${RUN}-c-overallrate-scope-in`;
+    const outOfScope = `${RUN}-c-overallrate-scope-out`;
+    const users: string[] = [];
+
+    async function rate(conversationId: string, userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-overallratescope-${userSuffix}`;
+      users.push(userId);
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+    }
+
+    await rate(inScope, 'in', true);
+    await rate(outOfScope, 'out', false);
+
+    assert.deepEqual(
+      await answerFeedbackWeeklySummary([inScope], 7),
+      { helpful: 1, total: 1 },
+      'SECURITY: only the in-scope conversation is counted, never the out-of-scope one',
+    );
+    assert.deepEqual(
+      await answerFeedbackWeeklySummary([outOfScope], 7),
+      { helpful: 0, total: 1 },
+      'the out-of-scope conversation has its own single rating, counted only under its own scope',
+    );
+    assert.deepEqual(
+      await answerFeedbackWeeklySummary([inScope, outOfScope], 7),
+      { helpful: 1, total: 2 },
+      'counting across both scopes returns the full 2 rows (the count is not capped)',
+    );
+    assert.deepEqual(
+      await answerFeedbackWeeklySummary([], 7),
+      { helpful: 0, total: 0 },
+      'an empty scope counts nothing',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [users]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[inScope, outOfScope]]);
+  },
+);
+
 test(
   'SECURITY: runAdminDigestOnce: an admin with every other signal at zero but ≥1 max-turns failure in scope still receives a digest containing only the bare count — never message content, replyToUserId, or conversation id (issue #371 acceptance criteria)',
   { skip },
@@ -4268,6 +4883,107 @@ test(
 
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [secretUserId]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'SECURITY: runAdminDigestOnce: an admin with every other signal at zero but ratings on BOTH a knowledge-grounded and a general-knowledge answer still receives a digest with a single overall helpful-rate line covering both — never question text, answer content, comment, or user id (issue #653 acceptance criteria)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-overallrate-admin`;
+    const conversationId = `${RUN}-c-run-overallrate`;
+    const secretUserId1 = `${RUN}-run-overallrate-asker1`;
+    const secretUserId2 = `${RUN}-run-overallrate-asker2`;
+    const secretAnswer = 'a very identifiable answer that must never leak in the overall-rate line';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    // (a) a KB-attributed answer, rated helpful — generalUnhelpfulCount and
+    // lowRatedKnowledgeCount both stay at 0, so this admin's only nonzero
+    // signal is the new overall line.
+    const { id: entryId } = await saveKnowledge({ content: `${RUN} overallrate KB entry content` });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: secretAnswer,
+      meta: { replyToUserId: secretUserId1, knowledgeEntryId: entryId },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: secretUserId1,
+        helpful: true,
+      }),
+    );
+
+    // (b) a general-knowledge (ungrounded) answer, rated unhelpful — this
+    // alone also triggers the narrower generalUnhelpfulCount line (#563),
+    // proving the two lines coexist and the overall one counts BOTH rows.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: `${secretAnswer} (general)`,
+      meta: { replyToUserId: secretUserId2 },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: secretUserId2,
+        helpful: false,
+      }),
+    );
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the two in-scope ratings alone trigger a digest');
+    assert.match(
+      sent[0].text,
+      /✅ Overall answer helpful-rate this week: 50% \(1\/2 ratings\)/,
+      'the overall line counts BOTH the grounded and ungrounded rating in one denominator',
+    );
+    assert.match(
+      sent[0].text,
+      /⚠️ 1 general-knowledge answer rated unhelpful this week/,
+      'the narrower general-unhelpful line still renders independently for its own slice',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretUserId1) && !sent[0].text.includes(secretUserId2),
+      'SECURITY: no rater/asker user id ever appears in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretAnswer),
+      'SECURITY: the rated answer content must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(conversationId),
+      'SECURITY: the conversation id must never appear in the digest DM',
+    );
+
+    assert.equal(
+      await wasAdminDigestSentRecently('discord', adminId, 7),
+      true,
+      'the freshness row is updated after a successful send',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[secretUserId1, secretUserId2]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);
