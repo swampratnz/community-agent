@@ -88,6 +88,8 @@ import {
   resolveLinkedIdentities,
   saveKnowledge,
   getLanguagePreference,
+  getResponseStyle,
+  type ResponseStyle,
   setLanguagePreference,
   setResponseStyle,
   withdrawOwnReports,
@@ -1337,6 +1339,18 @@ const MEMBER_APPROVED_MESSAGE_MI =
   'Whakapā mai ki ahau i ngā wā katoa. Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga poto.';
 
 /**
+ * Fixed, human-authored plain-language counterpart (issue #657, extending
+ * #430's `_PLAIN` pattern to this file), served instead of
+ * `MEMBER_APPROVED_MESSAGE` when the caller's language preference is NOT
+ * 'mi' and their response style is 'plain' — same trust level as the
+ * English/`_MI` constants: no model call, no translation, no injection
+ * surface.
+ */
+const MEMBER_APPROVED_MESSAGE_PLAIN =
+  "Kia ora! 👋 You're now a member of NZ Claude Community. " +
+  'You can message the bot here anytime. Ask me "what can you do?" for a short list of things I can help with.';
+
+/**
  * Fixed, static note appended to `add_member`'s reply when
  * `notifyMemberApproved` reports the confirmation DM did not land (issue
  * #556) — so the acting admin isn't told the identical success text
@@ -1444,10 +1458,21 @@ export async function notifyMemberApproved(
   wasAlreadyMember: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message = lang === 'mi' ? MEMBER_APPROVED_MESSAGE_MI : MEMBER_APPROVED_MESSAGE;
+  let message = MEMBER_APPROVED_MESSAGE;
+  if (lang === 'mi') {
+    message = MEMBER_APPROVED_MESSAGE_MI;
+  } else {
+    // Only consulted once 'mi' is ruled out (it takes precedence), same
+    // nested-lookup shape router.ts uses at its own getRespStyle call sites
+    // (issue #430). Degrades to 'standard' (English) on any lookup failure,
+    // same #52 invariant as the language lookup above.
+    const style: ResponseStyle = await getRespStyle(platform, userId).catch(() => 'standard' as const);
+    if (style === 'plain') message = MEMBER_APPROVED_MESSAGE_PLAIN;
+  }
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)
@@ -1472,6 +1497,14 @@ const ADMIN_APPROVED_MESSAGE =
 const ADMIN_APPROVED_MESSAGE_MI =
   'Kia ora! 👋 Kua whakapikitia koe hei kaiwhakahaere (admin) mō NZ Claude Community. ' +
   'Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga, tae atu ki ō rākau whakahaere hou.';
+
+/**
+ * Fixed, human-authored plain-language counterpart of {@link ADMIN_APPROVED_MESSAGE}
+ * (issue #657, same pattern as {@link MEMBER_APPROVED_MESSAGE_PLAIN} above).
+ */
+const ADMIN_APPROVED_MESSAGE_PLAIN =
+  "Kia ora! 👋 You're now an admin on NZ Claude Community. " +
+  'Ask me "what can you do?" for a rundown, including your new admin tools.';
 
 /**
  * Fixed, static note appended to `grant_admin`'s reply when
@@ -1502,10 +1535,18 @@ export async function notifyAdminApproved(
   wasAlreadyAdmin: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<boolean> {
   if (wasAlreadyAdmin) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message = lang === 'mi' ? ADMIN_APPROVED_MESSAGE_MI : ADMIN_APPROVED_MESSAGE;
+  let message = ADMIN_APPROVED_MESSAGE;
+  if (lang === 'mi') {
+    message = ADMIN_APPROVED_MESSAGE_MI;
+  } else {
+    // Same nested getRespStyle shape as notifyMemberApproved above.
+    const style: ResponseStyle = await getRespStyle(platform, userId).catch(() => 'standard' as const);
+    if (style === 'plain') message = ADMIN_APPROVED_MESSAGE_PLAIN;
+  }
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)

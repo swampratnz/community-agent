@@ -35,6 +35,17 @@ const CODE_TRUNCATED_NOTE_MI = (shown: number) =>
   `\n_[i poroa te tauira ki ${shown} rārangi — kaupapahere hapori; pātai atu i runga i a claude.ai mō ngā ` +
   'papatono katoa]_';
 
+// Fixed, human-authored plain-language variants (issue #657, extending
+// #339's _MI pattern to the 'plain' response-style axis, mirroring #430's
+// precedent elsewhere), served instead of CODE_OMITTED_NOTE/
+// CODE_TRUNCATED_NOTE when the caller's language preference is NOT 'mi' and
+// their response style is 'plain' — same trust level as the English
+// constants: no model call, no translation, no injection surface.
+const CODE_OMITTED_NOTE_PLAIN =
+  '_[code removed — this assistant does not write code for the community; try claude.ai or the API instead]_';
+const CODE_TRUNCATED_NOTE_PLAIN = (shown: number) =>
+  `\n_[showing only the first ${shown} lines — community rule; ask on claude.ai for the full code]_`;
+
 /**
  * Redact secrets. `knownSecrets` are exact runtime values (tokens, DB URLs)
  * that must never appear in output regardless of pattern matching.
@@ -56,11 +67,26 @@ export function redactSecrets(text: string, knownSecrets: readonly string[] = []
  * produced by a sweet-talked model or a cut-off reply — is treated as
  * running to end-of-text instead of bypassing the policy.
  */
-export function applyCodePolicy(text: string, policy: CodeAnswersPolicy, language?: 'mi'): string {
+export function applyCodePolicy(
+  text: string,
+  policy: CodeAnswersPolicy,
+  language?: 'mi',
+  style?: 'plain',
+): string {
   if (policy === 'full') return text;
 
-  const omittedNote = language === 'mi' ? CODE_OMITTED_NOTE_MI : CODE_OMITTED_NOTE;
-  const truncatedNote = language === 'mi' ? CODE_TRUNCATED_NOTE_MI : CODE_TRUNCATED_NOTE;
+  const omittedNote =
+    language === 'mi'
+      ? CODE_OMITTED_NOTE_MI
+      : style === 'plain'
+        ? CODE_OMITTED_NOTE_PLAIN
+        : CODE_OMITTED_NOTE;
+  const truncatedNote =
+    language === 'mi'
+      ? CODE_TRUNCATED_NOTE_MI
+      : style === 'plain'
+        ? CODE_TRUNCATED_NOTE_PLAIN
+        : CODE_TRUNCATED_NOTE;
 
   const out: string[] = [];
   let fenceHeader: string | null = null;
@@ -194,9 +220,10 @@ export function filterOutbound(
   knownSecrets: readonly string[] = [],
   platform?: OutboundPlatform,
   language?: 'mi',
+  style?: 'plain',
 ): string {
   const filtered = stripEmDashesOutsideCode(
-    applyCodePolicy(redactSecrets(text, knownSecrets), policy, language),
+    applyCodePolicy(redactSecrets(text, knownSecrets), policy, language, style),
   );
   return platform === 'whatsapp' ? convertMarkdownForWhatsApp(filtered) : filtered;
 }

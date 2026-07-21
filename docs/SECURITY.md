@@ -863,7 +863,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   over `'plain'`** when a caller has both set, so this can never regress the
   already-tested `_MI` behaviour; `PENDING_NOTICE_PLAIN` keeps the literal,
   untranslated `CONFIRM`/`CANCEL` tokens byte-identical to the English/`_MI`
-  templates, same invariant as `PENDING_NOTICE_MI`.
+  templates, same invariant as `PENDING_NOTICE_MI`. Issue #657 extends the
+  same `_PLAIN` mechanism to the three deterministic surfaces #430 named as
+  follow-ups but deferred: the moderation warn/block DMs honour a standing
+  `'plain'` `response_style` (`moderator.ts`'s `Moderator.scan()`, consulted
+  only once `getLanguagePreference` has resolved to something other than
+  `'mi'`); the `code_answers` redact/truncate notes gain a `style?: 'plain'`
+  parameter on `applyCodePolicy`/`filterOutbound`, propagated exactly like
+  the existing `language?: 'mi'` parameter; and the member/admin approval
+  confirmation DMs (`notifyMemberApproved`/`notifyAdminApproved`) gain the
+  same nested `getResponseStyle` read as the router.ts call sites above.
+  Every new call site keeps the same fail-safe: a `getResponseStyle`
+  rejection degrades to `'standard'` (English) and never throws or drops the
+  DM/notice/message.
 - **Standing language preference** (`language_prefs`, issue #189):
   structurally identical to `response_style_prefs` above — a member/guest-tier
   tool, `set_language_preference`, lets any caller opt into always receiving

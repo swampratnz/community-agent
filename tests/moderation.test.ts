@@ -21,6 +21,8 @@ const {
   blockedDmText,
   warnDmTextMi,
   blockedDmTextMi,
+  warnDmTextPlain,
+  blockedDmTextPlain,
   moderationAlertSummaryText,
 } = await import('../src/moderation/moderator.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
@@ -99,6 +101,7 @@ function makeModerator(opts: {
   alertRateLimitPerHour?: number;
   isExempt?: (p: string, u: string) => Promise<boolean>;
   getLanguagePreference?: (p: string, u: string) => Promise<'auto' | 'en' | 'mi'>;
+  getResponseStyle?: (p: string, u: string) => Promise<'standard' | 'plain'>;
   classify?: Classifier;
   store?: ReturnType<typeof makeStore>;
   enforcer?: ReturnType<typeof makeEnforcer>;
@@ -121,6 +124,7 @@ function makeModerator(opts: {
     classify: opts.classify ?? (async (t) => detect(t)),
     isExempt: opts.isExempt ?? (async () => false),
     getLanguagePreference: opts.getLanguagePreference ?? (async () => 'auto'),
+    getResponseStyle: opts.getResponseStyle ?? (async () => 'standard'),
     store,
     enforcer,
   });
@@ -300,6 +304,96 @@ test('SECURITY: a language-lookup failure degrades to English and never skips wa
   assert.equal(blockCase.enforcer.calls.warnUser.length, 1);
   assert.equal(blockCase.enforcer.calls.warnUser[0][1], blockedDmText(), 'degrades to the English default');
   assert.equal(blockCase.enforcer.calls.postAdminAlert.length, 1, 'the admin alert still fires');
+});
+
+// --- 'plain' response style on the warn/block DMs (issue #657) -------------
+
+test('Moderator: a member with a standing "plain" response style gets the plain-language warn DM, not the English default', async () => {
+  const { moderator, enforcer } = makeModerator({
+    strikeLimit: 3,
+    getResponseStyle: async () => 'plain',
+  });
+  await moderator.scan(msg('you asshole'));
+  assert.equal(enforcer.calls.warnUser.length, 1);
+  assert.equal(enforcer.calls.warnUser[0][1], warnDmTextPlain(1, 3));
+});
+
+test('Moderator: a member with a standing "plain" response style gets the plain-language block DM at the strike limit', async () => {
+  const { moderator, enforcer } = makeModerator({
+    strikeLimit: 1,
+    getResponseStyle: async () => 'plain',
+  });
+  await moderator.scan(msg('you asshole'));
+  assert.equal(enforcer.calls.warnUser.length, 1);
+  assert.equal(enforcer.calls.warnUser[0][1], blockedDmTextPlain());
+});
+
+test('Moderator: "standard" response style gets byte-identical English DM text on both warn and block', async () => {
+  const warnCase = makeModerator({ strikeLimit: 3, getResponseStyle: async () => 'standard' });
+  await warnCase.moderator.scan(msg('you asshole'));
+  assert.equal(warnCase.enforcer.calls.warnUser[0][1], warnDmText(1, 3));
+
+  const blockCase = makeModerator({ strikeLimit: 1, getResponseStyle: async () => 'standard' });
+  await blockCase.moderator.scan(msg('you asshole'));
+  assert.equal(blockCase.enforcer.calls.warnUser[0][1], blockedDmText());
+});
+
+test("Moderator: a standing 'mi' language preference wins over a standing 'plain' response style on both warn and block DMs (precedence: mi > plain > standard)", async () => {
+  const warnCase = makeModerator({
+    strikeLimit: 3,
+    getLanguagePreference: async () => 'mi',
+    getResponseStyle: async () => 'plain',
+  });
+  await warnCase.moderator.scan(msg('you asshole'));
+  assert.equal(warnCase.enforcer.calls.warnUser[0][1], warnDmTextMi(1, 3));
+  assert.notEqual(warnCase.enforcer.calls.warnUser[0][1], warnDmTextPlain(1, 3));
+
+  const blockCase = makeModerator({
+    strikeLimit: 1,
+    getLanguagePreference: async () => 'mi',
+    getResponseStyle: async () => 'plain',
+  });
+  await blockCase.moderator.scan(msg('you asshole'));
+  assert.equal(blockCase.enforcer.calls.warnUser[0][1], blockedDmTextMi());
+  assert.notEqual(blockCase.enforcer.calls.warnUser[0][1], blockedDmTextPlain());
+});
+
+test('SECURITY: a response-style lookup failure degrades to English and never skips warning/mute enforcement', async () => {
+  const failingRespStyle = async () => {
+    throw new Error('response_style_prefs lookup failed');
+  };
+
+  // Below the strike limit: warning still recorded, DM sent in English, admin alerted.
+  const warnCase = makeModerator({ strikeLimit: 3, getResponseStyle: failingRespStyle });
+  await assert.doesNotReject(warnCase.moderator.scan(msg('you asshole')));
+  assert.equal(warnCase.store.added.length, 1, 'the warning is still recorded');
+  assert.equal(warnCase.enforcer.calls.warnUser.length, 1);
+  assert.equal(warnCase.enforcer.calls.warnUser[0][1], warnDmText(1, 3), 'degrades to the English default');
+  assert.equal(warnCase.enforcer.calls.postAdminAlert.length, 1, 'the admin alert still fires');
+
+  // At the strike limit: mute still applied, block DM sent in English, admin alerted.
+  const blockCase = makeModerator({ strikeLimit: 1, getResponseStyle: failingRespStyle });
+  await assert.doesNotReject(blockCase.moderator.scan(msg('you asshole')));
+  assert.equal(blockCase.enforcer.calls.muteUser.length, 1, 'the mute is still applied');
+  assert.equal(blockCase.enforcer.calls.warnUser.length, 1);
+  assert.equal(blockCase.enforcer.calls.warnUser[0][1], blockedDmText(), 'degrades to the English default');
+  assert.equal(blockCase.enforcer.calls.postAdminAlert.length, 1, 'the admin alert still fires');
+});
+
+test("SECURITY: a standing 'mi' language preference never pays for (or is overridden by) a response-style lookup, even one that would fail", async () => {
+  let respStyleCalls = 0;
+  const failingRespStyle = async () => {
+    respStyleCalls += 1;
+    throw new Error('response_style_prefs lookup failed — must never be reached when lang is mi');
+  };
+  const { moderator, enforcer } = makeModerator({
+    strikeLimit: 3,
+    getLanguagePreference: async () => 'mi',
+    getResponseStyle: failingRespStyle,
+  });
+  await assert.doesNotReject(moderator.scan(msg('you asshole')));
+  assert.equal(enforcer.calls.warnUser[0][1], warnDmTextMi(1, 3));
+  assert.equal(respStyleCalls, 0, 'getResponseStyle must never be consulted once lang has resolved to mi');
 });
 
 // --- two-stage classifier gating --------------------------------------------
