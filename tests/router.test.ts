@@ -839,6 +839,55 @@ test('router: a turn with languagePreference left entirely unset (existing Agent
   assert.equal(sent[0].language, undefined);
 });
 
+test("router: the main reply send threads reply.responseStyle === 'plain' into adapter.sendMessage's style field (issue #657)", async () => {
+  const router = new Router(async () => ({ text: 'hi there', ok: true, responseStyle: 'plain' }), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'hi there');
+  assert.equal(sent[0].style, 'plain');
+});
+
+test("SECURITY: router: a turn with 'standard' response style sends style: undefined, never 'plain' (issue #657)", async () => {
+  const router = new Router(async () => ({ text: 'hi there', ok: true, responseStyle: 'standard' }), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].style, undefined);
+});
+
+test('router: a turn with responseStyle left entirely unset (existing AgentReply literals) sends style: undefined — no regression (issue #657)', async () => {
+  const router = new Router(async () => makeReply('plain reply'), 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].style, undefined);
+});
+
+test("SECURITY: router: 'mi' languagePreference still takes precedence when responseStyle is also 'plain' — both language: 'mi' and style: 'plain' are threaded through, and filterOutbound resolves the te reo variant (issue #657)", async () => {
+  const router = new Router(
+    async () => ({ text: 'kia ora', ok: true, languagePreference: 'mi', responseStyle: 'plain' }),
+    20,
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].language, 'mi');
+  assert.equal(sent[0].style, 'plain');
+});
+
 test('router (repeat-max-turns shortcut default off): REPEAT_MAX_TURNS_SHORTCUT_ENABLED unset means zero behaviour change — a resend after a max-turns failure always runs a fresh turn', async () => {
   assert.equal(
     config.behaviour.repeatMaxTurnsShortcutEnabled,

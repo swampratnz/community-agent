@@ -800,18 +800,19 @@ export class BaileysAdapter implements PlatformAdapter {
   /**
    * Every outbound path is filtered HERE (secret redaction + code policy) so
    * no caller — router reply, announce, warn, super-admin alert — can forget.
-   * `language` is optional (issue #339): only `sendMessage`'s main-reply path
-   * passes it through; every other call site below omits it, so their output
-   * stays English-only by construction (never `_MI`).
+   * `language` and `style` are optional (issues #339, #657): only
+   * `sendMessage`'s main-reply path passes them through; every other call
+   * site below omits both, so their output stays English-only by
+   * construction (never `_MI`/`_PLAIN`).
    */
-  private async filtered(text: string, language?: 'mi'): Promise<string> {
-    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
+  private async filtered(text: string, language?: 'mi', style?: 'plain'): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language, style);
   }
 
   async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     const sent = await this.sock.sendMessage(out.conversationId, {
-      text: await this.filtered(out.text, out.language),
+      text: await this.filtered(out.text, out.language, out.style),
     });
     this.remember(sent);
     // Clear the "composing" indicator now that the reply has actually sent.

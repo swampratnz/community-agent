@@ -869,8 +869,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `'plain'` `response_style` (`moderator.ts`'s `Moderator.scan()`, consulted
   only once `getLanguagePreference` has resolved to something other than
   `'mi'`); the `code_answers` redact/truncate notes gain a `style?: 'plain'`
-  parameter on `applyCodePolicy`/`filterOutbound`, propagated exactly like
-  the existing `language?: 'mi'` parameter; and the member/admin approval
+  parameter on `applyCodePolicy`/`filterOutbound`, threaded through
+  `OutgoingMessage.style`/`AgentReply.responseStyle`/`router.ts`'s `send()`
+  to the router's real-agent-turn main reply exactly like the existing
+  `language?: 'mi'` parameter (issue #339) already is — not just a
+  same-file test-only param; and the member/admin approval
   confirmation DMs (`notifyMemberApproved`/`notifyAdminApproved`) gain the
   same nested `getResponseStyle` read as the router.ts call sites above.
   Every new call site keeps the same fail-safe: a `getResponseStyle`

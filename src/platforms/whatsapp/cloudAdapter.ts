@@ -411,12 +411,13 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   /**
    * Every outbound path is filtered HERE (secret redaction + code policy) so
    * no caller — router reply, announce, warn, super-admin alert — can forget.
-   * `language` is optional (issue #339): only `sendMessage`'s main-reply path
-   * passes it through; every other call site (via `sendText`'s default)
-   * omits it, so their output stays English-only by construction (never `_MI`).
+   * `language` and `style` are optional (issues #339, #657): only
+   * `sendMessage`'s main-reply path passes them through; every other call
+   * site (via `sendText`'s default) omits both, so their output stays
+   * English-only by construction (never `_MI`/`_PLAIN`).
    */
-  private async filtered(text: string, language?: 'mi'): Promise<string> {
-    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language);
+  private async filtered(text: string, language?: 'mi', style?: 'plain'): Promise<string> {
+    return filterOutbound(text, await getCodeAnswersPolicy(), runtimeSecrets(), 'whatsapp', language, style);
   }
 
   // No `deleteOwnMessage` on this adapter: the Cloud Business API has no
@@ -427,7 +428,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   // but there is genuinely no id to report here since `sendText` doesn't
   // surface Meta's response wamid.
   async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
-    await this.sendText(out.conversationId, out.text, out.language);
+    await this.sendText(out.conversationId, out.text, out.language, out.style);
     return undefined;
   }
 
@@ -551,7 +552,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     }
   }
 
-  private async sendText(to: string, text: string, language?: 'mi'): Promise<void> {
+  private async sendText(to: string, text: string, language?: 'mi', style?: 'plain'): Promise<void> {
     const { phoneNumberId, accessToken } = config.whatsapp.cloud;
     if (!phoneNumberId || !accessToken) throw new Error('WhatsApp Cloud adapter not configured');
     this.assertWithinCustomerServiceWindow(to);
@@ -561,7 +562,7 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
     // messages (mirrors Discord's chunking at its own 2000-char limit). If a
     // chunk in the middle fails, earlier chunks have already been delivered
     // and the throw propagates — same partial-failure semantics as Discord.
-    for (const chunk of chunkText(await this.filtered(text, language), WHATSAPP_CLOUD_MAX_LEN)) {
+    for (const chunk of chunkText(await this.filtered(text, language, style), WHATSAPP_CLOUD_MAX_LEN)) {
       await this.sendChunk(to, phoneNumberId, accessToken, chunk);
     }
   }
