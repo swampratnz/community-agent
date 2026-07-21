@@ -439,6 +439,102 @@ test("SECURITY: notifyMemberApproved degrades to the English default, rather tha
   assert.match(calls[0], /You've been approved/);
 });
 
+test("notifyMemberApproved sends the plain-language variant for a caller with a stored 'plain' response style (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /You're now a member/);
+  assert.doesNotMatch(calls[0], /You've been approved/);
+});
+
+test("notifyMemberApproved sends the English default for the default 'standard' response style, byte-identical to today (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /You've been approved/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #657, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Kua whakaaetia/);
+  assert.doesNotMatch(calls[0], /You're now a member/);
+});
+
+test("SECURITY: notifyMemberApproved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /You've been approved/);
+});
+
+test("SECURITY: notifyMemberApproved never consults the response-style lookup once language has resolved to 'mi' (issue #657)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
 test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion, and resolves true (issue #556)', async () => {
@@ -523,6 +619,102 @@ test("SECURITY: notifyAdminApproved degrades to the English default, rather than
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /promoted to admin/);
+});
+
+test("notifyAdminApproved sends the plain-language variant for a caller with a stored 'plain' response style (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /You're now an admin/);
+  assert.doesNotMatch(calls[0], /promoted to admin/);
+});
+
+test("notifyAdminApproved sends the English default for the default 'standard' response style, byte-identical to today (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /promoted to admin/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #657, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Kua whakapikitia/);
+  assert.doesNotMatch(calls[0], /You're now an admin/);
+});
+
+test("SECURITY: notifyAdminApproved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /promoted to admin/);
+});
+
+test("SECURITY: notifyAdminApproved never consults the response-style lookup once language has resolved to 'mi' (issue #657)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)

@@ -2,7 +2,11 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { Platform } from '../platforms/types.js';
-import { recordBackgroundJobCost, type LanguagePreference } from '../storage/repository.js';
+import {
+  recordBackgroundJobCost,
+  type LanguagePreference,
+  type ResponseStyle,
+} from '../storage/repository.js';
 import { excerptOf, makeWordlistDetector, type Detection } from './wordlist.js';
 
 export interface ScanContext {
@@ -67,6 +71,14 @@ export interface ModeratorDeps {
   isExempt: (platform: Platform, userId: string) => Promise<boolean>;
   /** Standing language preference (issue #189), read to pick the warn/block DM's language. */
   getLanguagePreference: (platform: Platform, userId: string) => Promise<LanguagePreference>;
+  /**
+   * Standing response-style preference (issue #126), read to pick the
+   * plain-language warn/block DM variant (issue #657) — consulted in
+   * `scan()` only once `getLanguagePreference` has resolved to something
+   * other than `'mi'` (which takes precedence), mirroring `router.ts`'s
+   * `getRespStyle` usage exactly.
+   */
+  getResponseStyle: (platform: Platform, userId: string) => Promise<ResponseStyle>;
   store: ModerationStore;
   enforcer: ModerationEnforcer;
 }
@@ -98,6 +110,19 @@ export function warnDmTextMi(active: number, limit: number): string {
   );
 }
 
+// Fixed, human-authored plain-language variant (issue #657, extending #430's
+// _PLAIN pattern to this file), served instead of warnDmText to a member
+// with a standing 'plain' response-style preference (getResponseStyle, issue
+// #126) whose language preference is NOT 'mi' — 'mi' takes precedence over
+// 'plain'. Same trust level as warnDmText: no model call, no translation, no
+// injection surface.
+export function warnDmTextPlain(active: number, limit: number): string {
+  return (
+    `⚠️ You got a warning (${active}/${limit}). Please be respectful. ` +
+    `At ${limit} warnings, you won't be able to post for a while.`
+  );
+}
+
 export function blockedDmText(): string {
   return `⛔ You've reached the warning limit and can no longer post in the server. ${MUTED_ROLE_NOTE}`;
 }
@@ -106,6 +131,15 @@ export function blockedDmText(): string {
 // same pattern/trust level as warnDmTextMi above.
 export function blockedDmTextMi(): string {
   return `⛔ Kua eke koe ki te tepe whakatūpato, kāore koe e taea te tuhi anō i roto i te hapori. ${MUTED_ROLE_NOTE_MI}`;
+}
+
+// Fixed, human-authored plain-language variant (issue #657) of
+// blockedDmText, same pattern/trust level as warnDmTextPlain above. Reuses
+// MUTED_ROLE_NOTE (not a separate _PLAIN constant) since that shell is
+// already short/plain by construction — the same reasoning #430 used to skip
+// a _PLAIN counterpart for CANCEL_TEXT.
+export function blockedDmTextPlain(): string {
+  return `⛔ You've reached the warning limit. You can't post in the server right now. ${MUTED_ROLE_NOTE}`;
 }
 
 /**
@@ -233,6 +267,14 @@ export class Moderator {
     // as getLanguagePreference's own internal catch — so a language-lookup
     // failure can never skip or delay the enforcement side effects below.
     const lang = await this.deps.getLanguagePreference(ctx.platform, ctx.userId).catch(() => 'auto' as const);
+    // Only consulted once 'mi' is ruled out (it takes precedence) — same
+    // nested-lookup shape router.ts uses at its own getRespStyle call sites
+    // (issue #430). Degrades to 'standard' (English) on any lookup failure,
+    // same #52 invariant as the language lookup above.
+    let style: ResponseStyle = 'standard';
+    if (lang !== 'mi') {
+      style = await this.deps.getResponseStyle(ctx.platform, ctx.userId).catch(() => 'standard' as const);
+    }
 
     if (active >= this.deps.strikeLimit) {
       await this.safe(() => this.deps.enforcer.muteUser(ctx.userId), 'mute');
@@ -245,7 +287,11 @@ export class Moderator {
         'block-channel',
       );
       await this.safe(
-        () => this.deps.enforcer.warnUser(ctx.userId, lang === 'mi' ? blockedDmTextMi() : blockedDmText()),
+        () =>
+          this.deps.enforcer.warnUser(
+            ctx.userId,
+            lang === 'mi' ? blockedDmTextMi() : style === 'plain' ? blockedDmTextPlain() : blockedDmText(),
+          ),
         'block-dm',
       );
       await this.safe(() => this.postAlert(blockedAlertText(ctx, active, hit)), 'block-alert');
@@ -264,7 +310,9 @@ export class Moderator {
             ctx.userId,
             lang === 'mi'
               ? warnDmTextMi(active, this.deps.strikeLimit)
-              : warnDmText(active, this.deps.strikeLimit),
+              : style === 'plain'
+                ? warnDmTextPlain(active, this.deps.strikeLimit)
+                : warnDmText(active, this.deps.strikeLimit),
           ),
         'warn-dm',
       );

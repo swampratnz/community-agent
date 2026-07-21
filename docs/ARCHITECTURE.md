@@ -658,7 +658,13 @@ already short and plain by the charter's own te reo Māori register.
 `CANCEL_TEXT` deliberately has no `_PLAIN` counterpart (already at the floor
 of simplicity), and the gated-guest notice's `_PLAIN` substitution applies
 only to the static `GATED_NOTICE` fallback, never the dynamic, admin-naming
-`buildGatedNotice` output.
+`buildGatedNotice` output. Issue #657 extends this same `_PLAIN` mechanism to
+the three deterministic surfaces #430 named as follow-ups but deferred: the
+moderation warn/block DMs (`moderator.ts`), the `code_answers` redact/
+truncate notes (`agent/outbound.ts`'s `applyCodePolicy`), and the
+member/admin approval confirmation DMs (`agent/tools.ts`'s
+`notifyMemberApproved`/`notifyAdminApproved`) — same `'mi'`-over-`'plain'`
+precedence, same fail-safe-to-`'standard'` lookup shape.
 
 ## Onboarding (gated mode)
 

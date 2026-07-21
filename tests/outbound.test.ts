@@ -256,3 +256,56 @@ test('SECURITY: a secret-pattern match wrapped in markdown link syntax is still 
   assert.match(out, /\[redacted\]/);
   assert.equal(out, 'key: https://x.example/?token=[redacted]');
 });
+
+// --- 'plain' response style on the code-policy notes (issue #657) ----------
+
+test("code policy 'off' with style 'plain' returns the plain-language note, not the English one (issue #657)", () => {
+  const text = 'Here you go:\n```python\nprint("hi")\n```\nEnjoy!';
+  const out = applyCodePolicy(text, 'off', undefined, 'plain');
+  assert.ok(!out.includes('print("hi")'));
+  assert.ok(!out.includes('code omitted'), 'must not fall back to the English note');
+  assert.match(out, /code removed/);
+  assert.match(out, /Enjoy!/);
+});
+
+test("code policy 'snippets' with style 'plain' truncates and appends the plain-language note, not the English one (issue #657)", () => {
+  const long = '```js\n' + Array.from({ length: 40 }, (_, i) => `line${i};`).join('\n') + '\n```';
+  const out = applyCodePolicy(long, 'snippets', undefined, 'plain');
+  assert.ok(out.includes('line0;'));
+  assert.ok(out.includes('line14;'));
+  assert.ok(!out.includes('line15;'));
+  assert.ok(!out.includes('snippet truncated'), 'must not fall back to the English note');
+  assert.match(out, /showing only the first 15 lines/);
+});
+
+test("SECURITY: language 'mi' takes precedence over style 'plain' when both are set — the te reo variant is served, never the plain one", () => {
+  const off = 'Here you go:\n```python\nprint("hi")\n```\nEnjoy!';
+  const outOff = applyCodePolicy(off, 'off', 'mi', 'plain');
+  assert.match(outOff, /whakakorehia te waehere/);
+  assert.ok(!outOff.includes('code removed'), 'must not fall back to the plain-language note');
+
+  const long = '```js\n' + Array.from({ length: 40 }, (_, i) => `line${i};`).join('\n') + '\n```';
+  const outLong = applyCodePolicy(long, 'snippets', 'mi', 'plain');
+  assert.match(outLong, /poroa te tauira ki 15 rārangi/);
+  assert.ok(!outLong.includes('showing only the first'), 'must not fall back to the plain-language note');
+});
+
+test('SECURITY: applyCodePolicy/filterOutbound degrade to the standard English note for any style value other than exactly "plain" — mirroring how a getResponseStyle rejection caught upstream to \'standard\' (never a bare "plain" string) can never select the plain variant (issue #657)', () => {
+  const off = 'Here you go:\n```python\nprint("hi")\n```\nEnjoy!';
+  const long = '```js\n' + Array.from({ length: 40 }, (_, i) => `line${i};`).join('\n') + '\n```';
+
+  assert.equal(applyCodePolicy(off, 'off'), applyCodePolicy(off, 'off', undefined, undefined));
+  assert.equal(applyCodePolicy(long, 'snippets'), applyCodePolicy(long, 'snippets', undefined, undefined));
+  // Any non-'plain' value (e.g. a coerced 'standard') must never accidentally pick the plain variant.
+  assert.equal(
+    applyCodePolicy(off, 'off'),
+    applyCodePolicy(off, 'off', undefined, 'standard' as unknown as 'plain'),
+  );
+  assert.equal(filterOutbound(off, 'off'), filterOutbound(off, 'off', [], 'discord', undefined, undefined));
+});
+
+test("filterOutbound: threads its optional 6th 'style' parameter into applyCodePolicy exactly like the 5th 'language' parameter (issue #657)", () => {
+  const out = filterOutbound('```js\nconsole.log(1)\n```', 'off', [], 'discord', undefined, 'plain');
+  assert.match(out, /code removed/);
+  assert.ok(!out.includes('code omitted'));
+});
