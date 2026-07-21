@@ -247,7 +247,7 @@ jobs:
             # the build-worker identity gate above; the REST-only literal made
             # latest_review always empty and the loop inert.
             latest_review="$(gh pr view "$n" --repo "$REPO" --json comments \
-              --jq '[.comments[] | select((.author.login == "github-actions" or .author.login == "github-actions[bot]") and (.body | test("^PR review \\(automated\\):")))] | last // empty')"
+              --jq '[.comments[] | select((.author.login == "github-actions" or .author.login == "github-actions[bot]") and (.body | test("(^|\\n)PR review \\(automated\\):")))] | last // empty')"
             if [ -z "$latest_review" ]; then
               echo "PR #$n: no automated review verdict yet — skip."
               echo "::endgroup::"; continue
@@ -255,11 +255,18 @@ jobs:
             review_body="$(jq -r '.body' <<<"$latest_review")"
             review_at="$(jq -r '.createdAt' <<<"$latest_review")"
 
-            # Verdict = first 4 lines minus bullet lines, so a phrase inside a
-            # finding can't be misread as the verdict (the exact parse the
-            # review worker uses to route). Require an explicit LGTM and the
-            # absence of the two non-approving verdicts.
-            verdict="$(printf '%s' "$review_body" | head -n 4 | grep -vE '^[[:space:]]*[-*]' || true)"
+            # Verdict = the first 4 lines AFTER the "PR review (automated):"
+            # marker, minus bullet lines, so a phrase inside a finding can't be
+            # misread as the verdict. The review agent sometimes prefixes its
+            # verdict comment with a preamble paragraph ("This all checks out
+            # ..."), which both broke the old start-anchored comment match and
+            # would put the wrong lines under this parse — reading from the
+            # marker onward handles marker-first and preambled comments
+            # identically (PR #649, 2026-07-21: a genuine LGTM skipped as "no
+            # verdict" purely because of a preamble). Require an explicit LGTM
+            # and the absence of the two non-approving verdicts.
+            verdict_body="${review_body#*PR review (automated):}"
+            verdict="$(printf '%s' "$verdict_body" | head -n 4 | grep -vE '^[[:space:]]*[-*]' || true)"
             if printf '%s' "$verdict" | grep -qiE 'changes requested|needs a human decision' \
                || ! printf '%s' "$verdict" | grep -qiE 'lgtm|ready for a human to merge'; then
               echo "PR #$n: latest review verdict is not an LGTM approval — skip."
