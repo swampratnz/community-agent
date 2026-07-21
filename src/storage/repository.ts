@@ -4267,10 +4267,17 @@ export async function recordMemberDigestSent(): Promise<void> {
  * researched entry can never appear in a member-facing surface either —
  * only an admin-accepted `save_knowledge`/`accept_knowledge_candidate`/
  * `update_knowledge` entry, or a trusted `'docs'` backfill, ever qualifies.
- * Guild-wide/unscoped (like `countDuplicateKnowledge`/`countStaleKnowledge`)
- * rather than caller-conversation-scoped like `listKnowledgeTopics` itself —
- * there is no single caller here, just one weekly post to one configured
- * channel. Null and blank titles are excluded, same as `listKnowledgeTopics`.
+ *
+ * `scope = 'global'` ONLY (PR #651 review) — this is a single public,
+ * guild-wide Discord post with no caller conversation to scope by, so
+ * unlike `listKnowledgeTopics`'s `scope IN ('global', $platform,
+ * $conversationId)` there is no caller-specific scope to widen into. An
+ * admin who scoped a curated entry to a specific channel or a WhatsApp-only
+ * conversation to keep it out of general circulation must never have its
+ * title broadcast here — the same reasoning the gated-guest knowledge
+ * shortcut's `scopeRestriction: 'global-only'` (issue #165) already applies
+ * when there's no meaningful caller scope. Null and blank titles are
+ * excluded, same as `listKnowledgeTopics`.
  */
 export async function listCuratedKnowledgeCreatedSince(since: Date, limit: number): Promise<string[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
@@ -4278,6 +4285,7 @@ export async function listCuratedKnowledgeCreatedSince(since: Date, limit: numbe
     `SELECT title FROM knowledge
       WHERE created_at > $1
         AND created_by_role != 'auto'
+        AND scope = 'global'
         AND title IS NOT NULL
         AND trim(title) != ''
       ORDER BY created_at ASC

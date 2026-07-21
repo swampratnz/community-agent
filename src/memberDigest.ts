@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { startTrackedJob } from './backgroundJobs.js';
+import { scrubPII } from './context/export.js';
 import {
   listContextDigests,
   listCuratedKnowledgeCreatedSince,
@@ -29,6 +30,13 @@ const MAX_NEW_KNOWLEDGE_TITLES = 10;
  * and `newKnowledgeTitles` are knowledge-entry titles, never message
  * content or a member identifier — this function only ever renders
  * topic-level text and counts.
+ *
+ * `topic` is run through the same lexical `scrubPII` (issue #53's
+ * `context/export.ts`) the community-context export applies before its
+ * `topic`/`summary` ever leave the admin-only boundary — PR #651 review:
+ * the builder's "no names/handles" contract is prompt-only, and this is now
+ * a public, all-members Discord post rather than a private-repo export, so
+ * the same belt-and-braces scrub applies here too.
  */
 export function formatMemberDigestMessage(
   topics: ReadonlyArray<{ topic: string; questionCount: number }>,
@@ -41,7 +49,9 @@ export function formatMemberDigestMessage(
     sections.push(
       "📅 This week's topics:\n" +
         topics
-          .map((t) => `• ${t.topic} (${t.questionCount} question${t.questionCount === 1 ? '' : 's'})`)
+          .map(
+            (t) => `• ${scrubPII(t.topic)} (${t.questionCount} question${t.questionCount === 1 ? '' : 's'})`,
+          )
           .join('\n'),
     );
   }
@@ -98,8 +108,24 @@ export function makeDefaultMemberDigestRun(
       getDigests(FRESHNESS_DAYS, MAX_TOPICS),
       getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
     ]);
+    // Two independent floors before a digest topic reaches this public
+    // surface (PR #651 review):
+    //  - k-anonymity: this surface is more exposed than either existing
+    //    context_digests consumer, so it gets its OWN configurable floor
+    //    (MEMBER_DIGEST_MIN_DISTINCT_USERS) rather than inheriting whichever
+    //    value CONTEXT_BUILDER_MIN_DISTINCT_USERS happens to be set to.
+    //  - platform: a digest's clustering is unscoped by platform (it can be
+    //    built from a mix of Discord and WhatsApp interactions), which was
+    //    fine when every consumer was admin-only. Restrict to `discord`/null
+    //    so a WhatsApp-sourced topic is never surfaced to a Discord
+    //    audience that never had access to that conversation.
+    const eligible = digests.filter(
+      (d) =>
+        d.distinctUsers >= config.memberDigest.minDistinctUsers &&
+        (d.platform === 'discord' || d.platform === null),
+    );
     const message = formatMemberDigestMessage(
-      digests.map((d) => ({ topic: d.topic, questionCount: d.questionCount })),
+      eligible.map((d) => ({ topic: d.topic, questionCount: d.questionCount })),
       newKnowledgeTitles,
     );
     // Quiet week — nothing to post. Deliberately leaves the freshness row

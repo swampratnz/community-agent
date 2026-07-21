@@ -564,6 +564,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   in-process exporter can never write to the tracked `docs/` path itself
   (which would otherwise dirty the deploy checkout and deadlock the
   nightly redeploy's clean-tree check — see docs/DEPLOYMENT.md).
+- **Member-facing weekly digest** (`src/memberDigest.ts`, issue #645, off
+  unless `MEMBER_DIGEST_ENABLED`): the *other* place `context_digests`
+  content deliberately leaves the admin-only boundary — this time to a
+  public, all-members Discord channel rather than a private repo export, so
+  it carries its own independent controls rather than inheriting the
+  export's or the builder's:
+  - A configurable k-anonymity floor of its own
+    (`MEMBER_DIGEST_MIN_DISTINCT_USERS`, >=2, default 3) — independent of
+    both `CONTEXT_BUILDER_MIN_DISTINCT_USERS` (the write-time floor, sized
+    for an admin-only audience) and `CONTEXT_EXPORT_MIN_DISTINCT_USERS`
+    (sized for a private-repo audience).
+  - A `platform` filter restricting eligible topics to `discord`/`null` —
+    `context_digests` clustering is unscoped across Discord/WhatsApp, so
+    without this a WhatsApp-sourced topic could surface to a Discord
+    audience that never had access to that conversation.
+  - The same lexical `scrubPII` (`context/export.ts`) the community-context
+    export applies to `topic` — the builder's "no names/handles" contract is
+    prompt-only; this is a public post, so the same belt-and-braces scrub
+    applies (same **honest limit** as the export: lexical, not semantic).
+  - The "new in the knowledge base" line (`listCuratedKnowledgeCreatedSince`)
+    additionally restricts to `scope = 'global'` — there is no caller
+    conversation to widen a scope filter into for a single guild-wide post,
+    so (unlike `list_knowledge`'s deliberate unrestricted-browse exception
+    above) a channel- or conversation-scoped curated entry must never
+    surface here, the same reasoning the guest shortcut's
+    `scopeRestriction: 'global-only'` already applies.
+  Only the *audience* of already admin-visible, aggregate-by-construction
+  data is widened — never raw message content, user ids, display names, or
+  conversation ids, none of which this surface ever reads.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no

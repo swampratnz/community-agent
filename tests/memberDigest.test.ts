@@ -67,6 +67,9 @@ function makeAdapter(platform: 'discord' | 'whatsapp' = 'discord'): {
   return { adapter, sent };
 }
 
+// distinctUsers defaults to config.memberDigest.minDistinctUsers's own
+// default (3) so callers that don't care about the k-floor clear it
+// automatically; tests exercising the floor itself override explicitly.
 function makeDigest(overrides: Partial<ContextDigest> = {}): ContextDigest {
   return {
     id: 1,
@@ -76,7 +79,7 @@ function makeDigest(overrides: Partial<ContextDigest> = {}): ContextDigest {
     topic: 'MCP server auth',
     summary: 'Aggregate summary.',
     exampleRefs: [],
-    distinctUsers: 2,
+    distinctUsers: 3,
     questionCount: 1,
     createdAt: new Date(0),
     ...overrides,
@@ -131,6 +134,16 @@ test('formatMemberDigestMessage: singular/plural "question(s)" agrees with the e
   );
   assert.match(message ?? '', /One-question topic \(1 question\)/);
   assert.match(message ?? '', /Multi-question topic \(2 questions\)/);
+});
+
+test('SECURITY: formatMemberDigestMessage scrubs PII out of a topic label before rendering — the builder\'s "no names/handles" prompt contract is not trusted alone', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'Contact alice@example.com or @alice_h about MCP auth', questionCount: 2 }],
+    [],
+  );
+  assert.doesNotMatch(message ?? '', /alice@example\.com|@alice_h/);
+  assert.match(message ?? '', /\[email\]/);
+  assert.match(message ?? '', /\[handle\]/);
 });
 
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
@@ -230,6 +243,78 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
     "📅 This week's topics:\n• MCP server auth (4 questions)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
   );
   assert.equal(recordCalled, true, 'a real send stamps the freshness guard');
+});
+
+test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
+  const original = config.memberDigest.minDistinctUsers;
+  config.memberDigest.minDistinctUsers = 3;
+  try {
+    const { adapter, sent } = makeAdapter();
+    const runOnce = makeDefaultMemberDigestRun([adapter], {
+      wasSentRecently: async () => false,
+      getDigests: async () => [
+        makeDigest({ topic: 'below floor', distinctUsers: 2, questionCount: 5 }),
+        makeDigest({ topic: 'at floor', distinctUsers: 3, questionCount: 1 }),
+      ],
+      getNewKnowledgeTitles: async () => [],
+      recordSent: async () => {},
+    });
+    await runOnce();
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(sent[0].text, /below floor/, 'a topic under the floor never reaches the post');
+    assert.match(sent[0].text, /at floor/, 'a topic exactly at the floor is included');
+  } finally {
+    config.memberDigest.minDistinctUsers = original;
+  }
+});
+
+test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor and there is no new knowledge sends nothing', async () => {
+  const original = config.memberDigest.minDistinctUsers;
+  config.memberDigest.minDistinctUsers = 3;
+  try {
+    const { adapter, sent } = makeAdapter();
+    let recordCalled = false;
+    const runOnce = makeDefaultMemberDigestRun([adapter], {
+      wasSentRecently: async () => false,
+      getDigests: async () => [makeDigest({ topic: 'below floor', distinctUsers: 2 })],
+      getNewKnowledgeTitles: async () => [],
+      recordSent: async () => {
+        recordCalled = true;
+      },
+    });
+    await runOnce();
+    assert.equal(sent.length, 0, 'the only digest this week was below the floor — nothing to post');
+    assert.equal(recordCalled, false);
+  } finally {
+    config.memberDigest.minDistinctUsers = original;
+  }
+});
+
+test("SECURITY: makeDefaultMemberDigestRun never surfaces a WhatsApp-sourced digest topic to the Discord audience — only platform 'discord'/null topics are eligible", async () => {
+  const { adapter, sent } = makeAdapter();
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [
+      makeDigest({ topic: 'whatsapp-only topic', platform: 'whatsapp', questionCount: 5 }),
+      makeDigest({ topic: 'discord topic', platform: 'discord', questionCount: 1 }),
+      makeDigest({ topic: 'cross-platform topic', platform: null, questionCount: 1 }),
+    ],
+    getNewKnowledgeTitles: async () => [],
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(
+    sent[0].text,
+    /whatsapp-only topic/,
+    'a WhatsApp-clustered topic never reaches the Discord-only digest',
+  );
+  assert.match(sent[0].text, /discord topic/);
+  assert.match(
+    sent[0].text,
+    /cross-platform topic/,
+    'a platform-null (mixed/unattributed) topic is still eligible',
+  );
 });
 
 test('SECURITY: makeDefaultMemberDigestRun posts to exactly MEMBER_DIGEST_CHANNEL_ID from config — never a model- or message-derived id, even with multiple adapters registered', async () => {
@@ -370,6 +455,47 @@ test(
     assert.ok(!titles.includes(`${marker}-auto-title`), 'the auto-provenance entry title is never present');
 
     await pool.query('DELETE FROM knowledge WHERE id = ANY($1)', [[autoId, curatedId]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listCuratedKnowledgeCreatedSince excludes conversation/platform-scoped entries — only scope='global' titles ever reach the public digest",
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-scoped`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    const { id: globalId } = await saveKnowledge({
+      title: `${marker}-global-title`,
+      content: `${marker} global content`,
+      createdByRole: 'admin',
+      scope: 'global',
+    });
+    const { id: conversationId } = await saveKnowledge({
+      title: `${marker}-conversation-title`,
+      content: `${marker} conversation-scoped content, e.g. a private support channel`,
+      createdByRole: 'admin',
+      scope: 'whatsapp:some-private-conversation',
+    });
+    const { id: platformId } = await saveKnowledge({
+      title: `${marker}-platform-title`,
+      content: `${marker} platform-scoped content`,
+      createdByRole: 'admin',
+      scope: 'whatsapp',
+    });
+
+    const titles = await listCuratedKnowledgeCreatedSince(since, 50);
+    assert.ok(titles.includes(`${marker}-global-title`), 'the global-scope entry title is present');
+    assert.ok(
+      !titles.includes(`${marker}-conversation-title`),
+      'a conversation-scoped entry (e.g. a private support channel) never reaches the public digest',
+    );
+    assert.ok(
+      !titles.includes(`${marker}-platform-title`),
+      'a platform-scoped entry never reaches the public digest either',
+    );
+
+    await pool.query('DELETE FROM knowledge WHERE id = ANY($1)', [[globalId, conversationId, platformId]]);
   },
 );
 

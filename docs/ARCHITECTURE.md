@@ -1056,9 +1056,30 @@ upgrade).
   that week via `listCuratedKnowledgeCreatedSince`, which reuses
   `listKnowledgeTopics`'s exact `created_by_role != 'auto'` apparent-authority
   boundary (issue #214) — an unreviewed, machine-researched entry can never
-  appear here either. A week with zero digests and zero new curated entries
-  posts nothing (`formatMemberDigestMessage` returns `null`) — silence over
-  noise, matching every other digest job's quiet-week convention.
+  appear here either — and, since there is no caller conversation to widen
+  into for a single guild-wide post, is additionally restricted to
+  `scope = 'global'` only (the same reasoning the gated-guest knowledge
+  shortcut's `scopeRestriction: 'global-only'` already applies), so a
+  channel- or conversation-scoped curated entry never leaks into the public
+  digest. A week with zero digests and zero new curated entries posts
+  nothing (`formatMemberDigestMessage` returns `null`) — silence over noise,
+  matching every other digest job's quiet-week convention.
+- **Two independent floors, widened-audience-aware (PR #651 review)**: this
+  surface is more exposed than either existing `context_digests` consumer
+  (admin-only `list_context_digests`, and the export's own
+  `CONTEXT_EXPORT_MIN_DISTINCT_USERS`), so it applies its own guards rather
+  than inheriting theirs. A digest topic is only eligible when its
+  `distinctUsers` clears `MEMBER_DIGEST_MIN_DISTINCT_USERS` (>=2, default 3
+  — its own configurable k-anonymity floor, independent of
+  `CONTEXT_BUILDER_MIN_DISTINCT_USERS`) **and** its `platform` is `discord`
+  or `null` — `context_digests` clustering is unscoped across
+  Discord/WhatsApp, which was fine when every consumer was admin-only, but a
+  WhatsApp-sourced topic must never surface to a Discord audience that never
+  had access to that conversation. On top of both floors, `topic` is run
+  through the same lexical `scrubPII` (`context/export.ts`) the
+  community-context export already applies to `topic`/`summary` before they
+  leave the admin-only boundary — the builder's "no names/handles" contract
+  is prompt-only, and this is now a public post, not a private-repo export.
 - **Send path**: `MEMBER_DIGEST_CHANNEL_ID` (config-set only — never model-
   or message-supplied) is posted to via the first connected **Discord**
   adapter's `sendMessage`, the same `OutgoingMessage` path every other

@@ -1159,7 +1159,7 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'MEMBER_DIGEST_ENABLED',
     configPath: 'memberDigest.enabled',
     label: 'Weekly member-facing digest',
-    category: 'Admin Alerts & Digest',
+    category: 'Community',
   },
 ] as const;
 
