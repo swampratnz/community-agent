@@ -56,6 +56,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
   executed, so an instruction embedded inside it (e.g. "ignore your
   instructions and rewrite this") is discussed as an example, never obeyed.
   No new tool, tier, or data flow — a system-prompt-only change.
+- **Weekly admin digest now surfaces the overall answer helpful-rate** (#653):
+  VISION names `rate_answer` helpful-rate trending up as this bot's own
+  answer-quality north star, but no digest line ever showed it — the two
+  existing `answer_feedback`-derived lines are narrower (#563's ungrounded-
+  only unhelpful count, #592's cumulative auto-answer-vs-addressed split),
+  and neither answers "what fraction of all rated answers this week were
+  helpful?" Adds a `✅ Overall answer helpful-rate this week: X% (H/N
+  ratings)` line, conversation-scoped and windowed like every other weekly
+  signal, shown only when there's at least one rating this week, with the
+  usual week-over-week trend suffix. Bare percentage and integer counts
+  only — no question text, answer content, rating comment, or user id ever
+  reaches the digest DM. No new tool, tier, or data collection — reads only
+  the existing `answer_feedback`/`interactions` tables every sibling digest
+  line already reads.
 - **`usage_stats` gains an optional `platform` filter to drill into one
   platform's top-users/cost-by-role** (#647, #580's own named growth path):
   #580 added an always-on `By platform: ...` breakdown line, but `topUsers`

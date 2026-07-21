@@ -4927,6 +4927,47 @@ export async function countGeneralUnhelpfulAnswers(
   return Number(rows[0].n);
 }
 
+export interface AnswerFeedbackWeeklySummary {
+  helpful: number;
+  total: number;
+}
+
+/**
+ * Overall this-week helpful-rate across EVERY rated answer (issue #653) —
+ * VISION's own named answer-quality north star, currently invisible: neither
+ * `countGeneralUnhelpfulAnswers` (#563, ungrounded-only unhelpful COUNT) nor
+ * `answerFeedbackOriginSummary` (#592, cumulative origin split) answers "what
+ * fraction of all rated answers this week were helpful?" — a knowledge-
+ * grounded answer rated unhelpful lands in neither one's numerator or
+ * denominator. This read is deliberately **unfiltered** by
+ * `knowledgeEntryId`/origin/`autoAnswer` — every rated answer this week,
+ * counted once — the distinct, all-answer-types denominator neither sibling
+ * signal covers.
+ *
+ * Same rolling-window, conversation-scoped, true-`COUNT(*)` shape as
+ * `countGeneralUnhelpfulAnswers`/`countMaxTurnsFailures`, including the same
+ * JOIN-to-`interactions` exclusion of a purged rating (`interaction_id` set
+ * NULL by `forget_me`/`purge_user_data`) and the same empty-`conversationIds`
+ * early return (zero-counts, no query issued).
+ */
+export async function answerFeedbackWeeklySummary(
+  conversationIds: readonly string[],
+  days: number,
+): Promise<AnswerFeedbackWeeklySummary> {
+  if (conversationIds.length === 0) return { helpful: 0, total: 0 };
+  const { rows } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE answer_feedback.helpful) AS helpful,
+       count(*) AS total
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+      WHERE answer_feedback.conversation_id = ANY($1)
+        AND answer_feedback.created_at >= now() - ($2 || ' days')::interval`,
+    [[...conversationIds], String(days)],
+  );
+  return { helpful: Number(rows[0].helpful), total: Number(rows[0].total) };
+}
+
 /**
  * Flip a report's status (resolve/dismiss) — non-destructive, no CONFIRM
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
