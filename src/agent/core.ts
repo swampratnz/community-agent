@@ -88,6 +88,19 @@ export interface AgentReply {
    */
   languagePreference?: LanguagePreference;
   /**
+   * The caller's standing response-style preference for this turn (issue
+   * #657), threaded straight from the same `getResponseStyle` lookup used to
+   * build the system prompt above — no new DB call. Unlike
+   * `languagePreference`, this is never left `undefined` on a lookup
+   * failure: `responseStyle` itself already degrades to `'standard'` in that
+   * case (see the try/catch above), so there's no "lookup failed" state to
+   * preserve. Consumed downstream by the router's main-reply send to pick
+   * the `_PLAIN` outbound code-policy note — `filterOutbound`/
+   * `applyCodePolicy` already prioritise a `'mi'` `languagePreference` over
+   * this internally, so passing both is safe.
+   */
+  responseStyle?: ResponseStyle;
+  /**
    * Best-effort correlation with the most recent `knowledge_search` call in
    * this turn that had a hit clear `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`
    * (issue #411) — the id of that call's top-scoring hit, threaded from
@@ -571,6 +584,7 @@ export async function runAgentTurn(
     ok: outcome.ok,
     maxTurnsExceeded: outcome.maxTurnsExceeded,
     languagePreference,
+    responseStyle,
     knowledgeEntryId: outcome.knowledgeEntryId,
   };
 }

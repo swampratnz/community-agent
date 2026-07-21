@@ -65,6 +65,16 @@ export interface OutgoingMessage {
    * announce, warn) never sets this and stays English-only, by construction.
    */
   language?: 'mi';
+  /**
+   * Set only on the router's real-agent-turn main reply (issue #657) when the
+   * caller has a standing `response_style_prefs` of `'plain'` — picks the
+   * `_PLAIN` variant of the outbound code-policy note. `filterOutbound`/
+   * `applyCodePolicy` already prioritise `language: 'mi'` over this
+   * internally, so a caller with both set is unaffected by the order these
+   * two fields are set in. Every other send path stays English-only, by
+   * construction, same as `language` above.
+   */
+  style?: 'plain';
 }
 
 export type MessageHandler = (message: IncomingMessage) => Promise<void> | void;

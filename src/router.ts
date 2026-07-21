@@ -657,17 +657,18 @@ export class Router {
 
   /**
    * Outbound filtering (secrets + code policy) lives in the adapters' send
-   * paths. `language` is optional and threaded straight into
-   * `adapter.sendMessage` (issue #339) — every call site except the main
-   * reply send below omits it, so they stay byte-identical to before.
+   * paths. `language` and `style` are optional and threaded straight into
+   * `adapter.sendMessage` (issues #339, #657) — every call site except the
+   * main reply send below omits both, so they stay byte-identical to before.
    */
   private async send(
     adapter: PlatformAdapter,
     conversationId: string,
     text: string,
     language?: 'mi',
+    style?: 'plain',
   ): Promise<string[] | undefined> {
-    return adapter.sendMessage({ conversationId, text, language });
+    return adapter.sendMessage({ conversationId, text, language, style });
   }
 
   /**
@@ -1628,12 +1629,17 @@ export class Router {
       // What's still intentionally English-only: the ack-shortcut reply and
       // per-tool `requireConfirm` outcome/failure strings (`pending.execute()`
       // and the `Failed: ...` fallback below) — see #405's proposal for why
-      // those are out of scope.
+      // those are out of scope. `reply.responseStyle` is threaded the same
+      // way (issue #657) so a standing 'plain' preference reaches the
+      // outbound code-policy note here too; `filterOutbound`/
+      // `applyCodePolicy` already give `language: 'mi'` precedence over
+      // `style: 'plain'` internally, so passing both unconditionally is safe.
       const sentMessageIds = await this.send(
         adapter,
         target,
         outboundText,
         reply.languagePreference === 'mi' ? 'mi' : undefined,
+        reply.responseStyle === 'plain' ? 'plain' : undefined,
       );
 
       // Auto-retraction mapping (issue #575): only for a genuine addressed

@@ -2450,6 +2450,76 @@ test("SECURITY: the mi language override cannot leak beyond the router main-repl
   assert.ok(!threadCalls[0].name.includes('whakakorehia'));
 });
 
+test("sendMessage threads OutgoingMessage.style === 'plain' into filterOutbound end-to-end — the router's main-reply path actually reaches the plain-language code-policy note (issue #657)", async (t) => {
+  t.mock.method(pool, 'query', async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM policies') && params?.[0] === 'code_answers') {
+      return { rows: [{ value: 'off' }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  resetPolicyCacheForTests();
+  const adapter = new DiscordAdapter();
+  const sent = stubClient(adapter);
+
+  await adapter.sendMessage({
+    conversationId: 'chan-1',
+    text: 'Here you go:\n```js\nconsole.log(1)\n```\nEnjoy!',
+    style: 'plain',
+  });
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /code removed/, 'the plain-language code-omitted note must be sent');
+  assert.ok(!sent[0].includes('code omitted'), 'must not fall back to the English note');
+});
+
+test("SECURITY: the plain response-style override cannot leak beyond the router main-reply sendMessage path — sendDirectMessage, create_poll, and create_thread stay English-only even when the code_answers policy is 'off' (issue #657)", async (t) => {
+  t.mock.method(pool, 'query', async (sql: string, params?: unknown[]) => {
+    if (sql.includes('FROM policies') && params?.[0] === 'code_answers') {
+      return { rows: [{ value: 'off' }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  resetPolicyCacheForTests();
+  const fence = '```js\nconsole.log("secret plan")\n```';
+
+  const dmAdapter = new DiscordAdapter();
+  const dmSent = stubClient(dmAdapter);
+  // sendDirectMessage/etc. never accept a `style` argument — there is no way
+  // for a caller to make this leak 'plain', which is the invariant this test
+  // pins (mirrors the 'mi' leak test above).
+  await dmAdapter.sendDirectMessage('user-1', fence);
+  assert.equal(dmSent.length, 1);
+  assert.match(dmSent[0], /code omitted/, 'sendDirectMessage must still emit the English code-omitted note');
+  assert.ok(
+    !dmSent[0].includes('code removed'),
+    'sendDirectMessage must never emit the plain-language variant',
+  );
+
+  const pollAdapter = new DiscordAdapter();
+  const pollSent = stubClientForPoll(pollAdapter);
+  await pollAdapter.performAdminAction({
+    kind: 'create_poll',
+    conversationId: 'chan-1',
+    params: { question: fence, options: [fence], durationHours: 24 },
+  });
+  assert.equal(pollSent.length, 1);
+  assert.match(pollSent[0].poll.question.text, /code omitted/, 'poll question must stay English-only');
+  assert.ok(!pollSent[0].poll.question.text.includes('code removed'));
+  assert.match(pollSent[0].poll.answers[0].text, /code omitted/, 'poll answer must stay English-only');
+  assert.ok(!pollSent[0].poll.answers[0].text.includes('code removed'));
+
+  const threadAdapter = new DiscordAdapter();
+  const threadCalls = stubClientForThreadCreate(threadAdapter);
+  await threadAdapter.performAdminAction({
+    kind: 'create_thread',
+    conversationId: 'chan-1',
+    params: { name: fence },
+  });
+  assert.equal(threadCalls.length, 1);
+  assert.match(threadCalls[0].name, /code omitted/, 'thread name must stay English-only');
+  assert.ok(!threadCalls[0].name.includes('code removed'));
+});
+
 test('performAdminAction("create_thread") passes seedMessageId through as the native startMessage option (issue #229)', async () => {
   const adapter = new DiscordAdapter();
   const calls = stubClientForThreadCreate(adapter);
