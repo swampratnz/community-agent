@@ -148,6 +148,23 @@ jobs:
             exit 1
           fi
 
+          # Normalise the verdict to start AT the "PR review (automated):"
+          # marker: the agent sometimes prefixes a preamble paragraph ("This
+          # all checks out — ..."), and every downstream consumer (auto-merge's
+          # verdict gate, revise's precheck) parses relative to that marker —
+          # a preamble forces them to search for it mid-comment, which is
+          # ambiguous the moment commentary QUOTES the marker (as reviews of
+          # this very machinery do). Trimming here, deterministically, at the
+          # single place the comment is composed, means consumers can rely on
+          # a marker-first body. Only the FIRST line-anchored occurrence is
+          # the trim point; if the marker is absent entirely, post as-is (the
+          # no-output guard above already handled the empty case, and a
+          # marker-less review reads as "no verdict" downstream — fail-safe).
+          marker_line="$(printf '%s\n' "$review" | grep -nE '^PR review \(automated\):' | head -1 | cut -d: -f1 || true)"
+          if [ -n "$marker_line" ] && [ "$marker_line" -gt 1 ]; then
+            review="$(printf '%s\n' "$review" | tail -n +"$marker_line")"
+          fi
+
           # GitHub comment bodies cap ~65535 chars; keep well under.
           printf '%s' "$review" | head -c 60000 > review.txt
           gh pr comment "$PR" --body-file review.txt
