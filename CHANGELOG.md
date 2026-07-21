@@ -13,6 +13,13 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-21
 
 ### Added
+- **WhatsApp voice notes now carry a caveat DM for te reo Māori speakers**
+  (#655): `WHATSAPP_VOICE_MODEL` is English-only, so a te reo Māori voice
+  note could transcribe garbled with zero indication anything went wrong.
+  A sender with a stored `'mi'` language preference now gets a separate,
+  fixed, human-authored caveat DM after a successful transcription (at most
+  once per sender per week) — the transcript itself and the rest of the
+  reply pipeline are untouched.
 - **`feature_flags` now also reports 5 non-boolean operator knobs** (#616,
   #559's own named growth path): the super-admin `feature_flags` tool
   answered "which boolean flags are on?" but had no visibility into

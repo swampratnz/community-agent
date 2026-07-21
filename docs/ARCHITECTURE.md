@@ -183,6 +183,13 @@ per-sender rolling-hour cap once an operator opts into a wider population —
 see SECURITY.md §13 for the full posture and the residual-risk note about
 leaving the rate limit unset while lowering `minRole`.
 
+Because the model is English-only, a sender with a stored `'mi'` language
+preference (`getLanguagePreference`) gets a separate, fixed, debounced
+caveat DM after a successful transcription — a signal that the acted-on
+transcript may not match what they actually said (issue #655). It never
+gates or alters the transcript itself; see `src/voiceLanguageCaveatNotice.ts`
+and SECURITY.md §13 for the full behaviour.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),

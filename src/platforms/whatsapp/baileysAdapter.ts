@@ -28,6 +28,11 @@ import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
 import { atLeast } from '../../auth/rbac.js';
 import { evictReplyMapping, peekReplyMapping } from '../../replyRetraction.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
+import { getLanguagePreference } from '../../storage/repository.js';
+import {
+  VOICE_LANGUAGE_CAVEAT_TEXT_MI,
+  shouldNotify as shouldNotifyVoiceLanguageCaveat,
+} from '../../voiceLanguageCaveatNotice.js';
 import {
   extractAudio,
   extractText,
@@ -56,6 +61,10 @@ const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 // that is not recoverable anyway).
 const SENT_MESSAGE_CACHE_MAX = 1000;
 const SENT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
+
+// Debounce window for the voice-language caveat (issue #655) — "at most once
+// per sender per week" per the proposal's cost story.
+const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 // Generic and static — no @-mention or echo of the joiner, so a bulk add
 // can't be turned into a mass-ping and no participant JID reaches the chat.
@@ -138,6 +147,13 @@ export class BaileysAdapter implements PlatformAdapter {
    * to a fresh inbound) have no recent message to refresh the Signal session.
    */
   private readonly sentMessages = new Map<string, { message: proto.IMessage; at: number }>();
+  /**
+   * Debounce state for the voice-language caveat (issue #655):
+   * senderId -> last-notified epoch ms, checked via `shouldNotifyVoiceLanguageCaveat`
+   * mirroring router.ts's `rateLimitNotified` pattern. In-memory only, so a
+   * process restart re-arms it — acceptable for a once-per-week notice.
+   */
+  private readonly voiceLanguageCaveatNotified = new Map<string, number>();
 
   /**
    * Cache a just-sent message so `getMessage` can resend it on a retry receipt.
@@ -350,6 +366,9 @@ export class BaileysAdapter implements PlatformAdapter {
     // note is dropped exactly like an unhandled type.
     if (!text && audio) {
       text = await this.maybeTranscribeVoiceNote(msg, audio, senderId);
+      if (text) {
+        await this.maybeSendVoiceLanguageCaveat(senderId);
+      }
     }
     if (!text) return;
 
@@ -452,6 +471,37 @@ export class BaileysAdapter implements PlatformAdapter {
     const transcript = await transcribeVoiceNote(buffer);
     logger.info({ chars: transcript.length, seconds }, 'Transcribed voice note');
     return transcript;
+  }
+
+  /**
+   * After a successful voice-note transcription, DM the sender a fixed
+   * caveat if their stored language preference is 'mi' (issue #655):
+   * `WHATSAPP_VOICE_MODEL` is English-only, so their transcript may be
+   * garbled with no other signal that anything went wrong. Purely a side
+   * notice — never touches `text` or the downstream pipeline. Debounced to
+   * at most once per sender per `VOICE_LANGUAGE_CAVEAT_WINDOW_MS`. A
+   * `lid:`-fallback sender (no resolvable phone number) is skipped, since
+   * `sendDirectMessage` can only target a phone-number id.
+   */
+  private async maybeSendVoiceLanguageCaveat(senderId: string): Promise<void> {
+    if (!isPhoneUserId(senderId)) return;
+    const language = await getLanguagePreference('whatsapp', senderId);
+    if (language !== 'mi') return;
+    if (
+      !shouldNotifyVoiceLanguageCaveat(
+        this.voiceLanguageCaveatNotified.get(senderId),
+        Date.now(),
+        VOICE_LANGUAGE_CAVEAT_WINDOW_MS,
+      )
+    ) {
+      return;
+    }
+    this.voiceLanguageCaveatNotified.set(senderId, Date.now());
+    try {
+      await this.sendDirectMessage(senderId, VOICE_LANGUAGE_CAVEAT_TEXT_MI);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send voice-language caveat notice');
+    }
   }
 
   /** True for a group JID that's opted into ambient archiving (`WHATSAPP_ARCHIVE_GROUP_JIDS`, issue #103). */
