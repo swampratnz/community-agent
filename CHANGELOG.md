@@ -70,6 +70,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
   reaches the digest DM. No new tool, tier, or data collection — reads only
   the existing `answer_feedback`/`interactions` tables every sibling digest
   line already reads.
+- **`usage_stats` gains an optional `platform` filter to drill into one
+  platform's top-users/cost-by-role** (#647, #580's own named growth path):
+  #580 added an always-on `By platform: ...` breakdown line, but `topUsers`
+  and `costByRole` — the two most actionable fields, the ones an admin
+  actually drills into when chasing a cost spike — stayed blended across
+  every platform with no way to scope them, a gap #580's own proposal named
+  verbatim as deferred. `usage_stats` now takes the same optional
+  `platform: 'discord' | 'whatsapp'` param `engagement_stats` already has;
+  when set, `topUsers`/`costByRole`/the totals scope to that platform, the
+  now-redundant `By platform: ...` line is omitted, and the totals line is
+  labelled with the active filter (e.g. `Last 7 day(s) (discord only): ...`).
+  Omitted, output is byte-identical to today. No new tool, tier, or data
+  access — reuses the existing `super_admin` gate and the already-visible
+  `platform` column.
 
 ### Fixed
 - **Admin escalations could go completely missing during a total-outage

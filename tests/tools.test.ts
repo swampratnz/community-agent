@@ -6841,6 +6841,55 @@ test('formatUsageStats: single-platform-only data omits the other platform entir
   );
 });
 
+test('formatUsageStats: no platform arg is byte-identical to the pre-#647 output, including the By platform line (issue #647 acceptance criterion 1)', () => {
+  const s = {
+    ...BASE_USAGE_STATS,
+    byPlatform: [{ platform: 'discord' as const, inbound: 5, outbound: 3, costUsd: 1.5 }],
+  };
+  const out = formatUsageStats(s, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'By platform: discord: 5 in / 3 out, ~$1.50\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+});
+
+test('formatUsageStats: platform arg omits the By platform line and labels the totals line with the active filter (issue #647 acceptance criterion 2)', () => {
+  const s = {
+    ...BASE_USAGE_STATS,
+    inbound: 301,
+    outbound: 290,
+    costUsd: 2.4,
+    // A scoped call's byPlatform is whatever the caller passed through
+    // (repository.ts leaves it unfiltered) — the formatter must omit the
+    // line regardless of its contents once a platform filter is active.
+    byPlatform: [{ platform: 'discord' as const, inbound: 301, outbound: 290, costUsd: 2.4 }],
+  };
+  const out = formatUsageStats(s, 7, 'discord');
+  assert.equal(
+    out,
+    'Last 7 day(s) (discord only): 301 inbound / 290 replies, ~$2.40 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(
+    !out.includes('By platform'),
+    'the By platform line is redundant and must be omitted when scoped',
+  );
+});
+
+test('formatUsageStats: whatsapp platform arg labels the totals line accordingly (issue #647)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7, 'whatsapp');
+  assert.equal(
+    out,
+    'Last 7 day(s) (whatsapp only): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+});
+
 test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-platform breakdown (assertAtLeast re-check, issue #580)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -6864,6 +6913,37 @@ test('SECURITY: usage_stats rejects an admin caller — still super-admin-only a
     () => registeredTool.handler({}),
     /admin/i,
     'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the per-platform breakdown',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller even when a platform filter arg is supplied — the filter param opens no new lower-privilege path (issue #647 acceptance criterion 5)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            days?: number;
+            platform?: 'discord' | 'whatsapp';
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({ platform: 'discord' }),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check exactly as without the arg, even with a platform filter present',
   );
 });
 

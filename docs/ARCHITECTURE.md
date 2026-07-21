@@ -1932,6 +1932,13 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   table, window, and `direction`-based semantics as the top-level totals, just
   `GROUP BY platform`, ordered by volume desc then platform name. A platform
   with zero interactions in the window is omitted, not rendered as a zero row.
+  `usage_stats` also takes an optional `platform` filter param (issue #647,
+  mirroring `engagement_stats`'s existing param exactly) that scopes
+  `topUsers`, `costByRole`, and the totals to one platform; when set, the
+  redundant `By platform: ...` line is omitted and the totals line is
+  labelled instead (e.g. `Last 7 day(s) (discord only): ...`). The
+  background-job/cache/shortcut/auto-answer aggregates below stay
+  global-only — they aren't platform-attributed in the schema.
 - `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
   spend)` line (issue #552) — how much of `usage_stats`' total spend the
   opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/
