@@ -256,9 +256,14 @@ jobs:
             review_at="$(jq -r '.createdAt' <<<"$latest_review")"
 
             # Verdict = first 4 lines minus bullet lines, so a phrase inside a
-            # finding can't be misread as the verdict (the exact parse the
-            # review worker uses to route). Require an explicit LGTM and the
-            # absence of the two non-approving verdicts.
+            # finding can't be misread as the verdict. The comment is GUARANTEED
+            # marker-first: the review workflow deterministically trims any
+            # agent preamble at post time (see pipeline-pr-review.yml), so the
+            # strict ^-anchored match above and this top-of-comment parse are
+            # unambiguous even when review commentary QUOTES the marker string
+            # further down (PR #656 review found substring-based extraction
+            # here was decoy-prone in both directions; anchoring the SHAPE at
+            # the source removes the ambiguity class entirely).
             verdict="$(printf '%s' "$review_body" | head -n 4 | grep -vE '^[[:space:]]*[-*]' || true)"
             if printf '%s' "$verdict" | grep -qiE 'changes requested|needs a human decision' \
                || ! printf '%s' "$verdict" | grep -qiE 'lgtm|ready for a human to merge'; then

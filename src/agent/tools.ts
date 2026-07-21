@@ -786,16 +786,26 @@ export function parseIsoInstant(value: string): Date | null {
  * per-job by #438), so the background-jobs line is directly testable
  * without a DB. Byte-identical to before #401 when `backgroundCostUsd === 0`
  * — no line is appended for a deployment with the three background features
- * off (or before any of them has ever produced a billable call).
+ * off (or before any of them has ever produced a billable call). The
+ * optional `platform` arg (issue #647) is display-only here — `s` must
+ * already be scoped by the caller via `usageStats(days, platform)`; when set,
+ * the redundant `By platform: ...` line is omitted and the totals line is
+ * labelled with the active filter instead. Omitted, output is byte-identical
+ * to before #647.
  */
-export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days: number): string {
+export function formatUsageStats(
+  s: Awaited<ReturnType<typeof usageStats>>,
+  days: number,
+  platform?: Platform,
+): string {
   const byJob = s.backgroundCostByJob
     .filter((r) => r.costUsd > 0)
     .map((r) => `${r.job} ~$${r.costUsd.toFixed(2)}`)
     .join(' · ');
+  const filterLabel = platform ? ` (${platform} only)` : '';
   return (
-    `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
-    formatUsageByPlatformLine(s.byPlatform) +
+    `Last ${days} day(s)${filterLabel}: ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+    (platform ? '' : formatUsageByPlatformLine(s.byPlatform)) +
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
@@ -5471,12 +5481,18 @@ export function buildToolServer(
   const usageStatsTool = tool(
     'usage_stats',
     'Show message volume, cost and top users over recent days. Super admin only.',
-    { days: z.number().optional().describe('Window in days (default 7, max 365)') },
+    {
+      days: z.number().optional().describe('Window in days (default 7, max 365)'),
+      platform: z
+        .enum(['discord', 'whatsapp'])
+        .optional()
+        .describe('Restrict top users and cost-by-role to one platform (default: all)'),
+    },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'usage_stats');
       const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 365);
-      const s = await usageStats(days);
-      return text(formatUsageStats(s, days));
+      const s = await usageStats(days, args.platform);
+      return text(formatUsageStats(s, days, args.platform));
     },
     { annotations: { readOnlyHint: true } },
   );
