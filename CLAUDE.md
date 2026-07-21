@@ -173,6 +173,10 @@ ownership rules:
   typecheck/lint/format config, `CLAUDE.md`, `docs/PIPELINE.md`,
   `docs/SECURITY.md`) — those always require a human merge, so the loop can
   never auto-merge a change to its own guardrails or to what "green" means.
+  A governance-path PR that passes every other gate is not skipped silently:
+  it gets a `human-merge-ready` label plus one marker-guarded comment asking
+  a maintainer to merge (most feature PRs touch `docs/SECURITY.md` to
+  document themselves, so this is the common case, not the exception).
   Never one labelled `needs-human`/`no-auto-merge`. Exactly ONE merge per run:
   afterwards `main` has advanced, so it dispatches the conflict resolver to
   rebase the rest, and the next PR only re-qualifies once it is green against

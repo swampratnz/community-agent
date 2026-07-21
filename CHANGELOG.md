@@ -10,6 +10,17 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-22
+
+### Changed
+- **Auto-merge now escalates governance-path PRs instead of skipping them
+  silently**: a build-worker PR that passes every gate (green CI, mergeable,
+  fresh automated LGTM) but touches a governance/CI/config path — which
+  includes `docs/SECURITY.md`, a file most feature PRs must document
+  themselves in — is labelled `human-merge-ready` with one explanatory
+  comment, so the human merge it requires actually gets requested. Previously
+  such PRs sat unmerged with no signal to anyone.
+
 ## 2026-07-21
 
 ### Added
