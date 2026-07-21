@@ -863,7 +863,22 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   over `'plain'`** when a caller has both set, so this can never regress the
   already-tested `_MI` behaviour; `PENDING_NOTICE_PLAIN` keeps the literal,
   untranslated `CONFIRM`/`CANCEL` tokens byte-identical to the English/`_MI`
-  templates, same invariant as `PENDING_NOTICE_MI`.
+  templates, same invariant as `PENDING_NOTICE_MI`. Issue #657 extends the
+  same `_PLAIN` mechanism to the three deterministic surfaces #430 named as
+  follow-ups but deferred: the moderation warn/block DMs honour a standing
+  `'plain'` `response_style` (`moderator.ts`'s `Moderator.scan()`, consulted
+  only once `getLanguagePreference` has resolved to something other than
+  `'mi'`); the `code_answers` redact/truncate notes gain a `style?: 'plain'`
+  parameter on `applyCodePolicy`/`filterOutbound`, threaded through
+  `OutgoingMessage.style`/`AgentReply.responseStyle`/`router.ts`'s `send()`
+  to the router's real-agent-turn main reply exactly like the existing
+  `language?: 'mi'` parameter (issue #339) already is — not just a
+  same-file test-only param; and the member/admin approval
+  confirmation DMs (`notifyMemberApproved`/`notifyAdminApproved`) gain the
+  same nested `getResponseStyle` read as the router.ts call sites above.
+  Every new call site keeps the same fail-safe: a `getResponseStyle`
+  rejection degrades to `'standard'` (English) and never throws or drops the
+  DM/notice/message.
 - **Standing language preference** (`language_prefs`, issue #189):
   structurally identical to `response_style_prefs` above — a member/guest-tier
   tool, `set_language_preference`, lets any caller opt into always receiving
@@ -1401,6 +1416,28 @@ The controls:
   voice note that *replies to the bot* is addressed (its `contextInfo` is read
   from the audio payload); DMs to the bot are always addressed. This does not
   widen who can trigger the bot — the tier gate still applies.
+- **Voice-language caveat notice (issue #655).** The English-only
+  transcription model above means a te reo Māori voice note may transcribe
+  garbled with zero signal to the affected member that anything went wrong.
+  After a successful (non-empty) transcription, if the sender's stored
+  `getLanguagePreference('whatsapp', senderId)` is `'mi'`, `baileysAdapter.ts`
+  sends a **separate**, fixed, human-authored caveat DM (`src/
+  voiceLanguageCaveatNotice.ts`, mirroring `rateLimitNotice.ts`'s `_MI`
+  convention) via the existing `sendDirectMessage` — so it inherits the same
+  outbound secret-redaction/code-policy `filtered()` path for free — debounced
+  to at most once per sender per week via a pure `shouldNotify` helper
+  identical in shape to `shouldNotifyRateLimited`. The transcript itself and
+  the normal reply pipeline are completely untouched: the caveat is a side
+  notice, never gates or alters `text`. The notice body is a module-level
+  string literal, never constructed from the transcript or any runtime input
+  — pinned by a `SECURITY:` test feeding an adversarial transcript (angle
+  brackets, fake role tags, control characters) and asserting the sent notice
+  is byte-identical to the fixed constant. A `lid:`-fallback sender (no
+  resolvable phone number) is skipped before any DB read, since
+  `sendDirectMessage` can only target a phone-number id. No new tool, RBAC
+  tier, table, or migration — a read-only reuse of the existing
+  `language_prefs` read; a `SECURITY:` test pins that firing (or not) never
+  performs any repository access beyond that single read.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 

@@ -1251,6 +1251,20 @@ export async function latestKnowledgeSourceCheckAt(): Promise<Date | null> {
 }
 
 /**
+ * Exact count of knowledge entries the weekly link-rot checker (issue #448)
+ * flagged unreachable, for the admin digest fold-in (issue #624) —
+ * `countStaleKnowledge`'s exact `COUNT(*)` shape. Counts only
+ * `source_unreachable = true` rows, independent of any given row's
+ * staleness/rating/duplicate/candidate status, so it can never cross-
+ * contaminate the other digest counts. Guild-wide, unscoped, matching
+ * `list_knowledge`'s own unscoped `sourceUnreachable` filter this mirrors.
+ */
+export async function countUnreachableSourceKnowledge(): Promise<number> {
+  const { rows } = await pool.query(`SELECT count(*) AS n FROM knowledge WHERE source_unreachable = true`);
+  return Number(rows[0].n);
+}
+
+/**
  * Update a knowledge entry's title/content/scope and re-embed. Returns false
  * if no row matched. `sourceUrl`/`sourceTitle` (issue #214) follow the same
  * "undefined = leave unchanged" convention as title/content; supplying
@@ -2606,7 +2620,10 @@ export async function adminActivitySummary(days = 30): Promise<
   }));
 }
 
-export async function usageStats(days = 7): Promise<{
+export async function usageStats(
+  days = 7,
+  platform?: Platform,
+): Promise<{
   inbound: number;
   outbound: number;
   costUsd: number;
@@ -2621,18 +2638,33 @@ export async function usageStats(days = 7): Promise<{
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
+  // Optional platform scoping (issue #647), mirroring `engagementStats`'s
+  // dynamic-placeholder pattern: only `totals`/`top`/`byRole` — the three
+  // fields named by #580's growth path — take the filter. `byPlatform` and
+  // the background/cache/shortcut/auto-answer aggregates below stay
+  // global-only by design (they aren't platform-attributed, or scoping them
+  // is out of scope per the approved proposal).
+  const scopeParams: unknown[] = [interval];
+  let scopeFilter = '';
+  if (platform) {
+    scopeParams.push(platform);
+    scopeFilter = ` AND platform = $${scopeParams.length}`;
+  }
   const { rows: totals } = await pool.query(
     `SELECT
        count(*) FILTER (WHERE direction = 'inbound') AS inbound,
        count(*) FILTER (WHERE direction = 'outbound') AS outbound,
        coalesce(sum(cost_usd), 0) AS cost
-     FROM interactions WHERE created_at > now() - $1::interval`,
-    [interval],
+     FROM interactions WHERE created_at > now() - $1::interval${scopeFilter}`,
+    scopeParams,
   );
   // Per-platform split of the same `totals` query above (issue #580) — same
   // table/window/direction semantics, differing only by `GROUP BY platform`,
   // so summed rows equal `totals` by construction. Ordered by volume desc
-  // (then platform name) so the tool's output line is deterministic.
+  // (then platform name) so the tool's output line is deterministic. Always
+  // computed unfiltered — `formatUsageStats` omits rendering it when a
+  // `platform` filter is active (issue #647), since a single-platform view
+  // makes the breakdown line redundant.
   const { rows: byPlatform } = await pool.query(
     `SELECT platform,
        count(*) FILTER (WHERE direction = 'inbound') AS inbound,
@@ -2646,16 +2678,16 @@ export async function usageStats(days = 7): Promise<{
   const { rows: top } = await pool.query(
     `SELECT user_id, max(user_name) AS user_name, count(*) AS n
        FROM interactions
-      WHERE direction = 'inbound' AND created_at > now() - $1::interval
+      WHERE direction = 'inbound' AND created_at > now() - $1::interval${scopeFilter}
       GROUP BY user_id ORDER BY n DESC LIMIT 5`,
-    [interval],
+    scopeParams,
   );
   const { rows: byRole } = await pool.query(
     `SELECT role, coalesce(sum(cost_usd), 0) AS cost, count(*) AS n
        FROM interactions
-      WHERE direction = 'outbound' AND created_at > now() - $1::interval
+      WHERE direction = 'outbound' AND created_at > now() - $1::interval${scopeFilter}
       GROUP BY role ORDER BY sum(cost_usd) DESC, role`,
-    [interval],
+    scopeParams,
   );
   // Cache-hit/-write token telemetry (issue #522): sums the `meta` JSONB
   // keys `core.ts`/`router.ts` write per outbound row (issue #508's read,
@@ -4947,6 +4979,47 @@ export async function countGeneralUnhelpfulAnswers(
     [[...conversationIds], String(days)],
   );
   return Number(rows[0].n);
+}
+
+export interface AnswerFeedbackWeeklySummary {
+  helpful: number;
+  total: number;
+}
+
+/**
+ * Overall this-week helpful-rate across EVERY rated answer (issue #653) —
+ * VISION's own named answer-quality north star, currently invisible: neither
+ * `countGeneralUnhelpfulAnswers` (#563, ungrounded-only unhelpful COUNT) nor
+ * `answerFeedbackOriginSummary` (#592, cumulative origin split) answers "what
+ * fraction of all rated answers this week were helpful?" — a knowledge-
+ * grounded answer rated unhelpful lands in neither one's numerator or
+ * denominator. This read is deliberately **unfiltered** by
+ * `knowledgeEntryId`/origin/`autoAnswer` — every rated answer this week,
+ * counted once — the distinct, all-answer-types denominator neither sibling
+ * signal covers.
+ *
+ * Same rolling-window, conversation-scoped, true-`COUNT(*)` shape as
+ * `countGeneralUnhelpfulAnswers`/`countMaxTurnsFailures`, including the same
+ * JOIN-to-`interactions` exclusion of a purged rating (`interaction_id` set
+ * NULL by `forget_me`/`purge_user_data`) and the same empty-`conversationIds`
+ * early return (zero-counts, no query issued).
+ */
+export async function answerFeedbackWeeklySummary(
+  conversationIds: readonly string[],
+  days: number,
+): Promise<AnswerFeedbackWeeklySummary> {
+  if (conversationIds.length === 0) return { helpful: 0, total: 0 };
+  const { rows } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE answer_feedback.helpful) AS helpful,
+       count(*) AS total
+       FROM answer_feedback
+       JOIN interactions ON interactions.id = answer_feedback.interaction_id
+      WHERE answer_feedback.conversation_id = ANY($1)
+        AND answer_feedback.created_at >= now() - ($2 || ' days')::interval`,
+    [[...conversationIds], String(days)],
+  );
+  return { helpful: Number(rows[0].helpful), total: Number(rows[0].total) };
 }
 
 /**

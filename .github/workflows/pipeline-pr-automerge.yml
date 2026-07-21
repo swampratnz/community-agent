@@ -149,11 +149,17 @@ jobs:
             # match there is reversible (a wrong rebase/nudge); here a bad match
             # merges to `main`, so at these stakes the identity check must admit
             # only the build worker, not any other bot account with same-repo
-            # write access (e.g. Dependabot).
+            # write access (e.g. Dependabot). The gh CLI (GraphQL) renders the
+            # App's login as "app/claude" while REST renders "claude[bot]" —
+            # match both (a human login can contain neither "/" nor "[bot]",
+            # so each form uniquely names the App). The original REST-only
+            # literal matched nothing under gh, silently skipping every bot PR
+            # the first time the loop went live (2026-07-21).
             eligible="$(jq -r '
               (.isDraft | not)
               and (.isCrossRepository | not)
-              and (.author.login == "claude[bot]")
+              and (.author.is_bot == true)
+              and (.author.login == "claude[bot]" or .author.login == "app/claude")
               and ((.body // "") | test("[Cc]loses #[0-9]+"))
               and ([.labels[].name] | (index("needs-human") | not) and (index("no-auto-merge") | not))
             ' <<<"$struct")"
@@ -231,11 +237,17 @@ jobs:
             # body-text-only filter would accept a comment from ANY user who can
             # comment on the PR as a "fresh LGTM" and force an unreviewed merge.
             # The real verdict is posted by pipeline-pr-review.yml via `gh pr
-            # comment` under the GITHUB_TOKEN, i.e. as `github-actions[bot]` — an
-            # identity a normal user CANNOT post as, so requiring it closes the
-            # forgery gap that text matching alone leaves open.
+            # comment` under the GITHUB_TOKEN — an identity a normal user CANNOT
+            # post as ("github-actions" is a GitHub-reserved account), so
+            # requiring it closes the forgery gap that text matching alone
+            # leaves open. gh's GraphQL comment authors render as
+            # "github-actions" (no [bot] suffix, and no is_bot field exists on
+            # comment authors, unlike PR authors) while REST renders
+            # "github-actions[bot]" — match both, same dual-rendering fix as
+            # the build-worker identity gate above; the REST-only literal made
+            # latest_review always empty and the loop inert.
             latest_review="$(gh pr view "$n" --repo "$REPO" --json comments \
-              --jq '[.comments[] | select(.author.login == "github-actions[bot]" and (.body | test("^PR review \\(automated\\):")))] | last // empty')"
+              --jq '[.comments[] | select((.author.login == "github-actions" or .author.login == "github-actions[bot]") and (.body | test("^PR review \\(automated\\):")))] | last // empty')"
             if [ -z "$latest_review" ]; then
               echo "PR #$n: no automated review verdict yet — skip."
               echo "::endgroup::"; continue
@@ -244,9 +256,14 @@ jobs:
             review_at="$(jq -r '.createdAt' <<<"$latest_review")"
 
             # Verdict = first 4 lines minus bullet lines, so a phrase inside a
-            # finding can't be misread as the verdict (the exact parse the
-            # review worker uses to route). Require an explicit LGTM and the
-            # absence of the two non-approving verdicts.
+            # finding can't be misread as the verdict. The comment is GUARANTEED
+            # marker-first: the review workflow deterministically trims any
+            # agent preamble at post time (see pipeline-pr-review.yml), so the
+            # strict ^-anchored match above and this top-of-comment parse are
+            # unambiguous even when review commentary QUOTES the marker string
+            # further down (PR #656 review found substring-based extraction
+            # here was decoy-prone in both directions; anchoring the SHAPE at
+            # the source removes the ambiguity class entirely).
             verdict="$(printf '%s' "$review_body" | head -n 4 | grep -vE '^[[:space:]]*[-*]' || true)"
             if printf '%s' "$verdict" | grep -qiE 'changes requested|needs a human decision' \
                || ! printf '%s' "$verdict" | grep -qiE 'lgtm|ready for a human to merge'; then

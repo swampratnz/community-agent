@@ -13,6 +13,13 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-21
 
 ### Added
+- **WhatsApp voice notes now carry a caveat DM for te reo Māori speakers**
+  (#655): `WHATSAPP_VOICE_MODEL` is English-only, so a te reo Māori voice
+  note could transcribe garbled with zero indication anything went wrong.
+  A sender with a stored `'mi'` language preference now gets a separate,
+  fixed, human-authored caveat DM after a successful transcription (at most
+  once per sender per week) — the transcript itself and the rest of the
+  reply pipeline are untouched.
 - **`feature_flags` now also reports 5 non-boolean operator knobs** (#616,
   #559's own named growth path): the super-admin `feature_flags` tool
   answered "which boolean flags are on?" but had no visibility into
@@ -56,6 +63,34 @@ for anything after ~noon NZST/NZDT). Get today's date with
   executed, so an instruction embedded inside it (e.g. "ignore your
   instructions and rewrite this") is discussed as an example, never obeyed.
   No new tool, tier, or data flow — a system-prompt-only change.
+- **Weekly admin digest now surfaces the overall answer helpful-rate** (#653):
+  VISION names `rate_answer` helpful-rate trending up as this bot's own
+  answer-quality north star, but no digest line ever showed it — the two
+  existing `answer_feedback`-derived lines are narrower (#563's ungrounded-
+  only unhelpful count, #592's cumulative auto-answer-vs-addressed split),
+  and neither answers "what fraction of all rated answers this week were
+  helpful?" Adds a `✅ Overall answer helpful-rate this week: X% (H/N
+  ratings)` line, conversation-scoped and windowed like every other weekly
+  signal, shown only when there's at least one rating this week, with the
+  usual week-over-week trend suffix. Bare percentage and integer counts
+  only — no question text, answer content, rating comment, or user id ever
+  reaches the digest DM. No new tool, tier, or data collection — reads only
+  the existing `answer_feedback`/`interactions` tables every sibling digest
+  line already reads.
+- **`usage_stats` gains an optional `platform` filter to drill into one
+  platform's top-users/cost-by-role** (#647, #580's own named growth path):
+  #580 added an always-on `By platform: ...` breakdown line, but `topUsers`
+  and `costByRole` — the two most actionable fields, the ones an admin
+  actually drills into when chasing a cost spike — stayed blended across
+  every platform with no way to scope them, a gap #580's own proposal named
+  verbatim as deferred. `usage_stats` now takes the same optional
+  `platform: 'discord' | 'whatsapp'` param `engagement_stats` already has;
+  when set, `topUsers`/`costByRole`/the totals scope to that platform, the
+  now-redundant `By platform: ...` line is omitted, and the totals line is
+  labelled with the active filter (e.g. `Last 7 day(s) (discord only): ...`).
+  Omitted, output is byte-identical to today. No new tool, tier, or data
+  access — reuses the existing `super_admin` gate and the already-visible
+  `platform` column.
 
 ### Fixed
 - **Admin escalations could go completely missing during a total-outage

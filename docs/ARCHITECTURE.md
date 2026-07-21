@@ -183,6 +183,13 @@ per-sender rolling-hour cap once an operator opts into a wider population —
 see SECURITY.md §13 for the full posture and the residual-risk note about
 leaving the rate limit unset while lowering `minRole`.
 
+Because the model is English-only, a sender with a stored `'mi'` language
+preference (`getLanguagePreference`) gets a separate, fixed, debounced
+caveat DM after a successful transcription — a signal that the acted-on
+transcript may not match what they actually said (issue #655). It never
+gates or alters the transcript itself; see `src/voiceLanguageCaveatNotice.ts`
+and SECURITY.md §13 for the full behaviour.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
@@ -658,7 +665,13 @@ already short and plain by the charter's own te reo Māori register.
 `CANCEL_TEXT` deliberately has no `_PLAIN` counterpart (already at the floor
 of simplicity), and the gated-guest notice's `_PLAIN` substitution applies
 only to the static `GATED_NOTICE` fallback, never the dynamic, admin-naming
-`buildGatedNotice` output.
+`buildGatedNotice` output. Issue #657 extends this same `_PLAIN` mechanism to
+the three deterministic surfaces #430 named as follow-ups but deferred: the
+moderation warn/block DMs (`moderator.ts`), the `code_answers` redact/
+truncate notes (`agent/outbound.ts`'s `applyCodePolicy`), and the
+member/admin approval confirmation DMs (`agent/tools.ts`'s
+`notifyMemberApproved`/`notifyAdminApproved`) — same `'mi'`-over-`'plain'`
+precedence, same fail-safe-to-`'standard'` lookup shape.
 
 ## Onboarding (gated mode)
 
@@ -1971,6 +1984,13 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   table, window, and `direction`-based semantics as the top-level totals, just
   `GROUP BY platform`, ordered by volume desc then platform name. A platform
   with zero interactions in the window is omitted, not rendered as a zero row.
+  `usage_stats` also takes an optional `platform` filter param (issue #647,
+  mirroring `engagement_stats`'s existing param exactly) that scopes
+  `topUsers`, `costByRole`, and the totals to one platform; when set, the
+  redundant `By platform: ...` line is omitted and the totals line is
+  labelled instead (e.g. `Last 7 day(s) (discord only): ...`). The
+  background-job/cache/shortcut/auto-answer aggregates below stay
+  global-only — they aren't platform-attributed in the schema.
 - `usage_stats` also reports an `Auto-answer: N replies (~$X.XX, Y% of total
   spend)` line (issue #552) — how much of `usage_stats`' total spend the
   opt-in `AUTO_ANSWER_CHANNEL_IDS` feature (issue #477, extended by #519/

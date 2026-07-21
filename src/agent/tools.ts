@@ -88,6 +88,8 @@ import {
   resolveLinkedIdentities,
   saveKnowledge,
   getLanguagePreference,
+  getResponseStyle,
+  type ResponseStyle,
   setLanguagePreference,
   setResponseStyle,
   withdrawOwnReports,
@@ -786,16 +788,26 @@ export function parseIsoInstant(value: string): Date | null {
  * per-job by #438), so the background-jobs line is directly testable
  * without a DB. Byte-identical to before #401 when `backgroundCostUsd === 0`
  * — no line is appended for a deployment with the three background features
- * off (or before any of them has ever produced a billable call).
+ * off (or before any of them has ever produced a billable call). The
+ * optional `platform` arg (issue #647) is display-only here — `s` must
+ * already be scoped by the caller via `usageStats(days, platform)`; when set,
+ * the redundant `By platform: ...` line is omitted and the totals line is
+ * labelled with the active filter instead. Omitted, output is byte-identical
+ * to before #647.
  */
-export function formatUsageStats(s: Awaited<ReturnType<typeof usageStats>>, days: number): string {
+export function formatUsageStats(
+  s: Awaited<ReturnType<typeof usageStats>>,
+  days: number,
+  platform?: Platform,
+): string {
   const byJob = s.backgroundCostByJob
     .filter((r) => r.costUsd > 0)
     .map((r) => `${r.job} ~$${r.costUsd.toFixed(2)}`)
     .join(' · ');
+  const filterLabel = platform ? ` (${platform} only)` : '';
   return (
-    `Last ${days} day(s): ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
-    formatUsageByPlatformLine(s.byPlatform) +
+    `Last ${days} day(s)${filterLabel}: ${s.inbound} inbound / ${s.outbound} replies, ~$${s.costUsd.toFixed(2)} recorded.\n` +
+    (platform ? '' : formatUsageByPlatformLine(s.byPlatform)) +
     `Cost by role: ${s.costByRole.map((r) => `${r.role} ~$${r.costUsd.toFixed(2)} (${r.replies} replies)`).join(' · ') || 'none'}\n` +
     `Top users:\n${s.topUsers.map((u) => `- ${u.userName ? sanitizeName(u.userName) : u.userId}: ${u.messages} msgs`).join('\n') || '- none'}` +
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
@@ -1333,6 +1345,18 @@ const MEMBER_APPROVED_MESSAGE_MI =
   'Whakapā mai ki ahau i ngā wā katoa. Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga poto.';
 
 /**
+ * Fixed, human-authored plain-language counterpart (issue #657, extending
+ * #430's `_PLAIN` pattern to this file), served instead of
+ * `MEMBER_APPROVED_MESSAGE` when the caller's language preference is NOT
+ * 'mi' and their response style is 'plain' — same trust level as the
+ * English/`_MI` constants: no model call, no translation, no injection
+ * surface.
+ */
+const MEMBER_APPROVED_MESSAGE_PLAIN =
+  "Kia ora! 👋 You're now a member of NZ Claude Community. " +
+  'You can message the bot here anytime. Ask me "what can you do?" for a short list of things I can help with.';
+
+/**
  * Fixed, static note appended to `add_member`'s reply when
  * `notifyMemberApproved` reports the confirmation DM did not land (issue
  * #556) — so the acting admin isn't told the identical success text
@@ -1440,10 +1464,21 @@ export async function notifyMemberApproved(
   wasAlreadyMember: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<boolean> {
   if (wasAlreadyMember) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message = lang === 'mi' ? MEMBER_APPROVED_MESSAGE_MI : MEMBER_APPROVED_MESSAGE;
+  let message = MEMBER_APPROVED_MESSAGE;
+  if (lang === 'mi') {
+    message = MEMBER_APPROVED_MESSAGE_MI;
+  } else {
+    // Only consulted once 'mi' is ruled out (it takes precedence), same
+    // nested-lookup shape router.ts uses at its own getRespStyle call sites
+    // (issue #430). Degrades to 'standard' (English) on any lookup failure,
+    // same #52 invariant as the language lookup above.
+    const style: ResponseStyle = await getRespStyle(platform, userId).catch(() => 'standard' as const);
+    if (style === 'plain') message = MEMBER_APPROVED_MESSAGE_PLAIN;
+  }
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)
@@ -1468,6 +1503,14 @@ const ADMIN_APPROVED_MESSAGE =
 const ADMIN_APPROVED_MESSAGE_MI =
   'Kia ora! 👋 Kua whakapikitia koe hei kaiwhakahaere (admin) mō NZ Claude Community. ' +
   'Pātai mai "what can you do?" i ngā wā katoa mō tētahi whakarāpopototanga, tae atu ki ō rākau whakahaere hou.';
+
+/**
+ * Fixed, human-authored plain-language counterpart of {@link ADMIN_APPROVED_MESSAGE}
+ * (issue #657, same pattern as {@link MEMBER_APPROVED_MESSAGE_PLAIN} above).
+ */
+const ADMIN_APPROVED_MESSAGE_PLAIN =
+  "Kia ora! 👋 You're now an admin on NZ Claude Community. " +
+  'Ask me "what can you do?" for a rundown, including your new admin tools.';
 
 /**
  * Fixed, static note appended to `grant_admin`'s reply when
@@ -1498,10 +1541,18 @@ export async function notifyAdminApproved(
   wasAlreadyAdmin: boolean,
   platform: Platform,
   getLangPref: typeof getLanguagePreference = getLanguagePreference,
+  getRespStyle: typeof getResponseStyle = getResponseStyle,
 ): Promise<boolean> {
   if (wasAlreadyAdmin) return true;
   const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
-  const message = lang === 'mi' ? ADMIN_APPROVED_MESSAGE_MI : ADMIN_APPROVED_MESSAGE;
+  let message = ADMIN_APPROVED_MESSAGE;
+  if (lang === 'mi') {
+    message = ADMIN_APPROVED_MESSAGE_MI;
+  } else {
+    // Same nested getRespStyle shape as notifyMemberApproved above.
+    const style: ResponseStyle = await getRespStyle(platform, userId).catch(() => 'standard' as const);
+    if (style === 'plain') message = ADMIN_APPROVED_MESSAGE_PLAIN;
+  }
   return adapter
     .sendDirectMessage(userId, message)
     .then(() => true)
@@ -5477,12 +5528,18 @@ export function buildToolServer(
   const usageStatsTool = tool(
     'usage_stats',
     'Show message volume, cost and top users over recent days. Super admin only.',
-    { days: z.number().optional().describe('Window in days (default 7, max 365)') },
+    {
+      days: z.number().optional().describe('Window in days (default 7, max 365)'),
+      platform: z
+        .enum(['discord', 'whatsapp'])
+        .optional()
+        .describe('Restrict top users and cost-by-role to one platform (default: all)'),
+    },
     async (args) => {
       assertAtLeast(caller.role, 'super_admin', 'usage_stats');
       const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 365);
-      const s = await usageStats(days);
-      return text(formatUsageStats(s, days));
+      const s = await usageStats(days, args.platform);
+      return text(formatUsageStats(s, days, args.platform));
     },
     { annotations: { readOnlyHint: true } },
   );

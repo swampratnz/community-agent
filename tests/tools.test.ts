@@ -439,6 +439,102 @@ test("SECURITY: notifyMemberApproved degrades to the English default, rather tha
   assert.match(calls[0], /You've been approved/);
 });
 
+test("notifyMemberApproved sends the plain-language variant for a caller with a stored 'plain' response style (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /You're now a member/);
+  assert.doesNotMatch(calls[0], /You've been approved/);
+});
+
+test("notifyMemberApproved sends the English default for the default 'standard' response style, byte-identical to today (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /You've been approved/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #657, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Kua whakaaetia/);
+  assert.doesNotMatch(calls[0], /You're now a member/);
+});
+
+test("SECURITY: notifyMemberApproved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /You've been approved/);
+});
+
+test("SECURITY: notifyMemberApproved never consults the response-style lookup once language has resolved to 'mi' (issue #657)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyMemberApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
+});
+
 // notifyAdminApproved holds all of grant_admin's new (issue #201) notification
 // behaviour, tested directly here the same way notifyMemberApproved is above.
 test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion, and resolves true (issue #556)', async () => {
@@ -523,6 +619,102 @@ test("SECURITY: notifyAdminApproved degrades to the English default, rather than
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /promoted to admin/);
+});
+
+test("notifyAdminApproved sends the plain-language variant for a caller with a stored 'plain' response style (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /You're now an admin/);
+  assert.doesNotMatch(calls[0], /promoted to admin/);
+});
+
+test("notifyAdminApproved sends the English default for the default 'standard' response style, byte-identical to today (issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => 'standard',
+  );
+
+  assert.match(calls[0], /promoted to admin/);
+});
+
+test("SECURITY: a standing 'mi' language preference wins over a standing 'plain' response style — the te reo variant is sent, never the plain one (issue #657, precedence: mi > plain > standard)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => 'plain',
+  );
+
+  assert.match(calls[0], /Kua whakapikitia/);
+  assert.doesNotMatch(calls[0], /You're now an admin/);
+});
+
+test("SECURITY: notifyAdminApproved degrades to the English default, rather than throwing or dropping the DM, when the response-style lookup fails (issue #52's invariant extended to issue #657)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'auto',
+    async () => {
+      throw new Error('DB unreachable');
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /promoted to admin/);
+});
+
+test("SECURITY: notifyAdminApproved never consults the response-style lookup once language has resolved to 'mi' (issue #657)", async () => {
+  let respStyleCalls = 0;
+  const adapter = stubAdapter(async () => {});
+
+  await notifyAdminApproved(
+    adapter,
+    'user-1',
+    false,
+    'discord',
+    async () => 'mi',
+    async () => {
+      respStyleCalls += 1;
+      throw new Error('must never be reached when lang is mi');
+    },
+  );
+
+  assert.equal(respStyleCalls, 0);
 });
 
 // notifySuggestionResolved holds all of resolve_suggestion's new (issue #116)
@@ -6841,6 +7033,55 @@ test('formatUsageStats: single-platform-only data omits the other platform entir
   );
 });
 
+test('formatUsageStats: no platform arg is byte-identical to the pre-#647 output, including the By platform line (issue #647 acceptance criterion 1)', () => {
+  const s = {
+    ...BASE_USAGE_STATS,
+    byPlatform: [{ platform: 'discord' as const, inbound: 5, outbound: 3, costUsd: 1.5 }],
+  };
+  const out = formatUsageStats(s, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'By platform: discord: 5 in / 3 out, ~$1.50\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+});
+
+test('formatUsageStats: platform arg omits the By platform line and labels the totals line with the active filter (issue #647 acceptance criterion 2)', () => {
+  const s = {
+    ...BASE_USAGE_STATS,
+    inbound: 301,
+    outbound: 290,
+    costUsd: 2.4,
+    // A scoped call's byPlatform is whatever the caller passed through
+    // (repository.ts leaves it unfiltered) — the formatter must omit the
+    // line regardless of its contents once a platform filter is active.
+    byPlatform: [{ platform: 'discord' as const, inbound: 301, outbound: 290, costUsd: 2.4 }],
+  };
+  const out = formatUsageStats(s, 7, 'discord');
+  assert.equal(
+    out,
+    'Last 7 day(s) (discord only): 301 inbound / 290 replies, ~$2.40 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(
+    !out.includes('By platform'),
+    'the By platform line is redundant and must be omitted when scoped',
+  );
+});
+
+test('formatUsageStats: whatsapp platform arg labels the totals line accordingly (issue #647)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7, 'whatsapp');
+  assert.equal(
+    out,
+    'Last 7 day(s) (whatsapp only): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+});
+
 test('SECURITY: usage_stats rejects an admin caller — still super-admin-only after the per-platform breakdown (assertAtLeast re-check, issue #580)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {
@@ -6864,6 +7105,37 @@ test('SECURITY: usage_stats rejects an admin caller — still super-admin-only a
     () => registeredTool.handler({}),
     /admin/i,
     'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check — usage_stats gains no new lower-privilege path from the per-platform breakdown',
+  );
+});
+
+test('SECURITY: usage_stats rejects an admin caller even when a platform filter arg is supplied — the filter param opens no new lower-privilege path (issue #647 acceptance criterion 5)', async () => {
+  const adapter = stubAdapter(async () => {});
+  const caller = {
+    platform: 'discord' as const,
+    userId: 'admin-1',
+    userName: 'Admin',
+    role: 'admin' as const,
+    conversationId: 'convo-1',
+  };
+  const server = buildToolServer(caller, adapter);
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            days?: number;
+            platform?: 'discord' | 'whatsapp';
+          }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+        }
+      >;
+    }
+  )._registeredTools['usage_stats'];
+
+  await assert.rejects(
+    () => registeredTool.handler({ platform: 'discord' }),
+    /admin/i,
+    'an admin (not super_admin) caller must be rejected by the assertAtLeast re-check exactly as without the arg, even with a platform filter present',
   );
 });
 
