@@ -1401,6 +1401,28 @@ The controls:
   voice note that *replies to the bot* is addressed (its `contextInfo` is read
   from the audio payload); DMs to the bot are always addressed. This does not
   widen who can trigger the bot — the tier gate still applies.
+- **Voice-language caveat notice (issue #655).** The English-only
+  transcription model above means a te reo Māori voice note may transcribe
+  garbled with zero signal to the affected member that anything went wrong.
+  After a successful (non-empty) transcription, if the sender's stored
+  `getLanguagePreference('whatsapp', senderId)` is `'mi'`, `baileysAdapter.ts`
+  sends a **separate**, fixed, human-authored caveat DM (`src/
+  voiceLanguageCaveatNotice.ts`, mirroring `rateLimitNotice.ts`'s `_MI`
+  convention) via the existing `sendDirectMessage` — so it inherits the same
+  outbound secret-redaction/code-policy `filtered()` path for free — debounced
+  to at most once per sender per week via a pure `shouldNotify` helper
+  identical in shape to `shouldNotifyRateLimited`. The transcript itself and
+  the normal reply pipeline are completely untouched: the caveat is a side
+  notice, never gates or alters `text`. The notice body is a module-level
+  string literal, never constructed from the transcript or any runtime input
+  — pinned by a `SECURITY:` test feeding an adversarial transcript (angle
+  brackets, fake role tags, control characters) and asserting the sent notice
+  is byte-identical to the fixed constant. A `lid:`-fallback sender (no
+  resolvable phone number) is skipped before any DB read, since
+  `sendDirectMessage` can only target a phone-number id. No new tool, RBAC
+  tier, table, or migration — a read-only reuse of the existing
+  `language_prefs` read; a `SECURITY:` test pins that firing (or not) never
+  performs any repository access beyond that single read.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 
