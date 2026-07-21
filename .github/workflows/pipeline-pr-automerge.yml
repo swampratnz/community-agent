@@ -237,11 +237,17 @@ jobs:
             # body-text-only filter would accept a comment from ANY user who can
             # comment on the PR as a "fresh LGTM" and force an unreviewed merge.
             # The real verdict is posted by pipeline-pr-review.yml via `gh pr
-            # comment` under the GITHUB_TOKEN, i.e. as `github-actions[bot]` — an
-            # identity a normal user CANNOT post as, so requiring it closes the
-            # forgery gap that text matching alone leaves open.
+            # comment` under the GITHUB_TOKEN — an identity a normal user CANNOT
+            # post as ("github-actions" is a GitHub-reserved account), so
+            # requiring it closes the forgery gap that text matching alone
+            # leaves open. gh's GraphQL comment authors render as
+            # "github-actions" (no [bot] suffix, and no is_bot field exists on
+            # comment authors, unlike PR authors) while REST renders
+            # "github-actions[bot]" — match both, same dual-rendering fix as
+            # the build-worker identity gate above; the REST-only literal made
+            # latest_review always empty and the loop inert.
             latest_review="$(gh pr view "$n" --repo "$REPO" --json comments \
-              --jq '[.comments[] | select(.author.login == "github-actions[bot]" and (.body | test("^PR review \\(automated\\):")))] | last // empty')"
+              --jq '[.comments[] | select((.author.login == "github-actions" or .author.login == "github-actions[bot]") and (.body | test("^PR review \\(automated\\):")))] | last // empty')"
             if [ -z "$latest_review" ]; then
               echo "PR #$n: no automated review verdict yet — skip."
               echo "::endgroup::"; continue
