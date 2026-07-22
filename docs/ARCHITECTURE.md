@@ -1122,6 +1122,25 @@ No model is in the fetch/parse loop — deterministic JSON parsing of one
 fixed, official, first-party HTTPS source, the same trust framing docs
 ingest already establishes (see SECURITY.md).
 
+`startStatusCheck` (`src/backgroundJobs.ts`) already DMs super admins when
+the poll job itself fails repeatedly (the same consecutive-failure alerting
+every background job gets, issue #263/#321). Issue #601 adds a second,
+distinct branch on top of that: after a **successful** poll, it reads the
+freshly-updated cache's indicator and steps a pure crossed-latch tracker
+(`stepStatusIncidentTracker`, mirroring `usageAlert.ts`'s
+`stepUsageAlertTracker` shape). On a `'none' → 'minor'/'major'/'critical'`
+transition it DMs every super admin — via the same `alertSuperAdmins` path
+and disconnected-adapter `queuePendingAlert` fallback the failure alert
+already uses, no new send path — with a message built by
+`formatStatusIncidentAlert`, which wraps the existing member-facing
+`formatStatusMessage` rendering rather than re-interpolating the incident's
+Anthropic-supplied `name`/`description` a second time. The latch stays
+armed while the indicator remains non-`'none'` (no repeat DM per poll) and
+re-arms once it drops back to `'none'`, so a later, separate incident alerts
+again; the resolve transition itself sends no DM (out of scope for v1). A
+poll that *fails* never advances this tracker — that failure path is handled
+entirely by the existing job-failure alerting above.
+
 ## Suggestion capture
 
 `suggest_improvement` (issue #46) closes the "the suggestion died in chat"

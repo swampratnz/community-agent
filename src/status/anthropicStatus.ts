@@ -180,3 +180,16 @@ export function formatStatusMessage(state: StatusCacheState | null, now: number)
     `(checked ${age} ago):\n${lines.join('\n')}`
   );
 }
+
+/**
+ * The proactive super-admin DM sent on a `none → incident` transition (issue
+ * #601). Deliberately reuses `formatStatusMessage` verbatim for the incident
+ * body rather than hand-interpolating `StatusSummary`'s Anthropic-supplied
+ * `name`/`description` strings again — those are first-party but still
+ * externally-authored, so staying on the one already-reviewed rendering path
+ * (used today by member-facing `check_status`) avoids opening a second,
+ * divergent interpolation surface into this unprompted admin DM.
+ */
+export function formatStatusIncidentAlert(state: StatusCacheState, now: number): string {
+  return `🔔 Proactive alert (Anthropic status changed): ${formatStatusMessage(state, now)}`;
+}

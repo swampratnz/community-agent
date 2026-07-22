@@ -16,9 +16,15 @@ process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 process.env.STATUS_CHECK_ENABLED = 'true';
 process.env.STATUS_CHECK_POLL_MINUTES = '5';
 
-const { startStatusCheck, statusCheckAlertThreshold } = await import('../src/backgroundJobs.js');
+const {
+  startStatusCheck,
+  statusCheckAlertThreshold,
+  stepStatusIncidentTracker,
+  initialStatusIncidentTracker,
+} = await import('../src/backgroundJobs.js');
 const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
   await import('../src/backgroundJobHealth.js');
+const { pollAnthropicStatus, resetStatusCacheForTests } = await import('../src/status/anthropicStatus.js');
 
 const POLL_MS = 5 * 60_000;
 const THRESHOLD = statusCheckAlertThreshold(5);
@@ -196,3 +202,163 @@ test('SECURITY: the status-check alert DM body never contains a caught error mes
     clearInterval(timer!);
   }
 });
+
+// --- proactive incident DM (issue #601) --------------------------------------
+
+const ALL_OPERATIONAL_BODY = JSON.stringify({
+  status: { indicator: 'none', description: 'All Systems Operational' },
+  incidents: [],
+});
+
+const INCIDENT_BODY = JSON.stringify({
+  status: { indicator: 'major', description: 'Major System Outage' },
+  incidents: [
+    {
+      name: 'Elevated errors on the Messages API',
+      impact: 'major',
+      status: 'investigating',
+      updated_at: '2026-07-07T00:00:00.000Z',
+    },
+  ],
+});
+
+const OTHER_INCIDENT_BODY = JSON.stringify({
+  status: { indicator: 'critical', description: 'Complete API Outage' },
+  incidents: [
+    {
+      name: 'Total outage on the Messages API',
+      impact: 'critical',
+      status: 'investigating',
+      updated_at: '2026-07-07T01:00:00.000Z',
+    },
+  ],
+});
+
+test(
+  'stepStatusIncidentTracker: none -> incident fires once, stays silent while non-none persists, ' +
+    're-arms on return to none, and fires again on a later separate incident',
+  () => {
+    let tracker = initialStatusIncidentTracker();
+
+    let step = stepStatusIncidentTracker(tracker, 'none');
+    assert.equal(step.shouldAlert, false, 'staying at none never alerts');
+    tracker = step.tracker;
+
+    step = stepStatusIncidentTracker(tracker, 'minor');
+    assert.equal(step.shouldAlert, true, 'none -> minor fires exactly once');
+    tracker = step.tracker;
+
+    step = stepStatusIncidentTracker(tracker, 'major');
+    assert.equal(step.shouldAlert, false, 'staying non-none (even at a different level) does not re-fire');
+    tracker = step.tracker;
+
+    step = stepStatusIncidentTracker(tracker, 'none');
+    assert.equal(step.shouldAlert, false, 'the resolve transition itself never alerts');
+    tracker = step.tracker;
+
+    step = stepStatusIncidentTracker(tracker, 'critical');
+    assert.equal(step.shouldAlert, true, 'a later, separate incident after re-arming fires again');
+  },
+);
+
+test(
+  'startStatusCheck: DMs super admins exactly once on a none -> incident transition, no repeat while the ' +
+    'incident stays active, no DM on the resolve transition, and fires again for a later separate incident',
+  async (t) => {
+    resetStatusCacheForTests();
+    const { adapter, dms } = makeAdapter();
+    let body = ALL_OPERATIONAL_BODY;
+    // Wires the real pollAnthropicStatus/cache path (rather than a fake
+    // boolean) so the incident branch — which reads getStatusCache() after a
+    // successful poll — is exercised end to end, per the approved criteria.
+    const runOnce = () => pollAnthropicStatus(async () => body);
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startStatusCheck([adapter], runOnce);
+    try {
+      await flush(); // initial run: operational
+      assert.equal(dms.length, 0, 'no DM while status stays operational');
+
+      body = INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS);
+      await flush();
+      assert.equal(dms.length, 1, 'exactly one DM on the none -> incident transition');
+      assert.match(dms[0].text, /Elevated errors on the Messages API/);
+
+      t.mock.timers.tick(POLL_MS); // still the same incident
+      await flush();
+      assert.equal(dms.length, 1, 'no repeat DM while the incident stays active');
+
+      body = ALL_OPERATIONAL_BODY;
+      t.mock.timers.tick(POLL_MS); // resolves
+      await flush();
+      assert.equal(dms.length, 1, 'the resolve transition itself sends no DM (out of scope for this issue)');
+
+      body = OTHER_INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS); // a later, separate incident
+      await flush();
+      assert.equal(dms.length, 2, 'a later, separate incident after re-arming alerts again');
+      assert.match(dms[1].text, /Total outage on the Messages API/);
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
+
+test('SECURITY: a poll that FAILS never advances the incident latch, even if the last-known-good cache is an active incident', async (t) => {
+  resetStatusCacheForTests();
+  const { adapter, dms } = makeAdapter();
+  // First poll succeeds and caches an incident (arms nothing yet — the very
+  // first successful poll transitions from the tracker's initial "inactive"
+  // state, so this itself fires once, matching the DM test above).
+  let mode: 'incident' | 'fail' = 'incident';
+  const runOnce = () =>
+    pollAnthropicStatus(async () => {
+      if (mode === 'fail') throw new Error('network down');
+      return INCIDENT_BODY;
+    });
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startStatusCheck([adapter], runOnce);
+  try {
+    await flush();
+    assert.equal(dms.length, 1, 'the first successful poll observing an incident alerts once');
+
+    mode = 'fail';
+    t.mock.timers.tick(POLL_MS);
+    await flush();
+    assert.equal(dms.length, 1, 'a failed poll never re-evaluates or re-fires the incident latch');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test(
+  'SECURITY: the proactive incident DM targets only the configured super admins, via the same ' +
+    'alertSuperAdmins/sendDirectMessage fan-out every other proactive alert in this file uses — no admin, ' +
+    'member, or guest recipient, and nothing derived from message-content-supplied roles',
+  async (t) => {
+    resetStatusCacheForTests();
+    const { adapter, dms } = makeAdapter();
+    let body = ALL_OPERATIONAL_BODY;
+    const runOnce = () => pollAnthropicStatus(async () => body);
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const timer = startStatusCheck([adapter], runOnce);
+    try {
+      await flush();
+      body = INCIDENT_BODY;
+      t.mock.timers.tick(POLL_MS);
+      await flush();
+      assert.equal(dms.length, 1);
+      assert.deepEqual(
+        dms.map((d) => d.userId),
+        ['super-1'],
+        'the DM recipient is exactly the configured SUPER_ADMIN_DISCORD_IDS set — the same super-admin-only ' +
+          'fan-out as every job-failure alert above, no broader audience',
+      );
+    } finally {
+      clearInterval(timer!);
+    }
+  },
+);
