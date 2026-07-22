@@ -2336,6 +2336,279 @@ test('buildAdminDigestMessage: autoAnswerHelpful/autoAnswerUnhelpful/addressedHe
   assert.ok(!before!.includes('📊'), 'no auto-answer-ratings line at the pre-#592 call shape');
 });
 
+// Week-over-week trend on the auto-answer helpful ratio (issue #629) — the
+// one digest line #497's trendSuffix mechanism never reached, and the one
+// metric #477 itself named as auto-answer's own success criterion.
+test('buildAdminDigestMessage: the auto-answer-ratings line trends via pctTrendSuffix, both directions (issue #629 acceptance criterion 1)', () => {
+  const increase = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { autoAnswerHelpfulPct: 70 },
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(increase);
+  assert.equal(
+    increase.split('\n').find((l) => l.includes('📊')),
+    '📊 Auto-answer ratings: 82% helpful (9/11). ▲ 12.0pp since last week.',
+    "a rise from 70% to 82% renders the exact ▲ N.Npp suffix, #597's pp wording verbatim",
+  );
+
+  const decrease = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { autoAnswerHelpfulPct: 90 },
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(decrease);
+  assert.equal(
+    decrease.split('\n').find((l) => l.includes('📊')),
+    '📊 Auto-answer ratings: 82% helpful (9/11). ▼ 8.0pp since last week.',
+    'a fall from 90% to 82% renders the exact ▼ N.Npp suffix',
+  );
+});
+
+test('buildAdminDigestMessage: the auto-answer-ratings line renders no suffix on an unchanged percentage, and none at all with no prior snapshot / missing key (issue #629 acceptance criteria 2, 3)', () => {
+  const unchanged = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { autoAnswerHelpfulPct: 82 },
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  const noSnapshot = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  const missingKey = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { openReports: 3 },
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+
+  assert.ok(unchanged && noSnapshot && missingKey);
+  const line = (m: string) => m.split('\n').find((l) => l.includes('📊'));
+  assert.equal(
+    line(unchanged),
+    '📊 Auto-answer ratings: 82% helpful (9/11).',
+    'previous 82% -> current 82% is unchanged — silent, not "No change" (matching trendSuffix, not #597\'s alert form)',
+  );
+  assert.equal(
+    line(noSnapshot),
+    '📊 Auto-answer ratings: 82% helpful (9/11).',
+    'no previousCounts at all -> byte-identical to the pre-#629 line',
+  );
+  assert.equal(
+    line(missingKey),
+    '📊 Auto-answer ratings: 82% helpful (9/11).',
+    'a previousCounts snapshot that simply never had this key -> no suffix, no crash',
+  );
+  assert.equal(line(unchanged), line(noSnapshot), 'unchanged and no-prior-data render byte-identically');
+});
+
+test('SECURITY: the auto-answer trend suffix is a deterministic function of the two helpful/unhelpful count pairs and the prior snapshot only, and never carries message content, question text, or rater identity (issue #629 acceptance criterion 5)', () => {
+  const secretRaterId = 'discord-user-9988776655';
+  const message = buildAdminDigestMessage(
+    [{ representative: `a secret question by ${secretRaterId}`, count: 1 }],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { autoAnswerHelpfulPct: 70 },
+    null,
+    null,
+    null,
+    0,
+    9,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('📊'));
+  assert.ok(line, 'the auto-answer line renders');
+  assert.match(
+    line,
+    /^📊 Auto-answer ratings: \d+% helpful \(\d+\/\d+\)( vs \d+% helpful \(\d+\/\d+\) addressed)?\.( [▲▼] \d+\.\d+pp since last week\.)?$/,
+    'the whole line, trend suffix included, is numeric/symbol text only',
+  );
+  assert.ok(
+    !line.includes(secretRaterId),
+    'SECURITY: no rater/asker identity ever appears in the auto-answer trend line',
+  );
+});
+
 test('buildAdminDigestMessage: open-appeals line appears only when openAppealsCount > 0, and all TWENTY signals zero -> null (issue #631 acceptance criteria 2, 3)', () => {
   assert.equal(
     buildAdminDigestMessage(
@@ -5377,6 +5650,87 @@ test(
     );
 
     await clearAccessRequest('discord', requesterId);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  "buildAdminDigestForAdmin: autoAnswerHelpfulPct round-trips through currentCounts/recordAdminDigestSnapshot, and the second week's pull renders the exact pp trend against the first (issue #629 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-autoanswertrend-admin`;
+    const conversationId = `${RUN}-c-autoanswertrend`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const ratedUsers: string[] = [];
+    async function rateAutoAnswer(userSuffix: string, helpful: boolean) {
+      const userId = `${RUN}-autoanswertrend-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `auto-answer for ${userId}`,
+        meta: { replyToUserId: userId, autoAnswer: true },
+      });
+      expectFeedbackId(await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful }));
+      ratedUsers.push(userId);
+    }
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    try {
+      // Week 1: 3 helpful, 1 unhelpful -> 75% helpful.
+      await rateAutoAnswer('w1-h1', true);
+      await rateAutoAnswer('w1-h2', true);
+      await rateAutoAnswer('w1-h3', true);
+      await rateAutoAnswer('w1-u1', false);
+
+      const week1 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.equal(
+        week1.currentCounts.autoAnswerHelpfulPct,
+        75,
+        'currentCounts carries the derived percentage, not the raw helpful/unhelpful counts',
+      );
+      assert.ok(week1.message);
+      assert.equal(
+        week1.message.split('\n').find((l) => l.includes('📊')),
+        '📊 Auto-answer ratings: 75% helpful (3/4).',
+        'no prior snapshot yet -> no trend suffix, week 1 renders bare',
+      );
+
+      // Persist week 1's snapshot exactly as runAdminDigestOnce would on a
+      // real send, so week 2's read sees it as "last week".
+      await recordAdminDigestSnapshot('discord', adminId, week1.currentCounts);
+      assert.equal(
+        (await getLastDigestCounts('discord', adminId))?.autoAnswerHelpfulPct,
+        75,
+        'the percentage round-trips through the sanitize whitelist, unlike an unlisted key would',
+      );
+
+      // Week 2: one more helpful rating -> 4 helpful, 1 unhelpful -> 80%.
+      await rateAutoAnswer('w2-h1', true);
+
+      const week2 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.equal(week2.currentCounts.autoAnswerHelpfulPct, 80, "week 2's own currentCounts reflects 80%");
+      assert.ok(week2.message);
+      assert.equal(
+        week2.message.split('\n').find((l) => l.includes('📊')),
+        '📊 Auto-answer ratings: 80% helpful (4/5). ▲ 5.0pp since last week.',
+        "week 2 sees last week's persisted 75% and renders the exact ▲ 5.0pp delta",
+      );
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [ratedUsers]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);

@@ -2,7 +2,7 @@
   "accessRequestAlert.router.test.ts": 3,
   "accessRequestAlert.test.ts": 2,
   "ackShortcutRouter.test.ts": 3,
-  "adminDigest.test.ts": 42,
+  "adminDigest.test.ts": 43,
   "agentCoreFailureFallbacksMi.test.ts": 2,
   "agentCoreFailureFallbacksPlain.test.ts": 3,
   "agentCoreKnowledgeEntryId.test.ts": 2,

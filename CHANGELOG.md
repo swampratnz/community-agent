@@ -12,6 +12,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-22
 
+### Added
+- **Auto-answer helpful-ratio now shows a week-over-week trend** (#629): every
+  other weekly admin-digest signal already gained a `▲`/`▼` trend suffix
+  (#497), but the auto-answer ratings line (#592) — the exact metric #477
+  named as auto-answer's own success criterion — never did. It now appends
+  `▲ N.Npp since last week.` / `▼ N.Npp since last week.` (percentage points,
+  not a raw-count delta, since a count delta would conflate "more people
+  rated it" with "it got more helpful") whenever `ADMIN_DIGEST_TRENDS_ENABLED`
+  is on and a prior week's percentage was recorded; silent on no change or no
+  prior data, matching every other trended signal's guarantee.
+
 ### Changed
 - **Auto-merge now escalates governance-path PRs instead of skipping them
   silently**: a build-worker PR that passes every gate (green CI, mergeable,
