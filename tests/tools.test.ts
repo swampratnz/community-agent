@@ -119,6 +119,8 @@ const {
   engagementStats,
   adminActivitySummary,
   recordAdminAction,
+  searchKnowledge,
+  searchKnowledgeLexical,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -8246,6 +8248,58 @@ async function waitForGapCount(
   }
 }
 
+/**
+ * Issue #208's intermittent CI failure ("0 !== 1" on the below-floor-miss
+ * assertion) has never reproduced locally, and the CI logs show no
+ * `Embedding failed`/`Knowledge gap recording failed` warnings — the failure
+ * is silent. So when the wait below expires at 0 gap rows, dump the live DB
+ * state to stderr right there, before the assertion throws, instead of
+ * guessing again: the caller's full knowledge visibility (searchKnowledge's
+ * own `scope IN ('global', platform, conversationId)` filter), what
+ * searchKnowledge/searchKnowledgeLexical actually return for the query AT
+ * THAT MOMENT, and the (expected-empty) knowledge_gaps rows. This makes the
+ * next CI failure self-diagnosing instead of requiring another
+ * investigation round. Test-only: no src/ change, no behaviour change.
+ */
+async function dumpKnowledgeGapForensics(
+  caller: { platform: Platform; conversationId: string; userId: string },
+  query: string,
+): Promise<void> {
+  const { rows: visibleKnowledge } = await pool.query(
+    `SELECT id, scope, created_by_role, embedding IS NULL AS embedding_null
+       FROM knowledge
+      WHERE scope IN ('global', $1, $2)
+      ORDER BY id`,
+    [caller.platform, caller.conversationId],
+  );
+  const [semanticHits, lexicalHits] = await Promise.all([
+    searchKnowledge(query, caller).catch(
+      (err) => `searchKnowledge threw: ${err instanceof Error ? err.message : String(err)}`,
+    ),
+    searchKnowledgeLexical(query, caller).catch(
+      (err) => `searchKnowledgeLexical threw: ${err instanceof Error ? err.message : String(err)}`,
+    ),
+  ]);
+  const { rows: gapRows } = await pool.query(
+    `SELECT id, platform, conversation_id, user_id, query_text, created_at
+       FROM knowledge_gaps
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY id`,
+    [caller.platform, caller.userId],
+  );
+  console.error(
+    'issue #208 forensics: below-floor-miss wait expired at 0 knowledge_gaps rows.',
+    '\nVisible knowledge rows (scope IN global/platform/conversationId):',
+    JSON.stringify(visibleKnowledge),
+    '\nLive searchKnowledge hits for the query, right now:',
+    JSON.stringify(semanticHits),
+    '\nLive searchKnowledgeLexical hits for the query, right now:',
+    JSON.stringify(lexicalHits),
+    '\nFull knowledge_gaps rows for this platform/user:',
+    JSON.stringify(gapRows),
+  );
+}
+
 test(
   'knowledge_search tool handler records a knowledge_gaps row only on a below-floor miss (hits existed but none cleared the floor), never on a confident hit (issue #208)',
   { skip },
@@ -8287,8 +8341,12 @@ test(
     // so hits.length > 0, but this deliberately unrelated query must not
     // clear the relevance floor — exercising the "hits existed but none
     // cleared the floor" gap condition, not a plain empty result.
-    await registeredTool.handler({ query: 'what time does the ferry to Waiheke leave on Saturdays' });
+    const ferryQuery = 'what time does the ferry to Waiheke leave on Saturdays';
+    await registeredTool.handler({ query: ferryQuery });
     const gapAfterMiss = await waitForGapCount(caller.platform, caller.userId, (c) => c >= 1);
+    if (gapAfterMiss < 1) {
+      await dumpKnowledgeGapForensics(caller, ferryQuery);
+    }
     assert.equal(gapAfterMiss, 1, 'a below-floor miss must record exactly one knowledge gap');
 
     const { rows } = await pool.query(
