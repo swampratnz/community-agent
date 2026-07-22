@@ -44,6 +44,21 @@ for anything after ~noon NZST/NZDT). Get today's date with
   Purely a logging change — every `DocsIngestResult` count, and the separate,
   rarer chunk-upsert-failure warning, are untouched.
 
+### Fixed
+- **4 member-facing resolution DMs no longer silently vanish when a WhatsApp
+  Cloud recipient's 24h window is closed** (#644): #602 gave the admin-alert
+  path (`notifySuperAdmins`/`notifyAdmins`) a recovery for this WhatsApp
+  Cloud-specific failure, but 4 ordinary member notifications —
+  `notifyMemberApproved` (add_member confirmation), `notifySuggestionResolved`
+  (#116), `notifyReportResolved` (#120), and `notifyAppealResolved` (#622) —
+  still just logged and dropped the DM. Since these fire asynchronously
+  (an admin triages hours or days after the member's own last message), the
+  recipient's window is commonly closed by then. Each now queues the exact
+  same templated message via the existing `queueForWindowReopen` mechanism
+  when the send rejects with `WindowClosedError`, delivered the moment that
+  recipient's own next message reopens their window; any other rejection is
+  unaffected. No new mechanism, no schema change.
+
 ## 2026-07-21
 
 ### Added

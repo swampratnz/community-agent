@@ -1454,9 +1454,14 @@ const SUPER_ADMIN_CAPABILITIES_TEXT =
  * `.catch(logger.warn)` below.
  *
  * Returns `true` when the grant was already in place (nothing to attempt,
- * so no failure) or the DM send resolved; `false` when a DM was attempted
- * and the send threw/rejected (issue #556) — `add_member` uses this to tell
- * the acting admin the confirmation DM didn't land, since today it can't.
+ * so no failure), the DM send resolved, or the send rejected specifically
+ * with `WindowClosedError` and was queued via `queueForWindowReopen` (issue
+ * #644 — treated as "handled, will still arrive," the same #602 rejection
+ * class `handleAdminAlertSendFailure` above already recovers for admin
+ * alerts, extended here to this member-facing DM); `false` when a DM was
+ * attempted and the send threw/rejected for any OTHER reason (issue #556) —
+ * `add_member` uses this to tell the acting admin the confirmation DM
+ * didn't land, since today it can't.
  */
 export async function notifyMemberApproved(
   adapter: PlatformAdapter,
@@ -1483,6 +1488,11 @@ export async function notifyMemberApproved(
     .sendDirectMessage(userId, message)
     .then(() => true)
     .catch((err) => {
+      if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+        adapter.queueForWindowReopen(userId, message, 'low');
+        logger.warn({ userId, platform }, "Approval DM: recipient's window is closed, queued for reopen");
+        return true;
+      }
       logger.warn({ err, userId }, 'Approval DM failed');
       return false;
     });
@@ -1588,7 +1598,11 @@ export function truncateForEcho(content: string): string {
  * Honours the submitter's standing `'mi'` language preference (issue #331,
  * same degrade-to-`'auto'`-on-failure shape as notifyMemberApproved above)
  * — the echoed suggestion text (`truncateForEcho`) stays untranslated user
- * content either way.
+ * content either way. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #644 — the same #602 recovery `handleAdminAlertSendFailure` gives
+ * admin alerts, extended to this member-facing DM); any other rejection is
+ * unaffected.
  */
 export async function notifySuggestionResolved(
   adapter: PlatformAdapter,
@@ -1612,9 +1626,17 @@ export async function notifySuggestionResolved(
         : status === 'done'
           ? `Your suggestion has been marked **done** — thanks for the input! ("${echoed}")`
           : `Your suggestion has been reviewed — thanks for the input! ("${echoed}")`;
-  await adapter
-    .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Suggestion resolution DM failed'));
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Suggestion resolution DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Suggestion resolution DM failed');
+  });
 }
 
 /**
@@ -1634,7 +1656,11 @@ export async function notifySuggestionResolved(
  * preference (issue #331, same degrade-to-`'auto'`-on-failure shape as
  * notifyMemberApproved above) — the echoed reason (`truncateForEcho`) stays
  * untranslated user content either way, and the `mi` `dismissed` wording
- * stays just as neutral-to-supportive as the English original.
+ * stays just as neutral-to-supportive as the English original. A
+ * `WindowClosedError` rejection is queued via `queueForWindowReopen` at
+ * `'low'` priority instead of logged-and-dropped (issue #644, same #602
+ * recovery extended to this member-facing DM); any other rejection is
+ * unaffected.
  */
 export async function notifyReportResolved(
   adapter: PlatformAdapter,
@@ -1654,9 +1680,17 @@ export async function notifyReportResolved(
       : status === 'dismissed'
         ? `Your report has been reviewed. After triage, no further action was taken — thanks for flagging it: "${echoed}"`
         : `Your report has been reviewed and resolved — thanks for flagging it: "${echoed}"`;
-  await adapter
-    .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Report resolution DM failed'));
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Report resolution DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Report resolution DM failed');
+  });
 }
 
 /**
@@ -1792,7 +1826,10 @@ export async function notifyAppealFiled(
  * so it's unit-testable without the MCP tool-call transport, same
  * convention as `notifyReportResolved`. Honours the appellant's standing
  * `'mi'` language preference (issue #331), same degrade-to-`'auto'`-on-
- * failure shape.
+ * failure shape. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #644, same #602 recovery extended to this member-facing DM); any
+ * other rejection is unaffected.
  */
 export async function notifyAppealResolved(
   adapter: PlatformAdapter,
@@ -1812,9 +1849,17 @@ export async function notifyAppealResolved(
       : status === 'dismissed'
         ? `Your appeal has been reviewed. After triage, no further action was taken — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`
         : `Your appeal has been reviewed and resolved — thanks for reaching out.${echoed ? ` "${echoed}"` : ''}`;
-  await adapter
-    .sendDirectMessage(userId, message)
-    .catch((err) => logger.warn({ err, userId: hashId(userId) }, 'Appeal resolution DM failed'));
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Appeal resolution DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Appeal resolution DM failed');
+  });
 }
 
 /**
