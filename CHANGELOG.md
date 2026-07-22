@@ -20,6 +20,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
   themselves in — is labelled `human-merge-ready` with one explanatory
   comment, so the human merge it requires actually gets requested. Previously
   such PRs sat unmerged with no signal to anyone.
+- **Docs-ingest page-fetch failures now log as one run-end summary instead of
+  one line per page** (#613): a weekly docs-ingest run whose upstream index
+  lists a batch of dead links (observed: 157/586 page fetches 404ing under a
+  single `api/terraform/beta/*` prefix) previously logged one near-identical
+  `warn` line per failed page, burying any genuine new failure class (a real
+  outage, a broken selector) in the noise. Fetch failures are now collected as
+  the run proceeds and, once it completes, reported as a single `warn` line
+  with the total failed/attempted count, a capped sample of up to 5 failing
+  URLs, and a by-directory rollup (e.g. `157× api/terraform/beta`). Full
+  per-page detail is unchanged in shape and still available at `debug` level.
+  Purely a logging change — every `DocsIngestResult` count, and the separate,
+  rarer chunk-upsert-failure warning, are untouched.
 
 ## 2026-07-21
 
