@@ -1036,6 +1036,66 @@ periodically points `CONTEXT_EXPORT_PATH` at `docs/COMMUNITY-CONTEXT.md`,
 runs `npm run export:context` against production, reviews, and commits —
 which the research loop then reads (file-only, no DB access).
 
+## Member-facing weekly digest
+
+Every push summary above (`admin_digest`, `list_context_digests`) is
+admin-only — a member who missed a week's discussion has no way to learn
+what came up without scrolling history or knowing to ask
+`knowledge_search`/`catch_up`. `src/memberDigest.ts` (issue #645) widens the
+*audience* of the already admin-visible, aggregate-by-construction data
+above — never the underlying data itself — to a single Discord channel, off
+unless `MEMBER_DIGEST_ENABLED` (default off, zero behaviour change on
+upgrade).
+
+- **Content, deterministic — no model call**: this week's `context_digests`
+  rows (`listContextDigests`), rendered as **topic title + question count
+  only** — deliberately narrower than `list_context_digests`'s admin view,
+  which also shows the model-written `summary`; the member surface renders
+  only the shorter, more predictable topic label. Plus a "new in the
+  knowledge base" line: the count and titles of knowledge entries created
+  that week via `listCuratedKnowledgeCreatedSince`, which reuses
+  `listKnowledgeTopics`'s exact `created_by_role != 'auto'` apparent-authority
+  boundary (issue #214) — an unreviewed, machine-researched entry can never
+  appear here either — and, since there is no caller conversation to widen
+  into for a single guild-wide post, is additionally restricted to
+  `scope = 'global'` only (the same reasoning the gated-guest knowledge
+  shortcut's `scopeRestriction: 'global-only'` already applies), so a
+  channel- or conversation-scoped curated entry never leaks into the public
+  digest. A week with zero digests and zero new curated entries posts
+  nothing (`formatMemberDigestMessage` returns `null`) — silence over noise,
+  matching every other digest job's quiet-week convention.
+- **Two independent floors, widened-audience-aware (PR #651 review)**: this
+  surface is more exposed than either existing `context_digests` consumer
+  (admin-only `list_context_digests`, and the export's own
+  `CONTEXT_EXPORT_MIN_DISTINCT_USERS`), so it applies its own guards rather
+  than inheriting theirs. A digest topic is only eligible when its
+  `distinctUsers` clears `MEMBER_DIGEST_MIN_DISTINCT_USERS` (>=2, default 3
+  — its own configurable k-anonymity floor, independent of
+  `CONTEXT_BUILDER_MIN_DISTINCT_USERS`) **and** its `platform` is `discord`
+  or `null` — `context_digests` clustering is unscoped across
+  Discord/WhatsApp, which was fine when every consumer was admin-only, but a
+  WhatsApp-sourced topic must never surface to a Discord audience that never
+  had access to that conversation. On top of both floors, `topic` is run
+  through the same lexical `scrubPII` (`context/export.ts`) the
+  community-context export already applies to `topic`/`summary` before they
+  leave the admin-only boundary — the builder's "no names/handles" contract
+  is prompt-only, and this is now a public post, not a private-repo export.
+- **Send path**: `MEMBER_DIGEST_CHANNEL_ID` (config-set only — never model-
+  or message-supplied) is posted to via the first connected **Discord**
+  adapter's `sendMessage`, the same `OutgoingMessage` path every other
+  channel post uses — outbound filtering (secret redaction, code policy) and
+  `SuppressEmbeds` apply automatically, with no bespoke handling needed here.
+  Never WhatsApp; never a platform/id derived from anything but this fixed
+  config value.
+- **Cadence**: routed through the shared `startTrackedJob` (6h outer tick,
+  same consecutive-failure alerting as every other opt-in job), gated by a
+  single-row `member_digest_sends` freshness guard
+  (`wasMemberDigestSentRecently`/`recordMemberDigestSent`) — guild-wide, not
+  per-recipient (there is one post, not one per member), mirroring
+  `engagement_alert_sends`'s singleton shape. A quiet week deliberately
+  leaves the freshness row untouched, so a week that starts quiet but gains
+  content partway through can still post on a later tick.
+
 ## Anthropic status check
 
 `src/status/anthropicStatus.ts` (issue #206, off unless

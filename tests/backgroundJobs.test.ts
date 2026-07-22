@@ -41,6 +41,7 @@ process.env.ADMIN_DIGEST_ENABLED = 'true';
 process.env.DEPARTED_ADMIN_ALERT_ENABLED = 'true';
 process.env.USAGE_COST_DIGEST_ENABLED = 'true';
 process.env.ENGAGEMENT_ALERT_ENABLED = 'true';
+process.env.MEMBER_DIGEST_ENABLED = 'true';
 
 const {
   startContextBuilder,
@@ -59,6 +60,7 @@ const { startAdminDigest } = await import('../src/adminDigest.js');
 const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js');
 const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
 const { startEngagementAlert } = await import('../src/engagementAlert.js');
+const { startMemberDigest } = await import('../src/memberDigest.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
@@ -124,6 +126,7 @@ const JOBS = [
   ['startDepartedAdminAlert', startDepartedAdminAlert],
   ['startUsageCostDigest', startUsageCostDigest],
   ['startEngagementAlert', startEngagementAlert],
+  ['startMemberDigest', startMemberDigest],
 ] as const;
 
 /** Maps each starter above to the BackgroundJobName key it records under in the shared job-health registry (issue #467). */
@@ -139,6 +142,7 @@ const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
   startDepartedAdminAlert: 'departed-admin-alert',
   startUsageCostDigest: 'usage-cost-digest',
   startEngagementAlert: 'engagement-alert',
+  startMemberDigest: 'member-digest',
 };
 
 for (const [name, start] of JOBS) {

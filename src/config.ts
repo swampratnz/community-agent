@@ -431,6 +431,27 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Weekly member-facing digest post (issue #645): widens the audience of
+  // already-admin-visible k-floored `context_digests` topics + curated
+  // "new in the knowledge base" titles to a Discord channel, so a member who
+  // missed the week can see what was discussed without asking. Off by
+  // default — no timer, no send, byte-identical to today when unset (same
+  // convention as every other proactive push above). MEMBER_DIGEST_CHANNEL_ID
+  // is config-set only — never model- or message-supplied — and is the
+  // Discord channel the weekly post targets.
+  MEMBER_DIGEST_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  MEMBER_DIGEST_CHANNEL_ID: z.string().optional(),
+  // Independent k-anonymity floor for the member digest (PR #651 review):
+  // this surface is a public Discord channel, more exposed than either
+  // existing `context_digests` consumer (admin-only `list_context_digests`,
+  // and the export's own CONTEXT_EXPORT_MIN_DISTINCT_USERS), so it gets its
+  // own floor rather than inheriting whichever value CONTEXT_BUILDER_MIN_
+  // DISTINCT_USERS happens to be configured with. Same >=2, default 3 as
+  // the export's floor.
+  MEMBER_DIGEST_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
   // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
   // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
   // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
@@ -1005,6 +1026,11 @@ export const config = {
   },
   usageCostDigest: {
     enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
+  },
+  memberDigest: {
+    enabled: env.MEMBER_DIGEST_ENABLED ?? false,
+    channelId: env.MEMBER_DIGEST_CHANNEL_ID,
+    minDistinctUsers: env.MEMBER_DIGEST_MIN_DISTINCT_USERS,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

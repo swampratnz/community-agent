@@ -1155,6 +1155,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Auto-retract reply on member delete',
     category: 'Moderation',
   },
+  {
+    envVar: 'MEMBER_DIGEST_ENABLED',
+    configPath: 'memberDigest.enabled',
+    label: 'Weekly member-facing digest',
+    category: 'Community',
+  },
 ] as const;
 
 /**
