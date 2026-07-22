@@ -214,9 +214,21 @@ jobs:
                claim) the issue until you have read both.
             1. Relabel this issue `status:building` and comment that you've claimed it.
             2. Implement the approved proposal on a new branch (create it with
-               `git checkout -b <branch>`). When you push, use EXACTLY
-               `git push -u origin HEAD` (no other push form is permitted —
-               `HEAD` pushes the branch you just created). Match existing style
+               `git checkout -b <branch>`). If a PREVIOUS attempt's escalation
+               comment on this issue names a pushed branch with surviving work,
+               resume from it instead of rebuilding: `git fetch origin <branch>`
+               then `git checkout -b <branch> origin/<branch>`, verify its state
+               against the acceptance criteria, and continue. When you push, use
+               EXACTLY `git push -u origin HEAD` (no other push form is
+               permitted — `HEAD` pushes the branch you just created).
+               PUSH INCREMENTALLY: run `git push -u origin HEAD` right after
+               your FIRST commit, and `git push origin HEAD` after EVERY
+               subsequent commit — the job's GitHub credential can expire
+               mid-build (~1h lifetime vs this job's 120-min budget), and an
+               unpushed tree dies with the runner (this stranded 6+ finished
+               builds on 2026-07-20/22). Branch pushes trigger no CI and no PR
+               exists yet, so intermediate pushes are free; do NOT open the PR
+               until step 4. Match existing style
                and write/extend tests. A pgvector Postgres is available at
                DATABASE_URL, so run the FULL gate CI will run on your PR and make
                every one green BEFORE opening it:
@@ -367,8 +379,27 @@ jobs:
             if [ -n "${exec_file}" ] && [ -f "${exec_file}" ]; then
               summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
             fi
+
+            # Surviving-branch forensics: the worker pushes incrementally, so a
+            # dead build may have left its finished (or partial) work on the
+            # remote. Name the branch + last pushed commit in the escalation so
+            # a re-queued build resumes from it instead of rebuilding — and so
+            # a stranded-but-green tree is one `gh pr create` from recovered.
+            # Read the workspace's current branch (the agent worked in-place);
+            # only report it if it actually exists on the remote.
+            surviving=""
+            branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+            if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
+              remote_sha="$(git ls-remote origin "refs/heads/${branch}" 2>/dev/null | cut -f1 || true)"
+              if [ -n "${remote_sha}" ]; then
+                surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build should resume from it (fetch + checkout, per the build prompt), not rebuild.' "${branch}" "${remote_sha}")"
+              fi
+            fi
             {
               printf '🤖 Build worker produced **no pull request** after %s attempts (auto-retried) — a persistent failure, not a flake. Cleared `status:building`/`status:approved`; labelled `needs-human`. Re-queue by removing `needs-human` and re-adding `status:approved`.\n\nLatest run: %s\n' "${{ github.run_attempt }}" "${run_url}"
+              if [ -n "${surviving}" ]; then
+                printf '\n%s\n' "${surviving}"
+              fi
               if [ -n "${summary}" ]; then
                 printf '\n<details><summary>Build worker'\''s final summary (what it says blocked it)</summary>\n\n%s\n\n</details>\n' "${summary}"
               else
