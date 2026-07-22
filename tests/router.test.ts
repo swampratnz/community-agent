@@ -532,7 +532,7 @@ test(
       undefined,
       undefined,
       undefined,
-      async () => true, // recordAccessRequestFn: reports a fresh insert
+      async () => ({ inserted: true, firstRequestedAt: new Date() }), // recordAccessRequestFn: reports a fresh insert
       async () => {
         throw new Error('notifyAccessRequest must never fire while ACCESS_REQUEST_ALERT_ENABLED is off');
       },

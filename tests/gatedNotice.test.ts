@@ -10,8 +10,14 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-const { GATED_NOTICE, GATED_NOTICE_MAX_ADMIN_NAMES, makeGatedNoticeBuilder, renderGatedNotice } =
-  await import('../src/gatedNotice.js');
+const {
+  GATED_NOTICE,
+  GATED_NOTICE_MAX_ADMIN_NAMES,
+  appendWaitClause,
+  makeGatedNoticeBuilder,
+  renderGatedNotice,
+  waitDaysSince,
+} = await import('../src/gatedNotice.js');
 
 // Pure-renderer tests (acceptance criteria 2/3/4 for issue #360) — no DB, no
 // Router, mirroring rateLimitNotice.test.ts's pure-function unit tests.
@@ -74,6 +80,85 @@ test('SECURITY: renderGatedNotice sanitizes each name (strips angle brackets, co
 test('SECURITY: renderGatedNotice omits a name that sanitizes to empty, falling back to the static notice when no name survives', () => {
   const notice = renderGatedNotice(['<><>', '   ']);
   assert.equal(notice, GATED_NOTICE, 'names that sanitize to nothing are dropped, never shown blank');
+});
+
+// appendWaitClause / waitDaysSince: the returning-guest wait clause (issue
+// #591) — pure-function unit tests, mirroring renderGatedNotice's own
+// pure-renderer tests above.
+
+test('appendWaitClause: undefined waitDays renders byte-identical to the input notice (a first-ever, 0-day guest)', () => {
+  assert.equal(appendWaitClause(GATED_NOTICE, undefined), GATED_NOTICE);
+});
+
+test('appendWaitClause: waitDays === 0 renders byte-identical to the input notice', () => {
+  assert.equal(appendWaitClause(GATED_NOTICE, 0), GATED_NOTICE);
+});
+
+test('appendWaitClause: waitDays === 1 appends the singular "day" form', () => {
+  assert.equal(
+    appendWaitClause(GATED_NOTICE, 1),
+    `${GATED_NOTICE} (You first asked 1 day ago — your request is on record.)`,
+  );
+});
+
+test('appendWaitClause: waitDays === 6 appends the plural "days" form naming 6', () => {
+  assert.equal(
+    appendWaitClause(GATED_NOTICE, 6),
+    `${GATED_NOTICE} (You first asked 6 days ago — your request is on record.)`,
+  );
+});
+
+test('appendWaitClause: works on any base notice text, not just GATED_NOTICE (e.g. the dynamic admin-naming variant)', () => {
+  const dynamic = renderGatedNotice(['Alice']);
+  assert.equal(
+    appendWaitClause(dynamic, 6),
+    `${dynamic} (You first asked 6 days ago — your request is on record.)`,
+  );
+});
+
+test('SECURITY: appendWaitClause interpolates only a plain integer day count — the clause matches a fixed, no-free-text pattern', () => {
+  const notice = appendWaitClause(GATED_NOTICE, 6);
+  const suffix = notice.slice(GATED_NOTICE.length);
+  assert.match(
+    suffix,
+    /^ \(You first asked \d+ days? ago — your request is on record\.\)$/,
+    'the appended suffix must be exactly this fixed template with only a \\d+ day count substituted',
+  );
+});
+
+test('SECURITY: appendWaitClause never claims an admin was actively notified — no "I\'ve let them know"/"notified" wording', () => {
+  const notice = appendWaitClause(GATED_NOTICE, 6);
+  assert.ok(
+    !/notif|let them know/i.test(notice),
+    'the wording must stay true regardless of whether the flag-gated real-time admin alert (#480) actually fired',
+  );
+});
+
+test('waitDaysSince: less than one whole day in the past is 0', () => {
+  const now = 1_000_000_000_000;
+  const firstRequestedAt = new Date(now - (24 * 60 * 60 * 1000 - 1)); // 23h59m59.999s ago
+  assert.equal(
+    waitDaysSince(firstRequestedAt, () => now),
+    0,
+  );
+});
+
+test('waitDaysSince: exactly one whole day in the past is 1', () => {
+  const now = 1_000_000_000_000;
+  const firstRequestedAt = new Date(now - 24 * 60 * 60 * 1000);
+  assert.equal(
+    waitDaysSince(firstRequestedAt, () => now),
+    1,
+  );
+});
+
+test('waitDaysSince: six whole days in the past is 6', () => {
+  const now = 1_000_000_000_000;
+  const firstRequestedAt = new Date(now - 6 * 24 * 60 * 60 * 1000);
+  assert.equal(
+    waitDaysSince(firstRequestedAt, () => now),
+    6,
+  );
 });
 
 // makeGatedNoticeBuilder: cache + injected-dependency tests, mirroring

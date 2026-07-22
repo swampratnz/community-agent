@@ -734,6 +734,28 @@ weakening it:
    a glance, and the weekly admin digest's pending-request line gains the
    same age for the single OLDEST row (`oldestAccessRequestAgeDays()`,
    `MIN(first_requested_at)`) — see the admin-digest entry in SECURITY.md.
+   That "waiting Nd" figure was, until issue #591, admin-only — a returning
+   guest got the exact same byte-identical notice on their first message and
+   their fiftieth. `recordAccessRequest`'s upsert now also returns
+   `firstRequestedAt` off the same `RETURNING` clause (zero new queries), and
+   `router.ts` appends a fixed, deterministic wait clause (`appendWaitClause`,
+   `waitDaysSince`, `src/gatedNotice.ts`) to the gated notice — dynamic
+   admin-naming notice, `GATED_NOTICE`, and `GATED_NOTICE_PLAIN` alike, but
+   deliberately **not** `GATED_NOTICE_MI` (left byte-for-byte unchanged as a
+   documented te reo follow-up) — whenever the guest's `first_requested_at`
+   is at least one whole day in the past: *"(You first asked N days ago —
+   your request is on record.)"*. A brand-new guest (`< 1` day) still renders
+   byte-identical to before. The wording is deliberately neutral ("on
+   record") rather than claiming an admin was actively notified, since the
+   real-time alert below is flag-gated and may not have fired for this
+   request. The clause interpolates only a plain integer day count, never a
+   name or message content, so it needs no `sanitizeName`-style treatment.
+   Threading `firstRequestedAt` into the notice means the alert-disabled
+   fire-and-forget upsert (issue #480, below) is now awaited on the one
+   branch that actually renders a static notice — an intentional, bounded
+   exception to that non-blocking default; the rate-limited path and the
+   guest-knowledge-shortcut-hit path (issue #165, below), where no gated
+   notice is sent at all, keep the upsert fire-and-forget exactly as before.
 3. **Server roster** (issue #47, extended to WhatsApp by issue #407). The
    Discord adapter records every `guildMemberAdd`/`guildMemberRemove` into
    `server_roster` (identity metadata only — see SECURITY.md) and

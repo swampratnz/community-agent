@@ -52,6 +52,37 @@ export function renderGatedNotice(names: string[]): string {
   return `Kia ora! This assistant is member-only. Ask a community admin — ${shown} — to add you as a member and I can help.`;
 }
 
+/**
+ * Returning-guest wait clause (issue #591): appended by `router.ts` to
+ * whichever English gated-notice variant it settles on (the dynamic
+ * admin-naming notice above, or the static `GATED_NOTICE`/`GATED_NOTICE_PLAIN`
+ * fallbacks) — never to `GATED_NOTICE_MI`, which stays untouched as a
+ * documented te reo follow-up. `waitDays` is `undefined`/`0` on a guest's
+ * first-ever addressed message, rendering byte-identical to today; `>= 1`
+ * appends a fixed suffix naming the whole-day count. The suffix interpolates
+ * only a plain integer — never a name or message content — so it needs no
+ * `sanitizeName`-style treatment and carries no injection surface. Wording is
+ * deliberately neutral ("on record") rather than "I've let them know": the
+ * real-time admin alert (issue #480) is flag-gated and may not have fired for
+ * this request, so the clause must stay true regardless of that config.
+ */
+export function appendWaitClause(notice: string, waitDays?: number): string {
+  if (!waitDays || waitDays < 1) return notice;
+  const days = Math.floor(waitDays);
+  return `${notice} (You first asked ${days} day${days === 1 ? '' : 's'} ago — your request is on record.)`;
+}
+
+/**
+ * Whole-day age of an access request's first-ever message (issue #591),
+ * mirroring `oldestAccessRequestAgeDays`'s SQL whole-day truncation but
+ * computed in JS from the `firstRequestedAt` value `recordAccessRequest`'s
+ * own `RETURNING` clause already returns — no extra query. `now` is
+ * injectable so tests don't race the real clock.
+ */
+export function waitDaysSince(firstRequestedAt: Date, now: () => number = Date.now): number {
+  return Math.floor((now() - firstRequestedAt.getTime()) / 86_400_000);
+}
+
 interface CacheEntry {
   names: string[];
   expires: number;

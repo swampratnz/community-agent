@@ -4700,21 +4700,30 @@ test(
 
     const firstInsert = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
     assert.equal(
-      firstInsert,
+      firstInsert.inserted,
       true,
       'the first-ever request for this (platform, user_id) must report a fresh insert',
+    );
+    assert.ok(
+      firstInsert.firstRequestedAt instanceof Date,
+      "a fresh insert must return the row's first_requested_at",
     );
 
     const repeat = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
     assert.equal(
-      repeat,
+      repeat.inserted,
       false,
       'a second request from the same still-pending user must report NOT a fresh insert',
+    );
+    assert.equal(
+      repeat.firstRequestedAt.getTime(),
+      firstInsert.firstRequestedAt.getTime(),
+      'a repeat upsert must return the ORIGINAL first_requested_at, unchanged by the update',
     );
 
     const repeatAgain = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
     assert.equal(
-      repeatAgain,
+      repeatAgain.inserted,
       false,
       'every subsequent repeat must keep reporting false, not just the second one',
     );
@@ -4723,10 +4732,39 @@ test(
 
     const afterClear = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
     assert.equal(
-      afterClear,
+      afterClear.inserted,
       true,
       'after clearAccessRequest removes the row, the next request is a fresh insert again',
     );
+
+    await clearAccessRequest('discord', userId);
+  },
+);
+
+test(
+  'SECURITY: repository: recordAccessRequest returning firstRequestedAt adds no new DB round-trip — issues ' +
+    'exactly one query per call (issue #591)',
+  { skip },
+  async (t) => {
+    const userId = `${RUN}-recordaccessreq-onequery`;
+    await clearAccessRequest('discord', userId); // in case a previous failed run left a row behind
+
+    const calls: unknown[] = [];
+    const realQuery = pool.query.bind(pool);
+    t.mock.method(pool, 'query', (...args: unknown[]) => {
+      calls.push(args);
+      return (realQuery as (...a: unknown[]) => unknown)(...args);
+    });
+
+    const result = await recordAccessRequest({ platform: 'discord', userId, userName: 'tester' });
+
+    assert.equal(
+      calls.length,
+      1,
+      'recordAccessRequest must issue exactly one query even though it now also returns firstRequestedAt',
+    );
+    assert.equal(result.inserted, true);
+    assert.ok(result.firstRequestedAt instanceof Date);
 
     await clearAccessRequest('discord', userId);
   },
