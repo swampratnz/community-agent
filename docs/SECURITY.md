@@ -770,7 +770,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   row it returns — this only adds a second aggregate read (`MIN` instead of
   `COUNT`) of a column that was already fully admin-visible. The line is
   omitted entirely when the table is empty (`null`, never `0`) and otherwise
-  carries only the bare day-count integer, never a request's identity.
+  carries only the bare day-count integer, never a request's identity. Issue
+  #629 closed the one remaining gap in #497's trend rollout: the auto-answer
+  ratings line (#592) had never gained a `trendSuffix`, and its percentage
+  never round-tripped through `last_counts`. Rather than trend the raw
+  helpful/unhelpful counts (which would conflate rating volume with rating
+  quality), a derived `autoAnswerHelpfulPct` is added to `last_counts` — only
+  when the guild has at least one auto-answer rating that week, mirroring the
+  line's own render gate — and added to `sanitizeDigestCounts`'s whitelist
+  alongside the existing bare counts. The rendered suffix (`▲`/`▼ N.Npp since
+  last week`) and the persisted value are both a bare percentage/delta only,
+  same privacy convention as every other signal; no prior snapshot, an
+  unchanged percentage, or the flag off all render byte-identical to the
+  pre-#629 line.
 - **`list_admins`** (super-admin, read-only, no arguments, issue #428):
   answers "who currently holds bot-admin tier?" as a direct query —
   `listAdminRoster()` joins `community_users WHERE role = 'admin'` against

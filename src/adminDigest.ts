@@ -58,6 +58,28 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
 }
 
 /**
+ * Percentage-point week-over-week suffix for the auto-answer helpful-ratio
+ * line (issue #629) — same silent-unless-prior-data-and-changed contract as
+ * `trendSuffix` above, but a signed pp delta on the RATIO rather than an
+ * arrow on a raw count: trending `autoAnswerHelpful`'s count directly would
+ * conflate "more people rated it" with "it got more helpful" (the same
+ * reasoning issue #597 used to justify a bespoke pp-delta over reusing a
+ * count-delta for its own ratio signal). Reuses #597's `▲/▼ N.Npp` wording
+ * (`.toFixed(1)`) verbatim rather than inventing new phrasing; unlike
+ * `trendSuffix`'s parenthesized fragment, this appends as its own trailing
+ * sentence (`... since last week.`) since it's the only pp-based line in
+ * this digest.
+ */
+function pctTrendSuffix(key: string, current: number, previous: Record<string, number> | undefined): string {
+  if (!previous || !(key in previous)) return '';
+  const diff = current - previous[key];
+  if (diff === 0) return '';
+  return diff > 0
+    ? ` ▲ ${diff.toFixed(1)}pp since last week.`
+    : ` ▼ ${Math.abs(diff).toFixed(1)}pp since last week.`;
+}
+
+/**
  * Pure: clusters + pending-queue counts -> DM text, or null to skip.
  * Returning null when all five signals are zero is the "silently re-arm,
  * no message when there's nothing to say" convention shared with the
@@ -206,6 +228,22 @@ function trendSuffix(key: string, current: number, previous: Record<string, numb
  * not just this week's isolated rate. Two append-only trailing params,
  * default 0, so every existing call site is unaffected and the quiet case is
  * byte-identical to the pre-#653 form.
+ * `autoAnswerHelpfulPct` (issue #629) is the only trend the auto-answer
+ * ratings line (#592) has ever carried — every OTHER digest signal already
+ * got a `trendSuffix` from #497, but this line's own render block never
+ * called it and its percentage never round-tripped through
+ * `currentCounts`/`recordAdminDigestSnapshot`. Rather than reuse
+ * `trendSuffix` on the raw `autoAnswerHelpful` count (which would conflate
+ * rating VOLUME with rating QUALITY), this trends the derived percentage via
+ * `pctTrendSuffix`, following #597's percentage-point convention for a
+ * ratio. `buildAdminDigestForAdmin` only ever writes this key into
+ * `currentCounts` when `autoAnswerHelpful + autoAnswerUnhelpful > 0` (the
+ * same gate the render block itself uses), so a rating-less week adds no
+ * key and next week's read stays silent via `pctTrendSuffix`'s own
+ * `!(key in previous)` guard — never a stale/misleading comparison against
+ * an unrelated week. No prior snapshot value, an unchanged percentage, or
+ * `ADMIN_DIGEST_TRENDS_ENABLED` off all render byte-identical to the
+ * pre-#629 line, matching every other trended signal's guarantee.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -524,7 +562,8 @@ export function buildAdminDigestMessage(
           `(${addressedHelpful}/${addressedTotal}) addressed`
         : '';
     sections.push(
-      `📊 Auto-answer ratings: ${autoPct}% helpful (${autoAnswerHelpful}/${autoTotal})${comparisonFragment}.`,
+      `📊 Auto-answer ratings: ${autoPct}% helpful (${autoAnswerHelpful}/${autoTotal})${comparisonFragment}.` +
+        pctTrendSuffix('autoAnswerHelpfulPct', autoPct, previousCounts),
     );
   }
   if (duplicateKnowledgeCount > 0) {
@@ -741,6 +780,17 @@ export async function buildAdminDigestForAdmin(
     overallAnswerHelpful: overallAnswerSummary.helpful,
     overallAnswerTotal: overallAnswerSummary.total,
   };
+  // Only added when there's at least one auto-answer rating this week (issue
+  // #629) — mirrors the render block's own `autoAnswerHelpful +
+  // autoAnswerUnhelpful > 0` gate, so a rating-less week never writes a
+  // meaningless 0%/undefined-denominator percentage into next week's
+  // comparison base.
+  const autoAnswerTotal = answerOriginSummary.autoAnswer.helpful + answerOriginSummary.autoAnswer.unhelpful;
+  if (autoAnswerTotal > 0) {
+    currentCounts.autoAnswerHelpfulPct = Math.round(
+      (answerOriginSummary.autoAnswer.helpful / autoAnswerTotal) * 100,
+    );
+  }
   const previousCounts = config.adminDigest.trendsEnabled
     ? ((await getLastDigestCounts(platform, platformUserId)) ?? undefined)
     : undefined;

@@ -4019,10 +4019,14 @@ export async function wasAdminDigestSentRecently(
 
 /**
  * The only signal names ever allowed into `last_counts` — every one of
- * `buildAdminDigestMessage`'s bare-count parameters (see adminDigest.ts),
- * nothing else. `sanitizeDigestCounts` enforces this at the write boundary
- * so a future call site can never smuggle PII-shaped data (a user id, a
- * title) into the snapshot via an unexpected field name.
+ * `buildAdminDigestMessage`'s bare-count parameters, plus a handful of
+ * trend-only derived values that never round-trip as their own function
+ * parameter (e.g. `autoAnswerHelpfulPct`, issue #629, derived from
+ * `autoAnswerHelpful`/`autoAnswerUnhelpful` purely for the week-over-week
+ * comparison) — see adminDigest.ts. Nothing else. `sanitizeDigestCounts`
+ * enforces this at the write boundary so a future call site can never
+ * smuggle PII-shaped data (a user id, a title) into the snapshot via an
+ * unexpected field name.
  */
 const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
   'pendingAccessRequests',
@@ -4040,6 +4044,7 @@ const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
   'conflictCandidateCount',
   'staleMutedMembersCount',
   'notMembersCount',
+  'autoAnswerHelpfulPct',
 ]);
 
 /** Strips any key outside `ADMIN_DIGEST_SIGNAL_KEYS` and any non-integer value. */
