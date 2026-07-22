@@ -187,6 +187,58 @@ test(
 );
 
 test(
+  'SECURITY: a gated guest served by the knowledge shortcut gets a reply without the access-request record ' +
+    'being awaited — the #480 non-blocking invariant holds on the shortcut-hit path even though issue #591 now ' +
+    'awaits it on the static-notice-render path (issue #591)',
+  { skip },
+  async (t) => {
+    const { Router, saveKnowledge } = await mods(t);
+    await saveKnowledge({ content: GLOBAL_CONTENT, scope: 'global' });
+
+    let recordConsumed = false;
+    let resolveRecord: (() => void) | undefined;
+    const hangingRecord = new Promise<{ inserted: boolean; firstRequestedAt: Date }>((resolve) => {
+      resolveRecord = () => {
+        recordConsumed = true;
+        resolve({ inserted: true, firstRequestedAt: new Date() });
+      };
+    });
+
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      20,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => hangingRecord, // recordAccessRequestFn: deliberately never resolves during this test
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    const userId = `${RUN}-guest-shortcut-nonblocking`;
+    await assert.doesNotReject(trigger(makeMessage({ userId })));
+
+    assert.equal(sent.length, 1, 'the guest still gets the knowledge-shortcut reply');
+    assert.ok(sent[0].text.includes(GLOBAL_CONTENT));
+    assert.equal(
+      recordConsumed,
+      false,
+      'the shortcut-hit path (no gated notice rendered) must never await the access-request record',
+    );
+
+    resolveRecord?.(); // avoid leaving a dangling unresolved promise past the end of the test
+  },
+);
+
+test(
   'SECURITY: a gated guest never gets a conversation-scoped entry via the shortcut, even at very high similarity (issue #165)',
   { skip },
   async (t) => {

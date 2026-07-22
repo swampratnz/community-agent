@@ -60,7 +60,7 @@ import {
   DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
 } from './dailyReplyBudgetWarning.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
-import { buildGatedNotice, GATED_NOTICE } from './gatedNotice.js';
+import { appendWaitClause, buildGatedNotice, GATED_NOTICE, waitDaysSince } from './gatedNotice.js';
 
 // Fixed, human-authored te reo Māori variant (issue #363), served instead of
 // GATED_NOTICE to a gated guest with a standing 'mi' language_prefs row
@@ -772,16 +772,30 @@ export class Router {
         // fire-and-forget exactly as before #480 — the gated guest's reply path
         // (the raid-exposed hot path) never blocks on the DB round trip, so
         // behaviour is genuinely byte-identical when the feature is off.
+        // firstRequestedAtPromise (issue #591): the returning-guest wait
+        // clause needs the row's first_requested_at, which recordAccessRequest
+        // now returns off the same RETURNING clause — zero new queries. In
+        // the alert-disabled branch this promise is created but deliberately
+        // NOT awaited here, preserving #480's non-blocking invariant on the
+        // raid-exposed hot path; it is only awaited below, and only on the
+        // one branch that actually renders a static gated notice, matching
+        // the same "already awaits getLangPref/getGatedNotice/getRespStyle"
+        // precedent that branch sets.
+        let firstRequestedAtPromise: Promise<Date | null>;
         if (config.accessRequestAlert.enabled) {
-          const inserted = await this.recordAccessRequestFn({
+          const result = await this.recordAccessRequestFn({
             platform: msg.platform,
             userId: msg.userId,
             userName: msg.userName,
           }).catch((err) => {
             logger.warn({ err }, 'Failed to record access request');
-            return false;
+            return { inserted: false, firstRequestedAt: null as Date | null };
           });
-          if (inserted && this.reserveAccessRequestAlertSlot(config.accessRequestAlert.rateLimitPerHour)) {
+          firstRequestedAtPromise = Promise.resolve(result.firstRequestedAt);
+          if (
+            result.inserted &&
+            this.reserveAccessRequestAlertSlot(config.accessRequestAlert.rateLimitPerHour)
+          ) {
             this.notifyAccessRequestFn((platform) => this.adapters.get(platform), {
               platform: msg.platform,
               userId: msg.userId,
@@ -789,11 +803,16 @@ export class Router {
             }).catch((err) => logger.warn({ err }, 'Failed to fire access-request alert'));
           }
         } else {
-          void this.recordAccessRequestFn({
+          firstRequestedAtPromise = this.recordAccessRequestFn({
             platform: msg.platform,
             userId: msg.userId,
             userName: msg.userName,
-          }).catch((err) => logger.warn({ err }, 'Failed to record access request'));
+          })
+            .then((result) => result.firstRequestedAt)
+            .catch((err) => {
+              logger.warn({ err }, 'Failed to record access request');
+              return null;
+            });
         }
         if (!this.rateLimited(userKey)) {
           // Guest knowledge shortcut (issue #165): before the static "ask an
@@ -840,6 +859,15 @@ export class Router {
                 );
                 if (style === 'plain') notice = GATED_NOTICE_PLAIN;
               }
+              // Returning-guest wait clause (issue #591): this is the one
+              // branch that actually sends a static gated notice, so this is
+              // the one place firstRequestedAtPromise is awaited — an
+              // intentional, bounded exception to #480's fire-and-forget
+              // default, matching the notice path's existing awaits above.
+              // GATED_NOTICE_MI is deliberately excluded (untouched, above).
+              const firstRequestedAt = await firstRequestedAtPromise;
+              const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
+              notice = appendWaitClause(notice, waitDays);
             }
             await this.send(adapter, msg.conversationId, notice).catch((err) =>
               logger.warn({ err }, 'Failed to send gated notice'),

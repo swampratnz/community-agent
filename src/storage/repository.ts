@@ -2850,19 +2850,23 @@ export async function recordAdminAction(
  * caller must never pass message content. Upserts so repeat pings from the
  * same user dedup into one row instead of growing unbounded.
  *
- * Returns whether this call created a FRESH row (`true`) or updated an
- * existing still-pending one (`false`), via Postgres's own `xmax = 0` trick
- * on `RETURNING` — distinguishing "first insert" from "repeat upsert" needs
- * no extra query or column, just reading what the upsert already tells us
- * (issue #480). This is the debounce signal `notifyAccessRequest`'s
- * first-time-only real-time alert relies on: a repeat ping from the same
- * still-pending guest returns `false` and must not notify again.
+ * Returns whether this call created a FRESH row (`inserted`), via Postgres's
+ * own `xmax = 0` trick on `RETURNING` — distinguishing "first insert" from
+ * "repeat upsert" needs no extra query or column, just reading what the
+ * upsert already tells us (issue #480). This is the debounce signal
+ * `notifyAccessRequest`'s first-time-only real-time alert relies on: a
+ * repeat ping from the same still-pending guest returns `inserted: false` and
+ * must not notify again.
+ *
+ * Also returns `firstRequestedAt` (issue #591) — read off the same row via
+ * the same `RETURNING` clause, so surfacing it to the returning-guest wait
+ * clause in the gated notice costs zero new queries and zero new columns.
  */
 export async function recordAccessRequest(input: {
   platform: Platform;
   userId: string;
   userName?: string;
-}): Promise<boolean> {
+}): Promise<{ inserted: boolean; firstRequestedAt: Date }> {
   const { rows } = await pool.query(
     `INSERT INTO access_requests (platform, user_id, user_name)
      VALUES ($1,$2,$3)
@@ -2870,10 +2874,10 @@ export async function recordAccessRequest(input: {
        SET last_requested_at = now(),
            request_count = access_requests.request_count + 1,
            user_name = COALESCE(EXCLUDED.user_name, access_requests.user_name)
-     RETURNING (xmax = 0) AS inserted`,
+     RETURNING (xmax = 0) AS inserted, first_requested_at`,
     [input.platform, input.userId, input.userName ?? null],
   );
-  return rows[0]?.inserted === true;
+  return { inserted: rows[0]?.inserted === true, firstRequestedAt: rows[0].first_requested_at };
 }
 
 export interface AccessRequest {

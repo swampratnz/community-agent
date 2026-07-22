@@ -80,7 +80,7 @@ function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage 
  * adapter DM.
  */
 function makeGatedRouter(opts: {
-  recordAccessRequestFn: () => Promise<boolean>;
+  recordAccessRequestFn: () => Promise<{ inserted: boolean; firstRequestedAt: Date }>;
   notifyAccessRequestFn: (...args: unknown[]) => Promise<void>;
 }) {
   return new Router(
@@ -110,7 +110,7 @@ test('config: ACCESS_REQUEST_ALERT_ENABLED reads true and ACCESS_REQUEST_ALERT_R
 test('router (gated guest): a fresh access request (inserted === true) fires notifyAccessRequest exactly once, with the guest platform/userId/userName', async () => {
   const calls: Array<{ platform: string; userId: string; userName: string }> = [];
   const router = makeGatedRouter({
-    recordAccessRequestFn: async () => true,
+    recordAccessRequestFn: async () => ({ inserted: true, firstRequestedAt: new Date() }),
     notifyAccessRequestFn: async (_adapterFor, guest) => {
       calls.push(guest as { platform: string; userId: string; userName: string });
     },
@@ -134,7 +134,7 @@ test(
   async () => {
     let calls = 0;
     const router = makeGatedRouter({
-      recordAccessRequestFn: async () => false, // repeat upsert of an existing row
+      recordAccessRequestFn: async () => ({ inserted: false, firstRequestedAt: new Date() }), // repeat upsert of an existing row
       notifyAccessRequestFn: async () => {
         calls += 1;
       },
@@ -159,7 +159,7 @@ test(
     const router = makeGatedRouter({
       recordAccessRequestFn: async () => {
         recordCalls += 1;
-        return true; // every call here is a "fresh" first-time request
+        return { inserted: true, firstRequestedAt: new Date() }; // every call here is a "fresh" first-time request
       },
       notifyAccessRequestFn: async () => {
         notifyCalls += 1;
@@ -185,7 +185,7 @@ test(
 test('router (gated guest): re-request after a fresh insert (e.g. after clearAccessRequest) notifies again — each call is judged solely on its own inserted value', async () => {
   let calls = 0;
   const router = makeGatedRouter({
-    recordAccessRequestFn: async () => true, // every call reports fresh, as it would right after clearAccessRequest
+    recordAccessRequestFn: async () => ({ inserted: true, firstRequestedAt: new Date() }), // every call reports fresh, as it would right after clearAccessRequest
     notifyAccessRequestFn: async () => {
       calls += 1;
     },

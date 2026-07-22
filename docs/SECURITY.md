@@ -884,6 +884,34 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   byte-identical to before #480: `recordAccessRequest`'s new return value is
   computed but the alert branch never reads it, so no admin DM is ever sent
   and no rate-limit state is ever touched.
+- **Returning-guest wait clause** (`appendWaitClause`/`waitDaysSince`,
+  `src/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
+  age the admin-facing digest/`list_access_requests` (issue #515, above)
+  already show, to the *guest* themselves, appended to the gated notice once
+  they've been waiting at least one whole day. Self-scoped only: the day
+  count is read from the value `recordAccessRequest`'s own upsert already
+  returns for the caller's own `(platform, user_id)` row — never from message
+  content or another user's row. No new storage, no new retention, no new
+  query (one extra `RETURNING` column on the existing upsert) and no new
+  tool/tier/agent code path — this stays inside the same deterministic,
+  non-model gated-notice send #360/#430 established. The appended clause
+  interpolates only a plain integer day count, never a name or free text, so
+  it carries no injection surface and needs no `sanitizeName` treatment
+  (unlike the admin-name clause it sits next to). Wording is deliberately
+  "your request is on record" rather than "I've let them know" — the
+  real-time admin alert above is flag-gated and off by default, so a fixed
+  claim that an admin was actively notified would be false whenever that flag
+  is unset; the chosen wording is true regardless of the flag. Threading
+  `firstRequestedAt` into the render path means the alert-disabled branch's
+  `recordAccessRequest` upsert, previously always fire-and-forget, is now
+  awaited — but ONLY on the branch that actually renders a static gated
+  notice, matching that branch's existing awaits of
+  `getLangPref`/`getGatedNotice`/`getRespStyle`. The rate-limited path and the
+  guest-knowledge-shortcut-hit path (issue #165) render no notice at all, so
+  the upsert stays fire-and-forget on both, preserving #480's non-blocking
+  invariant on the raid-exposed hot path. `GATED_NOTICE_MI` is unchanged
+  byte-for-byte — te reo parity for this clause is an explicit, documented
+  follow-up, not this PR.
 - **Standing response-style preference** (`response_style_prefs`, issue
   #126): a member/guest-tier tool, `set_response_style`, lets any caller opt
   into plain-language replies without re-asking every message. The argument
