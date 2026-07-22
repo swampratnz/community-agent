@@ -25,6 +25,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
   active; the latch re-arms once status returns to normal so a later,
   separate incident alerts again. No new tool, config key, DB table, or
   model call — zero marginal cost.
+- **Auto-answer helpful-ratio now shows a week-over-week trend** (#629): every
+  other weekly admin-digest signal already gained a `▲`/`▼` trend suffix
+  (#497), but the auto-answer ratings line (#592) — the exact metric #477
+  named as auto-answer's own success criterion — never did. It now appends
+  `▲ N.Npp since last week.` / `▼ N.Npp since last week.` (percentage points,
+  not a raw-count delta, since a count delta would conflate "more people
+  rated it" with "it got more helpful") whenever `ADMIN_DIGEST_TRENDS_ENABLED`
+  is on and a prior week's percentage was recorded; silent on no change or no
+  prior data, matching every other trended signal's guarantee.
 
 ### Changed
 - **Auto-merge now escalates governance-path PRs instead of skipping them
