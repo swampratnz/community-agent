@@ -34,6 +34,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   rated it" with "it got more helpful") whenever `ADMIN_DIGEST_TRENDS_ENABLED`
   is on and a prior week's percentage was recorded; silent on no change or no
   prior data, matching every other trended signal's guarantee.
+- **Members now get a weekly digest post in a Discord channel** (#651):
+  admins already had several weekly recap signals surfaced via DM, but
+  members had no equivalent visibility into community activity. Off by
+  default (`MEMBER_DIGEST_ENABLED`); once enabled and pointed at a channel
+  (`MEMBER_DIGEST_CHANNEL_ID`), it posts once a week naming the discussion
+  topics tracked that week (title + question count only, deliberately
+  narrower than the admin-only summary view) and any new admin-curated
+  knowledge-base entries added in the same window. A week with nothing to
+  report — no topics, no new curated entries — posts nothing rather than an
+  empty message. Discord only.
 
 ### Changed
 - **Auto-merge now escalates governance-path PRs instead of skipping them
@@ -152,6 +162,32 @@ for anything after ~noon NZST/NZDT). Get today's date with
   Omitted, output is byte-identical to today. No new tool, tier, or data
   access — reuses the existing `super_admin` gate and the already-visible
   `platform` column.
+- **Weekly admin digest now surfaces broken knowledge-base source links**
+  (#648): the weekly link-check job (`KNOWLEDGE_LINK_CHECK_ENABLED`, #448)
+  already HEAD-checks every knowledge entry's source URL and stamps
+  unreachable ones, but the only way to see the result was pulling
+  `list_knowledge({ sourceUnreachable: true })` — every sibling
+  knowledge-quality signal (stale entries, gaps, pending candidates,
+  low-rated) already pushes into the digest, and #448 itself named this as
+  the deferred next step. Adds a guild-wide "N knowledge source(s)
+  unreachable" line, shown only when the link-check feature is on and the
+  count is nonzero, pointing admins at the existing filter. Bare integer
+  only — no URL, title, or entry id reaches the digest. No new tool or
+  schema.
+
+### Changed
+- **Plain-language response style now also covers moderation DMs,
+  code-omission notes, and approval messages** (#658): #430 gave members
+  with a stored `'plain'` response-style preference simplified wording for
+  the bot's model-authored replies, but three deterministic, non-model
+  surfaces were named as deferred follow-ups and kept sending standard
+  English regardless of preference — moderation warn/block DMs, the
+  code-omitted/truncated notes in outbound filtering, and the member/admin
+  approval-confirmation messages. All three now check the caller's stored
+  preference and send the matching plain-language variant, with the
+  existing `'mi'` te reo Māori preference still taking priority over
+  `'plain'`. No new tool, tier, or preference — reuses the existing
+  `response_style_prefs` row.
 
 ### Fixed
 - **Admin escalations could go completely missing during a total-outage
