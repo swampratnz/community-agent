@@ -18,7 +18,12 @@ import {
   type ClassifyDeps,
 } from './context/linkCheck.js';
 import { writeCommunityContextExport } from './context/export.js';
-import { pollAnthropicStatus } from './status/anthropicStatus.js';
+import {
+  pollAnthropicStatus,
+  getStatusCache,
+  formatStatusIncidentAlert,
+  type StatusIndicator,
+} from './status/anthropicStatus.js';
 import {
   listUnnotifiedDevTeamWatches,
   markDevTeamWatchNotified,
@@ -322,6 +327,32 @@ export function statusCheckAlertThreshold(pollMinutes: number): number {
   return Math.max(3, Math.ceil(60 / pollMinutes));
 }
 
+export interface StatusIncidentTracker {
+  active: boolean;
+}
+
+export function initialStatusIncidentTracker(): StatusIncidentTracker {
+  return { active: false };
+}
+
+/**
+ * Pure crossed-latch for the proactive incident DM (issue #601), mirroring
+ * `stepUsageAlertTracker`'s shape (`usageAlert.ts`) rather than introducing a
+ * new abstraction: a poll's indicator crossing from `'none'` to any incident
+ * level fires exactly once (latch stays "active" across subsequent non-`none`
+ * polls, no repeat DM), and the latch re-arms as soon as the indicator drops
+ * back to `'none'`, so a later, separate incident alerts again.
+ */
+export function stepStatusIncidentTracker(
+  tracker: StatusIncidentTracker,
+  indicator: StatusIndicator,
+): { tracker: StatusIncidentTracker; shouldAlert: boolean } {
+  if (indicator === 'none') {
+    return { tracker: { active: false }, shouldAlert: false };
+  }
+  return { tracker: { active: true }, shouldAlert: !tracker.active };
+}
+
 /**
  * Anthropic status check poller (off unless STATUS_CHECK_ENABLED; see
  * src/status/anthropicStatus.ts). Deliberately NOT routed through
@@ -333,6 +364,13 @@ export function statusCheckAlertThreshold(pollMinutes: number): number {
  * throws (it degrades to the last-known-good cache on failure) — its
  * boolean return, not a thrown error, drives the tracker here; the
  * try/catch below is only a defensive backstop against an unexpected throw.
+ *
+ * A second, distinct branch (issue #601) fires only on a SUCCESSFUL poll: it
+ * steps `stepStatusIncidentTracker` over the freshly-updated cache's
+ * indicator and, on a `none -> incident` transition, DMs super admins via the
+ * same `alertSuperAdmins` this function already uses for failure alerts —
+ * orthogonal to the failure-count tracker above, which only ever reacts to
+ * the poll *failing*, never to what a successful poll's content says.
  */
 export function startStatusCheck(
   adapters: readonly PlatformAdapter[],
@@ -343,6 +381,7 @@ export function startStatusCheck(
   let tracker: JobFailureTracker = initialJobFailureTracker();
   let lastSuccessAt: number | null = null;
   const threshold = statusCheckAlertThreshold(config.statusCheck.pollMinutes);
+  let incidentTracker: StatusIncidentTracker = initialStatusIncidentTracker();
 
   const run = async () => {
     let succeeded = false;
@@ -351,7 +390,20 @@ export function startStatusCheck(
     } catch (err) {
       logger.error({ err }, 'Anthropic status check run failed');
     }
-    if (succeeded) lastSuccessAt = Date.now();
+    if (succeeded) {
+      lastSuccessAt = Date.now();
+      // Proactive super-admin DM on a none -> incident transition (issue
+      // #601) — only on a SUCCESSFUL poll, so a failed fetch (which never
+      // advances the cache) can never itself flip the latch.
+      const state = getStatusCache();
+      if (state) {
+        const incidentStep = stepStatusIncidentTracker(incidentTracker, state.summary.indicator);
+        incidentTracker = incidentStep.tracker;
+        if (incidentStep.shouldAlert) {
+          void alertSuperAdmins(adapters, formatStatusIncidentAlert(state, Date.now()));
+        }
+      }
+    }
     const step = stepJobFailureTracker(tracker, !succeeded, threshold);
     tracker = step.tracker;
     recordJobRun('anthropic-status-check', tracker, Date.now(), lastSuccessAt);

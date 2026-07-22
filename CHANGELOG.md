@@ -13,6 +13,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-22
 
 ### Added
+- **Super admins now get a proactive DM when Anthropic's own status page
+  reports an incident** (#601): the existing background poller
+  (`STATUS_CHECK_ENABLED`) already fetched Anthropic's public status every
+  few minutes, but that data was pull-only — a member had to think to ask
+  `check_status` before anyone learned an incident was open. On a `none →
+  minor`/`major`/`critical` transition, every super admin now gets exactly
+  one DM naming the incident, reusing `check_status`'s own rendering (no new
+  interpolation of Anthropic-supplied text) and the same super-admin-only DM
+  path as every other proactive alert. No repeat DM while the incident stays
+  active; the latch re-arms once status returns to normal so a later,
+  separate incident alerts again. No new tool, config key, DB table, or
+  model call — zero marginal cost.
 - **Auto-answer helpful-ratio now shows a week-over-week trend** (#629): every
   other weekly admin-digest signal already gained a `▲`/`▼` trend suffix
   (#497), but the auto-answer ratings line (#592) — the exact metric #477
