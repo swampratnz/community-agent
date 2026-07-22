@@ -1827,6 +1827,25 @@ recipient B's queue) — so this can never send outside Meta's window;
 clears on restart, same posture as every other best-effort queue in this
 codebase.
 
+Issue #644 extended this exact recovery to the 4 member-facing resolution
+DMs `notifyMemberApproved`/`notifySuggestionResolved`/`notifyReportResolved`/
+`notifyAppealResolved` (`agent/tools.ts`) — #602 had deliberately scoped it
+to `notifySuperAdmins`/`notifyAdmins` only, leaving these asynchronous
+member notifications (an admin approves/resolves hours or days after the
+member's own last message, so the window is often closed by the time the
+DM fires) with no recovery at all. Each now catches `WindowClosedError`
+specifically and calls `queueForWindowReopen(userId, message, 'low')` —
+`'low'`, since all four are reachable from member-tier tool outcomes, so a
+flood of them can never displace a `'system'`-priority admin alert queued
+for the same recipient (`SECURITY:` test). Any other rejection is
+unaffected — still logged-and-dropped exactly as before. `notifyMemberApproved`
+returns `true` when queued (not `false`), so `add_member`'s existing "DM
+didn't land" signal to the acting admin (#556) isn't shown for a message
+that will still arrive; the other three return `void` and were already
+fire-and-forget. No new mechanism, no schema change, no new privileged data
+access — the same already-reviewed per-recipient queue, now fed by 5
+producers instead of 2.
+
 ### `/healthz` endpoint
 Opt-in (`HEALTH_PORT` unset = no listening port at all — matches this
 pipeline's "new surface is opt-in" pattern). Unauthenticated by design, but

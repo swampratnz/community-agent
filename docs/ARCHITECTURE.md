@@ -1894,6 +1894,22 @@ dead" (e.g. a banned WhatsApp number stuck in Baileys' reconnect loop).
   handling. Keyed strictly per-recipient, so a flush triggered by admin A's
   reopened window can never touch admin B's queued messages. In-memory only,
   clears on restart, same tradeoff as every other queue here.
+- **Window-reopen recovery extended to 4 member-facing resolution DMs**
+  (issue #644) — #602 above deliberately scoped the `WindowClosedError` →
+  `queueForWindowReopen` recovery to `notifySuperAdmins`/`notifyAdmins` only;
+  `notifyMemberApproved`, `notifySuggestionResolved`, `notifyReportResolved`,
+  and `notifyAppealResolved` (`agent/tools.ts`) each still only logged and
+  dropped on any rejection. Since an admin typically resolves these
+  asynchronously (hours or days after the member's own last message), the
+  member's 24h window is commonly closed by resolution time, so this was a
+  common failure, not a rare edge. Each of the 4 now catches
+  `WindowClosedError` specifically and queues via `queueForWindowReopen(userId,
+  message, 'low')` — same `'low'` producer-trust tier as the member-reachable
+  `report_content`/`appeal_moderation` alerts above, so it can never evict a
+  `'system'`-priority entry queued for the same recipient. Any other
+  rejection is unaffected — byte-identical logged-and-dropped. No new queue,
+  no new mechanism: the same capped-at-3-per-recipient, priority-aware queue
+  above now has 5 producers instead of 2.
 - **`/healthz`** (opt-in via `HEALTH_PORT`) — unauthenticated `GET` returning
   `{status: "ok"|"degraded", db: boolean, adapters: {discord: boolean,
   whatsapp: boolean}}`. No message content or user ids in the response.
