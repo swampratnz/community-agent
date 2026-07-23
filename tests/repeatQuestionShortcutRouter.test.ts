@@ -49,6 +49,35 @@ const REPEAT_SHORTCUT_NOTICE = "↩️ You asked this a moment ago — here's my
 // be cleaned up afterward.
 const RUN = `repeatq-router-${Date.now()}`;
 
+/**
+ * Retry an assertion block that reads countRepliesToUser — it aggregates
+ * outbound replies for an IDENTITY (platform + userId) across the whole
+ * interactions table over a sliding 24h window, by design (that's what a
+ * daily reply budget means), so it can't be scoped to this test's own
+ * conversation_id. The Node test runner executes test FILES in parallel
+ * against one shared DB, so another file's concurrent insert for the same
+ * 'super-1' discord identity can land between the before/after reads and
+ * shift the exact delta (issue #675: "3 !== 2"). Re-running the whole
+ * read-seed-read sequence gets a quiet window with overwhelming
+ * probability, while a REAL regression fails deterministically on every
+ * attempt — so retrying masks nothing (mirrors
+ * tests/repository.test.ts's retryOnSharedTableInterference).
+ */
+async function retryOnSharedTableInterference(attempts: number, run: () => Promise<void>): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run();
+      return;
+    } catch (err) {
+      if (attempt >= attempts) throw err;
+      console.warn(
+        `retryOnSharedTableInterference: attempt ${attempt}/${attempts} hit interference, retrying:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
+
 after(async () => {
   if (hasDb) {
     await pool.query(`DELETE FROM interactions WHERE content LIKE $1`, [`${RUN}%`]);
@@ -361,38 +390,47 @@ test(
   'router (repeat-question shortcut): a served repeat-shortcut reply is recorded exactly like a real answer — meta.repeatShortcut + replyToUserId — and counts toward the daily reply budget',
   { skip: !hasDb },
   async () => {
-    const conversationId = `${RUN}-recorded`;
     const userId = 'super-1';
-    const text = `${RUN} recorded question`;
-    const answer = `${RUN} genuine recorded answer`;
+    let attempt = 0;
 
-    const before = await countRepliesToUser('discord', userId);
+    await retryOnSharedTableInterference(4, async () => {
+      attempt++;
+      // Attempt-unique so a prior (interfered) attempt's already-committed
+      // rows don't get re-matched by this attempt's content-scoped lookup
+      // below — the delta assertion itself is safe on retry either way,
+      // since before/after are both re-read fresh each attempt.
+      const conversationId = `${RUN}-recorded-${attempt}`;
+      const text = `${RUN} recorded question ${attempt}`;
+      const answer = `${RUN} genuine recorded answer ${attempt}`;
 
-    const router = new Router(async () => ({ text: answer, ok: true }), 20);
-    const { adapter, sent, trigger } = makeAdapter();
-    router.register(adapter);
+      const before = await countRepliesToUser('discord', userId);
 
-    await trigger(makeMessage({ text, conversationId, userId }));
-    await trigger(makeMessage({ text: ` ${text} `, conversationId, userId }));
+      const router = new Router(async () => ({ text: answer, ok: true }), 20);
+      const { adapter, sent, trigger } = makeAdapter();
+      router.register(adapter);
 
-    assert.equal(sent.length, 2);
+      await trigger(makeMessage({ text, conversationId, userId }));
+      await trigger(makeMessage({ text: ` ${text} `, conversationId, userId }));
 
-    const after = await countRepliesToUser('discord', userId);
-    assert.equal(
-      after - before,
-      2,
-      'both the real answer and the repeat-shortcut reply must be recorded and counted toward the daily budget',
-    );
+      assert.equal(sent.length, 2);
 
-    const { rows } = await pool.query(
-      `SELECT meta FROM interactions WHERE direction = 'outbound' AND content LIKE $1`,
-      [`%${answer}%`],
-    );
-    const repeatRow = rows.find(
-      (r: { meta: { repeatShortcut?: boolean } }) => r.meta?.repeatShortcut === true,
-    );
-    assert.ok(repeatRow, 'the repeat-shortcut reply must be recorded with meta.repeatShortcut: true');
-    assert.equal(repeatRow.meta.replyToUserId, userId);
+      const after = await countRepliesToUser('discord', userId);
+      assert.equal(
+        after - before,
+        2,
+        'both the real answer and the repeat-shortcut reply must be recorded and counted toward the daily budget',
+      );
+
+      const { rows } = await pool.query(
+        `SELECT meta FROM interactions WHERE direction = 'outbound' AND content LIKE $1`,
+        [`%${answer}%`],
+      );
+      const repeatRow = rows.find(
+        (r: { meta: { repeatShortcut?: boolean } }) => r.meta?.repeatShortcut === true,
+      );
+      assert.ok(repeatRow, 'the repeat-shortcut reply must be recorded with meta.repeatShortcut: true');
+      assert.equal(repeatRow.meta.replyToUserId, userId);
+    });
   },
 );
 
