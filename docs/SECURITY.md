@@ -230,6 +230,26 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   the same already-audited `admin_audit` rows `audit_view` exposes flat, never
   `params` (which may carry free-text reasons) and never scoped to fewer
   actors than a super admin could already reconstruct by hand from the log.
+- **WhatsApp block/unblock (issue #572)**: neither WhatsApp adapter has a
+  native moderation surface an admin can lean on for a persistent abuser — the
+  Cloud API's only lever was a toothless `warn_user`, and Baileys' `kick_user`
+  only removes someone from a *group*, never the bot's DM surface. `moderate`'s
+  `block_user`/`unblock_user` actions add a bot-side, no-platform-API-call
+  primitive: a durable `blocked_users` row keyed on `(platform, external_id)`,
+  admin-tier and CONFIRM-gated exactly like `ban_user`, refused against a
+  target that resolves `admin`/`super_admin` (mirroring `remove_member`'s
+  admin-target guard). `router.ts`'s `handle()` checks `isUserBlocked` first —
+  before role resolution, before `recordInteraction`, in both `open` and
+  `gated` access mode — so a blocked sender gets zero footprint (no stored
+  interaction, no reply) rather than merely a refused reply; this is the one
+  gap `remove_member` structurally cannot reach, since `remove_member` only
+  affects `community_users`/`gated` mode and does nothing in `open` mode. The
+  block is deliberately **not** conversation-scoped (an admin invokes it from
+  a conversation they're in, same as any `moderate` action, but the resulting
+  block applies platform-wide) and deliberately excluded from
+  `forget_me`/`purge_user_data` (see "Data protection" below) so a blocked
+  sender cannot self-purge their way back into being served. Discord is
+  untouched — `ban_user` already fully covers this there.
 
 ### 5. Host compromise / blast radius
 **Controls**
@@ -2053,9 +2073,12 @@ base, unlike the other two's fixed-format extraction.
   as reporter*, their response-style preference, their auto-moderation
   warning history (`member_warnings`), and moderation appeals *they filed*
   (`moderation_appeals`, issue #554). Membership rows, the
-  admin audit log, and reports where the user is only the *target* (not the
-  reporter) are retained deliberately
-  (accountability) — the same precedent already applied to `admin_audit`. If
+  admin audit log, reports where the user is only the *target* (not the
+  reporter), and a standing `blocked_users` row (issue #572) are retained
+  deliberately (accountability) — the same precedent already applied to
+  `admin_audit`. A blocked sender's own `forget_me`/`purge_user_data` call
+  therefore can never lift a block placed on them — that would let a blocked
+  abuser route around moderation by self-purging. If
   the identity is linked (`link_member`), this scope applies to every linked
   identity, not just the one the request came from — see "Cross-platform
   identity linking" above for why that expanded blast radius is accepted.

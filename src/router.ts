@@ -29,6 +29,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  isUserBlocked,
   listAdmins,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
@@ -720,6 +721,19 @@ export class Router {
   private async handle(msg: IncomingMessage): Promise<void> {
     const adapter = this.adapters.get(msg.platform);
     if (!adapter) return;
+
+    // Blocked-sender check (issue #572) runs FIRST — before role resolution
+    // and before any storage — so a blocked sender leaves zero footprint (no
+    // interaction row, no reply) and this overrides `open` access mode's
+    // default-allow, which `remove_member` structurally cannot reach. A DB
+    // failure fails OPEN here (treats as not-blocked) rather than dropping
+    // every message platform-wide on a transient outage — same fail-open
+    // posture role resolution below already takes on its own catch.
+    const blocked = await isUserBlocked(msg.platform, msg.userId).catch((err) => {
+      logger.error({ err }, 'Blocked-sender check failed; treating sender as not blocked');
+      return false;
+    });
+    if (blocked) return;
 
     let role: Tier;
     try {

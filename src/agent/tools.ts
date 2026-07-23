@@ -3387,10 +3387,19 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. Admins can only act in conversations they are in.',
+    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete/block/unblock require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user (WhatsApp only) is a bot-side "stop serving this sender" primitive with no platform API call — it applies platform-wide, not just to the current conversation, and is refused against a target that resolves admin/super admin. Admins can only act in conversations they are in.',
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'ban_user', 'unban_user', 'delete_message', 'warn_user'])
+        .enum([
+          'timeout_user',
+          'kick_user',
+          'ban_user',
+          'unban_user',
+          'delete_message',
+          'warn_user',
+          'block_user',
+          'unblock_user',
+        ])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
@@ -3423,6 +3432,14 @@ export function buildToolServer(
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
+      // block_user must never be usable to silence an admin/super admin —
+      // mirrors remove_member's admin-target guard (issue #572).
+      if (
+        args.action === 'block_user' &&
+        atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')
+      ) {
+        return text('Refusing: cannot block an admin or super admin.', true);
+      }
       // delete_message's real messageId only reaches the adapter deep inside
       // CONFIRM/audited; check it upfront so a missing id is refused before
       // burning the admin's CONFIRM round-trip or writing a failed-but-
@@ -3435,6 +3452,9 @@ export function buildToolServer(
         reason: args.reason,
         durationMinutes: args.durationMinutes,
         messageId: args.messageId,
+        // Only block_user's performAdminAction reads this (blocked_users.blocked_by);
+        // harmless for every other action, which never looks at it.
+        actorUserId: caller.userId,
       };
       // Set by `run()` on a successful warn_user delivery only — read below to
       // gate the strike-system write on the DM actually having gone out,

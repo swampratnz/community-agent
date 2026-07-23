@@ -513,6 +513,32 @@ CREATE INDEX IF NOT EXISTS member_warnings_active_idx
   WHERE cleared_at IS NULL;
 
 -- ---------------------------------------------------------------------------
+-- Durable per-sender block (issue #572). WhatsApp has no native
+-- group/moderation surface an admin can lean on for a persistent abuser (the
+-- Cloud API's only lever was a toothless warn_user, and Baileys' kick_user
+-- only removes someone from a *group*, not the DM surface); this is a
+-- bot-side "stop serving this sender" primitive keyed on raw
+-- (platform, external_id), enforced entirely in router.ts before role
+-- resolution/storage — no platform API call either WhatsApp adapter makes.
+-- `reason` is admin-supplied free text, nullable like member_warnings'.
+-- Deliberately EXCLUDED from forget_me/purge_user_data, same as admin_audit
+-- and membership: a block is accountability/moderation state, not the
+-- blocked sender's own content, so a self-service purge must never be able
+-- to route around a standing block (see docs/SECURITY.md).
+-- ---------------------------------------------------------------------------
+-- The UNIQUE constraint below also backs the router's per-inbound-message
+-- block check (hot path) and the unblock lookup — no separate index needed.
+CREATE TABLE IF NOT EXISTS blocked_users (
+  id          BIGSERIAL   PRIMARY KEY,
+  platform    TEXT        NOT NULL,
+  external_id TEXT        NOT NULL,
+  blocked_by  TEXT        NOT NULL,
+  reason      TEXT,
+  blocked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (platform, external_id)
+);
+
+-- ---------------------------------------------------------------------------
 -- Admin-reviewed queue that turns a recurring `context_digests` cluster into
 -- a durable `knowledge` entry (issue #102 — the `knowledge_candidates` half
 -- of #51 that its adversarial review deferred). Model-drafted Q&A text over

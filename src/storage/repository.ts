@@ -2496,6 +2496,8 @@ export const MODERATION_ACTION_KINDS = [
   'delete_message',
   'clear_warnings',
   'announce',
+  'block_user',
+  'unblock_user',
 ] as const;
 
 /**
@@ -4624,6 +4626,51 @@ export async function listMemberWarnings(
     clearedAt: r.cleared_at,
     clearedBy: r.cleared_by,
   }));
+}
+
+// --- Blocked users (issue #572, WhatsApp bot-side block/unblock) ------------
+
+/**
+ * Insert (or refresh) a durable block on `(platform, externalId)`. Idempotent
+ * re-block updates `blocked_by`/`reason`/`blocked_at` rather than erroring, so
+ * a second `block_user` call (e.g. a different admin, or an updated reason)
+ * just refreshes the row instead of failing on the UNIQUE constraint.
+ */
+export async function blockUser(
+  platform: string,
+  externalId: string,
+  blockedBy: string,
+  reason: string | null,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO blocked_users (platform, external_id, blocked_by, reason)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (platform, external_id)
+     DO UPDATE SET blocked_by = $3, reason = $4, blocked_at = now()`,
+    [platform, externalId, blockedBy, reason],
+  );
+}
+
+/** Lift a block. Returns whether a row was actually removed (was blocked). */
+export async function unblockUser(platform: string, externalId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM blocked_users WHERE platform = $1 AND external_id = $2`,
+    [platform, externalId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * The router's hot-path check — index-backed via `blocked_users`' own
+ * `UNIQUE (platform, external_id)` constraint, no full scan. Called before
+ * role resolution/any storage so a blocked sender leaves no interaction row.
+ */
+export async function isUserBlocked(platform: string, externalId: string): Promise<boolean> {
+  const { rows } = await pool.query(`SELECT 1 FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
+    platform,
+    externalId,
+  ]);
+  return rows.length > 0;
 }
 
 // --- Content reports (member-facing abuse/spam intake) -----------------------

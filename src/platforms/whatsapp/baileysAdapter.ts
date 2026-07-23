@@ -18,9 +18,11 @@ import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
+  blockUser,
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
   markRosterLeave,
+  unblockUser,
   updateInteractionByMessageId,
   upsertRosterMember,
 } from '../../storage/repository.js';
@@ -112,7 +114,7 @@ export function stepWelcomeCooldown(
  */
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message']);
+  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message', 'block_user', 'unblock_user']);
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;
@@ -995,6 +997,26 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
+    // block_user/unblock_user are a pure DB row (issue #572) — no socket
+    // call, so they must not be gated behind a live connection like every
+    // other action here.
+    switch (action.kind) {
+      case 'block_user': {
+        await blockUser(
+          this.platform,
+          action.targetUserId ?? '',
+          paramString(action.params?.actorUserId),
+          paramString(action.params?.reason) || null,
+        );
+        return `Blocked ${action.targetUserId}.`;
+      }
+      case 'unblock_user': {
+        const wasBlocked = await unblockUser(this.platform, action.targetUserId ?? '');
+        return wasBlocked ? `Unblocked ${action.targetUserId}.` : `${action.targetUserId} was not blocked.`;
+      }
+      default:
+        break;
+    }
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
