@@ -62,6 +62,21 @@ for anything after ~noon NZST/NZDT). Get today's date with
   knowledge-base entries added in the same window. A week with nothing to
   report — no topics, no new curated entries — posts nothing rather than an
   empty message. Discord only.
+- **A returning gated guest now sees how long their access request has been
+  waiting** (#669): a guest in gated mode who messages the bot before an
+  admin adds them got the exact same fixed notice every time, whether it was
+  their first message or their fiftieth — `access_requests.first_requested_at`
+  already tracked the wait (surfaced to admins via
+  `list_access_requests`/the weekly digest, #515), but the guest themselves
+  never saw it. A guest whose first request is at least a day old now gets a
+  suffix naming the day count, e.g. "You first asked 6 days ago — your
+  request is on record."; a brand-new guest's first-ever message still
+  renders byte-identical to today. The wording deliberately says the request
+  "is on record" rather than implying an admin was actively notified, since
+  that separate alert is flag-gated and off by default. The te reo Māori
+  variant of the gated notice is unchanged — parity for this clause is a
+  deferred follow-up, same precedent as earlier te-reo-parity gaps. No new
+  tool, tier, or query.
 
 ### Changed
 - **Auto-merge now escalates governance-path PRs instead of skipping them
