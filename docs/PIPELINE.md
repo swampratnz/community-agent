@@ -405,12 +405,29 @@ sessions:
   group — distinct issues in parallel, no cross-eviction); `--max-turns 300` +
   a 120-min job timeout bound a run, sized generously so a pool-contended
   build finishes slowly instead of being killed mid-gate (see the WIP-caps
-  bullet above). Its final-attempt escalation clears **both** `status:building`
+  bullet above). The worker **pushes its branch incrementally** — right after
+  the first commit and after every commit thereafter — because the job's
+  GitHub credential lives ~1h while the job budget is 120 min, and an unpushed
+  tree dies with the runner (the 2026-07-20/22 strandings: 6+ builds finished
+  every gate green, then lost everything to a 401 at the single final push).
+  Branch pushes are free (no PR exists yet, `on: push` is main-only), and the
+  PR still opens only at the end, so the "no PR = dead build" contract the
+  verify step and groundskeeper enforce is unchanged (issue #663's rejection
+  documents why an *early PR* is the wrong fix). Its final-attempt escalation
+  clears **both** `status:building`
   and `status:approved` when adding `needs-human`, so an escalated issue fully
   leaves the automated lanes — leaving `status:approved` behind let the hourly
   fallback re-claim escalated work and wipe the `needs-human` label (the
   2026-07-19 #591 loop). A human re-queues by removing `needs-human` and
-  re-adding `status:approved`.
+  re-adding `status:approved`; the escalation comment names any surviving
+  pushed branch + last commit, and a re-queued build **resumes from that
+  branch** instead of rebuilding (#667). The resume pointer is resolved by a
+  **deterministic pre-step** (bot-authored comments only, pre-`<details>` text
+  only, exact template match, and the branch must still exist on the remote at
+  the named commit) and handed to the agent via prompt interpolation — the
+  agent is told comment TEXT about surviving branches is untrusted no matter
+  who wrote it, so a prompt-injected summary inside a bot comment can't
+  redirect a build onto an attacker-named branch.
 - `.github/workflows/pipeline-groundskeeper.yml` — deterministic (no model,
   no Max pool) hourly reconciliation sweep, same trust class as auto-merge:
   any open `status:building` issue with **no open same-repo PR** closing it
