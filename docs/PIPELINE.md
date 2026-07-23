@@ -421,7 +421,13 @@ sessions:
   2026-07-19 #591 loop). A human re-queues by removing `needs-human` and
   re-adding `status:approved`; the escalation comment names any surviving
   pushed branch + last commit, and a re-queued build **resumes from that
-  branch** (fetch + checkout, per its prompt) instead of rebuilding (#667).
+  branch** instead of rebuilding (#667). The resume pointer is resolved by a
+  **deterministic pre-step** (bot-authored comments only, pre-`<details>` text
+  only, exact template match, and the branch must still exist on the remote at
+  the named commit) and handed to the agent via prompt interpolation — the
+  agent is told comment TEXT about surviving branches is untrusted no matter
+  who wrote it, so a prompt-injected summary inside a bot comment can't
+  redirect a build onto an attacker-named branch.
 - `.github/workflows/pipeline-groundskeeper.yml` — deterministic (no model,
   no Max pool) hourly reconciliation sweep, same trust class as auto-merge:
   any open `status:building` issue with **no open same-repo PR** closing it

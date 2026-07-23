@@ -166,7 +166,9 @@ ownership rules:
   only at the end, so the verify-step/groundskeeper "no PR = dead build"
   contract is unchanged. Its escalation comment names any surviving pushed
   branch + commit, and a re-queued build resumes from that branch instead of
-  rebuilding (issue #667).
+  rebuilding (issue #667) — the pointer is resolved by a deterministic
+  pre-step (bot comments only, exact template, remote-verified), never by the
+  agent reading comment text.
 - The **auto-merge loop** (`pipeline-pr-automerge.yml`) merges fully-vetted
   build-worker PRs, one at a time, so a backlog of green + approved PRs doesn't
   stall on a human. It is a **deterministic, no-LLM, no-Max-pool** shell loop
