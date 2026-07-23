@@ -2182,6 +2182,52 @@ reactive volume threshold or an on-demand pull.
   it with a corrupt 0%, so the next real comparison isn't corrupted. Same
   no-PII guarantee as the cost line: only a percentage and a pp delta.
 
+`src/backgroundJobCostAlert.ts` (off unless `BACKGROUND_JOB_COST_ALERT_ENABLED`,
+issue #610) adds a fourth, same-day signal: a per-job cost **spike** alert,
+rather than a reactive volume threshold, a weekly trend, or an on-demand pull.
+
+- Closes the last gap in this fully-instrumented area: `usage_stats`'
+  `backgroundCostByJob` breakdown (issue #438) is pull-only, and even
+  `usageCostDigest.ts` only ever sums background cost into one aggregate
+  figure, never broken out per job. A single runaway job (e.g. the moderation
+  LLM's stage-2 classifier misfiring on every message, or `knowledge_refresh`/
+  `context_builder` looping) could otherwise silently draw down the shared Max
+  pool for up to a week before anyone noticed.
+- **No new SQL, schema, or migration** — the entire feature is two calls to
+  the existing `sumBackgroundJobCosts(days)` (`days=1` for today's trailing-24h
+  cost per job, `days=7` for the trailing baseline), a read-and-compare over
+  data the three existing jobs (`moderation_llm`/`context_builder`/
+  `knowledge_refresh`) already write via `recordBackgroundJobCost` (issue
+  #401). A job absent from a window is treated as 0, not skipped. Because the
+  7-day baseline window includes the same trailing 24h, a spike slightly
+  dilutes its own baseline — negligible at the default 3x multiplier, and it's
+  what keeps this a read-only, no-new-SQL feature.
+- A job alerts only when **both** hold: its trailing-24h cost exceeds
+  `BACKGROUND_JOB_COST_ALERT_MULTIPLIER` (default `3`) times its trailing
+  7-day daily average, **and** exceeds the absolute floor
+  `BACKGROUND_JOB_COST_ALERT_MIN_USD` (default `1`). The floor stops a job
+  going from $0.01 to $0.05 (technically 5x) from paging anyone over noise,
+  and is what still gates a cold-start job with a near-zero (or zero)
+  baseline.
+- Debounced per job with a rolling-window latch
+  (`stepBackgroundJobCostAlertTracker`, pure and unit-tested like
+  `usageAlert.ts`'s `stepUsageAlertTracker`): one DM per crossing per job, no
+  repeat while still over, silent re-arm once a later tick sees that job's
+  cost drop back under either condition. Each of the three jobs keeps its own
+  independent tracker, held in-memory across ticks (no new persisted state,
+  same "no new SQL" guarantee above) — a restart resets all trackers, same
+  restart-safety trade-off `usageAlert.ts`'s in-memory latch already accepts.
+- Routed through the shared `startTrackedJob` (same 6h outer tick as every
+  other opt-in job), so a throwing `runOnce` (e.g. a DB error from
+  `sumBackgroundJobCosts`) gets the existing consecutive-failure alerting for
+  free via `buildJobFailureAlert`'s fixed, non-leaking template — this module
+  never catches the error itself, so a raw error string can never reach a DM.
+- Delivery rides the exact same `alertSuperAdmins`/`superAdminIds` path every
+  other super-admin alert in this codebase uses — no new privileged tool, no
+  new RBAC surface. The DM carries only the fixed job-name enum plus two
+  `toFixed(2)` dollar figures, produced by a pure, unit-tested formatter —
+  never a user id, conversation id, or message excerpt.
+
 ## Departed-admin alert
 
 `src/departedAdminAlert.ts` (off unless `DEPARTED_ADMIN_ALERT_ENABLED`, issue

@@ -10,6 +10,24 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-23
+
+### Added
+- **Super admins now get a proactive DM when a background job's cost spikes
+  far above its own trailing average** (#610): `usage_stats`' per-job
+  background-cost breakdown (moderation LLM / context builder / knowledge
+  refresh, #438) was pull-only, and even the weekly cost-trend digest (#578)
+  only ever summed it into one aggregate figure — a runaway job (e.g. a bug
+  causing the moderation LLM's stage-2 classifier to fire on every message)
+  could silently draw down the shared Max pool for up to a week before
+  anyone noticed. A job now alerts once its trailing-24h cost exceeds both a
+  configurable multiplier (default 3x) of its own trailing 7-day daily
+  average and an absolute dollar floor (default $1, so a job going from
+  $0.01 to $0.05 can't page anyone over noise). Off unless
+  `BACKGROUND_JOB_COST_ALERT_ENABLED`; no new SQL/schema — two calls to the
+  existing `sumBackgroundJobCosts` aggregate. Debounced per job: one DM per
+  crossing, silent re-arm once back under.
+
 ## 2026-07-22
 
 ### Added

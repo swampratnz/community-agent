@@ -42,6 +42,7 @@ process.env.DEPARTED_ADMIN_ALERT_ENABLED = 'true';
 process.env.USAGE_COST_DIGEST_ENABLED = 'true';
 process.env.ENGAGEMENT_ALERT_ENABLED = 'true';
 process.env.MEMBER_DIGEST_ENABLED = 'true';
+process.env.BACKGROUND_JOB_COST_ALERT_ENABLED = 'true';
 
 const {
   startContextBuilder,
@@ -61,6 +62,7 @@ const { startDepartedAdminAlert } = await import('../src/departedAdminAlert.js')
 const { startUsageCostDigest } = await import('../src/usageCostDigest.js');
 const { startEngagementAlert } = await import('../src/engagementAlert.js');
 const { startMemberDigest } = await import('../src/memberDigest.js');
+const { startBackgroundJobCostAlert } = await import('../src/backgroundJobCostAlert.js');
 const { REFRESH_TOPICS, REFRESH_TITLES } = await import('../src/context/knowledgeRefresh.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { config } = await import('../src/config.js');
@@ -127,6 +129,7 @@ const JOBS = [
   ['startUsageCostDigest', startUsageCostDigest],
   ['startEngagementAlert', startEngagementAlert],
   ['startMemberDigest', startMemberDigest],
+  ['startBackgroundJobCostAlert', startBackgroundJobCostAlert],
 ] as const;
 
 /** Maps each starter above to the BackgroundJobName key it records under in the shared job-health registry (issue #467). */
@@ -143,6 +146,7 @@ const JOB_NAMES: Record<(typeof JOBS)[number][0], BackgroundJobName> = {
   startUsageCostDigest: 'usage-cost-digest',
   startEngagementAlert: 'engagement-alert',
   startMemberDigest: 'member-digest',
+  startBackgroundJobCostAlert: 'background-job-cost-alert',
 };
 
 for (const [name, start] of JOBS) {
@@ -876,6 +880,68 @@ test('SECURITY: the alert DM body for engagement-alert never contains the caught
     assert.match(
       body,
       /^⚠️ Background job 'engagement-alert' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
+    );
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test("startBackgroundJobCostAlert: a successful run after a failure streak resets that job's tracker, so a fresh streak of 3 further failures alerts again (not a one-shot latch, issue #610)", async (t) => {
+  const { adapter, dms } = makeAdapter();
+  let mode: 'fail' | 'succeed' = 'fail';
+  const runOnce = async () => {
+    if (mode === 'fail') throw new Error('sentinel-rearm-backgroundjobcostalert');
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startBackgroundJobCostAlert([adapter], runOnce);
+  try {
+    await flush(); // failure 1
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alert
+    assert.equal(dms.length, 1, 'first streak of 3 consecutive failures alerts once');
+
+    mode = 'succeed';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // success -> silently resets the tracker
+    assert.equal(dms.length, 1, 'a successful run never itself sends a DM');
+
+    mode = 'fail';
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 1 of the new streak
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 2
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // failure 3 -> alerts again
+    assert.equal(dms.length, 2, 'a fresh streak of 3 failures after recovery alerts again');
+  } finally {
+    clearInterval(timer!);
+  }
+});
+
+test('SECURITY: the alert DM body for background-job-cost-alert never contains the caught error message or stack — only the fixed template (job name, failure count, last-success timestamp), even though a thrown sumBackgroundJobCosts call could otherwise leak a query fragment (issue #610)', async (t) => {
+  const sentinel = 'sentinel-secret-path-or-query-fragment-backgroundjobcostalert';
+  const { adapter, dms } = makeAdapter();
+  const runOnce = async () => {
+    throw new Error(sentinel);
+  };
+
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const timer = startBackgroundJobCostAlert([adapter], runOnce);
+  try {
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush();
+    t.mock.timers.tick(SIX_HOURS_MS);
+    await flush(); // threshold reached
+    assert.equal(dms.length, 1, 'threshold reached, one alert sent');
+    const body = dms[0].text;
+    assert.ok(!body.includes(sentinel), 'the DM body must never contain the caught error message');
+    assert.match(
+      body,
+      /^⚠️ Background job 'background-job-cost-alert' has failed 3 consecutive times \(last success: never this run\)\. Check server logs for details\.$/,
     );
   } finally {
     clearInterval(timer!);
