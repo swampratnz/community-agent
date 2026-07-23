@@ -1150,6 +1150,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Cost/Model',
   },
   {
+    envVar: 'BACKGROUND_JOB_COST_ALERT_ENABLED',
+    configPath: 'backgroundJobCostAlert.enabled',
+    label: 'Background job cost spike alert',
+    category: 'Cost/Model',
+  },
+  {
     envVar: 'AUTO_RETRACT_REPLY_ENABLED',
     configPath: 'behaviour.autoRetractReplyEnabled',
     label: 'Auto-retract reply on member delete',

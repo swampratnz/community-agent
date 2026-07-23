@@ -158,6 +158,21 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   touch here. The DM text is two aggregate dollar figures only, produced by
   a pure, unit-tested formatter — never a user id, conversation id, or
   message excerpt.
+- Optional per-job cost-spike DM (`BACKGROUND_JOB_COST_ALERT_ENABLED`, off by
+  default, issue #610): `src/backgroundJobCostAlert.ts` DMs super admins when
+  one of the three background jobs' (`moderation_llm`/`context_builder`/
+  `knowledge_refresh`) trailing-24h cost exceeds both a configurable
+  multiplier of its own trailing 7-day daily average and an absolute dollar
+  floor — same-day, per-job complement to the weekly, aggregate-only trend
+  DM above. No new SQL/schema — reads only the existing
+  `sumBackgroundJobCosts` aggregate (no per-message/user data). No new
+  privileged tool, no new RBAC tier — reuses the exact `alertSuperAdmins`/
+  `superAdminIds` recipient set. The DM text is the fixed job-name enum plus
+  two aggregate dollar figures only, produced by a pure, unit-tested
+  formatter; a thrown `sumBackgroundJobCosts` call is never caught in this
+  module, so it surfaces through the shared `startTrackedJob` consecutive-
+  failure path and its existing fixed, non-leaking failure template — a raw
+  error/query fragment can never reach a DM either way.
 - `WebSearch` — the one metered, real-cost built-in Claude Code tool the bot
   grants (admin+ only) — carries its own per-conversation rolling-hour cap
   (`AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR`, default 20, issue #412), enforced

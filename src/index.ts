@@ -19,6 +19,7 @@ import {
 import { startDisconnectAlerts, startHealthServer } from './health.js';
 import { startUsageAlert } from './usageAlert.js';
 import { startUsageCostDigest } from './usageCostDigest.js';
+import { startBackgroundJobCostAlert } from './backgroundJobCostAlert.js';
 import { startAdminDigest } from './adminDigest.js';
 import { startMemberDigest } from './memberDigest.js';
 import { startDepartedAdminAlert } from './departedAdminAlert.js';
@@ -90,6 +91,9 @@ async function main(): Promise<void> {
   // 4d-bis. Optional weekly super-admin cost-trend DM (disabled unless configured).
   const usageCostDigestTimer = startUsageCostDigest(adapters);
 
+  // 4d-ter. Optional proactive per-job background cost spike alert (disabled unless configured).
+  const backgroundJobCostAlertTimer = startBackgroundJobCostAlert(adapters);
+
   // 4e. Optional offline context builder (disabled unless configured).
   const contextBuilderTimer = startContextBuilder(adapters);
 
@@ -133,6 +137,7 @@ async function main(): Promise<void> {
     if (embeddingHealthTimer) clearInterval(embeddingHealthTimer);
     if (usageAlertTimer) clearInterval(usageAlertTimer);
     if (usageCostDigestTimer) clearInterval(usageCostDigestTimer);
+    if (backgroundJobCostAlertTimer) clearInterval(backgroundJobCostAlertTimer);
     if (contextBuilderTimer) clearInterval(contextBuilderTimer);
     if (knowledgeRefreshTimer) clearInterval(knowledgeRefreshTimer);
     if (docsIngestTimer) clearInterval(docsIngestTimer);

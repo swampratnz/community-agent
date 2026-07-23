@@ -422,6 +422,21 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Proactive super-admin DM when a background job's (moderation_llm/
+  // context_builder/knowledge_refresh) trailing-24h cost spikes far above its
+  // own trailing 7-day daily average (issue #610) — the one aggregate in
+  // usage_stats' backgroundCostByJob breakdown with zero proactive push. Off
+  // by default, consistent with this repo's convention for new proactive DMs.
+  BACKGROUND_JOB_COST_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // A job alerts only when BOTH hold: today's cost exceeds multiplier ×
+  // (trailing 7-day total ÷ 7) for that job, AND exceeds the absolute floor
+  // below. The floor stops a job going from $0.01 to $0.05 (technically 5×)
+  // from paging anyone over noise.
+  BACKGROUND_JOB_COST_ALERT_MULTIPLIER: z.coerce.number().positive().default(3),
+  BACKGROUND_JOB_COST_ALERT_MIN_USD: z.coerce.number().positive().default(1),
   // Proactive super-admin alert (issue #568) pushing engagement_stats' (issue
   // #419) guild-wide engagement percentage on a weekly cadence — closes the
   // same pull-only gap #472/#480 closed for other super-admin-only signals.
@@ -1026,6 +1041,11 @@ export const config = {
   },
   usageCostDigest: {
     enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
+  },
+  backgroundJobCostAlert: {
+    enabled: env.BACKGROUND_JOB_COST_ALERT_ENABLED ?? false,
+    multiplier: env.BACKGROUND_JOB_COST_ALERT_MULTIPLIER,
+    minUsd: env.BACKGROUND_JOB_COST_ALERT_MIN_USD,
   },
   memberDigest: {
     enabled: env.MEMBER_DIGEST_ENABLED ?? false,
