@@ -10,6 +10,16 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-23
+
+### Changed
+- **The pipeline's build worker now pushes its branch incrementally** (after
+  the first commit and every commit thereafter, PR still opened only at the
+  end) and resumes a re-queued build from any surviving pushed branch named in
+  the prior escalation comment (#667). Fixes the dominant build-failure mode:
+  the job's ~1h GitHub credential expiring mid-build stranded 6+ fully-green,
+  finished builds that then had to be rebuilt from scratch.
+
 ## 2026-07-22
 
 ### Added

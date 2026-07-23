@@ -159,6 +159,16 @@ ownership rules:
   migrate, test against a real pgvector Postgres, build, test:security) BEFORE
   opening a PR, so "green locally" matches CI. Keep it that way when editing
   either `pipeline-build.yml` or `ci.yml` — they must run the same checks.
+  It also **pushes its branch incrementally** (after the first commit and every
+  commit thereafter — branch pushes trigger no CI and no PR exists yet, so they
+  are free) because the job's GitHub credential can expire mid-build (~1h vs the
+  120-min budget) and an unpushed tree dies with the runner; the PR still opens
+  only at the end, so the verify-step/groundskeeper "no PR = dead build"
+  contract is unchanged. Its escalation comment names any surviving pushed
+  branch + commit, and a re-queued build resumes from that branch instead of
+  rebuilding (issue #667) — the pointer is resolved by a deterministic
+  pre-step (bot comments only, exact template, remote-verified), never by the
+  agent reading comment text.
 - The **auto-merge loop** (`pipeline-pr-automerge.yml`) merges fully-vetted
   build-worker PRs, one at a time, so a backlog of green + approved PRs doesn't
   stall on a human. It is a **deterministic, no-LLM, no-Max-pool** shell loop
