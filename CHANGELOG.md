@@ -65,6 +65,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
   per-page detail is unchanged in shape and still available at `debug` level.
   Purely a logging change — every `DocsIngestResult` count, and the separate,
   rarer chunk-upsert-failure warning, are untouched.
+- **Plain-language response style now also covers moderation DMs,
+  code-omission notes, and approval messages** (#658): #430 gave members
+  with a stored `'plain'` response-style preference simplified wording for
+  the bot's model-authored replies, but three deterministic, non-model
+  surfaces were named as deferred follow-ups and kept sending standard
+  English regardless of preference — moderation warn/block DMs, the
+  code-omitted/truncated notes in outbound filtering, and the member/admin
+  approval-confirmation messages. All three now check the caller's stored
+  preference and send the matching plain-language variant, with the
+  existing `'mi'` te reo Māori preference still taking priority over
+  `'plain'`. No new tool, tier, or preference — reuses the existing
+  `response_style_prefs` row.
 
 ### Fixed
 - **4 member-facing resolution DMs no longer silently vanish when a WhatsApp
@@ -174,20 +186,6 @@ for anything after ~noon NZST/NZDT). Get today's date with
   count is nonzero, pointing admins at the existing filter. Bare integer
   only — no URL, title, or entry id reaches the digest. No new tool or
   schema.
-
-### Changed
-- **Plain-language response style now also covers moderation DMs,
-  code-omission notes, and approval messages** (#658): #430 gave members
-  with a stored `'plain'` response-style preference simplified wording for
-  the bot's model-authored replies, but three deterministic, non-model
-  surfaces were named as deferred follow-ups and kept sending standard
-  English regardless of preference — moderation warn/block DMs, the
-  code-omitted/truncated notes in outbound filtering, and the member/admin
-  approval-confirmation messages. All three now check the caller's stored
-  preference and send the matching plain-language variant, with the
-  existing `'mi'` te reo Māori preference still taking priority over
-  `'plain'`. No new tool, tier, or preference — reuses the existing
-  `response_style_prefs` row.
 
 ### Fixed
 - **Admin escalations could go completely missing during a total-outage
