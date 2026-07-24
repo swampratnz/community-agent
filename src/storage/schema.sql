@@ -809,3 +809,28 @@ CREATE TABLE IF NOT EXISTS member_digest_sends (
   sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT member_digest_sends_singleton CHECK (id = 1)
 );
+
+-- ---------------------------------------------------------------------------
+-- Bot-side block list (issue #572) — the only durable lever a WhatsApp admin
+-- has against a persistent abuser, since neither the Cloud API nor Baileys
+-- expose a native ban surface for the bot's own DM/number (see
+-- cloudAdapter.ts/baileysAdapter.ts adminCapabilities). Enforcement is
+-- entirely bot-side, no platform API call — blocking/unblocking is just this
+-- row. Keyed on raw (platform, external_id), not community_users, so it
+-- reaches a guest in `open` access mode too — the gap remove_member cannot
+-- close there (membership removal is a no-op when access is open). The
+-- primary key doubles as the index the router's per-message hot-path lookup
+-- needs (no separate index required). Deliberately KEPT OUT of
+-- purgeSingleIdentity/forget_me: like membership/audit rows, a block is
+-- accountability/enforcement data about the person, not their own content,
+-- and forget_me deleting it would hand a blocked abuser a route back in via
+-- self-purge (SECURITY, pinned by a test).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS blocked_users (
+  platform    TEXT        NOT NULL,
+  external_id TEXT        NOT NULL,
+  blocked_by  TEXT        NOT NULL,
+  reason      TEXT,
+  blocked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (platform, external_id)
+);

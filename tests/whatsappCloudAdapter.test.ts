@@ -211,6 +211,73 @@ function fakeResponse(): { res: ServerResponse; getStatus: () => number } {
   return { res: res as unknown as ServerResponse, getStatus: () => status };
 }
 
+test('WhatsAppCloudAdapter.adminCapabilities includes block_user and unblock_user, and still excludes every group/moderation action the Cloud API has no surface for (issue #572)', () => {
+  const adapter = new WhatsAppCloudAdapter();
+  assert.ok(adapter.adminCapabilities.has('block_user'));
+  assert.ok(adapter.adminCapabilities.has('unblock_user'));
+  assert.ok(adapter.adminCapabilities.has('warn_user'));
+  assert.ok(!adapter.adminCapabilities.has('kick_user'), 'the Cloud API still has no group/moderation surface');
+  assert.ok(!adapter.adminCapabilities.has('ban_user'));
+});
+
+test('performAdminAction: block_user persists a blocked_users row via the shared repository, with no Graph API call — the one moderation lever the Cloud API surface otherwise lacks entirely (issue #572)', async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+    calls.push({ sql, params });
+    return { rows: [], rowCount: 1 };
+  });
+  const adapter = new WhatsAppCloudAdapter();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    throw new Error('block_user must never call the Graph API');
+  }) as typeof fetch;
+  try {
+    const result = await adapter.performAdminAction({
+      kind: 'block_user',
+      targetUserId: '64211234567',
+      params: { reason: 'harassment', actorUserId: 'admin-1' },
+    });
+    assert.equal(result, 'Blocked 64211234567.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /INSERT INTO blocked_users/);
+  assert.deepEqual(calls[0].params, ['whatsapp', '64211234567', 'admin-1', 'harassment']);
+});
+
+test('performAdminAction: unblock_user removes a blocked_users row via the shared repository, with no Graph API call (issue #572)', async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+    calls.push({ sql, params });
+    return { rows: [], rowCount: 1 };
+  });
+  const adapter = new WhatsAppCloudAdapter();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    throw new Error('unblock_user must never call the Graph API');
+  }) as typeof fetch;
+  try {
+    const result = await adapter.performAdminAction({ kind: 'unblock_user', targetUserId: '64211234567' });
+    assert.equal(result, 'Unblocked 64211234567.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /DELETE FROM blocked_users/);
+  assert.deepEqual(calls[0].params, ['whatsapp', '64211234567']);
+});
+
+test('performAdminAction: every other action still throws "no group/moderation surface" — block_user/unblock_user do not widen the Cloud API default branch (issue #572)', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+  const adapter = new WhatsAppCloudAdapter();
+
+  await assert.rejects(
+    () => adapter.performAdminAction({ kind: 'kick_user', targetUserId: '64211234567' }),
+    /no group\/moderation surface/,
+  );
+});
+
 test('sendDirectMessage: short text sends exactly one Graph API call, unchanged from today', async () => {
   const adapter = new WhatsAppCloudAdapter();
   markInboundNow(adapter, '64211234567');

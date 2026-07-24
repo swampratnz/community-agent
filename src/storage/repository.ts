@@ -2349,8 +2349,10 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * *both*, which is why `link_member` is CONFIRM-gated, audited, and
  * super-admin-alerted; see docs/SECURITY.md). Backs both the member-facing
  * `forget_me` and the super-admin `purge_user_data`. Membership, audit rows,
- * and reports where the user is only the *target* (not the reporter) are
- * intentionally kept (accountability data — documented in SECURITY.md).
+ * reports where the user is only the *target* (not the reporter), and
+ * `blocked_users` rows (issue #572) are intentionally kept (accountability/
+ * enforcement data, documented in SECURITY.md) — a blocked sender purging
+ * their own data must not be able to route back in via forget_me.
  */
 export async function purgeUserData(platform: Platform, userId: string): Promise<number> {
   const identities = await resolveLinkedIdentities(platform, userId);
@@ -2496,6 +2498,8 @@ export const MODERATION_ACTION_KINDS = [
   'delete_message',
   'clear_warnings',
   'announce',
+  'block_user',
+  'unblock_user',
 ] as const;
 
 /**
@@ -4581,6 +4585,50 @@ export async function clearWarnings(platform: string, userId: string, clearedBy:
     [platform, userId, clearedBy],
   );
   return rowCount ?? 0;
+}
+
+/**
+ * Block a sender at the bot level (issue #572) — a pure DB row, no platform
+ * API call. Upserts on the `(platform, external_id)` primary key so
+ * re-blocking an already-blocked identity refreshes `blocked_by`/`reason`/
+ * `blocked_at` instead of erroring.
+ */
+export async function blockUser(
+  platform: string,
+  userId: string,
+  blockedBy: string,
+  reason?: string | null,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO blocked_users (platform, external_id, blocked_by, reason)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (platform, external_id)
+     DO UPDATE SET blocked_by = EXCLUDED.blocked_by, reason = EXCLUDED.reason, blocked_at = now()`,
+    [platform, userId, blockedBy, reason ?? null],
+  );
+}
+
+/** Returns whether a block row actually existed, so a no-op unblock can be reported distinctly from a real one. */
+export async function unblockUser(platform: string, userId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
+    platform,
+    userId,
+  ]);
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * The router's per-message hot-path check (issue #572) — must run before
+ * `resolveRole`/any storage write, so it stays a single lookup against the
+ * `blocked_users` primary key, the same cost shape as the rate-limit/role
+ * checks already on that path.
+ */
+export async function isUserBlocked(platform: string, userId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM blocked_users WHERE platform = $1 AND external_id = $2 LIMIT 1`,
+    [platform, userId],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 export interface MemberWarningRow {

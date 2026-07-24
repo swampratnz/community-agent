@@ -29,6 +29,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  isUserBlocked,
   listAdmins,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
@@ -446,6 +447,10 @@ export class Router {
    * `recordEscalatedGapFn` defaults to the real DB-backed escalated-gap
    * recorder (issue #514), fired alongside `notifyAdminsFn` from the same
    * intercept; overridable so tests can assert on it without a live DB.
+   * `checkBlocked` defaults to the real DB-backed `blocked_users` lookup
+   * (issue #572), consulted first in `handle()` — before `resolveRole` or any
+   * storage write — so a blocked sender gets zero footprint; overridable so
+   * tests can assert on it without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -463,6 +468,7 @@ export class Router {
     private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
     private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
+    private readonly checkBlocked: typeof isUserBlocked = isUserBlocked,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -720,6 +726,20 @@ export class Router {
   private async handle(msg: IncomingMessage): Promise<void> {
     const adapter = this.adapters.get(msg.platform);
     if (!adapter) return;
+
+    // Blocked-sender check (issue #572) — runs before resolveRole and before
+    // any storage write, so a blocked sender leaves zero footprint (no
+    // interaction row, no reply, not even a role lookup) and the check
+    // overrides `open` access mode's default-allow, closing the gap
+    // remove_member cannot reach there (membership removal is a no-op in
+    // open mode). A lookup failure fails toward "not blocked", same posture
+    // as resolveRole's own catch below (a transient DB hiccup must not take
+    // the whole bot down for every sender).
+    const blocked = await this.checkBlocked(msg.platform, msg.userId).catch((err) => {
+      logger.error({ err }, 'Blocked-sender check failed; treating sender as not blocked');
+      return false;
+    });
+    if (blocked) return;
 
     let role: Tier;
     try {

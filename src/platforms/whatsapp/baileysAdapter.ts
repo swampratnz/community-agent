@@ -28,7 +28,7 @@ import { isSuperAdmin, resolveRole } from '../../auth/roles.js';
 import { atLeast } from '../../auth/rbac.js';
 import { evictReplyMapping, peekReplyMapping } from '../../replyRetraction.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
-import { getLanguagePreference } from '../../storage/repository.js';
+import { blockUser, getLanguagePreference, unblockUser } from '../../storage/repository.js';
 import {
   VOICE_LANGUAGE_CAVEAT_TEXT_MI,
   shouldNotify as shouldNotifyVoiceLanguageCaveat,
@@ -112,7 +112,13 @@ export function stepWelcomeCooldown(
  */
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message']);
+  readonly adminCapabilities = new Set([
+    'warn_user',
+    'kick_user',
+    'delete_message',
+    'block_user',
+    'unblock_user',
+  ]);
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;
@@ -995,6 +1001,21 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
+    // block_user/unblock_user are a pure DB row, no Baileys API call (issue
+    // #572) — checked before the socket guard below so an admin can block an
+    // abuser even while the bot is reconnecting, unlike every other action.
+    if (action.kind === 'block_user' || action.kind === 'unblock_user') {
+      const targetUserId = action.targetUserId ?? '';
+      if (!targetUserId) throw new Error(`${action.kind} requires targetUserId`);
+      if (action.kind === 'unblock_user') {
+        const removed = await unblockUser('whatsapp', targetUserId);
+        return removed ? `Unblocked ${targetUserId}.` : `${targetUserId} was not blocked.`;
+      }
+      const actorUserId = paramString(action.params?.actorUserId);
+      if (!actorUserId) throw new Error('block_user requires an acting admin id');
+      await blockUser('whatsapp', targetUserId, actorUserId, paramString(action.params?.reason) || null);
+      return `Blocked ${targetUserId}.`;
+    }
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {

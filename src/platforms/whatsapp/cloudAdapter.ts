@@ -10,7 +10,7 @@ import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
-import { isKnownConversation } from '../../storage/repository.js';
+import { blockUser, isKnownConversation, unblockUser } from '../../storage/repository.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -123,7 +123,7 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
  */
 export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user']);
+  readonly adminCapabilities = new Set(['warn_user', 'block_user', 'unblock_user']);
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;
@@ -807,6 +807,23 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
           `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
+      }
+      // block_user/unblock_user are a pure DB row, no Graph API call (issue
+      // #572) — the one moderation lever the Cloud API surface otherwise
+      // lacks entirely.
+      case 'block_user': {
+        const targetUserId = action.targetUserId ?? '';
+        if (!targetUserId) throw new Error('block_user requires targetUserId');
+        const actorUserId = paramString(action.params?.actorUserId);
+        if (!actorUserId) throw new Error('block_user requires an acting admin id');
+        await blockUser('whatsapp', targetUserId, actorUserId, paramString(action.params?.reason) || null);
+        return `Blocked ${targetUserId}.`;
+      }
+      case 'unblock_user': {
+        const targetUserId = action.targetUserId ?? '';
+        if (!targetUserId) throw new Error('unblock_user requires targetUserId');
+        const removed = await unblockUser('whatsapp', targetUserId);
+        return removed ? `Unblocked ${targetUserId}.` : `${targetUserId} was not blocked.`;
       }
       default:
         throw new Error(

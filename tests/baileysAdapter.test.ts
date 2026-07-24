@@ -91,6 +91,71 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+test('BaileysAdapter.adminCapabilities includes block_user and unblock_user (issue #572)', () => {
+  const adapter = new BaileysAdapter();
+  assert.ok(adapter.adminCapabilities.has('block_user'));
+  assert.ok(adapter.adminCapabilities.has('unblock_user'));
+});
+
+test('performAdminAction: block_user persists a blocked_users row via the shared repository, with no live Baileys socket required — unlike every other action, this is a pure DB write (issue #572)', async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+    calls.push({ sql, params });
+    return { rows: [], rowCount: 1 };
+  });
+  const adapter = new BaileysAdapter(); // deliberately NOT stubSocket()-ed — proves no socket dependency
+
+  const result = await adapter.performAdminAction({
+    kind: 'block_user',
+    targetUserId: '64211234567',
+    params: { reason: 'harassment', actorUserId: 'admin-1' },
+  });
+
+  assert.equal(result, 'Blocked 64211234567.');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /INSERT INTO blocked_users/);
+  assert.deepEqual(calls[0].params, ['whatsapp', '64211234567', 'admin-1', 'harassment']);
+});
+
+test('performAdminAction: unblock_user removes a blocked_users row via the shared repository, with no live Baileys socket required (issue #572)', async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+    calls.push({ sql, params });
+    return { rows: [], rowCount: 1 };
+  });
+  const adapter = new BaileysAdapter();
+
+  const result = await adapter.performAdminAction({ kind: 'unblock_user', targetUserId: '64211234567' });
+
+  assert.equal(result, 'Unblocked 64211234567.');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /DELETE FROM blocked_users/);
+  assert.deepEqual(calls[0].params, ['whatsapp', '64211234567']);
+});
+
+test('performAdminAction: unblock_user on an identity that was never blocked reports so, rather than a false-positive success (issue #572)', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+  const adapter = new BaileysAdapter();
+
+  const result = await adapter.performAdminAction({ kind: 'unblock_user', targetUserId: '64211234567' });
+  assert.equal(result, '64211234567 was not blocked.');
+});
+
+test('SECURITY: performAdminAction: block_user without an acting admin id (params.actorUserId) throws rather than writing a blocked_by-less row (issue #572)', async (t) => {
+  t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+  const adapter = new BaileysAdapter();
+
+  await assert.rejects(
+    () =>
+      adapter.performAdminAction({
+        kind: 'block_user',
+        targetUserId: '64211234567',
+        params: { reason: 'x' },
+      }),
+    /requires an acting admin id/,
+  );
+});
+
 // Retry-receipt cache: when a recipient can't decrypt a message we sent, their
 // device asks for a resend and Baileys serves it via the `getMessage` handler,
 // which reads the `sentMessages` cache we populate on every content send.

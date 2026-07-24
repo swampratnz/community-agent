@@ -102,6 +102,9 @@ const {
   addMemberNote,
   upsertMember,
   getMemberRole,
+  blockUser,
+  isUserBlocked,
+  unblockUser,
   recordAccessRequest,
   clearAccessRequest,
   listAccessRequests,
@@ -3506,7 +3509,15 @@ function moderateHandler(caller: {
         string,
         {
           handler: (args: {
-            action: 'timeout_user' | 'kick_user' | 'ban_user' | 'unban_user' | 'delete_message' | 'warn_user';
+            action:
+              | 'timeout_user'
+              | 'kick_user'
+              | 'ban_user'
+              | 'unban_user'
+              | 'delete_message'
+              | 'warn_user'
+              | 'block_user'
+              | 'unblock_user';
             targetUserId: string;
             reason: string;
             durationMinutes?: number;
@@ -4213,6 +4224,320 @@ test(
     );
     assert.equal(rows.length, 1, 'exactly one admin_audit row for the failed unban attempt');
     assert.equal(rows[0].success, false, 'the failed attempt must not be recorded as a false success');
+  },
+);
+
+test(
+  'moderate refuses block_user on a platform that does not support it, before any CONFIRM is queued or ' +
+    'performAdminAction is called (issue #572 acceptance criterion #2) — mirrors the existing ' +
+    'adminCapabilities gate every other action already gets',
+  async () => {
+    const conv = `${RUN}-block-unsupported-platform`;
+    const targetUser = `${conv}-target`;
+    const adapter = moderateAdapter({ platform: 'discord', capabilities: ['warn_user', 'kick_user'] });
+    const handler = moderateHandler({ platform: 'discord', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'block_user',
+      targetUserId: targetUser,
+      reason: 'harassment',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /does not support "block_user"/);
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test('SECURITY: moderate rejects a member-tier caller for block_user before any adapter call or audit write (issue #572 acceptance criterion #2)', async () => {
+  const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['block_user'] });
+  const handler = moderateHandler({ platform: 'whatsapp', role: 'member', adapter });
+
+  await assert.rejects(
+    () =>
+      handler.handler({
+        action: 'block_user',
+        targetUserId: 'anyone',
+        reason: 'harassment',
+      }),
+    /Permission denied/,
+  );
+  assert.equal(adapter.performCalls.length, 0, 'a refused caller must never reach performAdminAction');
+});
+
+test(
+  'SECURITY: block_user against a target that resolves to admin or super_admin is refused before any CONFIRM ' +
+    'is queued, mirroring remove_member/manual-warn\'s existing "admins are never actioned" invariant ' +
+    '(issue #572 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-block-admin-target`;
+    const targetAdmin = `${conv}-target-admin`;
+    await seedKnownUser('whatsapp', conv, targetAdmin);
+    await upsertMember({ platform: 'whatsapp', userId: targetAdmin, role: 'admin', addedBy: 'admin-1' });
+
+    const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['block_user'] });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'block_user',
+      targetUserId: targetAdmin,
+      reason: 'harassment',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /resolves to admin or higher/);
+    assert.equal(hasPendingAction('whatsapp', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+    assert.equal(await isUserBlocked('whatsapp', targetAdmin), false, 'no block row for an admin+ target, ever');
+  },
+);
+
+test(
+  'SECURITY: block_user does not execute until CONFIRM is received — queued only, no performAdminAction call ' +
+    'and no admin_audit/blocked_users row until the admin confirms (issue #572 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-block-confirm-gate`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('whatsapp', conv, targetUser);
+    const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['block_user'] });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'block_user',
+      targetUserId: targetUser,
+      reason: 'harassment',
+    });
+
+    assert.equal(result.isError, false);
+    assert.match(
+      result.content[0]?.text ?? '',
+      new RegExp(`block_user on ${targetUser} in ${conv} \\(reason:`),
+    );
+    assert.equal(adapter.performCalls.length, 0, 'CONFIRM only queues the action, never runs it');
+    assert.equal(hasPendingAction('whatsapp', conv, 'admin-1'), true);
+    assert.equal(await isUserBlocked('whatsapp', targetUser), false, 'no block row before CONFIRM');
+
+    const { rows: beforeConfirm } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'block_user' AND target_user_id = $1`,
+      [targetUser],
+    );
+    assert.equal(beforeConfirm[0].n, 0, 'no admin_audit row before CONFIRM — a queued action is not audited');
+
+    cancelPendingAction('whatsapp', conv, 'admin-1');
+  },
+);
+
+test(
+  'A successful block_user persists a blocked_users row (blocked_by the acting admin) via the adapter, writes ' +
+    'exactly one admin_audit row, and is surfaced by moderation_history — mirroring every other moderate ' +
+    'action (issue #572 acceptance criteria #2 and #4)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-block-audit`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('whatsapp', conv, targetUser);
+    // Mirrors the real Baileys/Cloud adapters: performAdminAction for
+    // block_user is a pure DB write via the shared repository, no platform
+    // API call.
+    const adapter = moderateAdapter({
+      platform: 'whatsapp',
+      capabilities: ['block_user'],
+      performAdminAction: async (action) => {
+        await blockUser(
+          'whatsapp',
+          action.targetUserId ?? '',
+          String(action.params?.actorUserId ?? ''),
+          (action.params?.reason as string | undefined) ?? null,
+        );
+        return `Blocked ${action.targetUserId}.`;
+      },
+    });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'block_user',
+      targetUserId: targetUser,
+      reason: 'harassment',
+    });
+    assert.equal(result.isError, false);
+
+    const pending = takePendingAction('whatsapp', conv, 'admin-1');
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(adapter.performCalls.length, 1);
+    assert.equal(adapter.performCalls[0].kind, 'block_user');
+    assert.equal(adapter.performCalls[0].targetUserId, targetUser);
+
+    assert.equal(await isUserBlocked('whatsapp', targetUser), true, 'the block row now exists');
+    const { rows: blockRow } = await pool.query(
+      `SELECT blocked_by FROM blocked_users WHERE platform = 'whatsapp' AND external_id = $1`,
+      [targetUser],
+    );
+    assert.equal(blockRow[0].blocked_by, 'admin-1', "blocked_by is the acting admin's caller.userId");
+
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'block_user' AND target_user_id = $1`,
+      [targetUser],
+    );
+    assert.equal(rows[0].n, 1, 'exactly one admin_audit row for the confirmed block');
+
+    const modHistoryServer = buildToolServer(
+      {
+        platform: 'whatsapp' as const,
+        userId: 'admin-1',
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: conv,
+      },
+      adapter,
+    );
+    const modHistoryTool = (
+      modHistoryServer.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { targetUserId?: string; actionKind?: string }) => Promise<{
+              content: Array<{ type: string; text: string }>;
+              isError?: boolean;
+            }>;
+          }
+        >;
+      }
+    )._registeredTools['moderation_history'];
+    const historyResult = await modHistoryTool.handler({ targetUserId: targetUser, actionKind: 'block_user' });
+    assert.equal(historyResult.isError, false);
+    assert.match(
+      historyResult.content[0]?.text ?? '',
+      new RegExp(`block_user \\(${targetUser}\\)`),
+      'the block_user audit row must be surfaced by moderation_history',
+    );
+
+    await unblockUser('whatsapp', targetUser);
+  },
+);
+
+test(
+  'SECURITY: block_user against a targetUserId never seen on the platform is refused by the existing ' +
+    'isKnownUser check before any adapter call (issue #572 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-block-unknown-user`;
+    const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['block_user'] });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'block_user',
+      targetUserId: `${conv}-never-seen`,
+      reason: 'harassment',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /has never been seen on whatsapp/);
+    assert.equal(hasPendingAction('whatsapp', conv, 'admin-1'), false);
+    assert.equal(adapter.performCalls.length, 0, 'no admin action for a refused, unseen target');
+  },
+);
+
+test(
+  'moderate refuses unblock_user on a platform that does not support it, before any CONFIRM is queued or ' +
+    'performAdminAction is called (issue #572 acceptance criterion #2) — mirrors the existing ' +
+    'adminCapabilities gate every other action already gets',
+  async () => {
+    const conv = `${RUN}-unblock-unsupported-platform`;
+    const targetUser = `${conv}-target`;
+    const adapter = moderateAdapter({ platform: 'discord', capabilities: ['warn_user', 'kick_user'] });
+    const handler = moderateHandler({ platform: 'discord', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'unblock_user',
+      targetUserId: targetUser,
+      reason: 'appeal upheld',
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /does not support "unblock_user"/);
+    assert.equal(hasPendingAction('discord', conv, 'admin-1'), false, 'no CONFIRM may be queued');
+    assert.equal(adapter.performCalls.length, 0, 'the adapter must never be reached');
+  },
+);
+
+test('SECURITY: moderate rejects a member-tier caller for unblock_user before any adapter call or audit write (issue #572 acceptance criterion #2)', async () => {
+  const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['unblock_user'] });
+  const handler = moderateHandler({ platform: 'whatsapp', role: 'member', adapter });
+
+  await assert.rejects(
+    () =>
+      handler.handler({
+        action: 'unblock_user',
+        targetUserId: 'anyone',
+        reason: 'appeal upheld',
+      }),
+    /Permission denied/,
+  );
+  assert.equal(adapter.performCalls.length, 0, 'a refused caller must never reach performAdminAction');
+});
+
+test(
+  'Round trip: block_user then unblock_user via the moderate tool restores normal isUserBlocked state, both ' +
+    'audited under their own action_kind (issue #572 acceptance criterion #3)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-block-roundtrip-tool`;
+    const targetUser = `${conv}-target`;
+    await seedKnownUser('whatsapp', conv, targetUser);
+    const adapter = moderateAdapter({
+      platform: 'whatsapp',
+      capabilities: ['block_user', 'unblock_user'],
+      performAdminAction: async (action) => {
+        if (action.kind === 'block_user') {
+          await blockUser(
+            'whatsapp',
+            action.targetUserId ?? '',
+            String(action.params?.actorUserId ?? ''),
+            (action.params?.reason as string | undefined) ?? null,
+          );
+          return `Blocked ${action.targetUserId}.`;
+        }
+        const removed = await unblockUser('whatsapp', action.targetUserId ?? '');
+        return removed ? `Unblocked ${action.targetUserId}.` : `${action.targetUserId} was not blocked.`;
+      },
+    });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const blockResult = await handler.handler({
+      action: 'block_user',
+      targetUserId: targetUser,
+      reason: 'harassment',
+    });
+    assert.equal(blockResult.isError, false);
+    const blockPending = takePendingAction('whatsapp', conv, 'admin-1');
+    await blockPending?.execute();
+    assert.equal(await isUserBlocked('whatsapp', targetUser), true, 'blocked');
+
+    const unblockResult = await handler.handler({
+      action: 'unblock_user',
+      targetUserId: targetUser,
+      reason: 'appeal upheld',
+    });
+    assert.equal(unblockResult.isError, false);
+    const unblockPending = takePendingAction('whatsapp', conv, 'admin-1');
+    const unblockExec = await unblockPending?.execute();
+    assert.match(unblockExec ?? '', /Done:/);
+    assert.equal(await isUserBlocked('whatsapp', targetUser), false, 'unblocked — restored to normal');
+
+    const { rows } = await pool.query(
+      `SELECT action_kind FROM admin_audit WHERE target_user_id = $1 AND action_kind IN ('block_user', 'unblock_user') ORDER BY created_at`,
+      [targetUser],
+    );
+    assert.deepEqual(
+      rows.map((r) => r.action_kind),
+      ['block_user', 'unblock_user'],
+      'both halves of the round trip are audited under their own action_kind',
+    );
   },
 );
 

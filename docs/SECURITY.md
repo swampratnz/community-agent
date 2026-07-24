@@ -1838,6 +1838,33 @@ about what the account does on the wire. Subscribing to revoke/edit
 a new automation fingerprint. The ToS-risk mitigations above are about
 *outbound* patterns; this feature has none.
 
+### WhatsApp block/unblock (bot-side, issue #572)
+Neither WhatsApp provider gives the bot a native ban surface for its own
+number: the Cloud API's `adminCapabilities` is `warn_user` only, and Baileys'
+`kick_user` removes someone from a *group* the bot manages, not the bot's own
+DM/number. `block_user`/`unblock_user` (added to both providers'
+`adminCapabilities`) close that gap with a pure bot-side row in
+`blocked_users` (`platform`, `external_id`, `blocked_by`, `reason`,
+`blocked_at`) — **no platform API call**, unlike every other `moderate`
+action. Gated identically to `ban_user`: admin tier, the same out-of-band
+CONFIRM flow, and the same "cannot target an admin/super admin" guard
+(`atLeast(await resolveRole(...), 'admin')`) `remove_member` already enforces.
+`router.ts`'s `handle()` checks `blocked_users` **first** — before
+`resolveRole` and before any storage write — so a blocked sender leaves zero
+footprint (no interaction row, no reply, no role lookup) and the check
+overrides `open` access mode's default-allow, which is the one gap
+`remove_member` cannot reach there (membership removal is a no-op when access
+is open). A `blocked_users` lookup failure fails toward "not blocked" (same
+posture as `resolveRole`'s own catch), so a transient DB hiccup degrades to
+"the block check didn't fire this once," never "every sender is dropped."
+`blocked_users` is deliberately **excluded** from `purgeSingleIdentity`/
+`forget_me` — like `admin_audit` and membership rows, a block is
+accountability/enforcement data about the person, not their own content, and
+letting `forget_me` erase it would hand a blocked abuser a route back in via
+self-purge (`SECURITY:` test). Discord is untouched: `ban_user` already fully
+covers this there, so `DiscordAdapter.adminCapabilities` deliberately does not
+gain these two actions (`SECURITY:` test).
+
 ### WhatsApp Cloud API webhook
 `WhatsAppCloudAdapter` exposes a public HTTP listener
 (`WHATSAPP_CLOUD_WEBHOOK_PORT`) that must sit behind TLS termination (see
@@ -2053,8 +2080,8 @@ base, unlike the other two's fixed-format extraction.
   as reporter*, their response-style preference, their auto-moderation
   warning history (`member_warnings`), and moderation appeals *they filed*
   (`moderation_appeals`, issue #554). Membership rows, the
-  admin audit log, and reports where the user is only the *target* (not the
-  reporter) are retained deliberately
+  admin audit log, reports where the user is only the *target* (not the
+  reporter), and `blocked_users` rows (issue #572) are retained deliberately
   (accountability) — the same precedent already applied to `admin_audit`. If
   the identity is linked (`link_member`), this scope applies to every linked
   identity, not just the one the request came from — see "Cross-platform

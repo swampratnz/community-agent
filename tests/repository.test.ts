@@ -131,6 +131,9 @@ const {
   getMyDataSummary,
   addWarning,
   countActiveWarnings,
+  blockUser,
+  unblockUser,
+  isUserBlocked,
   countStaleKnowledge,
   countUnreachableSourceKnowledge,
   isKnownMessage,
@@ -9929,5 +9932,90 @@ test(
     assert.deepEqual(await recentConversationTail('discord', conv, 0), [], 'limit 0 disables the backfill');
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[conv, otherConv]]);
+  },
+);
+
+test(
+  'repository: blockUser/isUserBlocked/unblockUser round-trip, and re-blocking an already-blocked identity ' +
+    'upserts rather than erroring (issue #572)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-block-roundtrip`;
+    const blockedBy = `${RUN}-block-admin`;
+
+    assert.equal(await isUserBlocked('whatsapp', userId), false, 'not blocked before any block_user call');
+
+    await blockUser('whatsapp', userId, blockedBy, 'harassment');
+    assert.equal(await isUserBlocked('whatsapp', userId), true);
+
+    const { rows: firstRow } = await pool.query(
+      `SELECT blocked_by, reason FROM blocked_users WHERE platform = 'whatsapp' AND external_id = $1`,
+      [userId],
+    );
+    assert.equal(firstRow.length, 1);
+    assert.equal(firstRow[0].blocked_by, blockedBy);
+    assert.equal(firstRow[0].reason, 'harassment');
+
+    // Re-blocking (e.g. a second admin, or an updated reason) upserts on the
+    // (platform, external_id) primary key instead of erroring.
+    const secondBlockedBy = `${RUN}-block-admin-2`;
+    await blockUser('whatsapp', userId, secondBlockedBy, 'repeat harassment');
+    const { rows: secondRow } = await pool.query(
+      `SELECT blocked_by, reason FROM blocked_users WHERE platform = 'whatsapp' AND external_id = $1`,
+      [userId],
+    );
+    assert.equal(secondRow.length, 1, 'still exactly one row — an upsert, not a duplicate');
+    assert.equal(secondRow[0].blocked_by, secondBlockedBy);
+    assert.equal(secondRow[0].reason, 'repeat harassment');
+
+    const removed = await unblockUser('whatsapp', userId);
+    assert.equal(removed, true, 'unblockUser reports a row actually existed');
+    assert.equal(await isUserBlocked('whatsapp', userId), false, 'unblocked — restored to the default state');
+
+    const removedAgain = await unblockUser('whatsapp', userId);
+    assert.equal(removedAgain, false, 'unblocking an already-unblocked identity is a no-op, reported as such');
+  },
+);
+
+test(
+  'repository: blockUser is scoped per platform — blocking a WhatsApp identity never blocks the same raw id on Discord (issue #572)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-block-platform-scope`;
+    await blockUser('whatsapp', userId, `${RUN}-admin`, null);
+    assert.equal(await isUserBlocked('whatsapp', userId), true);
+    assert.equal(await isUserBlocked('discord', userId), false, 'the Discord identity is untouched');
+    await unblockUser('whatsapp', userId);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData does NOT delete a blocked_users row — a blocked sender purging their ' +
+    'own data via forget_me must not be able to route back in (issue #572)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-block-purge-survives`;
+    await blockUser('whatsapp', userId, `${RUN}-admin`, 'abuse');
+    // A minimal interaction fixture so purgeUserData has something else to do
+    // (an empty purge is a degenerate case that wouldn't exercise the same
+    // code path a real forget_me call takes).
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: `${RUN}-block-purge-conv`,
+      userId,
+      role: 'member',
+      direction: 'inbound',
+      content: 'hello',
+    });
+
+    await purgeUserData('whatsapp', userId);
+
+    assert.equal(
+      await isUserBlocked('whatsapp', userId),
+      true,
+      'the block survives forget_me/purge_user_data — accountability/enforcement data, not the blocked user’s own content',
+    );
+
+    await unblockUser('whatsapp', userId);
   },
 );

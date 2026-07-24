@@ -2318,7 +2318,9 @@ bot expected to run continuously:
 The adapter verifies every inbound webhook's `X-Hub-Signature-256` HMAC
 against `WHATSAPP_CLOUD_APP_SECRET` before parsing the body. Because the
 Cloud API is 1:1-only (no groups), `adminCapabilities` only advertises
-`warn_user`; other moderation actions report as unsupported. Free-form
+`warn_user` plus the bot-side `block_user`/`unblock_user` primitive (issue
+#572, see docs/SECURITY.md) — every other moderation action reports as
+unsupported. Free-form
 outbound replies are only sent within Meta's 24h customer-service window
 (tracked in-process from the timestamp of the sender's last inbound
 message); sends outside that window fail with a clear error rather than
