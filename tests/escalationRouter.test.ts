@@ -547,3 +547,128 @@ test("router (escalation offer): a caller with a standing 'mi' language preferen
     '👍 Kua tohu mō tētahi kaiwhakahaere hapori — ka whai kōrero mai tētahi i muri tata nei.',
   );
 });
+
+// Real-time admin escalation for a member's own thumbs-down (issue #598) — a
+// sibling producer feeding the SAME notifyAdmins sink and
+// ESCALATION_RATE_LIMIT_PER_HOUR cap as the max-turns offer/confirm flow
+// above, but firing DIRECTLY (no offer, no confirmation, no
+// pendingEscalations entry): `reply.unhelpfulAnswerRated === true` is set by
+// the `rate_answer` tool handler in agent/tools.ts only on a
+// genuinely-recorded `helpful: false` call. These tests stub `runTurn` to
+// return that flag directly, mirroring how the sibling tests above stub
+// `maxTurnsExceeded` — the tool-handler-level gating (helpful:true /
+// 'no_recent_answer' / 'rate_limited' never setting the flag) is covered in
+// tools.test.ts.
+
+test('router (unhelpful-answer escalation, flag off): a genuine rate_answer(helpful:false) turn is byte-identical — no notifyAdmins call, reply text unaffected (issue #598 acceptance criterion 1)', async () => {
+  const originalFlag = config.behaviour.escalationToAdminEnabled;
+  (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = false;
+  try {
+    const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
+      text: 'Thanks for the feedback, noted.',
+      ok: true,
+      unhelpfulAnswerRated: true,
+    }));
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+    const conversationId = `${RUN}-unhelpful-flag-off`;
+
+    await trigger(makeMessage({ text: `${RUN} that answer was wrong`, conversationId, userId: 'super-1' }));
+
+    assert.equal(sent[0].text, 'Thanks for the feedback, noted.');
+    assert.equal(notifyCalls.length, 0, 'notifyAdmins must never fire when the flag is off');
+  } finally {
+    (config.behaviour as { escalationToAdminEnabled: boolean }).escalationToAdminEnabled = originalFlag;
+  }
+});
+
+test('SECURITY: router (unhelpful-answer escalation): with the flag on, a genuine rate_answer(helpful:false) turn fires exactly one notifyAdmins call echoing the truncated triggering message, and the member-facing reply is untouched (issue #598 acceptance criterion 2)', async () => {
+  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
+    text: 'Thanks for the feedback, noted.',
+    ok: true,
+    unhelpfulAnswerRated: true,
+  }));
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-unhelpful-on`;
+
+  await trigger(
+    makeMessage({
+      text: `${RUN} that pricing answer was wrong`,
+      conversationId,
+      userId: 'super-1',
+    }),
+  );
+
+  assert.equal(
+    sent[0].text,
+    'Thanks for the feedback, noted.',
+    'the member-facing reply must never carry an offer/confirmation suffix — this producer fires directly',
+  );
+  assert.equal(notifyCalls.length, 1, 'exactly one notifyAdmins call');
+  assert.match(
+    notifyCalls[0].message,
+    /that pricing answer was wrong/,
+    'the notification must echo the (truncated) triggering message',
+  );
+  assert.equal(notifyCalls[0].excludeUserId, 'super-1');
+});
+
+test('router (unhelpful-answer escalation): a reply without unhelpfulAnswerRated === true (e.g. a helpful:true rating) never triggers notifyAdmins (issue #598 acceptance criterion 3)', async () => {
+  const { router, notifyCalls } = makeRouterWithNotifySpy(async () => ({
+    text: 'Thanks, glad that helped!',
+    ok: true,
+  }));
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+  const conversationId = `${RUN}-helpful-true`;
+
+  await trigger(makeMessage({ text: `${RUN} that was great, thanks`, conversationId, userId: 'super-1' }));
+
+  assert.equal(sent[0].text, 'Thanks, glad that helped!');
+  assert.equal(notifyCalls.length, 0);
+});
+
+test('SECURITY: router (unhelpful-answer escalation, shared cap): once ESCALATION_RATE_LIMIT_PER_HOUR confirmed escalations have fired within the trailing hour (via the existing max-turns producer), a subsequent rate_answer(helpful:false) notification is silently suppressed — no DM sent, no queue, no retry, reply unaffected (issue #598 acceptance criterion 6)', async () => {
+  const { router, notifyCalls } = makeRouterWithNotifySpy(async (_caller, userText: string) =>
+    userText.includes('shared cap ask')
+      ? { text: MAX_TURNS_REPLY, ok: false, maxTurnsExceeded: true }
+      : { text: 'Thanks for the feedback, noted.', ok: true, unhelpfulAnswerRated: true },
+  );
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  // Exhaust the guild-wide cap using the existing max-turns offer/confirm
+  // producer, each in its own conversation.
+  for (let i = 0; i < ESCALATION_RATE_LIMIT_PER_HOUR; i++) {
+    const conversationId = `${RUN}-unhelpful-shared-cap-${i}`;
+    await trigger(makeMessage({ text: `${RUN} shared cap ask ${i}`, conversationId, userId: 'super-1' }));
+    await trigger(makeMessage({ text: 'yes', conversationId, userId: 'super-1' }));
+  }
+  assert.equal(notifyCalls.length, ESCALATION_RATE_LIMIT_PER_HOUR);
+
+  // One further rate_answer(helpful:false) turn, past the cap: must be
+  // silently suppressed — no DM, no change to the member-facing reply, and
+  // (unlike the offer/confirm path's ESCALATION_RATE_LIMITED_TEXT) no
+  // rate-limited notice either, since there is no confirmation step here to
+  // attach one to.
+  const overCapConversationId = `${RUN}-unhelpful-shared-cap-over`;
+  await trigger(
+    makeMessage({
+      text: `${RUN} thumbs down after cap`,
+      conversationId: overCapConversationId,
+      userId: 'super-1',
+    }),
+  );
+
+  assert.equal(
+    notifyCalls.length,
+    ESCALATION_RATE_LIMIT_PER_HOUR,
+    'the cap-exhausted rate_answer notification must never fire',
+  );
+  assert.equal(
+    sent[sent.length - 1].text,
+    'Thanks for the feedback, noted.',
+    'the member-facing reply must be unaffected by the suppressed notification',
+  );
+});

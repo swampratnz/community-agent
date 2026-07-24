@@ -1622,6 +1622,33 @@ export class Router {
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
 
+      // Real-time admin escalation for a member's own thumbs-down (issue
+      // #598) — a sibling producer feeding the SAME `notifyAdmins` sink and
+      // `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns offer above,
+      // but firing directly: `rate_answer(helpful:false)` is an
+      // already-taken explicit member action, not a speculative offer, so
+      // there is nothing to confirm (unlike `offerEscalation`/
+      // `pendingEscalations` above) and `outboundText`/the member-facing
+      // reply is never touched. Gated on `reply.unhelpfulAnswerRated ===
+      // true`, which the `rate_answer` handler in `agent/tools.ts` sets ONLY
+      // on a genuinely-recorded `helpful: false` call (never on
+      // `'no_recent_answer'`/`'rate_limited'`, never on `helpful: true`) —
+      // `notifyAdmins` itself stays reachable only from here, never from the
+      // tool handler. A cap-exhausted hour silently suppresses the
+      // notification (no reply text change, no queue, no retry), same as a
+      // rate-limited confirmation above minus the member-facing notice —
+      // there is no confirmation step here to attach one to.
+      if (config.behaviour.escalationToAdminEnabled && reply.unhelpfulAnswerRated === true) {
+        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+          await this.notifyAdminsFn(
+            (platform) => this.adapters.get(platform),
+            `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
+              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+            msg.userId,
+          ).catch((err) => logger.warn({ err }, 'Unhelpful-answer escalation admin notification failed'));
+        }
+      }
+
       // Approaching-daily-budget warning (issue #511): append-only, same
       // shape as `offerEscalation` above — never replaces `outboundText`, so
       // the caches below (keyed off `reply.text`/`reply.ok`, not

@@ -2442,15 +2442,27 @@ export function formatDevTeamJobResult(r: JobResult): string {
 
 /**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
- * #411) — currently just the most recent qualifying `knowledge_search` hit,
- * mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped signals
- * already threaded through `TurnOutcome`/`AgentReply`. Optional so every
- * existing `buildToolServer(caller, adapter)` call (this file's own tests,
- * mainly) keeps compiling unchanged; callers that don't care about the
- * correlation simply never read it back.
+ * #411) — the most recent qualifying `knowledge_search` hit, plus (issue
+ * #598) whether `rate_answer` recorded a genuine member thumbs-down this
+ * turn — mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped
+ * signals already threaded through `TurnOutcome`/`AgentReply`. Both fields
+ * are optional so every existing `buildToolServer(caller, adapter)` call
+ * (this file's own tests, mainly) keeps compiling unchanged; callers that
+ * don't care about a given correlation simply never read it back.
  */
 export interface ToolServerTurnState {
   lastKnowledgeHitId: number | null;
+  /**
+   * Set `true` by the `rate_answer` handler ONLY on a successfully-recorded
+   * `helpful: false` call (never on `'no_recent_answer'`/`'rate_limited'`,
+   * and never for `helpful: true`) — read back by `execTurn` into
+   * `TurnOutcome.unhelpfulAnswerRated` on the genuine-success path, the same
+   * way `lastKnowledgeHitId` becomes `knowledgeEntryId`. Consumed by the
+   * router (never by this tool handler directly) to fire a real-time admin
+   * escalation, preserving `notifyAdmins`'s "never from a model-callable
+   * tool" invariant.
+   */
+  unhelpfulAnswerRated?: boolean;
 }
 
 export function buildToolServer(
@@ -3173,6 +3185,15 @@ export function buildToolServer(
             'Please wait before rating another.',
           true,
         );
+      }
+      // Real-time admin escalation (issue #598): a genuinely-recorded
+      // thumbs-down only ever sets the turn-scoped flag for the router to
+      // act on post-turn (same pattern as `lastKnowledgeHitId` → `knowledgeEntryId`,
+      // issue #411) — this handler never calls `notifyAdmins` itself, which
+      // would break the "never from a model-callable tool" invariant that
+      // function's own doc comment states.
+      if (turnState && args.helpful === false) {
+        turnState.unhelpfulAnswerRated = true;
       }
       return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
     },

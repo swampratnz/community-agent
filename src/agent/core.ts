@@ -117,6 +117,17 @@ export interface AgentReply {
    * (`list_low_rated_knowledge` / `list_answer_feedback`).
    */
   knowledgeEntryId?: number;
+  /**
+   * Set to `true` only when `rate_answer`'s handler recorded a genuine
+   * member thumbs-down THIS turn (`ToolServerTurnState.unhelpfulAnswerRated`,
+   * issue #598) — threaded through `TurnOutcome` on the same genuine-success
+   * path as `knowledgeEntryId` above, never on a fallback/error reply. A
+   * caller that cares must check `=== true`, never treat a missing value as
+   * truthy. Consumed by the router's deterministic post-turn escalation
+   * branch (never by the `rate_answer` tool handler itself), mirroring how
+   * `maxTurnsExceeded` feeds the sibling escalation-offer branch.
+   */
+  unhelpfulAnswerRated?: boolean;
 }
 
 /**
@@ -210,6 +221,7 @@ interface TurnOutcome {
   sessionId?: string;
   maxTurnsExceeded?: boolean;
   knowledgeEntryId?: number;
+  unhelpfulAnswerRated?: boolean;
 }
 
 /**
@@ -586,6 +598,7 @@ export async function runAgentTurn(
     languagePreference,
     responseStyle,
     knowledgeEntryId: outcome.knowledgeEntryId,
+    unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
   };
 }
 
@@ -802,5 +815,6 @@ async function execTurn(
     cacheCreationTokens,
     sessionId,
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
+    ...(turnState.unhelpfulAnswerRated === true ? { unhelpfulAnswerRated: true } : {}),
   };
 }

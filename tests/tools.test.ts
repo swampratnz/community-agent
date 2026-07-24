@@ -11487,7 +11487,11 @@ test("list_events calls the adapter's listUpcomingEvents with the fixed EVENTS_L
 // outcomes (recorded / no_recent_answer / rate_limited) against a real
 // DB-backed resolution + rate cap, same DB-integration pattern as
 // reportContentHandler above.
-function rateAnswerHandler(userId: string, conversationId: string) {
+function rateAnswerHandler(
+  userId: string,
+  conversationId: string,
+  turnState?: { lastKnowledgeHitId: number | null; unhelpfulAnswerRated?: boolean },
+) {
   const adapter = stubAdapter(async () => {});
   const server = buildToolServer(
     {
@@ -11498,6 +11502,8 @@ function rateAnswerHandler(userId: string, conversationId: string) {
       conversationId,
     },
     adapter,
+    undefined,
+    turnState,
   );
   return (
     server.instance as unknown as {
@@ -11598,6 +11604,141 @@ test(
     );
   },
 );
+
+// Real-time admin escalation turn-scoped signal (issue #598): the
+// `rate_answer` handler sets `turnState.unhelpfulAnswerRated` ONLY on a
+// genuinely-recorded `helpful: false` call — never for `helpful: true`,
+// never for a 'no_recent_answer'/'rate_limited' non-write. The router (never
+// this handler) reads the flag post-turn to fire `notifyAdmins`.
+test(
+  'rate_answer sets turnState.unhelpfulAnswerRated on a successfully-recorded helpful:false call (issue #598 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-unhelpful`;
+    const conversationId = `${RATE_ANSWER_HANDLER_USER}-convo-unhelpful`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the wrong answer',
+      meta: { replyToUserId: userId },
+    });
+
+    const turnState: { lastKnowledgeHitId: number | null; unhelpfulAnswerRated?: boolean } = {
+      lastKnowledgeHitId: null,
+    };
+    const result = await rateAnswerHandler(userId, conversationId, turnState).handler({ helpful: false });
+    assert.notEqual(result.isError, true);
+    assert.equal(turnState.unhelpfulAnswerRated, true);
+  },
+);
+
+test(
+  'rate_answer never sets turnState.unhelpfulAnswerRated on a helpful:true call (issue #598 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-helpful`;
+    const conversationId = `${RATE_ANSWER_HANDLER_USER}-convo-helpful`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a fine answer',
+      meta: { replyToUserId: userId },
+    });
+
+    const turnState: { lastKnowledgeHitId: number | null; unhelpfulAnswerRated?: boolean } = {
+      lastKnowledgeHitId: null,
+    };
+    const result = await rateAnswerHandler(userId, conversationId, turnState).handler({ helpful: true });
+    assert.notEqual(result.isError, true);
+    assert.equal(turnState.unhelpfulAnswerRated, undefined);
+  },
+);
+
+test(
+  'rate_answer never sets turnState.unhelpfulAnswerRated on a helpful:false call with no recent answer to bind to (issue #598 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-unhelpful-no-recent`;
+    const turnState: { lastKnowledgeHitId: number | null; unhelpfulAnswerRated?: boolean } = {
+      lastKnowledgeHitId: null,
+    };
+    const result = await rateAnswerHandler(
+      userId,
+      `${RATE_ANSWER_HANDLER_USER}-convo-unhelpful-no-recent`,
+      turnState,
+    ).handler({ helpful: false });
+    assert.equal(result.isError, true);
+    assert.equal(turnState.unhelpfulAnswerRated, undefined);
+  },
+);
+
+test(
+  'SECURITY: rate_answer never sets turnState.unhelpfulAnswerRated on a rate-limited helpful:false call — no feedback row actually written (issue #598 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const userId = `${RATE_ANSWER_HANDLER_USER}-unhelpful-capped`;
+    const conversationId = `${RATE_ANSWER_HANDLER_USER}-convo-unhelpful-capped`;
+    for (let i = 0; i < RATE_ANSWER_DAILY_LIMIT; i++) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `the repeatedly-rated answer ${i}`,
+        meta: { replyToUserId: userId },
+      });
+      const ok = await rateAnswerHandler(userId, conversationId).handler({ helpful: true });
+      assert.notEqual(ok.isError, true, `rating ${i} within the cap should succeed`);
+    }
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'one thumbs-down too many',
+      meta: { replyToUserId: userId },
+    });
+    const turnState: { lastKnowledgeHitId: number | null; unhelpfulAnswerRated?: boolean } = {
+      lastKnowledgeHitId: null,
+    };
+    const overCap = await rateAnswerHandler(userId, conversationId, turnState).handler({ helpful: false });
+    assert.equal(overCap.isError, true);
+    assert.match(overCap.content[0]?.text ?? '', /already rated/i);
+    assert.equal(
+      turnState.unhelpfulAnswerRated,
+      undefined,
+      'a rate-limited call recorded no feedback row, so it must never set the escalation flag',
+    );
+  },
+);
+
+test('SECURITY: the rate_answer handler never calls notifyAdmins directly — the escalation fires only from router.ts reading the turn-scoped flag post-turn (issue #598 acceptance criterion 5)', () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const defStart = source.indexOf("'rate_answer',");
+  assert.notEqual(defStart, -1, 'rate_answer tool definition not found');
+  const handlerMatch = source.slice(defStart).match(/async \(args\) => \{([\s\S]*?)\n {4}\},\n {2}\);/);
+  assert.ok(handlerMatch, 'rate_answer handler body not found');
+  const body = handlerMatch[1];
+  assert.doesNotMatch(
+    body,
+    /notifyAdmins\(/,
+    'rate_answer must never call notifyAdmins directly — only turnState.unhelpfulAnswerRated may be set',
+  );
+  assert.match(
+    body,
+    /turnState\.unhelpfulAnswerRated = true/,
+    'the handler must still set the turn-scoped flag on a genuine thumbs-down',
+  );
+});
 
 // list_answer_feedback tool handler (issue #269): exercises the read-time
 // content/knowledge-linkage enrichment added on top of the #118 tool —
