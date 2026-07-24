@@ -120,6 +120,14 @@ export const MEMBER_TOOLS = [
   // reasoning as community_guidelines/check_status. Discord-only; other
   // adapters simply don't implement PlatformAdapter.listUpcomingEvents.
   'mcp__community__list_events',
+  // Self-scoped write (rate-capped, own-project-only), instantly reversible
+  // like set_response_style — no CONFIRM gate. Publishes to other members
+  // (issue #646), so unlike most other self-service MEMBER_TOOLS it re-checks
+  // 'member' explicitly in the handler to exclude open-mode guests.
+  'mcp__community__share_project',
+  // Read-only counterpart to share_project — most-recent or embedding-
+  // similarity search over member_projects only, same 'member' floor check.
+  'mcp__community__list_projects',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */

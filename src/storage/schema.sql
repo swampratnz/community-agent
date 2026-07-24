@@ -331,6 +331,61 @@ CREATE INDEX IF NOT EXISTS suggestions_user_rate_idx
   ON suggestions (platform, user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Member-declared project showcase (issue #646) — the second instance of
+-- #634's self-declared-member-table pattern: opt-in, self-scoped, embedded,
+-- purged with the rest of a member's data. Unlike member_interests (a fuzzy
+-- discovery blob), these are discrete named artifacts a member accumulates
+-- over time, hence the per-(platform,user_id,name) uniqueness (upsert-by-edit)
+-- and the small per-member cap enforced in repository.ts's shareProject.
+-- Deliberately NO display_name column: owner attribution is resolved at
+-- render time via resolveDisplayName/resolveSanitizedLabel (community_users/
+-- server_roster), the same freshness-over-staleness choice already made for
+-- every other attributed-to-a-member render in this codebase.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_projects (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform      TEXT        NOT NULL,
+  user_id       TEXT        NOT NULL,
+  name          TEXT        NOT NULL,
+  description   TEXT        NOT NULL,
+  link          TEXT,                  -- verbatim member-supplied URL, stored as text, NEVER fetched
+  embedding     VECTOR(:EMBEDDING_DIM),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Soft-delete marker for remove_project (repository.ts removeMemberProject)
+  -- — deliberately NOT a hard DELETE, so the rolling-24h rate cap's COUNT(*)
+  -- still sees a since-removed row and a share/remove/share cycle can't
+  -- bypass it (same reasoning as content_reports' status = 'withdrawn').
+  -- purgeSingleIdentity/markRosterLeave still hard-DELETE for full erasure.
+  removed_at    TIMESTAMPTZ
+);
+
+-- Forwards-compatible with an already-applied earlier revision of this same
+-- migration (soft-delete was added after the table's first draft) — same
+-- ADD COLUMN IF NOT EXISTS / DROP CONSTRAINT IF EXISTS convention already
+-- used for knowledge.retrieval_count above.
+ALTER TABLE member_projects ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
+ALTER TABLE member_projects DROP CONSTRAINT IF EXISTS member_projects_platform_user_id_name_key;
+
+CREATE INDEX IF NOT EXISTS member_projects_recent_idx
+  ON member_projects (created_at DESC) WHERE removed_at IS NULL;
+
+-- Backs both the per-member cap and the rolling-24h rate cap (see
+-- repository.ts shareProject) — same shape as suggestions_user_rate_idx.
+-- Deliberately NOT filtered on removed_at: the rate cap's COUNT(*) must see
+-- soft-removed rows too.
+CREATE INDEX IF NOT EXISTS member_projects_user_rate_idx
+  ON member_projects (platform, user_id, created_at DESC);
+
+-- Name is unique only among a member's ACTIVE projects (upsert-by-name
+-- target) — a partial index rather than a plain UNIQUE constraint so a name
+-- freed by remove_project can be reused for a later, genuinely new share.
+CREATE UNIQUE INDEX IF NOT EXISTS member_projects_active_name_idx
+  ON member_projects (platform, user_id, name) WHERE removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS member_projects_embedding_idx
+  ON member_projects USING hnsw (embedding vector_cosine_ops);
+
+-- ---------------------------------------------------------------------------
 -- Admin-curated context notes about known community members (issue #45).
 -- Person-scoped facts ("runs the Chch meetup") that do NOT belong in the
 -- global knowledge FAQ. Human-entered only, admin-read only, deleted by the
@@ -511,6 +566,28 @@ CREATE TABLE IF NOT EXISTS member_warnings (
 CREATE INDEX IF NOT EXISTS member_warnings_active_idx
   ON member_warnings (platform, user_id)
   WHERE cleared_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Bot-side block list (issue #572), WhatsApp-only in practice today: the
+-- Cloud API's only moderation lever is a toothless warn_user, and Baileys'
+-- kick_user only removes someone from a *group*, never the bot's own DM
+-- surface. A block is a pure bot-side ignore — no platform API call, unlike
+-- every other moderation action — enforced by the router dropping a blocked
+-- sender's message before role resolution or any storage, in both open and
+-- gated access mode. One row per currently-blocked identity (not a history
+-- log like member_warnings), so PRIMARY KEY doubles as the hot-path lookup
+-- index. Deliberately NOT deleted by purgeUserData/forget_me (contrast
+-- member_warnings above, which is): a blocked sender must not be able to
+-- erase their own block by purging the linked identity that holds it.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS blocked_users (
+  platform     TEXT        NOT NULL,
+  external_id  TEXT        NOT NULL,
+  blocked_by   TEXT        NOT NULL,
+  reason       TEXT,
+  blocked_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (platform, external_id)
+);
 
 -- ---------------------------------------------------------------------------
 -- Admin-reviewed queue that turns a recurring `context_digests` cluster into

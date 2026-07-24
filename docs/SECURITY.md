@@ -616,6 +616,39 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   The pipeline bridge stays human — the bot has **no** GitHub access, so an
   injected "suggestion" can never become a repo issue a build worker acts
   on without an admin consciously filing it.
+- **Member project showcase** (`member_projects`, issue #646): a member
+  publishes a discrete, named artifact ("what I built") with
+  `share_project(name, description, link?)`, browsable/searchable by every
+  other member via `list_projects`. **Self-declared only, same invariant as
+  member interests (#634)** — never inferred from general chat about
+  something someone is building; the tool description states plainly that
+  sharing *publishes* the project. Both tools explicitly re-assert `member`
+  tier in the handler (excluding open-mode guests, unlike most other
+  self-service `MEMBER_TOOLS`, since this write is member-facing publication
+  rather than a private/self-scoped action like `set_response_style`).
+  Write-only-facing (upsert-by-name for edits; `remove: true` folds
+  removal into the same tool rather than a third one), capped at 3 distinct
+  active projects per member and a DB-backed rolling-24h rate cap of 3 new
+  shares (mirroring `SUGGESTION_RATE_LIMIT_PER_DAY`'s shape). `remove_project`
+  is a **soft delete** (`removed_at`, never a hard `DELETE`) specifically so
+  the rate cap's rolling window still counts a since-removed row — a hard
+  delete would let a share/remove/share cycle keep the active count under
+  cap while publishing unbounded distinct projects over time, the same
+  churn-spam gap `content_reports`' own `status = 'withdrawn'` (never a
+  DELETE) already avoids. `list_projects` results derive exclusively from
+  `member_projects` (never `interactions`), rendered with the same
+  quarantine discipline as the recall renderers (`renderMemoryContext`/
+  `renderConversationTail` in `systemPrompt.ts`): angle brackets and all
+  whitespace including U+0085 stripped/collapsed per entry
+  (`untrustedEntryContent`, exported for this reuse), owner display name
+  sanitized (`sanitizeName`/`resolveSanitizedLabel`) rather than stored
+  per-row — a crafted name/description/link can't escape the rendered block
+  or forge another member's attribution. A stored `link` is verbatim
+  member-supplied text, **rendered, never fetched** — no preview, no SSRF
+  surface, same as every other member-authored link in this bot. Rows are
+  deleted by `forget_me`/`purge_user_data` and on roster leave (a departed
+  member's published projects go with them, unlike most other member data
+  which waits for an explicit privacy request), and counted in `my_data`.
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
   boolean, comment?: string)`. Since issue #355, `comment` carries an
@@ -1807,6 +1840,41 @@ in the same spirit as `DISCORD_ARCHIVE_ALL_MESSAGES` (§6):
 - **No approval DM.** This path deliberately does not send
   `notifyMemberApproved` — that stays an admin-initiated notice, not an
   unprompted per-join message. Pinned by a `SECURITY:` test.
+
+### 18. WhatsApp bot-side block list (`block_user`/`unblock_user`, issue #572)
+
+WhatsApp has no equivalent of Discord's `ban_user`: on `open` access mode any
+phone number is served, and `remove_member` can't reach a sender who was never
+a member. `block_user` closes that gap with a **bot-side** block — a
+`blocked_users` row keyed `(platform, external_id)` — that stops the bot ever
+serving that sender again. Security posture:
+
+- **Same gates as every destructive moderation action.** Admin tier
+  (`assertAtLeast`), platform-capability gate (WhatsApp adapters only —
+  Discord never advertises it; use Discord's own `ban_user` there),
+  out-of-band CONFIRM before execution, and an `admin_audit` row via
+  `audited()`. A target that resolves to admin/super admin is refused before
+  any DB write, reusing the `atLeast(resolveRole(...), 'admin')` guard.
+- **Enforced before role resolution and before any storage.** The router
+  checks `isUserBlocked` first, so a blocked sender gets zero footprint — no
+  interaction row, no reply — and the check **overrides `open` mode's
+  default-allow** (the exact gap it exists to close). It fails open on a DB
+  error (log and continue), matching the role-resolution catch's posture: a
+  failed check must never itself become an outage.
+- **Deliberately survives `forget_me`/`purge_user_data`** — including across
+  linked identities — so a blocked sender cannot route around their block by
+  purging themselves. Pinned by `SECURITY:` tests. The row stores only the
+  external id, the blocking admin, an optional reason, and a timestamp — no
+  message content — so its retention is minimal-footprint by construction.
+  Because a purge deletes the target's `interactions` (what `isKnownUser`
+  reads), `unblock_user` admits a **currently-blocked** identity as an
+  alternate path to that reachability check — otherwise a purged identity
+  could never be unblocked; an id that is neither seen nor blocked keeps the
+  normal never-seen refusal.
+- **No platform API call in either direction** — block and unblock are pure
+  DB writes in both WhatsApp adapters (no Baileys socket dependency, no Cloud
+  endpoint), so they add no ToS-risk surface and work while WhatsApp is
+  disconnected.
 
 ## Platform-specific notes
 

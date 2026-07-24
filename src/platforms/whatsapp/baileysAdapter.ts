@@ -18,9 +18,11 @@ import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
+  blockUser,
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
   markRosterLeave,
+  unblockUser,
   updateInteractionByMessageId,
   upsertRosterMember,
 } from '../../storage/repository.js';
@@ -65,6 +67,18 @@ const SENT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
 // Debounce window for the voice-language caveat (issue #655) — "at most once
 // per sender per week" per the proposal's cost story.
 const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
+// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
+// appended verbatim, untranslated). Byte-for-byte the pre-#618 inline
+// template's wording (no "moderators" — same as cloudAdapter.ts's wording,
+// kept independent per-adapter rather than unified).
+const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community:';
+
+// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
+// #618), served when the target has a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
+// warnDmTextMi (#333) already established.
+const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā NZ Claude Community:';
 
 // Generic and static — no @-mention or echo of the joiner, so a bulk add
 // can't be turned into a mass-ping and no participant JID reaches the chat.
@@ -112,7 +126,13 @@ export function stepWelcomeCooldown(
  */
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message']);
+  readonly adminCapabilities = new Set([
+    'warn_user',
+    'kick_user',
+    'delete_message',
+    'block_user',
+    'unblock_user',
+  ]);
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;
@@ -995,12 +1015,31 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
+    // block_user/unblock_user are a pure DB write with no Baileys API call
+    // (issue #572) — handled before the socket-connected guard below since,
+    // unlike every other action here, they need no live connection at all.
+    if (action.kind === 'block_user') {
+      const targetUserId = action.targetUserId ?? '';
+      await blockUser(
+        'whatsapp',
+        targetUserId,
+        paramString(action.params?.blockedBy),
+        paramString(action.params?.reason) || null,
+      );
+      return `Blocked ${targetUserId}.`;
+    }
+    if (action.kind === 'unblock_user') {
+      const targetUserId = action.targetUserId ?? '';
+      const removed = await unblockUser('whatsapp', targetUserId);
+      return removed ? `Unblocked ${targetUserId}.` : `${targetUserId} was not blocked.`;
+    }
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
+        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
         await this.sendDirectMessage(
           action.targetUserId ?? '',
-          `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
+          `${prefix} ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
       }

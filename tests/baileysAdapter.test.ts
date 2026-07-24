@@ -91,6 +91,43 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+test(
+  'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
+    "admin's reason appended verbatim and untranslated (issue #618)",
+  async () => {
+    const adapter = new BaileysAdapter();
+    const sent = stubSocket(adapter);
+    const result = await adapter.performAdminAction({
+      kind: 'warn_user',
+      targetUserId: '64211234567',
+      params: { reason: 'spam', language: 'mi' },
+    });
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /He whakatūpato nā NZ Claude Community:/);
+    assert.match(sent[0], /spam/);
+    assert.ok(!sent[0].includes('Warning from NZ Claude Community:'));
+    assert.match(result, /Warned 64211234567/);
+  },
+);
+
+test(
+  'regression: performAdminAction("warn_user") sends byte-identical English text to today when ' +
+    'params.language is "en", undefined, or absent (issue #618)',
+  async () => {
+    for (const params of [
+      { reason: 'spam', language: 'en' },
+      { reason: 'spam', language: undefined },
+      { reason: 'spam' },
+    ]) {
+      const adapter = new BaileysAdapter();
+      const sent = stubSocket(adapter);
+      await adapter.performAdminAction({ kind: 'warn_user', targetUserId: '64211234567', params });
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0], '⚠️ Warning from NZ Claude Community: spam');
+    }
+  },
+);
+
 // Retry-receipt cache: when a recipient can't decrypt a message we sent, their
 // device asks for a resend and Baileys serves it via the `getMessage` handler,
 // which reads the `sentMessages` cache we populate on every content send.
@@ -151,6 +188,45 @@ test('sendDirectMessage caches the sent message too — the proactive-DM path th
   assert.equal(ids.length, 1);
   assert.ok(sentCache(adapter).get(ids[0]), 'a proactive DM is cached so its retry receipt can be served');
 });
+
+test('adminCapabilities includes block_user/unblock_user (issue #572)', () => {
+  const adapter = new BaileysAdapter();
+  assert.ok(adapter.adminCapabilities.has('block_user'));
+  assert.ok(adapter.adminCapabilities.has('unblock_user'));
+});
+
+test(
+  'SECURITY: performAdminAction(block_user)/unblock_user are a pure DB write — they never touch ' +
+    'this.sock, unlike every other Baileys admin action, so a block/unblock never depends on a live ' +
+    'WhatsApp connection (issue #572)',
+  async (t) => {
+    const adapter = new BaileysAdapter();
+    // Deliberately no stubSocket() call — `this.sock` stays unset. Any action
+    // that reached the sock-connected guard would throw here.
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+      calls.push({ sql, params });
+      return { rows: [], rowCount: sql.includes('DELETE') ? 1 : 0 };
+    });
+
+    const blockResult = await adapter.performAdminAction({
+      kind: 'block_user',
+      targetUserId: '64211234567',
+      params: { blockedBy: 'admin-1', reason: 'persistent abuse' },
+    });
+    assert.match(blockResult, /Blocked 64211234567/);
+    assert.match(calls[0].sql, /INSERT INTO blocked_users/);
+    assert.deepEqual(calls[0].params, ['whatsapp', '64211234567', 'admin-1', 'persistent abuse']);
+
+    const unblockResult = await adapter.performAdminAction({
+      kind: 'unblock_user',
+      targetUserId: '64211234567',
+    });
+    assert.match(unblockResult, /Unblocked 64211234567/);
+    assert.match(calls[1].sql, /DELETE FROM blocked_users/);
+    assert.deepEqual(calls[1].params, ['whatsapp', '64211234567']);
+  },
+);
 
 test('the sent-message retry cache is bounded — oldest entries evict past the max, newest kept', () => {
   const adapter = new BaileysAdapter();

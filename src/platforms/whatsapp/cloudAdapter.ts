@@ -10,7 +10,7 @@ import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
-import { isKnownConversation } from '../../storage/repository.js';
+import { blockUser, isKnownConversation, unblockUser } from '../../storage/repository.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -76,6 +76,18 @@ const WINDOW_REOPEN_QUEUE_CAP = 3;
  */
 const SEND_RETRY_MAX_BACKOFF_MS = 5_000;
 
+// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
+// appended verbatim, untranslated). Byte-for-byte the pre-#618 inline
+// template's wording (no "moderators" — this platform's existing wording
+// already differs from Discord's, kept as-is rather than unified).
+const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community:';
+
+// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
+// #618), served when the target has a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
+// warnDmTextMi (#333) already established.
+const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā NZ Claude Community:';
+
 // Generic and static — no @-mention or echo of the sender, so nothing
 // user-supplied (msg.name/msg.from) ever reaches the text. Mirrors
 // WHATSAPP_GROUP_WELCOME_MESSAGE's shape, adapted for a 1:1 first contact.
@@ -123,7 +135,7 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
  */
 export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user']);
+  readonly adminCapabilities = new Set(['warn_user', 'block_user', 'unblock_user']);
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;
@@ -802,11 +814,30 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   async performAdminAction(action: AdminAction): Promise<string> {
     switch (action.kind) {
       case 'warn_user': {
+        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
         await this.sendDirectMessage(
           action.targetUserId ?? '',
-          `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
+          `${prefix} ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
+      }
+      // block_user/unblock_user (issue #572) are a pure DB write, no Cloud
+      // API call — the only lever this adapter has against a persistent
+      // abuser, since the Cloud API otherwise has no moderation surface.
+      case 'block_user': {
+        const targetUserId = action.targetUserId ?? '';
+        await blockUser(
+          'whatsapp',
+          targetUserId,
+          paramString(action.params?.blockedBy),
+          paramString(action.params?.reason) || null,
+        );
+        return `Blocked ${targetUserId}.`;
+      }
+      case 'unblock_user': {
+        const targetUserId = action.targetUserId ?? '';
+        const removed = await unblockUser('whatsapp', targetUserId);
+        return removed ? `Unblocked ${targetUserId}.` : `${targetUserId} was not blocked.`;
       }
       default:
         throw new Error(

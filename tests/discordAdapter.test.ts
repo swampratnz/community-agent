@@ -2520,6 +2520,43 @@ test("SECURITY: the plain response-style override cannot leak beyond the router 
   assert.ok(!threadCalls[0].name.includes('code removed'));
 });
 
+test(
+  'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
+    "admin's reason appended verbatim and untranslated (issue #618)",
+  async () => {
+    const adapter = new DiscordAdapter();
+    const dmSent = stubClient(adapter);
+    const result = await adapter.performAdminAction({
+      kind: 'warn_user',
+      targetUserId: 'user-1',
+      params: { reason: 'spam', language: 'mi' },
+    });
+    assert.equal(dmSent.length, 1);
+    assert.match(dmSent[0], /He whakatūpato nā ngā kaiwhakahaere o NZ Claude Community:/);
+    assert.match(dmSent[0], /spam/);
+    assert.ok(!dmSent[0].includes('Warning from NZ Claude Community moderators'));
+    assert.match(result, /Warned user-1/);
+  },
+);
+
+test(
+  'regression: performAdminAction("warn_user") sends byte-identical English text to today when ' +
+    'params.language is "en", undefined, or absent (issue #618)',
+  async () => {
+    for (const params of [
+      { reason: 'spam', language: 'en' },
+      { reason: 'spam', language: undefined },
+      { reason: 'spam' },
+    ]) {
+      const adapter = new DiscordAdapter();
+      const dmSent = stubClient(adapter);
+      await adapter.performAdminAction({ kind: 'warn_user', targetUserId: 'user-1', params });
+      assert.equal(dmSent.length, 1);
+      assert.equal(dmSent[0], '⚠️ Warning from NZ Claude Community moderators: spam');
+    }
+  },
+);
+
 test('performAdminAction("create_thread") passes seedMessageId through as the native startMessage option (issue #229)', async () => {
   const adapter = new DiscordAdapter();
   const calls = stubClientForThreadCreate(adapter);
