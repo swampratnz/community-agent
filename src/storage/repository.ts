@@ -2307,6 +2307,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM moderation_appeals WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // member_projects (issue #646) is keyed the same way — purge coherence for
+    // anyone who shared a project via share_project.
+    const { rowCount: memberProjects } = await client.query(
+      `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -2324,7 +2330,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (answerFeedback ?? 0) +
       (knowledgeGaps ?? 0) +
       (devTeamWatches ?? 0) +
-      (moderationAppeals ?? 0)
+      (moderationAppeals ?? 0) +
+      (memberProjects ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2367,6 +2374,7 @@ export interface MyDataSummary {
   knowledgeEntries: number;
   reportsFiled: number;
   suggestionsFiled: number;
+  projectsShared: number;
   responseStyle: ResponseStyle;
 }
 
@@ -2396,6 +2404,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
   let knowledgeEntries = 0;
   let reportsFiled = 0;
   let suggestionsFiled = 0;
+  let projectsShared = 0;
   for (const identity of identities) {
     const { rows: interactionRows } = await pool.query(
       `SELECT
@@ -2426,6 +2435,12 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
       [identity.platform, identity.userId],
     );
     suggestionsFiled += Number(suggestionRows[0]?.n ?? 0);
+
+    const { rows: projectRows } = await pool.query(
+      `SELECT count(*) AS n FROM member_projects WHERE platform = $1 AND user_id = $2 AND removed_at IS NULL`,
+      [identity.platform, identity.userId],
+    );
+    projectsShared += Number(projectRows[0]?.n ?? 0);
   }
 
   return {
@@ -2434,6 +2449,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
     knowledgeEntries,
     reportsFiled,
     suggestionsFiled,
+    projectsShared,
     // The standing style preference isn't purge-scope data — it's a single
     // per-identity row, so this reports the caller's own invoking identity
     // only (same scoping set_response_style itself uses), not aggregated.
@@ -3504,6 +3520,209 @@ export async function resolveSuggestion(
     : null;
 }
 
+// --- Member projects (self-declared project showcase, issue #646) -----------
+//
+// Second instance of #634's self-declared-member-table pattern: opt-in,
+// self-scoped, embedded, purge/roster-leave-cleaned data — but discrete
+// named artifacts a member accumulates over time (a per-member cap makes
+// sense here) rather than one fuzzy discovery blob per member.
+
+/** Per-member cap on distinct (by name) shared projects — keeps the showcase from being flooded by one member. */
+export const MEMBER_PROJECT_CAP = 3;
+/** Per-user cap on NEW projects within a rolling 24h window (anti-spam), same shape as SUGGESTION_RATE_LIMIT_PER_DAY. Edits (upsert-by-name) don't count against this. */
+export const PROJECT_RATE_LIMIT_PER_DAY = 3;
+export const PROJECT_NAME_MAX_CHARS = 80;
+export const PROJECT_DESCRIPTION_MAX_CHARS = 400;
+/** Verbatim member-supplied URL — stored as text, never fetched (no SSRF/preview surface). Capped generously for a URL. */
+export const PROJECT_LINK_MAX_CHARS = 300;
+
+export interface MemberProject {
+  id: number;
+  platform: Platform;
+  userId: string;
+  name: string;
+  description: string;
+  link: string | null;
+  createdAt: Date;
+}
+
+export type ShareProjectResult =
+  { ok: true; id: number; created: boolean } | { ok: false; reason: 'cap' | 'rate_limited' };
+
+/**
+ * Self-scoped write: shares (or edits, upsert-by-name) one of the caller's
+ * own projects. A brand-new name (not already owned as an ACTIVE project by
+ * this identity) is subject to BOTH the per-member cap (MEMBER_PROJECT_CAP
+ * distinct ACTIVE projects) and the rolling-24h rate cap
+ * (PROJECT_RATE_LIMIT_PER_DAY new shares) — same DB-backed, restart-proof
+ * COUNT(*)-inside-the-write pattern as createSuggestion, never an in-memory
+ * counter. Editing an EXISTING active project (same platform/user_id/name)
+ * only ever updates that one row and is deliberately exempt from both caps —
+ * a member correcting a typo in their own already-published project is not
+ * new flood risk.
+ *
+ * Removal is soft (`removed_at`, see removeMemberProject) rather than a hard
+ * DELETE specifically so the rate cap's rolling-24h COUNT(*) still sees a
+ * since-removed row: a hard delete would let a member cycle
+ * share/remove/share to keep "recent shares" permanently under the cap while
+ * actually publishing unbounded distinct projects over time — the exact
+ * churn-spam gap `content_reports`' own soft `status = 'withdrawn'` (never a
+ * DELETE) already avoids for its own rate-capped write.
+ */
+export async function shareProject(input: {
+  platform: Platform;
+  userId: string;
+  name: string;
+  description: string;
+  link?: string | null;
+}): Promise<ShareProjectResult> {
+  const name = input.name.slice(0, PROJECT_NAME_MAX_CHARS);
+  const description = input.description.slice(0, PROJECT_DESCRIPTION_MAX_CHARS);
+  const link = input.link ? input.link.slice(0, PROJECT_LINK_MAX_CHARS) : null;
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(`${name}\n${description}`);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for shared project');
+  }
+
+  const { rows: existingRows } = await pool.query(
+    `SELECT id FROM member_projects
+      WHERE platform = $1 AND user_id = $2 AND name = $3 AND removed_at IS NULL`,
+    [input.platform, input.userId, name],
+  );
+  const existing = existingRows[0];
+
+  if (existing) {
+    await pool.query(`UPDATE member_projects SET description = $2, link = $3, embedding = $4 WHERE id = $1`, [
+      Number(existing.id),
+      description,
+      link,
+      embedding ? pgvector.toSql(embedding) : null,
+    ]);
+    return { ok: true, id: Number(existing.id), created: false };
+  }
+
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       -- ALL rows in the window, active or soft-removed — a removed row still
+       -- represents a share that happened, so it must still count here.
+       SELECT count(*) AS n FROM member_projects
+        WHERE platform = $1 AND user_id = $2
+          AND created_at > now() - interval '24 hours'
+     ),
+     active_total AS (
+       SELECT count(*) AS n FROM member_projects
+        WHERE platform = $1 AND user_id = $2 AND removed_at IS NULL
+     )
+     INSERT INTO member_projects (platform, user_id, name, description, link, embedding)
+     SELECT $1, $2, $3, $4, $5, $6
+      WHERE (SELECT n FROM recent) < $7 AND (SELECT n FROM active_total) < $8
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      name,
+      description,
+      link,
+      embedding ? pgvector.toSql(embedding) : null,
+      PROJECT_RATE_LIMIT_PER_DAY,
+      MEMBER_PROJECT_CAP,
+    ],
+  );
+  if (rows[0]) return { ok: true, id: Number(rows[0].id), created: true };
+
+  // Distinguish which cap was hit for a precise refusal message.
+  const { rows: countRows } = await pool.query(
+    `SELECT
+       count(*) FILTER (WHERE removed_at IS NULL) AS active_total,
+       count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS recent
+     FROM member_projects WHERE platform = $1 AND user_id = $2`,
+    [input.platform, input.userId],
+  );
+  const activeTotal = Number(countRows[0]?.active_total ?? 0);
+  return { ok: false, reason: activeTotal >= MEMBER_PROJECT_CAP ? 'cap' : 'rate_limited' };
+}
+
+/**
+ * Self-scoped removal by name — soft (removed_at, not a DELETE) so the
+ * rate-limit window above still sees it; purgeSingleIdentity/markRosterLeave
+ * are the only hard-DELETE paths (full erasure for privacy/offboarding).
+ * Returns false if the caller has no ACTIVE project by that name.
+ */
+export async function removeMemberProject(
+  platform: Platform,
+  userId: string,
+  name: string,
+): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE member_projects SET removed_at = now()
+      WHERE platform = $1 AND user_id = $2 AND name = $3 AND removed_at IS NULL`,
+    [platform, userId, name.slice(0, PROJECT_NAME_MAX_CHARS)],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Most-recently-shared ACTIVE projects across every member — the no-query default for list_projects. */
+export async function listRecentProjects(limit = 8): Promise<MemberProject[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 8, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, name, description, link, created_at
+       FROM member_projects
+      WHERE removed_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT $1`,
+    [clampedLimit],
+  );
+  return rows.map(mapMemberProjectRow);
+}
+
+export interface MemberProjectSearchHit extends MemberProject {
+  similarity: number;
+}
+
+/** Embedding-similarity search over ACTIVE projects' name+description, for the query-supplied path of list_projects. */
+export async function searchProjects(query: string, limit = 8): Promise<MemberProjectSearchHit[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 8, 1), 50);
+  let queryVec: number[];
+  try {
+    queryVec = await embed(query);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding query failed; skipping project search');
+    return [];
+  }
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, name, description, link, created_at,
+            1 - (embedding <=> $1) AS similarity
+       FROM member_projects
+      WHERE embedding IS NOT NULL AND removed_at IS NULL
+      ORDER BY embedding <=> $1
+      LIMIT $2`,
+    [pgvector.toSql(queryVec), clampedLimit],
+  );
+  return rows.map((r) => ({ ...mapMemberProjectRow(r), similarity: Number(r.similarity) }));
+}
+
+function mapMemberProjectRow(r: {
+  id: number | string;
+  platform: string;
+  user_id: string;
+  name: string;
+  description: string;
+  link: string | null;
+  created_at: Date;
+}): MemberProject {
+  return {
+    id: Number(r.id),
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    name: r.name,
+    description: r.description,
+    link: r.link,
+    createdAt: r.created_at,
+  };
+}
+
 // --- Member notes (admin-curated person-scoped context, issue #45) -----------
 
 export const MEMBER_NOTE_MAX_CHARS = 1000;
@@ -3597,14 +3816,29 @@ export async function upsertRosterMember(input: {
   );
 }
 
-/** Mark a roster row as left. No-op (false) if unknown or already marked left. */
+/**
+ * Mark a roster row as left. No-op (false) if unknown or already marked left.
+ * Also removes the departed member's shared projects (issue #646): unlike
+ * most member-owned data (which stays until an explicit forget_me/purge —
+ * membership alone isn't a privacy request), a project showcase entry is a
+ * PUBLISHED artifact whose premise is "a current member of this community
+ * built this" — once they've left, showing it to remaining members as if
+ * they were still around is misleading, so it goes with them automatically,
+ * same as the acceptance criteria's stated lifecycle.
+ */
 export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
   const { rowCount } = await pool.query(
     `UPDATE server_roster SET left_at = now()
       WHERE platform = $1 AND user_id = $2 AND left_at IS NULL`,
     [platform, userId],
   );
-  return (rowCount ?? 0) > 0;
+  const left = (rowCount ?? 0) > 0;
+  if (left) {
+    await pool
+      .query(`DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`, [platform, userId])
+      .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_projects cleanup failed'));
+  }
+  return left;
 }
 
 export type RosterFilter = 'recent' | 'not_members' | 'left' | 'all';

@@ -502,6 +502,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `set_language_preference` (standing reply-language preference: auto/en/mi; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `react_to_message` (emoji ack instead of a text reply; closed ✅/👍/👀/🎉 allowlist, target must be a message the bot has seen in the caller's own conversation, rate-capped 20/24h; Discord only) | ❌ | ✅ | ✅ | ✅ |

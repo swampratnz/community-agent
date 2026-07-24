@@ -346,9 +346,11 @@ export function renderRequesterTag(userName: string | null | undefined): string 
  * U+0085 (NEL) is named explicitly because it is a Unicode line terminator
  * JS's \s does NOT match (unlike LF/CR/LS/PS) — an invisible NEL would
  * otherwise survive the collapse and could still render as a line break
- * (PR #626 review).
+ * (PR #626 review). Exported so other untrusted-member-content renderers
+ * (e.g. tools.ts's list_projects, issue #646) reuse the exact same
+ * quarantine discipline rather than a parallel, driftable copy.
  */
-function untrustedEntryContent(content: string): string {
+export function untrustedEntryContent(content: string): string {
   return content
     .replace(/[<>]/g, ' ')
     .replace(/[\s\u0085]+/g, ' ')

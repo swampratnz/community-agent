@@ -616,6 +616,39 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   The pipeline bridge stays human — the bot has **no** GitHub access, so an
   injected "suggestion" can never become a repo issue a build worker acts
   on without an admin consciously filing it.
+- **Member project showcase** (`member_projects`, issue #646): a member
+  publishes a discrete, named artifact ("what I built") with
+  `share_project(name, description, link?)`, browsable/searchable by every
+  other member via `list_projects`. **Self-declared only, same invariant as
+  member interests (#634)** — never inferred from general chat about
+  something someone is building; the tool description states plainly that
+  sharing *publishes* the project. Both tools explicitly re-assert `member`
+  tier in the handler (excluding open-mode guests, unlike most other
+  self-service `MEMBER_TOOLS`, since this write is member-facing publication
+  rather than a private/self-scoped action like `set_response_style`).
+  Write-only-facing (upsert-by-name for edits; `remove: true` folds
+  removal into the same tool rather than a third one), capped at 3 distinct
+  active projects per member and a DB-backed rolling-24h rate cap of 3 new
+  shares (mirroring `SUGGESTION_RATE_LIMIT_PER_DAY`'s shape). `remove_project`
+  is a **soft delete** (`removed_at`, never a hard `DELETE`) specifically so
+  the rate cap's rolling window still counts a since-removed row — a hard
+  delete would let a share/remove/share cycle keep the active count under
+  cap while publishing unbounded distinct projects over time, the same
+  churn-spam gap `content_reports`' own `status = 'withdrawn'` (never a
+  DELETE) already avoids. `list_projects` results derive exclusively from
+  `member_projects` (never `interactions`), rendered with the same
+  quarantine discipline as the recall renderers (`renderMemoryContext`/
+  `renderConversationTail` in `systemPrompt.ts`): angle brackets and all
+  whitespace including U+0085 stripped/collapsed per entry
+  (`untrustedEntryContent`, exported for this reuse), owner display name
+  sanitized (`sanitizeName`/`resolveSanitizedLabel`) rather than stored
+  per-row — a crafted name/description/link can't escape the rendered block
+  or forge another member's attribution. A stored `link` is verbatim
+  member-supplied text, **rendered, never fetched** — no preview, no SSRF
+  surface, same as every other member-authored link in this bot. Rows are
+  deleted by `forget_me`/`purge_user_data` and on roster leave (a departed
+  member's published projects go with them, unlike most other member data
+  which waits for an explicit privacy request), and counted in `my_data`.
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
   boolean, comment?: string)`. Since issue #355, `comment` carries an
