@@ -10,6 +10,18 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-25
+
+### Added
+- **WhatsApp admins can now block a persistent abuser** (#572): `moderate`
+  gains `block_user`/`unblock_user` (WhatsApp only — Discord keeps its own
+  `ban_user`). A block is a bot-side ignore enforced before any storage or
+  reply — it overrides `open` access mode's default-allow, needs no WhatsApp
+  API call, survives the target purging their data (so a block can't be
+  evaded via `forget_me`), and is admin-tier, CONFIRM-gated, and audited
+  like every other destructive moderation action. `unblock_user` reverses
+  it, including for identities whose history was purged.
+
 ## 2026-07-23
 
 ### Added

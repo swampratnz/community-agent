@@ -1808,6 +1808,41 @@ in the same spirit as `DISCORD_ARCHIVE_ALL_MESSAGES` (§6):
   `notifyMemberApproved` — that stays an admin-initiated notice, not an
   unprompted per-join message. Pinned by a `SECURITY:` test.
 
+### 18. WhatsApp bot-side block list (`block_user`/`unblock_user`, issue #572)
+
+WhatsApp has no equivalent of Discord's `ban_user`: on `open` access mode any
+phone number is served, and `remove_member` can't reach a sender who was never
+a member. `block_user` closes that gap with a **bot-side** block — a
+`blocked_users` row keyed `(platform, external_id)` — that stops the bot ever
+serving that sender again. Security posture:
+
+- **Same gates as every destructive moderation action.** Admin tier
+  (`assertAtLeast`), platform-capability gate (WhatsApp adapters only —
+  Discord never advertises it; use Discord's own `ban_user` there),
+  out-of-band CONFIRM before execution, and an `admin_audit` row via
+  `audited()`. A target that resolves to admin/super admin is refused before
+  any DB write, reusing the `atLeast(resolveRole(...), 'admin')` guard.
+- **Enforced before role resolution and before any storage.** The router
+  checks `isUserBlocked` first, so a blocked sender gets zero footprint — no
+  interaction row, no reply — and the check **overrides `open` mode's
+  default-allow** (the exact gap it exists to close). It fails open on a DB
+  error (log and continue), matching the role-resolution catch's posture: a
+  failed check must never itself become an outage.
+- **Deliberately survives `forget_me`/`purge_user_data`** — including across
+  linked identities — so a blocked sender cannot route around their block by
+  purging themselves. Pinned by `SECURITY:` tests. The row stores only the
+  external id, the blocking admin, an optional reason, and a timestamp — no
+  message content — so its retention is minimal-footprint by construction.
+  Because a purge deletes the target's `interactions` (what `isKnownUser`
+  reads), `unblock_user` admits a **currently-blocked** identity as an
+  alternate path to that reachability check — otherwise a purged identity
+  could never be unblocked; an id that is neither seen nor blocked keeps the
+  normal never-seen refusal.
+- **No platform API call in either direction** — block and unblock are pure
+  DB writes in both WhatsApp adapters (no Baileys socket dependency, no Cloud
+  endpoint), so they add no ToS-risk surface and work while WhatsApp is
+  disconnected.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
