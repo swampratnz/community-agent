@@ -77,6 +77,8 @@ import {
   recentQuestionClusters,
   recordAdminAction,
   recordKnowledgeGap,
+  findCrossedKnowledgeGapCluster,
+  markKnowledgeGapsAlerted,
   recordKnowledgeRetrieval,
   removeMember,
   REPORT_RATE_LIMIT_PER_DAY,
@@ -658,6 +660,53 @@ export async function notifyAdmins(
 }
 
 /**
+ * Real-time counterpart to the passive `recentKnowledgeGapClusters`/weekly
+ * digest count (issue #650): after `recordKnowledgeGap` persists a new
+ * below-floor miss, re-run the same clustering scoped to that gap's own
+ * conversation and, if the cluster it just joined crosses
+ * `KNOWLEDGE_GAP_ALERT_THRESHOLD` unresolved-and-unalerted rows for the
+ * first time, queue one `notifyAdmins` DM naming the cluster's
+ * representative query text and count — the "these N people asked
+ * near-identical questions, worth a FAQ?" signal #636 itself named,
+ * promoted from pull-only to push, same structural precedent as #479/#480.
+ * Callers must only invoke this when `config.knowledgeGapAlert.enabled`
+ * (the `knowledge_search` tool handler checks first) — this function has no
+ * flag check of its own, so the flag alone decides whether the extra
+ * clustering query ever runs (acceptance criterion 3).
+ *
+ * The guild-wide `KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR` reservation is
+ * checked BEFORE stamping `alerted_at` or sending, mirroring the escalation
+ * intercept's reserve-then-record order (`router.ts`'s
+ * `reserveEscalationSlot`/`recordEscalatedGapFn`) — a rate-limited crossing
+ * stamps nothing, so the cluster's signal isn't lost, only deferred to
+ * whichever later gap lands once a slot frees up (acceptance criterion 6:
+ * the rate limit drops only the DM, never data). The member-authored
+ * `representative` text is truncated via `truncateForEcho`, the same cap
+ * the escalation-confirmation echo (#479) already applies before untrusted
+ * text reaches an admin DM.
+ */
+async function maybeAlertKnowledgeGapCluster(
+  adapterFor: (platform: Platform) => PlatformAdapter | undefined,
+  conversationId: string,
+  excludeUserId: string,
+  newGapId: number,
+): Promise<void> {
+  const crossed = await findCrossedKnowledgeGapCluster(
+    conversationId,
+    newGapId,
+    config.knowledgeGapAlert.threshold,
+  );
+  if (!crossed) return;
+  if (!reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) return;
+  await markKnowledgeGapsAlerted(crossed.ids);
+  await notifyAdmins(
+    adapterFor,
+    `Knowledge gap: ${crossed.count} similar searches with no confident answer yet, e.g. "${truncateForEcho(crossed.representative)}" — worth a FAQ?`,
+    excludeUserId,
+  );
+}
+
+/**
  * Cap on stored community guidelines text (issue #212). Bounded by Discord's
  * hard 2000-character message limit — guidelines are appended to the static
  * welcome message and sent unchunked (`member.send`/channel fallback), so an
@@ -1041,6 +1090,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'ACCESS_REQUEST_ALERT_ENABLED',
     configPath: 'accessRequestAlert.enabled',
     label: 'Access request alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'KNOWLEDGE_GAP_ALERT_ENABLED',
+    configPath: 'knowledgeGapAlert.enabled',
+    label: 'Knowledge gap cluster alert',
     category: 'Admin Alerts & Digest',
   },
   {
@@ -2264,6 +2319,36 @@ function reserveAnnounceSlot(conversationId: string, limit: number): boolean {
 }
 
 /**
+ * Timestamps of sent knowledge-gap cluster alerts, for the GUILD-WIDE rolling
+ * hour cap (`KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR`, issue #650) — a single
+ * array, not conversation-keyed, matching `ESCALATION_RATE_LIMIT_PER_HOUR`'s
+ * guild-wide scope (`router.ts`'s `escalationTimestamps`) rather than the
+ * per-conversation shape above: the alert's recipient set (`listAdmins()`) is
+ * guild-wide, so the cap that protects it must be too.
+ */
+let knowledgeGapAlertTimestamps: number[] = [];
+
+/**
+ * Reserve one knowledge-gap cluster alert slot against the guild-wide rolling
+ * hourly cap, same sliding-window shape as `reserveAnnounceSlot` above.
+ * Returns false without reserving if the guild already hit `limit` alerts
+ * within the last hour.
+ */
+function reserveKnowledgeGapAlertSlot(limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  knowledgeGapAlertTimestamps = knowledgeGapAlertTimestamps.filter((t) => now - t < windowMs);
+  if (knowledgeGapAlertTimestamps.length >= limit) return false;
+  knowledgeGapAlertTimestamps.push(now);
+  return true;
+}
+
+/** Test-only reset for the guild-wide `knowledgeGapAlertTimestamps` bucket above — mirrors `resetPendingAlertsForTests`'s convention (pendingAlertQueue.ts) so tests can exhaust/reset a shared, non-conversation-keyed cap deterministically. */
+export function resetKnowledgeGapAlertRateLimitForTests(): void {
+  knowledgeGapAlertTimestamps = [];
+}
+
+/**
  * appeal_moderation last-fired timestamp per CALLER (`platform:userId`), for
  * its per-caller cooldown (`MODERATION_APPEAL_COOLDOWN_HOURS`, issue #496).
  * Scoped to the caller rather than the conversation — unlike every
@@ -2726,10 +2811,19 @@ export function buildToolServer(
         // plain empty result set, which is indistinguishable from a
         // searchKnowledge embed() failure and would otherwise log every
         // outage query as a false "gap". Fire-and-forget, same
-        // non-blocking style as the retrieval-count bump above.
-        recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
-          logger.warn({ err }, 'Knowledge gap recording failed'),
-        );
+        // non-blocking style as the retrieval-count bump above. When
+        // KNOWLEDGE_GAP_ALERT_ENABLED (issue #650), a successful (non-rate-
+        // limited) insert also checks whether it just crossed a real-time
+        // alert threshold — gated here so the flag off means byte-identical
+        // behaviour to before #650 (acceptance criterion 3).
+        recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query)
+          .then((result) => {
+            if (result === 'rate_limited' || !config.knowledgeGapAlert.enabled) return;
+            maybeAlertKnowledgeGapCluster(adapterFor, caller.conversationId, caller.userId, result.id).catch(
+              (err) => logger.warn({ err }, 'Knowledge gap cluster alert failed'),
+            );
+          })
+          .catch((err) => logger.warn({ err }, 'Knowledge gap recording failed'));
       }
       return text(
         formatKnowledgeSearchResults(

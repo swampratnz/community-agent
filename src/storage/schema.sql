@@ -660,6 +660,19 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
 -- regardless of this column, so no extra purge code is needed.
 ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS escalated BOOLEAN NOT NULL DEFAULT false;
 
+-- Set once a threshold-crossing cluster containing this row has fired its
+-- one real-time admin DM (issue #650, repository.ts's
+-- findCrossedKnowledgeGapCluster/markKnowledgeGapsAlerted). NULL (including
+-- every pre-existing row) means "never alerted" — single-shot per cluster: a
+-- later gap joining an already-alerted cluster only recounts the still-NULL
+-- rows, so it can't re-cross the threshold alone. Independent of
+-- resolved_at: a resolved row is excluded from clustering entirely, while an
+-- alerted-but-unresolved row still participates in clustering (so a new gap
+-- correctly joins the SAME cluster) but no longer counts toward the
+-- threshold. forget_me/purge_user_data already delete knowledge_gaps rows by
+-- user_id regardless of this column, so no extra purge code is needed.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMPTZ;
+
 -- ---------------------------------------------------------------------------
 -- Cost of the three standalone background `query()` calls (issue #401) that
 -- spend from the shared Max pool but write no `interactions` row, so

@@ -3998,6 +3998,106 @@ export async function recentKnowledgeGapClusters(
     .map((c) => ({ representative: c.representative, count: c.count }));
 }
 
+export interface KnowledgeGapClusterAlert {
+  representative: string;
+  count: number;
+  /** Ids of every currently-unalerted row in the crossed cluster — what the caller must pass to `markKnowledgeGapsAlerted`. */
+  ids: number[];
+}
+
+/**
+ * Re-runs the same greedy embedding-similarity clustering
+ * `recentKnowledgeGapClusters` uses (same `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`),
+ * scoped to a single conversation, to answer the one question that function's
+ * `{representative, count}`-only return shape can't: has the cluster
+ * `newGapId` just joined reached `threshold` unresolved-and-never-alerted
+ * rows for the first time (issue #650's real-time knowledge-gap nudge)?
+ *
+ * `resolved_at IS NULL` is a query filter (a resolved gap can never
+ * contribute to a NEW crossing, matching `recentKnowledgeGapClusters`), but
+ * `alerted_at` deliberately is NOT — every unresolved row in the semantic
+ * cluster still participates in clustering, so a fresh gap correctly joins
+ * the SAME cluster as one that already fired. Only the *count* checked
+ * against `threshold` is restricted to `alerted_at IS NULL` rows: that's
+ * what makes a later gap into an already-alerted cluster a no-op (a single
+ * new unalerted row can't re-cross a threshold >= 2 on its own) without
+ * losing the cluster identity a wall-clock or count-only debounce would.
+ *
+ * Returns `null` if `newGapId` isn't found in any cluster (its embed() call
+ * failed, so it was never persisted with a vector — `recordKnowledgeGap`
+ * already handles that by leaving `embedding` NULL) or its cluster hasn't
+ * reached `threshold` unalerted rows yet. On a crossing, returns the
+ * cluster's representative query text, the crossing unalerted count, and the
+ * ids the caller must stamp via `markKnowledgeGapsAlerted` to make the alert
+ * single-shot.
+ */
+export async function findCrossedKnowledgeGapCluster(
+  conversationId: string,
+  newGapId: number,
+  threshold: number,
+  days = 7,
+): Promise<KnowledgeGapClusterAlert | null> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 30);
+
+  const { rows } = await pool.query(
+    `SELECT id, query_text, embedding, alerted_at
+       FROM knowledge_gaps
+      WHERE conversation_id = $1
+        AND embedding IS NOT NULL
+        AND resolved_at IS NULL
+        AND created_at > now() - $2::interval
+      ORDER BY created_at ASC`,
+    [conversationId, `${clampedDays} days`],
+  );
+
+  const clusters: Array<{
+    representative: string;
+    embedding: number[];
+    ids: number[];
+    unalertedIds: number[];
+  }> = [];
+  for (const row of rows) {
+    const vec = row.embedding as number[] | null;
+    if (!vec) continue;
+    const id = Number(row.id);
+    const unalerted = row.alerted_at == null;
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.ids.push(id);
+      if (unalerted) match.unalertedIds.push(id);
+    } else {
+      clusters.push({
+        representative: row.query_text,
+        embedding: vec,
+        ids: [id],
+        unalertedIds: unalerted ? [id] : [],
+      });
+    }
+  }
+
+  const crossed = clusters.find((c) => c.ids.includes(newGapId));
+  if (!crossed || crossed.unalertedIds.length < threshold) return null;
+  return {
+    representative: crossed.representative,
+    count: crossed.unalertedIds.length,
+    ids: crossed.unalertedIds,
+  };
+}
+
+/**
+ * Stamps `alerted_at = now()` on every id in a just-crossed cluster (issue
+ * #650) — the single-shot mechanism `findCrossedKnowledgeGapCluster` reads
+ * back: once stamped, these rows no longer count toward that function's
+ * unalerted threshold check, so a later gap joining the same cluster can't
+ * re-fire the alert by itself. No-ops on an empty list (the rate-limited
+ * branch never stamps — see the `knowledge_search` tool handler — so a
+ * dropped alert doesn't silently suppress the same cluster's next attempt).
+ */
+export async function markKnowledgeGapsAlerted(ids: readonly number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(`UPDATE knowledge_gaps SET alerted_at = now() WHERE id = ANY($1)`, [[...ids]]);
+}
+
 // --- Admin digest freshness guard (issue #97) --------------------------------
 
 /**

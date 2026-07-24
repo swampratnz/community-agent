@@ -475,6 +475,31 @@ const EnvSchema = z.object({
   // `access_requests` (visible via list_access_requests/the digest) but do
   // not notify; a fresh hour resumes notifying.
   ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(10),
+  // Real-time admin alert (issue #650) promoting the existing knowledge-gap
+  // clustering signal (recentKnowledgeGapClusters, issue #208/#246) from a
+  // once-weekly digest count to an instant DM the moment a conversation-
+  // scoped cluster of below-floor knowledge_search misses first crosses
+  // KNOWLEDGE_GAP_ALERT_THRESHOLD unresolved + unalerted rows — the same
+  // "push what was pullable" precedent as ACCESS_REQUEST_ALERT_ENABLED/#480
+  // and the escalation alert/#479. Off by default, consistent with this
+  // repo's convention for new proactive DMs.
+  KNOWLEDGE_GAP_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Unresolved + unalerted cluster size that triggers the alert. Default 3
+  // matches #636's own worked example ("these two people asked near-
+  // identical questions" plus the new one crossing the line).
+  KNOWLEDGE_GAP_ALERT_THRESHOLD: z.coerce.number().int().positive().default(3),
+  // Guild-wide rolling-hour cap on knowledge-gap cluster alerts, same
+  // sliding-window shape as ESCALATION_RATE_LIMIT_PER_HOUR/
+  // ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM
+  // volume from an organic or adversarial query burst. Once exhausted within
+  // the trailing hour, a crossing cluster's rows are left unalerted (not
+  // stamped) so the signal isn't lost, only delayed to the next crossing
+  // once a slot frees up; the underlying gap row and weekly digest count
+  // (countKnowledgeGaps) are entirely unaffected either way.
+  KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
   // Offline context builder (issue #51): distills stored interactions into
   // durable context_digests on a ~daily cadence. Off by default; when on,
   // each run makes AT MOST CONTEXT_BUILDER_MAX_SUMMARIES short tool-less
@@ -1038,6 +1063,11 @@ export const config = {
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
     rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
+  },
+  knowledgeGapAlert: {
+    enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
+    threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
+    rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
   },
   usageCostDigest: {
     enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,
