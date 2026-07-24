@@ -63,6 +63,8 @@ const {
   countEscalatedKnowledgeGaps,
   KNOWLEDGE_GAP_DAILY_LIMIT,
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
+  findKnowledgeGapAlertCluster,
+  markKnowledgeGapsAlerted,
   recentModerationEntries,
   adminActivitySummary,
   autoEnrollMemberWithAudit,
@@ -2584,6 +2586,202 @@ test(
 
     await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+// --- findKnowledgeGapAlertCluster / markKnowledgeGapsAlerted (issue #650) ---
+
+test(
+  'repository: findKnowledgeGapAlertCluster returns null below threshold and the crossed cluster (representative/count/ids) once the newly-inserted row brings it to threshold (acceptance criterion 1)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-cross`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[7] = 1;
+
+    const insertGap = (queryText: string) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        ['discord', conversationId, `${RUN}-gap-alert-cross-user`, queryText, pgvector.toSql(vec)],
+      );
+
+    const first = await insertGap('how do I reset my session');
+    const firstId = Number(first.rows[0].id);
+    const belowThreshold = await findKnowledgeGapAlertCluster('discord', conversationId, firstId, 3);
+    assert.equal(belowThreshold, null, 'a single row must never cross a threshold of 3');
+
+    const second = await insertGap('my session keeps resetting, how do I fix it');
+    const secondId = Number(second.rows[0].id);
+    const stillBelow = await findKnowledgeGapAlertCluster('discord', conversationId, secondId, 3);
+    assert.equal(stillBelow, null, 'two rows must not cross a threshold of 3');
+
+    const third = await insertGap('session resets on me constantly, help');
+    const thirdId = Number(third.rows[0].id);
+    const crossed = await findKnowledgeGapAlertCluster('discord', conversationId, thirdId, 3);
+    assert.ok(crossed, 'the third identical-topic row must cross a threshold of 3');
+    assert.equal(crossed?.count, 3);
+    assert.equal(crossed?.representative, 'how do I reset my session', 'representative is the first gap seen');
+    assert.deepEqual(
+      [...crossed!.ids].sort((a, b) => a - b),
+      [firstId, secondId, thirdId].sort((a, b) => a - b),
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: findKnowledgeGapAlertCluster excludes already-alerted rows, so a cluster stamped by markKnowledgeGapsAlerted never re-crosses on a later gap (acceptance criterion 2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-singleshot`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[8] = 1;
+
+    const insertGap = (queryText: string) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        ['discord', conversationId, `${RUN}-gap-alert-singleshot-user`, queryText, pgvector.toSql(vec)],
+      );
+
+    const a = await insertGap('alert-once query A');
+    const b = await insertGap('alert-once query B');
+    const c = await insertGap('alert-once query C');
+    const ids = [a, b, c].map((r) => Number(r.rows[0].id));
+
+    const crossed = await findKnowledgeGapAlertCluster('discord', conversationId, ids[2], 3);
+    assert.ok(crossed, 'three identical-topic rows must cross a threshold of 3');
+
+    await markKnowledgeGapsAlerted(crossed!.ids);
+    const { rows: alertedRows } = await pool.query(
+      `SELECT id, alerted_at FROM knowledge_gaps WHERE id = ANY($1)`,
+      [ids],
+    );
+    assert.equal(alertedRows.length, 3);
+    assert.ok(
+      alertedRows.every((r) => r.alerted_at),
+      'every row in the crossed cluster must have alerted_at set',
+    );
+
+    // A fourth gap into the same conversation/topic: the three earlier rows
+    // are now excluded (alerted_at IS NOT NULL), so the cluster containing
+    // only the new row has count 1 — nowhere near a threshold of 3.
+    const d = await insertGap('alert-once query D');
+    const dId = Number(d.rows[0].id);
+    const afterAlert = await findKnowledgeGapAlertCluster('discord', conversationId, dId, 3);
+    assert.equal(afterAlert, null, 'a later gap into an already-alerted cluster must not re-cross');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: findKnowledgeGapAlertCluster excludes resolved rows from the threshold count (acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-resolved`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[9] = 1;
+
+    const insertGap = (queryText: string) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        ['discord', conversationId, `${RUN}-gap-alert-resolved-user`, queryText, pgvector.toSql(vec)],
+      );
+
+    const a = await insertGap('resolved-exclusion query A');
+    const b = await insertGap('resolved-exclusion query B');
+    await pool.query(`UPDATE knowledge_gaps SET resolved_at = now() WHERE id = $1`, [Number(a.rows[0].id)]);
+
+    // threshold-1 (1) unresolved + 1 resolved: the new row below should NOT
+    // cross a threshold of 3, since the resolved row must not count.
+    const c = await insertGap('resolved-exclusion query C');
+    const cId = Number(c.rows[0].id);
+    const notCrossed = await findKnowledgeGapAlertCluster('discord', conversationId, cId, 3);
+    assert.equal(
+      notCrossed,
+      null,
+      'a resolved row must not count toward the threshold — only 2 unresolved rows (B, C) exist',
+    );
+    void b;
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: markKnowledgeGapsAlerted no-ops on an empty array (a rate-limited crossing must never stamp alerted_at)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-empty-noop`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[10] = 1;
+    const { rows } = await pool.query(
+      `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      ['discord', conversationId, `${RUN}-gap-alert-empty-noop-user`, 'noop query', pgvector.toSql(vec)],
+    );
+
+    await assert.doesNotReject(markKnowledgeGapsAlerted([]));
+
+    const { rows: after } = await pool.query(`SELECT alerted_at FROM knowledge_gaps WHERE id = $1`, [
+      Number(rows[0].id),
+    ]);
+    assert.equal(after[0].alerted_at, null, 'an empty-array call must never touch any row');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: findKnowledgeGapAlertCluster is scoped to (platform, conversation_id) — a matching-topic cluster in a different conversation never contributes to the count',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-gap-alert-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-gap-alert-scope-out`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[11] = 1;
+
+    const insertGap = (conversationId: string, queryText: string) =>
+      pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        ['discord', conversationId, `${RUN}-gap-alert-scope-user`, queryText, pgvector.toSql(vec)],
+      );
+
+    await insertGap(outOfScopeConvo, 'scope-check query A');
+    await insertGap(outOfScopeConvo, 'scope-check query B');
+    const inScope = await insertGap(inScopeConvo, 'scope-check query C');
+    const inScopeId = Number(inScope.rows[0].id);
+
+    const result = await findKnowledgeGapAlertCluster('discord', inScopeConvo, inScopeId, 3);
+    assert.equal(
+      result,
+      null,
+      'the two out-of-scope rows must not count toward the in-scope conversation cluster',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
+  },
+);
+
+test(
+  'repository: findKnowledgeGapAlertCluster returns null when newGapId is not found among unresolved/unalerted rows in scope',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-missing-id`;
+    const result = await findKnowledgeGapAlertCluster('discord', conversationId, -1, 1);
+    assert.equal(result, null);
   },
 );
 
