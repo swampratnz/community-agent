@@ -2471,6 +2471,7 @@ export function buildToolServer(
   adapter: PlatformAdapter,
   getAdapter?: AdapterLookup,
   turnState?: ToolServerTurnState,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
 ) {
   /**
    * Resolves the adapter to notify through for a row stored under
@@ -3593,10 +3594,23 @@ export function buildToolServer(
         return text('Refusing: delete_message requires messageId.', true);
       }
 
+      // Target's standing language preference, threaded into params ONLY for
+      // warn_user (issue #618, same reuse of the #266/#282/#300/#331/#333/#339
+      // `_MI` + getLanguagePreference pattern) — degrades to undefined (the
+      // English wrapper) on lookup failure, extending the #52 fail-open
+      // invariant, same `.catch(() => 'auto')` shape as moderator.ts:235.
+      // Never resolved for any other action, so it can't leak into an
+      // unrelated AdminAction's params.
+      let warnLanguage: 'mi' | undefined;
+      if (args.action === 'warn_user') {
+        const lang = await getLangPref(caller.platform, args.targetUserId).catch(() => 'auto' as const);
+        warnLanguage = lang === 'mi' ? 'mi' : undefined;
+      }
       const params = {
         reason: args.reason,
         durationMinutes: args.durationMinutes,
         messageId: args.messageId,
+        ...(args.action === 'warn_user' ? { language: warnLanguage } : {}),
       };
       // Set by `run()` on a successful warn_user delivery only — read below to
       // gate the strike-system write on the DM actually having gone out,
