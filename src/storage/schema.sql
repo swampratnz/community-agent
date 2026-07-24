@@ -601,6 +601,27 @@ CREATE INDEX IF NOT EXISTS knowledge_candidates_status_idx
 CREATE INDEX IF NOT EXISTS knowledge_candidates_digest_idx
   ON knowledge_candidates (digest_id);
 
+-- Member-contributed provenance (issue #633): a deliberate, attributed
+-- counterpart to the machine-drafted rows above, inserted by the
+-- `suggest_knowledge` member tool with `digest_id` NULL. Both columns are
+-- nullable and NULL on every pre-existing (machine) row and stay NULL for
+-- every future machine-drafted row too — `source_user_id IS NULL` is exactly
+-- how purgeSingleIdentity/list_knowledge_candidates tell a machine candidate
+-- apart from a member-sourced one. Not a foreign key (community_users is
+-- keyed on internal id, not the raw platform/user_id pair this needs to
+-- match forget_me/purge_user_data's own scoping) — same "plain TEXT identity
+-- pair" convention `suggestions`/`content_reports`/`member_projects` already
+-- use.
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS source_platform TEXT;
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS source_user_id TEXT;
+
+-- Backs both forget_me/purge_user_data's member-sourced-candidate deletion
+-- (all statuses) and suggest_knowledge's own per-user rolling-24h rate cap —
+-- same shape as suggestions_user_rate_idx.
+CREATE INDEX IF NOT EXISTS knowledge_candidates_source_idx
+  ON knowledge_candidates (source_platform, source_user_id, created_at DESC)
+  WHERE source_user_id IS NOT NULL;
+
 -- ---------------------------------------------------------------------------
 -- Member feedback on the bot's own answers (issue #118) — the deferred
 -- feedback-loop half of #60 (which taught the model to attribute

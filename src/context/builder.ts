@@ -309,7 +309,8 @@ export async function runContextBuilder(
         try {
           const { blocked: alreadyQueued, embedding: topicEmbedding } =
             await candidateTopicAlreadyReviewed(topic);
-          const alreadyAnswered = !alreadyQueued && (await knowledgeCoversTopic(topicEmbedding));
+          const alreadyAnswered =
+            !alreadyQueued && (await knowledgeCoversTopic(topicEmbedding)).covered;
           if (!alreadyQueued && !alreadyAnswered) {
             await insertKnowledgeCandidate({
               digestId,

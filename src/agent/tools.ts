@@ -17,6 +17,7 @@ import {
   addMemberNote,
   addWarning,
   areKnowledgeEntriesLowRated,
+  candidateTopicAlreadyReviewed,
   clearAccessRequest,
   clearWarnings,
   countActiveWarnings,
@@ -24,6 +25,7 @@ import {
   countRepliesToUser,
   createAnswerFeedback,
   createContentReport,
+  createKnowledgeTip,
   createModerationAppeal,
   createSuggestion,
   clearUserSessions,
@@ -39,7 +41,11 @@ import {
   hasConflictAmongIds,
   insertDevTeamWatch,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
+  KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+  KNOWLEDGE_TIP_TITLE_MAX_CHARS,
   type KnowledgeDuplicateMatch,
+  knowledgeCoversTopic,
   listDuplicateKnowledge,
   listKnowledgeConflictCandidates,
   listKnowledgeCandidates,
@@ -1402,6 +1408,8 @@ const MEMBER_CAPABILITIES_TEXT =
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
   '- Suggest how the bot or community could be better\n' +
+  '- Submit a tip for the knowledge base, for anyone else who hits the same thing later (an admin reviews ' +
+  'it before it\'s published)\n' +
   '- Rate my last answer helpful or not\n' +
   '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
   '- React to a message with an emoji instead of replying\n' +
@@ -3149,6 +3157,88 @@ export function buildToolServer(
       return text(
         `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
           'but no promises on if/when it gets built.',
+      );
+    },
+  );
+
+  const suggestKnowledge = tool(
+    'suggest_knowledge',
+    "Submit a tip for the community knowledge base, in the member's own words — for anyone else who " +
+      "hits the same thing later. This does NOT publish anything directly: it queues the tip in the " +
+      'same admin-reviewed candidate queue the automated context builder feeds (visible to admins via ' +
+      "list_knowledge_candidates), tagged with the caller as its source. An admin must explicitly " +
+      'accept_knowledge_candidate before it ever reaches knowledge_search — nothing written here can ' +
+      'influence an answer on its own. Call this only on an explicit, deliberate "here\'s a tip for the ' +
+      'knowledge base" / "someone should document this" request — never inferred from general chat.',
+    {
+      title: z
+        .string()
+        .min(1)
+        .max(KNOWLEDGE_TIP_TITLE_MAX_CHARS)
+        .describe(
+          `A short title for the tip (max ${KNOWLEDGE_TIP_TITLE_MAX_CHARS} characters) — also used to ` +
+            'check whether this is already queued or already covered.',
+        ),
+      content: z
+        .string()
+        .min(1)
+        .max(KNOWLEDGE_TIP_CONTENT_MAX_CHARS)
+        .describe(
+          `The tip itself, in the member's own words (max ${KNOWLEDGE_TIP_CONTENT_MAX_CHARS} characters).`,
+        ),
+    },
+    async (args) => {
+      // suggest_knowledge feeds the same admin-reviewed candidate queue
+      // list_knowledge_candidates/accept_knowledge_candidate already gate,
+      // but re-assert 'member' explicitly rather than relying solely on
+      // MEMBER_TOOLS surface gating — same posture share_project uses
+      // (issue #646 AC #7): an open-mode guest can reach every other
+      // MEMBER_TOOLS write, but queuing content that may eventually publish
+      // to every member is a step further than a self-scoped, invisible-
+      // to-others action like set_response_style.
+      assertAtLeast(caller.role, 'member', 'suggest_knowledge');
+      const topic = args.title.trim();
+      // Same dedup order runContextBuilder already uses for the machine
+      // path (issue #503): exact/semantic queue match first (cheaper, no
+      // embed() call on an exact hit), then whether an existing knowledge
+      // entry already answers it — both run BEFORE any insert, so a dup
+      // never reaches createKnowledgeTip, rate cap or not.
+      const { blocked: alreadyQueued, embedding: topicEmbedding } =
+        await candidateTopicAlreadyReviewed(topic);
+      if (alreadyQueued) {
+        return text(
+          `A tip on "${topic}" is already queued or has already been reviewed — thanks, but no need to ` +
+            're-submit it.',
+          true,
+        );
+      }
+      const { covered, title: coveringTitle } = await knowledgeCoversTopic(topicEmbedding);
+      if (covered) {
+        return text(
+          'This looks already covered by an existing knowledge entry' +
+            (coveringTitle ? ` ("${coveringTitle}")` : '') +
+            ' — thanks, but no need to re-submit it.',
+          true,
+        );
+      }
+      const created = await createKnowledgeTip({
+        platform: caller.platform,
+        userId: caller.userId,
+        topic,
+        title: args.title,
+        content: args.content,
+        topicEmbedding,
+      });
+      if (!created) {
+        return text(
+          `You've already submitted ${KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY} knowledge tips in the last 24 ` +
+            'hours. Please wait before submitting another.',
+          true,
+        );
+      }
+      return text(
+        `Tip #${created.id} queued for admin review — thanks! It won't show up in knowledge_search ` +
+          'unless an admin accepts it.',
       );
     },
   );
@@ -4944,9 +5034,10 @@ export function buildToolServer(
   const listKnowledgeCandidatesTool = tool(
     'list_knowledge_candidates',
     'Browse the knowledge-candidate review queue: Q&A drafts the offline context builder proposed from ' +
-      'recurring, answerable questions in community chat (behind CONTEXT_CANDIDATES_ENABLED). Nothing here ' +
-      'is visible to members — review each with accept_knowledge_candidate or decline_knowledge_candidate. ' +
-      'Admin only.',
+      'recurring, answerable questions in community chat (behind CONTEXT_CANDIDATES_ENABLED), plus tips ' +
+      'members submitted directly via suggest_knowledge (tagged [member-suggested by <name>]). Nothing ' +
+      'here is visible to members — review each with accept_knowledge_candidate or ' +
+      'decline_knowledge_candidate. Admin only.',
     {
       status: z
         .enum(['pending', 'accepted', 'declined'])
@@ -4965,19 +5056,32 @@ export function buildToolServer(
       assertAtLeast(caller.role, 'admin', 'list_knowledge_candidates');
       const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50, args.oldestFirst ?? false);
       if (rows.length === 0) return text('No knowledge candidates found.');
-      return text(
-        untrusted(
-          'Knowledge candidates',
-          rows
-            .map(
-              (c) =>
-                `#${c.id} [${c.status}] ${c.title}: ${c.content} ` +
-                `(topic: ${c.topic}, drafted ${c.createdAt.toISOString()}` +
-                `${c.digestId ? `, digest #${c.digestId}` : ''})`,
-            )
-            .join('\n'),
-        ),
+      const lines = await Promise.all(
+        rows.map(async (c) => {
+          // A member-submitted title/content (issue #633) is untrusted free
+          // text, unlike a machine-drafted candidate's. Strip the exact
+          // characters the provenance tag below is built from ([ ] < >),
+          // plus newlines, BEFORE building the line — the same
+          // quarantine-escape discipline as untrusted()/sanitizeName — so
+          // crafted text (e.g. a fake "[member-suggested by ...]" sequence)
+          // can never fake or escape the real tag, which is the only source
+          // of those bracket characters in the rendered line.
+          const safeTitle = c.title.replace(/[<>[\]\r\n]/g, ' ');
+          const safeContent = c.content.replace(/[<>[\]\r\n]/g, ' ');
+          const safeTopic = c.topic.replace(/[<>[\]\r\n]/g, ' ');
+          let provenance = '';
+          if (c.sourcePlatform && c.sourceUserId) {
+            const label = await resolveSanitizedLabel(c.sourcePlatform, c.sourceUserId);
+            provenance = ` [member-suggested by ${label}]`;
+          }
+          return (
+            `#${c.id} [${c.status}]${provenance} ${safeTitle}: ${safeContent} ` +
+            `(topic: ${safeTopic}, drafted ${c.createdAt.toISOString()}` +
+            `${c.digestId ? `, digest #${c.digestId}` : ''})`
+          );
+        }),
       );
+      return text(untrusted('Knowledge candidates', lines.join('\n')));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -6392,6 +6496,7 @@ export function buildToolServer(
       appealModeration,
       myData,
       suggestImprovement,
+      suggestKnowledge,
       rateAnswer,
       setResponseStyleTool,
       setLanguagePreferenceTool,

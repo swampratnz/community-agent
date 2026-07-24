@@ -41,6 +41,8 @@ const {
   recordKnowledgeRetrieval,
   insertContextDigest,
   insertKnowledgeCandidate,
+  createKnowledgeTip,
+  KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   listKnowledgeCandidates,
   acceptKnowledgeCandidate,
   declineKnowledgeCandidate,
@@ -1829,17 +1831,23 @@ test(
     // knowledgeCoversTopic (issue #503) now takes the already-computed
     // embedding rather than re-embedding internally — mirrors how the
     // builder threads candidateTopicAlreadyReviewed's vector through.
+    const coveredMatch = await knowledgeCoversTopic(await embed('zyquavexolorpin onboarding steps'));
     assert.equal(
-      await knowledgeCoversTopic(await embed('zyquavexolorpin onboarding steps')),
+      coveredMatch.covered,
       true,
       'an existing knowledge entry above the relevance floor counts as already answered',
     );
+    assert.equal(coveredMatch.title, 'Zyquavexolorpin onboarding', 'the covering entry\'s title is returned');
     assert.equal(
-      await knowledgeCoversTopic(await embed('qzxvbfrobnicator gloopington snorlaxian doorknob')),
+      (await knowledgeCoversTopic(await embed('qzxvbfrobnicator gloopington snorlaxian doorknob'))).covered,
       false,
       'an unrelated (and lexically unrelated) topic is not flagged as already covered',
     );
-    assert.equal(await knowledgeCoversTopic(null), false, 'a null vector fails open to "not covered"');
+    assert.equal(
+      (await knowledgeCoversTopic(null)).covered,
+      false,
+      'a null vector fails open to "not covered"',
+    );
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
@@ -1991,6 +1999,125 @@ test(
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[pendingId, toAcceptId]]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData (forget_me/purge_user_data) deletes the caller's OWN member-sourced knowledge_candidates rows (suggest_knowledge, issue #633) in EVERY status — pending, accepted, AND declined — while a machine-drafted candidate (source_user_id IS NULL) is untouched",
+  { skip },
+  async () => {
+    const victim = `${RUN}-kt-purge-victim`;
+    const other = `${RUN}-kt-purge-other`;
+
+    const pending = await createKnowledgeTip({
+      platform: 'discord',
+      userId: victim,
+      topic: `${RUN}-kt-purge-topic-pending`,
+      title: 'Still pending tip',
+      content: 'never reviewed',
+    });
+    const toAccept = await createKnowledgeTip({
+      platform: 'discord',
+      userId: victim,
+      topic: `${RUN}-kt-purge-topic-accept`,
+      title: 'To be accepted tip',
+      content: 'accepted tip content',
+    });
+    const toDecline = await createKnowledgeTip({
+      platform: 'discord',
+      userId: victim,
+      topic: `${RUN}-kt-purge-topic-decline`,
+      title: 'To be declined tip',
+      content: 'declined tip content',
+    });
+    assert.ok(pending && toAccept && toDecline, 'all three tips insert under the rate cap');
+
+    const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const declined = await declineKnowledgeCandidate(toDecline.id, 'admin-1');
+    assert.ok(declined);
+
+    // A machine-drafted candidate, from an unrelated digest, must never be
+    // touched by this identity's purge — it has no source_user_id at all.
+    const { rows: interactionRows } = await pool.query(
+      `INSERT INTO interactions (platform, conversation_id, user_id, role, direction, content)
+       VALUES ('discord', $1, $2, 'member', 'inbound', 'kt purge machine fixture') RETURNING id`,
+      [`${RUN}-c-kt-purge-machine`, other],
+    );
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kt-purge-machine-topic`,
+      summary: 'unrelated machine-drafted summary',
+      exampleRefs: [Number(interactionRows[0].id)],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+    const machineCandidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kt-purge-machine-topic`,
+      title: 'Machine-drafted candidate',
+      content: 'must survive the victim purge untouched',
+    });
+
+    const purged = await purgeUserData('discord', victim);
+    assert.ok(purged >= 3, 'purge count includes all three member-sourced tips');
+
+    const victimRows = await pool.query(
+      `SELECT id, status FROM knowledge_candidates WHERE id = ANY($1)`,
+      [[pending.id, toAccept.id, toDecline.id]],
+    );
+    assert.equal(
+      victimRows.rows.length,
+      0,
+      'SECURITY: every member-sourced candidate row this identity wrote is gone, regardless of status',
+    );
+
+    const machineRow = await pool.query(`SELECT status FROM knowledge_candidates WHERE id = $1`, [
+      machineCandidateId,
+    ]);
+    assert.equal(
+      machineRow.rows.length,
+      1,
+      'a machine-drafted candidate (source_user_id IS NULL) is never touched by a purge',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [machineCandidateId]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [other]);
+  },
+);
+
+test(
+  'repository: createKnowledgeTip rate-caps a member at KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY tips per rolling 24h, keyed on (source_platform, source_user_id) — never an in-memory counter',
+  { skip },
+  async () => {
+    const userId = `${RUN}-kt-rate-cap`;
+    const ids: number[] = [];
+    for (let i = 0; i < KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY; i++) {
+      const created = await createKnowledgeTip({
+        platform: 'discord',
+        userId,
+        topic: `${RUN}-kt-rate-topic-${i}`,
+        title: `Rate cap tip ${i}`,
+        content: 'content',
+      });
+      assert.ok(created, `tip ${i} inserts under the cap`);
+      ids.push(created.id);
+    }
+    const overCap = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN}-kt-rate-topic-over`,
+      title: 'One too many',
+      content: 'content',
+    });
+    assert.equal(overCap, null, 'a tip past the rolling-24h cap is refused, not inserted');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_platform = 'discord' AND source_user_id = $1`, [
+      userId,
+    ]);
   },
 );
 

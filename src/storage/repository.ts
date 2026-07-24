@@ -2313,6 +2313,16 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // knowledge_candidates rows this identity WROTE via suggest_knowledge
+    // (issue #633) — every status, not just pending, unlike the digest-
+    // invalidation delete above which only ever touches still-pending
+    // machine rows. `source_user_id IS NULL` on every machine-drafted row
+    // means this can never match one, so an admin's already-reviewed
+    // accept/decline history over machine candidates is untouched.
+    const { rowCount: knowledgeTips } = await client.query(
+      `DELETE FROM knowledge_candidates WHERE source_platform = $1 AND source_user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -2331,7 +2341,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (knowledgeGaps ?? 0) +
       (devTeamWatches ?? 0) +
       (moderationAppeals ?? 0) +
-      (memberProjects ?? 0)
+      (memberProjects ?? 0) +
+      (knowledgeTips ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2348,8 +2359,11 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
  * them (member_notes), suggestions they filed, their response-style and
  * language preferences, answer ratings *they submitted* (issue #118), any context
  * digest built over their purged interactions, any still-pending
- * knowledge_candidates drafted from an invalidated digest (issue #102), and
- * any moderation appeal(s) *they filed* (issue #554) —
+ * knowledge_candidates drafted from an invalidated digest (issue #102), any
+ * moderation appeal(s) *they filed* (issue #554), and any knowledge_candidates
+ * rows *they wrote* via suggest_knowledge in ANY status — pending, accepted,
+ * or declined (issue #633; distinct from the invalidated-digest delete,
+ * which only ever removes still-pending machine rows) —
  * across every identity linked to them via
  * `link_member` (SECURITY: this is a deliberate blast-radius expansion —
  * linking two identities means forget_me/purge from *either* now erases
@@ -3047,6 +3061,9 @@ export interface KnowledgeCandidate {
   createdAt: Date;
   reviewedBy: string | null;
   reviewedAt: Date | null;
+  /** NULL for machine-drafted candidates; set for member-suggested ones (issue #633). */
+  sourcePlatform: Platform | null;
+  sourceUserId: string | null;
 }
 
 function toKnowledgeCandidate(r: {
@@ -3059,6 +3076,8 @@ function toKnowledgeCandidate(r: {
   created_at: Date;
   reviewed_by: string | null;
   reviewed_at: Date | null;
+  source_platform?: string | null;
+  source_user_id?: string | null;
 }): KnowledgeCandidate {
   return {
     id: Number(r.id),
@@ -3070,6 +3089,8 @@ function toKnowledgeCandidate(r: {
     createdAt: r.created_at,
     reviewedBy: r.reviewed_by,
     reviewedAt: r.reviewed_at,
+    sourcePlatform: (r.source_platform as Platform | null) ?? null,
+    sourceUserId: r.source_user_id ?? null,
   };
 }
 
@@ -3102,6 +3123,64 @@ export async function insertKnowledgeCandidate(input: {
     ],
   );
   return Number(rows[0].id);
+}
+
+/** Per-member cap on new suggest_knowledge tips within a rolling 24h window (issue #633). */
+export const KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY = 3;
+export const KNOWLEDGE_TIP_TITLE_MAX_CHARS = 120;
+export const KNOWLEDGE_TIP_CONTENT_MAX_CHARS = 1000;
+
+/**
+ * Member-sourced counterpart to `insertKnowledgeCandidate` above (issue
+ * #633) — backs the `suggest_knowledge` member tool. `digestId` is always
+ * NULL: no `context_digests` row backs a deliberate, attributed member
+ * write. `sourcePlatform`/`sourceUserId` record who wrote it, which is what
+ * `list_knowledge_candidates`' provenance tag and forget_me/
+ * purge_user_data's member-sourced-candidate deletion both key on.
+ *
+ * Rate-capped atomically with the exact same
+ * COUNT(*)-inside-the-INSERT-guarded-by-a-WHERE pattern as `createSuggestion`
+ * (never an in-memory counter), keyed on the rolling 24h window over
+ * `(source_platform, source_user_id)` — the `knowledge_candidates_source_idx`
+ * partial index backs this scan. Returns null when the caller is already at
+ * the cap; the tool layer turns that into a friendly refusal naming the
+ * limit, same shape as `suggest_improvement`'s own cap message.
+ *
+ * The dedup guards (`candidateTopicAlreadyReviewed` / `knowledgeCoversTopic`)
+ * are the CALLER's responsibility, run BEFORE this — same order
+ * `runContextBuilder` already uses for the machine path — so a dup never
+ * reaches here, rate cap or not.
+ */
+export async function createKnowledgeTip(input: {
+  platform: Platform;
+  userId: string;
+  topic: string;
+  title: string;
+  content: string;
+  topicEmbedding?: number[] | null;
+}): Promise<{ id: number } | null> {
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM knowledge_candidates
+        WHERE source_platform = $1 AND source_user_id = $2
+          AND created_at > now() - interval '24 hours'
+     )
+     INSERT INTO knowledge_candidates
+       (digest_id, topic, title, content, topic_embedding, source_platform, source_user_id)
+     SELECT NULL, $3, $4, $5, $6, $1, $2
+      WHERE (SELECT n FROM recent) < $7
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      input.topic,
+      input.title.slice(0, KNOWLEDGE_TIP_TITLE_MAX_CHARS),
+      input.content.slice(0, KNOWLEDGE_TIP_CONTENT_MAX_CHARS),
+      input.topicEmbedding ? pgvector.toSql(input.topicEmbedding) : null,
+      KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+    ],
+  );
+  return rows[0] ? { id: Number(rows[0].id) } : null;
 }
 
 /**
@@ -3167,21 +3246,26 @@ export async function candidateTopicAlreadyReviewed(
 }
 
 /**
- * True if an existing `knowledge` entry already covers this topic above the
- * #95 relevance floor (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) — the other
- * half of the builder's dedup guard, so the candidate queue doesn't refill
- * with a suggestion an admin already answered. Takes the topic's already-
- * computed embedding (issue #503 — reused from `candidateTopicAlreadyReviewed`
- * rather than re-embedded) instead of embedding it again; a null vector
- * (exact-match short circuit upstream, or a failed embed) fails open to
- * false ("not covered") so a transient embedding outage can only ever
- * produce an extra candidate for an admin to decline, never silently
- * suppress a genuinely new one.
+ * True (plus the covering entry's title) if an existing `knowledge` entry
+ * already covers this topic above the #95 relevance floor
+ * (`KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) — the other half of the builder's
+ * dedup guard, so the candidate queue doesn't refill with a suggestion an
+ * admin already answered. Takes the topic's already-computed embedding
+ * (issue #503 — reused from `candidateTopicAlreadyReviewed` rather than
+ * re-embedded) instead of embedding it again; a null vector (exact-match
+ * short circuit upstream, or a failed embed) fails open to "not covered" so
+ * a transient embedding outage can only ever produce an extra candidate for
+ * an admin to decline, never silently suppress a genuinely new one. The
+ * title is returned (issue #633) so `suggest_knowledge` can name the
+ * covering entry in its refusal — `knowledge.title` is nullable, so a
+ * covering entry saved without one falls back to null.
  */
-export async function knowledgeCoversTopic(vec: number[] | null): Promise<boolean> {
-  if (!vec) return false;
+export async function knowledgeCoversTopic(
+  vec: number[] | null,
+): Promise<{ covered: boolean; title: string | null }> {
+  if (!vec) return { covered: false, title: null };
   const { rows } = await pool.query(
-    `SELECT 1 - (embedding <=> $1) AS similarity
+    `SELECT title, 1 - (embedding <=> $1) AS similarity
        FROM knowledge
       WHERE embedding IS NOT NULL
       ORDER BY embedding <=> $1
@@ -3189,7 +3273,8 @@ export async function knowledgeCoversTopic(vec: number[] | null): Promise<boolea
     [pgvector.toSql(vec)],
   );
   const top = rows[0];
-  return !!top && Number(top.similarity) >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
+  const covered = !!top && Number(top.similarity) >= KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
+  return { covered, title: covered ? (top.title ?? null) : null };
 }
 
 /**
@@ -3214,7 +3299,8 @@ export async function listKnowledgeCandidates(
   }
   params.push(clampedLimit);
   const { rows } = await pool.query(
-    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at
+    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at,
+            source_platform, source_user_id
        FROM knowledge_candidates
        ${where}
       ORDER BY created_at ${oldestFirst ? 'ASC' : 'DESC'}
@@ -3278,7 +3364,8 @@ export async function acceptKnowledgeCandidate(input: {
   sourceTitle?: string;
 }): Promise<{ candidateId: number; knowledgeId: number; similarEntry?: KnowledgeDuplicateMatch } | null> {
   const { rows } = await pool.query(
-    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at
+    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at,
+            source_platform, source_user_id
        FROM knowledge_candidates WHERE id = $1 AND status = 'pending'`,
     [input.id],
   );
@@ -3315,7 +3402,8 @@ export async function declineKnowledgeCandidate(
   const { rows } = await pool.query(
     `UPDATE knowledge_candidates SET status = 'declined', reviewed_by = $2, reviewed_at = now()
       WHERE id = $1 AND status = 'pending'
-      RETURNING id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at`,
+      RETURNING id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at,
+                source_platform, source_user_id`,
     [id, reviewedBy],
   );
   return rows[0] ? toKnowledgeCandidate(rows[0]) : null;

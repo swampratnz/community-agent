@@ -92,6 +92,13 @@ export const MEMBER_TOOLS = [
   // read side (list_suggestions) is admin-tier — a member can never read
   // anyone else's suggestion, only their own via my_submissions.
   'mcp__community__suggest_improvement',
+  // Write-only into the shared knowledge_candidates review queue (rate-
+  // capped, dedup-guarded); the read/accept/decline side stays admin-tier —
+  // this can never write to `knowledge` directly, only queue a pending
+  // candidate an admin explicitly reviews (issue #633). Re-checks 'member'
+  // explicitly in the handler, same as share_project below, since it
+  // publishes toward every member eventually.
+  'mcp__community__suggest_knowledge',
   // Write-only, boolean-only rating of the bot's own last answer to the
   // caller (rate-capped); the read side (list_answer_feedback) is
   // admin-tier — a member can never read the aggregate feedback queue.
