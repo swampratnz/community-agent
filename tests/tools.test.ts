@@ -7499,8 +7499,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    33,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610)",
+    34,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(

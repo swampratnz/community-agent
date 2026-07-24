@@ -61,6 +61,8 @@ const {
   countKnowledgeGaps,
   recordEscalatedKnowledgeGap,
   countEscalatedKnowledgeGaps,
+  findCrossedKnowledgeGapCluster,
+  markKnowledgeGapsAlerted,
   KNOWLEDGE_GAP_DAILY_LIMIT,
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
   recentModerationEntries,
@@ -2584,6 +2586,89 @@ test(
 
     await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  'repository: findCrossedKnowledgeGapCluster returns null until threshold unalerted rows accumulate, then returns the crossed cluster; markKnowledgeGapsAlerted makes a later gap in the same cluster a no-op (issue #650, acceptance criteria 1 + 2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-crossing`;
+    const query = `${RUN} identical alert-crossing gap query`;
+    const threshold = 3;
+
+    // Inserted and checked ONE AT A TIME — the crossing check must be
+    // re-run after each individual insert (as the real caller does), not
+    // computed once all three fixture rows already exist.
+    const gap1 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-crossing-a`, query);
+    assert.ok(gap1 !== 'rate_limited', 'fixture gap 1 recorded');
+    const belowAt1 = await findCrossedKnowledgeGapCluster(conversationId, gap1.id, threshold);
+    assert.equal(belowAt1, null, 'a single gap must never cross a threshold of 3');
+
+    const gap2 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-crossing-b`, query);
+    assert.ok(gap2 !== 'rate_limited', 'fixture gap 2 recorded');
+    const belowAt2 = await findCrossedKnowledgeGapCluster(conversationId, gap2.id, threshold);
+    assert.equal(belowAt2, null, 'two unalerted gaps must not cross a threshold of 3');
+
+    const gap3 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-crossing-c`, query);
+    assert.ok(gap3 !== 'rate_limited', 'fixture gap 3 recorded');
+    const crossed = await findCrossedKnowledgeGapCluster(conversationId, gap3.id, threshold);
+    assert.ok(crossed, 'the third identical-query gap crosses the threshold');
+    assert.equal(crossed.representative, query);
+    assert.equal(crossed.count, 3);
+    assert.deepEqual(
+      [...crossed.ids].sort((a, b) => a - b),
+      [gap1.id, gap2.id, gap3.id].sort((a, b) => a - b),
+    );
+
+    await markKnowledgeGapsAlerted(crossed.ids);
+    const { rows: stamped } = await pool.query(
+      `SELECT id FROM knowledge_gaps WHERE id = ANY($1) AND alerted_at IS NOT NULL`,
+      [crossed.ids],
+    );
+    assert.equal(stamped.length, 3, 'every row in the crossed cluster must be stamped alerted_at');
+
+    // A later gap into the SAME cluster must not re-cross alone: only this
+    // one new row is unalerted (1 < threshold), single-shot per cluster.
+    const gap4 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-crossing-d`, query);
+    assert.ok(gap4 !== 'rate_limited');
+    const afterAlert = await findCrossedKnowledgeGapCluster(conversationId, gap4.id, threshold);
+    assert.equal(afterAlert, null, 'a single later gap into an already-alerted cluster must not re-cross');
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: findCrossedKnowledgeGapCluster excludes a resolved gap from the threshold count (issue #650 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-alert-resolved-exclusion`;
+    const query = `${RUN} resolved-exclusion alert gap query`;
+    const threshold = 3;
+
+    const gap1 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-resolved-a`, query);
+    const gap2 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-resolved-b`, query);
+    const gap3 = await recordKnowledgeGap('discord', conversationId, `${RUN}-alert-resolved-c`, query);
+    assert.ok(
+      gap1 !== 'rate_limited' && gap2 !== 'rate_limited' && gap3 !== 'rate_limited',
+      'fixture gaps recorded',
+    );
+
+    // gap3 is resolved directly (mirroring the escalated-gaps resolved-
+    // exclusion test above) BEFORE it would otherwise complete the
+    // threshold-3 cluster — it must drop out of the count entirely, not
+    // merely stay unalerted.
+    await pool.query(`UPDATE knowledge_gaps SET resolved_at = now() WHERE id = $1`, [gap3.id]);
+
+    const result = await findCrossedKnowledgeGapCluster(conversationId, gap2.id, threshold);
+    assert.equal(
+      result,
+      null,
+      'a resolved gap must not count toward the threshold — only 2 unresolved rows remain',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
