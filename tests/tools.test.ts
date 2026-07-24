@@ -4467,6 +4467,59 @@ test(
 );
 
 test(
+  'SECURITY: unblock_user stays available after the target purges their data — a currently-blocked identity ' +
+    'admits via isUserBlocked even when isKnownUser is false, while an id neither seen nor blocked keeps the ' +
+    'existing refusal (issue #572, PR #678 review finding)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-unblock-after-purge`;
+    const targetUser = `${conv}-target`;
+    // Deliberately NO seedKnownUser: simulates the post-purge state —
+    // purge_user_data/forget_me hard-deletes the target's interactions (what
+    // isKnownUser reads) while the blocked_users row survives by design, so
+    // isKnownUser is false but the identity is still blocked.
+    await blockUser('whatsapp', targetUser, `${RUN}-blocking-admin`, 'persistent abuse');
+    const adapter = moderateAdapter({
+      platform: 'whatsapp',
+      capabilities: ['block_user', 'unblock_user'],
+      performAdminAction: async (action) => {
+        const removed = await unblockUser('whatsapp', action.targetUserId ?? '');
+        return removed ? `Unblocked ${action.targetUserId}.` : `${action.targetUserId} was not blocked.`;
+      },
+    });
+    const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
+
+    const result = await handler.handler({
+      action: 'unblock_user',
+      targetUserId: targetUser,
+      reason: 'appeal upheld',
+    });
+    assert.equal(
+      result.isError,
+      false,
+      'unblocking a purged-but-blocked identity must not be refused as never-seen',
+    );
+    const pending = takePendingAction('whatsapp', conv, 'admin-1');
+    assert.ok(pending, 'must register a pending action');
+    const execResult = await pending?.execute();
+    assert.match(execResult ?? '', /Done:/);
+    assert.equal(await isUserBlocked('whatsapp', targetUser), false, 'the block row is removed');
+
+    // An id that is neither seen nor blocked still gets the existing refusal —
+    // the alternate admission path opens only for genuinely blocked identities.
+    const stranger = `${conv}-stranger`;
+    const refused = await handler.handler({
+      action: 'unblock_user',
+      targetUserId: stranger,
+      reason: 'appeal upheld',
+    });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0]?.text ?? '', /has never been seen/);
+    assert.equal(adapter.performCalls.length, 1, 'the refused stranger call never reaches the adapter');
+  },
+);
+
+test(
   'SECURITY: block_user against a targetUserId never seen on the platform is refused by the existing ' +
     'isKnownUser check before any DB write (issue #572)',
   { skip },

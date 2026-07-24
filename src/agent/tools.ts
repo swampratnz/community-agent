@@ -52,6 +52,7 @@ import {
   isKnownMessage,
   isKnownUser,
   isKnowledgeStale,
+  isUserBlocked,
   linkMembers,
   listAccessRequests,
   listAdmins,
@@ -3441,7 +3442,17 @@ export function buildToolServer(
       ) {
         return text('Refusing: cannot block an admin or super admin.', true);
       }
-      if (!(await isKnownUser(caller.platform, args.targetUserId))) {
+      // unblock_user admits via isUserBlocked as an ALTERNATE path to
+      // isKnownUser: purge_user_data/forget_me hard-deletes the target's
+      // interactions (what isKnownUser reads) while deliberately keeping the
+      // blocked_users row alive, so after a purge isKnownUser is permanently
+      // false for that id — without this, a purged identity could never be
+      // unblocked (review finding on #678). A currently-blocked identity is
+      // definitionally known; an id that is neither seen nor blocked still
+      // gets the refusal below.
+      const admitsViaBlock =
+        args.action === 'unblock_user' && (await isUserBlocked(caller.platform, args.targetUserId));
+      if (!admitsViaBlock && !(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
       // delete_message's real messageId only reaches the adapter deep inside
