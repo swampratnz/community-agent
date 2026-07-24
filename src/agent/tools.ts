@@ -3388,7 +3388,7 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete/block/unblock require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user (WhatsApp only) is the bot-side equivalent: it stops the bot ever replying to that sender again, platform-wide, with no platform API call; unblock_user reverses it. Cannot block/ban a target that resolves admin or super admin. Admins can only act in conversations they are in.',
+    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete/block/unblock require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user (WhatsApp only) is the bot-side equivalent: it stops the bot ever replying to that sender again, platform-wide, with no platform API call; unblock_user reverses it. block_user cannot target an admin or super admin. Admins can only act in conversations they are in.',
     {
       action: z
         .enum([
