@@ -17,7 +17,8 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 
-const { Router, GATED_NOTICE } = await import('../src/router.js');
+const { Router } = await import('../src/router.js');
+const { GATED_NOTICE } = await import('../src/gatedNotice.js');
 
 function makeAdapter(overrides: Partial<PlatformAdapter> = {}): {
   adapter: PlatformAdapter;
