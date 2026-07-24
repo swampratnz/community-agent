@@ -593,6 +593,14 @@ a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
 is read once per flagged message (defensively, degrading to `'auto'` on
 failure so a lookup error can never skip or delay warning/mute enforcement)
 and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default. The
+manually-triggered counterpart — an admin invoking the `moderate` tool's
+`warn_user` action (`src/agent/tools.ts`) — gets the same treatment (issue
+#618), closing the gap #333 left open for this path: the tool resolves the
+target's (not the issuing admin's) standing preference via the same
+injectable `getLangPref`/degrade-to-`'auto'`-on-failure shape and threads it
+as `params.language`, read by each of the three adapters' `warn_user` case
+to pick a fixed `_MI` wrapper constant instead of the English one — the
+admin's own `reason` text is never translated either way. The
 same treatment extends to the four membership/admin-grant and
 suggestion/report-resolution DMs (`notifyMemberApproved`/`notifyAdminApproved`/
 `notifySuggestionResolved`/`notifyReportResolved` in `src/agent/tools.ts`,

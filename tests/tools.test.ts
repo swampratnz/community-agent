@@ -3489,6 +3489,7 @@ function moderateHandler(caller: {
   userId?: string;
   conversationId?: string;
   adapter: PlatformAdapter;
+  getLangPref?: typeof getLanguagePreference;
 }) {
   const server = buildToolServer(
     {
@@ -3499,6 +3500,9 @@ function moderateHandler(caller: {
       conversationId: caller.conversationId ?? 'convo-1',
     },
     caller.adapter,
+    undefined,
+    undefined,
+    caller.getLangPref,
   );
   return (
     server.instance as unknown as {
@@ -4361,6 +4365,155 @@ test(
     } finally {
       config.moderation.enabled = wasEnabled;
       config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+// Manual warn_user te reo Māori DM parity (issue #618): threads the TARGET's
+// standing language preference into params.language, mirroring what
+// moderation/moderator.ts's auto-detected warnings already do (issue #333).
+test(
+  "moderate resolves the TARGET's language preference and threads it as params.language for warn_user " +
+    "when it is 'mi' (issue #618 acceptance criterion 3)",
+  { skip },
+  async () => {
+    const conv = `${RUN}-warn-language-mi`;
+    const target = `${conv}-target`;
+    await seedKnownUser('discord', conv, target);
+    const adapter = moderateAdapter({});
+    const getLangPref = async () => 'mi' as const;
+    const handler = moderateHandler({ conversationId: conv, adapter, getLangPref });
+
+    const result = await handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam' });
+    assert.equal(result.isError, false);
+    assert.equal(adapter.performCalls.length, 1);
+    assert.equal(adapter.performCalls[0].params?.language, 'mi');
+  },
+);
+
+test(
+  "moderate leaves params.language undefined for warn_user when the target's preference is not 'mi' " +
+    '(issue #618 acceptance criterion 3, regression half — byte-identical to pre-#618 params otherwise)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-warn-language-en`;
+    const target = `${conv}-target`;
+    await seedKnownUser('discord', conv, target);
+    const adapter = moderateAdapter({});
+    const getLangPref = async () => 'en' as const;
+    const handler = moderateHandler({ conversationId: conv, adapter, getLangPref });
+
+    const result = await handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam' });
+    assert.equal(result.isError, false);
+    assert.equal(adapter.performCalls.length, 1);
+    assert.equal(adapter.performCalls[0].params?.language, undefined);
+  },
+);
+
+test(
+  'SECURITY: a rejecting getLangPref during warn_user still sends the DM (English) and leaves ' +
+    "applyManualWarnStrike's bookkeeping — the warning row write and the mute-on-strike-limit escalation " +
+    '— completely unaffected, extending the #52 fail-open invariant to this call site (issue #618 ' +
+    'acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-warn-language-fail-open`;
+    const target = `${conv}-target`;
+    await seedKnownUser('discord', conv, target);
+
+    const wasEnabled = config.moderation.enabled;
+    const originalLimit = config.moderation.strikeLimit;
+    config.moderation.enabled = true;
+    config.moderation.strikeLimit = 1;
+    try {
+      const adapter = moderateAdapter({ capabilities: ['warn_user', 'mute_user'] });
+      const getLangPref = async (): Promise<'auto' | 'en' | 'mi'> => {
+        throw new Error('language lookup boom');
+      };
+      const handler = moderateHandler({
+        conversationId: conv,
+        userId: MANUAL_WARN_HANDLER_ADMIN,
+        adapter,
+        getLangPref,
+      });
+
+      const result = await handler.handler({ action: 'warn_user', targetUserId: target, reason: 'spam' });
+      assert.equal(result.isError, false, 'the warning DM still sends despite the lookup rejecting');
+      assert.equal(
+        adapter.performCalls[0]?.params?.language,
+        undefined,
+        'a rejecting lookup degrades to the English wrapper (no language param), never throws or blocks',
+      );
+
+      const { rows } = await pool.query(
+        `SELECT source, issued_by FROM member_warnings WHERE platform = 'discord' AND user_id = $1 AND cleared_at IS NULL`,
+        [target],
+      );
+      assert.equal(rows.length, 1, 'the strike-system warning row must still be written');
+      assert.equal(rows[0].source, 'admin');
+      assert.equal(rows[0].issued_by, MANUAL_WARN_HANDLER_ADMIN);
+
+      assert.equal(
+        adapter.performCalls.filter((c) => c.kind === 'mute_user').length,
+        1,
+        'the mute-on-strike-limit escalation must still fire, unaffected by the rejecting lookup',
+      );
+    } finally {
+      config.moderation.enabled = wasEnabled;
+      config.moderation.strikeLimit = originalLimit;
+    }
+  },
+);
+
+test(
+  'SECURITY: params.language has no effect on any other moderate action (timeout_user/kick_user/ban_user/' +
+    'unban_user/delete_message) — the language lookup is never even invoked for them, guarding against a ' +
+    'future refactor accidentally widening scope beyond warn_user (issue #618 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const conv = `${RUN}-warn-language-scope`;
+    const target = `${conv}-target`;
+    await seedKnownUser('discord', conv, target);
+    let langCalls = 0;
+    const getLangPref = async (): Promise<'auto' | 'en' | 'mi'> => {
+      langCalls++;
+      return 'mi';
+    };
+    const adapter = moderateAdapter({
+      capabilities: ['timeout_user', 'kick_user', 'ban_user', 'unban_user', 'delete_message', 'warn_user'],
+    });
+    const handler = moderateHandler({ conversationId: conv, adapter, getLangPref });
+
+    for (const action of ['timeout_user', 'kick_user', 'ban_user', 'unban_user'] as const) {
+      const result = await handler.handler({
+        action,
+        targetUserId: target,
+        reason: 'spam',
+        durationMinutes: 5,
+      });
+      assert.equal(result.isError, false, `${action} must be accepted and queue a CONFIRM`);
+      const pending = takePendingAction('discord', conv, 'admin-1');
+      assert.ok(pending, `${action} must register a pending action`);
+      await pending?.execute();
+    }
+    const deleteResult = await handler.handler({
+      action: 'delete_message',
+      targetUserId: target,
+      reason: 'spam',
+      messageId: `${conv}-msg`,
+    });
+    assert.equal(deleteResult.isError, false);
+    const deletePending = takePendingAction('discord', conv, 'admin-1');
+    await deletePending?.execute();
+
+    assert.equal(langCalls, 0, 'getLangPref must never be resolved for any action other than warn_user');
+    assert.equal(adapter.performCalls.length, 5, 'timeout/kick/ban/unban/delete_message all executed');
+    for (const call of adapter.performCalls) {
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(call.params ?? {}, 'language'),
+        false,
+        `params.language must never appear on a ${call.kind} action`,
+      );
     }
   },
 );
