@@ -513,6 +513,28 @@ CREATE INDEX IF NOT EXISTS member_warnings_active_idx
   WHERE cleared_at IS NULL;
 
 -- ---------------------------------------------------------------------------
+-- Bot-side block list (issue #572), WhatsApp-only in practice today: the
+-- Cloud API's only moderation lever is a toothless warn_user, and Baileys'
+-- kick_user only removes someone from a *group*, never the bot's own DM
+-- surface. A block is a pure bot-side ignore — no platform API call, unlike
+-- every other moderation action — enforced by the router dropping a blocked
+-- sender's message before role resolution or any storage, in both open and
+-- gated access mode. One row per currently-blocked identity (not a history
+-- log like member_warnings), so PRIMARY KEY doubles as the hot-path lookup
+-- index. Deliberately NOT deleted by purgeUserData/forget_me (contrast
+-- member_warnings above, which is): a blocked sender must not be able to
+-- erase their own block by purging the linked identity that holds it.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS blocked_users (
+  platform     TEXT        NOT NULL,
+  external_id  TEXT        NOT NULL,
+  blocked_by   TEXT        NOT NULL,
+  reason       TEXT,
+  blocked_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (platform, external_id)
+);
+
+-- ---------------------------------------------------------------------------
 -- Admin-reviewed queue that turns a recurring `context_digests` cluster into
 -- a durable `knowledge` entry (issue #102 — the `knowledge_candidates` half
 -- of #51 that its adversarial review deferred). Model-drafted Q&A text over

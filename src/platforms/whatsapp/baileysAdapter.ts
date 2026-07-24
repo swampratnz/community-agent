@@ -18,9 +18,11 @@ import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
+  blockUser,
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
   markRosterLeave,
+  unblockUser,
   updateInteractionByMessageId,
   upsertRosterMember,
 } from '../../storage/repository.js';
@@ -112,7 +114,13 @@ export function stepWelcomeCooldown(
  */
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message']);
+  readonly adminCapabilities = new Set([
+    'warn_user',
+    'kick_user',
+    'delete_message',
+    'block_user',
+    'unblock_user',
+  ]);
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;
@@ -995,6 +1003,24 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
+    // block_user/unblock_user are a pure DB write with no Baileys API call
+    // (issue #572) — handled before the socket-connected guard below since,
+    // unlike every other action here, they need no live connection at all.
+    if (action.kind === 'block_user') {
+      const targetUserId = action.targetUserId ?? '';
+      await blockUser(
+        'whatsapp',
+        targetUserId,
+        paramString(action.params?.blockedBy),
+        paramString(action.params?.reason) || null,
+      );
+      return `Blocked ${targetUserId}.`;
+    }
+    if (action.kind === 'unblock_user') {
+      const targetUserId = action.targetUserId ?? '';
+      const removed = await unblockUser('whatsapp', targetUserId);
+      return removed ? `Unblocked ${targetUserId}.` : `${targetUserId} was not blocked.`;
+    }
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {

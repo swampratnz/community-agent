@@ -141,6 +141,9 @@ const {
   listAppeals,
   resolveModerationAppeal,
   countOpenAppeals,
+  blockUser,
+  unblockUser,
+  isUserBlocked,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -7231,6 +7234,58 @@ test(
       'auto',
       'SECURITY: after purge, the caller reverts to the default as if they never set a preference',
     );
+  },
+);
+
+// --- Block list (bot-side WhatsApp block, issue #572) -----------------------
+
+test(
+  'repository: blockUser/isUserBlocked/unblockUser round-trip, and re-blocking upserts rather than erroring',
+  { skip },
+  async () => {
+    const externalId = `${RUN}-block-roundtrip-user`;
+
+    assert.equal(await isUserBlocked('whatsapp', externalId), false, 'not blocked before any block_user call');
+
+    await blockUser('whatsapp', externalId, 'admin-1', 'harassment');
+    assert.equal(await isUserBlocked('whatsapp', externalId), true);
+
+    // Re-blocking the same identity upserts (refreshes reason/blocker) rather
+    // than erroring on the primary key.
+    await blockUser('whatsapp', externalId, 'admin-2', 'repeat harassment');
+    assert.equal(await isUserBlocked('whatsapp', externalId), true, 'still blocked after a re-block upsert');
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS n FROM blocked_users WHERE platform = 'whatsapp' AND external_id = $1`,
+      [externalId],
+    );
+    assert.equal(rows[0].n, 1, 'a re-block upserts in place, never duplicates the row');
+
+    const removed = await unblockUser('whatsapp', externalId);
+    assert.equal(removed, true, 'unblockUser reports a row was actually removed');
+    assert.equal(await isUserBlocked('whatsapp', externalId), false, 'unblocked after unblockUser');
+
+    const removedAgain = await unblockUser('whatsapp', externalId);
+    assert.equal(removedAgain, false, 'unblocking an identity that is not blocked removes nothing');
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me/purge_user_data) does NOT remove a blocked_users row — a blocked sender must not be able to route around their own block by purging their identity (issue #572)',
+  { skip },
+  async () => {
+    const externalId = `${RUN}-block-purge-survives-user`;
+    await blockUser('whatsapp', externalId, 'admin-1', 'harassment');
+    assert.equal(await isUserBlocked('whatsapp', externalId), true);
+
+    await purgeUserData('whatsapp', externalId);
+
+    assert.equal(
+      await isUserBlocked('whatsapp', externalId),
+      true,
+      'SECURITY: the block must survive forget_me/purge_user_data',
+    );
+
+    await unblockUser('whatsapp', externalId);
   },
 );
 
