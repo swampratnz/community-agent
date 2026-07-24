@@ -10,7 +10,7 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
-## 2026-07-24
+## 2026-07-25
 
 ### Added
 - **Members can now publish a project they've built to a searchable community
