@@ -2493,6 +2493,8 @@ export const MODERATION_ACTION_KINDS = [
   'kick_user',
   'ban_user',
   'unban_user',
+  'block_user',
+  'unblock_user',
   'delete_message',
   'clear_warnings',
   'announce',
@@ -4624,6 +4626,51 @@ export async function listMemberWarnings(
     clearedAt: r.cleared_at,
     clearedBy: r.cleared_by,
   }));
+}
+
+// --- Block list (issue #572: bot-side WhatsApp block/unblock) ----------------
+
+/**
+ * Block a `(platform, externalId)` sender — the bot-side primitive backing
+ * `moderate`'s `block_user` action. Upserts so re-blocking an already-blocked
+ * sender refreshes `blocked_by`/`reason`/`blocked_at` rather than erroring.
+ */
+export async function blockUser(
+  platform: string,
+  externalId: string,
+  blockedBy: string,
+  reason?: string,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO blocked_users (platform, external_id, blocked_by, reason)
+          VALUES ($1, $2, $3, $4)
+     ON CONFLICT (platform, external_id)
+     DO UPDATE SET blocked_by = EXCLUDED.blocked_by, reason = EXCLUDED.reason, blocked_at = now()`,
+    [platform, externalId, blockedBy, reason ?? null],
+  );
+}
+
+/** Unblock a `(platform, externalId)` sender. Returns false if they weren't blocked. */
+export async function unblockUser(platform: string, externalId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(`DELETE FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
+    platform,
+    externalId,
+  ]);
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Router hot-path check (issue #572 acceptance criterion 1): consulted
+ * FIRST in `handle()`, before `resolveRole` or any storage write, so a
+ * blocked sender leaves zero footprint. Backed by `blocked_users`' own
+ * UNIQUE(platform, external_id) index — no full scan.
+ */
+export async function isUserBlocked(platform: string, externalId: string): Promise<boolean> {
+  const { rows } = await pool.query(`SELECT 1 FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
+    platform,
+    externalId,
+  ]);
+  return rows.length > 0;
 }
 
 // --- Content reports (member-facing abuse/spam intake) -----------------------

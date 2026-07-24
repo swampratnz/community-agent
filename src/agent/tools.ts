@@ -3387,10 +3387,19 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. Admins can only act in conversations they are in.',
+    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/block/unblock/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user/unblock_user (WhatsApp only) is the WhatsApp equivalent: a bot-side, platform-wide block on a phone number, since neither WhatsApp adapter has a group/ban surface — a blocked sender is dropped before the bot processes or replies to them at all, on every conversation with them, not just this one. Cannot block an admin or super admin. Admins can only act in conversations they are in.',
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'ban_user', 'unban_user', 'delete_message', 'warn_user'])
+        .enum([
+          'timeout_user',
+          'kick_user',
+          'ban_user',
+          'unban_user',
+          'block_user',
+          'unblock_user',
+          'delete_message',
+          'warn_user',
+        ])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
@@ -3430,11 +3439,18 @@ export function buildToolServer(
       if (args.action === 'delete_message' && !args.messageId) {
         return text('Refusing: delete_message requires messageId.', true);
       }
+      // Mirrors applyManualWarnStrike's/Discord's rejoin-remute admin-target
+      // exemption: a block is bot-side and platform-wide, so it must never
+      // land on someone who can themselves administer the bot.
+      if (args.action === 'block_user' && atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')) {
+        return text('Refusing: cannot block an admin or super admin.', true);
+      }
 
       const params = {
         reason: args.reason,
         durationMinutes: args.durationMinutes,
         messageId: args.messageId,
+        blockedBy: caller.userId,
       };
       // Set by `run()` on a successful warn_user delivery only — read below to
       // gate the strike-system write on the DM actually having gone out,

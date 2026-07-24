@@ -10,7 +10,7 @@ import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
-import { isKnownConversation } from '../../storage/repository.js';
+import { blockUser, isKnownConversation, unblockUser } from '../../storage/repository.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -123,7 +123,7 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
  */
 export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user']);
+  readonly adminCapabilities = new Set(['warn_user', 'block_user', 'unblock_user']);
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;
@@ -807,6 +807,24 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
           `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
+      }
+      // block_user/unblock_user (issue #572) are pure DB operations — no
+      // Graph API call, unlike every other action here, and the only
+      // moderation lever this adapter has at all (the Cloud API itself has
+      // no group/ban surface).
+      case 'block_user': {
+        await blockUser(
+          'whatsapp',
+          action.targetUserId ?? '',
+          paramString(action.params?.blockedBy),
+          paramString(action.params?.reason) || undefined,
+        );
+        return `Blocked ${action.targetUserId}.`;
+      }
+      case 'unblock_user': {
+        const removed = await unblockUser('whatsapp', action.targetUserId ?? '');
+        if (!removed) throw new Error(`${action.targetUserId} is not currently blocked.`);
+        return `Unblocked ${action.targetUserId}.`;
       }
       default:
         throw new Error(

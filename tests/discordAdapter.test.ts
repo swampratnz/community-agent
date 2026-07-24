@@ -351,6 +351,16 @@ function stubClient(adapter: InstanceType<typeof DiscordAdapter>) {
   return sent;
 }
 
+test(
+  'SECURITY: DiscordAdapter.adminCapabilities does not gain block_user/unblock_user (issue #572 acceptance ' +
+    "criterion 6) — that's a WhatsApp-only primitive; Discord's existing ban_user already fully covers this",
+  () => {
+    const adapter = new DiscordAdapter();
+    assert.equal(adapter.adminCapabilities.has('block_user'), false);
+    assert.equal(adapter.adminCapabilities.has('unblock_user'), false);
+  },
+);
+
 test('SECURITY: sendMessage routes through filterOutbound — a secret cannot reach a Discord channel unredacted', async () => {
   const adapter = new DiscordAdapter();
   const sent = stubClient(adapter);

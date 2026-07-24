@@ -29,6 +29,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  isUserBlocked,
   listAdmins,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
@@ -446,6 +447,10 @@ export class Router {
    * `recordEscalatedGapFn` defaults to the real DB-backed escalated-gap
    * recorder (issue #514), fired alongside `notifyAdminsFn` from the same
    * intercept; overridable so tests can assert on it without a live DB.
+   * `checkBlocked` defaults to the real DB-backed `blocked_users` lookup
+   * (issue #572), consulted FIRST in `handle()` — before `resolveRole` or
+   * any storage — so tests can assert the zero-footprint contract without a
+   * live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -463,6 +468,7 @@ export class Router {
     private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
     private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
+    private readonly checkBlocked: typeof isUserBlocked = isUserBlocked,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -720,6 +726,20 @@ export class Router {
   private async handle(msg: IncomingMessage): Promise<void> {
     const adapter = this.adapters.get(msg.platform);
     if (!adapter) return;
+
+    // Block check FIRST (issue #572) — ahead of resolveRole and any storage
+    // write below, so a blocked sender leaves zero footprint: no interaction
+    // row, no reply, and it overrides `open` access mode's default-allow
+    // (the gap remove_member/community_users membership can't reach, since
+    // an open-mode guest has no membership row to remove). A lookup failure
+    // (e.g. DB hiccup) fails OPEN — treated as not-blocked — matching
+    // resolveRole's own catch just below, rather than silently dropping
+    // every sender on a transient DB error.
+    try {
+      if (await this.checkBlocked(msg.platform, msg.userId)) return;
+    } catch (err) {
+      logger.error({ err }, 'Block-list check failed; treating sender as not blocked');
+    }
 
     let role: Tier;
     try {

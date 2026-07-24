@@ -2114,3 +2114,78 @@ test('SECURITY: react_to_message refuses a WhatsApp-Cloud reaction to a messageI
   }
   assert.equal(calls.length, 0, 'an unvalidated target must never reach reactToMessage/fetch');
 });
+
+// --- block_user / unblock_user (issue #572) ---------------------------------
+// The Cloud API has no group/moderation surface at all — block_user/
+// unblock_user are the only moderation lever this adapter has, and are pure
+// DB operations with no Graph API call.
+
+test('WhatsAppCloudAdapter.adminCapabilities includes block_user and unblock_user (issue #572)', () => {
+  const adapter = new WhatsAppCloudAdapter();
+  assert.equal(adapter.adminCapabilities.has('block_user'), true);
+  assert.equal(adapter.adminCapabilities.has('unblock_user'), true);
+});
+
+test(
+  'performAdminAction("block_user") persists the block via the repository, with NO Graph API call ' +
+    '(issue #572)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const fetchCalls: unknown[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      fetchCalls.push(args);
+      throw new Error('block_user must never call fetch — the Cloud API has no moderation surface');
+    }) as typeof fetch;
+
+    try {
+      const adapter = new WhatsAppCloudAdapter();
+      const result = await adapter.performAdminAction({
+        kind: 'block_user',
+        targetUserId: '64211234567',
+        params: { blockedBy: 'admin-1', reason: 'persistent abuse' },
+      });
+      assert.match(result, /Blocked 64211234567/);
+      assert.equal(fetchCalls.length, 0, 'block_user is a pure DB write — no Graph API call');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  },
+);
+
+test(
+  'performAdminAction("unblock_user") removes the block via the repository, with NO Graph API call ' +
+    '(issue #572)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new WhatsAppCloudAdapter();
+    const result = await adapter.performAdminAction({ kind: 'unblock_user', targetUserId: '64211234567' });
+    assert.match(result, /Unblocked 64211234567/);
+  },
+);
+
+test(
+  'SECURITY: performAdminAction("unblock_user") on a target that is not currently blocked throws — no ' +
+    'false-success (issue #572)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+    const adapter = new WhatsAppCloudAdapter();
+    await assert.rejects(
+      adapter.performAdminAction({ kind: 'unblock_user', targetUserId: '64211234567' }),
+      /not currently blocked/,
+    );
+  },
+);
+
+test(
+  'performAdminAction("some_other_action") still throws the "no group/moderation surface" refusal — ' +
+    'block_user/unblock_user are additive, not a replacement of the existing default-refuse behaviour ' +
+    '(issue #572)',
+  async () => {
+    const adapter = new WhatsAppCloudAdapter();
+    await assert.rejects(
+      adapter.performAdminAction({ kind: 'kick_user', targetUserId: '64211234567' }),
+      /no group\/moderation surface/,
+    );
+  },
+);

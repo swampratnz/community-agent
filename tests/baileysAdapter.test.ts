@@ -91,6 +91,71 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+test('BaileysAdapter.adminCapabilities includes block_user and unblock_user (issue #572)', () => {
+  const adapter = new BaileysAdapter();
+  assert.equal(adapter.adminCapabilities.has('block_user'), true);
+  assert.equal(adapter.adminCapabilities.has('unblock_user'), true);
+});
+
+// --- block_user / unblock_user (issue #572) ---------------------------------
+// Pure DB operations, unlike every other admin action in this adapter — no
+// Baileys socket call at all, so (unlike kick_user/delete_message/warn_user)
+// they must work even while `this.sock` is null (disconnected/reconnecting).
+
+test(
+  'performAdminAction("block_user") persists the block via the repository and works with NO connected ' +
+    "socket (issue #572) — this.sock stays null throughout, unlike every other admin action's test",
+  async () => {
+    const adapter = new BaileysAdapter();
+    const result = await adapter.performAdminAction({
+      kind: 'block_user',
+      targetUserId: '64211234567',
+      params: { blockedBy: 'admin-1', reason: 'persistent abuse' },
+    });
+    assert.match(result, /Blocked 64211234567/);
+  },
+);
+
+test(
+  'performAdminAction("unblock_user") removes the block via the repository and also works with no ' +
+    'connected socket (issue #572)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
+    const adapter = new BaileysAdapter();
+    const result = await adapter.performAdminAction({
+      kind: 'unblock_user',
+      targetUserId: '64211234567',
+    });
+    assert.match(result, /Unblocked 64211234567/);
+  },
+);
+
+test(
+  'SECURITY: performAdminAction("unblock_user") on a target that is not currently blocked throws — no ' +
+    'false-success (issue #572, matches unban_user\'s "not banned" failure shape)',
+  async (t) => {
+    t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 0 }));
+    const adapter = new BaileysAdapter();
+    await assert.rejects(
+      adapter.performAdminAction({ kind: 'unblock_user', targetUserId: '64211234567' }),
+      /not currently blocked/,
+    );
+  },
+);
+
+test(
+  'performAdminAction("kick_user") still throws "socket not connected" with no live socket — the block_user/' +
+    'unblock_user socket-guard bypass (issue #572) is scoped to exactly those two actions, every other ' +
+    'action still requires a live connection',
+  async () => {
+    const adapter = new BaileysAdapter();
+    await assert.rejects(
+      adapter.performAdminAction({ kind: 'kick_user', targetUserId: '64211234567', conversationId: 'g@g.us' }),
+      /WhatsApp socket not connected/,
+    );
+  },
+);
+
 // Retry-receipt cache: when a recipient can't decrypt a message we sent, their
 // device asks for a resend and Baileys serves it via the `getMessage` handler,
 // which reads the `sentMessages` cache we populate on every content send.

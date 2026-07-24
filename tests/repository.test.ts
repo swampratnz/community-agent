@@ -30,6 +30,9 @@ const {
   userMessages,
   purgeOldInteractions,
   purgeUserData,
+  blockUser,
+  unblockUser,
+  isUserBlocked,
   saveKnowledge,
   searchKnowledge,
   searchKnowledgeLexical,
@@ -506,6 +509,89 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [otherKnowledgeId]);
     await pool.query(`DELETE FROM admin_audit WHERE target_user_id = $1`, [targetUser]);
     await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportAboutThem.id]);
+  },
+);
+
+// --- Block list (issue #572: bot-side WhatsApp block/unblock) --------------
+
+test('repository: blockUser + isUserBlocked round-trip, and unblockUser reverses it', { skip }, async () => {
+  const target = `${RUN}-block-target`;
+
+  assert.equal(await isUserBlocked('whatsapp', target), false, 'not blocked before any blockUser call');
+
+  await blockUser('whatsapp', target, `${RUN}-admin`, 'persistent abuse');
+  assert.equal(await isUserBlocked('whatsapp', target), true);
+
+  const removed = await unblockUser('whatsapp', target);
+  assert.equal(removed, true, 'unblockUser reports it removed a row');
+  assert.equal(await isUserBlocked('whatsapp', target), false, 'no longer blocked after unblockUser');
+
+  const removedAgain = await unblockUser('whatsapp', target);
+  assert.equal(removedAgain, false, 'unblocking an already-unblocked user reports false, not an error');
+});
+
+test(
+  'repository: blockUser is scoped per (platform, externalId) — blocking on whatsapp never blocks the same id on discord',
+  { skip },
+  async () => {
+    const sharedId = `${RUN}-block-cross-platform`;
+    await blockUser('whatsapp', sharedId, `${RUN}-admin`);
+    assert.equal(await isUserBlocked('whatsapp', sharedId), true);
+    assert.equal(await isUserBlocked('discord', sharedId), false, 'blocking is per-platform, not global');
+    await unblockUser('whatsapp', sharedId);
+  },
+);
+
+test(
+  're-blocking an already-blocked user upserts (refreshes blocked_by/reason/blocked_at) rather than erroring',
+  { skip },
+  async () => {
+    const target = `${RUN}-block-reblock`;
+    await blockUser('whatsapp', target, `${RUN}-admin-1`, 'first reason');
+    await assert.doesNotReject(blockUser('whatsapp', target, `${RUN}-admin-2`, 'second reason'));
+
+    const { rows } = await pool.query(
+      `SELECT blocked_by, reason FROM blocked_users WHERE platform = 'whatsapp' AND external_id = $1`,
+      [target],
+    );
+    assert.equal(rows.length, 1, 'still exactly one row — upsert, not a duplicate');
+    assert.equal(rows[0].blocked_by, `${RUN}-admin-2`);
+    assert.equal(rows[0].reason, 'second reason');
+
+    await unblockUser('whatsapp', target);
+  },
+);
+
+test(
+  'SECURITY: repository: purgeUserData (forget_me/purge_user_data) does NOT remove a blocked_users row — ' +
+    'a block is accountability/enforcement data, and letting a blocked sender erase their own block via ' +
+    'forget_me would defeat the feature (issue #572)',
+  { skip },
+  async () => {
+    const target = `${RUN}-block-survives-purge`;
+    await recordInteraction({
+      platform: 'whatsapp',
+      conversationId: `${RUN}-c-block-purge`,
+      userId: target,
+      role: 'guest',
+      direction: 'inbound',
+      content: 'abusive message',
+    });
+    await blockUser('whatsapp', target, `${RUN}-admin`, 'persistent abuse');
+
+    await purgeUserData('whatsapp', target);
+
+    assert.equal(
+      await isUserBlocked('whatsapp', target),
+      true,
+      'the block itself must survive the blocked user\'s own forget_me/purge_user_data',
+    );
+    const { rows } = await pool.query(`SELECT 1 FROM interactions WHERE platform = 'whatsapp' AND user_id = $1`, [
+      target,
+    ]);
+    assert.equal(rows.length, 0, 'the purge still removes their interaction content as normal');
+
+    await unblockUser('whatsapp', target);
   },
 );
 

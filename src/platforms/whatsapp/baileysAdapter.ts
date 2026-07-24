@@ -18,9 +18,11 @@ import { runtimeSecrets } from '../../agent/secrets.js';
 import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
+  blockUser,
   deleteInteractionByMessageId,
   getInteractionAuthorByMessageId,
   markRosterLeave,
+  unblockUser,
   updateInteractionByMessageId,
   upsertRosterMember,
 } from '../../storage/repository.js';
@@ -112,7 +114,7 @@ export function stepWelcomeCooldown(
  */
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message']);
+  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message', 'block_user', 'unblock_user']);
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;
@@ -995,6 +997,28 @@ export class BaileysAdapter implements PlatformAdapter {
   }
 
   async performAdminAction(action: AdminAction): Promise<string> {
+    // block_user/unblock_user (issue #572) are pure DB operations — no
+    // Baileys socket call at all, unlike every other action below — so they
+    // must work even while the socket is disconnected/reconnecting. Handled
+    // before the shared socket guard for that reason.
+    switch (action.kind) {
+      case 'block_user': {
+        await blockUser(
+          'whatsapp',
+          action.targetUserId ?? '',
+          paramString(action.params?.blockedBy),
+          paramString(action.params?.reason) || undefined,
+        );
+        return `Blocked ${action.targetUserId}.`;
+      }
+      case 'unblock_user': {
+        const removed = await unblockUser('whatsapp', action.targetUserId ?? '');
+        if (!removed) throw new Error(`${action.targetUserId} is not currently blocked.`);
+        return `Unblocked ${action.targetUserId}.`;
+      }
+      default:
+        break;
+    }
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
