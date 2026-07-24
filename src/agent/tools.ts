@@ -2442,15 +2442,26 @@ export function formatDevTeamJobResult(r: JobResult): string {
 
 /**
  * Turn-scoped, mutable correlation state threaded in from `execTurn` (issue
- * #411) — currently just the most recent qualifying `knowledge_search` hit,
- * mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped signals
- * already threaded through `TurnOutcome`/`AgentReply`. Optional so every
- * existing `buildToolServer(caller, adapter)` call (this file's own tests,
- * mainly) keeps compiling unchanged; callers that don't care about the
+ * #411) — currently the most recent qualifying `knowledge_search` hit and
+ * (issue #598) whether `rate_answer` recorded a genuine thumbs-down this
+ * turn, mirroring the `languagePreference`/`maxTurnsExceeded` turn-scoped
+ * signals already threaded through `TurnOutcome`/`AgentReply`. Optional so
+ * every existing `buildToolServer(caller, adapter)` call (this file's own
+ * tests, mainly) keeps compiling unchanged; callers that don't care about the
  * correlation simply never read it back.
  */
 export interface ToolServerTurnState {
   lastKnowledgeHitId: number | null;
+  /**
+   * Set `true` only when this turn's `rate_answer` call recorded a genuine
+   * `helpful: false` rating (`createAnswerFeedback` returned `{ id }`, not
+   * `'no_recent_answer'`/`'rate_limited'`) — never on a positive rating or an
+   * unrecorded call. Read back by `execTurn` into `TurnOutcome`/`AgentReply`
+   * so `router.ts` can direct-fire `notifyAdmins` post-turn (issue #598);
+   * `notifyAdmins` itself is never called from this file — see `rate_answer`
+   * below and `notifyAdmins`'s own doc comment.
+   */
+  unhelpfulAnswerRated?: boolean;
 }
 
 export function buildToolServer(
@@ -3173,6 +3184,16 @@ export function buildToolServer(
             'Please wait before rating another.',
           true,
         );
+      }
+      // Real-time admin escalation (issue #598): only a genuinely-recorded
+      // thumbs-down sets the turn-scoped flag — never a positive rating, and
+      // never the 'no_recent_answer'/'rate_limited' branches above, which
+      // return before reaching here. `notifyAdmins` is deliberately NOT
+      // called from this tool handler; `router.ts` reads this flag back
+      // post-turn and direct-fires it, preserving the documented "never from
+      // a model-callable tool" boundary (see `notifyAdmins`'s doc comment).
+      if (turnState && args.helpful === false) {
+        turnState.unhelpfulAnswerRated = true;
       }
       return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
     },

@@ -117,6 +117,17 @@ export interface AgentReply {
    * (`list_low_rated_knowledge` / `list_answer_feedback`).
    */
   knowledgeEntryId?: number;
+  /**
+   * `true` only when this turn's `rate_answer` call recorded a genuine
+   * `helpful: false` rating (issue #598), threaded from
+   * `TurnOutcome.unhelpfulAnswerRated` via the same turn-scoped-ref pattern
+   * as `knowledgeEntryId` above. `undefined` on a positive rating, an
+   * unrecorded call (`'no_recent_answer'`/`'rate_limited'`), no `rate_answer`
+   * call at all, or a turn that didn't end in genuine success (`ok !==
+   * true`). Consumed by the router's post-turn deterministic escalation
+   * branch — never read by, or acted on inside, any model-callable tool.
+   */
+  unhelpfulAnswerRated?: boolean;
 }
 
 /**
@@ -210,6 +221,7 @@ interface TurnOutcome {
   sessionId?: string;
   maxTurnsExceeded?: boolean;
   knowledgeEntryId?: number;
+  unhelpfulAnswerRated?: boolean;
 }
 
 /**
@@ -586,6 +598,7 @@ export async function runAgentTurn(
     languagePreference,
     responseStyle,
     knowledgeEntryId: outcome.knowledgeEntryId,
+    unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
   };
 }
 
@@ -666,7 +679,7 @@ async function execTurn(
   // top-scoring id of its most recent qualifying hit here; read back below
   // only on the genuine-success path (never on a thrown-error or non-success
   // result, so a fallback/error reply can never carry a stale correlation).
-  const turnState: ToolServerTurnState = { lastKnowledgeHitId: null };
+  const turnState: ToolServerTurnState = { lastKnowledgeHitId: null, unhelpfulAnswerRated: false };
   const toolServer = buildToolServer(caller, adapter, getAdapter, turnState);
 
   // Text of the assistant message currently being streamed. Reset per
@@ -802,5 +815,6 @@ async function execTurn(
     cacheCreationTokens,
     sessionId,
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
+    ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
   };
 }

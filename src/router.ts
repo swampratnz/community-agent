@@ -1622,6 +1622,27 @@ export class Router {
           ? this.offerEscalation(msg, reply.text, reply.languagePreference === 'mi')
           : reply.text;
 
+      // Real-time admin escalation for a member's own thumbs-down (issue
+      // #598) — a direct-fire sibling of the max-turns offer above, not a
+      // speculative offer: `rate_answer(helpful: false)` IS the explicit
+      // action already taken, so there is nothing to confirm and no
+      // `pendingEscalations` entry is registered. Never touches
+      // `outboundText`/`reply.text` — the member still just sees "Thanks for
+      // the feedback, noted." Shares (never adds to) the same guild-wide
+      // `ESCALATION_RATE_LIMIT_PER_HOUR` cap as the max-turns producer; when
+      // the cap is exhausted this is silently suppressed, not queued or
+      // retried.
+      if (config.behaviour.escalationToAdminEnabled && reply.unhelpfulAnswerRated === true) {
+        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+          await this.notifyAdminsFn(
+            (platform) => this.adapters.get(platform),
+            `${msg.userName} rated my last answer unhelpful on ${msg.platform} ` +
+              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+            msg.userId,
+          ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
+        }
+      }
+
       // Approaching-daily-budget warning (issue #511): append-only, same
       // shape as `offerEscalation` above — never replaces `outboundText`, so
       // the caches below (keyed off `reply.text`/`reply.ok`, not
