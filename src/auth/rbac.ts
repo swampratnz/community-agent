@@ -120,6 +120,14 @@ export const MEMBER_TOOLS = [
   // reasoning as community_guidelines/check_status. Discord-only; other
   // adapters simply don't implement PlatformAdapter.listUpcomingEvents.
   'mcp__community__list_events',
+  // Opt-in, self-declared project showcase (issue #646) — the second
+  // instance of #634's self-declared-member-table pattern. Structurally
+  // reachable at guest tier too (same MEMBER_TOOLS surface as everything
+  // above), but both tools explicitly re-assert 'member' inside their
+  // handlers (docs/SECURITY.md) since publishing to every OTHER member is a
+  // genuinely new exposure category most MEMBER_TOOLS entries don't have.
+  'mcp__community__share_project',
+  'mcp__community__list_projects',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */

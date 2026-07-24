@@ -2307,6 +2307,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM moderation_appeals WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // member_projects (issue #646) is keyed the same way — a purged member's
+    // self-published projects go with them, same as suggestions/reports above.
+    const { rowCount: memberProjects } = await client.query(
+      `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -2324,7 +2330,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (answerFeedback ?? 0) +
       (knowledgeGaps ?? 0) +
       (devTeamWatches ?? 0) +
-      (moderationAppeals ?? 0)
+      (moderationAppeals ?? 0) +
+      (memberProjects ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2367,6 +2374,7 @@ export interface MyDataSummary {
   knowledgeEntries: number;
   reportsFiled: number;
   suggestionsFiled: number;
+  projectsShared: number;
   responseStyle: ResponseStyle;
 }
 
@@ -2396,6 +2404,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
   let knowledgeEntries = 0;
   let reportsFiled = 0;
   let suggestionsFiled = 0;
+  let projectsShared = 0;
   for (const identity of identities) {
     const { rows: interactionRows } = await pool.query(
       `SELECT
@@ -2426,6 +2435,8 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
       [identity.platform, identity.userId],
     );
     suggestionsFiled += Number(suggestionRows[0]?.n ?? 0);
+
+    projectsShared += await countMemberProjects(identity.platform, identity.userId);
   }
 
   return {
@@ -2434,6 +2445,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
     knowledgeEntries,
     reportsFiled,
     suggestionsFiled,
+    projectsShared,
     // The standing style preference isn't purge-scope data — it's a single
     // per-identity row, so this reports the caller's own invoking identity
     // only (same scoping set_response_style itself uses), not aggregated.
@@ -3504,6 +3516,208 @@ export async function resolveSuggestion(
     : null;
 }
 
+// --- Member projects (opt-in, self-declared project showcase, issue #646) ---
+// The second instance of the self-declared-member-table pattern #634
+// (member_interests) set: only ever written by the owning member, embedded
+// for semantic search, never inferred from message content. See
+// schema.sql's member_projects comment for the table-shape rationale.
+
+/** Small per-member cap so the showcase can't be flooded by one member. */
+export const PROJECT_CAP_PER_MEMBER = 3;
+/** Rolling-24h cap on new/edited shares, same shape as SUGGESTION_RATE_LIMIT_PER_DAY. */
+export const PROJECT_SHARE_RATE_LIMIT_PER_DAY = 3;
+export const PROJECT_NAME_MAX_CHARS = 80;
+export const PROJECT_DESCRIPTION_MAX_CHARS = 400;
+export const PROJECT_LINK_MAX_CHARS = 300;
+
+export interface MemberProject {
+  id: number;
+  platform: Platform;
+  userId: string;
+  displayName: string | null;
+  name: string;
+  description: string;
+  link: string | null;
+  createdAt: Date;
+  /** Only present on an embedding-similarity (`query` given) lookup. */
+  similarity?: number;
+}
+
+export type ShareProjectResult =
+  { ok: true; id: number; updated: boolean } | { ok: false; reason: 'rate_limited' | 'cap_reached' };
+
+/**
+ * Record (or edit, upsert-by-name) a member's own self-declared project.
+ * Identity is always `platform`/`userId` from the caller — never a
+ * model-supplied id. A rolling-24h cap on new/edited shares mirrors
+ * `createSuggestion`'s anti-spam shape; a separate, smaller cap on the
+ * member's TOTAL distinct project count (`PROJECT_CAP_PER_MEMBER`) applies
+ * only to genuinely NEW names — editing an existing one never counts against
+ * it, so a member can always keep an already-shared project up to date even
+ * sitting at the cap.
+ */
+export async function shareProject(input: {
+  platform: Platform;
+  userId: string;
+  displayName?: string;
+  name: string;
+  description: string;
+  link?: string;
+}): Promise<ShareProjectResult> {
+  const name = input.name.trim().slice(0, PROJECT_NAME_MAX_CHARS);
+  const description = input.description.trim().slice(0, PROJECT_DESCRIPTION_MAX_CHARS);
+  const link = input.link?.trim().slice(0, PROJECT_LINK_MAX_CHARS) || null;
+
+  const { rows: existingRows } = await pool.query(
+    `SELECT id FROM member_projects WHERE platform = $1 AND user_id = $2 AND name = $3`,
+    [input.platform, input.userId, name],
+  );
+  const isUpdate = existingRows.length > 0;
+
+  const { rows: gateRows } = await pool.query(
+    `SELECT
+       count(*) AS total,
+       count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS recent
+     FROM member_projects WHERE platform = $1 AND user_id = $2`,
+    [input.platform, input.userId],
+  );
+  const total = Number(gateRows[0]?.total ?? 0);
+  const recent = Number(gateRows[0]?.recent ?? 0);
+
+  if (recent >= PROJECT_SHARE_RATE_LIMIT_PER_DAY) {
+    return { ok: false, reason: 'rate_limited' };
+  }
+  if (!isUpdate && total >= PROJECT_CAP_PER_MEMBER) {
+    return { ok: false, reason: 'cap_reached' };
+  }
+
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(`${name}\n${description}`);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for shared project');
+  }
+
+  const { rows } = await pool.query(
+    `INSERT INTO member_projects (platform, user_id, display_name, name, description, link, embedding)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (platform, user_id, name) DO UPDATE SET
+       display_name = EXCLUDED.display_name,
+       description = EXCLUDED.description,
+       link = EXCLUDED.link,
+       embedding = EXCLUDED.embedding
+     RETURNING id`,
+    [
+      input.platform,
+      input.userId,
+      input.displayName ?? null,
+      name,
+      description,
+      link,
+      embedding ? pgvector.toSql(embedding) : null,
+    ],
+  );
+  return { ok: true, id: Number(rows[0].id), updated: isUpdate };
+}
+
+/**
+ * Remove one of the CALLER'S OWN previously-shared projects by name — never
+ * reachable for another member's row (scoped to platform/userId, same as
+ * every other self-scoped member write). Returns false if no row matched
+ * (unknown name), so the tool layer can give a clear "nothing to remove".
+ */
+export async function removeProject(platform: Platform, userId: string, name: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2 AND name = $3`,
+    [platform, userId, name.trim().slice(0, PROJECT_NAME_MAX_CHARS)],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Default/max row count for one `list_projects` call — a browsable-sized page, not a full dump. */
+export const PROJECT_LIST_DEFAULT_LIMIT = 8;
+export const PROJECT_LIST_MAX_LIMIT = 10;
+
+function mapProjectRow(r: {
+  id: number | string;
+  platform: Platform;
+  user_id: string;
+  display_name: string | null;
+  name: string;
+  description: string;
+  link: string | null;
+  created_at: Date;
+  similarity?: number | string;
+}): MemberProject {
+  return {
+    id: Number(r.id),
+    platform: r.platform,
+    userId: r.user_id,
+    displayName: r.display_name,
+    name: r.name,
+    description: r.description,
+    link: r.link,
+    createdAt: r.created_at,
+    ...(r.similarity !== undefined ? { similarity: Number(r.similarity) } : {}),
+  };
+}
+
+/**
+ * List published member projects — most-recent-first with no `query`, or
+ * embedding-similarity ranked over name+description when one is given.
+ * Results derive EXCLUSIVELY from `member_projects` (SECURITY: never a join
+ * or union against `interactions` or any other table) — a member who never
+ * called `shareProject` can never appear here, no matter what they've said
+ * in chat.
+ */
+export async function listProjects(
+  query?: string,
+  limit = PROJECT_LIST_DEFAULT_LIMIT,
+): Promise<MemberProject[]> {
+  const clampedLimit = Math.min(
+    Math.max(Math.trunc(limit) || PROJECT_LIST_DEFAULT_LIMIT, 1),
+    PROJECT_LIST_MAX_LIMIT,
+  );
+
+  if (!query || !query.trim()) {
+    const { rows } = await pool.query(
+      `SELECT id, platform, user_id, display_name, name, description, link, created_at
+         FROM member_projects
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [clampedLimit],
+    );
+    return rows.map(mapProjectRow);
+  }
+
+  let queryVec: number[];
+  try {
+    queryVec = await embed(query);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding query failed; skipping project search');
+    return [];
+  }
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, display_name, name, description, link, created_at,
+            1 - (embedding <=> $1) AS similarity
+       FROM member_projects
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <=> $1
+      LIMIT $2`,
+    [pgvector.toSql(queryVec), clampedLimit],
+  );
+  return rows.map(mapProjectRow);
+}
+
+/** Exact per-caller count for `my_data` — mirrors `suggestionsFiled`'s own per-identity `COUNT(*)`. */
+export async function countMemberProjects(platform: Platform, userId: string): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM member_projects WHERE platform = $1 AND user_id = $2`,
+    [platform, userId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 // --- Member notes (admin-curated person-scoped context, issue #45) -----------
 
 export const MEMBER_NOTE_MAX_CHARS = 1000;
@@ -3597,14 +3811,25 @@ export async function upsertRosterMember(input: {
   );
 }
 
-/** Mark a roster row as left. No-op (false) if unknown or already marked left. */
+/**
+ * Mark a roster row as left. No-op (false) if unknown or already marked left.
+ * Also removes the departed member's `member_projects` rows (issue #646) —
+ * a departed member's self-published showcase entries go with them at time
+ * of leave, rather than waiting on the roster's own age-based retention
+ * sweep (rosterRetention.ts), same immediacy as #634's own roster-leave
+ * contract for member_interests.
+ */
 export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
   const { rowCount } = await pool.query(
     `UPDATE server_roster SET left_at = now()
       WHERE platform = $1 AND user_id = $2 AND left_at IS NULL`,
     [platform, userId],
   );
-  return (rowCount ?? 0) > 0;
+  const left = (rowCount ?? 0) > 0;
+  if (left) {
+    await pool.query(`DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+  }
+  return left;
 }
 
 export type RosterFilter = 'recent' | 'not_members' | 'left' | 'all';

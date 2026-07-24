@@ -809,3 +809,38 @@ CREATE TABLE IF NOT EXISTS member_digest_sends (
   sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT member_digest_sends_singleton CHECK (id = 1)
 );
+
+-- ---------------------------------------------------------------------------
+-- Opt-in, self-declared project showcase (issue #646) — the second instance
+-- of the self-declared-member-table pattern #634 (member_interests) set:
+-- deliberately published data, never inferred from message content. Distinct
+-- from member_interests (a fuzzy discovery blob) because a project is a
+-- discrete, named artifact a member adds to over time, and the per-member
+-- cap only makes sense per-row (see repository.ts's PROJECT_CAP_PER_MEMBER).
+-- `display_name` is denormalized at share time (same convention as
+-- suggestions.display_name/content_reports.reporter_name) rather than joined
+-- live, so a rename after sharing doesn't retroactively relabel old rows.
+-- `link` is stored and rendered as plain text ONLY — never fetched, no
+-- preview, no SSRF surface (docs/SECURITY.md). Unique per (platform, user_id,
+-- name) so `share_project` can upsert-by-name for edits.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_projects (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  platform      TEXT        NOT NULL,
+  user_id       TEXT        NOT NULL,
+  display_name  TEXT,
+  name          TEXT        NOT NULL,
+  description   TEXT        NOT NULL,
+  link          TEXT,
+  embedding     VECTOR(:EMBEDDING_DIM),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (platform, user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS member_projects_embedding_idx
+  ON member_projects USING hnsw (embedding vector_cosine_ops);
+
+-- Backs both the per-member cap/rate-limit counts and the recent-N listing
+-- (see repository.ts shareProject/listProjects).
+CREATE INDEX IF NOT EXISTS member_projects_owner_idx
+  ON member_projects (platform, user_id, created_at DESC);
