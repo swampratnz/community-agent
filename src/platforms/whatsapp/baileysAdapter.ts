@@ -68,6 +68,18 @@ const SENT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60_000; // 6h
 // per sender per week" per the proposal's cost story.
 const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
+// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
+// appended verbatim, untranslated). Byte-for-byte the pre-#618 inline
+// template's wording (no "moderators" — same as cloudAdapter.ts's wording,
+// kept independent per-adapter rather than unified).
+const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community:';
+
+// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
+// #618), served when the target has a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
+// warnDmTextMi (#333) already established.
+const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā NZ Claude Community:';
+
 // Generic and static — no @-mention or echo of the joiner, so a bulk add
 // can't be turned into a mass-ping and no participant JID reaches the chat.
 export const WHATSAPP_GROUP_WELCOME_MESSAGE =
@@ -1024,9 +1036,10 @@ export class BaileysAdapter implements PlatformAdapter {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
     switch (action.kind) {
       case 'warn_user': {
+        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
         await this.sendDirectMessage(
           action.targetUserId ?? '',
-          `⚠️ Warning from NZ Claude Community: ${paramString(action.params?.reason)}`,
+          `${prefix} ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
       }

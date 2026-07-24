@@ -299,6 +299,60 @@ test('sendDirectMessage: Discord-style markdown is converted to WhatsApp formatt
   assert.equal(body, '*Answer:*\n*Heading*\n• one\n• two');
 });
 
+test(
+  'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
+    "admin's reason appended verbatim and untranslated (issue #618)",
+  async () => {
+    const adapter = new WhatsAppCloudAdapter();
+    markInboundNow(adapter, '64211234567');
+    const { calls, fetchMock } = mockFetch([{ ok: true }]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as typeof fetch;
+    let result: string;
+    try {
+      result = await adapter.performAdminAction({
+        kind: 'warn_user',
+        targetUserId: '64211234567',
+        params: { reason: 'spam', language: 'mi' },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(calls.length, 1);
+    const body = JSON.parse(calls[0].body).text.body as string;
+    assert.match(body, /He whakatūpato nā NZ Claude Community:/);
+    assert.match(body, /spam/);
+    assert.ok(!body.includes('Warning from NZ Claude Community:'));
+    assert.match(result, /Warned 64211234567/);
+  },
+);
+
+test(
+  'regression: performAdminAction("warn_user") sends byte-identical English text to today when ' +
+    'params.language is "en", undefined, or absent (issue #618)',
+  async () => {
+    for (const params of [
+      { reason: 'spam', language: 'en' },
+      { reason: 'spam', language: undefined },
+      { reason: 'spam' },
+    ]) {
+      const adapter = new WhatsAppCloudAdapter();
+      markInboundNow(adapter, '64211234567');
+      const { calls, fetchMock } = mockFetch([{ ok: true }]);
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = fetchMock as typeof fetch;
+      try {
+        await adapter.performAdminAction({ kind: 'warn_user', targetUserId: '64211234567', params });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      assert.equal(calls.length, 1);
+      const body = JSON.parse(calls[0].body).text.body as string;
+      assert.equal(body, '⚠️ Warning from NZ Claude Community: spam');
+    }
+  },
+);
+
 test('partial-failure semantics: a mid-sequence Graph API failure delivers earlier chunks then throws (parity with Discord)', async () => {
   const adapter = new WhatsAppCloudAdapter();
   markInboundNow(adapter, '64211234567');

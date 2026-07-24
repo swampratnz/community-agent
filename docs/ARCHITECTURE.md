@@ -502,6 +502,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `set_language_preference` (standing reply-language preference: auto/en/mi; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `react_to_message` (emoji ack instead of a text reply; closed ✅/👍/👀/🎉 allowlist, target must be a message the bot has seen in the caller's own conversation, rate-capped 20/24h; Discord only) | ❌ | ✅ | ✅ | ✅ |
@@ -593,6 +594,14 @@ a standing `'mi'` preference (issue #333), same pattern: `getLanguagePreference`
 is read once per flagged message (defensively, degrading to `'auto'` on
 failure so a lookup error can never skip or delay warning/mute enforcement)
 and picks `warnDmTextMi`/`blockedDmTextMi` instead of the English default. The
+manually-triggered counterpart — an admin invoking the `moderate` tool's
+`warn_user` action (`src/agent/tools.ts`) — gets the same treatment (issue
+#618), closing the gap #333 left open for this path: the tool resolves the
+target's (not the issuing admin's) standing preference via the same
+injectable `getLangPref`/degrade-to-`'auto'`-on-failure shape and threads it
+as `params.language`, read by each of the three adapters' `warn_user` case
+to pick a fixed `_MI` wrapper constant instead of the English one — the
+admin's own `reason` text is never translated either way. The
 same treatment extends to the four membership/admin-grant and
 suggestion/report-resolution DMs (`notifyMemberApproved`/`notifyAdminApproved`/
 `notifySuggestionResolved`/`notifyReportResolved` in `src/agent/tools.ts`,
