@@ -91,6 +91,43 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+test(
+  'performAdminAction("warn_user") sends the te reo Māori wrapper when params.language is "mi", with the ' +
+    "admin's reason appended verbatim and untranslated (issue #618)",
+  async () => {
+    const adapter = new BaileysAdapter();
+    const sent = stubSocket(adapter);
+    const result = await adapter.performAdminAction({
+      kind: 'warn_user',
+      targetUserId: '64211234567',
+      params: { reason: 'spam', language: 'mi' },
+    });
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /He whakatūpato nā NZ Claude Community:/);
+    assert.match(sent[0], /spam/);
+    assert.ok(!sent[0].includes('Warning from NZ Claude Community:'));
+    assert.match(result, /Warned 64211234567/);
+  },
+);
+
+test(
+  'regression: performAdminAction("warn_user") sends byte-identical English text to today when ' +
+    'params.language is "en", undefined, or absent (issue #618)',
+  async () => {
+    for (const params of [
+      { reason: 'spam', language: 'en' },
+      { reason: 'spam', language: undefined },
+      { reason: 'spam' },
+    ]) {
+      const adapter = new BaileysAdapter();
+      const sent = stubSocket(adapter);
+      await adapter.performAdminAction({ kind: 'warn_user', targetUserId: '64211234567', params });
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0], '⚠️ Warning from NZ Claude Community: spam');
+    }
+  },
+);
+
 // Retry-receipt cache: when a recipient can't decrypt a message we sent, their
 // device asks for a resend and Baileys serves it via the `getMessage` handler,
 // which reads the `sentMessages` cache we populate on every content send.

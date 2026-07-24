@@ -96,6 +96,18 @@ function mapScheduledEventStatus(status: GuildScheduledEventStatus): ScheduledEv
   }
 }
 
+// Fixed wrapper prefix for a manual warn_user DM (the admin's `reason` is
+// appended verbatim, untranslated — same scope boundary as router.ts's
+// FAILED_PREFIX_MI/DONE_PREFIX_MI). Reused as-is (no interpolation) for
+// byte-for-byte backward compatibility with the pre-#618 inline template.
+const WARN_USER_DM_PREFIX = '⚠️ Warning from NZ Claude Community moderators:';
+
+// Fixed, human-authored te reo Māori variant of WARN_USER_DM_PREFIX (issue
+// #618), served when the target has a standing 'mi' language_prefs row
+// (getLanguagePreference, issue #189) — same `_MI` pattern moderator.ts's
+// warnDmTextMi (#333) already established for auto-moderation's warn DM.
+const WARN_USER_DM_PREFIX_MI = '⚠️ He whakatūpato nā ngā kaiwhakahaere o NZ Claude Community:';
+
 export const WELCOME_MESSAGE =
   "Kia ora, welcome! 👋 This server's bot answers Claude/Anthropic questions and remembers context, " +
   'but it only replies to registered members. Ask an admin to add you, or just say hi to the bot here ' +
@@ -1030,10 +1042,8 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       }
       case 'warn_user': {
         // A "warn" is a DM to the user; recorded in the audit log by the caller.
-        await this.sendDirectMessage(
-          action.targetUserId!,
-          `⚠️ Warning from NZ Claude Community moderators: ${paramString(action.params?.reason)}`,
-        );
+        const prefix = action.params?.language === 'mi' ? WARN_USER_DM_PREFIX_MI : WARN_USER_DM_PREFIX;
+        await this.sendDirectMessage(action.targetUserId!, `${prefix} ${paramString(action.params?.reason)}`);
         return `Warned ${action.targetUserId}.`;
       }
       case 'unmute_user': {
