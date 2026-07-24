@@ -10,7 +10,7 @@ import type { AlertPriority } from '../../pendingAlertQueue.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
-import { isKnownConversation } from '../../storage/repository.js';
+import { blockUser, isKnownConversation, unblockUser } from '../../storage/repository.js';
 import {
   extractMessages,
   isAllowedSender,
@@ -135,7 +135,7 @@ export const WHATSAPP_CLOUD_WELCOME_MESSAGE_OPEN =
  */
 export class WhatsAppCloudAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user']);
+  readonly adminCapabilities = new Set(['warn_user', 'block_user', 'unblock_user']);
 
   private handler: MessageHandler | null = null;
   private server: Server | null = null;
@@ -820,6 +820,24 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
           `${prefix} ${paramString(action.params?.reason)}`,
         );
         return `Warned ${action.targetUserId}.`;
+      }
+      // block_user/unblock_user (issue #572) are a pure DB write, no Cloud
+      // API call — the only lever this adapter has against a persistent
+      // abuser, since the Cloud API otherwise has no moderation surface.
+      case 'block_user': {
+        const targetUserId = action.targetUserId ?? '';
+        await blockUser(
+          'whatsapp',
+          targetUserId,
+          paramString(action.params?.blockedBy),
+          paramString(action.params?.reason) || null,
+        );
+        return `Blocked ${targetUserId}.`;
+      }
+      case 'unblock_user': {
+        const targetUserId = action.targetUserId ?? '';
+        const removed = await unblockUser('whatsapp', targetUserId);
+        return removed ? `Unblocked ${targetUserId}.` : `${targetUserId} was not blocked.`;
       }
       default:
         throw new Error(

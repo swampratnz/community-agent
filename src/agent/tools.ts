@@ -52,6 +52,7 @@ import {
   isKnownMessage,
   isKnownUser,
   isKnowledgeStale,
+  isUserBlocked,
   linkMembers,
   listAccessRequests,
   listAdmins,
@@ -3550,10 +3551,19 @@ export function buildToolServer(
 
   const moderate = tool(
     'moderate',
-    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. Admins can only act in conversations they are in.',
+    'Perform a moderation action. warn_user sends immediately; timeout/kick/ban/unban/delete/block/unblock require the admin to reply CONFIRM. ban_user (Discord only) is durable — the member cannot rejoin via invite — but unban_user reverses it in-bot, same gates as every other action. block_user (WhatsApp only) is the bot-side equivalent: it stops the bot ever replying to that sender again, platform-wide, with no platform API call; unblock_user reverses it. block_user cannot target an admin or super admin. Admins can only act in conversations they are in.',
     {
       action: z
-        .enum(['timeout_user', 'kick_user', 'ban_user', 'unban_user', 'delete_message', 'warn_user'])
+        .enum([
+          'timeout_user',
+          'kick_user',
+          'ban_user',
+          'unban_user',
+          'delete_message',
+          'warn_user',
+          'block_user',
+          'unblock_user',
+        ])
         .describe('The moderation action to perform'),
       targetUserId: z.string().describe('Platform user id to act on (message author for delete_message)'),
       reason: z.string().describe('Reason, for the audit log and the affected user'),
@@ -3583,7 +3593,29 @@ export function buildToolServer(
       ) {
         return text(unreachableConversationRefusal(targetConversation), true);
       }
-      if (!(await isKnownUser(caller.platform, args.targetUserId))) {
+      // block_user cannot target an admin/super admin — mirrors remove_member's
+      // and applyManualWarnStrike's existing "never act against an admin+"
+      // guard. Checked before isKnownUser: an admin/super admin's role is
+      // resolved from env/community_users, not from ever having been "seen"
+      // in an interaction, so this refusal must not depend on that unrelated
+      // reachability check.
+      if (
+        args.action === 'block_user' &&
+        atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')
+      ) {
+        return text('Refusing: cannot block an admin or super admin.', true);
+      }
+      // unblock_user admits via isUserBlocked as an ALTERNATE path to
+      // isKnownUser: purge_user_data/forget_me hard-deletes the target's
+      // interactions (what isKnownUser reads) while deliberately keeping the
+      // blocked_users row alive, so after a purge isKnownUser is permanently
+      // false for that id — without this, a purged identity could never be
+      // unblocked (review finding on #678). A currently-blocked identity is
+      // definitionally known; an id that is neither seen nor blocked still
+      // gets the refusal below.
+      const admitsViaBlock =
+        args.action === 'unblock_user' && (await isUserBlocked(caller.platform, args.targetUserId));
+      if (!admitsViaBlock && !(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
       // delete_message's real messageId only reaches the adapter deep inside
@@ -3610,6 +3642,9 @@ export function buildToolServer(
         reason: args.reason,
         durationMinutes: args.durationMinutes,
         messageId: args.messageId,
+        // Read only by the WhatsApp adapters' block_user case — the DB row's
+        // blocked_by column. Harmless for every other action, which ignores it.
+        blockedBy: caller.userId,
         ...(args.action === 'warn_user' ? { language: warnLanguage } : {}),
       };
       // Set by `run()` on a successful warn_user delivery only — read below to

@@ -2278,6 +2278,10 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM member_warnings WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // blocked_users (issue #572) is DELIBERATELY NOT purged here, unlike
+    // member_warnings above: forget_me/purge_user_data must never be a way to
+    // route around an admin's block by erasing the row that enforces it,
+    // including via a linked identity (SECURITY).
     // answer_feedback (issue #118) rows this identity submitted AS RATER go
     // with them, same as suggestions/reports above. A row where this identity
     // was only the RECIPIENT of the rated answer is not deleted here — its
@@ -2512,6 +2516,8 @@ export const MODERATION_ACTION_KINDS = [
   'delete_message',
   'clear_warnings',
   'announce',
+  'block_user',
+  'unblock_user',
 ] as const;
 
 /**
@@ -4858,6 +4864,52 @@ export async function listMemberWarnings(
     clearedAt: r.cleared_at,
     clearedBy: r.cleared_by,
   }));
+}
+
+// --- Block list (bot-side WhatsApp block, issue #572) -----------------------
+
+/**
+ * Block a `(platform, externalId)` identity — the router checks this before
+ * role resolution or any storage, so a blocked sender gets no reply and no
+ * footprint, in both `open` and `gated` access mode. Upserts rather than
+ * inserting so re-blocking an already-blocked identity refreshes the reason/
+ * blocker/timestamp instead of erroring on the primary key.
+ */
+export async function blockUser(
+  platform: string,
+  externalId: string,
+  blockedBy: string,
+  reason: string | null,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO blocked_users (platform, external_id, blocked_by, reason)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (platform, external_id)
+     DO UPDATE SET blocked_by = $3, reason = $4, blocked_at = now()`,
+    [platform, externalId, blockedBy, reason],
+  );
+}
+
+/** Unblock a `(platform, externalId)` identity. Returns whether a row was actually removed. */
+export async function unblockUser(platform: string, externalId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM blocked_users WHERE platform = $1 AND external_id = $2`,
+    [platform, externalId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Router hot-path check (issue #572): is this sender currently blocked?
+ * Index-backed by `blocked_users`' own primary key — same shape/cost as the
+ * rate-limit and role-resolution lookups already in the inbound path.
+ */
+export async function isUserBlocked(platform: string, externalId: string): Promise<boolean> {
+  const { rows } = await pool.query(`SELECT 1 FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
+    platform,
+    externalId,
+  ]);
+  return rows.length > 0;
 }
 
 // --- Content reports (member-facing abuse/spam intake) -----------------------

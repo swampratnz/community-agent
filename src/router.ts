@@ -29,6 +29,7 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  isUserBlocked,
   listAdmins,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
@@ -720,6 +721,18 @@ export class Router {
   private async handle(msg: IncomingMessage): Promise<void> {
     const adapter = this.adapters.get(msg.platform);
     if (!adapter) return;
+
+    // Block list (issue #572): checked before role resolution and before any
+    // storage, so a blocked sender gets zero footprint — no interaction row,
+    // no reply — and this overrides `open` access mode's default-allow,
+    // which is exactly the gap `remove_member` cannot reach. Fails open (log
+    // and continue) on a DB error, same posture as the role-resolution catch
+    // just below: one failed check must never itself become an outage.
+    try {
+      if (await isUserBlocked(msg.platform, msg.userId)) return;
+    } catch (err) {
+      logger.error({ err }, 'Block-list check failed; treating sender as not blocked');
+    }
 
     let role: Tier;
     try {
