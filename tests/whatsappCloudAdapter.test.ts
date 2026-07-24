@@ -2137,9 +2137,9 @@ test(
       return { rows: [], rowCount: sql.includes('DELETE') ? 1 : 0 };
     });
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = async () => {
       throw new Error('block_user/unblock_user must never call fetch()');
-    }) as typeof fetch;
+    };
     try {
       const blockResult = await adapter.performAdminAction({
         kind: 'block_user',

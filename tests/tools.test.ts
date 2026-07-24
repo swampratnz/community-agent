@@ -4371,7 +4371,7 @@ test(
           await blockUser(
             'whatsapp',
             action.targetUserId ?? '',
-            String(action.params?.blockedBy ?? ''),
+            (action.params?.blockedBy as string | undefined) ?? '',
             (action.params?.reason as string | undefined) ?? null,
           );
           return `Blocked ${action.targetUserId}.`;
