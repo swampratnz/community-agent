@@ -141,6 +141,14 @@ const {
   listAppeals,
   resolveModerationAppeal,
   countOpenAppeals,
+  shareProject,
+  removeMemberProject,
+  listRecentProjects,
+  searchProjects,
+  MEMBER_PROJECT_CAP,
+  PROJECT_RATE_LIMIT_PER_DAY,
+  PROJECT_NAME_MAX_CHARS,
+  PROJECT_DESCRIPTION_MAX_CHARS,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -5530,6 +5538,309 @@ test(
 );
 
 test(
+  'repository: shareProject enforces the per-member cap and a DB-backed rolling-24h rate cap, robust to a simulated restart (issue #646)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-sharer`;
+
+    // Seed cap-many projects via direct SQL — as if written by a previous
+    // process instance — so an in-memory counter would wrongly admit the
+    // next one, but the DB-backed COUNT(*) refuses it (same pattern as
+    // createSuggestion's own restart-proof rate-cap test).
+    for (let i = 0; i < MEMBER_PROJECT_CAP; i++) {
+      await pool.query(
+        `INSERT INTO member_projects (platform, user_id, name, description) VALUES ($1,$2,$3,$4)`,
+        ['discord', userId, `prior-process project ${i}`, 'a project'],
+      );
+    }
+
+    const rejected = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'one too many',
+      description: 'over the per-member cap',
+    });
+    assert.deepEqual(rejected, { ok: false, reason: 'cap' }, 'the (cap+1)th distinct project is refused');
+
+    const countAfter = await pool.query(`SELECT count(*) AS n FROM member_projects WHERE user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(Number(countAfter.rows[0].n), MEMBER_PROJECT_CAP, 'no row is inserted for a refused share');
+
+    // Editing an EXISTING project (same name) is exempt from the cap.
+    const edited = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'prior-process project 0',
+      description: 'an edited description',
+      link: 'https://example.com/project-0',
+    });
+    assert.ok(
+      edited.ok && !edited.created,
+      'editing an existing project by name succeeds and is not "created"',
+    );
+    const editedRow = await pool.query(
+      `SELECT description, link FROM member_projects WHERE user_id = $1 AND name = $2`,
+      [userId, 'prior-process project 0'],
+    );
+    assert.equal(editedRow.rows[0].description, 'an edited description');
+    assert.equal(editedRow.rows[0].link, 'https://example.com/project-0');
+    assert.equal(
+      Number(
+        (await pool.query(`SELECT count(*) AS n FROM member_projects WHERE user_id = $1`, [userId])).rows[0]
+          .n,
+      ),
+      MEMBER_PROJECT_CAP,
+      'an edit never grows the row count',
+    );
+
+    // Free a cap slot by removing one — a no-op false for an unknown name.
+    assert.ok(await removeMemberProject('discord', userId, 'prior-process project 1'));
+    assert.equal(
+      await removeMemberProject('discord', userId, 'never existed'),
+      false,
+      'removing an unknown name is a no-op false, not an error',
+    );
+
+    // Hit the RATE cap distinctly from the member cap: seed
+    // PROJECT_RATE_LIMIT_PER_DAY rows for a fresh user, then soft-remove ONE
+    // of them (removeMemberProject sets removed_at, never a hard DELETE) so
+    // the ACTIVE count drops below MEMBER_PROJECT_CAP while the rolling-24h
+    // COUNT(*) — which counts a soft-removed row too, precisely so a
+    // share/remove/share cycle can't be used to dodge this cap — still sees
+    // all of them and refuses. If removal instead freed a rate-cap slot too,
+    // this would come back 'cap' or wrongly succeed; it must come back
+    // 'rate_limited' specifically.
+    const rateUser = `${userId}-rate`;
+    for (let i = 0; i < PROJECT_RATE_LIMIT_PER_DAY; i++) {
+      await pool.query(
+        `INSERT INTO member_projects (platform, user_id, name, description) VALUES ($1,$2,$3,$4)`,
+        ['discord', rateUser, `rate project ${i}`, 'a project'],
+      );
+    }
+    assert.ok(await removeMemberProject('discord', rateUser, 'rate project 0'));
+    const preAttemptCounts = await pool.query(
+      `SELECT count(*) FILTER (WHERE removed_at IS NULL) AS active, count(*) AS total
+         FROM member_projects WHERE user_id = $1`,
+      [rateUser],
+    );
+    assert.equal(
+      Number(preAttemptCounts.rows[0].active),
+      PROJECT_RATE_LIMIT_PER_DAY - 1,
+      'the soft-removed row drops the ACTIVE count below the member cap',
+    );
+    assert.equal(
+      Number(preAttemptCounts.rows[0].total),
+      PROJECT_RATE_LIMIT_PER_DAY,
+      'but the soft-removed row still exists for the rate window to count',
+    );
+
+    const rateRejected = await shareProject({
+      platform: 'discord',
+      userId: rateUser,
+      name: 'a brand new name',
+      description: 'over the rolling-24h rate cap even though under the member cap',
+    });
+    assert.deepEqual(rateRejected, { ok: false, reason: 'rate_limited' });
+    assert.equal(
+      Number(
+        (await pool.query(`SELECT count(*) AS n FROM member_projects WHERE user_id = $1`, [rateUser])).rows[0]
+          .n,
+      ),
+      PROJECT_RATE_LIMIT_PER_DAY,
+      'no row is inserted for a rate-limited refusal',
+    );
+
+    // Age every row out of the rate window — a slot frees up.
+    await pool.query(
+      `UPDATE member_projects SET created_at = now() - interval '25 hours' WHERE user_id = $1`,
+      [rateUser],
+    );
+    const rateAccepted = await shareProject({
+      platform: 'discord',
+      userId: rateUser,
+      name: 'x'.repeat(PROJECT_NAME_MAX_CHARS + 20),
+      description: 'y'.repeat(PROJECT_DESCRIPTION_MAX_CHARS + 20),
+    });
+    assert.ok(
+      rateAccepted.ok && rateAccepted.created,
+      'accepted once every prior share ages out of the rate window',
+    );
+    const stored = await pool.query(`SELECT name, description FROM member_projects WHERE id = $1`, [
+      rateAccepted.ok ? rateAccepted.id : -1,
+    ]);
+    assert.equal(stored.rows[0].name.length, PROJECT_NAME_MAX_CHARS, 'over-long name is capped server-side');
+    assert.equal(
+      stored.rows[0].description.length,
+      PROJECT_DESCRIPTION_MAX_CHARS,
+      'over-long description is capped server-side',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = ANY($1)`, [[userId, rateUser]]);
+  },
+);
+
+test(
+  'SECURITY: repository: removeMemberProject soft-deletes so a share/remove/share churn cannot bypass the rolling-24h rate cap (issue #646 AC #1)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-churn-antispam`;
+
+    for (let i = 0; i < PROJECT_RATE_LIMIT_PER_DAY; i++) {
+      const shared = await shareProject({
+        platform: 'discord',
+        userId,
+        name: `churn ${i}`,
+        description: 'a project',
+      });
+      assert.ok(shared.ok && shared.created);
+      // Remove it immediately — if removal were a hard DELETE, this loop could
+      // run forever without ever tripping the rate cap (each removal would
+      // un-count the "recent" row it just inserted).
+      assert.ok(await removeMemberProject('discord', userId, `churn ${i}`));
+    }
+
+    const blocked = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'one more after the churn',
+      description: 'must still be refused',
+    });
+    assert.deepEqual(
+      blocked,
+      { ok: false, reason: 'rate_limited' },
+      'SECURITY: repeatedly sharing then removing must not let a member exceed the daily new-share rate cap',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = $1`, [userId]);
+  },
+);
+
+test(
+  'repository: listRecentProjects returns most-recently-shared projects across every member, newest first (issue #646)',
+  { skip },
+  async () => {
+    const a = `${RUN}-recent-a`;
+    const b = `${RUN}-recent-b`;
+    const first = await shareProject({
+      platform: 'discord',
+      userId: a,
+      name: 'first',
+      description: 'the first one',
+    });
+    await pool.query(`UPDATE member_projects SET created_at = now() - interval '2 hours' WHERE id = $1`, [
+      first.ok ? first.id : -1,
+    ]);
+    const second = await shareProject({
+      platform: 'discord',
+      userId: b,
+      name: 'second',
+      description: 'the second one',
+    });
+
+    const recent = await listRecentProjects(200);
+    const ids = recent.map((p) => p.id);
+    assert.ok(second.ok && ids.indexOf(second.id) < ids.indexOf(first.ok ? first.id : -2), 'newest first');
+    const secondRow = recent.find((p) => second.ok && p.id === second.id);
+    assert.equal(secondRow?.name, 'second');
+    assert.equal(secondRow?.userId, b);
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = ANY($1)`, [[a, b]]);
+  },
+);
+
+test(
+  'SECURITY: repository: searchProjects ranks by embedding similarity over name+description and never returns a non-member_projects row (issue #646 AC #3)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-search-owner`;
+    const relevant = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'RAG chatbot',
+      description: 'A retrieval-augmented generation chatbot built with Claude and pgvector',
+    });
+    const distractor = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'cooking blog',
+      description: 'A blog about baking sourdough bread',
+    });
+    assert.ok(relevant.ok && distractor.ok);
+
+    // A distractor row in `interactions` (chat content, never a shared
+    // project) with matching text must never surface from searchProjects —
+    // the function only ever queries member_projects (SECURITY: issue #646 AC #3).
+    await recordInteraction({
+      platform: 'discord',
+      conversationId: `${RUN}-search-convo`,
+      userId: `${RUN}-non-sharer`,
+      role: 'member',
+      direction: 'inbound',
+      content: 'I am building a retrieval-augmented generation chatbot with Claude and pgvector too',
+    });
+
+    const hits = await searchProjects('retrieval augmented generation chatbot', 5);
+    assert.ok(
+      hits.some((h) => relevant.ok && h.id === relevant.id),
+      'the relevant shared project is found',
+    );
+    assert.ok(
+      !hits.some((h) => distractor.ok && h.id === distractor.id) ||
+        hits[0]?.id === (relevant.ok ? relevant.id : -1),
+      'the relevant project ranks above the unrelated distractor',
+    );
+    assert.ok(
+      hits.every((h) => h.userId !== `${RUN}-non-sharer`),
+      'SECURITY: a matching interactions row from a non-sharing member never appears in searchProjects results',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [`${RUN}-non-sharer`]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's member_projects rows (issue #646 AC #4)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-purge-projects`;
+    const created = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'to be purged',
+      description: 'gone after forget_me',
+    });
+    assert.ok(created.ok);
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the shared project');
+    const after = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
+    assert.equal(after.rows.length, 0, "the user's shared projects are gone after purge");
+  },
+);
+
+test(
+  "SECURITY: markRosterLeave removes the departed member's shared projects (issue #646)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-leave-projects`;
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Leaver' });
+    const created = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'showcase entry',
+      description: 'should not survive roster leave',
+    });
+    assert.ok(created.ok);
+
+    assert.equal(await markRosterLeave('discord', userId), true);
+    const after = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
+    assert.equal(after.rows.length, 0, "a departed member's shared projects are removed on roster leave");
+  },
+);
+
+test(
   'repository: countPendingSuggestions is exact past the 50-row listSuggestions default limit, and counts only status = new (issue #193)',
   { skip },
   async () => {
@@ -9242,7 +9553,13 @@ test(
       conversationId,
       reason: 'my report',
     });
-    assert.ok(suggestion && report, 'fixtures recorded');
+    const project = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'my-data project',
+      description: 'a project sourced from this user',
+    });
+    assert.ok(suggestion && report && project.ok, 'fixtures recorded');
     await setResponseStyle('discord', userId, 'plain');
 
     // Fixtures for tables getMyDataSummary must NEVER count or query, even
@@ -9276,12 +9593,14 @@ test(
     assert.equal(summary.knowledgeEntries, 1);
     assert.equal(summary.reportsFiled, 1);
     assert.equal(summary.suggestionsFiled, 1);
+    assert.equal(summary.projectsShared, 1);
     assert.equal(summary.responseStyle, 'plain');
     assert.deepEqual(
       Object.keys(summary).sort(),
       [
         'knowledgeEntries',
         'ownMessages',
+        'projectsShared',
         'repliesToThem',
         'reportsFiled',
         'responseStyle',
@@ -9299,7 +9618,8 @@ test(
       summary.repliesToThem +
       summary.knowledgeEntries +
       summary.reportsFiled +
-      summary.suggestionsFiled;
+      summary.suggestionsFiled +
+      summary.projectsShared;
     const purged = await purgeUserData('discord', userId);
     assert.ok(
       purged > reportedTotal,
@@ -9316,6 +9636,7 @@ test(
         knowledgeEntries: 0,
         reportsFiled: 0,
         suggestionsFiled: 0,
+        projectsShared: 0,
         responseStyle: 'standard',
       },
       'every table getMyDataSummary reports is empty after purge — reconciled per-table with the DELETE',

@@ -10,6 +10,19 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-25
+
+### Added
+- **Members can now publish a project they've built to a searchable community
+  showcase** (#646): `share_project(name, description, link?)` self-scoped
+  writes to a new `member_projects` table (per-member cap of 3, DB-backed
+  rolling-24h rate cap of 3 new shares, upsert-by-name for edits, `remove:
+  true` to take one down); `list_projects(query?)` browses the most
+  recently shared projects or, with a query, the closest matches by
+  meaning. A link is stored and shown as plain text only — the bot never
+  fetches or previews it. Rows are deleted by `forget_me`/`purge_user_data`
+  and on roster leave, and counted in `my_data`.
+
 ## 2026-07-23
 
 ### Added
