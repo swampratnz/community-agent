@@ -30,6 +30,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
   meaning. A link is stored and shown as plain text only — the bot never
   fetches or previews it. Rows are deleted by `forget_me`/`purge_user_data`
   and on roster leave, and counted in `my_data`.
+- **A member's own thumbs-down now reaches an admin in real time** (#598):
+  previously a `rate_answer(helpful: false)` call only wrote an
+  `answer_feedback` row, surfaced to admins only via the weekly digest or a
+  manual `list_answer_feedback` pull — up to days of latency on a member
+  telling the bot it got something wrong. When `ESCALATION_TO_ADMIN_ENABLED`
+  is on, a genuinely-recorded thumbs-down now direct-fires the same
+  `notifyAdmins` real-time DM the max-turns escalation (#481) and knowledge-gap
+  escalation (#514) use, sharing (not adding to) their guild-wide hourly cap.
+  No confirmation step — the rating itself is the explicit action, so there's
+  nothing to confirm. Off by default; byte-identical behaviour when the flag
+  is unset.
 
 ## 2026-07-23
 
