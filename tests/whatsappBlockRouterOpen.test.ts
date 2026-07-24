@@ -142,7 +142,11 @@ test(
 
     await trigger(makeMessage({ userId }));
 
-    assert.equal(sent.length, 0, 'a blocked sender must get no reply at all, even under open-mode default-allow');
+    assert.equal(
+      sent.length,
+      0,
+      'a blocked sender must get no reply at all, even under open-mode default-allow',
+    );
 
     const { rows } = await pool.query(
       `SELECT count(*)::int AS n FROM interactions WHERE platform = 'whatsapp' AND user_id = $1`,

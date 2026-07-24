@@ -148,7 +148,9 @@ test(
 
     await blockUser('whatsapp', userId, 'test-admin', 'persistent abuse');
     try {
-      await trigger(makeMessage({ userId, conversationId: convo, text: `${RUN} first message while blocked` }));
+      await trigger(
+        makeMessage({ userId, conversationId: convo, text: `${RUN} first message while blocked` }),
+      );
       assert.equal(calls, 0, 'blocked: no turn');
       assert.equal(sent.length, 0, 'blocked: no reply');
 

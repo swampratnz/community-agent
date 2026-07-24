@@ -2114,3 +2114,51 @@ test('SECURITY: react_to_message refuses a WhatsApp-Cloud reaction to a messageI
   }
   assert.equal(calls.length, 0, 'an unvalidated target must never reach reactToMessage/fetch');
 });
+
+test('adminCapabilities includes block_user/unblock_user (issue #572) — the Cloud API otherwise has no moderation surface', () => {
+  const adapter = new WhatsAppCloudAdapter();
+  assert.ok(adapter.adminCapabilities.has('block_user'));
+  assert.ok(adapter.adminCapabilities.has('unblock_user'));
+  assert.equal(
+    adapter.adminCapabilities.size,
+    3,
+    'warn_user, block_user, unblock_user — no other moderation action is supported',
+  );
+});
+
+test(
+  'SECURITY: performAdminAction(block_user)/unblock_user are a pure DB write, no Graph API call — unlike ' +
+    'every other Cloud action, a block/unblock never makes a fetch() request (issue #572)',
+  async (t) => {
+    const adapter = new WhatsAppCloudAdapter();
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    t.mock.method(pool, 'query', async (sql: string, params: unknown[]) => {
+      calls.push({ sql, params });
+      return { rows: [], rowCount: sql.includes('DELETE') ? 1 : 0 };
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error('block_user/unblock_user must never call fetch()');
+    }) as typeof fetch;
+    try {
+      const blockResult = await adapter.performAdminAction({
+        kind: 'block_user',
+        targetUserId: '64211234567',
+        params: { blockedBy: 'admin-1', reason: 'persistent abuse' },
+      });
+      assert.match(blockResult, /Blocked 64211234567/);
+      assert.match(calls[0].sql, /INSERT INTO blocked_users/);
+      assert.deepEqual(calls[0].params, ['whatsapp', '64211234567', 'admin-1', 'persistent abuse']);
+
+      const unblockResult = await adapter.performAdminAction({
+        kind: 'unblock_user',
+        targetUserId: '64211234567',
+      });
+      assert.match(unblockResult, /Unblocked 64211234567/);
+      assert.match(calls[1].sql, /DELETE FROM blocked_users/);
+      assert.deepEqual(calls[1].params, ['whatsapp', '64211234567']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  },
+);

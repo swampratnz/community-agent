@@ -4671,10 +4671,10 @@ export async function unblockUser(platform: string, externalId: string): Promise
  * rate-limit and role-resolution lookups already in the inbound path.
  */
 export async function isUserBlocked(platform: string, externalId: string): Promise<boolean> {
-  const { rows } = await pool.query(
-    `SELECT 1 FROM blocked_users WHERE platform = $1 AND external_id = $2`,
-    [platform, externalId],
-  );
+  const { rows } = await pool.query(`SELECT 1 FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
+    platform,
+    externalId,
+  ]);
   return rows.length > 0;
 }
 

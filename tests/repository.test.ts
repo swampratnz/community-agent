@@ -7245,7 +7245,11 @@ test(
   async () => {
     const externalId = `${RUN}-block-roundtrip-user`;
 
-    assert.equal(await isUserBlocked('whatsapp', externalId), false, 'not blocked before any block_user call');
+    assert.equal(
+      await isUserBlocked('whatsapp', externalId),
+      false,
+      'not blocked before any block_user call',
+    );
 
     await blockUser('whatsapp', externalId, 'admin-1', 'harassment');
     assert.equal(await isUserBlocked('whatsapp', externalId), true);

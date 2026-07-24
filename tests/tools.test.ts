@@ -122,6 +122,8 @@ const {
   searchKnowledge,
   searchKnowledgeLexical,
   isUserBlocked,
+  blockUser,
+  unblockUser,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -4357,7 +4359,30 @@ test(
     const conv = `${RUN}-block-audit-roundtrip`;
     const targetUser = `${conv}-target`;
     await seedKnownUser('whatsapp', conv, targetUser);
-    const adapter = moderateAdapter({ platform: 'whatsapp', capabilities: ['block_user', 'unblock_user'] });
+    // Mirrors the real WhatsApp adapters' performAdminAction (issue #572): a
+    // pure DB write via the shared repository, no platform API call — so this
+    // test exercises the moderate tool -> adapter -> DB path end to end
+    // rather than only asserting on the mock's recorded call shape.
+    const adapter = moderateAdapter({
+      platform: 'whatsapp',
+      capabilities: ['block_user', 'unblock_user'],
+      performAdminAction: async (action) => {
+        if (action.kind === 'block_user') {
+          await blockUser(
+            'whatsapp',
+            action.targetUserId ?? '',
+            String(action.params?.blockedBy ?? ''),
+            (action.params?.reason as string | undefined) ?? null,
+          );
+          return `Blocked ${action.targetUserId}.`;
+        }
+        if (action.kind === 'unblock_user') {
+          const removed = await unblockUser('whatsapp', action.targetUserId ?? '');
+          return removed ? `Unblocked ${action.targetUserId}.` : `${action.targetUserId} was not blocked.`;
+        }
+        throw new Error(`unexpected action ${action.kind}`);
+      },
+    });
     const handler = moderateHandler({ platform: 'whatsapp', conversationId: conv, adapter });
 
     const blockResult = await handler.handler({
@@ -4405,7 +4430,10 @@ test(
         >;
       }
     )._registeredTools['moderation_history'];
-    const historyResult = await modHistoryTool.handler({ targetUserId: targetUser, actionKind: 'block_user' });
+    const historyResult = await modHistoryTool.handler({
+      targetUserId: targetUser,
+      actionKind: 'block_user',
+    });
     assert.equal(historyResult.isError, false);
     assert.match(
       historyResult.content[0]?.text ?? '',
@@ -4424,7 +4452,11 @@ test(
     assert.ok(unblockPending, 'must register a pending action');
     const unblockExecResult = await unblockPending?.execute();
     assert.match(unblockExecResult ?? '', /Done:/);
-    assert.equal(await isUserBlocked('whatsapp', targetUser), false, 'the block row must actually be removed');
+    assert.equal(
+      await isUserBlocked('whatsapp', targetUser),
+      false,
+      'the block row must actually be removed',
+    );
 
     const { rows: unblockRows } = await pool.query(
       `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'unblock_user' AND target_user_id = $1`,
@@ -4465,7 +4497,11 @@ test(
     const adapter = new DiscordAdapter();
     assert.equal(adapter.adminCapabilities.has('block_user'), false);
     assert.equal(adapter.adminCapabilities.has('unblock_user'), false);
-    assert.equal(adapter.adminCapabilities.has('ban_user'), true, 'Discord keeps its existing ban_user coverage');
+    assert.equal(
+      adapter.adminCapabilities.has('ban_user'),
+      true,
+      'Discord keeps its existing ban_user coverage',
+    );
   },
 );
 

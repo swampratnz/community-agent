@@ -3429,6 +3429,18 @@ export function buildToolServer(
       ) {
         return text(unreachableConversationRefusal(targetConversation), true);
       }
+      // block_user cannot target an admin/super admin — mirrors remove_member's
+      // and applyManualWarnStrike's existing "never act against an admin+"
+      // guard. Checked before isKnownUser: an admin/super admin's role is
+      // resolved from env/community_users, not from ever having been "seen"
+      // in an interaction, so this refusal must not depend on that unrelated
+      // reachability check.
+      if (
+        args.action === 'block_user' &&
+        atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')
+      ) {
+        return text('Refusing: cannot block an admin or super admin.', true);
+      }
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
@@ -3438,12 +3450,6 @@ export function buildToolServer(
       // recorded audit row (issue #312).
       if (args.action === 'delete_message' && !args.messageId) {
         return text('Refusing: delete_message requires messageId.', true);
-      }
-      // block_user cannot target an admin/super admin — mirrors remove_member's
-      // and applyManualWarnStrike's existing "never act against an admin+"
-      // guard. Checked upfront, before burning the CONFIRM round-trip.
-      if (args.action === 'block_user' && atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')) {
-        return text('Refusing: cannot block an admin or super admin.', true);
       }
 
       const params = {
