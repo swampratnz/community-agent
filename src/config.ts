@@ -413,6 +413,27 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Real-time admin alert (issue #650) fired the moment a `recordKnowledgeGap`
+  // insert brings its conversation-scoped, unresolved, unalerted cluster to
+  // KNOWLEDGE_GAP_ALERT_THRESHOLD — the discrete-event complement to the
+  // weekly digest's passive knowledgeGapsCount, same "push what was pullable"
+  // precedent as #479/#480. Off by default, consistent with this repo's
+  // convention for new proactive DMs.
+  KNOWLEDGE_GAP_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Unresolved, unalerted rows a conversation-scoped knowledge-gap cluster
+  // must reach before it is DMed to admins.
+  KNOWLEDGE_GAP_ALERT_THRESHOLD: z.coerce.number().int().positive().default(3),
+  // Guild-wide rolling-hour cap on knowledge-gap alerts, same sliding-window
+  // shape as ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR — bounds worst-case
+  // admin DM volume under an organic or adversarial query burst. Once
+  // exhausted within the trailing hour, a further threshold-crossing cluster
+  // is still recorded and still counted by the weekly digest, but does not
+  // notify; a fresh hour resumes notifying (and the cluster stays eligible —
+  // a rate-limited crossing never stamps alerted_at).
+  KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
   // Weekly super-admin cost-trend DM (issue #578): compares this week's
   // usageStats(7) total against last week's persisted total and DMs the
   // signed delta. Complementary to USAGE_ALERT_DAILY_REPLIES's reactive
@@ -1038,6 +1059,11 @@ export const config = {
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
     rateLimitPerHour: env.ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR,
+  },
+  knowledgeGapAlert: {
+    enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
+    threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
+    rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
   },
   usageCostDigest: {
     enabled: env.USAGE_COST_DIGEST_ENABLED ?? false,

@@ -33,6 +33,7 @@ import {
   getKnowledgeContentById,
   deleteMemberNote,
   demoteAdmin,
+  findKnowledgeGapAlertCluster,
   getMemberNote,
   getMemberRole,
   getMyDataSummary,
@@ -66,6 +67,7 @@ import {
   listReports,
   listRoster,
   listSuggestions,
+  markKnowledgeGapsAlerted,
   MODERATION_ACTION_KINDS,
   type ModerationAppeal,
   purgeUserData,
@@ -657,6 +659,74 @@ export async function notifyAdmins(
   }
 }
 
+/** Guild-wide rolling-hour timestamps for KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR (issue #650) — keyless/guild-wide, same shape as router.ts's reserveAccessRequestAlertSlot (issue #480), matching this alert's guild-wide listAdmins() audience. Kept here rather than in router.ts because knowledge_search's tool handler (not the router) triggers this alert. */
+const knowledgeGapAlertTimestamps: number[] = [];
+
+/**
+ * Reserve one knowledge-gap-alert slot against a rolling hourly cap — same
+ * sliding-window shape as `reservePollSlot` below, but keyless/guild-wide
+ * like router.ts's `reserveAccessRequestAlertSlot`. Returns false without
+ * reserving if the guild already hit `limit` within the last hour.
+ */
+function reserveKnowledgeGapAlertSlot(limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000;
+  const recent = knowledgeGapAlertTimestamps.filter((t) => now - t < windowMs);
+  knowledgeGapAlertTimestamps.length = 0;
+  knowledgeGapAlertTimestamps.push(...recent);
+  if (recent.length >= limit) return false;
+  knowledgeGapAlertTimestamps.push(now);
+  return true;
+}
+
+/** Test-only reset for `reserveKnowledgeGapAlertSlot`'s module-level guild-wide timestamp array, matching the repo's `*ForTests` reset convention (e.g. pendingAlertQueue.ts's `resetPendingAlertsForTests`) — otherwise state leaks between tests in the same process. */
+export function resetKnowledgeGapAlertRateLimitForTests(): void {
+  knowledgeGapAlertTimestamps.length = 0;
+}
+
+/**
+ * Real-time counterpart to the weekly digest's bare `knowledgeGapsCount`
+ * (issue #650): called fire-and-forget from `knowledge_search`'s
+ * below-floor-miss branch, immediately after a successful `recordKnowledgeGap`
+ * insert, only when `KNOWLEDGE_GAP_ALERT_ENABLED`. Re-clusters the gap's own
+ * `(platform, conversationId)` scope via `findKnowledgeGapAlertCluster`; if
+ * the newly-inserted row's cluster has just reached
+ * `KNOWLEDGE_GAP_ALERT_THRESHOLD` unresolved, unalerted rows, reserves a
+ * guild-wide rate-limit slot and — only on success — stamps every row in the
+ * cluster `alerted_at` via `markKnowledgeGapsAlerted` (single-shot per
+ * cluster, mirroring #479/#480's promote-a-digest-signal-to-instant-DM shape)
+ * and queues exactly one `notifyAdmins` DM naming the cluster's
+ * `representative` query text (`truncateForEcho`-bounded, same cap the
+ * escalation-echo path already applies to member-authored text) and its
+ * `count`. A rate-limited crossing deliberately does NOT stamp `alerted_at` —
+ * the gap is still recorded and still counted by the weekly digest either
+ * way, so the cluster stays eligible to alert once the trailing hour clears,
+ * matching the access-request alert's same non-lossy rate-limit shape.
+ */
+async function maybeAlertKnowledgeGapCluster(
+  adapterForFn: (platform: Platform) => PlatformAdapter | undefined,
+  platform: Platform,
+  conversationId: string,
+  excludeUserId: string,
+  newGapId: number,
+): Promise<void> {
+  const cluster = await findKnowledgeGapAlertCluster(
+    platform,
+    conversationId,
+    newGapId,
+    config.knowledgeGapAlert.threshold,
+  );
+  if (!cluster) return;
+  if (!reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) return;
+  await markKnowledgeGapsAlerted(cluster.ids);
+  await notifyAdmins(
+    adapterForFn,
+    `Knowledge gap: "${truncateForEcho(cluster.representative)}" has now come up ${cluster.count} times with ` +
+      `no confident answer — worth adding to the knowledge base?`,
+    excludeUserId,
+  );
+}
+
 /**
  * Cap on stored community guidelines text (issue #212). Bounded by Discord's
  * hard 2000-character message limit — guidelines are appended to the static
@@ -1041,6 +1111,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'ACCESS_REQUEST_ALERT_ENABLED',
     configPath: 'accessRequestAlert.enabled',
     label: 'Access request alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'KNOWLEDGE_GAP_ALERT_ENABLED',
+    configPath: 'knowledgeGapAlert.enabled',
+    label: 'Knowledge gap cluster alert',
     category: 'Admin Alerts & Digest',
   },
   {
@@ -2726,10 +2802,24 @@ export function buildToolServer(
         // plain empty result set, which is indistinguishable from a
         // searchKnowledge embed() failure and would otherwise log every
         // outage query as a false "gap". Fire-and-forget, same
-        // non-blocking style as the retrieval-count bump above.
-        recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
-          logger.warn({ err }, 'Knowledge gap recording failed'),
-        );
+        // non-blocking style as the retrieval-count bump above. Chained (not
+        // parallel) `.then` for the real-time cluster-alert follow-up (issue
+        // #650): only reached on a successful (non-rate-limited) insert, and
+        // short-circuits before any extra query when the flag is off, so a
+        // deployment with KNOWLEDGE_GAP_ALERT_ENABLED unset stays
+        // byte-identical to pre-#650 behaviour (acceptance criterion 3).
+        recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query)
+          .then((result) => {
+            if (result === 'rate_limited' || !config.knowledgeGapAlert.enabled) return undefined;
+            return maybeAlertKnowledgeGapCluster(
+              adapterFor,
+              caller.platform,
+              caller.conversationId,
+              caller.userId,
+              result.id,
+            );
+          })
+          .catch((err) => logger.warn({ err }, 'Knowledge gap recording failed'));
       }
       return text(
         formatKnowledgeSearchResults(

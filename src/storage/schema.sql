@@ -651,6 +651,22 @@ ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
   ON knowledge_gaps (conversation_id, created_at DESC) WHERE resolved_at IS NULL;
 
+-- Set once findKnowledgeGapAlertCluster's crossed-threshold cluster has been
+-- DMed to admins via notifyAdmins (issue #650's real-time counterpart to the
+-- weekly digest's bare knowledge-gap count) — stamped on EVERY row in that
+-- cluster in the same step, so a later gap joining an already-alerted
+-- cluster can never re-trigger (single-shot per cluster, same never-notify-
+-- twice precedent as the access-request alert, issue #480). NULL (including
+-- every pre-existing row) means never alerted. forget_me/purge_user_data
+-- delete the row outright regardless of this value.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMPTZ;
+
+-- Backs the `AND alerted_at IS NULL` filter findKnowledgeGapAlertCluster adds
+-- on top of knowledge_gaps_unresolved_idx's own `resolved_at IS NULL`.
+CREATE INDEX IF NOT EXISTS knowledge_gaps_unalerted_idx
+  ON knowledge_gaps (platform, conversation_id, created_at ASC)
+  WHERE resolved_at IS NULL AND alerted_at IS NULL;
+
 -- True for a row written by recordEscalatedKnowledgeGap — a confirmed,
 -- member-initiated escalation (issue #479) rather than a passive
 -- below-floor knowledge_search miss. Distinguishes "a member asked a human

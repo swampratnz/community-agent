@@ -3998,6 +3998,76 @@ export async function recentKnowledgeGapClusters(
     .map((c) => ({ representative: c.representative, count: c.count }));
 }
 
+export interface KnowledgeGapAlertCluster {
+  representative: string;
+  count: number;
+  ids: number[];
+}
+
+/**
+ * Real-time counterpart to `recentKnowledgeGapClusters` (issue #650): after a
+ * fresh `recordKnowledgeGap` insert, re-clusters the *unresolved, unalerted*
+ * rows scoped to that gap's own `(platform, conversation_id)` — same greedy
+ * cosine-similarity clustering, but restricted to `alerted_at IS NULL` so a
+ * cluster that already crossed the threshold and was DMed (every one of its
+ * rows stamped `alerted_at` by `markKnowledgeGapsAlerted`) naturally drops out
+ * of consideration rather than re-triggering. Returns the cluster containing
+ * `newGapId` only if it has reached `threshold` rows, else `null` — including
+ * when `newGapId` itself isn't found (e.g. it was resolved or alerted between
+ * insert and this call). No day window (unlike `recentKnowledgeGapClusters`):
+ * every unresolved, unalerted row is eligible, since a stale but never-alerted
+ * gap is still exactly the "asked N times, never confidently answered" signal
+ * this alert exists to surface.
+ */
+export async function findKnowledgeGapAlertCluster(
+  platform: Platform,
+  conversationId: string,
+  newGapId: number,
+  threshold: number,
+): Promise<KnowledgeGapAlertCluster | null> {
+  const { rows } = await pool.query(
+    `SELECT id, query_text, embedding
+       FROM knowledge_gaps
+      WHERE platform = $1 AND conversation_id = $2
+        AND embedding IS NOT NULL
+        AND resolved_at IS NULL
+        AND alerted_at IS NULL
+      ORDER BY created_at ASC`,
+    [platform, conversationId],
+  );
+
+  const clusters: Array<{ representative: string; embedding: number[]; ids: number[] }> = [];
+  for (const row of rows) {
+    const vec = row.embedding as number[] | null;
+    if (!vec) continue;
+    const id = Number(row.id);
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.ids.push(id);
+    } else {
+      clusters.push({ representative: row.query_text, embedding: vec, ids: [id] });
+    }
+  }
+
+  const crossed = clusters.find((c) => c.ids.includes(newGapId));
+  if (!crossed || crossed.ids.length < threshold) return null;
+  return { representative: crossed.representative, count: crossed.ids.length, ids: crossed.ids };
+}
+
+/**
+ * Stamps `alerted_at = now()` on every given `knowledge_gaps` row — called
+ * once, immediately before the single admin DM for a crossed cluster
+ * (issue #650), so every row that contributed to the alert is excluded from
+ * `findKnowledgeGapAlertCluster`'s next query and can never re-trigger.
+ * No-ops on an empty array (a cluster that failed the rate-limit reservation
+ * must never call this — see `maybeAlertKnowledgeGapCluster` in agent/tools.ts
+ * — so a later hour still gets a chance to alert).
+ */
+export async function markKnowledgeGapsAlerted(ids: readonly number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(`UPDATE knowledge_gaps SET alerted_at = now() WHERE id = ANY($1)`, [[...ids]]);
+}
+
 // --- Admin digest freshness guard (issue #97) --------------------------------
 
 /**
