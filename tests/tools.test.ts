@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import type { AdapterLookup, Platform, PlatformAdapter, UpcomingEvent } from '../src/platforms/types.js';
+import { paramString } from '../src/platforms/types.js';
 import { formatNzEventTime } from '../src/util/nzTime.js';
 
 // config.ts validates env at import time — provide a dummy environment
@@ -4309,8 +4310,8 @@ test(
         await blockUser(
           'whatsapp',
           input.targetUserId ?? '',
-          String(input.params?.blockedBy ?? ''),
-          input.params?.reason ? String(input.params.reason) : undefined,
+          paramString(input.params?.blockedBy),
+          paramString(input.params?.reason) || undefined,
         );
         return `Blocked ${input.targetUserId}.`;
       },
@@ -4331,7 +4332,11 @@ test(
     assert.equal(adapter.performCalls.length, 1);
     assert.equal(adapter.performCalls[0].kind, 'block_user');
     assert.equal(adapter.performCalls[0].targetUserId, targetUser);
-    assert.equal(adapter.performCalls[0].params?.blockedBy, 'admin-1', "blockedBy carries the caller's userId");
+    assert.equal(
+      adapter.performCalls[0].params?.blockedBy,
+      'admin-1',
+      "blockedBy carries the caller's userId",
+    );
 
     const { rows } = await pool.query(
       `SELECT count(*)::int AS n FROM admin_audit WHERE action_kind = 'block_user' AND target_user_id = $1`,
@@ -4363,7 +4368,10 @@ test(
         >;
       }
     )._registeredTools['moderation_history'];
-    const historyResult = await modHistoryTool.handler({ targetUserId: targetUser, actionKind: 'block_user' });
+    const historyResult = await modHistoryTool.handler({
+      targetUserId: targetUser,
+      actionKind: 'block_user',
+    });
     assert.equal(historyResult.isError, false);
     assert.match(
       historyResult.content[0]?.text ?? '',
@@ -4401,7 +4409,7 @@ test(
 
 test(
   'SECURITY: moderate refuses to block a target that resolves admin, before any CONFIRM is queued or DB ' +
-    'write happens (issue #572 acceptance criterion 2 — mirrors applyManualWarnStrike/rejoin-remute\'s ' +
+    "write happens (issue #572 acceptance criterion 2 — mirrors applyManualWarnStrike/rejoin-remute's " +
     'admin-tier exemption)',
   { skip },
   async () => {
@@ -4466,8 +4474,8 @@ test(
           await blockUser(
             'whatsapp',
             input.targetUserId ?? '',
-            String(input.params?.blockedBy ?? ''),
-            input.params?.reason ? String(input.params.reason) : undefined,
+            paramString(input.params?.blockedBy),
+            paramString(input.params?.reason) || undefined,
           );
           return `Blocked ${input.targetUserId}.`;
         }

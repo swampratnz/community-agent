@@ -2133,10 +2133,10 @@ test(
     t.mock.method(pool, 'query', async () => ({ rows: [], rowCount: 1 }));
     const fetchCalls: unknown[] = [];
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+    globalThis.fetch = async (...args: Parameters<typeof fetch>) => {
       fetchCalls.push(args);
       throw new Error('block_user must never call fetch — the Cloud API has no moderation surface');
-    }) as typeof fetch;
+    };
 
     try {
       const adapter = new WhatsAppCloudAdapter();

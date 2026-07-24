@@ -105,7 +105,7 @@ function buildRouter(
 
 test(
   'baseline (no block check tripped): a gated guest still gets the static GATED_NOTICE, byte-identical to ' +
-    "today — the block check integrates without regressing the existing gated flow",
+    'today — the block check integrates without regressing the existing gated flow',
   async () => {
     const router = buildRouter(
       async () => {
@@ -173,7 +173,7 @@ test(
 );
 
 test(
-  'SECURITY: a block-list lookup failure fails OPEN (treated as not-blocked), matching resolveRole\'s own ' +
+  "SECURITY: a block-list lookup failure fails OPEN (treated as not-blocked), matching resolveRole's own " +
     'degrade convention — a transient DB hiccup must never silently drop every sender (issue #572)',
   async () => {
     let runTurnCalls = 0;

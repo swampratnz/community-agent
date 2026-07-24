@@ -4652,10 +4652,10 @@ export async function blockUser(
 
 /** Unblock a `(platform, externalId)` sender. Returns false if they weren't blocked. */
 export async function unblockUser(platform: string, externalId: string): Promise<boolean> {
-  const { rowCount } = await pool.query(`DELETE FROM blocked_users WHERE platform = $1 AND external_id = $2`, [
-    platform,
-    externalId,
-  ]);
+  const { rowCount } = await pool.query(
+    `DELETE FROM blocked_users WHERE platform = $1 AND external_id = $2`,
+    [platform, externalId],
+  );
   return (rowCount ?? 0) > 0;
 }
 

@@ -3442,7 +3442,10 @@ export function buildToolServer(
       // Mirrors applyManualWarnStrike's/Discord's rejoin-remute admin-target
       // exemption: a block is bot-side and platform-wide, so it must never
       // land on someone who can themselves administer the bot.
-      if (args.action === 'block_user' && atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')) {
+      if (
+        args.action === 'block_user' &&
+        atLeast(await resolveRole(caller.platform, args.targetUserId), 'admin')
+      ) {
         return text('Refusing: cannot block an admin or super admin.', true);
       }
 

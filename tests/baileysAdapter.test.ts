@@ -150,7 +150,11 @@ test(
   async () => {
     const adapter = new BaileysAdapter();
     await assert.rejects(
-      adapter.performAdminAction({ kind: 'kick_user', targetUserId: '64211234567', conversationId: 'g@g.us' }),
+      adapter.performAdminAction({
+        kind: 'kick_user',
+        targetUserId: '64211234567',
+        conversationId: 'g@g.us',
+      }),
       /WhatsApp socket not connected/,
     );
   },

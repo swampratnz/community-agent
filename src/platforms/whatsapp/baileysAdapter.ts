@@ -114,7 +114,13 @@ export function stepWelcomeCooldown(
  */
 export class BaileysAdapter implements PlatformAdapter {
   readonly platform = 'whatsapp' as const;
-  readonly adminCapabilities = new Set(['warn_user', 'kick_user', 'delete_message', 'block_user', 'unblock_user']);
+  readonly adminCapabilities = new Set([
+    'warn_user',
+    'kick_user',
+    'delete_message',
+    'block_user',
+    'unblock_user',
+  ]);
 
   private sock: WASocket | null = null;
   private handler: MessageHandler | null = null;

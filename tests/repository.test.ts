@@ -584,11 +584,12 @@ test(
     assert.equal(
       await isUserBlocked('whatsapp', target),
       true,
-      'the block itself must survive the blocked user\'s own forget_me/purge_user_data',
+      "the block itself must survive the blocked user's own forget_me/purge_user_data",
     );
-    const { rows } = await pool.query(`SELECT 1 FROM interactions WHERE platform = 'whatsapp' AND user_id = $1`, [
-      target,
-    ]);
+    const { rows } = await pool.query(
+      `SELECT 1 FROM interactions WHERE platform = 'whatsapp' AND user_id = $1`,
+      [target],
+    );
     assert.equal(rows.length, 0, 'the purge still removes their interaction content as normal');
 
     await unblockUser('whatsapp', target);
