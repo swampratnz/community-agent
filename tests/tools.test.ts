@@ -8874,6 +8874,130 @@ test(
 );
 
 test(
+  'knowledge_search tool handler (KNOWLEDGE_GAP_ALERT_ENABLED=true): a repeated identical below-floor-miss query crosses KNOWLEDGE_GAP_ALERT_THRESHOLD on the 3rd call and sets turnState.knowledgeGapCluster, not before (issue #650 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const originalEnabled = config.knowledgeGapAlert.enabled;
+    (config.knowledgeGapAlert as { enabled: boolean }).enabled = true;
+    try {
+      const scope = `${KNOWLEDGE_GAP_HANDLER_SCOPE}-alert`;
+      await saveKnowledge({
+        title: `Quazzledorf account activation (alert) ${RUN}`,
+        content: 'Quazzledorf accounts are activated by emailing the treasurer with your membership number.',
+        scope,
+      });
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-gap-alert-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      // Same identical query every call (issue #208's fixture pattern, same
+      // deterministic-embedding trick as tests/repository.test.ts's cluster
+      // tests use hand-crafted vectors for): embed() is deterministic, so
+      // three identical-text below-floor misses are guaranteed to cluster
+      // together (cosine similarity 1.0) without relying on the model's
+      // paraphrase behaviour, avoiding CI flakiness.
+      const query = 'what time does the ferry to Waiheke leave on Saturdays (alert test)';
+
+      const turnState: { lastKnowledgeHitId: number | null; knowledgeGapCluster?: unknown } = {
+        lastKnowledgeHitId: null,
+      };
+      const server = buildToolServer(caller, adapter, undefined, turnState);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+
+      await registeredTool.handler({ query });
+      assert.equal(turnState.knowledgeGapCluster, undefined, 'call 1/3 must not cross the threshold');
+
+      await registeredTool.handler({ query });
+      assert.equal(turnState.knowledgeGapCluster, undefined, 'call 2/3 must not cross the threshold');
+
+      await registeredTool.handler({ query });
+      const crossed = turnState.knowledgeGapCluster as
+        { representative: string; count: number; rowIds: number[] } | undefined;
+      assert.ok(crossed, 'call 3/3 must cross the threshold and set turnState.knowledgeGapCluster');
+      assert.equal(crossed?.count, 3);
+      assert.equal(crossed?.representative, query);
+      assert.equal(crossed?.rowIds.length, 3);
+    } finally {
+      (config.knowledgeGapAlert as { enabled: boolean }).enabled = originalEnabled;
+    }
+  },
+);
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_GAP_ALERT_ENABLED unset/false, the default): repeated below-floor misses never set turnState.knowledgeGapCluster and recordKnowledgeGap stays fire-and-forget — byte-identical to before issue #650 (acceptance criterion 3)',
+  { skip },
+  async () => {
+    assert.equal(config.knowledgeGapAlert.enabled, false, 'this test requires the flag at its off default');
+    const scope = `${KNOWLEDGE_GAP_HANDLER_SCOPE}-no-alert`;
+    await saveKnowledge({
+      title: `Quazzledorf account activation (no-alert) ${RUN}`,
+      content: 'Quazzledorf accounts are activated by emailing the treasurer with your membership number.',
+      scope,
+    });
+
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${RUN}-gap-no-alert-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: scope,
+    };
+    const query = 'what time does the ferry to Waiheke leave on Saturdays (no-alert test)';
+
+    const turnState: { lastKnowledgeHitId: number | null; knowledgeGapCluster?: unknown } = {
+      lastKnowledgeHitId: null,
+    };
+    const server = buildToolServer(caller, adapter, undefined, turnState);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+      }
+    )._registeredTools['knowledge_search'];
+
+    for (let i = 0; i < 3; i++) {
+      await registeredTool.handler({ query });
+      assert.equal(
+        turnState.knowledgeGapCluster,
+        undefined,
+        'the flag being off must never set turnState.knowledgeGapCluster, no matter how many misses',
+      );
+    }
+
+    const gapCount = await waitForGapCount(caller.platform, caller.userId, (c) => c >= 3);
+    assert.equal(
+      gapCount,
+      3,
+      'recordKnowledgeGap must still record every miss — only the alert path is gated',
+    );
+  },
+);
+
+test("SECURITY: the knowledge_search tool handler never calls notifyAdmins directly — a real-time alert (issue #650) may only fire from router.ts reading the turn-scoped flag post-turn, mirroring rate_answer's own invariant (issue #598)", () => {
+  const source = readFileSync(new URL('../src/agent/tools.ts', import.meta.url), 'utf8');
+  const start = source.indexOf("'knowledge_search',");
+  const end = source.indexOf("'list_knowledge_topics',");
+  assert.notEqual(start, -1, 'knowledge_search tool definition not found');
+  assert.notEqual(end, -1, 'list_knowledge_topics tool definition not found');
+  assert.ok(end > start, 'list_knowledge_topics must be defined after knowledge_search');
+  const body = source.slice(start, end);
+  assert.doesNotMatch(
+    body,
+    /notifyAdmins\(/,
+    'knowledge_search handler must never call notifyAdmins directly — only router.ts may, post-turn',
+  );
+});
+
+test(
   'knowledge_search tool handler writes the top-scoring qualifying hit id into turnState.lastKnowledgeHitId, and a later below-floor call does not clear it (issue #411, acceptance criterion 3)',
   { skip },
   async () => {

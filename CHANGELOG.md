@@ -22,6 +22,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
   404 error body can no longer masquerade as a surviving-branch pointer.
 
 ### Added
+- **A recurring knowledge gap now nudges an admin in real time instead of
+  waiting for the weekly digest** (#650): with `KNOWLEDGE_GAP_ALERT_ENABLED`
+  (off by default), the moment a cluster of similar below-floor
+  `knowledge_search` misses first crosses `KNOWLEDGE_GAP_ALERT_THRESHOLD`
+  (default 3) unresolved rows, admins get an instant DM naming the query and
+  how many times it's come up — "worth a FAQ?" — instead of only seeing a
+  bare count in next week's digest. Single-shot per cluster, guild-wide
+  rolling-hour rate cap (`KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR`, default
+  5), and byte-identical to today with the flag off.
 - **WhatsApp admins can now block a persistent abuser** (#572): `moderate`
   gains `block_user`/`unblock_user` (WhatsApp only — Discord keeps its own
   `ban_user`). A block is a bot-side ignore enforced before any storage or

@@ -1692,7 +1692,12 @@ export class Router {
       // cluster's rows are deliberately left unalerted (not marked) so a
       // later gap in the same cluster can retry once the trailing hour frees
       // up — the underlying gap is still recorded and still counted by the
-      // weekly digest either way (acceptance criterion 6).
+      // weekly digest either way (acceptance criterion 6). SECURITY: unlike
+      // the escalation/unhelpful-answer alerts above, the message deliberately
+      // omits `msg.platform`/`msg.conversationId` — acceptance criterion 5
+      // requires the DM body to be a strict subset of what `list_knowledge_gaps`
+      // already returns for the same scope (query text + count only, no new
+      // field), and that tool's own output never includes a conversation id.
       if (reply.knowledgeGapCluster) {
         const cluster = reply.knowledgeGapCluster;
         if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
@@ -1701,9 +1706,8 @@ export class Router {
           );
           await this.notifyAdminsFn(
             (platform) => this.adapters.get(platform),
-            `A knowledge gap has come up ${cluster.count} times recently on ${msg.platform} ` +
-              `(conversation ${msg.conversationId}) and might be worth turning into a FAQ: ` +
-              `"${truncateForEcho(cluster.representative)}"`,
+            `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
+              `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
             msg.userId,
           ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
         }
