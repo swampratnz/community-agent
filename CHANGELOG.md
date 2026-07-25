@@ -61,6 +61,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   already did: the supplementary signal is dropped and the search results are
   still returned.
 
+### Security
+- **The WhatsApp Cloud webhook verification handshake now compares its
+  `hub.verify_token` in constant time.** The signature path on the same
+  adapter already used `timingSafeEqual`; this closes the remaining `===`
+  comparison of a caller-supplied value against a configured secret. Both
+  sides are hashed before comparison so an attacker-chosen token length can
+  neither throw nor reveal the configured token's length. Low severity — a
+  one-off setup handshake where network jitter dominates the signal — but it
+  removes the last early-exit secret comparison on that path.
+
 ## 2026-07-23
 
 ### Added
