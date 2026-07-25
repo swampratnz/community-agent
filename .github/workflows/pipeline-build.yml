@@ -82,10 +82,17 @@ jobs:
     # the Max pool, so under contention turns are throttled and a legitimate
     # build runs several× slower — 60 min was killing real builds mid-gate (the
     # 2026-07-04 spiral: cancelled at 60 min with `npm test` still running), and
-    # a cancelled run is not retried. 120 gives a contended build room to finish
-    # instead of being killed. Still well under GitHub's 6 h job cap; a genuinely
-    # hung run is still caught by the verify step (and costs at most 2 h).
-    timeout-minutes: 120
+    # a cancelled run is not retried. 120 was then killing real builds too once
+    # the suite grew past ~2300 tests (a full gate pass is ~10 min and a build
+    # runs it 2-3×; issue #633 died at the 120 wall on FOUR consecutive
+    # campaigns, twice with the implementation finished). 180 fits the observed
+    # cost of a real feature build under contention. Two constraints keep this
+    # honest: the groundskeeper's STALE_HOURS must exceed this budget (it is 4h
+    # — keep them in sync when changing either), and a job-level timeout kills
+    # even `if: always()` steps, so the checkpoint/verify/escalate machinery
+    # never runs on a timed-out build — the wall must therefore be a genuine
+    # outlier, not the common case. Still well under GitHub's 6 h job cap.
+    timeout-minutes: 180
     # A real pgvector Postgres so the worker's OWN verification runs the
     # DB-integration tests (which skip without DATABASE_URL) against the same
     # database CI will use on the PR. Without this the worker "passes" locally

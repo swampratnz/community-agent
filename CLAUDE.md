@@ -143,8 +143,8 @@ ownership rules:
 - The **groundskeeper sweep** (`pipeline-groundskeeper.yml`) is the
   deterministic, no-LLM hourly reconciler for zombie pipeline state: any open
   `status:building` issue with no open same-repo PR closing it and no
-  activity for 3h+ is escalated `needs-human` (both status labels cleared).
-  It exists because a build job that hits its 120-min timeout reports
+  activity for 4h+ is escalated `needs-human` (both status labels cleared).
+  It exists because a build job that hits its 180-min timeout reports
   `cancelled` — invisible to both the failure-keyed retry loop and the
   final-attempt escalation — and a dead fallback-Routine claim leaves no run
   at all; either way the issue previously sat `status:building` forever,
@@ -162,7 +162,7 @@ ownership rules:
   It also **pushes its branch incrementally** (after the first commit and every
   commit thereafter — branch pushes trigger no CI and no PR exists yet, so they
   are free) because the job's GitHub credential can expire mid-build (~1h vs the
-  120-min budget) and an unpushed tree dies with the runner; the PR still opens
+  180-min budget) and an unpushed tree dies with the runner; the PR still opens
   only at the end, so the verify-step/groundskeeper "no PR = dead build"
   contract is unchanged. A deterministic post-agent **checkpoint step** pushes
   any committed-but-unpushed work with the job's GITHUB_TOKEN (agents have
