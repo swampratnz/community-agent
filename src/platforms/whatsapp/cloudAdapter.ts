@@ -15,6 +15,7 @@ import {
   extractMessages,
   isAllowedSender,
   parseVerificationRequest,
+  timingSafeEqualString,
   verifySignature,
   type CloudInboundMessage,
 } from './cloudWire.js';
@@ -297,7 +298,15 @@ export class WhatsAppCloudAdapter implements PlatformAdapter {
   private handleVerification(url: URL, res: ServerResponse): void {
     const verification = parseVerificationRequest(url);
     const { verifyToken } = config.whatsapp.cloud;
-    if (verification && verification.mode === 'subscribe' && verification.token === verifyToken) {
+    // Constant-time: the token is a configured secret and `verification.token`
+    // is attacker-controlled, so this must not early-exit on the first
+    // differing byte the way `===` does (the signature path above already
+    // uses timingSafeEqual for the same reason).
+    if (
+      verification &&
+      verification.mode === 'subscribe' &&
+      timingSafeEqualString(verification.token, verifyToken ?? '')
+    ) {
       res.writeHead(200, { 'Content-Type': 'text/plain' }).end(verification.challenge);
       return;
     }

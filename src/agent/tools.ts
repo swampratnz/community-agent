@@ -2716,7 +2716,16 @@ export function buildToolServer(
       // scoped, LIMIT-1 self-join — never the full-table audit
       // `listKnowledgeConflictCandidates` runs. Skipped entirely below 2
       // ids, matching hasConflictAmongIds' own zero-query short-circuit.
-      const hasConflict = relevantIds.length >= 2 ? await hasConflictAmongIds(relevantIds) : false;
+      // Fail-safe like the low-rated caveat below: the conflict note is a
+      // purely advisory badge, so a lookup failure must degrade to "no note"
+      // rather than discarding the hits we already fetched successfully.
+      const hasConflict =
+        relevantIds.length >= 2
+          ? await hasConflictAmongIds(relevantIds).catch((err) => {
+              logger.warn({ err }, 'Knowledge conflict check failed; omitting the conflict note');
+              return false;
+            })
+          : false;
       // Member-facing low-rated-answer caveat (issue #432) — the display-side
       // counterpart to #337's shortcut-only caveat: this is the dominant
       // answer path (below the shortcut's 0.9-cosine ceiling), so gating and
@@ -2744,9 +2753,16 @@ export function buildToolServer(
       // output is byte-identical to before issue #362 for the common case.
       let lexicalHits: Awaited<ReturnType<typeof searchKnowledgeLexical>> = [];
       if (hits.length > 0 && relevantIds.length === 0) {
+        // Fail-safe, same reasoning as the conflict/low-rated lookups above:
+        // this is a supplementary second attempt on the below-floor branch,
+        // so a failure here must degrade to "no lexical hits" and still show
+        // the semantic results, never replace them with a raw DB error.
         lexicalHits = await searchKnowledgeLexical(args.query, {
           platform: caller.platform,
           conversationId: caller.conversationId,
+        }).catch((err) => {
+          logger.warn({ err }, 'Knowledge lexical fallback failed; returning semantic results only');
+          return [];
         });
       }
       if (lexicalHits.length > 0) {

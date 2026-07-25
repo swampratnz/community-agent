@@ -25,7 +25,19 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 // "different platform" caller without ever touching the (unreachable in
 // these tests) community_users DB lookup non-super-admins would fall through
 // to (which resolves to 'guest' and hits the gated-guest branch instead).
-process.env.SUPER_ADMIN_DISCORD_IDS ??= 'super-1,super-2';
+// Run-unique identity used ONLY by the reply-budget assertion below.
+// `countRepliesToUser` aggregates outbound replies for an IDENTITY across the
+// whole `interactions` table over a sliding 24h window — that is what a daily
+// budget means, so the read cannot be conversation-scoped. Counting the shared
+// 'super-1' fixture id therefore absorbs any concurrent insert another test
+// file makes for that same identity, and test files run as parallel processes
+// against ONE Postgres. A per-process id no other file can ever write makes
+// interference structurally impossible rather than merely improbable (issue
+// #675 preferred exactly this scoping over the retry it ultimately shipped).
+// Registered as a super admin so the identity still resolves to the same tier
+// 'super-1' did, keeping the exercised router path unchanged.
+const BUDGET_USER_ID = `budget-super-${process.pid}-${Date.now()}`;
+process.env.SUPER_ADMIN_DISCORD_IDS ??= `super-1,super-2,${BUDGET_USER_ID}`;
 process.env.SUPER_ADMIN_WHATSAPP_NUMBERS ??= 'super-1';
 process.env.REPEAT_QUESTION_SHORTCUT_ENABLED = 'true';
 
@@ -55,13 +67,18 @@ const RUN = `repeatq-router-${Date.now()}`;
  * interactions table over a sliding 24h window, by design (that's what a
  * daily reply budget means), so it can't be scoped to this test's own
  * conversation_id. The Node test runner executes test FILES in parallel
- * against one shared DB, so another file's concurrent insert for the same
- * 'super-1' discord identity can land between the before/after reads and
- * shift the exact delta (issue #675: "3 !== 2"). Re-running the whole
- * read-seed-read sequence gets a quiet window with overwhelming
- * probability, while a REAL regression fails deterministically on every
- * attempt — so retrying masks nothing (mirrors
- * tests/repository.test.ts's retryOnSharedTableInterference).
+ * against one shared DB, so another file's concurrent insert for the SAME
+ * identity can land between the before/after reads and shift the exact delta
+ * (issue #675: "3 !== 2", which recurred after this retry shipped).
+ *
+ * The primary defence is now `BUDGET_USER_ID`: the budget assertion counts a
+ * per-process identity no other test file can write, so there is no longer a
+ * path by which a concurrent insert reaches the count. This retry is kept as
+ * a backstop for any future interference this file's other reads might hit,
+ * and because a REAL regression still fails deterministically on every
+ * attempt — so retrying masks nothing (mirrors tests/repository.test.ts's
+ * retryOnSharedTableInterference). Every absorbed attempt still emits a
+ * console.warn, so interference is never silent.
  */
 async function retryOnSharedTableInterference(attempts: number, run: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
@@ -390,7 +407,8 @@ test(
   'router (repeat-question shortcut): a served repeat-shortcut reply is recorded exactly like a real answer — meta.repeatShortcut + replyToUserId — and counts toward the daily reply budget',
   { skip: !hasDb },
   async () => {
-    const userId = 'super-1';
+    // Run-unique, NOT the shared 'super-1' — see BUDGET_USER_ID's rationale.
+    const userId = BUDGET_USER_ID;
     let attempt = 0;
 
     await retryOnSharedTableInterference(4, async () => {

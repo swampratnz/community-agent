@@ -82,10 +82,17 @@ jobs:
     # the Max pool, so under contention turns are throttled and a legitimate
     # build runs several× slower — 60 min was killing real builds mid-gate (the
     # 2026-07-04 spiral: cancelled at 60 min with `npm test` still running), and
-    # a cancelled run is not retried. 120 gives a contended build room to finish
-    # instead of being killed. Still well under GitHub's 6 h job cap; a genuinely
-    # hung run is still caught by the verify step (and costs at most 2 h).
-    timeout-minutes: 120
+    # a cancelled run is not retried. 120 was then killing real builds too once
+    # the suite grew past ~2300 tests (a full gate pass is ~10 min and a build
+    # runs it 2-3×; issue #633 died at the 120 wall on FOUR consecutive
+    # campaigns, twice with the implementation finished). 180 fits the observed
+    # cost of a real feature build under contention. Two constraints keep this
+    # honest: the groundskeeper's STALE_HOURS must exceed this budget (it is 4h
+    # — keep them in sync when changing either), and a job-level timeout kills
+    # even `if: always()` steps, so the checkpoint/verify/escalate machinery
+    # never runs on a timed-out build — the wall must therefore be a genuine
+    # outlier, not the common case. Still well under GitHub's 6 h job cap.
+    timeout-minutes: 180
     # A real pgvector Postgres so the worker's OWN verification runs the
     # DB-integration tests (which skip without DATABASE_URL) against the same
     # database CI will use on the PR. Without this the worker "passes" locally
@@ -277,7 +284,7 @@ jobs:
                PUSH INCREMENTALLY: run `git push -u origin HEAD` right after
                your FIRST commit, and `git push origin HEAD` after EVERY
                subsequent commit — the job's GitHub credential can expire
-               mid-build (~1h lifetime vs this job's 120-min budget), and an
+               mid-build (~1h lifetime vs this job's 180-min budget), and an
                unpushed tree dies with the runner (this stranded 6+ finished
                builds on 2026-07-20/22). Branch pushes trigger no CI and no PR
                exists yet, so intermediate pushes are free; do NOT open the PR
@@ -373,13 +380,59 @@ jobs:
           # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
           # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
           # turns fast). 300 gives real proposals room to finish; the
-          # `timeout-minutes` above (120) is the wall-clock guard — solo, 300
+          # `timeout-minutes` above (180) is the wall-clock guard — solo, 300
           # turns ≈ 40 min (~7s/turn), but under shared-pool throttling a
-          # legitimate build runs slower, which is why the guard is 120 not 60.
+          # legitimate build runs slower, which is why the guard is 180, not 60.
           claude_args: |
             --max-turns 300
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git checkout -b:*),Bash(git switch -c:*),Bash(git rev-parse:*),Bash(git fetch origin:*),Bash(git merge origin/main),Bash(git push -u origin HEAD),Bash(git push origin HEAD),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(npm:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      # Deterministic safety net for the incremental-push mandate: agents have
+      # completed multi-hour builds and still never pushed (issue #633's third
+      # attempt: implementation done, gates green, zero pushes — everything
+      # died with the runner). Prompt-only compliance is unreliable, so after
+      # the agent has EXITED, push whatever it committed. This is the #663
+      # adversarial review's own recommended shape: a post-step publish with
+      # the job's GITHUB_TOKEN (valid for the whole job, unlike the ~1h App
+      # token), no adversarial-exfil window (the agent process is gone), and
+      # branch pushes trigger no workflows. If the remote branch exists with
+      # different history (a prior attempt), the checkpoint goes to a unique
+      # -ckpt-<run_id> ref instead of force-pushing over anything.
+      - name: Checkpoint unpushed work (deterministic)
+        if: always() && env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+          if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "HEAD" ]; then
+            echo "No work branch in the workspace — nothing to checkpoint."; exit 0
+          fi
+          ahead="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+          if [ "${ahead}" -eq 0 ]; then
+            echo "No commits beyond origin/main — nothing to checkpoint."; exit 0
+          fi
+          head_sha="$(git rev-parse HEAD)"
+          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+          if [ "${remote_sha}" = "${head_sha}" ]; then
+            echo "Branch ${branch} already pushed at ${head_sha}.";
+            echo "CKPT_REF=${branch}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if git push "${push_url}" "HEAD:refs/heads/${branch}" 2>/dev/null; then
+            echo "Checkpointed ${branch} at ${head_sha}."
+            echo "CKPT_REF=${branch}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
+          else
+            alt="${branch}-ckpt-${{ github.run_id }}"
+            if git push "${push_url}" "HEAD:refs/heads/${alt}"; then
+              echo "Remote ${branch} diverged; checkpointed to ${alt} at ${head_sha}."
+              echo "CKPT_REF=${alt}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
+            else
+              echo "::warning::Checkpoint push failed — unpushed work will die with this runner."
+            fi
+          fi
 
       - name: Verify a PR was produced (else escalate + fail loudly)
         if: always() && env.HAS_TOKEN == 'true'
@@ -445,12 +498,22 @@ jobs:
             # unauthenticated `git ls-remote` would silently fail on a private
             # repo and the escalation would never name the branch.
             surviving=""
-            branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-            if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
-              remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
-              if [ -n "${remote_sha}" ]; then
-                surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build resumes from it via the deterministic resolve-resume pre-step (comment text is never trusted for this).' "${branch}" "${remote_sha}")"
+            # Prefer the checkpoint step's already-verified ref; fall back to a
+            # live lookup. Either way the sha must be exactly 40 hex chars —
+            # `gh api` prints its ERROR BODY to stdout on a 404 (issue #633's
+            # escalation interpolated a JSON error into this template; the
+            # resume pre-step's strict regex rejected it, but the line lied).
+            branch="${CKPT_REF:-}"; remote_sha="${CKPT_SHA:-}"
+            if [ -z "${branch}" ]; then
+              branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+              if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
+                remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+              else
+                branch=""
               fi
+            fi
+            if [ -n "${branch}" ] && printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then
+              surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build resumes from it via the deterministic resolve-resume pre-step (comment text is never trusted for this).' "${branch}" "${remote_sha}")"
             fi
             # Defence-in-depth for the resolve-resume pre-step's template
             # match: the agent's free-text summary is embedded in this same

@@ -12,6 +12,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-25
 
+### Changed
+- **The pipeline's build worker now checkpoints committed work
+  deterministically**: a post-agent workflow step pushes any
+  committed-but-unpushed branch with the job's own token (to a unique
+  `-ckpt` ref if the remote diverged), because agents completed entire
+  multi-hour builds without ever pushing (#633) and everything died with the
+  runner. Escalation forensics also now validate the commit sha shape, so a
+  404 error body can no longer masquerade as a surviving-branch pointer.
+
 ### Added
 - **WhatsApp admins can now block a persistent abuser** (#572): `moderate`
   gains `block_user`/`unblock_user` (WhatsApp only — Discord keeps its own
@@ -49,6 +58,26 @@ for anything after ~noon NZST/NZDT). Get today's date with
   No confirmation step — the rating itself is the explicit action, so there's
   nothing to confirm. Off by default; byte-identical behaviour when the flag
   is unset.
+
+### Fixed
+- **`knowledge_search` no longer throws away a good answer when a secondary
+  lookup fails.** The advisory conflict-badge check and the below-floor
+  lexical fallback were the only two unguarded database calls in the handler,
+  so a transient failure in either replaced results the bot had already
+  fetched successfully with a raw error. Both now degrade the same way their
+  neighbours (the retrieval counter, the low-rated caveat, the gap recorder)
+  already did: the supplementary signal is dropped and the search results are
+  still returned.
+
+### Security
+- **The WhatsApp Cloud webhook verification handshake now compares its
+  `hub.verify_token` in constant time.** The signature path on the same
+  adapter already used `timingSafeEqual`; this closes the remaining `===`
+  comparison of a caller-supplied value against a configured secret. Both
+  sides are hashed before comparison so an attacker-chosen token length can
+  neither throw nor reveal the configured token's length. Low severity — a
+  one-off setup handshake where network jitter dominates the signal — but it
+  removes the last early-exit secret comparison on that path.
 
 ## 2026-07-23
 

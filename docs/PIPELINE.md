@@ -403,17 +403,22 @@ sessions:
   status:approved`, implements on a branch, opens a PR "Closes #N", relabels
   `status:built`. Builds run **per-issue** (each issue its own `concurrency`
   group — distinct issues in parallel, no cross-eviction); `--max-turns 300` +
-  a 120-min job timeout bound a run, sized generously so a pool-contended
+  a 180-min job timeout bound a run, sized generously so a pool-contended
   build finishes slowly instead of being killed mid-gate (see the WIP-caps
   bullet above). The worker **pushes its branch incrementally** — right after
   the first commit and after every commit thereafter — because the job's
-  GitHub credential lives ~1h while the job budget is 120 min, and an unpushed
+  GitHub credential lives ~1h while the job budget is 180 min, and an unpushed
   tree dies with the runner (the 2026-07-20/22 strandings: 6+ builds finished
   every gate green, then lost everything to a 401 at the single final push).
   Branch pushes are free (no PR exists yet, `on: push` is main-only), and the
   PR still opens only at the end, so the "no PR = dead build" contract the
   verify step and groundskeeper enforce is unchanged (issue #663's rejection
-  documents why an *early PR* is the wrong fix). Its final-attempt escalation
+  documents why an *early PR* is the wrong fix). Because prompt-only
+  compliance proved unreliable (#633: a full green build, zero pushes), a
+  deterministic **checkpoint step** after the agent exits pushes any
+  committed-but-unpushed work with the job's GITHUB_TOKEN — to the work
+  branch, or a unique `-ckpt-<run_id>` ref if the remote diverged — so
+  committed work can no longer die with the runner. Its final-attempt escalation
   clears **both** `status:building`
   and `status:approved` when adding `needs-human`, so an escalated issue fully
   leaves the automated lanes — leaving `status:approved` behind let the hourly
@@ -431,10 +436,10 @@ sessions:
 - `.github/workflows/pipeline-groundskeeper.yml` — deterministic (no model,
   no Max pool) hourly reconciliation sweep, same trust class as auto-merge:
   any open `status:building` issue with **no open same-repo PR** closing it
-  and **no activity for 3h+** is escalated to `needs-human` (both status
+  and **no activity for 4h+** is escalated to `needs-human` (both status
   labels removed) with an explanatory comment. This is the enforcement behind
   the state machine's "building means a build is in flight" invariant: a
-  build job that hits its 120-min timeout reports `cancelled` — which the
+  build job that hits its 180-min timeout reports `cancelled` — which the
   failure-keyed retry loop never re-runs and the final-attempt escalation
   never sees — and a dead fallback-Routine claim leaves no run at all; both
   previously zombied forever (the 2026-07-20 incident: four zombie
