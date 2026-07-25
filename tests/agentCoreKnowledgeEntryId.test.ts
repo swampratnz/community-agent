@@ -7,14 +7,17 @@ import type { KnowledgeSearchHit } from '../src/storage/repository.js';
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching the
 // convention in tests/agentCoreLanguagePreference.test.ts. DATABASE_URL is
-// unreachable; the only repository export this file overrides is
-// searchKnowledge, so it can simulate a knowledge_search tool call's hits
-// deterministically without a real DB or embedding model — every other
-// repository call the exercised knowledge_search handler makes
-// (recordKnowledgeRetrieval, hasConflictAmongIds) is fire-and-forget/
-// `.catch()`-guarded or skipped by this file's fixture shapes (a single hit
-// never triggers the >=2-id conflict check), so it degrades harmlessly
-// against the unreachable DB exactly like every other test in this style.
+// unreachable, so this file overrides the two repository exports the
+// exercised knowledge_search handler AWAITS on the paths under test:
+// searchKnowledge (the semantic search, to simulate hits deterministically
+// without a real DB or embedding model) and searchKnowledgeLexical (the
+// below-floor fallback — reached by the 'below-floor query' fixture, so
+// leaving it unmocked would put a live DB call on the critical path and
+// fail this file without a local Postgres). Every OTHER repository call the
+// handler makes is fire-and-forget/`.catch()`-guarded, or skipped by this
+// file's fixture shapes (a single hit never triggers the >=2-id conflict
+// check), so it degrades harmlessly against the unreachable DB exactly like
+// every other test in this style.
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
 process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
@@ -118,6 +121,9 @@ async function core(t: { mock: { module: (specifier: string, opts: unknown) => v
       namedExports: {
         ...realRepo,
         searchKnowledge: async (query: string) => HIT_FIXTURES[query] ?? [],
+        // The below-floor branch awaits this before returning; stub it to an
+        // empty result so no fixture depends on a reachable DB.
+        searchKnowledgeLexical: async () => [],
       },
     });
     corePromise = import('../src/agent/core.js');

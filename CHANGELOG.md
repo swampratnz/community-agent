@@ -51,6 +51,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   nothing to confirm. Off by default; byte-identical behaviour when the flag
   is unset.
 
+### Fixed
+- **`knowledge_search` no longer throws away a good answer when a secondary
+  lookup fails.** The advisory conflict-badge check and the below-floor
+  lexical fallback were the only two unguarded database calls in the handler,
+  so a transient failure in either replaced results the bot had already
+  fetched successfully with a raw error. Both now degrade the same way their
+  neighbours (the retrieval counter, the low-rated caveat, the gap recorder)
+  already did: the supplementary signal is dropped and the search results are
+  still returned.
+
 ## 2026-07-23
 
 ### Added

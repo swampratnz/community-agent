@@ -156,60 +156,70 @@ test('runDocsIngest: index reachable but EVERY page fetch fails — indexFetchFa
   assert.equal(res.failed, 2, 'both page fetches are counted as failures');
 });
 
-// --- fetch-failure log batching (issue #613) — the first three run before
-// any DB call, so they run regardless of DATABASE_URL.
+// --- fetch-failure log batching (issue #613). Only the all-fetches-fail case
+// is genuinely DB-free: with zero successful fetches nothing is chunked, so
+// `seen` stays empty and runDocsIngest returns before the prune's
+// listGlobalKnowledgeTitlesByProvenance call. The other two here have at
+// least one SUCCESSFUL fetch, which reaches both syncGlobalKnowledgeByProvenance
+// and that prune query — so they are DB-backed and carry `{ skip }` like every
+// other DB-touching test in this file, rather than failing without a local
+// Postgres (CLAUDE.md).
 
-test('runDocsIngest: F failed page fetches emit exactly ONE warn-level summary line (not F), with count/sample/rollup, plus one debug line per failure', async (t) => {
-  const { logger } = await import('../src/logger.js');
-  const warn = t.mock.method(logger, 'warn');
-  const debug = t.mock.method(logger, 'debug');
+test(
+  'runDocsIngest: F failed page fetches emit exactly ONE warn-level summary line (not F), with count/sample/rollup, plus one debug line per failure',
+  { skip },
+  async (t) => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    const debug = t.mock.method(logger, 'debug');
 
-  const ok = 'https://platform.claude.com/docs/en/api/messages.md';
-  const dead = Array.from(
-    { length: 3 },
-    (_, i) => `https://platform.claude.com/docs/en/api/terraform/beta/page-${i}.md`,
-  );
-  const index = `- [ok](${ok})\n` + dead.map((u) => `- [d](${u})`).join('\n');
-  const fetchText = async (url: string): Promise<string> => {
-    if (url === config.docsIngest.indexUrl) return index;
-    if (url === ok) return 'Messages API.';
-    throw new Error(`404 ${url}`);
-  };
+    const ok = 'https://platform.claude.com/docs/en/api/messages.md';
+    const dead = Array.from(
+      { length: 3 },
+      (_, i) => `https://platform.claude.com/docs/en/api/terraform/beta/page-${i}.md`,
+    );
+    const index = `- [ok](${ok})\n` + dead.map((u) => `- [d](${u})`).join('\n');
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return index;
+      if (url === ok) return 'Messages API.';
+      throw new Error(`404 ${url}`);
+    };
 
-  const res = await runDocsIngest(fetchText);
+    const res = await runDocsIngest(fetchText);
 
-  assert.equal(res.failed, 3);
-  assert.equal(res.fetched, 1);
+    assert.equal(res.failed, 3);
+    assert.equal(res.fetched, 1);
 
-  const fetchFailureWarns = warn.mock.calls.filter(
-    (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
-  );
-  assert.equal(
-    fetchFailureWarns.length,
-    1,
-    'exactly one warn call for fetch failures, however many pages failed',
-  );
-  const payload = fetchFailureWarns[0].arguments[0] as {
-    failed: number;
-    attempted: number;
-    sample: string[];
-    rollup: string;
-  };
-  assert.equal(payload.failed, 3);
-  assert.equal(payload.attempted, 4);
-  assert.equal(payload.sample.length, 3, 'sample capped at <=5 (here, all 3 failures)');
-  assert.match(
-    payload.rollup,
-    /3× api\/terraform\/beta/,
-    'by-prefix rollup groups the dead tranche together',
-  );
+    const fetchFailureWarns = warn.mock.calls.filter(
+      (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
+    );
+    assert.equal(
+      fetchFailureWarns.length,
+      1,
+      'exactly one warn call for fetch failures, however many pages failed',
+    );
+    const payload = fetchFailureWarns[0].arguments[0] as {
+      failed: number;
+      attempted: number;
+      sample: string[];
+      rollup: string;
+    };
+    assert.equal(payload.failed, 3);
+    assert.equal(payload.attempted, 4);
+    assert.equal(payload.sample.length, 3, 'sample capped at <=5 (here, all 3 failures)');
+    assert.match(
+      payload.rollup,
+      /3× api\/terraform\/beta/,
+      'by-prefix rollup groups the dead tranche together',
+    );
 
-  assert.equal(debug.mock.calls.length, 3, 'one debug line per failed URL, unchanged shape');
-  for (const call of debug.mock.calls) {
-    assert.equal(call.arguments[1], 'Docs ingest: page fetch failed');
-    assert.ok((call.arguments[0] as { url: string }).url, 'debug payload still carries the url');
-  }
-});
+    assert.equal(debug.mock.calls.length, 3, 'one debug line per failed URL, unchanged shape');
+    for (const call of debug.mock.calls) {
+      assert.equal(call.arguments[1], 'Docs ingest: page fetch failed');
+      assert.ok((call.arguments[0] as { url: string }).url, 'debug payload still carries the url');
+    }
+  },
+);
 
 test('runDocsIngest: the fetch-failure summary sample is capped at 5 URLs even with many more failures', async (t) => {
   const { logger } = await import('../src/logger.js');
@@ -237,24 +247,28 @@ test('runDocsIngest: the fetch-failure summary sample is capped at 5 URLs even w
   assert.equal(payload.sample.length, 5, 'sample capped at <=5 URLs');
 });
 
-test('runDocsIngest: zero failed fetches emit no fetch-failure warning (unchanged from today)', async (t) => {
-  const { logger } = await import('../src/logger.js');
-  const warn = t.mock.method(logger, 'warn');
+test(
+  'runDocsIngest: zero failed fetches emit no fetch-failure warning (unchanged from today)',
+  { skip },
+  async (t) => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
 
-  const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
-  const fetchText = async (url: string): Promise<string> => {
-    if (url === config.docsIngest.indexUrl) return `- [a](${u1})`;
-    return 'Messages API.';
-  };
+    const u1 = 'https://platform.claude.com/docs/en/api/messages.md';
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${u1})`;
+      return 'Messages API.';
+    };
 
-  const res = await runDocsIngest(fetchText);
-  assert.equal(res.failed, 0);
+    const res = await runDocsIngest(fetchText);
+    assert.equal(res.failed, 0);
 
-  const fetchFailureWarns = warn.mock.calls.filter(
-    (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
-  );
-  assert.equal(fetchFailureWarns.length, 0, 'no fetch-failure summary when nothing failed');
-});
+    const fetchFailureWarns = warn.mock.calls.filter(
+      (c) => c.arguments[1] === 'Docs ingest: page fetch failures',
+    );
+    assert.equal(fetchFailureWarns.length, 0, 'no fetch-failure summary when nothing failed');
+  },
+);
 
 test(
   'runDocsIngest: chunk-upsert failures are untouched by the fetch-failure summary — still one warn per upsert failure, at the pre-existing message',
