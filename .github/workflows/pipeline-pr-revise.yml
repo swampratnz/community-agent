@@ -97,6 +97,9 @@ jobs:
       # count.
       ATTEMPT_MARKER: '<!-- pipeline-pr-revise-attempt -->'
       ESCALATE_MARKER: '<!-- pipeline-pr-revise-escalation -->'
+      # Its own marker so a recovered-work notice never counts toward the
+      # 2-try attempt cap either.
+      CHECKPOINT_MARKER: '<!-- pipeline-pr-revise-checkpoint -->'
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -268,6 +271,58 @@ jobs:
             --max-turns 200
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git fetch origin:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      # DETERMINISTIC CHECKPOINT — the "agent stalled and lost its work" class.
+      # The EXECUTION MODEL block above already tells the agent to run every
+      # command synchronously and to NEVER end its turn waiting for one. It
+      # does not always obey: on PR #606 this loop's agent ended with "I'll
+      # wait for the monitor notification before continuing with the security
+      # test suite, build, and push", and the conflict resolver ended PR #609
+      # with "I'll stop issuing further commands now and wait for the running
+      # Monitor task". Both had already COMMITTED work, which died with the
+      # runner — each PR was escalated `needs-human` with nothing to show for
+      # a full agent run. The prompt rule is necessary but provably not
+      # sufficient, so this is the deterministic backstop, mirroring the build
+      # worker's own checkpoint for the identical failure (#633/#682).
+      #
+      # Safe by construction: it runs only AFTER the agent has exited (no
+      # process left to influence it or read the token), uses the job's
+      # GITHUB_TOKEN (valid for the whole job, unlike the agent's ~1h App
+      # token), and only ever FAST-FORWARDS the PR branch — if the remote moved
+      # under us the work is parked on a side ref rather than rewriting
+      # someone else's push. Placed BEFORE the verify step on purpose, so a
+      # successful recovery is seen as the new commit it is.
+      - name: Checkpoint unpushed work (deterministic)
+        if: always() && steps.mark.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.precheck.outputs.branch }}
+          HEAD_BEFORE: ${{ steps.mark.outputs.head_before }}
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+          if [ -z "${head_sha}" ] || [ "${head_sha}" = "${HEAD_BEFORE}" ]; then
+            echo "Agent committed nothing — nothing to checkpoint."; exit 0
+          fi
+          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
+          if [ "${head_sha}" = "${remote_sha}" ]; then
+            echo "Agent already pushed ${head_sha} — nothing to checkpoint."; exit 0
+          fi
+          target="${BRANCH}"
+          if [ -n "${remote_sha}" ] && ! git merge-base --is-ancestor "${remote_sha}" HEAD 2>/dev/null; then
+            target="${BRANCH}-ckpt-${{ github.run_id }}"
+            echo "Remote ${BRANCH} moved to ${remote_sha}; parking on ${target} rather than rewriting it."
+          fi
+          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if ! git push "${push_url}" "HEAD:refs/heads/${target}"; then
+            echo "::warning::Checkpoint push failed — the agent's committed work dies with this runner."
+            exit 0
+          fi
+          echo "Checkpointed ${head_sha} to ${target}."
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${CHECKPOINT_MARKER}
+          🤖 Recovered work the revise agent committed but never pushed — it ended its turn without pushing. Checkpointed \`${head_sha}\` to \`${target}\`.
+
+          ⚠️ This was **not verified by the agent** (it stopped before finishing the gate). CI on this push is the adjudicator, and the automated review still has to pass before anything can merge." || true
 
       - name: Verify a revision was pushed (else escalate loudly)
         if: always() && steps.mark.outcome == 'success'

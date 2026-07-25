@@ -255,6 +255,9 @@ jobs:
       # GITHUB_TOKEN it could exfiltrate (see pipeline-pr-autofix.yml).
       CONFLICT_MARKER: '<!-- pipeline-pr-conflict-attempt -->'
       ESCALATE_MARKER: '<!-- pipeline-pr-conflict-escalation -->'
+      # Its own marker so a recovered-work notice is never mistaken for an
+      # attempt or an escalation.
+      CHECKPOINT_MARKER: '<!-- pipeline-pr-conflict-checkpoint -->'
     steps:
       # Trust boundary + superseded-run guard, BEFORE any checkout. Two jobs
       # in one, both re-derived from the GitHub API rather than the dispatch
@@ -586,6 +589,60 @@ jobs:
             --max-turns 200
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git merge origin/main),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin main),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      # DETERMINISTIC CHECKPOINT — the "agent stalled and lost its work" class.
+      # The EXECUTION MODEL block above already tells the agent to run every
+      # command synchronously and NEVER to end its turn waiting for one. It
+      # does not always obey: this loop ended PR #609 with "I'll stop issuing
+      # further commands now and wait for the running Monitor task to notify me
+      # when `npm run test:security` finishes", and the revise loop ended PR
+      # #606 the same way. Both had already COMMITTED work, which died with the
+      # runner — each PR escalated `needs-human` with nothing to show for a
+      # full agent run, and #609's resolution turned out to be a clean merge a
+      # human completed in minutes. The prompt rule is necessary but provably
+      # not sufficient, so this is the deterministic backstop, mirroring the
+      # build worker's own checkpoint for the identical failure (#633/#682).
+      #
+      # Safe by construction: runs only AFTER the agent has exited (no process
+      # left to influence it or read the token), uses the job's GITHUB_TOKEN
+      # (valid for the whole job, unlike the agent's ~1h App token), and only
+      # ever FAST-FORWARDS the PR branch — if the remote moved under us the
+      # work is parked on a side ref rather than rewriting someone else's push.
+      # Placed BEFORE the verify step so a successful recovery is seen as the
+      # new commit it is.
+      - name: Checkpoint unpushed work (deterministic)
+        if: always() && steps.precheck.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed via env, never ${{ }}-interpolated into the script body —
+          # see the verify step below for why.
+          BRANCH: ${{ steps.precheck.outputs.branch }}
+          HEAD_BEFORE: ${{ steps.mark.outputs.head_before }}
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+          if [ -z "${head_sha}" ] || [ "${head_sha}" = "${HEAD_BEFORE}" ]; then
+            echo "Agent committed nothing — nothing to checkpoint."; exit 0
+          fi
+          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
+          if [ "${head_sha}" = "${remote_sha}" ]; then
+            echo "Agent already pushed ${head_sha} — nothing to checkpoint."; exit 0
+          fi
+          target="${BRANCH}"
+          if [ -n "${remote_sha}" ] && ! git merge-base --is-ancestor "${remote_sha}" HEAD 2>/dev/null; then
+            target="${BRANCH}-ckpt-${{ github.run_id }}"
+            echo "Remote ${BRANCH} moved to ${remote_sha}; parking on ${target} rather than rewriting it."
+          fi
+          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if ! git push "${push_url}" "HEAD:refs/heads/${target}"; then
+            echo "::warning::Checkpoint push failed — the agent's committed work dies with this runner."
+            exit 0
+          fi
+          echo "Checkpointed ${head_sha} to ${target}."
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "${CHECKPOINT_MARKER}
+          🤖 Recovered work the conflict resolver committed but never pushed — it ended its turn without pushing. Checkpointed \`${head_sha}\` to \`${target}\`.
+
+          ⚠️ This resolution was **not verified by the agent** (it stopped before finishing the gate). CI on this push is the adjudicator, and the automated review still has to pass before anything can merge." || true
 
       - name: Verify the conflict was resolved (else escalate loudly)
         if: always() && steps.precheck.outputs.proceed == 'true'
