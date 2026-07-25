@@ -72,6 +72,12 @@ const { getJobHealthSnapshot, resetJobHealthRegistryForTests } =
 const { getPendingAlertsForTests, getPendingAlertEntriesForTests, resetPendingAlertsForTests } =
   await import('../src/pendingAlertQueue.js');
 
+// Pin the docs-ingest dead-URL feature OFF by default here (issue #611): the
+// pre-existing docs-ingest tests in this file drive real page-fetch failures
+// through the REAL repository store, and must keep behaving exactly as they did
+// before the feature. The one dead-skip test below opts itself back in.
+(config.docsIngest as { deadUrlRuns: number }).deadUrlRuns = 0;
+
 after(async () => {
   await closeDb();
 });
@@ -992,6 +998,48 @@ test(
     };
     t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
     await assert.rejects(() => defaultDocsIngestRun(indexOkAllPagesFail));
+  },
+);
+
+test(
+  'defaultDocsIngestRun does NOT throw when every listed page was dead-SKIPPED rather than attempted — a skipped page costs no fetch, so it must not read as "all fetches failed" (issue #611)',
+  { skip },
+  async (t) => {
+    // The stage-2 total-failure check compares fetched against pages ATTEMPTED.
+    // Before #611 it compared against pages LISTED, so a run whose every page is
+    // skipped as persistently dead (fetched === 0) would raise a false
+    // job-failure alarm — and DM super admins — despite nothing being wrong.
+    const pageUrl = `${config.docsIngest.indexUrl.replace(/\/[^/]*$/, '')}/docs/en/api/terraform/beta/dead-611.md`;
+    // Anchor the failure row to the SAME instant the clock is mocked to. This
+    // suite runs the real freshness guard against a mocked far-future Date, and
+    // the dead-URL cooldown is measured from `last_failed_at` — so a row written
+    // at real now() would read as 5 years stale, fall due for its re-probe, and
+    // be fetched rather than skipped (which is correct behaviour, just not the
+    // scenario under test).
+    const farFuture = FAR_FUTURE_MS();
+    await pool.query(
+      `INSERT INTO docs_ingest_url_failures (url, consecutive_failures, first_failed_at, last_failed_at, reported_at)
+       VALUES ($1, 99, $2, $2, $2)
+       ON CONFLICT (url) DO UPDATE
+         SET consecutive_failures = 99, last_failed_at = $2, reported_at = $2`,
+      [pageUrl, new Date(farFuture)],
+    );
+    // This file pins the feature off by default (see the top of the file) — opt
+    // back in for this test, which is specifically about the skip behaviour.
+    const docsCfg = config.docsIngest as { deadUrlRuns: number };
+    const wasDeadUrlRuns = docsCfg.deadUrlRuns;
+    docsCfg.deadUrlRuns = 3;
+    try {
+      const fetchText = async (url: string): Promise<string> => {
+        if (url === config.docsIngest.indexUrl) return `- [dead](${pageUrl})`;
+        throw new Error('unreachable: a dead-skipped page must never be fetched');
+      };
+      t.mock.timers.enable({ apis: ['Date'], now: farFuture });
+      await assert.doesNotReject(() => defaultDocsIngestRun(fetchText));
+    } finally {
+      docsCfg.deadUrlRuns = wasDeadUrlRuns;
+      await pool.query(`DELETE FROM docs_ingest_url_failures WHERE url = $1`, [pageUrl]);
+    }
   },
 );
 
