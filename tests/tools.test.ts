@@ -2351,11 +2351,12 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // MEMBER_CAPABILITIES_TEXT now names all of them (consolidated into
   // behaviourally-related lines, not one bullet each), so the ~700-char cap
   // sized for #92's original 9-entry text no longer fits. Bumped again for
-  // issue #437's list_knowledge_topics line, and again for issue #646's
-  // share_project/list_projects line. Still a hard cap, not a soft
+  // issue #437's list_knowledge_topics line, again for issue #646's
+  // share_project/list_projects line, and again for issue #634's
+  // set_my_interests/who_is_into line. Still a hard cap, not a soft
   // heuristic — a future addition that isn't consolidated should fail this
   // rather than silently growing into a wall of text.
-  assert.ok(replyText.length < 1400, `reply should stay short; was ${replyText.length} chars`);
+  assert.ok(replyText.length < 1550, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2660,8 +2661,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // of text. Bumped alongside the member cap for issue #437; bumped again for
   // issue #554's list_appeals/resolve_appeal (consolidated into the existing
   // moderation bullet, not a new one); bumped again alongside the member cap
-  // for issue #646's share_project/list_projects line.
-  assert.ok(adminReply.length < 3050, `admin reply should stay short; was ${adminReply.length} chars`);
+  // for issue #646's share_project/list_projects line, and again for issue
+  // #634's set_my_interests/who_is_into line.
+  assert.ok(adminReply.length < 3200, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -2786,9 +2788,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // growing into a wall of text. Own cap, distinct from the admin cap, since
   // this reply is longer (member + admin + super_admin content). Bumped
   // alongside the member/admin caps for issue #646's share_project/
-  // list_projects line.
+  // list_projects line, and again for issue #634's set_my_interests/
+  // who_is_into line.
   assert.ok(
-    superAdminReply.length < 3700,
+    superAdminReply.length < 3850,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
