@@ -413,7 +413,12 @@ sessions:
   Branch pushes are free (no PR exists yet, `on: push` is main-only), and the
   PR still opens only at the end, so the "no PR = dead build" contract the
   verify step and groundskeeper enforce is unchanged (issue #663's rejection
-  documents why an *early PR* is the wrong fix). Its final-attempt escalation
+  documents why an *early PR* is the wrong fix). Because prompt-only
+  compliance proved unreliable (#633: a full green build, zero pushes), a
+  deterministic **checkpoint step** after the agent exits pushes any
+  committed-but-unpushed work with the job's GITHUB_TOKEN — to the work
+  branch, or a unique `-ckpt-<run_id>` ref if the remote diverged — so
+  committed work can no longer die with the runner. Its final-attempt escalation
   clears **both** `status:building`
   and `status:approved` when adding `needs-human`, so an escalated issue fully
   leaves the automated lanes — leaving `status:approved` behind let the hourly
