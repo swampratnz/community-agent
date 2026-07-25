@@ -1,10 +1,15 @@
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
+  clearDocsIngestUrlFailures,
   deleteProvenancedKnowledgeByTitles,
   latestKnowledgeUpdateAtByProvenance,
+  listDocsIngestUrlFailures,
   listGlobalKnowledgeTitlesByProvenance,
+  markDocsIngestUrlsReported,
+  recordDocsIngestUrlFailures,
   syncGlobalKnowledgeByProvenance,
+  type DocsIngestUrlFailure,
 } from '../storage/repository.js';
 
 /**
@@ -205,6 +210,41 @@ function rollupByPathPrefix(urls: readonly string[]): Array<{ prefix: string; co
     .sort((a, b) => b.count - a.count || a.prefix.localeCompare(b.prefix));
 }
 
+/**
+ * Decide which listed URLs to actually fetch this run, given each URL's current
+ * failing streak (issue #611). A URL is SKIPPED only when it has failed
+ * `deadRuns` or more consecutive runs AND its last failure is inside the
+ * re-probe cooldown. Pure (state + clock in, decision out) so the policy is
+ * unit-testable without a DB or network.
+ *
+ * `deadRuns <= 0` disables skipping entirely — every listed URL is fetched, as
+ * before this feature.
+ *
+ * The cooldown is what keeps a skip self-healing: once `recheckMs` has elapsed
+ * a dead URL is re-probed exactly once. If upstream restored it the fetch
+ * succeeds, its failure row is deleted, and it rejoins the normal set with no
+ * operator action; if it still 404s, its streak bumps and it goes quiet again.
+ */
+export function partitionDeadUrls(
+  urls: readonly string[],
+  failures: ReadonlyMap<string, { consecutiveFailures: number; lastFailedAt: Date }>,
+  deadRuns: number,
+  recheckMs: number,
+  now: number,
+): { toFetch: string[]; skipped: string[] } {
+  if (deadRuns <= 0) return { toFetch: [...urls], skipped: [] };
+  const toFetch: string[] = [];
+  const skipped: string[] = [];
+  for (const url of urls) {
+    const state = failures.get(url);
+    const isDead = state !== undefined && state.consecutiveFailures >= deadRuns;
+    const dueForRecheck = state !== undefined && now - state.lastFailedAt.getTime() >= recheckMs;
+    if (isDead && !dueForRecheck) skipped.push(url);
+    else toFetch.push(url);
+  }
+  return { toFetch, skipped };
+}
+
 /** Run `worker` over `items` with at most `concurrency` in flight. */
 async function runPool<T>(
   items: readonly T[],
@@ -232,6 +272,15 @@ export interface DocsIngestResult {
   removed: number;
   skipped: number;
   /**
+   * Pages in the index slice NOT fetched this run because they are currently
+   * skipped as persistently dead (issue #611). Counted separately from
+   * `skipped` (which means "chunk not written") and from `failed` (a fetch that
+   * was attempted and threw) — a dead-skipped page costs no request at all.
+   * `pages - deadSkipped` is therefore the number of fetches actually
+   * attempted, which is what the caller's all-fetches-failed check must use.
+   */
+  deadSkipped: number;
+  /**
    * True only when the llms.txt index itself failed to fetch — a total-run
    * failure, distinct from a zero-URL parse (a legitimate no-op when the
    * index is reachable but happens to list nothing). This is only the FIRST
@@ -245,6 +294,18 @@ export interface DocsIngestResult {
 }
 
 /**
+ * Dead-URL store + clock, injectable so the skip/report policy can be tested
+ * without a DB (issue #611). Production uses the repository defaults.
+ */
+export interface DocsIngestDeps {
+  listFailures?: () => Promise<DocsIngestUrlFailure[]>;
+  recordFailures?: (urls: readonly string[]) => Promise<void>;
+  clearFailures?: (urls: readonly string[]) => Promise<void>;
+  markReported?: (urls: readonly string[]) => Promise<void>;
+  now?: () => number;
+}
+
+/**
  * One ingest run. Fetches the index, then every page (concurrency-limited),
  * chunks + diff-upserts each into `knowledge` under the 'docs' provenance, and
  * prunes chunks whose sections disappeared upstream. `fetchText` is injectable
@@ -253,7 +314,15 @@ export interface DocsIngestResult {
  */
 export async function runDocsIngest(
   fetchText: (url: string) => Promise<string> = defaultFetchText,
+  deps: DocsIngestDeps = {},
 ): Promise<DocsIngestResult> {
+  const {
+    listFailures = listDocsIngestUrlFailures,
+    recordFailures = recordDocsIngestUrlFailures,
+    clearFailures = clearDocsIngestUrlFailures,
+    markReported = markDocsIngestUrlsReported,
+    now = () => Date.now(),
+  } = deps;
   const result: DocsIngestResult = {
     pages: 0,
     fetched: 0,
@@ -264,6 +333,7 @@ export async function runDocsIngest(
     unchanged: 0,
     removed: 0,
     skipped: 0,
+    deadSkipped: 0,
     indexFetchFailed: false,
   };
 
@@ -301,11 +371,37 @@ export async function runDocsIngest(
   // failure class in near-identical lines). Full per-page detail is still
   // emitted at debug level, unchanged in shape.
   const failedFetchUrls: string[] = [];
+  // Successfully-fetched URLs that currently carry a failing streak — clearing
+  // only these (rather than all successes) keeps the post-run write proportional
+  // to the dead tranche instead of to the whole index (issue #611).
+  const recoveredUrls: string[] = [];
+
+  // Skip URLs that have failed for `deadUrlRuns` consecutive runs and are still
+  // inside their re-probe cooldown, so a permanently-dead upstream tranche
+  // stops costing a request every run (issue #611). Reading the streak state
+  // must never break a run: on a read failure, fall back to fetching everything
+  // (today's behaviour) rather than skipping blindly.
+  let failureState = new Map<string, DocsIngestUrlFailure>();
+  try {
+    failureState = new Map((await listFailures()).map((f) => [f.url, f]));
+  } catch (err) {
+    logger.warn({ err }, 'Docs ingest: dead-URL state read failed; fetching every listed page this run');
+  }
+  const { toFetch, skipped: deadSkippedUrls } = partitionDeadUrls(
+    urls,
+    failureState,
+    config.docsIngest.deadUrlRuns,
+    config.docsIngest.deadUrlRecheckDays * 86_400_000,
+    now(),
+  );
+  result.deadSkipped = deadSkippedUrls.length;
+
   const worker = async (url: string): Promise<void> => {
     let md: string;
     try {
       md = await fetchText(url);
       result.fetched += 1;
+      if (failureState.has(url)) recoveredUrls.push(url);
     } catch (err) {
       logger.debug({ err, url }, 'Docs ingest: page fetch failed');
       failedFetchUrls.push(url);
@@ -335,7 +431,43 @@ export async function runDocsIngest(
     }
   };
 
-  await runPool(urls, config.docsIngest.concurrency, worker);
+  await runPool(toFetch, config.docsIngest.concurrency, worker);
+
+  // Persist this run's outcomes, then report any URL that has JUST crossed the
+  // dead threshold — once. Best-effort throughout: this is bookkeeping for a
+  // logging/efficiency optimisation, so a write failure must never fail a run
+  // whose actual ingest work succeeded.
+  try {
+    await clearFailures(recoveredUrls);
+    await recordFailures(failedFetchUrls);
+    if (config.docsIngest.deadUrlRuns > 0) {
+      // A URL is newly dead when this run's failure takes its streak to the
+      // threshold and it has never been reported. `+ 1` because `failureState`
+      // is the pre-run snapshot and `recordFailures` has just bumped it.
+      const newlyDead = failedFetchUrls.filter((url) => {
+        const prior = failureState.get(url);
+        const streak = (prior?.consecutiveFailures ?? 0) + 1;
+        return streak >= config.docsIngest.deadUrlRuns && prior?.reportedAt == null;
+      });
+      if (newlyDead.length > 0) {
+        logger.warn(
+          {
+            count: newlyDead.length,
+            consecutiveRuns: config.docsIngest.deadUrlRuns,
+            recheckDays: config.docsIngest.deadUrlRecheckDays,
+            sample: newlyDead.slice(0, 5),
+            rollup: rollupByPathPrefix(newlyDead)
+              .map(({ prefix, count }) => `${count}× ${prefix}`)
+              .join(', '),
+          },
+          'Docs ingest: URLs persistently failing; skipping them until the next re-probe',
+        );
+        await markReported(newlyDead);
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Docs ingest: dead-URL bookkeeping failed; run results are unaffected');
+  }
 
   if (failedFetchUrls.length > 0) {
     const rollup = rollupByPathPrefix(failedFetchUrls)
@@ -344,7 +476,10 @@ export async function runDocsIngest(
     logger.warn(
       {
         failed: failedFetchUrls.length,
-        attempted: urls.length,
+        // Fetches actually ATTEMPTED — excludes dead-skipped pages, which cost
+        // no request (issue #611), so "failed of attempted" stays honest.
+        attempted: toFetch.length,
+        deadSkipped: result.deadSkipped,
         sample: failedFetchUrls.slice(0, 5),
         rollup,
       },

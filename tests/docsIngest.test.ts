@@ -25,6 +25,7 @@ const {
   chunkMarkdown,
   shouldRunDocsIngest,
   runDocsIngest,
+  partitionDeadUrls,
   DOCS_PROVENANCE,
 } = await import('../src/context/docsIngest.js');
 
@@ -521,5 +522,239 @@ test(
     assert.ok(res.skipped >= 1, 'the collided chunk is reported skipped');
 
     await pool.query(`DELETE FROM knowledge WHERE title = $1 AND scope = 'global'`, [humanTitle]);
+  },
+);
+
+// --- Dead-URL skipping (issue #611) -----------------------------------------
+// The upstream index habitually lists a tranche of pages that don't exist (one
+// observed run: 157/586 404ing under api/terraform/beta/*). #613 batched the
+// LOGGING of those failures; this closes #611's remaining ask — stop re-fetching
+// them every run, report once, and self-heal via a periodic re-probe.
+
+const DEAD_URL = 'https://platform.claude.com/docs/en/api/terraform/beta/dead.md';
+const LIVE_URL = 'https://platform.claude.com/docs/en/api/messages.md';
+
+/** A failure-state entry as listDocsIngestUrlFailures would return it. */
+function failure(url: string, consecutiveFailures: number, agedDays = 0, reportedAt: Date | null = null) {
+  return {
+    url,
+    consecutiveFailures,
+    lastFailedAt: new Date(Date.now() - agedDays * 86_400_000),
+    reportedAt,
+  };
+}
+
+/** Captures every dead-URL store call so a test can assert on the bookkeeping. */
+function stubDeadUrlStore(failures: ReturnType<typeof failure>[] = []) {
+  const calls = {
+    recorded: [] as string[][],
+    cleared: [] as string[][],
+    reported: [] as string[][],
+  };
+  return {
+    calls,
+    deps: {
+      listFailures: async () => failures,
+      recordFailures: async (urls: readonly string[]) => {
+        calls.recorded.push([...urls]);
+      },
+      clearFailures: async (urls: readonly string[]) => {
+        calls.cleared.push([...urls]);
+      },
+      markReported: async (urls: readonly string[]) => {
+        calls.reported.push([...urls]);
+      },
+    },
+  };
+}
+
+/** Runs `fn` with the dead-URL config knobs overridden, restoring them after. */
+async function withDeadUrlConfig(runs: number, recheckDays: number, fn: () => Promise<void>): Promise<void> {
+  const cfg = config.docsIngest as { deadUrlRuns: number; deadUrlRecheckDays: number };
+  const wasRuns = cfg.deadUrlRuns;
+  const wasDays = cfg.deadUrlRecheckDays;
+  cfg.deadUrlRuns = runs;
+  cfg.deadUrlRecheckDays = recheckDays;
+  try {
+    await fn();
+  } finally {
+    cfg.deadUrlRuns = wasRuns;
+    cfg.deadUrlRecheckDays = wasDays;
+  }
+}
+
+test('partitionDeadUrls: skips only URLs at/over the threshold that are still inside the re-probe cooldown', () => {
+  const now = Date.now();
+  const recheckMs = 30 * 86_400_000;
+  const state = new Map([
+    ['a', { consecutiveFailures: 1, lastFailedAt: new Date(now) }], // under threshold
+    ['b', { consecutiveFailures: 3, lastFailedAt: new Date(now) }], // dead, in cooldown
+    ['c', { consecutiveFailures: 9, lastFailedAt: new Date(now - 31 * 86_400_000) }], // dead, due for re-probe
+  ]);
+  const { toFetch, skipped } = partitionDeadUrls(['a', 'b', 'c', 'd'], state, 3, recheckMs, now);
+  assert.deepEqual(skipped, ['b'], 'only the in-cooldown dead URL is skipped');
+  assert.deepEqual(
+    toFetch,
+    ['a', 'c', 'd'],
+    'under-threshold, due-for-re-probe, and never-failed URLs are all fetched',
+  );
+});
+
+test('partitionDeadUrls: deadRuns=0 disables skipping entirely — every listed URL is fetched', () => {
+  const now = Date.now();
+  const state = new Map([['b', { consecutiveFailures: 99, lastFailedAt: new Date(now) }]]);
+  const { toFetch, skipped } = partitionDeadUrls(['a', 'b'], state, 0, 30 * 86_400_000, now);
+  assert.deepEqual(skipped, []);
+  assert.deepEqual(toFetch, ['a', 'b'], 'a long-dead URL is still fetched when the feature is off');
+});
+
+test('partitionDeadUrls: a URL exactly AT the threshold is skipped (>=, not >)', () => {
+  const now = Date.now();
+  const state = new Map([['b', { consecutiveFailures: 3, lastFailedAt: new Date(now) }]]);
+  const { skipped } = partitionDeadUrls(['b'], state, 3, 30 * 86_400_000, now);
+  assert.deepEqual(skipped, ['b']);
+});
+
+test('runDocsIngest: a persistently-dead URL is not fetched at all and is counted in deadSkipped', async () => {
+  await withDeadUrlConfig(3, 30, async () => {
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 3)]);
+    const attempted: string[] = [];
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})\n- [b](${LIVE_URL})`;
+      attempted.push(url);
+      throw new Error(`404 ${url}`); // LIVE_URL also fails, keeping this test DB-free
+    };
+
+    const res = await runDocsIngest(fetchText, deps);
+
+    assert.ok(!attempted.includes(DEAD_URL), 'the dead URL costs no request at all');
+    assert.deepEqual(attempted, [LIVE_URL], 'only the non-dead URL is attempted');
+    assert.equal(res.deadSkipped, 1, 'the skip is counted');
+    assert.equal(res.pages, 2, 'pages still reflects the full index slice');
+    assert.equal(res.failed, 1, 'only the attempted-and-failed page counts as failed');
+    assert.deepEqual(calls.recorded, [[LIVE_URL]], 'only the attempted failure bumps a streak');
+  });
+});
+
+test('runDocsIngest: a URL crossing the dead threshold is reported ONCE and stamped reported', async (t) => {
+  await withDeadUrlConfig(3, 30, async () => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    // Two prior consecutive failures — this run's failure is the 3rd, crossing.
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 2)]);
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      throw new Error(`404 ${url}`);
+    };
+
+    await runDocsIngest(fetchText, deps);
+
+    const deadWarns = warn.mock.calls.filter(
+      (c) =>
+        c.arguments[1] === 'Docs ingest: URLs persistently failing; skipping them until the next re-probe',
+    );
+    assert.equal(deadWarns.length, 1, 'exactly one newly-dead report');
+    const payload = deadWarns[0].arguments[0] as { count: number; sample: string[]; rollup: string };
+    assert.equal(payload.count, 1);
+    assert.deepEqual(payload.sample, [DEAD_URL]);
+    assert.match(payload.rollup, /1× api\/terraform\/beta/);
+    assert.deepEqual(calls.reported, [[DEAD_URL]], 'the crossing is stamped so it is never re-reported');
+  });
+});
+
+test('runDocsIngest: an ALREADY-reported dead URL that gets re-probed and fails again is not re-reported', async (t) => {
+  await withDeadUrlConfig(3, 30, async () => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    // Well past the threshold, already reported, and due for its re-probe.
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 9, 31, new Date())]);
+    const attempted: string[] = [];
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      attempted.push(url);
+      throw new Error(`404 ${url}`);
+    };
+
+    const res = await runDocsIngest(fetchText, deps);
+
+    assert.deepEqual(attempted, [DEAD_URL], 'the cooldown elapsed, so it IS re-probed exactly once');
+    assert.equal(res.deadSkipped, 0, 'a re-probed URL is not counted as skipped this run');
+    const deadWarns = warn.mock.calls.filter(
+      (c) =>
+        c.arguments[1] === 'Docs ingest: URLs persistently failing; skipping them until the next re-probe',
+    );
+    assert.equal(deadWarns.length, 0, 'no second report — the operator was already told once');
+    assert.deepEqual(calls.reported, [], 'nothing re-stamped');
+  });
+});
+
+test('runDocsIngest: with deadUrlRuns=0 a long-dead URL is still fetched and never reported', async (t) => {
+  await withDeadUrlConfig(0, 30, async () => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 99)]);
+    const attempted: string[] = [];
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      attempted.push(url);
+      throw new Error(`404 ${url}`);
+    };
+
+    const res = await runDocsIngest(fetchText, deps);
+
+    assert.deepEqual(attempted, [DEAD_URL], 'skipping is off, so the URL is fetched as before');
+    assert.equal(res.deadSkipped, 0);
+    assert.equal(
+      warn.mock.calls.filter(
+        (c) =>
+          c.arguments[1] === 'Docs ingest: URLs persistently failing; skipping them until the next re-probe',
+      ).length,
+      0,
+      'no dead-URL reporting when the feature is disabled',
+    );
+    assert.deepEqual(calls.reported, []);
+  });
+});
+
+test('runDocsIngest: a dead-URL store read failure degrades to fetching everything, never to skipping blindly', async () => {
+  await withDeadUrlConfig(3, 30, async () => {
+    const attempted: string[] = [];
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      attempted.push(url);
+      throw new Error(`404 ${url}`);
+    };
+
+    const res = await runDocsIngest(fetchText, {
+      listFailures: async () => {
+        throw new Error('db down');
+      },
+      recordFailures: async () => {},
+      clearFailures: async () => {},
+      markReported: async () => {},
+    });
+
+    assert.deepEqual(attempted, [DEAD_URL], 'an unreadable streak store must not cause a silent skip');
+    assert.equal(res.deadSkipped, 0);
+  });
+});
+
+test(
+  'runDocsIngest: a dead URL that fetches successfully again has its failing streak cleared (self-heals)',
+  { skip },
+  async () => {
+    await withDeadUrlConfig(3, 30, async () => {
+      const { calls, deps } = stubDeadUrlStore([failure(LIVE_URL, 9, 31)]);
+      const fetchText = async (url: string): Promise<string> => {
+        if (url === config.docsIngest.indexUrl) return `- [a](${LIVE_URL})`;
+        return '# Messages\n\nThe Messages API sends a conversation to the model.';
+      };
+
+      const res = await runDocsIngest(fetchText, deps);
+
+      assert.equal(res.fetched, 1, 'the re-probe succeeded');
+      assert.deepEqual(calls.cleared, [[LIVE_URL]], 'the streak is deleted, so it rejoins the normal set');
+      assert.deepEqual(calls.recorded, [[]], 'nothing failed, so nothing is recorded');
+    });
   },
 );

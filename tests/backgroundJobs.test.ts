@@ -996,6 +996,34 @@ test(
 );
 
 test(
+  'defaultDocsIngestRun does NOT throw when every listed page was dead-SKIPPED rather than attempted — a skipped page costs no fetch, so it must not read as "all fetches failed" (issue #611)',
+  { skip },
+  async (t) => {
+    // The stage-2 total-failure check compares fetched against pages ATTEMPTED.
+    // Before #611 it compared against pages LISTED, so a run whose every page is
+    // skipped as persistently dead (fetched === 0) would raise a false
+    // job-failure alarm — and DM super admins — despite nothing being wrong.
+    const pageUrl = `${config.docsIngest.indexUrl.replace(/\/[^/]*$/, '')}/docs/en/api/terraform/beta/dead-611.md`;
+    await pool.query(
+      `INSERT INTO docs_ingest_url_failures (url, consecutive_failures, reported_at)
+       VALUES ($1, 99, now())
+       ON CONFLICT (url) DO UPDATE SET consecutive_failures = 99, last_failed_at = now()`,
+      [pageUrl],
+    );
+    try {
+      const fetchText = async (url: string): Promise<string> => {
+        if (url === config.docsIngest.indexUrl) return `- [dead](${pageUrl})`;
+        throw new Error('unreachable: a dead-skipped page must never be fetched');
+      };
+      t.mock.timers.enable({ apis: ['Date'], now: FAR_FUTURE_MS() });
+      await assert.doesNotReject(() => defaultDocsIngestRun(fetchText));
+    } finally {
+      await pool.query(`DELETE FROM docs_ingest_url_failures WHERE url = $1`, [pageUrl]);
+    }
+  },
+);
+
+test(
   'defaultKnowledgeLinkCheckRun does NOT throw on a legitimate zero-attempted-failure run (real freshness guard + real sweep, injected fetch/lookup that never fails)',
   { skip },
   async (t) => {
