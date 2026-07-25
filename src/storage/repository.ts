@@ -2317,6 +2317,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // member_interests (issue #634) is keyed the same way — purge coherence
+    // for anyone who published interests via set_my_interests.
+    const { rowCount: memberInterests } = await client.query(
+      `DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -2335,7 +2341,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (knowledgeGaps ?? 0) +
       (devTeamWatches ?? 0) +
       (moderationAppeals ?? 0) +
-      (memberProjects ?? 0)
+      (memberProjects ?? 0) +
+      (memberInterests ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2379,6 +2386,7 @@ export interface MyDataSummary {
   reportsFiled: number;
   suggestionsFiled: number;
   projectsShared: number;
+  interestsPublished: number;
   responseStyle: ResponseStyle;
 }
 
@@ -2409,6 +2417,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
   let reportsFiled = 0;
   let suggestionsFiled = 0;
   let projectsShared = 0;
+  let interestsPublished = 0;
   for (const identity of identities) {
     const { rows: interactionRows } = await pool.query(
       `SELECT
@@ -2445,6 +2454,12 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
       [identity.platform, identity.userId],
     );
     projectsShared += Number(projectRows[0]?.n ?? 0);
+
+    const { rows: interestRows } = await pool.query(
+      `SELECT count(*) AS n FROM member_interests WHERE platform = $1 AND user_id = $2`,
+      [identity.platform, identity.userId],
+    );
+    interestsPublished += Number(interestRows[0]?.n ?? 0);
   }
 
   return {
@@ -2454,6 +2469,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
     reportsFiled,
     suggestionsFiled,
     projectsShared,
+    interestsPublished,
     // The standing style preference isn't purge-scope data — it's a single
     // per-identity row, so this reports the caller's own invoking identity
     // only (same scoping set_response_style itself uses), not aggregated.
@@ -3526,6 +3542,94 @@ export async function resolveSuggestion(
     : null;
 }
 
+// --- Member interests (member-to-member discovery, issue #634) --------------
+//
+// Self-declared-member-table pattern member_projects below reuses: opt-in,
+// self-scoped, embedded, purge/roster-leave-cleaned data. One fuzzy free-text
+// blob per identity rather than discrete named artifacts, hence the plain
+// (platform, user_id) primary key and upsert-only-in-place semantics — no
+// per-member cap or rate limit is needed since a member can only ever have
+// the single row their own writes replace.
+
+/** Hard cap on published interest text length (self-declared free text), enforced server-side. */
+export const MEMBER_INTERESTS_MAX_CHARS = 300;
+/** who_is_into's result cap. */
+export const WHO_IS_INTO_LIMIT = 5;
+
+export interface MemberInterestSearchHit {
+  platform: Platform;
+  userId: string;
+  interests: string;
+  similarity: number;
+}
+
+/**
+ * Self-scoped upsert/clear of the caller's OWN published interests row.
+ * Passing the literal string 'clear' (case-insensitive, whitespace-trimmed)
+ * deletes the row instead of writing one — the exact `text | 'clear'`
+ * interface the tool description exposes. Never CONFIRM-gated: instantly
+ * reversible, same shape as set_response_style/set_language_preference.
+ */
+export async function setMemberInterests(
+  platform: Platform,
+  userId: string,
+  interests: string,
+): Promise<{ cleared: boolean }> {
+  if (interests.trim().toLowerCase() === 'clear') {
+    await pool.query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+    return { cleared: true };
+  }
+  const text = interests.slice(0, MEMBER_INTERESTS_MAX_CHARS);
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(text);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for member interests');
+  }
+  await pool.query(
+    `INSERT INTO member_interests (platform, user_id, interests, embedding, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (platform, user_id) DO UPDATE SET
+       interests = EXCLUDED.interests, embedding = EXCLUDED.embedding, updated_at = now()`,
+    [platform, userId, text, embedding ? pgvector.toSql(embedding) : null],
+  );
+  return { cleared: false };
+}
+
+/**
+ * Embedding-similarity search over published interests ONLY (never
+ * `interactions` — SECURITY: issue #634 AC #4, interests are never inferred
+ * from chat content). A caller with no row of their own can still search;
+ * absent/cleared rows never appear since they simply don't exist in the table.
+ */
+export async function searchMemberInterests(
+  query: string,
+  limit = WHO_IS_INTO_LIMIT,
+): Promise<MemberInterestSearchHit[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || WHO_IS_INTO_LIMIT, 1), 50);
+  let queryVec: number[];
+  try {
+    queryVec = await embed(query);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding query failed; skipping member interest search');
+    return [];
+  }
+  const { rows } = await pool.query(
+    `SELECT platform, user_id, interests, 1 - (embedding <=> $1) AS similarity
+       FROM member_interests
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <=> $1
+      LIMIT $2`,
+    [pgvector.toSql(queryVec), clampedLimit],
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    interests: r.interests as string,
+    similarity: Number(r.similarity),
+  }));
+}
+
 // --- Member projects (self-declared project showcase, issue #646) -----------
 //
 // Second instance of #634's self-declared-member-table pattern: opt-in,
@@ -3824,13 +3928,13 @@ export async function upsertRosterMember(input: {
 
 /**
  * Mark a roster row as left. No-op (false) if unknown or already marked left.
- * Also removes the departed member's shared projects (issue #646): unlike
- * most member-owned data (which stays until an explicit forget_me/purge —
- * membership alone isn't a privacy request), a project showcase entry is a
- * PUBLISHED artifact whose premise is "a current member of this community
- * built this" — once they've left, showing it to remaining members as if
- * they were still around is misleading, so it goes with them automatically,
- * same as the acceptance criteria's stated lifecycle.
+ * Also removes the departed member's shared projects (issue #646) and
+ * published interests (issue #634): unlike most member-owned data (which
+ * stays until an explicit forget_me/purge — membership alone isn't a privacy
+ * request), both are PUBLISHED artifacts whose premise is "a current member
+ * of this community built/is into this" — once they've left, showing them to
+ * remaining members as if they were still around is misleading, so they go
+ * with them automatically, same as each feature's stated lifecycle.
  */
 export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
   const { rowCount } = await pool.query(
@@ -3843,6 +3947,9 @@ export async function markRosterLeave(platform: Platform, userId: string): Promi
     await pool
       .query(`DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`, [platform, userId])
       .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_projects cleanup failed'));
+    await pool
+      .query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId])
+      .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_interests cleanup failed'));
   }
   return left;
 }

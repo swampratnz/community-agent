@@ -120,6 +120,17 @@ export const MEMBER_TOOLS = [
   // reasoning as community_guidelines/check_status. Discord-only; other
   // adapters simply don't implement PlatformAdapter.listUpcomingEvents.
   'mcp__community__list_events',
+  // Self-scoped write (one row per identity, upsert/clear semantics),
+  // instantly reversible ('clear') like set_response_style — no CONFIRM gate.
+  // Publishes to other members (issue #634), so unlike most other
+  // self-service MEMBER_TOOLS it re-checks 'member' explicitly in the
+  // handler to exclude open-mode guests, same discipline share_project below
+  // uses. Only self-declared text is ever stored — never inferred from chat.
+  'mcp__community__set_my_interests',
+  // Read-only counterpart to set_my_interests — embedding-similarity search
+  // over member_interests only, same 'member' floor check. A caller with no
+  // published interests of their own can still search.
+  'mcp__community__who_is_into',
   // Self-scoped write (rate-capped, own-project-only), instantly reversible
   // like set_response_style — no CONFIRM gate. Publishes to other members
   // (issue #646), so unlike most other self-service MEMBER_TOOLS it re-checks

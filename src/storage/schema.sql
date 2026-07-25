@@ -331,6 +331,25 @@ CREATE INDEX IF NOT EXISTS suggestions_user_rate_idx
   ON suggestions (platform, user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Member-declared interests for member-to-member discovery (issue #634) — a
+-- single self-scoped, embedded, opt-in-published free-text blob per identity
+-- (one row per (platform, user_id), upsert semantics), purged with the rest
+-- of a member's data. member_projects below reuses this same table shape for
+-- discrete named artifacts instead of one fuzzy blob per member.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_interests (
+  platform      TEXT        NOT NULL,
+  user_id       TEXT        NOT NULL,
+  interests     TEXT        NOT NULL,
+  embedding     VECTOR(:EMBEDDING_DIM),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (platform, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS member_interests_embedding_idx
+  ON member_interests USING hnsw (embedding vector_cosine_ops);
+
+-- ---------------------------------------------------------------------------
 -- Member-declared project showcase (issue #646) — the second instance of
 -- #634's self-declared-member-table pattern: opt-in, self-scoped, embedded,
 -- purged with the rest of a member's data. Unlike member_interests (a fuzzy
