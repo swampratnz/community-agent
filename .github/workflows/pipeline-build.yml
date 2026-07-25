@@ -82,10 +82,17 @@ jobs:
     # the Max pool, so under contention turns are throttled and a legitimate
     # build runs several× slower — 60 min was killing real builds mid-gate (the
     # 2026-07-04 spiral: cancelled at 60 min with `npm test` still running), and
-    # a cancelled run is not retried. 120 gives a contended build room to finish
-    # instead of being killed. Still well under GitHub's 6 h job cap; a genuinely
-    # hung run is still caught by the verify step (and costs at most 2 h).
-    timeout-minutes: 120
+    # a cancelled run is not retried. 120 was then killing real builds too once
+    # the suite grew past ~2300 tests (a full gate pass is ~10 min and a build
+    # runs it 2-3×; issue #633 died at the 120 wall on FOUR consecutive
+    # campaigns, twice with the implementation finished). 180 fits the observed
+    # cost of a real feature build under contention. Two constraints keep this
+    # honest: the groundskeeper's STALE_HOURS must exceed this budget (it is 4h
+    # — keep them in sync when changing either), and a job-level timeout kills
+    # even `if: always()` steps, so the checkpoint/verify/escalate machinery
+    # never runs on a timed-out build — the wall must therefore be a genuine
+    # outlier, not the common case. Still well under GitHub's 6 h job cap.
+    timeout-minutes: 180
     # A real pgvector Postgres so the worker's OWN verification runs the
     # DB-integration tests (which skip without DATABASE_URL) against the same
     # database CI will use on the PR. Without this the worker "passes" locally
@@ -277,7 +284,7 @@ jobs:
                PUSH INCREMENTALLY: run `git push -u origin HEAD` right after
                your FIRST commit, and `git push origin HEAD` after EVERY
                subsequent commit — the job's GitHub credential can expire
-               mid-build (~1h lifetime vs this job's 120-min budget), and an
+               mid-build (~1h lifetime vs this job's 180-min budget), and an
                unpushed tree dies with the runner (this stranded 6+ finished
                builds on 2026-07-20/22). Branch pushes trigger no CI and no PR
                exists yet, so intermediate pushes are free; do NOT open the PR
@@ -373,9 +380,9 @@ jobs:
           # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
           # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
           # turns fast). 300 gives real proposals room to finish; the
-          # `timeout-minutes` above (120) is the wall-clock guard — solo, 300
+          # `timeout-minutes` above (180) is the wall-clock guard — solo, 300
           # turns ≈ 40 min (~7s/turn), but under shared-pool throttling a
-          # legitimate build runs slower, which is why the guard is 120 not 60.
+          # legitimate build runs slower, which is why the guard is 180, not 60.
           claude_args: |
             --max-turns 300
             --model sonnet

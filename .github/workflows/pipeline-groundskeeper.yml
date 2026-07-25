@@ -26,10 +26,11 @@ name: Pipeline groundskeeper
 # it. A human re-queues by removing `needs-human` and re-adding
 # `status:approved`.
 #
-# STALE_HOURS (3) deliberately exceeds the build job's 120-min
-# `timeout-minutes` plus claim-comment lag: each build attempt re-claims with
-# a fresh comment (bumping the issue's updatedAt), so an issue quiet for 3h
-# cannot have a live build attempt behind it.
+# STALE_HOURS (4) deliberately exceeds the build job's 180-min
+# `timeout-minutes` (keep them in sync when changing either) plus
+# claim-comment lag: each build attempt re-claims with a fresh comment
+# (bumping the issue's updatedAt), so an issue quiet for 4h cannot have a
+# live build attempt behind it.
 
 on:
   schedule:
@@ -51,7 +52,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
-      STALE_HOURS: 3
+      STALE_HOURS: 4
     steps:
       - name: Escalate zombie status:building issues
         run: |
