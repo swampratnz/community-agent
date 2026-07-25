@@ -30,6 +30,14 @@ for anything after ~noon NZST/NZDT). Get today's date with
   meaning. A link is stored and shown as plain text only — the bot never
   fetches or previews it. Rows are deleted by `forget_me`/`purge_user_data`
   and on roster leave, and counted in `my_data`.
+- **Members can now find each other by shared interests** (#634):
+  `set_my_interests(text | 'clear')` self-scoped upsert/clear of the
+  caller's own free-text interests (one row per identity, publishing them to
+  other members); `who_is_into(query)` embedding-similarity search over
+  published interests only, capped at 5 matches — never inferred from chat
+  content, and a caller with no published interests of their own can still
+  search. Rows are deleted by `forget_me`/`purge_user_data` and on roster
+  leave, and counted in `my_data`.
 - **A member's own thumbs-down now reaches an admin in real time** (#598):
   previously a `rate_answer(helpful: false)` call only wrote an
   `answer_feedback` row, surfaced to admins only via the weekly digest or a

@@ -649,6 +649,42 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deleted by `forget_me`/`purge_user_data` and on roster leave (a departed
   member's published projects go with them, unlike most other member data
   which waits for an explicit privacy request), and counted in `my_data`.
+- **Member interests / member-to-member discovery** (`member_interests`,
+  issue #634): a member publishes a single free-text blob of their own
+  interests with `set_my_interests(text | 'clear')`, discoverable by every
+  other member via `who_is_into(query)` (embedding-similarity search, capped
+  at 5 results). **Self-declared only, never inferred from message
+  content** — this is the strongest privacy posture a discovery feature can
+  have, and the tool description states plainly that setting interests
+  *publishes* them; a test seeds `interactions` with chat text matching a
+  `who_is_into` query for a member who never called `set_my_interests` and
+  asserts they never appear (SECURITY, same discipline `list_projects`
+  applies to `member_projects`). Both tools explicitly re-assert `member`
+  tier in the handler (excluding open-mode guests, same reasoning as
+  `share_project`/`list_projects`, since this is member-facing publication
+  rather than a private/self-scoped action like `set_response_style`). One
+  row per identity (`platform, user_id` primary key) with plain upsert
+  semantics — no rate cap is needed since a member can only ever replace
+  their own single row, unlike `member_projects`' unbounded distinct-name
+  accumulation. Passing the literal string `'clear'` (case-insensitive,
+  trimmed) deletes the row instead of writing one. A caller with no
+  published interests of their own can still query `who_is_into` — discovery
+  doesn't require self-disclosure. `who_is_into` results are rendered with
+  the same quarantine discipline as `list_projects`' `<shared-projects>`
+  block: angle brackets and all whitespace including U+0085
+  stripped/collapsed per entry (`untrustedEntryContent`), owner display name
+  sanitized (`sanitizeName`/`resolveSanitizedLabel`) — a crafted interests
+  string can't escape the rendered `<member-interests>` block or forge
+  another member's attribution. Rows are deleted by
+  `forget_me`/`purge_user_data` and on roster leave (a departed member's
+  published interests go with them, same reasoning as `member_projects`),
+  and counted in `my_data`. **Monitored risk, not a blocker (accepted at
+  proposal review):** a member could sweep `who_is_into` with broad queries
+  to enumerate the whole published directory — every byte returned is
+  deliberately self-published free text, never inferred, never message
+  content, so this is no more exposure than a queryable "intros channel";
+  the 5-result cap limits per-query yield, not enumeration across many
+  queries. Revisit if abused.
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
   boolean, comment?: string)`. Since issue #355, `comment` carries an

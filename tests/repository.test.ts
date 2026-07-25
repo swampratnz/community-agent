@@ -5567,25 +5567,35 @@ test(
       `SELECT count(*) AS n, max(interests) AS interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
       [userId],
     );
-    assert.equal(Number(afterEdit.rows[0].n), 1, 'a second write on the same identity never creates a second row');
+    assert.equal(
+      Number(afterEdit.rows[0].n),
+      1,
+      'a second write on the same identity never creates a second row',
+    );
     assert.equal(afterEdit.rows[0].interests, 'Now also into MCP servers');
 
     // Over-long text is truncated server-side, not merely by the tool's zod cap.
     const overLong = await setMemberInterests('discord', userId, 'x'.repeat(MEMBER_INTERESTS_MAX_CHARS + 50));
     assert.deepEqual(overLong, { cleared: false });
-    const stored = await pool.query(`SELECT interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
-      userId,
-    ]);
-    assert.equal(stored.rows[0].interests.length, MEMBER_INTERESTS_MAX_CHARS, 'over-long text is capped server-side');
+    const stored = await pool.query(
+      `SELECT interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      stored.rows[0].interests.length,
+      MEMBER_INTERESTS_MAX_CHARS,
+      'over-long text is capped server-side',
+    );
 
     // 'clear' (case-insensitive, trimmed) deletes the row rather than storing
     // the literal text "clear" — the exact text | 'clear' interface the tool
     // description exposes.
     const cleared = await setMemberInterests('discord', userId, '  ClEaR  ');
     assert.deepEqual(cleared, { cleared: true });
-    const afterClear = await pool.query(`SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
-      userId,
-    ]);
+    const afterClear = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
     assert.equal(afterClear.rows.length, 0, "'clear' deletes the caller's row");
 
     // Clearing an already-absent row is a harmless no-op, not an error.
@@ -5595,7 +5605,7 @@ test(
 );
 
 test(
-  "SECURITY: repository: searchMemberInterests derives exclusively from member_interests — chat text in `interactions` matching the query, from a member who never called set_my_interests, never appears (issue #634 AC #4)",
+  'SECURITY: repository: searchMemberInterests derives exclusively from member_interests — chat text in `interactions` matching the query, from a member who never called set_my_interests, never appears (issue #634 AC #4)',
   { skip },
   async () => {
     const publisher = `${RUN}-interests-search-publisher`;
@@ -5640,9 +5650,10 @@ test(
 
     const purged = await purgeUserData('discord', userId);
     assert.ok(purged >= 1, 'purge count includes the published interests row');
-    const after = await pool.query(`SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
-      userId,
-    ]);
+    const after = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
     assert.equal(after.rows.length, 0, "the user's published interests are gone after purge");
   },
 );
@@ -5656,9 +5667,10 @@ test(
     await setMemberInterests('discord', userId, 'should not survive roster leave');
 
     assert.equal(await markRosterLeave('discord', userId), true);
-    const after = await pool.query(`SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
-      userId,
-    ]);
+    const after = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
     assert.equal(after.rows.length, 0, "a departed member's published interests are removed on roster leave");
   },
 );

@@ -3435,7 +3435,7 @@ export function buildToolServer(
 
   const whoIsIntoTool = tool(
     'who_is_into',
-    "Find other members whose self-declared interests (published via set_my_interests) match a topic — " +
+    'Find other members whose self-declared interests (published via set_my_interests) match a topic — ' +
       'member-to-member discovery, e.g. "who\'s into RAG?" or "anyone working on MCP servers?". Returns up ' +
       `to ${WHO_IS_INTO_LIMIT} matches by meaning. Results derive only from what members have explicitly ` +
       'published with set_my_interests — never from general chat or any other source. A caller with no ' +

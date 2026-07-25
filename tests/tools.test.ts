@@ -11939,7 +11939,7 @@ test(
     assert.doesNotMatch(
       afterEdit.content[0]?.text ?? '',
       /Building RAG systems/,
-      'a second publish replaces the caller\'s single row rather than adding a second one',
+      "a second publish replaces the caller's single row rather than adding a second one",
     );
 
     const cleared = await setTool.handler({ interests: 'clear' });
@@ -11962,7 +11962,9 @@ test(
     const conversationId = `${RUN}-who-is-into-convo`;
 
     const setTool = setMyInterestsHandler({ platform: 'discord', userId: publisher });
-    const created = await setTool.handler({ interests: 'Actually published: retrieval-augmented generation' });
+    const created = await setTool.handler({
+      interests: 'Actually published: retrieval-augmented generation',
+    });
     assert.equal(created.isError, false);
 
     // Chat content mentioning the exact same topic from a member who never
@@ -12051,7 +12053,7 @@ test(
 );
 
 test(
-  "who_is_into: a caller with no published interests of their own can still search (issue #634 AC #3)",
+  'who_is_into: a caller with no published interests of their own can still search (issue #634 AC #3)',
   { skip },
   async () => {
     const publisher = `${RUN}-who-is-into-no-self`;
