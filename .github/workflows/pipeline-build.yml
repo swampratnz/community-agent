@@ -284,7 +284,7 @@ jobs:
                PUSH INCREMENTALLY: run `git push -u origin HEAD` right after
                your FIRST commit, and `git push origin HEAD` after EVERY
                subsequent commit — the job's GitHub credential can expire
-               mid-build (~1h lifetime vs this job's 120-min budget), and an
+               mid-build (~1h lifetime vs this job's 180-min budget), and an
                unpushed tree dies with the runner (this stranded 6+ finished
                builds on 2026-07-20/22). Branch pushes trigger no CI and no PR
                exists yet, so intermediate pushes are free; do NOT open the PR
@@ -380,9 +380,9 @@ jobs:
           # (issue #27); 80 died at turn 81 on a repo-wide job (issue #41,
           # ESLint+Prettier — formatting sweeps and lint-fix iteration eat
           # turns fast). 300 gives real proposals room to finish; the
-          # `timeout-minutes` above (120) is the wall-clock guard — solo, 300
+          # `timeout-minutes` above (180) is the wall-clock guard — solo, 300
           # turns ≈ 40 min (~7s/turn), but under shared-pool throttling a
-          # legitimate build runs slower, which is why the guard is 120 not 60.
+          # legitimate build runs slower, which is why the guard is 180, not 60.
           claude_args: |
             --max-turns 300
             --model sonnet
