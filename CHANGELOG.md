@@ -10,10 +10,30 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-26
+
+### Fixed
+- **The changelog-coverage check no longer flags its own housekeeping forever**
+  (#698): the check lists merged PRs missing a changelog entry, and its
+  "internal PR" filter matched only the paren form `docs(` and the hyphenated
+  `De-flake` — so the colon forms (`docs:`, `deps:`, `build(deps):`) and plain
+  `Deflake` all fell through as if they were user-facing features. The worst
+  case was self-perpetuating: every `docs: backfill CHANGELOG.md` PR — the
+  output of doing exactly what the check asks — permanently added a new flagged
+  entry describing itself, which no changelog entry could ever satisfy. Eight of
+  the twenty-seven items on the tracking issue were previous backfills, so the
+  list could never empty and the issue could never auto-close. The filter now
+  covers those forms. Nothing about which *user-facing* PRs get flagged changes.
+- **Backfilled the genuine gaps behind that noise**: entries added for the
+  pipeline and infrastructure work merged 2026-07-19..25 (#569, #614, #628,
+  #630, #632, #643, #652, #656, #670, #686), and PR-number citations added to
+  the entries that already described #626, #660, #687 and #692 in prose but
+  cited no number for the check to find.
+
 ## 2026-07-25
 
 ### Changed
-- **The three PR-fixing loops now checkpoint committed work too**, closing the
+- **The three PR-fixing loops now checkpoint committed work too** (#692), closing the
   same "the agent stalled and its work died with the runner" hole the build
   worker had. Each loop already told its agent to run every command
   synchronously and never to end its turn waiting for one — and agents ignored
@@ -38,6 +58,13 @@ for anything after ~noon NZST/NZDT). Get today's date with
   multi-hour builds without ever pushing (#633) and everything died with the
   runner. Escalation forensics also now validate the commit sha shape, so a
   404 error body can no longer masquerade as a surviving-branch pointer.
+- **Build jobs get 180 minutes instead of 120, and the groundskeeper's stale
+  threshold moves 3h → 4h in lockstep** (#686): parallel builds on the shared
+  pool throttle each other, so contended builds were hitting the old ceiling
+  and dying as `cancelled` — a state neither the failure-keyed retry loop nor
+  the final-attempt escalation can see. The two numbers have to move together:
+  a sweep that reaped at 3h would now escalate builds that are merely slow,
+  not stuck.
 
 ### Added
 - **Members can now suggest a durable knowledge-base tip** (#633):
@@ -124,7 +151,7 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ### Security
 - **The WhatsApp Cloud webhook verification handshake now compares its
-  `hub.verify_token` in constant time.** The signature path on the same
+  `hub.verify_token` in constant time** (#687). The signature path on the same
   adapter already used `timingSafeEqual`; this closes the remaining `===`
   comparison of a caller-supplied value against a configured secret. Both
   sides are hashed before comparison so an attacker-chosen token length can
@@ -222,7 +249,7 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ### Changed
 - **Auto-merge now escalates governance-path PRs instead of skipping them
-  silently**: a build-worker PR that passes every gate (green CI, mergeable,
+  silently** (#660): a build-worker PR that passes every gate (green CI, mergeable,
   fresh automated LGTM) but touches a governance/CI/config path — which
   includes `docs/SECURITY.md`, a file most feature PRs must document
   themselves in — is labelled `human-merge-ready` with one explanatory
@@ -267,6 +294,12 @@ for anything after ~noon NZST/NZDT). Get today's date with
   when the send rejects with `WindowClosedError`, delivered the moment that
   recipient's own next message reopens their window; any other rejection is
   unaffected. No new mechanism, no schema change.
+- **The intermittently-failing issue #208 knowledge-gap test now reports why**
+  (#670): it asserted on behaviour driven by a background path but discarded
+  the child process's stderr, so a CI failure gave a bare assertion diff and
+  no cause. The stderr is now captured and surfaced on failure. Test-only —
+  no product code changed — but it turns a recurring "rerun and hope" flake
+  into something diagnosable from the run log.
 
 ## 2026-07-21
 
@@ -389,7 +422,7 @@ for anything after ~noon NZST/NZDT). Get today's date with
   at-least-one-connected-admin path are unchanged. This was the last item on
   the `listAdmins()`-recipient-preserving-queue growth path (#545/#593/#625).
 - **Quarantine-block entries can no longer spoof extra lines via embedded
-  newlines** (PR #617 review follow-up): `renderConversationTail` and
+  newlines** (#626, a PR #617 review follow-up): `renderConversationTail` and
   `renderMemoryContext` stripped angle brackets from message content but kept
   newlines, so a crafted multi-line message could render a fake
   `[outbound by CommunityAgent] ...` line inside the untrusted block,
@@ -398,6 +431,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
   `sanitizeName` already applies to author names), so every entry is exactly
   one line and the leading `[direction by Name]` tag can't be forged onto a
   new one. Applies to both recall and the new session-rollover tail backfill.
+- **Automated review verdicts are no longer lost to a preamble** (#656): the
+  review worker sometimes prefixed its verdict with a sentence of throat-
+  clearing, and auto-merge's deliberately strict parser — which will not
+  guess at an ambiguous verdict — then read no verdict at all, so a
+  fully-approved PR silently failed to qualify. Fixed at the source by
+  trimming the preamble when the verdict is written, rather than by loosening
+  the parser: a lenient parser that infers approval from prose is exactly the
+  failure mode worth keeping out of a merge gate.
+- **Auto-merge's bot-identity and verdict-author checks now survive `gh`
+  rendering** (#652): both compared against display-rendered author strings
+  rather than the raw login, so the build worker's own PRs and the review
+  worker's own LGTMs could fail their identity test and sit unmerged. Both
+  now match on the exact login. The checks were failing closed — nothing
+  unvetted could ever have merged as a result — but the queue stalled.
 
 ## 2026-07-20
 
@@ -495,6 +542,21 @@ for anything after ~noon NZST/NZDT). Get today's date with
   pages (anthropic.com / claude.com / support.claude.com, or the relevant
   vendor's own docs); a figure, date, or dollar amount that appears only in a
   third-party source must be presented as unverified, never stated flatly.
+- **Pipeline scale-up for the Max 20x pool** (#643): CI deflaked, the local
+  embedding model cached between runs rather than re-downloaded, and the
+  work-in-progress caps raised now that more parallel builds are affordable.
+  The cache is the change members would notice indirectly — it removes a slow,
+  network-dependent step from every single run.
+- **VISION gains member-growth and community-flywheel themes, plus north-star
+  metrics** (#632): the roadmap document now names "members contribute to each
+  other" as an explicit goal and lists the signals that measure it — including
+  accepted member-contributed knowledge entries, which was sitting at zero
+  because no member-facing write path existed. That gap is what `suggest_knowledge`
+  (#633) was built to close.
+- **The security audit of the repository is recorded in-tree** (#614): the
+  2026-07-20 review that produced the HIGH and MEDIUM findings now lives under
+  `audit/` alongside the fixes that resolved them (#615), so the reasoning
+  behind those changes is auditable rather than living only in a PR thread.
 
 ### Fixed
 - **Discord event times showed as raw UTC timestamps instead of NZ-local
@@ -557,6 +619,19 @@ for anything after ~noon NZST/NZDT). Get today's date with
   so a member filing reports can't silently displace a queued escalation for a
   window-closed super-admin. No change for Discord or Baileys admins, and no
   change to Meta's window rule itself — nothing is ever sent outside it.
+- **Pipeline issues could get stuck "building" forever** (#630): a build job
+  that hit its timeout reported `cancelled` — a state invisible to both the
+  failure-keyed retry loop and the final-attempt escalation — so the issue kept
+  its `status:building` label indefinitely, wedging the lane and starving the
+  approved queue behind it. Two fixes: escalation is now terminal (it clears
+  both status labels, so an escalated issue fully leaves the automated lanes),
+  and a deterministic hourly groundskeeper sweep reaps any issue left building
+  with no open PR and no activity. The sweep runs no model and reads issue and
+  PR fields only as data.
+- **Pinned the escalate-in-thread regression from the 2026-07-20 audit** (#628):
+  audit finding M1 — a CONFIRM answered inside a thread resolving against the
+  wrong conversation — was fixed at the time but had no test holding it down.
+  It now has one.
 
 ### Security
 - **Closed a DNS-rebinding/TOCTOU gap in the knowledge link-check's SSRF
@@ -616,6 +691,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   `resolve_appeal` never itself clears warnings or lifts a mute — that stays
   `clear_warnings`' job alone. Deletable via `forget_me`/`purge_user_data`.
   See docs/ARCHITECTURE.md and docs/SECURITY.md.
+- **A serialized auto-merge loop now lands fully-vetted build-worker PRs**
+  (#569): a backlog of green, reviewed PRs used to wait on a human simply to
+  press merge. The loop merges exactly one per run — the oldest same-repo
+  build-worker PR that closes an issue, has every check green, is mergeable,
+  and carries a fresh automated LGTM newer than its head commit. It is
+  deterministic shell with no model in the loop, it reads PR text only as
+  data, and it never touches governance, CI, or config paths — so it cannot
+  merge a change to its own guardrails or to the definition of "green".
+  Pin any PR out of it with `no-auto-merge`.
+
 ## 2026-07-20
 
 ### Added

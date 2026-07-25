@@ -44,8 +44,16 @@ const windowDays = windowArg
 // Non-user-facing PRs that legitimately never get a changelog entry. Keep this
 // deliberately broad: a missed CI/chore PR flagged here is worse noise than a
 // missed feature, and features never match these prefixes.
+//
+// The colon-form conventional-commit prefixes (`docs:`, `deps:`, `build(deps):`)
+// and the unhyphenated `Deflake` matter more than they look: only the paren form
+// `docs(` and the hyphenated `De-flake` were listed, so every routine
+// housekeeping PR fell through. That included the `docs: backfill CHANGELOG.md`
+// PRs this very check asks for — each backfill permanently added a NEW flagged
+// entry describing itself, which no changelog entry can ever satisfy, so the
+// tracking issue could never reach empty and auto-close.
 const INTERNAL =
-  /^(ci|ci\(|docs\(|chore|test|refactor|Bump |Build worker|build worker)|De-flake|un-break|self-heal|needs-human|build-failure|forbid the build worker|grant gh issue view|deterministic fast-path|merge_group|Keep security-floor|reduce needs-human|one-shot framing|report-only|adversarial routine|Pipeline hardening|Backport push-loop|Auto-resolve build-worker|Auto-fix failing PRs|Auto-retry failed builds|Give build worker room|per-issue concurrency|migrate base schema|dummy CLAUDE_CODE|security-gate runner-flag|Harden and tidy the CI|Harden build-worker tool allowlist|repo governance files|security-invariants test gate|Move community-context export/i;
+  /^(ci|ci\(|docs\(|docs:|deps:|build\(deps\)|chore|test|refactor|Deflake|Bump |Build worker|build worker)|De-flake|un-break|self-heal|needs-human|build-failure|forbid the build worker|grant gh issue view|deterministic fast-path|merge_group|Keep security-floor|reduce needs-human|one-shot framing|report-only|adversarial routine|Pipeline hardening|Backport push-loop|Auto-resolve build-worker|Auto-fix failing PRs|Auto-retry failed builds|Give build worker room|per-issue concurrency|migrate base schema|dummy CLAUDE_CODE|security-gate runner-flag|Harden and tidy the CI|Harden build-worker tool allowlist|repo governance files|security-invariants test gate|Move community-context export/i;
 
 const tokensOf = (title) =>
   [...title.matchAll(/\b([a-z][a-z0-9]*_[a-z0-9_]+|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g)].map((m) => m[1]);
