@@ -402,6 +402,35 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deletes its still-*pending* candidates; an accepted candidate (and the
   knowledge entry it produced) is unaffected, matching how `knowledge`
   itself outlives an unrelated purge.
+- **Member-contributed knowledge tips** (`suggest_knowledge`, issue #633):
+  members get a direct write path into the SAME `knowledge_candidates` queue
+  and review flow above, rather than a new privileged surface — the
+  human-curation invariant is unchanged, since a tip can only reach
+  `knowledge` through the same admin-tier `accept_knowledge_candidate` call.
+  `suggest_knowledge` is `MEMBER_TOOLS` (member+, guests refused, tier
+  re-asserted inside the handler — not merely surface-gated — pinned by
+  `SECURITY:` tests); a `SECURITY:` test also pins that the tool writes ONLY
+  to `knowledge_candidates`, never `knowledge`. Reuses the context builder's
+  own pre-insert dedup guard verbatim (`candidateTopicAlreadyReviewed` +
+  `findKnowledgeCoveringTopic`) so a tip whose topic is already
+  queued/reviewed or already covered by an existing entry is refused before
+  insert, and a DB-backed rolling-24h rate cap
+  (`KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY`, 3/day) plus title/content length caps
+  bound queue-flooding, same `COUNT(*)`-inside-the-insert pattern as
+  `suggest_improvement`. Provenance is two nullable columns,
+  `source_platform`/`source_user_id` (null/null for every machine-drafted
+  row); `list_knowledge_candidates` renders a `[member-suggested by <name>]`
+  tag for a member-sourced row — **SECURITY:** a candidate's own
+  title/content has its square brackets stripped before rendering
+  (independently of `untrusted()`'s own angle-bracket/newline stripping), so
+  crafted text can never forge that tag, pinned by a `SECURITY:` test.
+  Purge coherence is FULLER than the digest-invalidation path above:
+  `forget_me`/`purge_user_data` delete a member-sourced row matched on
+  `source_platform`/`source_user_id` in EVERY status (pending AND
+  accepted/declined) — a member's own attributed submission is their data to
+  erase regardless of review status — while a machine-drafted row
+  (`source_user_id IS NULL`) never matches that predicate, pinned by a
+  `SECURITY:` test extending the existing purge coverage.
 - **Knowledge gaps** (`knowledge_gaps`, issue #208): the `knowledge_search`
   handler persists a below-floor miss — a call that came back with hits but
   none cleared `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD` — so admins can see

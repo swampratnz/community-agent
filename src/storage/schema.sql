@@ -857,6 +857,31 @@ CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
 ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS topic_embedding VECTOR(:EMBEDDING_DIM);
 
 -- ---------------------------------------------------------------------------
+-- Member-contributed provenance on knowledge_candidates (issue #633): a
+-- direct member write path (suggest_knowledge tool) sharing this table and
+-- the same admin accept/decline review flow the offline context builder's
+-- machine-drafted rows already use. Both nullable and NULL together for
+-- every pre-existing row and any future builder-drafted row; non-NULL
+-- together identifies a member-sourced row (whose `digest_id` is always
+-- NULL — there is no context_digests row underneath a member's own tip).
+-- forget_me/purge_user_data delete a member-sourced row in EVERY status
+-- (pending AND accepted/declined), matched on these two columns — see
+-- purgeSingleIdentity below. That is deliberately fuller than the digest-
+-- invalidation path above (which only removes a still-*pending* machine
+-- row and leaves an already-reviewed accepted one's accountability trail
+-- intact): a member's own attributed submission is their data to erase
+-- regardless of review status.
+-- ---------------------------------------------------------------------------
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS source_platform TEXT;
+ALTER TABLE knowledge_candidates ADD COLUMN IF NOT EXISTS source_user_id TEXT;
+
+-- Backs suggest_knowledge's per-member rolling-24h rate cap and the
+-- forget_me/purge_user_data delete above — same shape as
+-- suggestions_user_rate_idx.
+CREATE INDEX IF NOT EXISTS knowledge_candidates_source_rate_idx
+  ON knowledge_candidates (source_platform, source_user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
 -- Restart-safe freshness guard + trend store for the weekly super-admin
 -- cost-trend DM (issue #578), off unless USAGE_COST_DIGEST_ENABLED. A single
 -- global row (`id` pinned to `true`, never more than one) — this signal is

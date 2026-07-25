@@ -40,6 +40,18 @@ for anything after ~noon NZST/NZDT). Get today's date with
   404 error body can no longer masquerade as a surviving-branch pointer.
 
 ### Added
+- **Members can now suggest a durable knowledge-base tip** (#633):
+  `suggest_knowledge(title, content)` queues the tip in the SAME
+  admin-reviewed `knowledge_candidates` queue the offline context builder's
+  own drafts already use — nothing a member writes here can influence
+  answers until an admin calls `accept_knowledge_candidate`. Reuses the
+  builder's own dedup guard (a topic already queued/reviewed, or already
+  covered by an existing entry, is refused with an explanation instead of
+  queued again); rate-capped at 3/24h with title/content length caps.
+  `list_knowledge_candidates` now shows a `[member-suggested by <name>]`
+  tag for these rows so reviewers know the provenance, and
+  `forget_me`/`purge_user_data` delete a member's own tips in every status
+  (pending, accepted, or declined).
 - **A recurring knowledge gap now nudges an admin in real time instead of
   waiting for the weekly digest** (#650): with `KNOWLEDGE_GAP_ALERT_ENABLED`
   (off by default), the moment a cluster of similar below-floor

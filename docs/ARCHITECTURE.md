@@ -502,6 +502,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search) | ❌ | ✅ | ✅ | ✅ |
 | `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -519,7 +520,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
-| `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest into knowledge; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
+| `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest — OR a member's own `suggest_knowledge` tip — into knowledge; member-sourced rows render a `[member-suggested by <name>]` tag; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `admin_digest` (on-demand pull of the caller's own weekly admin-digest snapshot; no arguments, no CONFIRM — never affects the weekly push's cadence) | ❌ | ❌ | ✅ *caller only* | ✅ |
@@ -980,6 +981,50 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   accepted/declined candidates survive (their digest FK is `ON DELETE SET
   NULL`) with the same accountability treatment as `knowledge`/`admin_audit`
   generally.
+
+#### Member-contributed tips (`suggest_knowledge`, issue #633)
+
+The context builder's `minDistinctUsers` k-floor deliberately excludes a
+single member's hard-won insight — correct for *passively harvested* chat,
+wrong for a *deliberate, attributed* contribution. `suggest_knowledge`
+(`MEMBER_TOOLS`, member+, guests refused, tier re-asserted in the handler)
+gives members a direct write path into the SAME `knowledge_candidates` queue
+and review flow above, rather than a separate table or a privileged surface:
+
+- **Same human-curation gate**: the tip inserts with `digest_id NULL` (there
+  is no `context_digests` row underneath it), `topic = title`, and
+  `status = 'pending'`. It can only reach `knowledge` through the same
+  admin-tier `accept_knowledge_candidate` call machine candidates go through
+  — nothing about the write path itself is privileged.
+- **Same dedup guard, reused verbatim**: `candidateTopicAlreadyReviewed`
+  (exact + semantic match against already-queued/reviewed topics) and
+  `findKnowledgeCoveringTopic` (an existing `knowledge` entry that already
+  covers it, above `KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD`) both run BEFORE
+  insert; a blocked tip is never queued and the reply tells the member why
+  (naming the covering entry's title when that's the reason).
+  `findKnowledgeCoveringTopic` is a thin wrapper `knowledgeCoversTopic` (the
+  builder's own boolean check) now delegates to, so the builder's behaviour
+  and its own tests are unchanged.
+- **Own rate/length caps**: `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY` (3/24h per
+  member, DB-backed `COUNT(*)`-inside-the-insert, same restart-proof pattern
+  as `SUGGESTION_RATE_LIMIT_PER_DAY`) and `KNOWLEDGE_TIP_TITLE_MAX_CHARS` /
+  `KNOWLEDGE_TIP_CONTENT_MAX_CHARS` (mirroring the drafted-candidate
+  truncation `summarizeCluster` already applies).
+- **Provenance, not a new capability**: two nullable columns,
+  `source_platform`/`source_user_id` (NULL together for every pre-existing
+  and future machine-drafted row). `list_knowledge_candidates` renders a
+  `[member-suggested by <name>]` tag for a member-sourced row, resolved via
+  `resolveSanitizedLabel` — SECURITY: a candidate's own title/content has
+  its square brackets stripped before rendering (independently of the
+  `untrusted()` wrapper's own angle-bracket/newline stripping) so crafted
+  text can never forge that tag.
+- **Fuller purge than the digest-linked path**: `forget_me`/
+  `purge_user_data` delete a member-sourced row matched on
+  `source_platform`/`source_user_id` in EVERY status (pending AND
+  accepted/declined) — deliberately more than the digest-invalidation delete
+  above (which only removes a still-pending *machine* row). A member's own
+  attributed submission is their data to erase regardless of review status;
+  rows with `source_user_id IS NULL` never match this predicate.
 
 ### Knowledge gaps (issue #208)
 

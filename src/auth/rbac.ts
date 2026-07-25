@@ -92,6 +92,13 @@ export const MEMBER_TOOLS = [
   // read side (list_suggestions) is admin-tier — a member can never read
   // anyone else's suggestion, only their own via my_submissions.
   'mcp__community__suggest_improvement',
+  // Write-only into the SAME admin-reviewed candidate queue the offline
+  // context builder feeds (issue #633) — digest_id NULL, rate-capped, dedup-
+  // guarded against already-queued/reviewed topics and already-covered
+  // knowledge. Nothing a member writes here can influence answers until an
+  // admin's accept_knowledge_candidate call; the read/accept/decline side
+  // stays admin-tier, same shape as suggest_improvement/list_suggestions.
+  'mcp__community__suggest_knowledge',
   // Write-only, boolean-only rating of the bot's own last answer to the
   // caller (rate-capped); the read side (list_answer_feedback) is
   // admin-tier — a member can never read the aggregate feedback queue.

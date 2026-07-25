@@ -374,6 +374,30 @@ test('SECURITY: suggest_improvement is write-only at member tier — the suggest
   }
 });
 
+test('SECURITY: suggest_knowledge is write-only at member tier — the candidate review queue (list/accept/decline_knowledge_candidate) stays admin-only (issue #633)', () => {
+  const writeTool = 'mcp__community__suggest_knowledge';
+  const readTools = [
+    'mcp__community__list_knowledge_candidates',
+    'mcp__community__accept_knowledge_candidate',
+    'mcp__community__decline_knowledge_candidate',
+  ];
+
+  assert.ok(MEMBER_TOOLS.includes(writeTool), 'suggest_knowledge must be in MEMBER_TOOLS');
+  for (const t of readTools) {
+    assert.ok(ADMIN_TOOLS.includes(t), `${t} must be in ADMIN_TOOLS`);
+    assert.ok(!(MEMBER_TOOLS as readonly string[]).includes(t), `${t} must not be in MEMBER_TOOLS`);
+  }
+  for (const role of ['guest', 'member'] as const) {
+    const surface = toolsForRole(role);
+    for (const t of readTools) {
+      assert.ok(!surface.includes(t), `${role} must not read the candidate queue via ${t}`);
+    }
+  }
+  for (const role of ['member', 'admin', 'super_admin'] as const) {
+    assert.ok(toolsForRole(role).includes(writeTool), `${role} must reach suggest_knowledge`);
+  }
+});
+
 test('SECURITY: set_response_style is member-tier and reaches guests in open mode (issue #126)', () => {
   const tool = 'mcp__community__set_response_style';
   assert.ok(MEMBER_TOOLS.includes(tool), 'set_response_style must be in MEMBER_TOOLS');
