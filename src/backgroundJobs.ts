@@ -187,9 +187,13 @@ export async function defaultDocsIngestRun(fetchText?: (url: string) => Promise<
   // EVERY page fetch attempted this run failed (e.g. the docs host blocks
   // the bot's user-agent, or a network partition to that host) — the index
   // fetch succeeding told us nothing about whether the pages themselves are
-  // reachable.
-  if (result.pages > 0 && result.fetched === 0) {
-    throw new Error(`Docs ingest: all ${result.pages} page fetches failed`);
+  // reachable. Measured against pages ATTEMPTED, not pages listed: a page
+  // skipped as persistently dead (issue #611) is never fetched, so counting it
+  // here would raise a false "all fetches failed" alarm on a run whose every
+  // remaining page is dead-skipped — or mask a real one.
+  const attempted = result.pages - result.deadSkipped;
+  if (attempted > 0 && result.fetched === 0) {
+    throw new Error(`Docs ingest: all ${attempted} attempted page fetches failed`);
   }
   // Total failure, stage 3: pages fetched fine, but EVERY resulting chunk
   // upsert threw (e.g. the DB rejects every write) — zero created/updated/

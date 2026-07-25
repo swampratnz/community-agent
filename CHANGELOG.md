@@ -13,6 +13,24 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-25
 
 ### Changed
+- **The three PR-fixing loops now checkpoint committed work too**, closing the
+  same "the agent stalled and its work died with the runner" hole the build
+  worker had. Each loop already told its agent to run every command
+  synchronously and never to end its turn waiting for one — and agents ignored
+  it: the revise worker ended one PR with "I'll wait for the monitor
+  notification before continuing with the security test suite, build, and
+  push", and the conflict resolver ended another waiting on a background task.
+  Both had already committed real work, both lost it, and both PRs were then
+  escalated for a human with nothing to show — one of them a conflict that
+  turned out to be a clean merge finished in minutes. Autofix, the conflict
+  resolver, and the revise loop now each run the build worker's deterministic
+  checkpoint after the agent exits, so committed work is pushed rather than
+  discarded. It only ever fast-forwards the PR branch (a branch that moved
+  underneath gets a separate `-ckpt-` ref instead of being overwritten), and
+  because recovered work never cleared the agent's own checks, the comment it
+  leaves says so plainly: CI decides, and the automated review still has to
+  pass, so recovery can surface work but never slip unverified work into a
+  merge.
 - **The pipeline's build worker now checkpoints committed work
   deterministically**: a post-agent workflow step pushes any
   committed-but-unpushed branch with the job's own token (to a unique
@@ -34,6 +52,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
   tag for these rows so reviewers know the provenance, and
   `forget_me`/`purge_user_data` delete a member's own tips in every status
   (pending, accepted, or declined).
+- **A recurring knowledge gap now nudges an admin in real time instead of
+  waiting for the weekly digest** (#650): with `KNOWLEDGE_GAP_ALERT_ENABLED`
+  (off by default), the moment a cluster of similar below-floor
+  `knowledge_search` misses first crosses `KNOWLEDGE_GAP_ALERT_THRESHOLD`
+  (default 3) unresolved rows, admins get an instant DM naming the query and
+  how many times it's come up — "worth a FAQ?" — instead of only seeing a
+  bare count in next week's digest. Single-shot per cluster, guild-wide
+  rolling-hour rate cap (`KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR`, default
+  5), and byte-identical to today with the flag off.
 - **WhatsApp admins can now block a persistent abuser** (#572): `moderate`
   gains `block_user`/`unblock_user` (WhatsApp only — Discord keeps its own
   `ban_user`). A block is a bot-side ignore enforced before any storage or
@@ -51,6 +78,14 @@ for anything after ~noon NZST/NZDT). Get today's date with
   meaning. A link is stored and shown as plain text only — the bot never
   fetches or previews it. Rows are deleted by `forget_me`/`purge_user_data`
   and on roster leave, and counted in `my_data`.
+- **Members can now find each other by shared interests** (#634):
+  `set_my_interests(text | 'clear')` self-scoped upsert/clear of the
+  caller's own free-text interests (one row per identity, publishing them to
+  other members); `who_is_into(query)` embedding-similarity search over
+  published interests only, capped at 5 matches — never inferred from chat
+  content, and a caller with no published interests of their own can still
+  search. Rows are deleted by `forget_me`/`purge_user_data` and on roster
+  leave, and counted in `my_data`.
 - **A member's own thumbs-down now reaches an admin in real time** (#598):
   previously a `rate_answer(helpful: false)` call only wrote an
   `answer_feedback` row, surfaced to admins only via the weekly digest or a
@@ -64,6 +99,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
   is unset.
 
 ### Fixed
+- **Docs ingest stops re-fetching pages the upstream index lists but doesn't
+  have** (#611): Anthropic's `llms.txt` habitually lists a tranche of dead
+  pages — one observed run had 157 of 586 returning 404, all under
+  `api/terraform/beta/*` — and every weekly run re-requested all of them. A
+  page that fails to fetch on `DOCS_INGEST_DEAD_URL_RUNS` consecutive runs
+  (default 3, so ~3 weeks at the weekly cadence) is now reported **once** and
+  then skipped, instead of costing a request and a log line every week. The
+  skip is self-healing rather than permanent: each skipped page is re-probed
+  once every `DOCS_INGEST_DEAD_URL_RECHECK_DAYS` (default 30), so if Anthropic
+  restores the page it silently rejoins the normal fetch set with no operator
+  action. Set `DOCS_INGEST_DEAD_URL_RUNS=0` to keep fetching everything every
+  run. This completes the second half of #611 — the first half (batching the
+  404 log spam into one summary line) shipped in #613. No knowledge can be lost
+  by a skip: pruning still keys off the index, never off fetch success.
 - **`knowledge_search` no longer throws away a good answer when a secondary
   lookup fails.** The advisory conflict-badge check and the below-floor
   lexical fallback were the only two unguarded database calls in the handler,
@@ -72,6 +121,36 @@ for anything after ~noon NZST/NZDT). Get today's date with
   neighbours (the retrieval counter, the low-rated caveat, the gap recorder)
   already did: the supplementary signal is dropped and the search results are
   still returned.
+
+### Security
+- **The WhatsApp Cloud webhook verification handshake now compares its
+  `hub.verify_token` in constant time.** The signature path on the same
+  adapter already used `timingSafeEqual`; this closes the remaining `===`
+  comparison of a caller-supplied value against a configured secret. Both
+  sides are hashed before comparison so an attacker-chosen token length can
+  neither throw nor reveal the configured token's length. Low severity — a
+  one-off setup handshake where network jitter dominates the signal — but it
+  removes the last early-exit secret comparison on that path.
+- **Dependency advisories cleared: 7 down to 3.** Three new `overrides`
+  entries — `brace-expansion` (`^5.0.8`), `protobufjs` (`^7.6.5`) and `sharp`
+  (`^0.35.3`). The `sharp` one resolves the libvips CVEs npm reported as
+  having no fix, because `@huggingface/transformers` pinned `0.34.5`; it also
+  dedupes the two `sharp` copies in the tree to one. Overrides rather than an
+  `npm audit fix` lockfile regen, deliberately: the regen silently carried
+  `@anthropic-ai/claude-agent-sdk` forward 0.3.201 → 0.3.220 inside its
+  existing `^0.3.201` range, and an unreviewed bump of the SDK that enforces
+  tool gating and the confirm flow does not belong in a dependency-patch
+  change. None of the three was reachable
+  in this deployment — `brace-expansion` is dev-only via eslint, the
+  `protobufjs` parser is absent from the `protobufjs/minimal` build Baileys
+  uses, and no image ever reaches `sharp` (transformers is used only for text
+  embeddings and speech, and `/imagine` shells out to a sandboxed subprocess)
+  — so this is hygiene, not incident response. The remaining advisory
+  (`@hono/node-server`, Windows-only `serve-static` path traversal) is
+  deliberately NOT taken: it is unreachable twice over (Ubuntu deployment; the
+  MCP server is in-process via `createSdkMcpServer`, so no HTTP server is ever
+  started), and npm's suggested remedy downgrades
+  `@anthropic-ai/claude-agent-sdk` across a major version.
 
 ## 2026-07-23
 

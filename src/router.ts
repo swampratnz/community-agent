@@ -31,6 +31,7 @@ import {
   isKnowledgeLowRated,
   isUserBlocked,
   listAdmins,
+  markKnowledgeGapsAlerted,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
   recordInteraction,
@@ -464,6 +465,7 @@ export class Router {
     private readonly notifyAccessRequestFn: typeof notifyAccessRequest = notifyAccessRequest,
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
     private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
+    private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted = markKnowledgeGapsAlerted,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -487,6 +489,28 @@ export class Router {
     this.accessRequestAlertTimestamps.push(...recent);
     if (recent.length >= limit) return false;
     this.accessRequestAlertTimestamps.push(now);
+    return true;
+  }
+
+  /** Rolling-hour timestamps for `KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR` (issue #650) — guild-wide, same reasoning as `accessRequestAlertTimestamps` above (the `listAdmins()` audience is guild-wide too). */
+  private readonly knowledgeGapAlertTimestamps: number[] = [];
+
+  /**
+   * Reserve one knowledge-gap-cluster-alert slot against a rolling hourly
+   * cap, identical sliding-window shape as `reserveAccessRequestAlertSlot`.
+   * Returns false without reserving if the guild already hit `limit` within
+   * the last hour — the caller (below) leaves the crossed cluster's rows
+   * unalerted in that case, so a later gap in the same cluster can retry the
+   * alert once the window frees (issue #650 acceptance criterion 6).
+   */
+  private reserveKnowledgeGapAlertSlot(limit: number): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = this.knowledgeGapAlertTimestamps.filter((t) => now - t < windowMs);
+    this.knowledgeGapAlertTimestamps.length = 0;
+    this.knowledgeGapAlertTimestamps.push(...recent);
+    if (recent.length >= limit) return false;
+    this.knowledgeGapAlertTimestamps.push(now);
     return true;
   }
 
@@ -1653,6 +1677,39 @@ export class Router {
               `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
             msg.userId,
           ).catch((err) => logger.warn({ err }, 'Unhelpful-answer admin notification failed'));
+        }
+      }
+
+      // Real-time admin nudge when a knowledge-gap cluster crosses
+      // KNOWLEDGE_GAP_ALERT_THRESHOLD (issue #650) — the "asked N times,
+      // never confidently answered" signal promoted from the weekly digest's
+      // bare count to an instant DM, same promote-to-instant-DM shape as the
+      // escalation branch above. `reply.knowledgeGapCluster` is only ever set
+      // (by the knowledge_search tool handler) when
+      // config.knowledgeGapAlert.enabled is true and the turn ended in
+      // genuine success, so no separate flag check is needed here. The rate
+      // slot is reserved BEFORE marking the cluster alerted: on a miss, the
+      // cluster's rows are deliberately left unalerted (not marked) so a
+      // later gap in the same cluster can retry once the trailing hour frees
+      // up — the underlying gap is still recorded and still counted by the
+      // weekly digest either way (acceptance criterion 6). SECURITY: unlike
+      // the escalation/unhelpful-answer alerts above, the message deliberately
+      // omits `msg.platform`/`msg.conversationId` — acceptance criterion 5
+      // requires the DM body to be a strict subset of what `list_knowledge_gaps`
+      // already returns for the same scope (query text + count only, no new
+      // field), and that tool's own output never includes a conversation id.
+      if (reply.knowledgeGapCluster) {
+        const cluster = reply.knowledgeGapCluster;
+        if (this.reserveKnowledgeGapAlertSlot(config.knowledgeGapAlert.rateLimitPerHour)) {
+          await this.markKnowledgeGapsAlertedFn(cluster.rowIds).catch((err) =>
+            logger.warn({ err }, 'Failed to mark knowledge gap cluster alerted'),
+          );
+          await this.notifyAdminsFn(
+            (platform) => this.adapters.get(platform),
+            `A knowledge gap has come up ${cluster.count} times recently and might be worth turning ` +
+              `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
+            msg.userId,
+          ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
         }
       }
 

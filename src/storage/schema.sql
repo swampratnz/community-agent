@@ -331,6 +331,25 @@ CREATE INDEX IF NOT EXISTS suggestions_user_rate_idx
   ON suggestions (platform, user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Member-declared interests for member-to-member discovery (issue #634) — a
+-- single self-scoped, embedded, opt-in-published free-text blob per identity
+-- (one row per (platform, user_id), upsert semantics), purged with the rest
+-- of a member's data. member_projects below reuses this same table shape for
+-- discrete named artifacts instead of one fuzzy blob per member.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS member_interests (
+  platform      TEXT        NOT NULL,
+  user_id       TEXT        NOT NULL,
+  interests     TEXT        NOT NULL,
+  embedding     VECTOR(:EMBEDDING_DIM),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (platform, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS member_interests_embedding_idx
+  ON member_interests USING hnsw (embedding vector_cosine_ops);
+
+-- ---------------------------------------------------------------------------
 -- Member-declared project showcase (issue #646) — the second instance of
 -- #634's self-declared-member-table pattern: opt-in, self-scoped, embedded,
 -- purged with the rest of a member's data. Unlike member_interests (a fuzzy
@@ -737,6 +756,19 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
 -- regardless of this column, so no extra purge code is needed.
 ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS escalated BOOLEAN NOT NULL DEFAULT false;
 
+-- Set once a real-time admin alert has been queued for the cluster this row
+-- belongs to (issue #650) — stamped on every row of a cluster the moment it
+-- crosses KNOWLEDGE_GAP_ALERT_THRESHOLD, so it can never contribute to a
+-- future crossing again (single-shot per cluster, same never-notify-twice
+-- precedent as the escalation/access-request real-time alerts). NULL
+-- (including every pre-existing row) means not yet alerted.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMPTZ;
+
+-- Backs findCrossedKnowledgeGapCluster's `alerted_at IS NULL` filter, same
+-- shape as knowledge_gaps_unresolved_idx above.
+CREATE INDEX IF NOT EXISTS knowledge_gaps_unalerted_idx
+  ON knowledge_gaps (conversation_id, created_at DESC) WHERE alerted_at IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- Cost of the three standalone background `query()` calls (issue #401) that
 -- spend from the shared Max pool but write no `interactions` row, so
@@ -910,4 +942,30 @@ CREATE TABLE IF NOT EXISTS member_digest_sends (
   id      SMALLINT    PRIMARY KEY DEFAULT 1,
   sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT member_digest_sends_singleton CHECK (id = 1)
+);
+
+-- ---------------------------------------------------------------------------
+-- Per-URL consecutive fetch-failure tracking for the docs-ingest job
+-- (issue #611, the growth path #613 deferred). Anthropic's llms.txt index
+-- habitually lists a tranche of pages that don't exist (one observed run:
+-- 157/586 404ing, all under api/terraform/beta/*), and every weekly run
+-- re-fetched all of them. A URL that fails DOCS_INGEST_DEAD_URL_RUNS runs in
+-- a row is reported ONCE and then skipped, with a periodic re-probe
+-- (DOCS_INGEST_DEAD_URL_RECHECK_DAYS) so an upstream fix self-heals.
+--
+-- A row exists only while a URL is CURRENTLY failing: a successful fetch
+-- deletes it, and a row whose URL has left the index entirely (dropped
+-- upstream, or newly excluded) is reaped on the next run — so this table stays
+-- bounded by the current dead tranche and never needs its own retention purge.
+-- Holds first-party docs URLs only — no user identifier, so
+-- forget_me/purge_user_data have nothing to touch here.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS docs_ingest_url_failures (
+  url                  TEXT        PRIMARY KEY,
+  consecutive_failures INTEGER     NOT NULL DEFAULT 1,
+  first_failed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_failed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Set when the URL crossed the dead threshold and was reported, so the
+  -- operator is told once rather than every run.
+  reported_at          TIMESTAMPTZ
 );

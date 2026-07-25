@@ -67,6 +67,7 @@
   "injectionCorpus.test.ts": 7,
   "knowledgeCandidateDedupDegradation.test.ts": 1,
   "knowledgeEntryIdRouter.test.ts": 1,
+  "knowledgeGapAlert.router.test.ts": 2,
   "knowledgeRefresh.test.ts": 2,
   "knowledgeScope.test.ts": 4,
   "knowledgeSearchFailSafe.test.ts": 2,
@@ -92,7 +93,7 @@
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,
-  "repository.test.ts": 84,
+  "repository.test.ts": 87,
   "router.test.ts": 8,
   "secrets.test.ts": 5,
   "securityGateCanary.test.ts": 1,
@@ -100,7 +101,7 @@
   "statusCheckAlert.test.ts": 3,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 18,
-  "tools.test.ts": 224,
+  "tools.test.ts": 229,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 2,
   "usageCostDigest.test.ts": 3,
@@ -108,6 +109,6 @@
   "whatsappBlockRouter.test.ts": 1,
   "whatsappBlockRouterOpen.test.ts": 1,
   "whatsappCloudAdapter.test.ts": 21,
-  "whatsappCloudWire.test.ts": 5,
+  "whatsappCloudWire.test.ts": 8,
   "whatsappWire.test.ts": 1
 }

@@ -68,8 +68,14 @@ const {
   countEscalatedKnowledgeGaps,
   KNOWLEDGE_GAP_DAILY_LIMIT,
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
+  findCrossedKnowledgeGapCluster,
+  markKnowledgeGapsAlerted,
   recentModerationEntries,
   adminActivitySummary,
+  listDocsIngestUrlFailures,
+  recordDocsIngestUrlFailures,
+  clearDocsIngestUrlFailures,
+  markDocsIngestUrlsReported,
   autoEnrollMemberWithAudit,
   AUTO_ENROLL_ACTOR,
   usageStats,
@@ -157,6 +163,10 @@ const {
   PROJECT_RATE_LIMIT_PER_DAY,
   PROJECT_NAME_MAX_CHARS,
   PROJECT_DESCRIPTION_MAX_CHARS,
+  setMemberInterests,
+  searchMemberInterests,
+  MEMBER_INTERESTS_MAX_CHARS,
+  WHO_IS_INTO_LIMIT,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -176,6 +186,58 @@ const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
  * fails deterministically on every attempt — so retrying masks nothing, and
  * the final attempt's assertion error propagates with real values.
  */
+/**
+ * Rank-independent assertion that a platform-scoped `usageStats` call's
+ * `topUsers` really is scoped to that platform.
+ *
+ * This replaces the older "the seeded user appears in topUsers" shape, which
+ * was a DIFFERENT interference mechanism from the absorbed-count deltas
+ * `retryOnSharedTableInterference` exists for, and which retrying could not
+ * fix: `topUsers` is `GROUP BY user_id ORDER BY n DESC LIMIT 5` over inbound
+ * rows in the window, and the seeded user has exactly ONE inbound row, so it
+ * competes for a top-5 slot against every other test file's concurrent
+ * traffic and is routinely evicted regardless of how many times the block is
+ * re-run (the 2026-07-25 CI flake, "discord-scoped topUsers includes the
+ * seeded discord user"). Seeding enough rows to win the slot is not viable
+ * either — `recordInteraction` embeds every message.
+ *
+ * Asserting the scope INVARIANT instead of the seeded row's rank is both
+ * interference-proof and strictly stronger: every id the scoped call returns
+ * must genuinely have an inbound row on that platform inside the window,
+ * which is exactly what a dropped/incorrect platform filter would violate,
+ * whoever happens to top the leaderboard. The non-empty check keeps it from
+ * passing vacuously — the caller seeds an inbound row on this platform in
+ * the same window, so at least one row always qualifies.
+ *
+ * The window predicate mirrors usageStats' own (`direction = 'inbound'`,
+ * `created_at > now() - $interval`, `platform = $platform`).
+ */
+async function assertTopUsersScopedToPlatform(
+  topUsers: Array<{ userId: string }>,
+  platform: 'discord' | 'whatsapp',
+  days: number,
+): Promise<void> {
+  assert.ok(
+    topUsers.length > 0,
+    `${platform}-scoped topUsers must not be empty — the caller seeded an inbound ${platform} row in this window`,
+  );
+  const ids = topUsers.map((u) => u.userId);
+  const { rows } = await pool.query(
+    `SELECT DISTINCT user_id
+       FROM interactions
+      WHERE direction = 'inbound'
+        AND platform = $1
+        AND created_at > now() - $2::interval
+        AND user_id = ANY($3)`,
+    [platform, `${days} days`, ids],
+  );
+  assert.equal(
+    rows.length,
+    ids.length,
+    `every id in ${platform}-scoped topUsers must have an inbound ${platform} row in the window — a leaked id means the platform filter was not applied`,
+  );
+}
+
 async function retryOnSharedTableInterference(attempts: number, run: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -2487,6 +2549,137 @@ test(
 );
 
 test(
+  'repository: findCrossedKnowledgeGapCluster returns null below threshold and the crossed cluster (with every member row id) once the new row brings it to threshold (issue #650 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-crossed`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[7] = 1;
+
+    const insertGap = async (queryText: string) => {
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        ['discord', conversationId, `${RUN}-gap-crossed-user`, queryText, pgvector.toSql(vec)],
+      );
+      return Number(rows[0].id);
+    };
+
+    const id1 = await insertGap('how do I reset my session');
+    const belowThreshold1 = await findCrossedKnowledgeGapCluster(conversationId, id1, 3);
+    assert.equal(belowThreshold1, null, 'a single row in the cluster must not cross a threshold of 3');
+
+    const id2 = await insertGap('my session keeps resetting, how do I fix it');
+    const belowThreshold2 = await findCrossedKnowledgeGapCluster(conversationId, id2, 3);
+    assert.equal(belowThreshold2, null, 'two rows must not cross a threshold of 3');
+
+    const id3 = await insertGap('session reset is not working for me either');
+    const crossed = await findCrossedKnowledgeGapCluster(conversationId, id3, 3);
+    assert.ok(crossed, 'the third row in the same cluster must cross the threshold');
+    assert.equal(crossed?.count, 3);
+    assert.equal(
+      crossed?.representative,
+      'how do I reset my session',
+      'representative is the first gap seen',
+    );
+    assert.deepEqual(
+      [...(crossed?.rowIds ?? [])].sort((a, b) => a - b),
+      [id1, id2, id3].sort((a, b) => a - b),
+      'every member row of the crossed cluster is returned, for markKnowledgeGapsAlerted to stamp',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: findCrossedKnowledgeGapCluster + markKnowledgeGapsAlerted are single-shot per cluster — a later gap in an already-alerted cluster does not cross again (issue #650 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-single-shot`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[9] = 1;
+
+    const insertGap = async (queryText: string) => {
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        ['discord', conversationId, `${RUN}-gap-single-shot-user`, queryText, pgvector.toSql(vec)],
+      );
+      return Number(rows[0].id);
+    };
+
+    const id1 = await insertGap('where is the meetup venue');
+    await findCrossedKnowledgeGapCluster(conversationId, id1, 3);
+    const id2 = await insertGap('what is the meetup venue address');
+    await findCrossedKnowledgeGapCluster(conversationId, id2, 3);
+    const id3 = await insertGap('venue for the meetup, where is it');
+    const crossed = await findCrossedKnowledgeGapCluster(conversationId, id3, 3);
+    assert.ok(crossed, 'the third row crosses the threshold');
+
+    await markKnowledgeGapsAlerted(crossed?.rowIds ?? []);
+    const alertedRows = await pool.query(
+      `SELECT id FROM knowledge_gaps WHERE conversation_id = $1 AND alerted_at IS NOT NULL`,
+      [conversationId],
+    );
+    assert.equal(alertedRows.rows.length, 3, 'every row in the crossed cluster is stamped alerted_at');
+
+    const id4 = await insertGap('venue location for the meetup please');
+    const secondCheck = await findCrossedKnowledgeGapCluster(conversationId, id4, 3);
+    assert.equal(
+      secondCheck,
+      null,
+      'a single fresh gap in the same (now-alerted) cluster must not re-cross a threshold of 3 — the ' +
+        'already-alerted rows are excluded from the count',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: findCrossedKnowledgeGapCluster excludes resolved rows from the threshold count (issue #650 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-gap-resolved`;
+    const dim = config.db.embeddingDim;
+    const vec = new Array(dim).fill(0);
+    vec[11] = 1;
+
+    const insertGap = async (queryText: string, resolved: boolean) => {
+      const { rows } = await pool.query(
+        `INSERT INTO knowledge_gaps (platform, conversation_id, user_id, query_text, embedding, resolved_at)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+        [
+          'discord',
+          conversationId,
+          `${RUN}-gap-resolved-user`,
+          queryText,
+          pgvector.toSql(vec),
+          resolved ? new Date() : null,
+        ],
+      );
+      return Number(rows[0].id);
+    };
+
+    await insertGap('resolved gap A', true);
+    await insertGap('unresolved gap A', false);
+    const newId = await insertGap('unresolved gap B', false);
+
+    const crossed = await findCrossedKnowledgeGapCluster(conversationId, newId, 3);
+    assert.equal(
+      crossed,
+      null,
+      'a cluster with only 2 unresolved rows must not cross a threshold of 3, even with a 3rd resolved row present',
+    );
+
+    await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   'SECURITY: repository: recordKnowledgeGap enforces a DB-backed rolling-24h cap per (platform, user_id), robust to a simulated process restart',
   { skip },
   async () => {
@@ -3551,10 +3744,7 @@ test(
         assert.equal(afterDiscord.inbound - beforeDiscord.inbound, 1);
         assert.equal(afterDiscord.outbound - beforeDiscord.outbound, 1);
         assert.ok(Math.abs(afterDiscord.costUsd - beforeDiscord.costUsd - 1.2) < 1e-9);
-        assert.ok(
-          afterDiscord.topUsers.some((u) => u.userId === discordUser),
-          'discord-scoped topUsers includes the seeded discord user',
-        );
+        await assertTopUsersScopedToPlatform(afterDiscord.topUsers, 'discord', days);
         assert.ok(
           !afterDiscord.topUsers.some((u) => u.userId === whatsappUser),
           'discord-scoped topUsers must never include a whatsapp-only user',
@@ -3572,10 +3762,7 @@ test(
         assert.equal(afterWhatsapp.inbound - beforeWhatsapp.inbound, 1);
         assert.equal(afterWhatsapp.outbound - beforeWhatsapp.outbound, 1);
         assert.ok(Math.abs(afterWhatsapp.costUsd - beforeWhatsapp.costUsd - 0.3) < 1e-9);
-        assert.ok(
-          afterWhatsapp.topUsers.some((u) => u.userId === whatsappUser),
-          'whatsapp-scoped topUsers includes the seeded whatsapp user',
-        );
+        await assertTopUsersScopedToPlatform(afterWhatsapp.topUsers, 'whatsapp', days);
         assert.ok(
           !afterWhatsapp.topUsers.some((u) => u.userId === discordUser),
           'whatsapp-scoped topUsers must never include a discord-only user',
@@ -5748,6 +5935,137 @@ test(
     assert.equal(afterPurge.rows.length, 0, "the user's suggestions are gone after purge");
 
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [`${RUN}-suggester-other`]);
+  },
+);
+
+test(
+  'repository: setMemberInterests upserts a self-scoped row, is capped server-side, and "clear" deletes it (issue #634)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-interests-lifecycle`;
+
+    const created = await setMemberInterests('discord', userId, 'RAG, pgvector, and Discord bots');
+    assert.deepEqual(created, { cleared: false });
+    const row = await pool.query(
+      `SELECT interests, embedding IS NOT NULL AS has_embedding FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(row.rows[0].interests, 'RAG, pgvector, and Discord bots');
+    assert.equal(row.rows[0].has_embedding, true, 'a fresh write is embedded');
+
+    // Re-writing the SAME identity upserts in place — never a second row,
+    // since (platform, user_id) is the primary key.
+    const edited = await setMemberInterests('discord', userId, 'Now also into MCP servers');
+    assert.deepEqual(edited, { cleared: false });
+    const afterEdit = await pool.query(
+      `SELECT count(*) AS n, max(interests) AS interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      Number(afterEdit.rows[0].n),
+      1,
+      'a second write on the same identity never creates a second row',
+    );
+    assert.equal(afterEdit.rows[0].interests, 'Now also into MCP servers');
+
+    // Over-long text is truncated server-side, not merely by the tool's zod cap.
+    const overLong = await setMemberInterests('discord', userId, 'x'.repeat(MEMBER_INTERESTS_MAX_CHARS + 50));
+    assert.deepEqual(overLong, { cleared: false });
+    const stored = await pool.query(
+      `SELECT interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(
+      stored.rows[0].interests.length,
+      MEMBER_INTERESTS_MAX_CHARS,
+      'over-long text is capped server-side',
+    );
+
+    // 'clear' (case-insensitive, trimmed) deletes the row rather than storing
+    // the literal text "clear" — the exact text | 'clear' interface the tool
+    // description exposes.
+    const cleared = await setMemberInterests('discord', userId, '  ClEaR  ');
+    assert.deepEqual(cleared, { cleared: true });
+    const afterClear = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(afterClear.rows.length, 0, "'clear' deletes the caller's row");
+
+    // Clearing an already-absent row is a harmless no-op, not an error.
+    const clearedAgain = await setMemberInterests('discord', userId, 'clear');
+    assert.deepEqual(clearedAgain, { cleared: true });
+  },
+);
+
+test(
+  'SECURITY: repository: searchMemberInterests derives exclusively from member_interests — chat text in `interactions` matching the query, from a member who never called set_my_interests, never appears (issue #634 AC #4)',
+  { skip },
+  async () => {
+    const publisher = `${RUN}-interests-search-publisher`;
+    const nonPublisher = `${RUN}-interests-search-nonpublisher`;
+    const conversationId = `${RUN}-interests-search-convo`;
+
+    await setMemberInterests('discord', publisher, 'retrieval-augmented generation with Claude and pgvector');
+
+    // Chat content mentioning the exact same topic from a member who never
+    // called set_my_interests — must never surface via who_is_into/
+    // searchMemberInterests, since interests are never inferred from chat.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: nonPublisher,
+      role: 'member',
+      direction: 'inbound',
+      content: 'I am building a retrieval-augmented generation system with Claude and pgvector too',
+    });
+
+    const hits = await searchMemberInterests('retrieval augmented generation', WHO_IS_INTO_LIMIT);
+    assert.ok(
+      hits.some((h) => h.userId === publisher),
+      'the publisher who actually called set_my_interests is found',
+    );
+    assert.ok(
+      hits.every((h) => h.userId !== nonPublisher),
+      'SECURITY: a matching interactions row from a non-publishing member never appears in searchMemberInterests results',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [publisher]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [nonPublisher]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's member_interests row (issue #634)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-purge-interests`;
+    await setMemberInterests('discord', userId, 'gone after forget_me');
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the published interests row');
+    const after = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(after.rows.length, 0, "the user's published interests are gone after purge");
+  },
+);
+
+test(
+  "SECURITY: markRosterLeave removes the departed member's published interests (issue #634)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-leave-interests`;
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Leaver' });
+    await setMemberInterests('discord', userId, 'should not survive roster leave');
+
+    assert.equal(await markRosterLeave('discord', userId), true);
+    const after = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(after.rows.length, 0, "a departed member's published interests are removed on roster leave");
   },
 );
 
@@ -9830,6 +10148,7 @@ test(
       description: 'a project sourced from this user',
     });
     assert.ok(suggestion && report && project.ok, 'fixtures recorded');
+    await setMemberInterests('discord', userId, 'interests sourced from this user');
     await setResponseStyle('discord', userId, 'plain');
 
     // Fixtures for tables getMyDataSummary must NEVER count or query, even
@@ -9864,10 +10183,12 @@ test(
     assert.equal(summary.reportsFiled, 1);
     assert.equal(summary.suggestionsFiled, 1);
     assert.equal(summary.projectsShared, 1);
+    assert.equal(summary.interestsPublished, 1);
     assert.equal(summary.responseStyle, 'plain');
     assert.deepEqual(
       Object.keys(summary).sort(),
       [
+        'interestsPublished',
         'knowledgeEntries',
         'ownMessages',
         'projectsShared',
@@ -9889,7 +10210,8 @@ test(
       summary.knowledgeEntries +
       summary.reportsFiled +
       summary.suggestionsFiled +
-      summary.projectsShared;
+      summary.projectsShared +
+      summary.interestsPublished;
     const purged = await purgeUserData('discord', userId);
     assert.ok(
       purged > reportedTotal,
@@ -9907,6 +10229,7 @@ test(
         reportsFiled: 0,
         suggestionsFiled: 0,
         projectsShared: 0,
+        interestsPublished: 0,
         responseStyle: 'standard',
       },
       'every table getMyDataSummary reports is empty after purge — reconciled per-table with the DELETE',
@@ -10520,5 +10843,79 @@ test(
     assert.deepEqual(await recentConversationTail('discord', conv, 0), [], 'limit 0 disables the backfill');
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[conv, otherConv]]);
+  },
+);
+
+// --- Docs-ingest dead-URL tracking (issue #611) ------------------------------
+
+test(
+  'repository: docs-ingest URL failures accumulate a CONSECUTIVE streak, a success clears it, and reporting is stamped once',
+  { skip },
+  async () => {
+    const a = `https://example.invalid/${RUN}/a.md`;
+    const b = `https://example.invalid/${RUN}/b.md`;
+    const mine = async () => (await listDocsIngestUrlFailures()).filter((f) => f.url.includes(RUN));
+    try {
+      // First failure creates the row at 1.
+      await recordDocsIngestUrlFailures([a, b]);
+      let rows = await mine();
+      assert.equal(rows.length, 2, 'a row per failing URL');
+      assert.ok(
+        rows.every((r) => r.consecutiveFailures === 1 && r.reportedAt === null),
+        'first failure starts the streak at 1, unreported',
+      );
+
+      // Second and third failures bump the same rows rather than duplicating.
+      await recordDocsIngestUrlFailures([a, b]);
+      await recordDocsIngestUrlFailures([a]);
+      rows = await mine();
+      assert.equal(rows.length, 2, 'still one row per URL — the upsert bumps, never duplicates');
+      assert.equal(rows.find((r) => r.url === a)?.consecutiveFailures, 3);
+      assert.equal(rows.find((r) => r.url === b)?.consecutiveFailures, 2);
+
+      // Reporting stamps only the named URL, and only once.
+      await markDocsIngestUrlsReported([a]);
+      const firstStamp = (await mine()).find((r) => r.url === a)?.reportedAt;
+      assert.ok(firstStamp instanceof Date, 'the reported URL is stamped');
+      assert.equal((await mine()).find((r) => r.url === b)?.reportedAt, null, 'the other URL is untouched');
+      await markDocsIngestUrlsReported([a]);
+      assert.deepEqual(
+        (await mine()).find((r) => r.url === a)?.reportedAt,
+        firstStamp,
+        're-marking is a no-op — the original report time is preserved (WHERE reported_at IS NULL)',
+      );
+
+      // A success deletes the row entirely — that is what makes the streak
+      // CONSECUTIVE and lets a restored upstream page self-heal.
+      await clearDocsIngestUrlFailures([a]);
+      rows = await mine();
+      assert.deepEqual(
+        rows.map((r) => r.url),
+        [b],
+        'the recovered URL is gone; the still-failing one remains',
+      );
+
+      // A fresh failure after recovery starts from 1 again, not from 3.
+      await recordDocsIngestUrlFailures([a]);
+      assert.equal(
+        (await mine()).find((r) => r.url === a)?.consecutiveFailures,
+        1,
+        'the streak restarts after a success — it is consecutive, not cumulative',
+      );
+    } finally {
+      await pool.query(`DELETE FROM docs_ingest_url_failures WHERE url LIKE $1`, [`%${RUN}%`]);
+    }
+  },
+);
+
+test(
+  'repository: the docs-ingest failure helpers are all no-ops on an empty list (no stray query, no row churn)',
+  { skip },
+  async () => {
+    await assert.doesNotReject(async () => {
+      await recordDocsIngestUrlFailures([]);
+      await clearDocsIngestUrlFailures([]);
+      await markDocsIngestUrlsReported([]);
+    });
   },
 );

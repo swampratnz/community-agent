@@ -506,6 +506,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   off the **index**, not fetch success — a `'docs'` chunk is removed only when
   its page is no longer listed in the index at all, so a page that transiently
   404s/times out (the index habitually lists some dead URLs) is never deleted.
+  That same dead-URL habit is also bounded on the *fetch* side (issue #611): a
+  URL that fails `DOCS_INGEST_DEAD_URL_RUNS` consecutive runs (default 3, ~3
+  weeks at the weekly cadence; `0` disables) is reported once and then skipped
+  rather than re-fetched every run, with one re-probe every
+  `DOCS_INGEST_DEAD_URL_RECHECK_DAYS` so an upstream fix self-heals with no
+  operator action. This changes only which *already-listed, first-party* URLs
+  are requested — it can neither widen the fetch set nor delete knowledge
+  (pruning still keys off the index, per above), and the streak table holds
+  URLs only, no user identifier.
   Bounds:
   fixed source URL (override-only), `DOCS_INGEST_MAX_PAGES`/
   `DOCS_INGEST_MAX_CHUNKS` caps, polite fetch concurrency, and a redeploy-safe
@@ -678,6 +687,42 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   deleted by `forget_me`/`purge_user_data` and on roster leave (a departed
   member's published projects go with them, unlike most other member data
   which waits for an explicit privacy request), and counted in `my_data`.
+- **Member interests / member-to-member discovery** (`member_interests`,
+  issue #634): a member publishes a single free-text blob of their own
+  interests with `set_my_interests(text | 'clear')`, discoverable by every
+  other member via `who_is_into(query)` (embedding-similarity search, capped
+  at 5 results). **Self-declared only, never inferred from message
+  content** — this is the strongest privacy posture a discovery feature can
+  have, and the tool description states plainly that setting interests
+  *publishes* them; a test seeds `interactions` with chat text matching a
+  `who_is_into` query for a member who never called `set_my_interests` and
+  asserts they never appear (SECURITY, same discipline `list_projects`
+  applies to `member_projects`). Both tools explicitly re-assert `member`
+  tier in the handler (excluding open-mode guests, same reasoning as
+  `share_project`/`list_projects`, since this is member-facing publication
+  rather than a private/self-scoped action like `set_response_style`). One
+  row per identity (`platform, user_id` primary key) with plain upsert
+  semantics — no rate cap is needed since a member can only ever replace
+  their own single row, unlike `member_projects`' unbounded distinct-name
+  accumulation. Passing the literal string `'clear'` (case-insensitive,
+  trimmed) deletes the row instead of writing one. A caller with no
+  published interests of their own can still query `who_is_into` — discovery
+  doesn't require self-disclosure. `who_is_into` results are rendered with
+  the same quarantine discipline as `list_projects`' `<shared-projects>`
+  block: angle brackets and all whitespace including U+0085
+  stripped/collapsed per entry (`untrustedEntryContent`), owner display name
+  sanitized (`sanitizeName`/`resolveSanitizedLabel`) — a crafted interests
+  string can't escape the rendered `<member-interests>` block or forge
+  another member's attribution. Rows are deleted by
+  `forget_me`/`purge_user_data` and on roster leave (a departed member's
+  published interests go with them, same reasoning as `member_projects`),
+  and counted in `my_data`. **Monitored risk, not a blocker (accepted at
+  proposal review):** a member could sweep `who_is_into` with broad queries
+  to enumerate the whole published directory — every byte returned is
+  deliberately self-published free text, never inferred, never message
+  content, so this is no more exposure than a queryable "intros channel";
+  the 5-result cap limits per-query yield, not enumeration across many
+  queries. Revisit if abused.
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
   boolean, comment?: string)`. Since issue #355, `comment` carries an
@@ -961,6 +1006,49 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   byte-identical to before #480: `recordAccessRequest`'s new return value is
   computed but the alert branch never reads it, so no admin DM is ever sent
   and no rate-limit state is ever touched.
+- **Real-time knowledge-gap-cluster alert** (`KNOWLEDGE_GAP_ALERT_ENABLED`,
+  off by default, issue #650): the discrete-event push complement to
+  `list_knowledge_gaps`/the digest's `countKnowledgeGaps` line, same
+  promote-to-instant-DM precedent as the escalation alert (#479) and the
+  access-request alert above (#480). **No new tool, no new privileged data
+  access, no broadened recipient set**: the alert content (a cluster's
+  `representative` query text + `count`) is a strict subset of what
+  admin-tier `list_knowledge_gaps` already returns for the same
+  conversation scope — this changes only *when* it's seen. Delivered only to
+  `listAdmins()`, the identical guild-wide recipient set the weekly digest
+  and #479/#480 already use, via the existing `notifyAdmins` queue (so it
+  inherits #625's offline-admin delivery guarantee for free). Detection
+  reuses `recentKnowledgeGapClusters`' exact clustering logic
+  (`findCrossedKnowledgeGapCluster` in `storage/repository.ts`) rather than
+  a second detector, conversation-scoped exactly like the read side. Threaded
+  from the `knowledge_search` tool handler as turn-scoped state
+  (`ToolServerTurnState.knowledgeGapCluster` → `TurnOutcome` →
+  `AgentReply`), the same non-model pattern `unhelpfulAnswerRated` (#598)
+  already established — `notifyAdmins` is never called from `tools.ts`
+  itself, only from `router.ts` post-turn, so this adds no new
+  model-reachable path to an admin DM. **Single-shot per cluster**: a new
+  `alerted_at TIMESTAMPTZ` column on `knowledge_gaps` (NULL until stamped) is
+  set on every row of a crossed cluster at the moment a real-time-alert
+  rate-limit slot is successfully reserved, so `findCrossedKnowledgeGapCluster`'s
+  `alerted_at IS NULL` filter means none of those rows can trigger a second
+  alert — pinned by a `SECURITY:` test. **Bounded untrusted-content path**:
+  `representative` is member-authored text (a reformulated search query);
+  the DM applies `truncateForEcho`, the identical 120-char cap the
+  escalation-echo path (#479) already applies to member-authored text before
+  it reaches an admin DM, so a crafted/over-long query can't produce an
+  unbounded admin-DM surface, pinned by a `SECURITY:` test. **Guild-wide
+  rolling-hour cap**, `KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR` (default 5,
+  identical sliding-window shape to `reserveAccessRequestAlertSlot`), bounds
+  worst-case admin DM volume from an organic or adversarial query burst,
+  pinned by a `SECURITY:` test; once exhausted within the trailing hour, a
+  further threshold crossing is still recorded (and still counted by the
+  weekly digest — `countKnowledgeGaps` unaffected) but the crossed cluster's
+  rows are left unalerted, so a later gap in the same cluster can retry once
+  the window frees — the rate limit drops only the extra DM, never data.
+  With the flag unset/false, the `knowledge_search` handler's
+  `recordKnowledgeGap` call stays exactly the fire-and-forget it was before
+  #650: no extra cluster query, no await, no DM — byte-identical to today,
+  pinned by a `SECURITY:` test.
 - **Returning-guest wait clause** (`appendWaitClause`/`waitDaysSince`,
   `src/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
   age the admin-facing digest/`list_access_requests` (issue #515, above)

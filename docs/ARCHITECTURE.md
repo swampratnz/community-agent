@@ -503,6 +503,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
+| `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search) | ❌ | ✅ | ✅ | ✅ |
 | `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `set_language_preference` (standing reply-language preference: auto/en/mi; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -1099,6 +1100,39 @@ serve. That decision used to be made and thrown away in the same request;
   trusted `'docs'` backfill or any human-authored entry (admin `save_knowledge`
   /`update_knowledge`, or `accept_knowledge_candidate`'s admin-reviewed
   publish) may resolve gaps as normal.
+- **Real-time cluster alert (issue #650, `KNOWLEDGE_GAP_ALERT_ENABLED`,
+  off by default).** Promotes the "asked N times, never confidently
+  answered → worth a FAQ?" signal from the weekly digest's pull-only
+  `countKnowledgeGaps` line to an instant admin DM the moment a cluster
+  first crosses `KNOWLEDGE_GAP_ALERT_THRESHOLD` (default 3) unresolved,
+  not-yet-alerted rows — the same promote-to-instant-DM shape the max-turns
+  escalation (#479) and access-request alert (#480) already use. A new
+  `alerted_at TIMESTAMPTZ` column on `knowledge_gaps` (NULL until stamped)
+  makes this single-shot per cluster: `findCrossedKnowledgeGapCluster`
+  re-runs `recentKnowledgeGapClusters`' exact clustering, scoped to the new
+  gap's own conversation and restricted to `alerted_at IS NULL` rows, right
+  after `recordKnowledgeGap`'s insert; when the row's own cluster reaches
+  the threshold, the crossing is threaded through
+  `ToolServerTurnState.knowledgeGapCluster` → `TurnOutcome`/`AgentReply`,
+  the same turn-scoped-ref pattern `unhelpfulAnswerRated` (#598) already
+  uses — `notifyAdmins` is never called from `tools.ts` itself. `router.ts`
+  then reserves a guild-wide rolling-hour slot
+  (`KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR`, default 5, identical shape to
+  `reserveAccessRequestAlertSlot`) and, only on a successful reservation,
+  stamps every row in the crossed cluster `alerted_at = now()`
+  (`markKnowledgeGapsAlerted`) and fires one `notifyAdmins` DM naming the
+  cluster's `representative` query text (`truncateForEcho`-capped, the same
+  120-char bound the escalation-echo path already applies to member-authored
+  text) and its `count`. A crossing that misses the rate cap leaves the
+  cluster's rows unalerted so a later gap in the same cluster can retry once
+  the trailing hour frees up — the gap itself is still recorded and still
+  counted by the weekly digest either way; only the extra real-time DM is
+  dropped. With the flag off, the `knowledge_search` handler's
+  `recordKnowledgeGap` call stays exactly the fire-and-forget it was before
+  #650 — no extra query, no await. Explicitly out of scope (named future
+  work in the issue): auto-posting into the channel/thread where the
+  questions were asked, and extending the same real-time-nudge treatment to
+  the stale-knowledge/generic-repeat-question signals.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,

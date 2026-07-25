@@ -172,6 +172,23 @@ ownership rules:
   rebuilding (issue #667) — the pointer is resolved by a deterministic
   pre-step (bot comments only, exact template, remote-verified), never by the
   agent reading comment text.
+- **All three PR-fixing loops (autofix, conflict-resolver, revise) carry the
+  same deterministic checkpoint** as the build worker, for the same reason.
+  Each already instructs its agent to run every command synchronously and to
+  NEVER end its turn waiting for one, and that instruction is provably not
+  enough: the revise agent ended PR #606 with *"I'll wait for the monitor
+  notification before continuing with the security test suite, build, and
+  push"*, and the conflict resolver ended PR #609 waiting on a Monitor task —
+  both had already COMMITTED work, which died with the runner, and both PRs
+  escalated `needs-human` with nothing to show (#609's "unresolvable" conflict
+  was then a clean merge a human finished in minutes). The checkpoint runs
+  after the agent exits, pushes committed-but-unpushed work with the job's
+  GITHUB_TOKEN, and only ever FAST-FORWARDS the PR branch — a remote that
+  moved parks the work on a `-ckpt-<run_id>` ref instead of rewriting someone
+  else's push. Because that work never cleared the agent's own gate, the
+  recovery comment says so explicitly: CI on the push is the adjudicator and
+  the automated review still has to pass, so a checkpoint can surface work but
+  can never launder it into a merge.
 - The **auto-merge loop** (`pipeline-pr-automerge.yml`) merges fully-vetted
   build-worker PRs, one at a time, so a backlog of green + approved PRs doesn't
   stall on a human. It is a **deterministic, no-LLM, no-Max-pool** shell loop

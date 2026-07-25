@@ -1722,6 +1722,81 @@ export async function deleteProvenancedKnowledgeByTitles(
   return rowCount ?? 0;
 }
 
+// --- Docs-ingest dead-URL tracking (issue #611) ------------------------------
+
+export interface DocsIngestUrlFailure {
+  url: string;
+  consecutiveFailures: number;
+  lastFailedAt: Date;
+  /** Non-null once the URL crossed the dead threshold and was reported. */
+  reportedAt: Date | null;
+}
+
+/**
+ * Every URL currently in a failing streak. A row exists only while a URL is
+ * failing (a successful fetch deletes it — see `clearDocsIngestUrlFailures`),
+ * so this is bounded by the size of the upstream index's dead tranche, not by
+ * history. Returned raw: the caller (`runDocsIngest`) applies the
+ * threshold/recheck policy, keeping this function free of config coupling and
+ * the policy directly unit-testable.
+ */
+export async function listDocsIngestUrlFailures(): Promise<DocsIngestUrlFailure[]> {
+  const { rows } = await pool.query(
+    `SELECT url, consecutive_failures, last_failed_at, reported_at FROM docs_ingest_url_failures`,
+  );
+  return rows.map((r) => ({
+    url: r.url as string,
+    consecutiveFailures: Number(r.consecutive_failures),
+    lastFailedAt: r.last_failed_at as Date,
+    reportedAt: (r.reported_at as Date | null) ?? null,
+  }));
+}
+
+/**
+ * Record one more consecutive failure for each URL, creating the row on first
+ * failure. `first_failed_at` is preserved across bumps (it dates the streak);
+ * `last_failed_at` moves to now, which is what the re-probe cooldown measures
+ * from. No-op on an empty list.
+ */
+export async function recordDocsIngestUrlFailures(urls: readonly string[]): Promise<void> {
+  // De-duplicated because ON CONFLICT DO UPDATE errors outright ("cannot affect
+  // row a second time") if the same key appears twice in one statement.
+  const unique = [...new Set(urls)];
+  if (unique.length === 0) return;
+  await pool.query(
+    `INSERT INTO docs_ingest_url_failures (url)
+     SELECT unnest($1::text[])
+     ON CONFLICT (url) DO UPDATE
+       SET consecutive_failures = docs_ingest_url_failures.consecutive_failures + 1,
+           last_failed_at = now()`,
+    [unique],
+  );
+}
+
+/**
+ * Clear the failing streak for URLs that fetched successfully — this is what
+ * makes the streak CONSECUTIVE (one success resets it) and what lets an
+ * upstream fix self-heal a skipped URL on its next re-probe. No-op on an empty
+ * list.
+ */
+export async function clearDocsIngestUrlFailures(urls: readonly string[]): Promise<void> {
+  if (urls.length === 0) return;
+  await pool.query(`DELETE FROM docs_ingest_url_failures WHERE url = ANY($1)`, [[...urls]]);
+}
+
+/**
+ * Stamp `reported_at` on URLs whose dead-threshold crossing has just been
+ * logged, so the operator is told once rather than on every subsequent run.
+ * No-op on an empty list.
+ */
+export async function markDocsIngestUrlsReported(urls: readonly string[]): Promise<void> {
+  if (urls.length === 0) return;
+  await pool.query(
+    `UPDATE docs_ingest_url_failures SET reported_at = now() WHERE url = ANY($1) AND reported_at IS NULL`,
+    [[...urls]],
+  );
+}
+
 // --- Membership (three-tier RBAC) -------------------------------------------
 
 export type StoredRole = 'admin' | 'member';
@@ -2317,6 +2392,12 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`,
       [platform, userId],
     );
+    // member_interests (issue #634) is keyed the same way — purge coherence
+    // for anyone who published interests via set_my_interests.
+    const { rowCount: memberInterests } = await client.query(
+      `DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`,
+      [platform, userId],
+    );
     // Member-sourced knowledge_candidates rows (issue #633, suggest_knowledge)
     // — matched on source_platform/source_user_id, in EVERY status (pending
     // AND accepted/declined), unlike the digest-invalidation delete above
@@ -2348,6 +2429,7 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (devTeamWatches ?? 0) +
       (moderationAppeals ?? 0) +
       (memberProjects ?? 0) +
+      (memberInterests ?? 0) +
       (knowledgeTips ?? 0)
     );
   } catch (err) {
@@ -2393,6 +2475,7 @@ export interface MyDataSummary {
   reportsFiled: number;
   suggestionsFiled: number;
   projectsShared: number;
+  interestsPublished: number;
   responseStyle: ResponseStyle;
 }
 
@@ -2423,6 +2506,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
   let reportsFiled = 0;
   let suggestionsFiled = 0;
   let projectsShared = 0;
+  let interestsPublished = 0;
   for (const identity of identities) {
     const { rows: interactionRows } = await pool.query(
       `SELECT
@@ -2459,6 +2543,12 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
       [identity.platform, identity.userId],
     );
     projectsShared += Number(projectRows[0]?.n ?? 0);
+
+    const { rows: interestRows } = await pool.query(
+      `SELECT count(*) AS n FROM member_interests WHERE platform = $1 AND user_id = $2`,
+      [identity.platform, identity.userId],
+    );
+    interestsPublished += Number(interestRows[0]?.n ?? 0);
   }
 
   return {
@@ -2468,6 +2558,7 @@ export async function getMyDataSummary(platform: Platform, userId: string): Prom
     reportsFiled,
     suggestionsFiled,
     projectsShared,
+    interestsPublished,
     // The standing style preference isn't purge-scope data — it's a single
     // per-identity row, so this reports the caller's own invoking identity
     // only (same scoping set_response_style itself uses), not aggregated.
@@ -3615,6 +3706,94 @@ export async function resolveSuggestion(
     : null;
 }
 
+// --- Member interests (member-to-member discovery, issue #634) --------------
+//
+// Self-declared-member-table pattern member_projects below reuses: opt-in,
+// self-scoped, embedded, purge/roster-leave-cleaned data. One fuzzy free-text
+// blob per identity rather than discrete named artifacts, hence the plain
+// (platform, user_id) primary key and upsert-only-in-place semantics — no
+// per-member cap or rate limit is needed since a member can only ever have
+// the single row their own writes replace.
+
+/** Hard cap on published interest text length (self-declared free text), enforced server-side. */
+export const MEMBER_INTERESTS_MAX_CHARS = 300;
+/** who_is_into's result cap. */
+export const WHO_IS_INTO_LIMIT = 5;
+
+export interface MemberInterestSearchHit {
+  platform: Platform;
+  userId: string;
+  interests: string;
+  similarity: number;
+}
+
+/**
+ * Self-scoped upsert/clear of the caller's OWN published interests row.
+ * Passing the literal string 'clear' (case-insensitive, whitespace-trimmed)
+ * deletes the row instead of writing one — the exact `text | 'clear'`
+ * interface the tool description exposes. Never CONFIRM-gated: instantly
+ * reversible, same shape as set_response_style/set_language_preference.
+ */
+export async function setMemberInterests(
+  platform: Platform,
+  userId: string,
+  interests: string,
+): Promise<{ cleared: boolean }> {
+  if (interests.trim().toLowerCase() === 'clear') {
+    await pool.query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId]);
+    return { cleared: true };
+  }
+  const text = interests.slice(0, MEMBER_INTERESTS_MAX_CHARS);
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embed(text);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for member interests');
+  }
+  await pool.query(
+    `INSERT INTO member_interests (platform, user_id, interests, embedding, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (platform, user_id) DO UPDATE SET
+       interests = EXCLUDED.interests, embedding = EXCLUDED.embedding, updated_at = now()`,
+    [platform, userId, text, embedding ? pgvector.toSql(embedding) : null],
+  );
+  return { cleared: false };
+}
+
+/**
+ * Embedding-similarity search over published interests ONLY (never
+ * `interactions` — SECURITY: issue #634 AC #4, interests are never inferred
+ * from chat content). A caller with no row of their own can still search;
+ * absent/cleared rows never appear since they simply don't exist in the table.
+ */
+export async function searchMemberInterests(
+  query: string,
+  limit = WHO_IS_INTO_LIMIT,
+): Promise<MemberInterestSearchHit[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || WHO_IS_INTO_LIMIT, 1), 50);
+  let queryVec: number[];
+  try {
+    queryVec = await embed(query);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding query failed; skipping member interest search');
+    return [];
+  }
+  const { rows } = await pool.query(
+    `SELECT platform, user_id, interests, 1 - (embedding <=> $1) AS similarity
+       FROM member_interests
+      WHERE embedding IS NOT NULL
+      ORDER BY embedding <=> $1
+      LIMIT $2`,
+    [pgvector.toSql(queryVec), clampedLimit],
+  );
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    userId: r.user_id,
+    interests: r.interests as string,
+    similarity: Number(r.similarity),
+  }));
+}
+
 // --- Member projects (self-declared project showcase, issue #646) -----------
 //
 // Second instance of #634's self-declared-member-table pattern: opt-in,
@@ -3913,13 +4092,13 @@ export async function upsertRosterMember(input: {
 
 /**
  * Mark a roster row as left. No-op (false) if unknown or already marked left.
- * Also removes the departed member's shared projects (issue #646): unlike
- * most member-owned data (which stays until an explicit forget_me/purge —
- * membership alone isn't a privacy request), a project showcase entry is a
- * PUBLISHED artifact whose premise is "a current member of this community
- * built this" — once they've left, showing it to remaining members as if
- * they were still around is misleading, so it goes with them automatically,
- * same as the acceptance criteria's stated lifecycle.
+ * Also removes the departed member's shared projects (issue #646) and
+ * published interests (issue #634): unlike most member-owned data (which
+ * stays until an explicit forget_me/purge — membership alone isn't a privacy
+ * request), both are PUBLISHED artifacts whose premise is "a current member
+ * of this community built/is into this" — once they've left, showing them to
+ * remaining members as if they were still around is misleading, so they go
+ * with them automatically, same as each feature's stated lifecycle.
  */
 export async function markRosterLeave(platform: Platform, userId: string): Promise<boolean> {
   const { rowCount } = await pool.query(
@@ -3932,6 +4111,9 @@ export async function markRosterLeave(platform: Platform, userId: string): Promi
     await pool
       .query(`DELETE FROM member_projects WHERE platform = $1 AND user_id = $2`, [platform, userId])
       .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_projects cleanup failed'));
+    await pool
+      .query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId])
+      .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_interests cleanup failed'));
   }
   return left;
 }
@@ -4325,6 +4507,87 @@ export async function recentKnowledgeGapClusters(
     .sort((a, b) => b.count - a.count)
     .slice(0, clampedLimit)
     .map((c) => ({ representative: c.representative, count: c.count }));
+}
+
+export interface CrossedKnowledgeGapCluster extends KnowledgeGapCluster {
+  /** ids of every row in the crossed cluster, for `markKnowledgeGapsAlerted`. */
+  rowIds: number[];
+}
+
+/**
+ * Real-time counterpart to `recentKnowledgeGapClusters` above (issue #650):
+ * identical greedy embedding-similarity clustering, scoped to `newGapId`'s
+ * own conversation, but restricted to `alerted_at IS NULL` rows so a cluster
+ * already promoted to an alert (its rows stamped by `markKnowledgeGapsAlerted`)
+ * can't re-trigger on a later gap — only fresh, not-yet-alerted rows count
+ * toward a new crossing. Called synchronously right after `recordKnowledgeGap`'s
+ * insert, scoped to that one gap's own conversation (never guild-wide),
+ * matching `recentKnowledgeGapClusters`'s own scoping convention.
+ *
+ * Returns the crossed cluster's `representative`/`count` (same shape as
+ * `recentKnowledgeGapClusters`) plus every member row's `id`, so the caller
+ * can stamp them all alerted in one `markKnowledgeGapsAlerted` call.
+ * `recentKnowledgeGapClusters` itself is left untouched — still backs
+ * `list_knowledge_gaps`, never returns row ids, since exposing ids there
+ * would be unused surface for that read-only listing path.
+ *
+ * Returns null when `newGapId`'s own cluster (identified by embedding
+ * similarity) hasn't yet reached `threshold` unalerted rows, or when the new
+ * row has no embedding (an `embed()` failure at insert time — no signal to
+ * cluster on) or isn't found among the unresolved/unalerted rows (already
+ * resolved or alerted by a race with another turn).
+ */
+export async function findCrossedKnowledgeGapCluster(
+  conversationId: string,
+  newGapId: number,
+  threshold: number,
+  days = 7,
+): Promise<CrossedKnowledgeGapCluster | null> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 30);
+
+  const { rows } = await pool.query(
+    `SELECT id, query_text, embedding
+       FROM knowledge_gaps
+      WHERE conversation_id = $1
+        AND resolved_at IS NULL
+        AND alerted_at IS NULL
+        AND embedding IS NOT NULL
+        AND created_at > now() - $2::interval
+      ORDER BY created_at ASC`,
+    [conversationId, `${clampedDays} days`],
+  );
+
+  const clusters: Array<{ representative: string; embedding: number[]; count: number; ids: number[] }> = [];
+  for (const row of rows) {
+    const vec = row.embedding as number[] | null;
+    if (!vec) continue;
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.count += 1;
+      match.ids.push(Number(row.id));
+    } else {
+      clusters.push({ representative: row.query_text, embedding: vec, count: 1, ids: [Number(row.id)] });
+    }
+  }
+
+  const crossed = clusters.find((c) => c.ids.includes(newGapId) && c.count >= threshold);
+  if (!crossed) return null;
+  return { representative: crossed.representative, count: crossed.count, rowIds: crossed.ids };
+}
+
+/**
+ * Stamps `alerted_at = now()` on every row of a just-crossed cluster (issue
+ * #650), returned by `findCrossedKnowledgeGapCluster` — single-shot per
+ * cluster: that function's `alerted_at IS NULL` filter means none of these
+ * rows can contribute to a future crossing again. Called unconditionally once
+ * the caller has reserved a real-time-alert rate-limit slot, regardless of
+ * whether the subsequent admin DM itself succeeds — same "the slot is
+ * consumed the moment we decide to alert" precedent as
+ * `reserveEscalationSlot`/`reserveAccessRequestAlertSlot`.
+ */
+export async function markKnowledgeGapsAlerted(ids: readonly number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(`UPDATE knowledge_gaps SET alerted_at = now() WHERE id = ANY($1)`, [[...ids]]);
 }
 
 // --- Admin digest freshness guard (issue #97) --------------------------------
