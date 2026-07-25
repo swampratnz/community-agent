@@ -95,6 +95,24 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   guardrails as autofix (`gh` read-only except `gh pr comment` so a
   principled refusal is explained on the PR). It never opens or merges PRs.
   Do not misflag its pushes as an ownership violation either.
+- **All three of the above (autofix, conflict-resolver, revise) also carry the
+  build worker's deterministic checkpoint step**, for the same reason it was
+  added there: prompt-only compliance is unreliable. Each loop's EXECUTION
+  MODEL block already says to run every command synchronously and NEVER to end
+  the turn waiting for one, and agents still did exactly that — the revise
+  agent ended PR #606 with *"I'll wait for the monitor notification before
+  continuing with the security test suite, build, and push"* and the conflict
+  resolver ended PR #609 waiting on a Monitor task. Both had COMMITTED work
+  that died with the runner; both PRs escalated `needs-human` having produced
+  nothing, and #609's supposedly unresolvable conflict was a clean `main`
+  merge a human completed in minutes. The step runs after the agent exits,
+  pushes committed-but-unpushed work with the job's GITHUB_TOKEN, and only
+  FAST-FORWARDS the PR branch (a moved remote parks the work on a
+  `-ckpt-<run_id>` ref rather than rewriting it). Since that work never passed
+  the agent's own gate, the recovery comment says so outright — CI on the push
+  adjudicates and the automated review must still pass, so a checkpoint can
+  rescue work but never launder unverified work into a merge. Its pushes are
+  likewise not an ownership violation.
 - A fourth exception: the **auto-merge loop** (`pipeline-pr-automerge.yml`)
   merges fully-vetted build-worker PRs — a deliberate, tightly-gated reversal
   of the original "a human merges everything" rule, added because throughput,
