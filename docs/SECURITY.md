@@ -477,6 +477,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   off the **index**, not fetch success — a `'docs'` chunk is removed only when
   its page is no longer listed in the index at all, so a page that transiently
   404s/times out (the index habitually lists some dead URLs) is never deleted.
+  That same dead-URL habit is also bounded on the *fetch* side (issue #611): a
+  URL that fails `DOCS_INGEST_DEAD_URL_RUNS` consecutive runs (default 3, ~3
+  weeks at the weekly cadence; `0` disables) is reported once and then skipped
+  rather than re-fetched every run, with one re-probe every
+  `DOCS_INGEST_DEAD_URL_RECHECK_DAYS` so an upstream fix self-heals with no
+  operator action. This changes only which *already-listed, first-party* URLs
+  are requested — it can neither widen the fetch set nor delete knowledge
+  (pruning still keys off the index, per above), and the streak table holds
+  URLs only, no user identifier.
   Bounds:
   fixed source URL (override-only), `DOCS_INGEST_MAX_PAGES`/
   `DOCS_INGEST_MAX_CHUNKS` caps, polite fetch concurrency, and a redeploy-safe

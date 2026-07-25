@@ -559,6 +559,20 @@ const EnvSchema = z.object({
   DOCS_INGEST_EXCLUDE_PATHS: z
     .string()
     .default('api/go,api/csharp,api/java,api/python,api/typescript,api/ruby,api/php,api/cli,api/compliance'),
+  // Dead-URL skipping (issue #611, the growth path #613 deferred): after this
+  // many CONSECUTIVE runs in which a page URL fails to fetch, it is reported
+  // once and then skipped instead of being re-fetched every run — the upstream
+  // index habitually lists a tranche of pages that don't exist. 0 disables the
+  // skipping entirely (every listed page is fetched every run, as before).
+  // Default 3 is deliberately conservative: the job runs ~weekly, so a URL must
+  // fail for ~3 weeks before it is skipped at all.
+  DOCS_INGEST_DEAD_URL_RUNS: z.coerce.number().int().min(0).max(100).default(3),
+  // How long a skipped (dead) URL stays skipped before ONE re-probe. This is
+  // what makes the skip self-healing: if upstream restores the page, the next
+  // re-probe succeeds, its failure row is deleted, and it returns to the normal
+  // fetch set with no operator action. Never 0 — a 0-day cooldown would re-probe
+  // every run and defeat the point.
+  DOCS_INGEST_DEAD_URL_RECHECK_DAYS: z.coerce.number().int().positive().max(365).default(30),
   // Knowledge link-rot check (issue #448): a weekly background job HEAD-checks
   // every knowledge entry's sourceUrl and flags dead citations for admin
   // review (list_knowledge sourceUnreachable filter). OFF by default, matching
@@ -1024,6 +1038,8 @@ export const config = {
     maxChunks: env.DOCS_INGEST_MAX_CHUNKS,
     concurrency: env.DOCS_INGEST_CONCURRENCY,
     excludePaths: csv(env.DOCS_INGEST_EXCLUDE_PATHS),
+    deadUrlRuns: env.DOCS_INGEST_DEAD_URL_RUNS,
+    deadUrlRecheckDays: env.DOCS_INGEST_DEAD_URL_RECHECK_DAYS,
   },
   knowledgeLinkCheck: {
     enabled: env.KNOWLEDGE_LINK_CHECK_ENABLED ?? false,

@@ -67,6 +67,10 @@ const {
   markKnowledgeGapsAlerted,
   recentModerationEntries,
   adminActivitySummary,
+  listDocsIngestUrlFailures,
+  recordDocsIngestUrlFailures,
+  clearDocsIngestUrlFailures,
+  markDocsIngestUrlsReported,
   autoEnrollMemberWithAudit,
   AUTO_ENROLL_ACTOR,
   usageStats,
@@ -10628,5 +10632,79 @@ test(
     assert.deepEqual(await recentConversationTail('discord', conv, 0), [], 'limit 0 disables the backfill');
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [[conv, otherConv]]);
+  },
+);
+
+// --- Docs-ingest dead-URL tracking (issue #611) ------------------------------
+
+test(
+  'repository: docs-ingest URL failures accumulate a CONSECUTIVE streak, a success clears it, and reporting is stamped once',
+  { skip },
+  async () => {
+    const a = `https://example.invalid/${RUN}/a.md`;
+    const b = `https://example.invalid/${RUN}/b.md`;
+    const mine = async () => (await listDocsIngestUrlFailures()).filter((f) => f.url.includes(RUN));
+    try {
+      // First failure creates the row at 1.
+      await recordDocsIngestUrlFailures([a, b]);
+      let rows = await mine();
+      assert.equal(rows.length, 2, 'a row per failing URL');
+      assert.ok(
+        rows.every((r) => r.consecutiveFailures === 1 && r.reportedAt === null),
+        'first failure starts the streak at 1, unreported',
+      );
+
+      // Second and third failures bump the same rows rather than duplicating.
+      await recordDocsIngestUrlFailures([a, b]);
+      await recordDocsIngestUrlFailures([a]);
+      rows = await mine();
+      assert.equal(rows.length, 2, 'still one row per URL — the upsert bumps, never duplicates');
+      assert.equal(rows.find((r) => r.url === a)?.consecutiveFailures, 3);
+      assert.equal(rows.find((r) => r.url === b)?.consecutiveFailures, 2);
+
+      // Reporting stamps only the named URL, and only once.
+      await markDocsIngestUrlsReported([a]);
+      const firstStamp = (await mine()).find((r) => r.url === a)?.reportedAt;
+      assert.ok(firstStamp instanceof Date, 'the reported URL is stamped');
+      assert.equal((await mine()).find((r) => r.url === b)?.reportedAt, null, 'the other URL is untouched');
+      await markDocsIngestUrlsReported([a]);
+      assert.deepEqual(
+        (await mine()).find((r) => r.url === a)?.reportedAt,
+        firstStamp,
+        're-marking is a no-op — the original report time is preserved (WHERE reported_at IS NULL)',
+      );
+
+      // A success deletes the row entirely — that is what makes the streak
+      // CONSECUTIVE and lets a restored upstream page self-heal.
+      await clearDocsIngestUrlFailures([a]);
+      rows = await mine();
+      assert.deepEqual(
+        rows.map((r) => r.url),
+        [b],
+        'the recovered URL is gone; the still-failing one remains',
+      );
+
+      // A fresh failure after recovery starts from 1 again, not from 3.
+      await recordDocsIngestUrlFailures([a]);
+      assert.equal(
+        (await mine()).find((r) => r.url === a)?.consecutiveFailures,
+        1,
+        'the streak restarts after a success — it is consecutive, not cumulative',
+      );
+    } finally {
+      await pool.query(`DELETE FROM docs_ingest_url_failures WHERE url LIKE $1`, [`%${RUN}%`]);
+    }
+  },
+);
+
+test(
+  'repository: the docs-ingest failure helpers are all no-ops on an empty list (no stray query, no row churn)',
+  { skip },
+  async () => {
+    await assert.doesNotReject(async () => {
+      await recordDocsIngestUrlFailures([]);
+      await clearDocsIngestUrlFailures([]);
+      await markDocsIngestUrlsReported([]);
+    });
   },
 );

@@ -69,6 +69,20 @@ for anything after ~noon NZST/NZDT). Get today's date with
   is unset.
 
 ### Fixed
+- **Docs ingest stops re-fetching pages the upstream index lists but doesn't
+  have** (#611): Anthropic's `llms.txt` habitually lists a tranche of dead
+  pages — one observed run had 157 of 586 returning 404, all under
+  `api/terraform/beta/*` — and every weekly run re-requested all of them. A
+  page that fails to fetch on `DOCS_INGEST_DEAD_URL_RUNS` consecutive runs
+  (default 3, so ~3 weeks at the weekly cadence) is now reported **once** and
+  then skipped, instead of costing a request and a log line every week. The
+  skip is self-healing rather than permanent: each skipped page is re-probed
+  once every `DOCS_INGEST_DEAD_URL_RECHECK_DAYS` (default 30), so if Anthropic
+  restores the page it silently rejoins the normal fetch set with no operator
+  action. Set `DOCS_INGEST_DEAD_URL_RUNS=0` to keep fetching everything every
+  run. This completes the second half of #611 — the first half (batching the
+  404 log spam into one summary line) shipped in #613. No knowledge can be lost
+  by a skip: pruning still keys off the index, never off fetch success.
 - **`knowledge_search` no longer throws away a good answer when a secondary
   lookup fails.** The advisory conflict-badge check and the below-floor
   lexical fallback were the only two unguarded database calls in the handler,
