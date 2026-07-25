@@ -322,7 +322,16 @@ jobs:
             echo "Agent committed nothing — nothing to checkpoint."; exit 0
           fi
           remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
-          if [ "${head_sha}" = "${remote_sha}" ]; then
+          # A failed/404 gh api call can leave a NON-sha in remote_sha (an error
+          # body passed straight through --jq, e.g. the literal "null") — the
+          # same trap pipeline-build.yml had to harden after a real incident.
+          # Treat anything that is not a 40-hex sha as "remote tip unknown":
+          # blanking it skips the divergence pre-check and attempts the ordinary
+          # NON-FORCE push, which the server rejects unless it is a
+          # fast-forward. Without this a bogus value fails the ancestor test and
+          # diverts a perfectly fast-forwardable recovery onto a side ref.
+          if ! printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then remote_sha=""; fi
+          if [ -n "${remote_sha}" ] && [ "${head_sha}" = "${remote_sha}" ]; then
             echo "Agent already pushed ${head_sha} — nothing to checkpoint."; exit 0
           fi
           target="${BRANCH}"
