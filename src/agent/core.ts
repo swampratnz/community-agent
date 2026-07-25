@@ -13,6 +13,7 @@ import {
   searchMemory,
   setClaudeSessionId,
   type ConversationTailRow,
+  type CrossedKnowledgeGapCluster,
   type LanguagePreference,
   type ResponseStyle,
 } from '../storage/repository.js';
@@ -128,6 +129,17 @@ export interface AgentReply {
    * branch — never read by, or acted on inside, any model-callable tool.
    */
   unhelpfulAnswerRated?: boolean;
+  /**
+   * Set only when this turn's `knowledge_search` below-floor-miss crossed
+   * `KNOWLEDGE_GAP_ALERT_THRESHOLD` for the first time (issue #650),
+   * threaded from `TurnOutcome.knowledgeGapCluster` via the same
+   * turn-scoped-ref pattern as `unhelpfulAnswerRated` above. `undefined`
+   * whenever the flag is off, no crossing occurred this turn, or the turn
+   * didn't end in genuine success (`ok !== true`). Consumed by the router's
+   * post-turn deterministic alert branch — never read by, or acted on
+   * inside, any model-callable tool.
+   */
+  knowledgeGapCluster?: CrossedKnowledgeGapCluster;
 }
 
 /**
@@ -222,6 +234,7 @@ interface TurnOutcome {
   maxTurnsExceeded?: boolean;
   knowledgeEntryId?: number;
   unhelpfulAnswerRated?: boolean;
+  knowledgeGapCluster?: CrossedKnowledgeGapCluster;
 }
 
 /**
@@ -599,6 +612,7 @@ export async function runAgentTurn(
     responseStyle,
     knowledgeEntryId: outcome.knowledgeEntryId,
     unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
+    knowledgeGapCluster: outcome.knowledgeGapCluster,
   };
 }
 
@@ -679,7 +693,11 @@ async function execTurn(
   // top-scoring id of its most recent qualifying hit here; read back below
   // only on the genuine-success path (never on a thrown-error or non-success
   // result, so a fallback/error reply can never carry a stale correlation).
-  const turnState: ToolServerTurnState = { lastKnowledgeHitId: null, unhelpfulAnswerRated: false };
+  const turnState: ToolServerTurnState = {
+    lastKnowledgeHitId: null,
+    unhelpfulAnswerRated: false,
+    knowledgeGapCluster: null,
+  };
   const toolServer = buildToolServer(caller, adapter, getAdapter, turnState);
 
   // Text of the assistant message currently being streamed. Reset per
@@ -816,5 +834,6 @@ async function execTurn(
     sessionId,
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
     ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
+    ...(turnState.knowledgeGapCluster ? { knowledgeGapCluster: turnState.knowledgeGapCluster } : {}),
   };
 }

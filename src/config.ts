@@ -446,6 +446,26 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Real-time admin nudge (issue #650) fired the moment a knowledge-gap
+  // cluster (recordKnowledgeGap + recentKnowledgeGapClusters, issue #208)
+  // crosses KNOWLEDGE_GAP_ALERT_THRESHOLD unresolved, not-yet-alerted rows —
+  // the "asked N times, never confidently answered → worth a FAQ?" signal
+  // promoted from the weekly digest's bare count to an instant, rate-limited
+  // notifyAdmins DM, same promote-to-instant-DM precedent as #479/#480. Off
+  // by default, consistent with this repo's convention for new proactive DMs.
+  KNOWLEDGE_GAP_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Cluster size (unresolved, unalerted rows) that triggers the alert.
+  KNOWLEDGE_GAP_ALERT_THRESHOLD: z.coerce.number().int().positive().default(3),
+  // Guild-wide rolling-hour cap on knowledge-gap-cluster alerts, same
+  // sliding-window shape as ACCESS_REQUEST_ALERT_RATE_LIMIT_PER_HOUR — bounds
+  // worst-case admin DM volume from an organic or adversarial query burst.
+  // Once exhausted within the trailing hour, a further threshold crossing is
+  // still recorded (and still counted by the weekly digest) but does not
+  // notify; the row is left unalerted so it can retry once the window frees.
+  KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
   // Weekly member-facing digest post (issue #645): widens the audience of
   // already-admin-visible k-floored `context_digests` topics + curated
   // "new in the knowledge base" titles to a Discord channel, so a member who
@@ -1034,6 +1054,11 @@ export const config = {
   },
   engagementAlert: {
     enabled: env.ENGAGEMENT_ALERT_ENABLED ?? false,
+  },
+  knowledgeGapAlert: {
+    enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
+    threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
+    rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
   },
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,
