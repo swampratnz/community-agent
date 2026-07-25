@@ -84,6 +84,9 @@ jobs:
       # (a re-run of the same failed CI must not read one real attempt as two).
       ATTEMPT_MARKER: '<!-- pipeline-autofix-attempt -->'
       ESCALATE_MARKER: '<!-- pipeline-autofix-escalation -->'
+      # Its own marker so a recovered-work notice can never inflate the
+      # attempt count or be mistaken for an escalation.
+      CHECKPOINT_MARKER: '<!-- pipeline-autofix-checkpoint -->'
     steps:
       - name: Inert notice (token not set)
         if: env.HAS_TOKEN != 'true'
@@ -282,6 +285,70 @@ jobs:
             --max-turns 200
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git fetch origin:*),Bash(git rev-parse:*),Bash(git push origin HEAD),Bash(gh run view:*),Bash(gh pr checks:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
+
+      # DETERMINISTIC CHECKPOINT — the "agent stalled and lost its work" class.
+      # The EXECUTION MODEL block above already tells the agent to run every
+      # command synchronously and NEVER to end its turn waiting for one, but
+      # the sibling loops proved that insufficient: the revise agent ended PR
+      # #606 with "I'll wait for the monitor notification before continuing
+      # with the security test suite, build, and push", and the conflict
+      # resolver ended PR #609 waiting on a Monitor task. Both had already
+      # COMMITTED work, which died with the runner. Autofix runs the same
+      # agent against the same long gate, so it carries the same risk and gets
+      # the same backstop, mirroring the build worker's checkpoint (#633/#682).
+      #
+      # Safe by construction: runs only AFTER the agent has exited (no process
+      # left to influence it or read the token), uses the job's GITHUB_TOKEN
+      # (valid for the whole job, unlike the agent's ~1h App token), and only
+      # ever FAST-FORWARDS the PR branch — if the remote moved under us the
+      # work is parked on a side ref rather than rewriting someone else's push.
+      # Placed BEFORE the verify step so a successful recovery is seen as the
+      # new commit it is.
+      - name: Checkpoint unpushed work (deterministic)
+        if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed via env, never ${{ }}-interpolated into the script body: a
+          # git ref name may legally contain shell metacharacters. Uses the
+          # same source expression as the checkout above rather than the
+          # job-level HEAD_BRANCH, so this step is self-contained.
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_BEFORE: ${{ steps.mark.outputs.head_before }}
+        run: |
+          set -euo pipefail
+          n="${{ steps.pr.outputs.number }}"
+          head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+          if [ -z "${head_sha}" ] || [ "${head_sha}" = "${HEAD_BEFORE}" ]; then
+            echo "Agent committed nothing — nothing to checkpoint."; exit 0
+          fi
+          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
+          # A failed/404 gh api call can leave a NON-sha in remote_sha (an error
+          # body passed straight through --jq, e.g. the literal "null") — the
+          # same trap pipeline-build.yml had to harden after a real incident.
+          # Treat anything that is not a 40-hex sha as "remote tip unknown":
+          # blanking it skips the divergence pre-check and attempts the ordinary
+          # NON-FORCE push, which the server rejects unless it is a
+          # fast-forward. Without this a bogus value fails the ancestor test and
+          # diverts a perfectly fast-forwardable recovery onto a side ref.
+          if ! printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then remote_sha=""; fi
+          if [ -n "${remote_sha}" ] && [ "${head_sha}" = "${remote_sha}" ]; then
+            echo "Agent already pushed ${head_sha} — nothing to checkpoint."; exit 0
+          fi
+          target="${BRANCH}"
+          if [ -n "${remote_sha}" ] && ! git merge-base --is-ancestor "${remote_sha}" HEAD 2>/dev/null; then
+            target="${BRANCH}-ckpt-${{ github.run_id }}"
+            echo "Remote ${BRANCH} moved to ${remote_sha}; parking on ${target} rather than rewriting it."
+          fi
+          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if ! git push "${push_url}" "HEAD:refs/heads/${target}"; then
+            echo "::warning::Checkpoint push failed — the agent's committed work dies with this runner."
+            exit 0
+          fi
+          echo "Checkpointed ${head_sha} to ${target}."
+          gh pr comment "$n" --body "${CHECKPOINT_MARKER}
+          🤖 Recovered work the autofix agent committed but never pushed — it ended its turn without pushing. Checkpointed \`${head_sha}\` to \`${target}\`.
+
+          ⚠️ This was **not verified by the agent** (it stopped before finishing the gate). CI on this push is the adjudicator, and the automated review still has to pass before anything can merge." || true
 
       - name: Verify a fix was pushed (else escalate loudly)
         if: always() && env.HAS_TOKEN == 'true' && steps.mark.outcome == 'success'
