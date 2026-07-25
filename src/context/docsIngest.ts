@@ -446,7 +446,17 @@ export async function runDocsIngest(
   // whose actual ingest work succeeded.
   if (deadUrlsEnabled) {
     try {
-      await clearFailures(recoveredUrls);
+      // A streak row is also stale once its URL has left the index entirely —
+      // dropped upstream, or newly excluded via DOCS_INGEST_EXCLUDE_PATHS. Such
+      // a URL is never fetched again, so a success would never clear it and the
+      // row would linger forever. Reap those here, keyed off the FULL index
+      // (`allUrls`, not the maxPages slice) exactly like the chunk prune below,
+      // so a page merely past the fetch cap is never mistaken for one that
+      // vanished. This is what actually bounds the table by the CURRENT dead
+      // tranche rather than by history (PR #691 review).
+      const indexed = new Set(allUrls);
+      const orphaned = [...failureState.keys()].filter((url) => !indexed.has(url));
+      await clearFailures([...recoveredUrls, ...orphaned]);
       await recordFailures(failedFetchUrls);
       // A URL is newly dead when this run's failure takes its streak to the
       // threshold and it has never been reported. `+ 1` because `failureState`

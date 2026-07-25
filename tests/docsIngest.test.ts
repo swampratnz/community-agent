@@ -827,3 +827,27 @@ test('runDocsIngest: an already-reported URL that stays skipped is never re-repo
     assert.deepEqual(calls.reported, []);
   });
 });
+
+test('runDocsIngest: a streak row whose URL has left the index is reaped, so the table stays bounded by the current dead tranche (PR #691 review)', async () => {
+  await withDeadUrlConfig(3, 30, async () => {
+    const goneFromIndex = 'https://platform.claude.com/docs/en/api/terraform/beta/removed-upstream.md';
+    // Two open streaks: one URL still listed, one that has vanished from the
+    // index. The vanished one will never be fetched again, so nothing would
+    // ever clear it — it must be reaped here instead of lingering forever.
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 1), failure(goneFromIndex, 1)]);
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      throw new Error(`404 ${url}`);
+    };
+
+    await runDocsIngest(fetchText, deps);
+
+    assert.equal(calls.cleared.length, 1, 'one clear call');
+    assert.deepEqual(
+      calls.cleared[0],
+      [goneFromIndex],
+      'only the de-listed URL is reaped — the still-listed one keeps its streak',
+    );
+    assert.deepEqual(calls.recorded, [[DEAD_URL]], 'the still-listed URL still bumps its streak');
+  });
+});

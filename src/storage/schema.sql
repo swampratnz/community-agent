@@ -916,8 +916,10 @@ CREATE TABLE IF NOT EXISTS member_digest_sends (
 -- (DOCS_INGEST_DEAD_URL_RECHECK_DAYS) so an upstream fix self-heals.
 --
 -- A row exists only while a URL is CURRENTLY failing: a successful fetch
--- deletes it, so this table stays small and never needs its own retention
--- purge. Holds first-party docs URLs only — no user identifier, so
+-- deletes it, and a row whose URL has left the index entirely (dropped
+-- upstream, or newly excluded) is reaped on the next run — so this table stays
+-- bounded by the current dead tranche and never needs its own retention purge.
+-- Holds first-party docs URLs only — no user identifier, so
 -- forget_me/purge_user_data have nothing to touch here.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS docs_ingest_url_failures (
