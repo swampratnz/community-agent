@@ -69,6 +69,7 @@
   "knowledgeEntryIdRouter.test.ts": 1,
   "knowledgeRefresh.test.ts": 2,
   "knowledgeScope.test.ts": 4,
+  "knowledgeSearchFailSafe.test.ts": 2,
   "knowledgeSearchLowRatedCaveat.test.ts": 1,
   "knowledgeShortcutRouter.test.ts": 3,
   "linkCheck.test.ts": 13,
