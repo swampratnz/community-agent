@@ -758,3 +758,59 @@ test(
     });
   },
 );
+
+test('runDocsIngest: lowering the threshold onto an existing streak still reports the URL once before it goes quiet (PR #691 review)', async (t) => {
+  // The URL has 2 prior failures and was never reported. An operator lowers
+  // DOCS_INGEST_DEAD_URL_RUNS to 2, so it is dead on the NEXT run — and is
+  // therefore skipped before it is ever re-attempted, never entering
+  // failedFetchUrls. It must still get its one-time report rather than
+  // silently disappearing from the fetch set.
+  await withDeadUrlConfig(2, 30, async () => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 2)]);
+    const attempted: string[] = [];
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      attempted.push(url);
+      throw new Error(`404 ${url}`);
+    };
+
+    const res = await runDocsIngest(fetchText, deps);
+
+    assert.deepEqual(attempted, [], 'already over the lowered threshold, so it is skipped, not fetched');
+    assert.equal(res.deadSkipped, 1);
+    const deadWarns = warn.mock.calls.filter(
+      (c) =>
+        c.arguments[1] === 'Docs ingest: URLs persistently failing; skipping them until the next re-probe',
+    );
+    assert.equal(deadWarns.length, 1, 'the one-time report still fires for a config-induced crossing');
+    assert.deepEqual((deadWarns[0].arguments[0] as { sample: string[] }).sample, [DEAD_URL]);
+    assert.deepEqual(calls.reported, [[DEAD_URL]], 'and it is stamped, so it never reports again');
+  });
+});
+
+test('runDocsIngest: an already-reported URL that stays skipped is never re-reported (the report is once, not per run)', async (t) => {
+  await withDeadUrlConfig(3, 30, async () => {
+    const { logger } = await import('../src/logger.js');
+    const warn = t.mock.method(logger, 'warn');
+    const { calls, deps } = stubDeadUrlStore([failure(DEAD_URL, 5, 0, new Date())]);
+    const fetchText = async (url: string): Promise<string> => {
+      if (url === config.docsIngest.indexUrl) return `- [a](${DEAD_URL})`;
+      throw new Error('unreachable: this URL is dead and in cooldown');
+    };
+
+    const res = await runDocsIngest(fetchText, deps);
+
+    assert.equal(res.deadSkipped, 1, 'still skipped');
+    assert.equal(
+      warn.mock.calls.filter(
+        (c) =>
+          c.arguments[1] === 'Docs ingest: URLs persistently failing; skipping them until the next re-probe',
+      ).length,
+      0,
+      'already reported, so the run stays silent about it',
+    );
+    assert.deepEqual(calls.reported, []);
+  });
+});

@@ -444,11 +444,18 @@ export async function runDocsIngest(
       // A URL is newly dead when this run's failure takes its streak to the
       // threshold and it has never been reported. `+ 1` because `failureState`
       // is the pre-run snapshot and `recordFailures` has just bumped it.
-      const newlyDead = failedFetchUrls.filter((url) => {
+      const crossedThisRun = failedFetchUrls.filter((url) => {
         const prior = failureState.get(url);
         const streak = (prior?.consecutiveFailures ?? 0) + 1;
         return streak >= config.docsIngest.deadUrlRuns && prior?.reportedAt == null;
       });
+      // A URL can also become dead WITHOUT failing this run: lowering
+      // DOCS_INGEST_DEAD_URL_RUNS pushes an existing sub-threshold streak over
+      // the line, and it is then skipped before it is ever re-attempted — so it
+      // would go quiet having never been reported. Report those too, so
+      // "reported once, then skipped" holds however the URL crossed.
+      const skippedUnreported = deadSkippedUrls.filter((url) => failureState.get(url)?.reportedAt == null);
+      const newlyDead = [...new Set([...crossedThisRun, ...skippedUnreported])];
       if (newlyDead.length > 0) {
         logger.warn(
           {
