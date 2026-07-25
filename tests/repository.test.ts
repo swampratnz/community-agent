@@ -152,6 +152,10 @@ const {
   PROJECT_RATE_LIMIT_PER_DAY,
   PROJECT_NAME_MAX_CHARS,
   PROJECT_DESCRIPTION_MAX_CHARS,
+  setMemberInterests,
+  searchMemberInterests,
+  MEMBER_INTERESTS_MAX_CHARS,
+  WHO_IS_INTO_LIMIT,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -5541,6 +5545,125 @@ test(
 );
 
 test(
+  'repository: setMemberInterests upserts a self-scoped row, is capped server-side, and "clear" deletes it (issue #634)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-interests-lifecycle`;
+
+    const created = await setMemberInterests('discord', userId, 'RAG, pgvector, and Discord bots');
+    assert.deepEqual(created, { cleared: false });
+    const row = await pool.query(
+      `SELECT interests, embedding IS NOT NULL AS has_embedding FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(row.rows[0].interests, 'RAG, pgvector, and Discord bots');
+    assert.equal(row.rows[0].has_embedding, true, 'a fresh write is embedded');
+
+    // Re-writing the SAME identity upserts in place — never a second row,
+    // since (platform, user_id) is the primary key.
+    const edited = await setMemberInterests('discord', userId, 'Now also into MCP servers');
+    assert.deepEqual(edited, { cleared: false });
+    const afterEdit = await pool.query(
+      `SELECT count(*) AS n, max(interests) AS interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(Number(afterEdit.rows[0].n), 1, 'a second write on the same identity never creates a second row');
+    assert.equal(afterEdit.rows[0].interests, 'Now also into MCP servers');
+
+    // Over-long text is truncated server-side, not merely by the tool's zod cap.
+    const overLong = await setMemberInterests('discord', userId, 'x'.repeat(MEMBER_INTERESTS_MAX_CHARS + 50));
+    assert.deepEqual(overLong, { cleared: false });
+    const stored = await pool.query(`SELECT interests FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(stored.rows[0].interests.length, MEMBER_INTERESTS_MAX_CHARS, 'over-long text is capped server-side');
+
+    // 'clear' (case-insensitive, trimmed) deletes the row rather than storing
+    // the literal text "clear" — the exact text | 'clear' interface the tool
+    // description exposes.
+    const cleared = await setMemberInterests('discord', userId, '  ClEaR  ');
+    assert.deepEqual(cleared, { cleared: true });
+    const afterClear = await pool.query(`SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(afterClear.rows.length, 0, "'clear' deletes the caller's row");
+
+    // Clearing an already-absent row is a harmless no-op, not an error.
+    const clearedAgain = await setMemberInterests('discord', userId, 'clear');
+    assert.deepEqual(clearedAgain, { cleared: true });
+  },
+);
+
+test(
+  "SECURITY: repository: searchMemberInterests derives exclusively from member_interests — chat text in `interactions` matching the query, from a member who never called set_my_interests, never appears (issue #634 AC #4)",
+  { skip },
+  async () => {
+    const publisher = `${RUN}-interests-search-publisher`;
+    const nonPublisher = `${RUN}-interests-search-nonpublisher`;
+    const conversationId = `${RUN}-interests-search-convo`;
+
+    await setMemberInterests('discord', publisher, 'retrieval-augmented generation with Claude and pgvector');
+
+    // Chat content mentioning the exact same topic from a member who never
+    // called set_my_interests — must never surface via who_is_into/
+    // searchMemberInterests, since interests are never inferred from chat.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: nonPublisher,
+      role: 'member',
+      direction: 'inbound',
+      content: 'I am building a retrieval-augmented generation system with Claude and pgvector too',
+    });
+
+    const hits = await searchMemberInterests('retrieval augmented generation', WHO_IS_INTO_LIMIT);
+    assert.ok(
+      hits.some((h) => h.userId === publisher),
+      'the publisher who actually called set_my_interests is found',
+    );
+    assert.ok(
+      hits.every((h) => h.userId !== nonPublisher),
+      'SECURITY: a matching interactions row from a non-publishing member never appears in searchMemberInterests results',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [publisher]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [nonPublisher]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's member_interests row (issue #634)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-purge-interests`;
+    await setMemberInterests('discord', userId, 'gone after forget_me');
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the published interests row');
+    const after = await pool.query(`SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(after.rows.length, 0, "the user's published interests are gone after purge");
+  },
+);
+
+test(
+  "SECURITY: markRosterLeave removes the departed member's published interests (issue #634)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-leave-interests`;
+    await upsertRosterMember({ platform: 'discord', userId, displayName: 'Leaver' });
+    await setMemberInterests('discord', userId, 'should not survive roster leave');
+
+    assert.equal(await markRosterLeave('discord', userId), true);
+    const after = await pool.query(`SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      userId,
+    ]);
+    assert.equal(after.rows.length, 0, "a departed member's published interests are removed on roster leave");
+  },
+);
+
+test(
   'repository: shareProject enforces the per-member cap and a DB-backed rolling-24h rate cap, robust to a simulated restart (issue #646)',
   { skip },
   async () => {
@@ -9619,6 +9742,7 @@ test(
       description: 'a project sourced from this user',
     });
     assert.ok(suggestion && report && project.ok, 'fixtures recorded');
+    await setMemberInterests('discord', userId, 'interests sourced from this user');
     await setResponseStyle('discord', userId, 'plain');
 
     // Fixtures for tables getMyDataSummary must NEVER count or query, even
@@ -9653,10 +9777,12 @@ test(
     assert.equal(summary.reportsFiled, 1);
     assert.equal(summary.suggestionsFiled, 1);
     assert.equal(summary.projectsShared, 1);
+    assert.equal(summary.interestsPublished, 1);
     assert.equal(summary.responseStyle, 'plain');
     assert.deepEqual(
       Object.keys(summary).sort(),
       [
+        'interestsPublished',
         'knowledgeEntries',
         'ownMessages',
         'projectsShared',
@@ -9678,7 +9804,8 @@ test(
       summary.knowledgeEntries +
       summary.reportsFiled +
       summary.suggestionsFiled +
-      summary.projectsShared;
+      summary.projectsShared +
+      summary.interestsPublished;
     const purged = await purgeUserData('discord', userId);
     assert.ok(
       purged > reportedTotal,
@@ -9696,6 +9823,7 @@ test(
         reportsFiled: 0,
         suggestionsFiled: 0,
         projectsShared: 0,
+        interestsPublished: 0,
         responseStyle: 'standard',
       },
       'every table getMyDataSummary reports is empty after purge — reconciled per-table with the DELETE',
