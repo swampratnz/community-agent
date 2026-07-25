@@ -171,6 +171,58 @@ const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
  * fails deterministically on every attempt — so retrying masks nothing, and
  * the final attempt's assertion error propagates with real values.
  */
+/**
+ * Rank-independent assertion that a platform-scoped `usageStats` call's
+ * `topUsers` really is scoped to that platform.
+ *
+ * This replaces the older "the seeded user appears in topUsers" shape, which
+ * was a DIFFERENT interference mechanism from the absorbed-count deltas
+ * `retryOnSharedTableInterference` exists for, and which retrying could not
+ * fix: `topUsers` is `GROUP BY user_id ORDER BY n DESC LIMIT 5` over inbound
+ * rows in the window, and the seeded user has exactly ONE inbound row, so it
+ * competes for a top-5 slot against every other test file's concurrent
+ * traffic and is routinely evicted regardless of how many times the block is
+ * re-run (the 2026-07-25 CI flake, "discord-scoped topUsers includes the
+ * seeded discord user"). Seeding enough rows to win the slot is not viable
+ * either — `recordInteraction` embeds every message.
+ *
+ * Asserting the scope INVARIANT instead of the seeded row's rank is both
+ * interference-proof and strictly stronger: every id the scoped call returns
+ * must genuinely have an inbound row on that platform inside the window,
+ * which is exactly what a dropped/incorrect platform filter would violate,
+ * whoever happens to top the leaderboard. The non-empty check keeps it from
+ * passing vacuously — the caller seeds an inbound row on this platform in
+ * the same window, so at least one row always qualifies.
+ *
+ * The window predicate mirrors usageStats' own (`direction = 'inbound'`,
+ * `created_at > now() - $interval`, `platform = $platform`).
+ */
+async function assertTopUsersScopedToPlatform(
+  topUsers: Array<{ userId: string }>,
+  platform: 'discord' | 'whatsapp',
+  days: number,
+): Promise<void> {
+  assert.ok(
+    topUsers.length > 0,
+    `${platform}-scoped topUsers must not be empty — the caller seeded an inbound ${platform} row in this window`,
+  );
+  const ids = topUsers.map((u) => u.userId);
+  const { rows } = await pool.query(
+    `SELECT DISTINCT user_id
+       FROM interactions
+      WHERE direction = 'inbound'
+        AND platform = $1
+        AND created_at > now() - $2::interval
+        AND user_id = ANY($3)`,
+    [platform, `${days} days`, ids],
+  );
+  assert.equal(
+    rows.length,
+    ids.length,
+    `every id in ${platform}-scoped topUsers must have an inbound ${platform} row in the window — a leaked id means the platform filter was not applied`,
+  );
+}
+
 async function retryOnSharedTableInterference(attempts: number, run: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -3340,10 +3392,7 @@ test(
         assert.equal(afterDiscord.inbound - beforeDiscord.inbound, 1);
         assert.equal(afterDiscord.outbound - beforeDiscord.outbound, 1);
         assert.ok(Math.abs(afterDiscord.costUsd - beforeDiscord.costUsd - 1.2) < 1e-9);
-        assert.ok(
-          afterDiscord.topUsers.some((u) => u.userId === discordUser),
-          'discord-scoped topUsers includes the seeded discord user',
-        );
+        await assertTopUsersScopedToPlatform(afterDiscord.topUsers, 'discord', days);
         assert.ok(
           !afterDiscord.topUsers.some((u) => u.userId === whatsappUser),
           'discord-scoped topUsers must never include a whatsapp-only user',
@@ -3361,10 +3410,7 @@ test(
         assert.equal(afterWhatsapp.inbound - beforeWhatsapp.inbound, 1);
         assert.equal(afterWhatsapp.outbound - beforeWhatsapp.outbound, 1);
         assert.ok(Math.abs(afterWhatsapp.costUsd - beforeWhatsapp.costUsd - 0.3) < 1e-9);
-        assert.ok(
-          afterWhatsapp.topUsers.some((u) => u.userId === whatsappUser),
-          'whatsapp-scoped topUsers includes the seeded whatsapp user',
-        );
+        await assertTopUsersScopedToPlatform(afterWhatsapp.topUsers, 'whatsapp', days);
         assert.ok(
           !afterWhatsapp.topUsers.some((u) => u.userId === discordUser),
           'whatsapp-scoped topUsers must never include a discord-only user',

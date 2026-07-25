@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
  * Pure helpers for the WhatsApp Business Cloud API webhook wire format
@@ -26,6 +26,27 @@ export function verifySignature(
   const expected = Buffer.from(expectedHex, 'hex');
   if (expected.length !== computed.length) return false;
   return timingSafeEqual(expected, computed);
+}
+
+/**
+ * Constant-time string equality for comparing a caller-supplied value against
+ * a configured secret — the `hub.verify_token` handshake below being the one
+ * such comparison on this adapter that a `===` would otherwise decide with an
+ * early-exit, input-dependent number of byte comparisons.
+ *
+ * Both sides are SHA-256'd first so the compared buffers are always the same
+ * fixed width: `timingSafeEqual` throws outright on a length mismatch, and
+ * length-checking before it would leak the configured token's length. Hashing
+ * is what makes this safe for arbitrary, attacker-chosen input lengths.
+ *
+ * An empty/absent value on either side never matches, so an unconfigured
+ * secret can't be satisfied by an empty request parameter.
+ */
+export function timingSafeEqualString(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const digestA = createHash('sha256').update(a, 'utf8').digest();
+  const digestB = createHash('sha256').update(b, 'utf8').digest();
+  return timingSafeEqual(digestA, digestB);
 }
 
 export interface WebhookVerification {

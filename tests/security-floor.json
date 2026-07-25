@@ -108,6 +108,6 @@
   "whatsappBlockRouter.test.ts": 1,
   "whatsappBlockRouterOpen.test.ts": 1,
   "whatsappCloudAdapter.test.ts": 21,
-  "whatsappCloudWire.test.ts": 5,
+  "whatsappCloudWire.test.ts": 8,
   "whatsappWire.test.ts": 1
 }

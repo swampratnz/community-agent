@@ -5,6 +5,7 @@ import {
   extractMessages,
   isAllowedSender,
   parseVerificationRequest,
+  timingSafeEqualString,
   verifySignature,
 } from '../src/platforms/whatsapp/cloudWire.js';
 
@@ -41,6 +42,34 @@ test('SECURITY: verifySignature rejects missing header, missing secret, and malf
 test('SECURITY: verifySignature rejects a hex signature of the wrong length', () => {
   const body = Buffer.from('{"a":1}');
   assert.equal(verifySignature(body, 'sha256=deadbeef', 'app-secret'), false);
+});
+
+test('timingSafeEqualString: identical strings match', () => {
+  assert.equal(timingSafeEqualString('verify-token', 'verify-token'), true);
+  assert.equal(timingSafeEqualString('a', 'a'), true);
+});
+
+test('SECURITY: timingSafeEqualString rejects a wrong token, including near-misses that share a prefix', () => {
+  // A prefix-sharing near-miss is exactly what a byte-at-a-time `===` would
+  // distinguish by timing; all of these must simply be false.
+  assert.equal(timingSafeEqualString('verify-token', 'verify-toke'), false);
+  assert.equal(timingSafeEqualString('verify-token', 'verify-tokenn'), false);
+  assert.equal(timingSafeEqualString('verify-token', 'Verify-token'), false);
+  assert.equal(timingSafeEqualString('verify-token', 'wrong'), false);
+});
+
+test('SECURITY: timingSafeEqualString handles length mismatches without throwing — hashing keeps the compared buffers fixed-width', () => {
+  // timingSafeEqual() itself throws on differing buffer lengths, so a naive
+  // implementation would turn an attacker-chosen length into a 500 (and an
+  // observable oracle). Both directions, including a very long input.
+  assert.equal(timingSafeEqualString('short', 'a'.repeat(10_000)), false);
+  assert.equal(timingSafeEqualString('a'.repeat(10_000), 'short'), false);
+});
+
+test('SECURITY: timingSafeEqualString never matches when either side is empty — an unset secret cannot be satisfied by an empty parameter', () => {
+  assert.equal(timingSafeEqualString('', ''), false);
+  assert.equal(timingSafeEqualString('', 'verify-token'), false);
+  assert.equal(timingSafeEqualString('verify-token', ''), false);
 });
 
 test('parseVerificationRequest: valid Meta handshake', () => {
