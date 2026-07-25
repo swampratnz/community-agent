@@ -756,6 +756,19 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_unresolved_idx
 -- regardless of this column, so no extra purge code is needed.
 ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS escalated BOOLEAN NOT NULL DEFAULT false;
 
+-- Set once a real-time admin alert has been queued for the cluster this row
+-- belongs to (issue #650) — stamped on every row of a cluster the moment it
+-- crosses KNOWLEDGE_GAP_ALERT_THRESHOLD, so it can never contribute to a
+-- future crossing again (single-shot per cluster, same never-notify-twice
+-- precedent as the escalation/access-request real-time alerts). NULL
+-- (including every pre-existing row) means not yet alerted.
+ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMPTZ;
+
+-- Backs findCrossedKnowledgeGapCluster's `alerted_at IS NULL` filter, same
+-- shape as knowledge_gaps_unresolved_idx above.
+CREATE INDEX IF NOT EXISTS knowledge_gaps_unalerted_idx
+  ON knowledge_gaps (conversation_id, created_at DESC) WHERE alerted_at IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- Cost of the three standalone background `query()` calls (issue #401) that
 -- spend from the shared Max pool but write no `interactions` row, so

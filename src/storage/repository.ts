@@ -4420,6 +4420,87 @@ export async function recentKnowledgeGapClusters(
     .map((c) => ({ representative: c.representative, count: c.count }));
 }
 
+export interface CrossedKnowledgeGapCluster extends KnowledgeGapCluster {
+  /** ids of every row in the crossed cluster, for `markKnowledgeGapsAlerted`. */
+  rowIds: number[];
+}
+
+/**
+ * Real-time counterpart to `recentKnowledgeGapClusters` above (issue #650):
+ * identical greedy embedding-similarity clustering, scoped to `newGapId`'s
+ * own conversation, but restricted to `alerted_at IS NULL` rows so a cluster
+ * already promoted to an alert (its rows stamped by `markKnowledgeGapsAlerted`)
+ * can't re-trigger on a later gap — only fresh, not-yet-alerted rows count
+ * toward a new crossing. Called synchronously right after `recordKnowledgeGap`'s
+ * insert, scoped to that one gap's own conversation (never guild-wide),
+ * matching `recentKnowledgeGapClusters`'s own scoping convention.
+ *
+ * Returns the crossed cluster's `representative`/`count` (same shape as
+ * `recentKnowledgeGapClusters`) plus every member row's `id`, so the caller
+ * can stamp them all alerted in one `markKnowledgeGapsAlerted` call.
+ * `recentKnowledgeGapClusters` itself is left untouched — still backs
+ * `list_knowledge_gaps`, never returns row ids, since exposing ids there
+ * would be unused surface for that read-only listing path.
+ *
+ * Returns null when `newGapId`'s own cluster (identified by embedding
+ * similarity) hasn't yet reached `threshold` unalerted rows, or when the new
+ * row has no embedding (an `embed()` failure at insert time — no signal to
+ * cluster on) or isn't found among the unresolved/unalerted rows (already
+ * resolved or alerted by a race with another turn).
+ */
+export async function findCrossedKnowledgeGapCluster(
+  conversationId: string,
+  newGapId: number,
+  threshold: number,
+  days = 7,
+): Promise<CrossedKnowledgeGapCluster | null> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 30);
+
+  const { rows } = await pool.query(
+    `SELECT id, query_text, embedding
+       FROM knowledge_gaps
+      WHERE conversation_id = $1
+        AND resolved_at IS NULL
+        AND alerted_at IS NULL
+        AND embedding IS NOT NULL
+        AND created_at > now() - $2::interval
+      ORDER BY created_at ASC`,
+    [conversationId, `${clampedDays} days`],
+  );
+
+  const clusters: Array<{ representative: string; embedding: number[]; count: number; ids: number[] }> = [];
+  for (const row of rows) {
+    const vec = row.embedding as number[] | null;
+    if (!vec) continue;
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.count += 1;
+      match.ids.push(Number(row.id));
+    } else {
+      clusters.push({ representative: row.query_text, embedding: vec, count: 1, ids: [Number(row.id)] });
+    }
+  }
+
+  const crossed = clusters.find((c) => c.ids.includes(newGapId) && c.count >= threshold);
+  if (!crossed) return null;
+  return { representative: crossed.representative, count: crossed.count, rowIds: crossed.ids };
+}
+
+/**
+ * Stamps `alerted_at = now()` on every row of a just-crossed cluster (issue
+ * #650), returned by `findCrossedKnowledgeGapCluster` — single-shot per
+ * cluster: that function's `alerted_at IS NULL` filter means none of these
+ * rows can contribute to a future crossing again. Called unconditionally once
+ * the caller has reserved a real-time-alert rate-limit slot, regardless of
+ * whether the subsequent admin DM itself succeeds — same "the slot is
+ * consumed the moment we decide to alert" precedent as
+ * `reserveEscalationSlot`/`reserveAccessRequestAlertSlot`.
+ */
+export async function markKnowledgeGapsAlerted(ids: readonly number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(`UPDATE knowledge_gaps SET alerted_at = now() WHERE id = ANY($1)`, [[...ids]]);
+}
+
 // --- Admin digest freshness guard (issue #97) --------------------------------
 
 /**

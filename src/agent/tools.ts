@@ -80,6 +80,8 @@ import {
   recentAuditEntries,
   recentConversationHistory,
   recentKnowledgeGapClusters,
+  findCrossedKnowledgeGapCluster,
+  type CrossedKnowledgeGapCluster,
   recentModerationEntries,
   recentQuestionClusters,
   recordAdminAction,
@@ -1158,6 +1160,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'ENGAGEMENT_ALERT_ENABLED',
     configPath: 'engagementAlert.enabled',
     label: 'Weekly engagement alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'KNOWLEDGE_GAP_ALERT_ENABLED',
+    configPath: 'knowledgeGapAlert.enabled',
+    label: 'Real-time knowledge-gap-cluster alert',
     category: 'Admin Alerts & Digest',
   },
   {
@@ -2483,6 +2491,16 @@ export interface ToolServerTurnState {
    * below and `notifyAdmins`'s own doc comment.
    */
   unhelpfulAnswerRated?: boolean;
+  /**
+   * Set when this turn's `knowledge_search` below-floor-miss `recordKnowledgeGap`
+   * insert crossed `KNOWLEDGE_GAP_ALERT_THRESHOLD` unresolved+unalerted rows
+   * in its conversation-scoped cluster for the first time (issue #650). Read
+   * back by `execTurn` into `TurnOutcome`/`AgentReply` so `router.ts` can
+   * reserve a rate-limit slot and direct-fire `notifyAdmins` post-turn,
+   * mirroring `unhelpfulAnswerRated`'s shape exactly — `notifyAdmins` itself
+   * is never called from this file, see its own doc comment.
+   */
+  knowledgeGapCluster?: CrossedKnowledgeGapCluster | null;
 }
 
 export function buildToolServer(
@@ -2774,11 +2792,39 @@ export function buildToolServer(
         // NONE cleared the floor (semantic or, now, lexical) — never on a
         // plain empty result set, which is indistinguishable from a
         // searchKnowledge embed() failure and would otherwise log every
-        // outage query as a false "gap". Fire-and-forget, same
-        // non-blocking style as the retrieval-count bump above.
-        recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
-          logger.warn({ err }, 'Knowledge gap recording failed'),
-        );
+        // outage query as a false "gap". Fire-and-forget, same non-blocking
+        // style as the retrieval-count bump above — UNLESS the real-time
+        // cluster alert (issue #650) is enabled, in which case the insert is
+        // awaited (one extra fast DB round-trip) so the immediately-following
+        // cluster-threshold check has the new row's id to key off. With the
+        // flag off (the default) this branch is byte-identical to before
+        // #650 — no extra query, no await, no DM (acceptance criterion 3).
+        if (config.knowledgeGapAlert.enabled && turnState) {
+          const gapResult = await recordKnowledgeGap(
+            caller.platform,
+            caller.conversationId,
+            caller.userId,
+            args.query,
+          ).catch((err) => {
+            logger.warn({ err }, 'Knowledge gap recording failed');
+            return null;
+          });
+          if (gapResult && gapResult !== 'rate_limited') {
+            const crossed = await findCrossedKnowledgeGapCluster(
+              caller.conversationId,
+              gapResult.id,
+              config.knowledgeGapAlert.threshold,
+            ).catch((err) => {
+              logger.warn({ err }, 'Knowledge gap cluster threshold check failed');
+              return null;
+            });
+            if (crossed) turnState.knowledgeGapCluster = crossed;
+          }
+        } else {
+          recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
+            logger.warn({ err }, 'Knowledge gap recording failed'),
+          );
+        }
       }
       return text(
         formatKnowledgeSearchResults(
