@@ -53,7 +53,12 @@ const {
   countStalePendingKnowledgeCandidates,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
+  findKnowledgeCoveringTopic,
   candidateTopicAlreadyReviewed,
+  createKnowledgeTip,
+  KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+  KNOWLEDGE_TIP_TITLE_MAX_CHARS,
+  KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
   recordAdminAction,
   recentQuestionClusters,
   recentKnowledgeGapClusters,
@@ -1994,6 +1999,212 @@ test(
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[pendingId, toAcceptId]]);
+  },
+);
+
+// --- suggest_knowledge (issue #633): a member's own write path into the ---
+// SAME knowledge_candidates queue/review flow the tests above exercise for
+// machine-drafted rows, plus provenance columns and a purge path unique to
+// member-sourced rows (see purgeSingleIdentity's DELETE below).
+
+test(
+  'repository: createKnowledgeTip inserts a pending, digest_id-NULL candidate with source provenance, enforcing a DB-backed rolling-24h rate cap per (platform, user) — same pattern as createSuggestion (issue #633)',
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const userId = `${RUN}-tip-rate-user`;
+    const ids: number[] = [];
+    for (let i = 0; i < KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY; i++) {
+      const created = await createKnowledgeTip({
+        platform,
+        userId,
+        topic: `${RUN} tip rate topic ${i}`,
+        title: `${RUN} tip rate topic ${i}`,
+        content: `tip content ${i}`,
+      });
+      assert.ok(created, `tip ${i} under the cap must be accepted`);
+      ids.push(created.id);
+    }
+    const overCap = await createKnowledgeTip({
+      platform,
+      userId,
+      topic: `${RUN} tip rate topic over-cap`,
+      title: `${RUN} tip rate topic over-cap`,
+      content: 'over cap content',
+    });
+    assert.equal(overCap, null, `the ${KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY + 1}th tip in 24h is refused`);
+
+    const row = await pool.query(
+      `SELECT digest_id, status, source_platform, source_user_id, title, content
+         FROM knowledge_candidates WHERE id = $1`,
+      [ids[0]],
+    );
+    assert.equal(row.rows[0].digest_id, null, 'a member tip has no underlying context_digests row');
+    assert.equal(row.rows[0].status, 'pending');
+    assert.equal(row.rows[0].source_platform, platform);
+    assert.equal(row.rows[0].source_user_id, userId);
+
+    // Length caps truncate rather than reject (mirrors createSuggestion).
+    const longTitle = 'x'.repeat(KNOWLEDGE_TIP_TITLE_MAX_CHARS + 50);
+    const longContent = 'y'.repeat(KNOWLEDGE_TIP_CONTENT_MAX_CHARS + 50);
+    const truncated = await createKnowledgeTip({
+      platform,
+      userId: `${userId}-lengths`,
+      topic: `${RUN} tip length topic`,
+      title: longTitle,
+      content: longContent,
+    });
+    assert.ok(truncated);
+    const truncatedRow = await pool.query(`SELECT title, content FROM knowledge_candidates WHERE id = $1`, [
+      truncated.id,
+    ]);
+    assert.equal(truncatedRow.rows[0].title.length, KNOWLEDGE_TIP_TITLE_MAX_CHARS);
+    assert.equal(truncatedRow.rows[0].content.length, KNOWLEDGE_TIP_CONTENT_MAX_CHARS);
+
+    await pool.query(
+      `DELETE FROM knowledge_candidates WHERE source_platform = $1 AND source_user_id LIKE $2`,
+      [platform, `${userId}%`],
+    );
+  },
+);
+
+test(
+  "repository: findKnowledgeCoveringTopic returns the covering entry's id/title above the relevance floor, and null (not just false) when nothing covers it or the vector is null — knowledgeCoversTopic wraps it unchanged (issue #633)",
+  { skip },
+  async () => {
+    // Deliberately RUN-free invented words, same discipline as the existing
+    // knowledgeCoversTopic fixture above — findKnowledgeCoveringTopic scans
+    // ALL knowledge unscoped, so a real word or the shared ${RUN} numeric tag
+    // risks a lexical false positive against other files' fixtures.
+    const { id: knowledgeId } = await saveKnowledge({
+      title: 'Quixnorbaltrangium setup',
+      content: 'Quixnorbaltrangium setup: install the CLI and run init.',
+      scope: 'global',
+    });
+
+    const covering = await findKnowledgeCoveringTopic(await embed('quixnorbaltrangium setup steps'));
+    assert.ok(covering, 'an existing entry above the relevance floor is returned');
+    assert.equal(covering.id, knowledgeId);
+    assert.equal(covering.title, 'Quixnorbaltrangium setup');
+
+    assert.equal(
+      await findKnowledgeCoveringTopic(await embed('zzznbfrogblatt unrelated snorlaxian doorknob')),
+      null,
+      'an unrelated topic is not flagged as covered',
+    );
+    assert.equal(await findKnowledgeCoveringTopic(null), null, 'a null vector fails open to "not covered"');
+
+    // knowledgeCoversTopic must still be the same plain boolean callers
+    // (the context builder) already depend on.
+    assert.equal(await knowledgeCoversTopic(await embed('quixnorbaltrangium setup steps')), true);
+    assert.equal(await knowledgeCoversTopic(null), false);
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData deletes the caller's OWN member-sourced knowledge_candidates rows (suggest_knowledge) in EVERY status — pending AND accepted AND declined — while a machine-drafted row (source_user_id IS NULL) is untouched (issue #633)",
+  { skip },
+  async () => {
+    const platform = 'discord';
+    const victim = `${RUN}-tip-purge-victim`;
+    const bystander = `${RUN}-tip-purge-bystander`;
+
+    const pending = await createKnowledgeTip({
+      platform,
+      userId: victim,
+      topic: `${RUN} tip purge pending topic`,
+      title: 'Still pending tip',
+      content: 'pending tip content',
+    });
+    const toAccept = await createKnowledgeTip({
+      platform,
+      userId: victim,
+      topic: `${RUN} tip purge accept topic`,
+      title: 'Will be accepted tip',
+      content: 'accepted tip content',
+    });
+    const toDecline = await createKnowledgeTip({
+      platform,
+      userId: victim,
+      topic: `${RUN} tip purge decline topic`,
+      title: 'Will be declined tip',
+      content: 'declined tip content',
+    });
+    assert.ok(pending && toAccept && toDecline);
+    const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const declined = await declineKnowledgeCandidate(toDecline.id, 'admin-1');
+    assert.ok(declined);
+
+    // A bystander's own tip and a machine-drafted (no provenance) row must
+    // both survive the victim's purge untouched.
+    const bystanderTip = await createKnowledgeTip({
+      platform,
+      userId: bystander,
+      topic: `${RUN} tip purge bystander topic`,
+      title: 'Bystander tip',
+      content: 'bystander tip content',
+    });
+    assert.ok(bystanderTip);
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN} tip purge machine topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const machineCandidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN} tip purge machine topic`,
+      title: 'Machine-drafted candidate',
+      content: 'machine content',
+    });
+
+    await purgeUserData(platform, victim);
+
+    const victimRows = await pool.query(
+      `SELECT id FROM knowledge_candidates WHERE source_platform = $1 AND source_user_id = $2`,
+      [platform, victim],
+    );
+    assert.equal(
+      victimRows.rows.length,
+      0,
+      "SECURITY: every one of the victim's own tips is gone regardless of status (pending/accepted/declined)",
+    );
+
+    const bystanderRow = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE id = $1`, [
+      bystanderTip.id,
+    ]);
+    assert.equal(bystanderRow.rows.length, 1, "a bystander's own tip is unaffected by the victim's purge");
+
+    const machineRow = await pool.query(`SELECT source_user_id FROM knowledge_candidates WHERE id = $1`, [
+      machineCandidateId,
+    ]);
+    assert.equal(
+      machineRow.rows.length,
+      1,
+      'SECURITY: a machine-drafted row (source_user_id IS NULL) never matches the provenance-scoped delete',
+    );
+    assert.equal(machineRow.rows[0].source_user_id, null);
+
+    // The accepted tip's resulting knowledge entry is independent, reviewed
+    // content — it is not deleted by the tip-row purge above.
+    const knowledgeRow = await pool.query(`SELECT 1 FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    assert.equal(
+      knowledgeRow.rows.length,
+      1,
+      "the knowledge entry produced by accepting the victim's tip survives the purge",
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [bystanderTip.id, machineCandidateId],
+    ]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
   },
 );
 

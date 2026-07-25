@@ -17,6 +17,7 @@ import {
   addMemberNote,
   addWarning,
   areKnowledgeEntriesLowRated,
+  candidateTopicAlreadyReviewed,
   clearAccessRequest,
   clearWarnings,
   countActiveWarnings,
@@ -24,11 +25,13 @@ import {
   countRepliesToUser,
   createAnswerFeedback,
   createContentReport,
+  createKnowledgeTip,
   createModerationAppeal,
   createSuggestion,
   clearUserSessions,
   declineKnowledgeCandidate,
   deleteKnowledge,
+  findKnowledgeCoveringTopic,
   getInteractionContentByMessageId,
   getKnowledgeContentById,
   deleteMemberNote,
@@ -39,6 +42,9 @@ import {
   hasConflictAmongIds,
   insertDevTeamWatch,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
+  KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
+  KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+  KNOWLEDGE_TIP_TITLE_MAX_CHARS,
   type KnowledgeDuplicateMatch,
   listDuplicateKnowledge,
   listKnowledgeConflictCandidates,
@@ -1402,7 +1408,8 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Search back through your own past messages for something said earlier\n' +
   "- Check what I've stored about you, your active warnings, or your filed suggestions/reports\n" +
   '- Catch you up on recent activity in this conversation ("what did I miss?")\n' +
-  '- Suggest how the bot or community could be better\n' +
+  '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
+  'to find later\n' +
   '- Rate my last answer helpful or not\n' +
   '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
   '- React to a message with an emoji instead of replying\n' +
@@ -3177,6 +3184,75 @@ export function buildToolServer(
       return text(
         `Suggestion #${created.id} recorded. A human maintainer reviews these — thanks for the idea, ` +
           'but no promises on if/when it gets built.',
+      );
+    },
+  );
+
+  const suggestKnowledgeTool = tool(
+    'suggest_knowledge',
+    'Suggest a durable knowledge-base tip for other members — a hard-won answer, workaround, or fact ' +
+      'worth saving for the next person who hits the same thing (e.g. "for anyone else hitting this: X ' +
+      'needs Y"). This does NOT add to the knowledge base directly: it queues the tip in the SAME admin-' +
+      "reviewed candidate queue the offline context builder's own drafts use (list_knowledge_candidates) " +
+      '— nothing a member writes here can influence answers until an admin accepts it. Never call this ' +
+      'for a question, a request, or a feature/bot-improvement idea (use suggest_improvement for that).',
+    {
+      title: z
+        .string()
+        .min(1)
+        .max(KNOWLEDGE_TIP_TITLE_MAX_CHARS)
+        .describe(`Short FAQ-style title for the tip (max ${KNOWLEDGE_TIP_TITLE_MAX_CHARS} characters)`),
+      content: z
+        .string()
+        .min(1)
+        .max(KNOWLEDGE_TIP_CONTENT_MAX_CHARS)
+        .describe(
+          `The tip itself, in the member's own words (max ${KNOWLEDGE_TIP_CONTENT_MAX_CHARS} characters)`,
+        ),
+    },
+    async (args) => {
+      // SECURITY: tier is re-asserted here, not merely surface-gated by
+      // MEMBER_TOOLS — same defensive-double-check discipline every
+      // privileged/self-service tool in this file follows.
+      assertAtLeast(caller.role, 'member', 'suggest_knowledge');
+
+      // Topic = title, and this reuses the context builder's OWN pre-insert
+      // dedup guard verbatim (issue #503) so a member's tip is held to the
+      // same "don't refill an already-queued/reviewed or already-answered
+      // topic" bar as a machine-drafted candidate.
+      const topic = args.title;
+      const { blocked: alreadyQueued, embedding: topicEmbedding } =
+        await candidateTopicAlreadyReviewed(topic);
+      if (alreadyQueued) {
+        return text(
+          'Thanks, but a similar tip is already queued for review or has already been reviewed — no ' +
+            'need to resubmit.',
+        );
+      }
+      const covering = await findKnowledgeCoveringTopic(topicEmbedding);
+      if (covering) {
+        const label = covering.title ? `"${covering.title}"` : `entry #${covering.id}`;
+        return text(`Thanks, but this looks already covered by existing knowledge entry ${label}.`);
+      }
+
+      const created = await createKnowledgeTip({
+        platform: caller.platform,
+        userId: caller.userId,
+        topic,
+        title: args.title,
+        content: args.content,
+        topicEmbedding,
+      });
+      if (!created) {
+        return text(
+          `You've already suggested ${KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY} tips in the last 24 hours. ` +
+            'Please wait before suggesting another.',
+          true,
+        );
+      }
+      return text(
+        `Thanks! Tip #${created.id} queued for admin review — it won't appear in the knowledge base ` +
+          'unless an admin accepts it.',
       );
     },
   );
@@ -5037,19 +5113,31 @@ export function buildToolServer(
       assertAtLeast(caller.role, 'admin', 'list_knowledge_candidates');
       const rows = await listKnowledgeCandidates(args.status, args.limit ?? 50, args.oldestFirst ?? false);
       if (rows.length === 0) return text('No knowledge candidates found.');
-      return text(
-        untrusted(
-          'Knowledge candidates',
-          rows
-            .map(
-              (c) =>
-                `#${c.id} [${c.status}] ${c.title}: ${c.content} ` +
-                `(topic: ${c.topic}, drafted ${c.createdAt.toISOString()}` +
-                `${c.digestId ? `, digest #${c.digestId}` : ''})`,
-            )
-            .join('\n'),
-        ),
+      const lines = await Promise.all(
+        rows.map(async (c) => {
+          // SECURITY: a member-sourced tip's own title/content is untrusted
+          // text this handler renders alongside the `[member-suggested by
+          // ...]` provenance tag it adds itself — strip square brackets so
+          // crafted title/content can't forge a fake tag (angle brackets/
+          // newlines are already stripped by the surrounding untrusted()
+          // wrapper below). Applied uniformly, not just to member-sourced
+          // rows, since a machine-drafted candidate's text is untrusted too.
+          const safeTitle = c.title.replace(/[[\]]/g, ' ');
+          const safeContent = c.content.replace(/[[\]]/g, ' ');
+          const safeTopic = c.topic.replace(/[[\]]/g, ' ');
+          let provenance = '';
+          if (c.sourcePlatform && c.sourceUserId) {
+            const name = await resolveSanitizedLabel(c.sourcePlatform, c.sourceUserId);
+            provenance = ` [member-suggested by ${name}]`;
+          }
+          return (
+            `#${c.id} [${c.status}]${provenance} ${safeTitle}: ${safeContent} ` +
+            `(topic: ${safeTopic}, drafted ${c.createdAt.toISOString()}` +
+            `${c.digestId ? `, digest #${c.digestId}` : ''})`
+          );
+        }),
       );
+      return text(untrusted('Knowledge candidates', lines.join('\n')));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -6464,6 +6552,7 @@ export function buildToolServer(
       appealModeration,
       myData,
       suggestImprovement,
+      suggestKnowledgeTool,
       rateAnswer,
       setResponseStyleTool,
       setLanguagePreferenceTool,
