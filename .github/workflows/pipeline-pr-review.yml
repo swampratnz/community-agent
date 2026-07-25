@@ -65,7 +65,7 @@ jobs:
       - id: analyze
         if: env.HAS_TOKEN == 'true'
         continue-on-error: true # a bad run must still reach the post step below
-        uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1.0.177
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The build worker opens its PRs as the `claude[bot]` GitHub App, and
