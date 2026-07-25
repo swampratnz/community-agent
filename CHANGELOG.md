@@ -12,6 +12,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-25
 
+### Changed
+- **The pipeline's build worker now checkpoints committed work
+  deterministically**: a post-agent workflow step pushes any
+  committed-but-unpushed branch with the job's own token (to a unique
+  `-ckpt` ref if the remote diverged), because agents completed entire
+  multi-hour builds without ever pushing (#633) and everything died with the
+  runner. Escalation forensics also now validate the commit sha shape, so a
+  404 error body can no longer masquerade as a surviving-branch pointer.
+
 ### Added
 - **WhatsApp admins can now block a persistent abuser** (#572): `moderate`
   gains `block_user`/`unblock_user` (WhatsApp only — Discord keeps its own

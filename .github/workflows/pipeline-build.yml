@@ -381,6 +381,52 @@ jobs:
             --model sonnet
             --allowedTools "Edit,Write,Read,MultiEdit,Grep,Glob,LS,TodoWrite,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git restore:*),Bash(git rm:*),Bash(git checkout -b:*),Bash(git switch -c:*),Bash(git rev-parse:*),Bash(git fetch origin:*),Bash(git merge origin/main),Bash(git push -u origin HEAD),Bash(git push origin HEAD),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh run view:*),Bash(npm:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(cat:*),Bash(ls:*)"
 
+      # Deterministic safety net for the incremental-push mandate: agents have
+      # completed multi-hour builds and still never pushed (issue #633's third
+      # attempt: implementation done, gates green, zero pushes — everything
+      # died with the runner). Prompt-only compliance is unreliable, so after
+      # the agent has EXITED, push whatever it committed. This is the #663
+      # adversarial review's own recommended shape: a post-step publish with
+      # the job's GITHUB_TOKEN (valid for the whole job, unlike the ~1h App
+      # token), no adversarial-exfil window (the agent process is gone), and
+      # branch pushes trigger no workflows. If the remote branch exists with
+      # different history (a prior attempt), the checkpoint goes to a unique
+      # -ckpt-<run_id> ref instead of force-pushing over anything.
+      - name: Checkpoint unpushed work (deterministic)
+        if: always() && env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+          if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "HEAD" ]; then
+            echo "No work branch in the workspace — nothing to checkpoint."; exit 0
+          fi
+          ahead="$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+          if [ "${ahead}" -eq 0 ]; then
+            echo "No commits beyond origin/main — nothing to checkpoint."; exit 0
+          fi
+          head_sha="$(git rev-parse HEAD)"
+          remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+          if [ "${remote_sha}" = "${head_sha}" ]; then
+            echo "Branch ${branch} already pushed at ${head_sha}.";
+            echo "CKPT_REF=${branch}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          push_url="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if git push "${push_url}" "HEAD:refs/heads/${branch}" 2>/dev/null; then
+            echo "Checkpointed ${branch} at ${head_sha}."
+            echo "CKPT_REF=${branch}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
+          else
+            alt="${branch}-ckpt-${{ github.run_id }}"
+            if git push "${push_url}" "HEAD:refs/heads/${alt}"; then
+              echo "Remote ${branch} diverged; checkpointed to ${alt} at ${head_sha}."
+              echo "CKPT_REF=${alt}" >> "$GITHUB_ENV"; echo "CKPT_SHA=${head_sha}" >> "$GITHUB_ENV"
+            else
+              echo "::warning::Checkpoint push failed — unpushed work will die with this runner."
+            fi
+          fi
+
       - name: Verify a PR was produced (else escalate + fail loudly)
         if: always() && env.HAS_TOKEN == 'true'
         env:
@@ -445,12 +491,22 @@ jobs:
             # unauthenticated `git ls-remote` would silently fail on a private
             # repo and the escalation would never name the branch.
             surviving=""
-            branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-            if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
-              remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
-              if [ -n "${remote_sha}" ]; then
-                surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build resumes from it via the deterministic resolve-resume pre-step (comment text is never trusted for this).' "${branch}" "${remote_sha}")"
+            # Prefer the checkpoint step's already-verified ref; fall back to a
+            # live lookup. Either way the sha must be exactly 40 hex chars —
+            # `gh api` prints its ERROR BODY to stdout on a 404 (issue #633's
+            # escalation interpolated a JSON error into this template; the
+            # resume pre-step's strict regex rejected it, but the line lied).
+            branch="${CKPT_REF:-}"; remote_sha="${CKPT_SHA:-}"
+            if [ -z "${branch}" ]; then
+              branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+              if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
+                remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+              else
+                branch=""
               fi
+            fi
+            if [ -n "${branch}" ] && printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then
+              surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build resumes from it via the deterministic resolve-resume pre-step (comment text is never trusted for this).' "${branch}" "${remote_sha}")"
             fi
             # Defence-in-depth for the resolve-resume pre-step's template
             # match: the agent's free-text summary is embedded in this same

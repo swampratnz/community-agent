@@ -164,7 +164,10 @@ ownership rules:
   are free) because the job's GitHub credential can expire mid-build (~1h vs the
   120-min budget) and an unpushed tree dies with the runner; the PR still opens
   only at the end, so the verify-step/groundskeeper "no PR = dead build"
-  contract is unchanged. Its escalation comment names any surviving pushed
+  contract is unchanged. A deterministic post-agent **checkpoint step** pushes
+  any committed-but-unpushed work with the job's GITHUB_TOKEN (agents have
+  finished whole builds without ever pushing — #633), so nothing committed can
+  die with the runner. Its escalation comment names any surviving pushed
   branch + commit, and a re-queued build resumes from that branch instead of
   rebuilding (issue #667) — the pointer is resolved by a deterministic
   pre-step (bot comments only, exact template, remote-verified), never by the
