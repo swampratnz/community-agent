@@ -29,6 +29,14 @@ const {
   DOCS_PROVENANCE,
 } = await import('../src/context/docsIngest.js');
 
+// Pin the dead-URL feature OFF for this file by default (issue #611). Every
+// test written before it existed calls runDocsIngest WITHOUT stub deps, so with
+// the feature on they would read/write the real docs_ingest_url_failures table
+// against the shared CI database — and a URL failed by enough of them could
+// start being SKIPPED, silently changing those tests' expected counts. The
+// dead-URL tests at the bottom opt themselves back in via withDeadUrlConfig.
+(config.docsIngest as { deadUrlRuns: number }).deadUrlRuns = 0;
+
 after(async () => {
   if (hasDb) {
     await pool.query(`DELETE FROM knowledge WHERE created_by_role = $1`, [DOCS_PROVENANCE]);
@@ -712,7 +720,12 @@ test('runDocsIngest: with deadUrlRuns=0 a long-dead URL is still fetched and nev
       0,
       'no dead-URL reporting when the feature is disabled',
     );
+    // 0 is a COMPLETE off-switch, not just "never skip": no streak read and no
+    // streak write either, so opting out is byte-identical to pre-feature
+    // behaviour with no extra queries.
     assert.deepEqual(calls.reported, []);
+    assert.deepEqual(calls.recorded, [], 'no streak write when the feature is off');
+    assert.deepEqual(calls.cleared, [], 'no streak clear when the feature is off');
   });
 });
 

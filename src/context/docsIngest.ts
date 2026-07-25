@@ -381,11 +381,18 @@ export async function runDocsIngest(
   // stops costing a request every run (issue #611). Reading the streak state
   // must never break a run: on a read failure, fall back to fetching everything
   // (today's behaviour) rather than skipping blindly.
+  // `DOCS_INGEST_DEAD_URL_RUNS=0` is a COMPLETE off-switch, not just "never
+  // skip": no streak read, no streak write, no reporting — so a deployment that
+  // opts out behaves byte-identically to before this feature, with no extra
+  // queries at all.
+  const deadUrlsEnabled = config.docsIngest.deadUrlRuns > 0;
   let failureState = new Map<string, DocsIngestUrlFailure>();
-  try {
-    failureState = new Map((await listFailures()).map((f) => [f.url, f]));
-  } catch (err) {
-    logger.warn({ err }, 'Docs ingest: dead-URL state read failed; fetching every listed page this run');
+  if (deadUrlsEnabled) {
+    try {
+      failureState = new Map((await listFailures()).map((f) => [f.url, f]));
+    } catch (err) {
+      logger.warn({ err }, 'Docs ingest: dead-URL state read failed; fetching every listed page this run');
+    }
   }
   const { toFetch, skipped: deadSkippedUrls } = partitionDeadUrls(
     urls,
@@ -437,10 +444,10 @@ export async function runDocsIngest(
   // dead threshold — once. Best-effort throughout: this is bookkeeping for a
   // logging/efficiency optimisation, so a write failure must never fail a run
   // whose actual ingest work succeeded.
-  try {
-    await clearFailures(recoveredUrls);
-    await recordFailures(failedFetchUrls);
-    if (config.docsIngest.deadUrlRuns > 0) {
+  if (deadUrlsEnabled) {
+    try {
+      await clearFailures(recoveredUrls);
+      await recordFailures(failedFetchUrls);
       // A URL is newly dead when this run's failure takes its streak to the
       // threshold and it has never been reported. `+ 1` because `failureState`
       // is the pre-run snapshot and `recordFailures` has just bumped it.
@@ -471,9 +478,9 @@ export async function runDocsIngest(
         );
         await markReported(newlyDead);
       }
+    } catch (err) {
+      logger.warn({ err }, 'Docs ingest: dead-URL bookkeeping failed; run results are unaffected');
     }
-  } catch (err) {
-    logger.warn({ err }, 'Docs ingest: dead-URL bookkeeping failed; run results are unaffected');
   }
 
   if (failedFetchUrls.length > 0) {
