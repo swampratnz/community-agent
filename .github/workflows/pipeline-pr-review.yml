@@ -45,7 +45,7 @@ jobs:
         if: env.HAS_TOKEN != 'true'
         run: echo "CLAUDE_CODE_OAUTH_TOKEN not set — PR review worker is inert. Add the secret + install the Claude GitHub App to enable."
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.HAS_TOKEN == 'true'
         with:
           # The review agent reads untrusted PR content and its final text is
