@@ -70,6 +70,26 @@ for anything after ~noon NZST/NZDT). Get today's date with
   neither throw nor reveal the configured token's length. Low severity — a
   one-off setup handshake where network jitter dominates the signal — but it
   removes the last early-exit secret comparison on that path.
+- **Dependency advisories cleared: 7 down to 3.** Three new `overrides`
+  entries — `brace-expansion` (`^5.0.8`), `protobufjs` (`^7.6.5`) and `sharp`
+  (`^0.35.3`). The `sharp` one resolves the libvips CVEs npm reported as
+  having no fix, because `@huggingface/transformers` pinned `0.34.5`; it also
+  dedupes the two `sharp` copies in the tree to one. Overrides rather than an
+  `npm audit fix` lockfile regen, deliberately: the regen silently carried
+  `@anthropic-ai/claude-agent-sdk` forward 0.3.201 → 0.3.220 inside its
+  existing `^0.3.201` range, and an unreviewed bump of the SDK that enforces
+  tool gating and the confirm flow does not belong in a dependency-patch
+  change. None of the three was reachable
+  in this deployment — `brace-expansion` is dev-only via eslint, the
+  `protobufjs` parser is absent from the `protobufjs/minimal` build Baileys
+  uses, and no image ever reaches `sharp` (transformers is used only for text
+  embeddings and speech, and `/imagine` shells out to a sandboxed subprocess)
+  — so this is hygiene, not incident response. The remaining advisory
+  (`@hono/node-server`, Windows-only `serve-static` path traversal) is
+  deliberately NOT taken: it is unreachable twice over (Ubuntu deployment; the
+  MCP server is in-process via `createSdkMcpServer`, so no HTTP server is ever
+  started), and npm's suggested remedy downgrades
+  `@anthropic-ai/claude-agent-sdk` across a major version.
 
 ## 2026-07-23
 
