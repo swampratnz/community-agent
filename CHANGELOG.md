@@ -70,6 +70,21 @@ for anything after ~noon NZST/NZDT). Get today's date with
   neither throw nor reveal the configured token's length. Low severity — a
   one-off setup handshake where network jitter dominates the signal — but it
   removes the last early-exit secret comparison on that path.
+- **Dependency advisories cleared: 7 down to 3.** `brace-expansion` (5.0.8)
+  and `protobufjs` (7.6.5) are lockfile-only patch bumps, and a new `sharp`
+  override (`^0.35.3`) resolves the libvips CVEs npm reported as having no
+  fix, because `@huggingface/transformers` pinned `0.34.5`; that also dedupes
+  the two `sharp` copies in the tree to one. None of the three was reachable
+  in this deployment — `brace-expansion` is dev-only via eslint, the
+  `protobufjs` parser is absent from the `protobufjs/minimal` build Baileys
+  uses, and no image ever reaches `sharp` (transformers is used only for text
+  embeddings and speech, and `/imagine` shells out to a sandboxed subprocess)
+  — so this is hygiene, not incident response. The remaining advisory
+  (`@hono/node-server`, Windows-only `serve-static` path traversal) is
+  deliberately NOT taken: it is unreachable twice over (Ubuntu deployment; the
+  MCP server is in-process via `createSdkMcpServer`, so no HTTP server is ever
+  started), and npm's suggested remedy downgrades
+  `@anthropic-ai/claude-agent-sdk` across a major version.
 
 ## 2026-07-23
 
