@@ -272,6 +272,10 @@ const FEATURE_FLAGGED_TOOL_GROUPS: ReadonlyArray<{ enabled: boolean; tools: read
       'mcp__community__dev_team_verify',
     ],
   },
+  {
+    enabled: config.findHelper.enabled,
+    tools: ['mcp__community__set_helper_availability', 'mcp__community__find_helper'],
+  },
 ];
 
 function filterFeatureFlaggedTools(tools: string[]): string[] {

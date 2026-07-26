@@ -751,6 +751,10 @@ test('config: dev-team dispatch service is off by default with no endpoint/token
   assert.equal(config.devTeam.watchPollMinutes, 1);
 });
 
+test('config: find-helper peer handoff (issue #729) is off by default', () => {
+  assert.equal(config.findHelper.enabled, false);
+});
+
 test('config: DEV_TEAM_* env vars parse — enabled, an http:// tailnet endpoint, and a token all load cleanly (http is allowed for the tailnet-internal endpoint)', () => {
   const repoRoot = fileURLToPath(new URL('..', import.meta.url));
   const result = spawnSync(

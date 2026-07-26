@@ -34,12 +34,14 @@ test('issue #535 acceptance criterion 2 — GITHUB_ISSUE_ENABLED=true (others de
         'mcp__community__dev_team_backlog',
         'mcp__community__dev_team_findings',
         'mcp__community__dev_team_verify',
+        'mcp__community__set_helper_availability',
+        'mcp__community__find_helper',
       ].includes(t),
   );
   assert.deepEqual(
     [...opts.allowedTools].sort(),
     [...expected].sort(),
     'super_admin allowedTools with GITHUB_ISSUE_ENABLED=true must equal the pre-#535 toolsForRole list, ' +
-      'minus the still-disabled image-gen/dev-team tools',
+      'minus the still-disabled image-gen/dev-team/find-helper tools',
   );
 });
