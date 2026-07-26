@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -114,6 +114,32 @@ test('SECURITY: enabling the flag does not alter allowedTools beyond the base to
       `${role}: allowedTools must be unaffected by AGENT_SKILLS_ENABLED — 'Skill' is not added there`,
     );
   }
+});
+
+// Guards the "is omitting 'Skill' from allowedTools a bug?" review question
+// (issue #741 PR review) with evidence rather than assertion: the installed
+// SDK's own type declarations document that the `skills` option is a
+// self-sufficient pre-approval path and that passing 'Skill' into
+// `allowedTools` directly is deprecated. This test pins that exact documented
+// contract against the vendored .d.ts, so an SDK upgrade that silently drops
+// or narrows the guarantee fails CI here instead of shipping a Skill tool
+// that's granted in `tools` but never actually approved to fire.
+test('SECURITY: AC8 — the installed SDK still documents that skills pre-approves Skill without needing it in allowedTools', () => {
+  const sdkDtsPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts',
+  );
+  const dts = readFileSync(sdkDtsPath, 'utf8');
+  assert.match(
+    dts,
+    /you do not need to add `'Skill'` to `allowedTools` yourself\s*\n\s*\* when using this option/,
+    "the SDK's Options.skills doc must still state that allowedTools does not need 'Skill' added — if this text changed, re-verify the allowedTools omission above is still safe before merging an SDK bump",
+  );
+  assert.match(
+    dts,
+    /Note: passing `'Skill'` here is deprecated — use the `skills` option instead\./,
+    "the SDK's Options.allowedTools doc must still mark passing 'Skill' there as deprecated",
+  );
 });
 
 // AC5 — the bundled skill plugin directory can load nothing beyond the one

@@ -13,6 +13,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-27
 
 ### Added
+- **Opt-in Agent Skills support for the prompt-review checklist** (#741,
+  `AGENT_SKILLS_ENABLED`, off by default): wires the Claude Agent SDK's
+  Agent Skills mechanism to host the #635 prompt-review guidance. Off
+  (default), nothing changes — the checklist stays inline in the system
+  prompt exactly as #635 shipped it. On, the same checklist text moves,
+  byte-for-byte, into a repo-bundled skill (`prompt-review`) that loads into
+  context only on turns that actually invoke it, instead of being paid for
+  on every turn — the tool surface addition (`Skill`, granted uniformly to
+  every tier, no new RBAC gating) and the bundled skill directory are both
+  narrowly scoped and code-reviewed, never runtime- or member-derived.
 - **Opt-in "can someone help with X" member-to-member handoff** (#729,
   `FIND_HELPER_ENABLED`, off by default), the active-side consumer of #634's
   `who_is_into`: `set_helper_availability(available)` lets a member (who has

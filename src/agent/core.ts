@@ -403,6 +403,16 @@ export function buildQueryOptions(
     // prompt-review checklist this replaces. `allowedTools` alone only
     // auto-approves; this list is what actually restricts the surface.
     tools: [...(webSearch ? ['WebSearch'] : []), ...(config.agentSkills.enabled ? ['Skill'] : [])],
+    // Deliberately NOT adding 'Skill' here, unlike WebSearch above: the
+    // installed SDK's own type declarations (sdk.d.ts, pinned at
+    // @anthropic-ai/claude-agent-sdk@0.3.220) document that passing 'Skill'
+    // into allowedTools is deprecated and that the `skills` option below
+    // ("you do not need to add 'Skill' to allowedTools yourself when using
+    // this option") is the intended, self-sufficient pre-approval path —
+    // confirmed by tests/agentSkillsEnabled.test.ts, which pins that exact
+    // wording still present in the vendored .d.ts so an SDK upgrade that
+    // silently drops the guarantee fails CI instead of shipping a Skill
+    // tool that's granted in `tools` but never actually approved to fire.
     allowedTools: [
       ...filterFeatureFlaggedTools(toolsForRole(role, platform)),
       ...(webSearch ? ['WebSearch'] : []),
