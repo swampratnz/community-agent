@@ -196,7 +196,22 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   try/catch, so a thrown error from either fails closed identically.
   In-memory only (`AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS`, default 300s;
   `AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE`, default 3) — the query text is never
-  written to `interactions`/`admin_audit` or logged.
+  written to `interactions`/`admin_audit` or logged. The exact-match check
+  above is only the first half: once it misses, the guard also catches
+  near-paraphrases (issue #706, the growth path #589 itself named) by
+  embedding the query via the same local, offline `embed()` `knowledge_search`
+  already uses (no paid-API cost) and denying if its cosine similarity
+  against any windowed history entry meets
+  `AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD` (default 0.9, same
+  default/validation shape as `KNOWLEDGE_SHORTCUT_THRESHOLD`). The embedding
+  is computed at most once per call — `isDuplicateWebSearchQuery` returns the
+  vector it already computed and `recordWebSearchQuery` reuses it rather than
+  re-embedding, mirroring `candidateTopicAlreadyReviewed`'s reuse discipline
+  (issue #503). The exact-match check still runs first and never calls
+  `embed()` — a true short circuit. A thrown/rejected `embed()` shares the
+  same fail-closed try/catch as the other two checks, and the embedding
+  vector itself is held to the same never-logged, never-persisted posture as
+  the query text.
 - A thrown `query()` error whose message matches a small, anchored
   usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
   honest member-facing reply instead of the generic internal-error one, and

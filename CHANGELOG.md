@@ -13,6 +13,15 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-26
 
 ### Added
+- **Admin `WebSearch` dedup now catches near-paraphrases, not just verbatim
+  repeats** (#706), closing the growth path #589 itself named: reformulating
+  a search almost identically ("NZ contractor tax rules" → "New Zealand tax
+  rules for contractors") no longer burns a second metered call. Once the
+  existing exact-match check misses, the guard compares the new query's
+  embedding (via the same local, offline model `knowledge_search` already
+  uses — no added cost) against recent queries in the conversation and denies
+  on high similarity, with a new `AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD`
+  knob (default 0.9).
 - **Accepting or declining a member-submitted knowledge tip now DMs the
   submitter** (#703), closing the one gap `suggest_knowledge` (#633) shipped
   with — the one member-initiated flow whose resolution was previously

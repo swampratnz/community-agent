@@ -310,6 +310,16 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  *    query would be wrongly denied as "already searched" instead of hitting
  *    the accurate rate-limit message. Both checks share the same try/catch,
  *    so a thrown error from either fails closed identically.
+ *  - the dedup check also catches near-paraphrases, not just verbatim
+ *    repeats (issue #706, the growth path #589 itself named): once the
+ *    exact-match check misses, `isDuplicateWebSearchQuery` embeds the query
+ *    via the local, offline `embed()` (no paid-API cost) and denies if its
+ *    cosine similarity against any windowed history entry meets
+ *    `AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD`. The embedding is
+ *    computed at most once per call — the same vector returned by the check
+ *    is passed into `recordWebSearchQuery` rather than re-embedded. A
+ *    thrown/rejected `embed()` propagates into this hook's existing
+ *    try/catch below and fails closed, same as the other two checks.
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
@@ -371,7 +381,13 @@ export function buildQueryOptions(
                           : '';
 
                       const dedupWindowMs = config.llm.webSearchDedupWindowSeconds * 1000;
-                      if (isDuplicateWebSearchQuery(conversationId, query, dedupWindowMs)) {
+                      const { duplicate, embedding } = await isDuplicateWebSearchQuery(
+                        conversationId,
+                        query,
+                        dedupWindowMs,
+                        config.llm.webSearchDedupSimilarityThreshold,
+                      );
+                      if (duplicate) {
                         return {
                           continue: true,
                           hookSpecificOutput: {
@@ -402,12 +418,15 @@ export function buildQueryOptions(
 
                       // Only record once the call is actually going to proceed — recording a
                       // query that then gets denied by the volume cap would poison the dedup
-                      // history with a search that never ran (issue #589 review).
+                      // history with a search that never ran (issue #589 review). `embedding` is
+                      // the SAME vector isDuplicateWebSearchQuery already computed above — reused
+                      // rather than re-embedded (issue #706).
                       recordWebSearchQuery(
                         conversationId,
                         query,
                         dedupWindowMs,
                         config.llm.webSearchDedupHistorySize,
+                        embedding,
                       );
                       return { continue: true };
                     } catch (err) {

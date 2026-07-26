@@ -9,14 +9,19 @@ process.env.DISCORD_BOT_TOKEN ??= 'test-token';
 process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 
-test('SECURITY: AC-5 — the WebSearch dedup check never logs the raw query text, at any level, denial or not', async (t) => {
+test('SECURITY: AC-5 (extended by issue #706) — the WebSearch dedup check never logs the raw query text OR its embedding vector, at any level, denial or not', async (t) => {
   // Mock BEFORE the first import of core.js — see the same trap noted in
   // tests/agentWebSearchRateLimitFailClosed.test.ts / this issue's
   // agentWebSearchDedupFailClosed.test.ts. The dedup cache (tools.ts,
   // `webSearchQueryHistoryByConversation`) is in-memory only and never
   // handed a DB pool, so it structurally can't persist to `interactions`/
   // `admin_audit`; this test covers the remaining half of the invariant —
-  // that the query text also never reaches the logger above (or at) debug.
+  // that the query text (and, since issue #706, its embedding vector) also
+  // never reaches the logger above (or at) debug. Both occurrences below
+  // exercise a real embed() call (the first occurrence is never an exact
+  // match, so it falls through to the embedding half of the check) — this
+  // file deliberately does NOT mock embeddings.js, so the vector logged (if
+  // any) would be the real one, not a fixture that could hide a leak.
   const secretQuery = 'unlogged secret admin research query 42';
   const logCalls: unknown[] = [];
   const realLogger = await import('../src/logger.js');
@@ -74,6 +79,19 @@ test('SECURITY: AC-5 — the WebSearch dedup check never logs the raw query text
     assert.ok(
       !JSON.stringify(call).toLowerCase().includes(secretQuery.toLowerCase()),
       'the raw WebSearch query text must never reach the logger at any level',
+    );
+  }
+
+  // The first occurrence above computed a REAL embedding of secretQuery
+  // (never mocked in this file) — assert that exact vector never appears in
+  // any log call either, pinning issue #706's no-log guarantee for the
+  // embedding half of the check, not just the query text half.
+  const { embed } = await import('../src/storage/embeddings.js');
+  const secretEmbedding = JSON.stringify(await embed(secretQuery));
+  for (const call of logCalls) {
+    assert.ok(
+      !JSON.stringify(call).includes(secretEmbedding),
+      'the WebSearch query embedding vector must never reach the logger at any level',
     );
   }
 });
