@@ -80,6 +80,7 @@ const {
   ANNOUNCE_RATE_LIMIT_PER_HOUR,
   EVENTS_LIST_LIMIT,
   APPEAL_MODERATION_REASON_MAX_CHARS,
+  reserveVoiceTranscriptionSlot,
 } = await import('../src/agent/tools.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
 const {
@@ -8164,8 +8165,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    37,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for FIND_HELPER_ENABLED landing with #729)",
+    38,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for DISCORD_VOICE_ENABLED landing with #732)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -18143,5 +18144,34 @@ test(
       await pool.query(`DELETE FROM admin_audit WHERE actor_user_id = ANY($1)`, [[knownActor, unknownActor]]);
       await pool.query(`DELETE FROM community_users WHERE platform_user_id = $1`, [knownActor]);
     }
+  },
+);
+
+test(
+  'SECURITY: reserveVoiceTranscriptionSlot keys are platform-qualified — a WhatsApp id and a Discord id ' +
+    'that happen to collide never share an hourly transcription quota (issue #732)',
+  () => {
+    const collidingId = `${RUN}-voice-collide`;
+    const limit = 1;
+    assert.equal(
+      reserveVoiceTranscriptionSlot(`whatsapp:${collidingId}`, limit),
+      true,
+      'the WhatsApp-qualified key gets its own first slot',
+    );
+    assert.equal(
+      reserveVoiceTranscriptionSlot(`discord:${collidingId}`, limit),
+      true,
+      'a Discord id colliding with the WhatsApp bare id must NOT share the WhatsApp quota',
+    );
+    assert.equal(
+      reserveVoiceTranscriptionSlot(`whatsapp:${collidingId}`, limit),
+      false,
+      'the WhatsApp quota is independently exhausted after its own single slot',
+    );
+    assert.equal(
+      reserveVoiceTranscriptionSlot(`discord:${collidingId}`, limit),
+      false,
+      'the Discord quota is independently exhausted after its own single slot',
+    );
   },
 );
