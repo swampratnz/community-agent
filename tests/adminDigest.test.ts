@@ -2174,6 +2174,285 @@ test('buildAdminDigestMessage: the overall-answer-helpful-rate line trends via t
   );
 });
 
+// recentUnhelpfulFeedbackClusters unhelpful-theme-count line (issue #724) —
+// the still-missing qualitative half of VISION's answer-quality north star
+// ("thumbs-down themes shrinking in the digests"), the complement to the
+// overall-answer-helpful-rate line (#653's quantitative half) tested above.
+test('buildAdminDigestMessage: the unhelpful-theme-count line renders only when unhelpfulThemeCount > 0, with the exact wording, and an explicit 0/omitted trailing param is byte-identical to the pre-#724 form (issue #724 acceptance criterion 3)', () => {
+  const omitted = buildAdminDigestMessage([], 0, 0, 0, 0, 0);
+  const explicitZero = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(
+    omitted,
+    explicitZero,
+    'an explicit 0 for the new trailing param matches the omitted-param output',
+  );
+  assert.equal(
+    explicitZero,
+    null,
+    'zero unhelpful themes alongside every other signal at zero is a quiet week',
+  );
+
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+  );
+  assert.ok(message, 'a non-zero unhelpful-theme count alone still produces a DM');
+  const lines = message.split('\n').filter((l) => l.includes('🗂️'));
+  assert.equal(lines.length, 1, 'exactly one unhelpful-theme-count line');
+  assert.equal(
+    lines[0],
+    '🗂️ 3 recurring unhelpful-answer theme(s) this week — run `list_unhelpful_themes` to review.',
+    'exact bare-integer-plus-pointer wording',
+  );
+
+  const zeroMessage = buildAdminDigestMessage(
+    [],
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.ok(!zeroMessage!.includes('🗂️'), 'no unhelpful-theme-count line when unhelpfulThemeCount is zero');
+});
+
+test('buildAdminDigestMessage: the unhelpful-theme-count line trends via the existing trendSuffix mechanism on unhelpfulThemeCount, and renders no suffix when previousCounts is omitted (issue #724)', () => {
+  const withTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    { unhelpfulThemeCount: 5 },
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+  );
+  assert.ok(withTrend);
+  const trendLine = withTrend.split('\n').find((l) => l.includes('🗂️'));
+  assert.equal(
+    trendLine,
+    '🗂️ 2 recurring unhelpful-answer theme(s) this week — run `list_unhelpful_themes` to review. (▼-3 since last week)',
+    'the trend suffix appends exactly as every other signal line does',
+  );
+
+  const withoutTrend = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+  );
+  assert.ok(withoutTrend);
+  const noTrendLine = withoutTrend.split('\n').find((l) => l.includes('🗂️'));
+  assert.equal(
+    noTrendLine,
+    '🗂️ 2 recurring unhelpful-answer theme(s) this week — run `list_unhelpful_themes` to review.',
+    'no previousCounts -> no suffix, same as every other signal',
+  );
+});
+
+test('SECURITY: the unhelpful-theme-count line is a deterministic function of unhelpfulThemeCount only, and never carries comment text, user_id, or user_name (issue #724 acceptance criterion 6)', () => {
+  const message = buildAdminDigestMessage(
+    [],
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    4,
+  );
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🗂️'));
+  assert.match(
+    line!,
+    /^🗂️ 4 recurring unhelpful-answer theme\(s\) this week — run `list_unhelpful_themes` to review\.$/,
+    'SECURITY: the line is exactly the bare integer and pointer text — no room for comment text, user_id, or user_name to be interpolated in',
+  );
+});
+
 // answerFeedbackOriginSummary origin-split line (issue #592) — #477's own
 // named helpful-ratio-vs-mention-mode success metric, finally surfaced.
 test('buildAdminDigestMessage: the auto-answer-ratings line renders only when the auto-answer bucket has at least one rating, with the exact bare-ratio wording (issue #592 acceptance criterion 3)', () => {
@@ -5257,6 +5536,80 @@ test(
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[secretUserId1, secretUserId2]]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+// recentUnhelpfulFeedbackClusters unhelpful-theme-count line (issue #724) —
+// the still-missing qualitative half of VISION's answer-quality north star,
+// wired end-to-end through buildAdminDigestForAdmin/runAdminDigestOnce
+// (unlike the buildAdminDigestMessage-only tests above, which hand-craft the
+// positional count).
+test(
+  "SECURITY: runAdminDigestOnce: an admin with two near-duplicate unhelpful-rating comments receives a digest with the bare recurring-theme count — never the comment text or the raters' user ids (issue #724)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-run-unhelpful-themes-admin`;
+    const conversationId = `${RUN}-c-run-unhelpful-themes`;
+    const secretUserId1 = `${RUN}-run-unhelpful-themes-rater1`;
+    const secretUserId2 = `${RUN}-run-unhelpful-themes-rater2`;
+    const secretComment = 'the pricing answer is out of date';
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    for (const [userId, comment] of [
+      [secretUserId1, secretComment],
+      [secretUserId2, `${secretComment} now`],
+    ] as const) {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        userName: 'CommunityAgent',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({
+          platform: 'discord',
+          conversationId,
+          userId,
+          helpful: false,
+          comment,
+        }),
+      );
+    }
+
+    const sent: Array<{ userId: string; text: string }> = [];
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent });
+
+    await runAdminDigestOnce([adapter]);
+
+    assert.equal(sent.length, 1, 'the two near-duplicate unhelpful ratings alone trigger a digest');
+    assert.match(
+      sent[0].text,
+      /🗂️ 1 recurring unhelpful-answer theme\(s\) this week — run `list_unhelpful_themes` to review\./,
+      'the two near-duplicate comments cluster into a single recurring theme',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretComment),
+      'SECURITY: the rater comment text must never appear in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(secretUserId1) && !sent[0].text.includes(secretUserId2),
+      'SECURITY: no rater user id ever appears in the digest DM',
+    );
+    assert.ok(
+      !sent[0].text.includes(conversationId),
+      'SECURITY: the conversation id must never appear in the digest DM',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[secretUserId1, secretUserId2]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
       adminId,
     ]);

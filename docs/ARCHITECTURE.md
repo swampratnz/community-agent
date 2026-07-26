@@ -313,6 +313,33 @@ memory**:
    theme). No new tool — the digest line points an admin at the existing
    `list_answer_feedback` (`unhelpfulOnly: true`) to drill in. A bare integer
    only, no question text, answer content, comment, or user id.
+   Plus (issue #653) their own scoped this-week `answer_feedback`
+   helpful/total counts, sourced from `answerFeedbackWeeklySummary(scope,
+   ...)` — conversation-scoped and windowed identically to the two counts
+   above, but deliberately unfiltered by knowledge-grounding or origin: every
+   rated answer this week, the exact "`rate_answer` helpful-rate trending up"
+   half of VISION's own named answer-quality north star. Rendered as a
+   derived percentage plus the bare `helpful`/`total` integers, with its own
+   `trendSuffix` on the total so an admin can see rating volume moving too.
+   Plus (issue #724) their own scoped count of recurring unhelpful-answer
+   *themes* — the "thumbs-down themes shrinking in the digests" other half of
+   the same north star, left unbuilt when #653 shipped only the quantitative
+   half. Sourced from `recentUnhelpfulFeedbackClusters(scope, ...)`, which
+   greedily clusters `helpful = false AND comment IS NOT NULL` ratings by
+   embedding similarity — mirroring `recentQuestionClusters`/
+   `recentKnowledgeGapClusters` exactly (same threshold, same `count >= 2`
+   floor to count as a "theme"), but embedding each comment at READ time
+   (no persisted `embedding` column on `answer_feedback`, following issue
+   #706's call-time-embed precedent) since qualifying rows are already
+   double-bounded by `RATE_ANSWER_DAILY_LIMIT` and the unhelpful-with-comment
+   filter. Covers BOTH knowledge-grounded and ungrounded answers, closing the
+   exact cross-cutting gap neither `list_low_rated_knowledge` (grounded-only,
+   per-entry) nor `countGeneralUnhelpfulAnswers` (ungrounded-only, no comment
+   text) covers on its own. The digest line is a bare integer plus its trend
+   only — never a comment or rater identity; the new `list_unhelpful_themes`
+   admin tool (representative comment + count per theme, `untrusted()`-wrapped
+   like `list_answer_feedback`'s own comment rendering) is where an admin
+   drills in.
    Plus (issue #631) a guild-wide count of open moderation appeals,
    sourced from `countOpenAppeals(admin.platform)` — the same
    guild-wide-by-platform shape as the muted-members count above

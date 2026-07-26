@@ -52,7 +52,10 @@ is implied — and per the guardrails below, none should be proposed that
 expands member-data collection):
 
 - **Answer quality** — `rate_answer` helpful-rate trending up; thumbs-down
-  themes shrinking in the digests.
+  themes shrinking in the digests. Both halves now instrumented in the
+  weekly admin digest (see `docs/ARCHITECTURE.md`'s digest-signals section):
+  the helpful-rate line (issue #653) and the recurring-unhelpful-theme count
+  (issue #724, `list_unhelpful_themes`).
 - **Knowledge leverage** — knowledge-shortcut hit rate up; repeat-question
   clusters (context digests) shrinking; time-to-first-answer in auto-answer
   channels down.

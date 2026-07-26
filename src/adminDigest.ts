@@ -27,6 +27,7 @@ import {
   oldestOpenReportAgeDays,
   oldestPendingSuggestionAgeDays,
   recentQuestionClusters,
+  recentUnhelpfulFeedbackClusters,
   recordAdminDigestSent,
   recordAdminDigestSnapshot,
   resolveLinkedIdentities,
@@ -244,6 +245,19 @@ function pctTrendSuffix(key: string, current: number, previous: Record<string, n
  * an unrelated week. No prior snapshot value, an unchanged percentage, or
  * `ADMIN_DIGEST_TRENDS_ENABLED` off all render byte-identical to the
  * pre-#629 line, matching every other trended signal's guarantee.
+ * `unhelpfulThemeCount` (issue #724) comes from
+ * `recentUnhelpfulFeedbackClusters` — the still-missing qualitative half of
+ * VISION's answer-quality north star ("thumbs-down themes shrinking in the
+ * digests"), the complement to `overallAnswerHelpful`/`overallAnswerTotal`
+ * above (#653's quantitative half). Same conversation-scoping and
+ * freshness-window convention as every other signal here; clusters both
+ * grounded and ungrounded unhelpful answers with a comment, count >= 2 to
+ * count as a "theme" (mirroring `recentQuestionClusters`'s own threshold).
+ * Rendered only when `> 0`, as a bare integer plus its `trendSuffix` — no
+ * comment text or rater identity ever reaches the DM, same privacy
+ * convention as every other digest line. Append-only trailing param,
+ * default 0, so every existing call site is unaffected and the quiet case
+ * is byte-identical to the pre-#724 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -351,6 +365,13 @@ export function buildAdminDigestMessage(
   // is unaffected.
   overallAnswerHelpful: number = 0,
   overallAnswerTotal: number = 0,
+  // Recurring unhelpful-answer themes from `recentUnhelpfulFeedbackClusters`
+  // (issue #724) — the still-missing second half of VISION's answer-quality
+  // north star ("thumbs-down themes shrinking in the digests"), the
+  // qualitative complement to `overallAnswerHelpful`/`overallAnswerTotal`
+  // above (#653's quantitative half). Append-only trailing param, default 0,
+  // so every existing call site is unaffected.
+  unhelpfulThemeCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -374,7 +395,8 @@ export function buildAdminDigestMessage(
     autoAnswerUnhelpful === 0 &&
     openAppealsCount === 0 &&
     unreachableSourceKnowledgeCount === 0 &&
-    overallAnswerTotal === 0
+    overallAnswerTotal === 0 &&
+    unhelpfulThemeCount === 0
   )
     return null;
 
@@ -546,6 +568,18 @@ export function buildAdminDigestMessage(
         trendSuffix('overallAnswerTotal', overallAnswerTotal, previousCounts),
     );
   }
+  if (unhelpfulThemeCount > 0) {
+    // Bare integer plus its trend only — no comment text or rater identity
+    // ever reaches the DM (#724), same privacy convention as every other
+    // digest line. The qualitative complement to the helpful-rate line
+    // above: VISION's own "thumbs-down themes shrinking" half of the same
+    // answer-quality north star, made visible for the first time.
+    sections.push(
+      `🗂️ ${unhelpfulThemeCount} recurring unhelpful-answer theme(s) this week — run ` +
+        '`list_unhelpful_themes` to review.' +
+        trendSuffix('unhelpfulThemeCount', unhelpfulThemeCount, previousCounts),
+    );
+  }
   if (autoAnswerHelpful + autoAnswerUnhelpful > 0) {
     // Bare ratios/counts only — no message content, question text, or rater
     // identity ever reaches the DM, same privacy convention as every other
@@ -658,6 +692,7 @@ export async function buildAdminDigestForAdmin(
     openAppealsCount,
     unreachableSourceKnowledgeCount,
     overallAnswerSummary,
+    unhelpfulThemeClusters,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -745,6 +780,11 @@ export async function buildAdminDigestForAdmin(
     // unfiltered-by-grounding-or-origin this-week helpful-rate VISION names
     // as the answer-quality north star (issue #653).
     answerFeedbackWeeklySummary(scope, FRESHNESS_DAYS),
+    // Conversation-scoped like generalUnhelpfulCount (answer_feedback has a
+    // conversation_id), over the same freshness window — the qualitative
+    // complement to overallAnswerSummary above: VISION's own "thumbs-down
+    // themes shrinking" half of the answer-quality north star (issue #724).
+    recentUnhelpfulFeedbackClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -779,6 +819,7 @@ export async function buildAdminDigestForAdmin(
     unreachableSourceKnowledgeCount,
     overallAnswerHelpful: overallAnswerSummary.helpful,
     overallAnswerTotal: overallAnswerSummary.total,
+    unhelpfulThemeCount: unhelpfulThemeClusters.length,
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -829,6 +870,7 @@ export async function buildAdminDigestForAdmin(
     unreachableSourceKnowledgeCount,
     overallAnswerSummary.helpful,
     overallAnswerSummary.total,
+    unhelpfulThemeClusters.length,
   );
   return { message, currentCounts };
 }

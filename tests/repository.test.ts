@@ -135,6 +135,7 @@ const {
   answerFeedbackGrounding,
   listAnswerFeedback,
   listKnowledgeFeedbackSummary,
+  recentUnhelpfulFeedbackClusters,
   isKnowledgeLowRated,
   areKnowledgeEntriesLowRated,
   countLowRatedKnowledge,
@@ -9745,6 +9746,153 @@ test(
       [inScopeConvo, outOfScopeConvo],
     ]);
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [entryId]);
+  },
+);
+
+// recentUnhelpfulFeedbackClusters (issue #724): the cross-cutting complement
+// to listKnowledgeFeedbackSummary above — clusters unhelpful-rating comments
+// by embedding similarity across BOTH grounded and ungrounded answers,
+// mirroring recentQuestionClusters/recentKnowledgeGapClusters exactly but
+// embedding each comment at call time (no persisted embedding column on
+// answer_feedback).
+test(
+  'repository: recentUnhelpfulFeedbackClusters clusters near-duplicate unhelpful comments, drops a singleton ' +
+    'below the count >= 2 floor, and never includes a helpful rating or a NULL comment (issue #724)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-unhelpful-themes`;
+
+    async function rate(userSuffix: string, helpful: boolean, comment?: string) {
+      const userId = `${RUN}-unhelpful-themes-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful, comment }),
+      );
+      return userId;
+    }
+
+    // Two near-duplicate complaints about the same theme — real embeddings,
+    // same near-verbatim-with-minor-wording-differences shape the existing
+    // listDuplicateKnowledge test uses to reliably clear a similarity
+    // threshold with the real local model.
+    const u1 = await rate('theme-1', false, 'the pricing answer is out of date');
+    const u2 = await rate('theme-2', false, 'the pricing answer is out of date now');
+    // A clearly unrelated unhelpful comment — stays its own singleton and is
+    // dropped by the count >= 2 floor.
+    const u3 = await rate('unrelated', false, 'the bot never mentions the meetup schedule');
+    // A helpful rating with a comment must never be embedded/clustered.
+    const u4 = await rate('helpful', true, 'the pricing answer is out of date too, thanks!');
+    // An unhelpful rating with no comment has nothing to cluster and must
+    // never crash the aggregation.
+    const u5 = await rate('no-comment', false);
+
+    const clusters = await recentUnhelpfulFeedbackClusters([conversationId], 7, 10);
+    assert.equal(clusters.length, 1, 'only the count >= 2 cluster survives; singletons are dropped');
+    assert.equal(clusters[0].count, 2, 'the two near-duplicate pricing complaints cluster together');
+    assert.equal(
+      clusters[0].representative,
+      'the pricing answer is out of date',
+      'representative is the first qualifying comment seen',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [[u1, u2, u3, u4, u5]]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: recentUnhelpfulFeedbackClusters never throws when a qualifying row has no comment (issue #724, acceptance criterion 2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-unhelpful-themes-nullsafe`;
+    const userId = `${RUN}-unhelpful-themes-nullsafe-user`;
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: `answer for ${userId}`,
+      meta: { replyToUserId: userId },
+    });
+    expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: false }),
+    );
+
+    const clusters = await recentUnhelpfulFeedbackClusters([conversationId], 7, 10);
+    assert.deepEqual(clusters, [], 'a NULL-comment row contributes nothing and raises no error');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: recentUnhelpfulFeedbackClusters excludes conversations outside the given scope, while a null (super admin) scope sees both (issue #724, acceptance criterion 4)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-unhelpful-themes-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-unhelpful-themes-scope-out`;
+
+    async function rate(conversationId: string, userSuffix: string, comment: string) {
+      const userId = `${RUN}-unhelpful-themes-scope-${userSuffix}`;
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: `answer for ${userId}`,
+        meta: { replyToUserId: userId },
+      });
+      expectFeedbackId(
+        await createAnswerFeedback({
+          platform: 'discord',
+          conversationId,
+          userId,
+          helpful: false,
+          comment,
+        }),
+      );
+      return userId;
+    }
+
+    const inScopeUsers = [
+      await rate(inScopeConvo, 'in-1', 'in-scope secret complaint about pricing'),
+      await rate(inScopeConvo, 'in-2', 'in-scope secret complaint about pricing again'),
+    ];
+    const outOfScopeUsers = [
+      await rate(outOfScopeConvo, 'out-1', 'out-of-scope secret complaint about pricing'),
+      await rate(outOfScopeConvo, 'out-2', 'out-of-scope secret complaint about pricing again'),
+    ];
+
+    const scoped = await recentUnhelpfulFeedbackClusters([inScopeConvo], 7, 10);
+    assert.equal(scoped.length, 1, 'clusters only reflect the in-scope conversation');
+    assert.equal(scoped[0].count, 2);
+    assert.doesNotMatch(
+      scoped[0].representative,
+      /out-of-scope/,
+      'SECURITY: a comment from a conversation outside the scope filter must never be returned',
+    );
+
+    const unscoped = await recentUnhelpfulFeedbackClusters(null, 7, 10);
+    const totalUnscoped = unscoped.reduce((n, c) => n + c.count, 0);
+    assert.ok(totalUnscoped >= 4, 'without a scope filter (super admin), both conversations contribute');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = ANY($1)`, [
+      [...inScopeUsers, ...outOfScopeUsers],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
   },
 );
 

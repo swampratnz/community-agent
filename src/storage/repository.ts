@@ -5803,6 +5803,89 @@ export async function answerFeedbackWeeklySummary(
   return { helpful: Number(rows[0].helpful), total: Number(rows[0].total) };
 }
 
+export interface UnhelpfulFeedbackCluster {
+  representative: string;
+  count: number;
+}
+
+/**
+ * Greedily cluster recent unhelpful `answer_feedback` comments by embedding
+ * similarity — the second, still-missing half of VISION's answer-quality
+ * north star ("thumbs-down themes shrinking in the digests", issue #724).
+ * Mirrors `recentQuestionClusters`/`recentKnowledgeGapClusters` exactly (same
+ * greedy clustering code, same `QUESTION_CLUSTER_SIMILARITY_THRESHOLD`, same
+ * `count >= 2` theme floor, same conversation-scoping convention — null =
+ * super admin, unrestricted), but sourced from `answer_feedback` instead of
+ * `interactions`/`knowledge_gaps`.
+ *
+ * Deliberately NOT filtered by `knowledgeEntryId` — both grounded and
+ * ungrounded unhelpful answers are included, closing the exact gap
+ * `listKnowledgeFeedbackSummary` (grounded-only) and
+ * `countGeneralUnhelpfulAnswers` (ungrounded-only, no comment text) each
+ * leave open on their own.
+ *
+ * `answer_feedback` has no persisted `embedding` column (issue #706's
+ * call-time-embed precedent, not a schema change): each qualifying comment is
+ * embedded here, at read time, via the same local/offline `embed()`. Volume
+ * is already double-bounded by `RATE_ANSWER_DAILY_LIMIT` and the
+ * `helpful = false AND comment IS NOT NULL` filter, so this is realistically
+ * a handful of rows per admin scope per digest window — never a bulk
+ * backfill. A row whose `embed()` call fails is skipped (logged, not
+ * thrown) exactly like `recordKnowledgeGap`'s embed-failure handling, so a
+ * transient embedding-model outage degrades to fewer clusters, never a
+ * crash.
+ */
+export async function recentUnhelpfulFeedbackClusters(
+  conversationIds: readonly string[] | null,
+  days = 7,
+  limit = 10,
+): Promise<UnhelpfulFeedbackCluster[]> {
+  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 30);
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+
+  const params: unknown[] = [`${clampedDays} days`];
+  let scope = '';
+  if (conversationIds) {
+    params.push([...conversationIds]);
+    scope = `AND conversation_id = ANY($${params.length})`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT comment
+       FROM answer_feedback
+      WHERE helpful = false
+        AND comment IS NOT NULL
+        AND created_at > now() - $1::interval
+        ${scope}
+      ORDER BY created_at ASC`,
+    params,
+  );
+
+  const clusters: Array<{ representative: string; embedding: number[]; count: number }> = [];
+  for (const row of rows) {
+    const comment = row.comment as string;
+    let vec: number[] | null = null;
+    try {
+      vec = await embed(comment);
+    } catch (err) {
+      logger.warn({ err }, 'Embedding failed for unhelpful-feedback clustering');
+    }
+    if (!vec) continue;
+    const match = clusters.find((c) => cosineSim(c.embedding, vec) >= QUESTION_CLUSTER_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.count += 1;
+    } else {
+      clusters.push({ representative: comment, embedding: vec, count: 1 });
+    }
+  }
+
+  return clusters
+    .filter((c) => c.count >= 2)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, clampedLimit)
+    .map((c) => ({ representative: c.representative, count: c.count }));
+}
+
 /**
  * Flip a report's status (resolve/dismiss) — non-destructive, no CONFIRM
  * needed (mirrors warn_user's low-blast-radius treatment). Optionally scoped
