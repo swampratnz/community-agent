@@ -179,7 +179,11 @@ ownership rules:
   When a failed attempt leaves a pushed branch **ahead of `main` with no PR**
   — a build that did the work and skipped only `gh pr create` — the verify
   step opens that PR itself, as a **draft**, and relabels `status:built`
-  rather than spending another attempt re-deriving the same diff. Recovered
+  rather than spending another attempt re-deriving the same diff. Recovery
+  fires only while the issue is still `status:building` with no `needs-human`
+  (an agent's deliberate step-5 refusal also leaves a branch ahead of `main`,
+  and must stand), and never for a branch that has ever had a PR in any
+  state (a closed-unmerged one means a human already rejected that work). Recovered
   work is not laundered by this: it never cleared the build agent's own gate,
   so CI on the PR adjudicates and the automated review still applies, and the
   PR is authored by `github-actions[bot]` — not the `claude[bot]` identity the

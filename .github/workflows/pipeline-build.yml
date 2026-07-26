@@ -512,10 +512,36 @@ jobs:
           # applies: this work never cleared the build agent's own gate, so CI on
           # the PR decides and the automated review still has to pass. Recovery can
           # surface work; it cannot launder it into a merge.
+          # Recovery must never override a DELIBERATE stop. The agent's prompt
+          # step 5 tells it to label `needs-human` and explain when a proposal
+          # is infeasible/unsafe rather than forcing a PR — and because pushes
+          # are incremental by design, that refusal still leaves the branch
+          # ahead of main. So recovery only fires while the issue is still in
+          # the building lane (`status:building` present, `needs-human` absent);
+          # anything else means the no-PR outcome was a decision, not a stall,
+          # and we fall through to the pointer/escalation path. This also keeps
+          # the one-lane invariant: recovery can't stack `status:built` onto a
+          # `needs-human` issue.
+          lane_ok=false
           if [ -n "${branch}" ]; then
+            labels="$(gh issue view "${ISSUE_NUMBER}" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)"
+            case ",${labels}," in
+              *,needs-human,*) echo "Issue #${ISSUE_NUMBER} is needs-human — the agent (or a human) chose to stop; not recovering." ;;
+              *,status:building,*) lane_ok=true ;;
+              *) echo "Issue #${ISSUE_NUMBER} is not in the building lane (labels: ${labels:-none}); not recovering." ;;
+            esac
+          fi
+          if [ "${lane_ok}" = "true" ]; then
             ahead="$(gh api "repos/${{ github.repository }}/compare/main...${branch}" --jq '.ahead_by' 2>/dev/null || echo 0)"
             case "${ahead}" in ''|*[!0-9]*) ahead=0 ;; esac
-            existing="$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+            # ANY prior PR for this head — open, merged, or closed — disqualifies
+            # recovery: open means the verify match above simply didn't see a
+            # "Closes #N" body (not ours to duplicate); closed-unmerged means a
+            # human already looked at this branch and rejected it (reopening
+            # would override that human decision); merged means the compare
+            # above is stale. Recovery only ever fires for a branch that has
+            # never had a PR.
+            existing="$(gh pr list --head "${branch}" --state all --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
             if [ "${ahead}" -gt 0 ] && [ -z "${existing}" ]; then
               issue_title="$(gh issue view "${ISSUE_NUMBER}" --json title --jq '.title' 2>/dev/null | tr -d '\n\r' | head -c 200 || true)"
               [ -n "${issue_title}" ] || issue_title="Build for issue #${ISSUE_NUMBER}"

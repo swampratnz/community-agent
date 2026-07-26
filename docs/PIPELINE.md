@@ -464,7 +464,14 @@ sessions:
   **Recovery PR.** When the failed attempt's surviving branch is *ahead of
   `main` and has no PR*, the verify step opens the PR itself instead of
   resuming at all — that case is a build that did the work and skipped only
-  `gh pr create` (#701 attempt 1 ended 98 seconds after its commit). The
+  `gh pr create` (#701 attempt 1 ended 98 seconds after its commit). Recovery
+  never overrides a deliberate stop: it fires only while the issue is still
+  `status:building` with no `needs-human` — an agent that judged the proposal
+  infeasible per its step 5 (label `needs-human` and explain) leaves a branch
+  ahead of `main` too, and that refusal must stand. It also skips any branch
+  that has *ever* had a PR in any state: a closed-unmerged PR for the branch
+  means a human already rejected that work, and reopening it would override
+  the human. The
   recovery PR is a **draft**, its body says plainly that the workflow opened
   it and that the diff never cleared the build agent's own gate, and the issue
   moves to `status:built` exactly as the agent's own step 4 would have moved
