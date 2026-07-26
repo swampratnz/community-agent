@@ -1125,9 +1125,22 @@ evaporates.
   self-rating (rater is the addressed member) is exempt — that case is
   already bounded by `createKnowledgeTip`'s own per-source-user cap, same as
   a member's own `suggest_knowledge` calls.
-- **Silent side effect**: `rate_answer`'s own reply text
+- **DM exclusion (issue #730 review)**: no draft is ever attempted from a
+  1:1 DM (`caller.isDirect`). In a channel the Q&A was already visible to
+  the room; in a DM the member may reasonably assume privacy, and a
+  "helpful" rating is not consent to republish into the guild-wide,
+  admin-visible candidate queue — a DM Q&A only enters that queue via the
+  EXPLICIT `suggest_knowledge` act.
+- **Silent side effect, failure-isolated**: `rate_answer`'s own reply text
   (`'Thanks, glad that helped!'`) is unchanged either way; drafting is never
   announced to the member, unlike the deliberate `suggest_knowledge` flow.
+  The whole drafting block is try/caught (issue #730 review): a transient
+  failure in any of its reads/writes degrades to "no draft" and a warn log —
+  it can never surface as a tool error on a rating that was already
+  recorded. The rater-scoped mismatch cap stays deliberately check-then-act
+  rather than atomic: its count runs after the rating's own row is inserted,
+  so the only overshoot window is truly-concurrent calls, and the atomic
+  per-victim cap inside `createKnowledgeTip` remains the hard bound.
 
 ### Knowledge gaps (issue #208)
 

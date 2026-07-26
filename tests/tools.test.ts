@@ -13442,6 +13442,136 @@ test(
 );
 
 test(
+  'SECURITY: rate_answer in a 1:1 DM never drafts a candidate, flag on — a DM Q&A only enters the guild-wide admin-visible queue via the explicit suggest_knowledge act, never implicitly from a helpful rating (issue #730 review)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-dm`;
+    const conversationId = `${RUN}-c-answer-candidate-dm`;
+    // Same whimsical-wording discipline as the basic drafting test above, so
+    // the shared-table dedup guard can't silently suppress the draft this
+    // test must prove is suppressed by the DM check ALONE.
+    const question = `${RUN} why does the sombre plaid axolotl refuse the stairlift`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: question,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'gently decant the axolotl before engaging the stairlift',
+      meta: { replyToUserId: askingMember },
+    });
+
+    // Same shape as rateAnswerHandler, with the one difference under test.
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: askingMember,
+        userName: 'Rating Member',
+        role: 'member' as const,
+        conversationId,
+        isDirect: true,
+      },
+      adapter,
+    );
+    const handler = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              helpful: boolean;
+            }) => Promise<{ isError?: boolean; content: Array<{ text?: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['rate_answer'];
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await handler.handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+      assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+    });
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(
+      rows.rows.length,
+      0,
+      'SECURITY: a helpful rating in a DM must never draft a candidate — same fixture drafts in a channel (see the basic test above), so the DM check alone is what suppressed it',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'rate_answer: a transient failure inside the drafting side effect never surfaces as a tool error — the rating is recorded and the reply text is unchanged (issue #730 review)',
+  { skip },
+  async (t) => {
+    const askingMember = `${RUN}-answer-candidate-outage`;
+    const conversationId = `${RUN}-c-answer-candidate-outage`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} where does the burgundy heron store its spare monocle`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'in the velvet alcove behind the reeds',
+      meta: { replyToUserId: askingMember },
+    });
+
+    // Fail exactly the grounding read (identifiable by its own
+    // reply_to_user_id alias, same marker the flag-off spy test keys on);
+    // every other query proceeds normally, so the rating insert succeeds
+    // before the simulated outage hits the side effect.
+    const original = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((...queryArgs: Parameters<typeof pool.query>) => {
+      if (String(queryArgs[0]).includes('reply_to_user_id')) {
+        throw new Error('simulated grounding outage');
+      }
+      return original(...queryArgs);
+    }) as typeof pool.query);
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+      assert.notEqual(
+        result.isError,
+        true,
+        'a drafting failure must degrade to "no draft", never error the rating',
+      );
+      assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+    });
+
+    const feedback = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    assert.equal(feedback.rows.length, 1, 'the rating itself was recorded before the outage');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
   'SECURITY: rate_answer never drafts a candidate for a GROUNDED answer (meta.knowledgeEntryId set), flag on — independent of the ungrounded-answer draft path (issue #726 acceptance criteria 3, 9)',
   { skip },
   async () => {

@@ -3582,47 +3582,68 @@ export function buildToolServer(
       // author (`grounding.questionUserId`), which can differ from the rater
       // when `resolveAnswerFeedbackTarget` bound this rating to a reply
       // addressed to someone else (SECURITY, issue #726 AC10).
-      if (config.knowledgeAnswerCandidate.enabled && args.helpful === true) {
-        const grounding = await answerFeedbackGrounding(created.interactionId);
-        if (
-          grounding &&
-          grounding.knowledgeEntryId === null &&
-          grounding.questionContent !== null &&
-          grounding.questionUserId !== null
-        ) {
-          // SECURITY (issue #726 follow-up): createKnowledgeTip's cap alone
-          // bounds how much of a single VICTIM's quota this can absorb, not
-          // how many DIFFERENT victims one rater can draft against via the
-          // mismatched-attribution fallback above — rate_answer's own daily
-          // cap (RATE_ANSWER_DAILY_LIMIT, 20/day) is far looser than any one
-          // victim's KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY (3/day). A matched
-          // self-rating is exempt: that case is already bounded by
-          // createKnowledgeTip's own per-source-user cap. Fails closed
-          // (silently, same as every other branch here) rather than erroring
-          // the rating itself.
-          const mismatched = grounding.questionUserId !== caller.userId;
-          const raterExhausted =
-            mismatched &&
-            (await countMismatchedHelpfulRatings(caller.platform, caller.userId)) >
-              KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY;
-          if (!raterExhausted) {
-            const { blocked, embedding: topicEmbedding } = await candidateTopicAlreadyReviewed(
-              grounding.questionContent,
-            );
-            if (!blocked) {
-              const covering = await findKnowledgeCoveringTopic(topicEmbedding);
-              if (!covering) {
-                await createKnowledgeTip({
-                  platform: caller.platform,
-                  userId: grounding.questionUserId,
-                  topic: grounding.questionContent,
-                  title: grounding.questionContent,
-                  content: grounding.answerContent,
-                  topicEmbedding,
-                });
+      // DM exclusion (issue #730 review): a 1:1 DM Q&A only ever enters the
+      // guild-wide, admin-visible candidate queue via the EXPLICIT
+      // suggest_knowledge act — never implicitly from a "helpful" rating.
+      // In a channel the exchange was already visible to the room; in a DM
+      // the member may reasonably assume privacy, and "helpful" is not
+      // consent to republish. Whole block is try/caught: drafting is a
+      // silent side effect on an already-recorded rating, so a transient
+      // failure in any of its reads/writes must degrade to "no draft" —
+      // never surface as a tool error on the rating itself (same fail-open
+      // posture as the gap/stale/retrieval supplements in knowledge_search).
+      if (config.knowledgeAnswerCandidate.enabled && args.helpful === true && !caller.isDirect) {
+        try {
+          const grounding = await answerFeedbackGrounding(created.interactionId);
+          if (
+            grounding &&
+            grounding.knowledgeEntryId === null &&
+            grounding.questionContent !== null &&
+            grounding.questionUserId !== null
+          ) {
+            // SECURITY (issue #726 follow-up): createKnowledgeTip's cap alone
+            // bounds how much of a single VICTIM's quota this can absorb, not
+            // how many DIFFERENT victims one rater can draft against via the
+            // mismatched-attribution fallback above — rate_answer's own daily
+            // cap (RATE_ANSWER_DAILY_LIMIT, 20/day) is far looser than any one
+            // victim's KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY (3/day). A matched
+            // self-rating is exempt: that case is already bounded by
+            // createKnowledgeTip's own per-source-user cap. Fails closed
+            // (silently, same as every other branch here) rather than erroring
+            // the rating itself.
+            const mismatched = grounding.questionUserId !== caller.userId;
+            // Deliberately check-then-act, not atomic (issue #730 review): the
+            // count runs over answer_feedback AFTER this rating's own row was
+            // inserted, so the only overshoot window is calls truly in flight
+            // at the same instant, and the per-VICTIM cap inside
+            // createKnowledgeTip (an atomic INSERT..SELECT) stays the hard
+            // bound on actual damage regardless. A cross-table atomic rewrite
+            // would buy precision on an advisory secondary guard.
+            const raterExhausted =
+              mismatched &&
+              (await countMismatchedHelpfulRatings(caller.platform, caller.userId)) >
+                KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY;
+            if (!raterExhausted) {
+              const { blocked, embedding: topicEmbedding } = await candidateTopicAlreadyReviewed(
+                grounding.questionContent,
+              );
+              if (!blocked) {
+                const covering = await findKnowledgeCoveringTopic(topicEmbedding);
+                if (!covering) {
+                  await createKnowledgeTip({
+                    platform: caller.platform,
+                    userId: grounding.questionUserId,
+                    topic: grounding.questionContent,
+                    title: grounding.questionContent,
+                    content: grounding.answerContent,
+                    topicEmbedding,
+                  });
+                }
               }
             }
           }
+        } catch (err) {
+          logger.warn({ err }, 'rate_answer knowledge-candidate drafting failed; rating already recorded');
         }
       }
       return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
