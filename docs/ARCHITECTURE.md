@@ -1048,6 +1048,41 @@ and review flow above, rather than a separate table or a privileged surface:
   same as `resolve_appeal`'s `dismissed` case — `decline_knowledge_candidate`
   takes no reason argument, so nothing is fabricated.
 
+#### Implicit drafting from a helpful answer (`rate_answer`, issue #726)
+
+A third path into the same `knowledge_candidates` queue, behind
+`KNOWLEDGE_ANSWER_CANDIDATE_ENABLED` (off by default): closing the loop
+CAPABILITY-IDEAS.md §D2 names, where a `rate_answer(helpful: true)` on an
+**ungrounded** reply (no `meta->>'knowledgeEntryId'` — answered from the
+model's own general knowledge, not an existing `knowledge` entry) is the
+cheapest possible source of a new knowledge-base entry and otherwise
+evaporates.
+
+- **One new read, `answerFeedbackGrounding`**: given the `interactions.id`
+  `rate_answer` just bound the rating to, it reads that outbound row's own
+  `content`/`meta->>'knowledgeEntryId'`/`meta->>'replyToUserId'`, then (only
+  when a `replyToUserId` exists) the most recent INBOUND row from that SAME
+  addressed member in the SAME conversation at or before the reply, to
+  recover the member's original question. `createAnswerFeedback`'s success
+  return additively gained `interactionId` (already resolved internally) so
+  the tool handler can chain straight into this read.
+- **Same write path, verbatim**: when the reply is ungrounded and a
+  preceding question was recovered, `rate_answer` runs the identical
+  `candidateTopicAlreadyReviewed` + `findKnowledgeCoveringTopic` dedup guard
+  `suggest_knowledge` runs, then calls the SAME `createKnowledgeTip` — no new
+  table, no new rate-limit constant, no model call. The shared
+  `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY` cap and the `[member-suggested by
+  <name>]` rendering/purge machinery above apply automatically.
+- **Attribution tracks the question, not the rater**: the drafted row's
+  `source_platform`/`source_user_id` are the ADDRESSED member's identity
+  (`replyToUserId`) — not necessarily the `rate_answer` caller, since
+  `resolveAnswerFeedbackTarget` can bind a rating to a reply addressed to
+  someone else. A grounded reply, a `helpful: false` rating, or a reply with
+  no recoverable preceding question all fail closed — no draft.
+- **Silent side effect**: `rate_answer`'s own reply text
+  (`'Thanks, glad that helped!'`) is unchanged either way; drafting is never
+  announced to the member, unlike the deliberate `suggest_knowledge` flow.
+
 ### Knowledge gaps (issue #208)
 
 `question_digest`, `countStaleKnowledge`, and `knowledge_candidates` each
