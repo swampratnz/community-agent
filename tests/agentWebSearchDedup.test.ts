@@ -28,6 +28,45 @@ type PreToolUseHook = (
 
 const hookOptions = { signal: new AbortController().signal };
 
+// A pool of genuinely UNRELATED topics for tests that need many queries the
+// embedding-similarity check (issue #706) must never treat as duplicates —
+// unlike a numeric-suffix pattern ("query number 0", "query number 1", ...),
+// which real embeddings can place well above
+// AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD's default 0.9 (verified
+// empirically: adjacent "distinct query number N" pairs embedded as high as
+// 0.96 cosine similarity), these 25 topics span unrelated domains and stay
+// below ~0.45 cosine similarity pairwise against the real local embedding
+// model. Tests exercising the volume cap / eviction machinery — where the
+// dedup guard must NOT be the thing doing the denying — draw from here
+// instead of a numeric suffix.
+const DISTINCT_TOPICS = [
+  'nz contractor tax rules',
+  'auckland public transport fares',
+  'best pgvector index type',
+  'kiwi bird conservation status',
+  'wellington earthquake building code',
+  'discord webhook rate limits',
+  'lemon cake baking recipe',
+  'glacier melting rate antarctica',
+  'opera house ticket prices',
+  'lentil soup nutrition facts',
+  'satellite internet coverage rural nz',
+  'harbour bridge toll history',
+  'cactus watering schedule',
+  'choir rehearsal scheduling app',
+  'tunnel boring machine specs',
+  'rugby world cup schedule',
+  'bitcoin mining energy usage',
+  'volcano eruption warning signs',
+  'string theory basics explained',
+  'sourdough starter troubleshooting',
+  'electric vehicle charging stations nz',
+  'shakespeare play summaries',
+  'coral reef bleaching causes',
+  'jazz music history 1920s',
+  'mount everest climbing permits',
+];
+
 function preToolUseInput(toolUseId: string, query: string) {
   return {
     session_id: 'sess-1',
@@ -121,14 +160,23 @@ test('AC-7: the existing rate-limit behaviour is unchanged when the query differ
   const conversationId = 'ws-dedup-rate-unaffected';
   const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
 
+  assert.ok(
+    config.llm.webSearchRateLimitPerHour < DISTINCT_TOPICS.length,
+    'DISTINCT_TOPICS must have enough genuinely-unrelated entries to cover the configured rate limit plus one',
+  );
   for (let i = 0; i < config.llm.webSearchRateLimitPerHour; i++) {
-    const result = await fn(preToolUseInput(`u-${i}`, `distinct query number ${i}`), `u-${i}`, hookOptions);
+    const result = await fn(preToolUseInput(`u-${i}`, DISTINCT_TOPICS[i]), `u-${i}`, hookOptions);
     assert.equal(result.hookSpecificOutput, undefined, `distinct query ${i} must not be denied by dedup`);
   }
 
-  // Every prior call was a distinct query, so the volume cap — not dedup —
-  // must be exactly exhausted now; one more distinct query is still denied.
-  const overLimit = await fn(preToolUseInput('u-over', 'yet another distinct query'), 'u-over', hookOptions);
+  // Every prior call was a distinct (semantically unrelated) query, so the
+  // volume cap — not dedup — must be exactly exhausted now; one more
+  // distinct query is still denied.
+  const overLimit = await fn(
+    preToolUseInput('u-over', DISTINCT_TOPICS[config.llm.webSearchRateLimitPerHour]),
+    'u-over',
+    hookOptions,
+  );
   assert.equal(overLimit.hookSpecificOutput?.permissionDecision, 'deny');
   assert.match(
     overLimit.hookSpecificOutput?.permissionDecisionReason ?? '',
@@ -142,20 +190,25 @@ test('AC-8: the dedup history evicts the oldest query once more than historySize
   const conversationId = 'ws-dedup-eviction';
   const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
   const historySize = config.llm.webSearchDedupHistorySize;
+  assert.ok(
+    historySize < DISTINCT_TOPICS.length,
+    'DISTINCT_TOPICS must have enough genuinely-unrelated entries to cover the configured history size',
+  );
 
-  const first = await fn(preToolUseInput('e-first', 'query zero'), 'e-first', hookOptions);
+  const first = await fn(preToolUseInput('e-first', DISTINCT_TOPICS[0]), 'e-first', hookOptions);
   assert.equal(first.hookSpecificOutput, undefined);
 
-  // Fill the history with (historySize) MORE distinct queries, pushing
-  // "query zero" out the back once the history exceeds historySize entries.
+  // Fill the history with (historySize) MORE distinct (unrelated) queries,
+  // pushing DISTINCT_TOPICS[0] out the back once the history exceeds
+  // historySize entries.
   for (let i = 1; i <= historySize; i++) {
-    const result = await fn(preToolUseInput(`e-${i}`, `query ${i}`), `e-${i}`, hookOptions);
+    const result = await fn(preToolUseInput(`e-${i}`, DISTINCT_TOPICS[i]), `e-${i}`, hookOptions);
     assert.equal(result.hookSpecificOutput, undefined, `distinct query ${i} must not be denied by dedup`);
   }
 
-  // "query zero" has now been evicted, so repeating it must be treated as a
-  // brand-new query, not a duplicate.
-  const repeatEvicted = await fn(preToolUseInput('e-repeat', 'query zero'), 'e-repeat', hookOptions);
+  // DISTINCT_TOPICS[0] has now been evicted, so repeating it must be treated
+  // as a brand-new query, not a duplicate.
+  const repeatEvicted = await fn(preToolUseInput('e-repeat', DISTINCT_TOPICS[0]), 'e-repeat', hookOptions);
   assert.equal(
     repeatEvicted.hookSpecificOutput,
     undefined,
@@ -168,16 +221,22 @@ test('AC-9: a query denied by the volume cap is never recorded into the dedup hi
   const conversationId = 'ws-dedup-rate-then-retry';
   const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
 
-  // Exhaust the volume cap with distinct queries, none of which collide
-  // with the query used below.
+  // Exhaust the volume cap with distinct (semantically unrelated) queries,
+  // none of which collide with the query used below.
+  assert.ok(
+    config.llm.webSearchRateLimitPerHour < DISTINCT_TOPICS.length,
+    'DISTINCT_TOPICS must have enough genuinely-unrelated entries to cover the configured rate limit plus one',
+  );
   for (let i = 0; i < config.llm.webSearchRateLimitPerHour; i++) {
-    const result = await fn(preToolUseInput(`f-${i}`, `filler query number ${i}`), `f-${i}`, hookOptions);
+    const result = await fn(preToolUseInput(`f-${i}`, DISTINCT_TOPICS[i]), `f-${i}`, hookOptions);
     assert.equal(result.hookSpecificOutput, undefined, `filler query ${i} must not be denied by dedup`);
   }
 
-  // A genuinely new, never-before-seen query is now denied by the volume
-  // cap — not the dedup guard, since it is not a repeat of anything.
-  const first = await fn(preToolUseInput('g-1', 'a brand new never searched query'), 'g-1', hookOptions);
+  // A genuinely new, never-before-seen (and semantically unrelated) query is
+  // now denied by the volume cap — not the dedup guard, since it is not a
+  // repeat of anything.
+  const newQuery = DISTINCT_TOPICS[config.llm.webSearchRateLimitPerHour];
+  const first = await fn(preToolUseInput('g-1', newQuery), 'g-1', hookOptions);
   assert.equal(first.hookSpecificOutput?.permissionDecision, 'deny');
   assert.match(
     first.hookSpecificOutput?.permissionDecisionReason ?? '',
@@ -189,7 +248,7 @@ test('AC-9: a query denied by the volume cap is never recorded into the dedup hi
   // if the first call had wrongly been recorded into the dedup history
   // despite never actually searching, this retry would instead get the
   // dedup guard's "already searched" denial.
-  const retry = await fn(preToolUseInput('g-2', 'a brand new never searched query'), 'g-2', hookOptions);
+  const retry = await fn(preToolUseInput('g-2', newQuery), 'g-2', hookOptions);
   assert.equal(retry.hookSpecificOutput?.permissionDecision, 'deny');
   assert.match(
     retry.hookSpecificOutput?.permissionDecisionReason ?? '',
@@ -201,6 +260,80 @@ test('AC-9: a query denied by the volume cap is never recorded into the dedup hi
     retry.hookSpecificOutput?.permissionDecisionReason ?? '',
     /already searched/i,
     'a query that was denied by the volume cap (never recorded as searched) must not be dedup-denied on retry',
+  );
+});
+
+test('SECURITY: issue #706 AC1 — a near-paraphrase (not an exact-normalized match) of a recent WebSearch query is denied with the SAME "already searched" reason as an exact repeat, not a new/different message', async () => {
+  const conversationId = 'ws-dedup-paraphrase';
+  const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
+
+  const first = await fn(preToolUseInput('p-1', 'best pgvector index type'), 'p-1', hookOptions);
+  assert.equal(first.hookSpecificOutput, undefined, 'the first occurrence of a query must never be denied');
+
+  // Not an exact-normalized match (different wording/word order entirely),
+  // but the same underlying question — embeds above the default 0.9
+  // similarity threshold against the real local embedding model.
+  const paraphrase = await fn(
+    preToolUseInput('p-2', 'which index type is best for pgvector'),
+    'p-2',
+    hookOptions,
+  );
+  assert.equal(paraphrase.hookSpecificOutput?.hookEventName, 'PreToolUse');
+  assert.equal(paraphrase.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.equal(
+    paraphrase.hookSpecificOutput?.permissionDecisionReason,
+    'You already searched for this in the last few minutes — use what you found.',
+    'the similarity-path denial must reuse the exact-match denial reason verbatim, byte-identical — ' +
+      'not a new or different message (adversarial-review tightening on issue #706)',
+  );
+});
+
+test('issue #706 AC2 — a genuinely distinct pair that embeds BELOW the similarity threshold is allowed, pinning that the 0.9 default does not over-block', async () => {
+  const conversationId = 'ws-dedup-distinct-below-threshold';
+  const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
+
+  const first = await fn(preToolUseInput('t-1', 'NZ GST registration threshold'), 't-1', hookOptions);
+  assert.equal(first.hookSpecificOutput, undefined);
+
+  const second = await fn(preToolUseInput('t-2', 'pgvector HNSW index tuning'), 't-2', hookOptions);
+  assert.equal(
+    second.hookSpecificOutput,
+    undefined,
+    'two genuinely unrelated topics must never be denied by the similarity guard, even though neither is an exact match',
+  );
+});
+
+test('SECURITY: issue #706 AC5 (adversarial review) — two WebSearch calls for the same conversation issued without awaiting between them (parallel tool use in one turn) cannot both bypass dedup for an identical query', async () => {
+  const conversationId = 'ws-dedup-concurrent-race';
+  const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
+
+  // Deliberately NOT awaited individually — both hook invocations start
+  // before either finishes, exercising the exact interleaving the
+  // `await embed()` yield point (inside isDuplicateWebSearchQuery) opened
+  // up between the dedup check and recordWebSearchQuery. Without
+  // withWebSearchDedupLock serializing the check -> reserve -> record
+  // sequence per conversation, both calls could read the (still-empty)
+  // dedup history before either recorded, and both would be allowed
+  // through — silently defeating the exact-match guard, not just the new
+  // similarity path.
+  const [first, second] = await Promise.all([
+    fn(preToolUseInput('race-1', 'best pgvector index type'), 'race-1', hookOptions),
+    fn(preToolUseInput('race-2', 'best pgvector index type'), 'race-2', hookOptions),
+  ]);
+
+  assert.equal(
+    first.hookSpecificOutput,
+    undefined,
+    'the first of two concurrent identical calls must still be allowed through',
+  );
+  assert.equal(
+    second.hookSpecificOutput?.permissionDecision,
+    'deny',
+    'the second of two concurrent identical calls must be denied by dedup, not race past it',
+  );
+  assert.equal(
+    second.hookSpecificOutput?.permissionDecisionReason,
+    'You already searched for this in the last few minutes — use what you found.',
   );
 });
 

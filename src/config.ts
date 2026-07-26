@@ -79,6 +79,13 @@ const EnvSchema = z.object({
   // so a legitimate multi-topic research turn can't plausibly be blocked.
   AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
   AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE: z.coerce.number().int().positive().default(3),
+  // Embedding-similarity dedup (issue #706, the growth path #589 itself
+  // named): once the exact-match check above misses, a near-paraphrase of a
+  // recent query ("NZ contractor tax rules" vs "New Zealand tax rules for
+  // contractors") is still denied if its embed()-cosine-similarity against
+  // any windowed history entry meets this floor. Same default/validation
+  // shape as KNOWLEDGE_SHORTCUT_THRESHOLD, the precedent this mirrors.
+  AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
 
   // Discord
   DISCORD_BOT_TOKEN: z.string().min(1),
@@ -952,6 +959,7 @@ export const config = {
     webSearchRateLimitPerHour: env.AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR,
     webSearchDedupWindowSeconds: env.AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS,
     webSearchDedupHistorySize: env.AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE,
+    webSearchDedupSimilarityThreshold: env.AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD,
   },
   discord: {
     botToken: env.DISCORD_BOT_TOKEN,

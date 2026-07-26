@@ -31,6 +31,7 @@ import {
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
   reserveWebSearchSlot,
+  withWebSearchDedupLock,
   type ToolServerTurnState,
 } from './tools.js';
 import {
@@ -322,6 +323,23 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  *    query would be wrongly denied as "already searched" instead of hitting
  *    the accurate rate-limit message. Both checks share the same try/catch,
  *    so a thrown error from either fails closed identically.
+ *  - the dedup check also catches near-paraphrases, not just verbatim
+ *    repeats (issue #706, the growth path #589 itself named): once the
+ *    exact-match check misses, `isDuplicateWebSearchQuery` embeds the query
+ *    via the local, offline `embed()` (no paid-API cost) and denies if its
+ *    cosine similarity against any windowed history entry meets
+ *    `AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD`. The embedding is
+ *    computed at most once per call — the same vector returned by the check
+ *    is passed into `recordWebSearchQuery` rather than re-embedded. A
+ *    thrown/rejected `embed()` propagates into this hook's existing
+ *    try/catch below and fails closed, same as the other two checks.
+ *  - `await embed()` is a genuine yield point that JS run-to-completion
+ *    semantics never had to contend with pre-#706, so the entire
+ *    check -> volume-reserve -> record sequence is wrapped in
+ *    `withWebSearchDedupLock` (`tools.ts`), serialized per conversation —
+ *    without it, two WebSearch calls in the same turn could both read the
+ *    dedup history before either recorded and race past the guard entirely
+ *    (adversarial review on issue #706).
  */
 export function buildQueryOptions(
   role: CallerContext['role'],
@@ -383,45 +401,63 @@ export function buildQueryOptions(
                           : '';
 
                       const dedupWindowMs = config.llm.webSearchDedupWindowSeconds * 1000;
-                      if (isDuplicateWebSearchQuery(conversationId, query, dedupWindowMs)) {
-                        return {
-                          continue: true,
-                          hookSpecificOutput: {
-                            hookEventName: 'PreToolUse',
-                            permissionDecision: 'deny',
-                            permissionDecisionReason:
-                              'You already searched for this in the last few minutes — use what you found.',
-                          },
-                        };
-                      }
+                      // The whole check -> volume-reserve -> record sequence is serialized per
+                      // conversation (issue #706 adversarial review): `await embed()` inside
+                      // `isDuplicateWebSearchQuery` is a genuine yield point, so without this lock
+                      // two WebSearch calls issued in the same turn could both pass the dedup
+                      // check before either records, racing past both the exact-match and
+                      // similarity guards. `withWebSearchDedupLock` restores the atomicity this
+                      // hook had before that `await` existed.
+                      return await withWebSearchDedupLock(conversationId, async () => {
+                        const { duplicate, embedding } = await isDuplicateWebSearchQuery(
+                          conversationId,
+                          query,
+                          dedupWindowMs,
+                          config.llm.webSearchDedupSimilarityThreshold,
+                        );
+                        if (duplicate) {
+                          return {
+                            continue: true,
+                            hookSpecificOutput: {
+                              hookEventName: 'PreToolUse',
+                              permissionDecision: 'deny',
+                              permissionDecisionReason:
+                                'You already searched for this in the last few minutes — use what you found.',
+                            },
+                          };
+                        }
 
-                      const allowed = reserveWebSearchSlot(
-                        conversationId,
-                        config.llm.webSearchRateLimitPerHour,
-                      );
-                      if (!allowed) {
-                        return {
-                          continue: true,
-                          hookSpecificOutput: {
-                            hookEventName: 'PreToolUse',
-                            permissionDecision: 'deny',
-                            permissionDecisionReason:
-                              'WebSearch already hit the conversation limit ' +
-                              `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
-                          },
-                        };
-                      }
+                        const allowed = reserveWebSearchSlot(
+                          conversationId,
+                          config.llm.webSearchRateLimitPerHour,
+                        );
+                        if (!allowed) {
+                          return {
+                            continue: true,
+                            hookSpecificOutput: {
+                              hookEventName: 'PreToolUse',
+                              permissionDecision: 'deny',
+                              permissionDecisionReason:
+                                'WebSearch already hit the conversation limit ' +
+                                `(${config.llm.webSearchRateLimitPerHour}/hour) — try again later.`,
+                            },
+                          };
+                        }
 
-                      // Only record once the call is actually going to proceed — recording a
-                      // query that then gets denied by the volume cap would poison the dedup
-                      // history with a search that never ran (issue #589 review).
-                      recordWebSearchQuery(
-                        conversationId,
-                        query,
-                        dedupWindowMs,
-                        config.llm.webSearchDedupHistorySize,
-                      );
-                      return { continue: true };
+                        // Only record once the call is actually going to proceed — recording a
+                        // query that then gets denied by the volume cap would poison the dedup
+                        // history with a search that never ran (issue #589 review). `embedding` is
+                        // the SAME vector isDuplicateWebSearchQuery already computed above — reused
+                        // rather than re-embedded (issue #706).
+                        recordWebSearchQuery(
+                          conversationId,
+                          query,
+                          dedupWindowMs,
+                          config.llm.webSearchDedupHistorySize,
+                          embedding,
+                        );
+                        return { continue: true };
+                      });
                     } catch (err) {
                       logger.error(
                         { err, conversationId },

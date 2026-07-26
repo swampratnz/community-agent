@@ -610,6 +610,37 @@ test('SECURITY: AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE rejects a non-positive value
   assert.match(result.stderr, /AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE/);
 });
 
+test('config: AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD defaults to 0.9 (issue #706)', () => {
+  assert.equal(config.llm.webSearchDedupSimilarityThreshold, 0.9);
+});
+
+test('SECURITY: AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD rejects a value outside [0, 1] — fail-fast rather than a silently no-op or silently-blocks-everything threshold (issue #706)', () => {
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD: '1.5',
+      },
+    },
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    'AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD=1.5 must fail config validation, not load',
+  );
+  assert.match(result.stderr, /AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD/);
+});
+
 test('config: DB pool timeouts default to 15000/15000/10000ms (statement/query/connect, issue #502)', () => {
   assert.equal(config.db.statementTimeoutMs, 15_000);
   assert.equal(config.db.queryTimeoutMs, 15_000);

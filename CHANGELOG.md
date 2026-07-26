@@ -13,6 +13,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-26
 
 ### Added
+- **Admin `WebSearch` dedup now catches near-paraphrases, not just verbatim
+  repeats** (#706), closing the growth path #589 itself named: reformulating
+  a search almost identically ("NZ contractor tax rules" → "New Zealand tax
+  rules for contractors") no longer burns a second metered call. Once the
+  existing exact-match check misses, the guard compares the new query's
+  embedding (via the same local, offline model `knowledge_search` already
+  uses — no added cost) against recent queries in the conversation and denies
+  on high similarity, with a new `AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD`
+  knob (default 0.9). The embedding lookup's one genuine `await` is
+  serialized per conversation so two WebSearch calls issued in the same turn
+  can't both race past the dedup guard before either is recorded.
 - **Real-time admin nudge for a stale knowledge entry actively served to a
   member** (#701, `KNOWLEDGE_STALE_ALERT_ENABLED`, off by default): previously
   the only signal that a *specific* knowledge-base entry had gone stale and
