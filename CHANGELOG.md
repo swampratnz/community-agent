@@ -12,6 +12,22 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-27
 
+### Added
+- **`who_is_into` and `list_projects` now cross-reference each other** (#718),
+  closing the growth path both #634 and #646 named in their own follow-up
+  sections: a member matched by `who_is_into` who has also shipped a project
+  now shows a `Shared projects: "X", "Y"` line, and a project shown by
+  `list_projects` whose owner has published interests now shows an
+  `Interests: <text>` line — the single strongest "talk to this person"
+  signal, surfaced without a manual round-trip between the two tools. Two new
+  batched repository lookups (`getActiveProjectNamesForOwners`,
+  `getPublishedInterestsForOwners`) do one query per render call regardless
+  of result-set size, never N+1; both are silent when the cross-referenced
+  member has nothing to show, and the appended text passes through the same
+  `untrustedEntryContent`/`sanitizeName` quarantine as the rest of each
+  block. No new tool, table, or write path — purely additive over the two
+  already-public, already opt-in directories #634 and #646 shipped.
+
 ### Fixed
 - **The gated-notice returning-guest wait clause now also reaches te reo
   Māori** (#716), closing the follow-up #591 itself deferred: since #591, an

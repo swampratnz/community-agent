@@ -169,6 +169,8 @@ const {
   searchMemberInterests,
   MEMBER_INTERESTS_MAX_CHARS,
   WHO_IS_INTO_LIMIT,
+  getActiveProjectNamesForOwners,
+  getPublishedInterestsForOwners,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -6443,6 +6445,160 @@ test(
     assert.equal(await markRosterLeave('discord', userId), true);
     const after = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
     assert.equal(after.rows.length, 0, "a departed member's shared projects are removed on roster leave");
+  },
+);
+
+test(
+  'repository: getActiveProjectNamesForOwners returns ACTIVE project names batched across owners, one round trip (issue #718)',
+  { skip },
+  async () => {
+    const withOne = `${RUN}-crossref-projects-one`;
+    const withTwo = `${RUN}-crossref-projects-two`;
+    const withNone = `${RUN}-crossref-projects-none`;
+    const removedOnly = `${RUN}-crossref-projects-removed`;
+
+    const single = await shareProject({
+      platform: 'discord',
+      userId: withOne,
+      name: 'Solo Project',
+      description: 'one active project',
+    });
+    assert.ok(single.ok);
+    const first = await shareProject({
+      platform: 'discord',
+      userId: withTwo,
+      name: 'First Project',
+      description: 'first of two',
+    });
+    const second = await shareProject({
+      platform: 'discord',
+      userId: withTwo,
+      name: 'Second Project',
+      description: 'second of two',
+    });
+    assert.ok(first.ok && second.ok);
+    const removed = await shareProject({
+      platform: 'discord',
+      userId: removedOnly,
+      name: 'Removed Project',
+      description: 'soft-removed, must not count as active',
+    });
+    assert.ok(removed.ok);
+    assert.equal(await removeMemberProject('discord', removedOnly, 'Removed Project'), true);
+
+    const result = await getActiveProjectNamesForOwners([
+      { platform: 'discord', userId: withOne },
+      { platform: 'discord', userId: withTwo },
+      { platform: 'discord', userId: withNone },
+      { platform: 'discord', userId: removedOnly },
+    ]);
+
+    assert.deepEqual(result.get(`discord:${withOne}`), ['Solo Project']);
+    assert.equal(
+      result.get(`discord:${withTwo}`)?.length,
+      2,
+      'both active projects for the two-project owner',
+    );
+    assert.ok(result.get(`discord:${withTwo}`)?.includes('First Project'));
+    assert.ok(result.get(`discord:${withTwo}`)?.includes('Second Project'));
+    assert.equal(result.has(`discord:${withNone}`), false, 'an owner with zero shared projects has no entry');
+    assert.equal(
+      result.has(`discord:${removedOnly}`),
+      false,
+      'an owner whose only project is soft-removed has no entry',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = ANY($1)`, [
+      [withOne, withTwo, withNone, removedOnly],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: getActiveProjectNamesForOwners never returns rows for an owner outside the requested input set (issue #718 AC #7)',
+  { skip },
+  async () => {
+    const inSet = `${RUN}-crossref-projects-inset`;
+    const outsideSet = `${RUN}-crossref-projects-outside`;
+    const inRow = await shareProject({
+      platform: 'discord',
+      userId: inSet,
+      name: 'In Set Project',
+      description: 'requested owner',
+    });
+    const outsideRow = await shareProject({
+      platform: 'discord',
+      userId: outsideSet,
+      name: 'Outside Set Project',
+      description: 'never requested — a leaking query would still return this',
+    });
+    assert.ok(inRow.ok && outsideRow.ok);
+
+    const result = await getActiveProjectNamesForOwners([{ platform: 'discord', userId: inSet }]);
+    assert.deepEqual(result.get(`discord:${inSet}`), ['In Set Project']);
+    assert.equal(
+      result.has(`discord:${outsideSet}`),
+      false,
+      'SECURITY: an owner with active shared projects but outside the input set must never appear',
+    );
+    assert.equal(result.size, 1, 'SECURITY: no extra rows beyond the requested owner set');
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = ANY($1)`, [[inSet, outsideSet]]);
+  },
+);
+
+test(
+  'repository: getPublishedInterestsForOwners returns published interests text batched across owners (issue #718)',
+  { skip },
+  async () => {
+    const withInterests = `${RUN}-crossref-interests-with`;
+    const withNone = `${RUN}-crossref-interests-none`;
+
+    await setMemberInterests('discord', withInterests, 'building a RAG chatbot');
+
+    const result = await getPublishedInterestsForOwners([
+      { platform: 'discord', userId: withInterests },
+      { platform: 'discord', userId: withNone },
+    ]);
+
+    assert.equal(result.get(`discord:${withInterests}`), 'building a RAG chatbot');
+    assert.equal(
+      result.has(`discord:${withNone}`),
+      false,
+      'an owner with no published (or cleared) interests has no entry',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      withInterests,
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: getPublishedInterestsForOwners never returns rows for an owner outside the requested input set (issue #718 AC #7)',
+  { skip },
+  async () => {
+    const inSet = `${RUN}-crossref-interests-inset`;
+    const outsideSet = `${RUN}-crossref-interests-outside`;
+    await setMemberInterests('discord', inSet, 'in-set interests');
+    await setMemberInterests(
+      'discord',
+      outsideSet,
+      'outside-set interests — a leaking query would still return this',
+    );
+
+    const result = await getPublishedInterestsForOwners([{ platform: 'discord', userId: inSet }]);
+    assert.equal(result.get(`discord:${inSet}`), 'in-set interests');
+    assert.equal(
+      result.has(`discord:${outsideSet}`),
+      false,
+      'SECURITY: an owner with published interests but outside the input set must never appear',
+    );
+    assert.equal(result.size, 1, 'SECURITY: no extra rows beyond the requested owner set');
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [inSet, outsideSet],
+    ]);
   },
 );
 
