@@ -512,6 +512,16 @@ const EnvSchema = z.object({
   // DISTINCT_USERS happens to be configured with. Same >=2, default 3 as
   // the export's floor.
   MEMBER_DIGEST_MIN_DISTINCT_USERS: z.coerce.number().int().min(2).default(3),
+  // Opt-in "can someone help with X" member-to-member handoff (issue #729):
+  // set_helper_availability/find_helper, the active-side consumer of #634's
+  // member_interests/who_is_into. Off by default — both tools are dropped
+  // from allowedTools entirely (never merely refused), byte-identical to
+  // today for any deployment that doesn't set this, same convention as every
+  // other tool-gating flag in FEATURE_FLAGGED_TOOL_GROUPS (agent/core.ts).
+  FIND_HELPER_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Guild-wide rolling-hour cap on access-request alerts (issue #480), same
   // sliding-window shape as ANNOUNCE_RATE_LIMIT_PER_HOUR/
   // AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR — bounds worst-case admin DM volume
@@ -1137,6 +1147,9 @@ export const config = {
     enabled: env.MEMBER_DIGEST_ENABLED ?? false,
     channelId: env.MEMBER_DIGEST_CHANNEL_ID,
     minDistinctUsers: env.MEMBER_DIGEST_MIN_DISTINCT_USERS,
+  },
+  findHelper: {
+    enabled: env.FIND_HELPER_ENABLED ?? false,
   },
   behaviour: {
     memoryTopK: env.MEMORY_TOP_K,

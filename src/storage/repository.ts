@@ -2410,6 +2410,16 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       `DELETE FROM knowledge_candidates WHERE source_platform = $1 AND source_user_id = $2`,
       [platform, userId],
     );
+    // helper_notifications (issue #729, find_helper) is keyed on this
+    // identity in EITHER role — as the helper who was notified, or as the
+    // requester who triggered the notification — so both halves are deleted
+    // here, unlike every other table above which is keyed one way.
+    const { rowCount: helperNotifications } = await client.query(
+      `DELETE FROM helper_notifications
+        WHERE (helper_platform = $1 AND helper_user_id = $2)
+           OR (requester_platform = $1 AND requester_user_id = $2)`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -2430,7 +2440,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (moderationAppeals ?? 0) +
       (memberProjects ?? 0) +
       (memberInterests ?? 0) +
-      (knowledgeTips ?? 0)
+      (knowledgeTips ?? 0) +
+      (helperNotifications ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -3844,6 +3855,158 @@ export async function getPublishedInterestsForOwners(
   return result;
 }
 
+// --- Helper handoff (set_helper_availability / find_helper, issue #729) -----
+//
+// The active-side consumer of member_interests: willing_to_help rides the
+// same row set_my_interests/who_is_into already publish/search, so a helper
+// must have a published interests row before they can opt in. Matching reuses
+// searchMemberInterests' exact query shape (embedding-similarity, embedding
+// IS NOT NULL) filtered to willing_to_help = true and excluding the
+// requester's own row. helper_notifications is a separate append-only log,
+// never edited in place, backing two independent DB-backed rolling-window
+// caps (never in-memory counters, so both survive a process restart).
+
+/** Hard cap on a find_helper topic's length, mirroring rate_answer's comment cap. */
+export const FIND_HELPER_TOPIC_MAX_CHARS = 200;
+/** How many top-ranked candidates find_helper will walk before giving up — bounded above the two rate caps below so a scan isn't starved by a few maxed-out helpers. */
+export const FIND_HELPER_CANDIDATE_SCAN_LIMIT = 10;
+/** Per-helper cap on notifications received in a rolling 7 days — the "unsolicited pings" guardrail. */
+export const FIND_HELPER_WEEKLY_LIMIT_PER_HELPER = 3;
+/** Per-requester cap on find_helper calls in a rolling 24h — prevents looping over topics to exhaust many helpers' weekly quotas. */
+export const FIND_HELPER_REQUESTER_DAILY_LIMIT = 3;
+/**
+ * Minimum cosine similarity for a willing_to_help row to count as a genuine
+ * match — same floor and same embedding model as
+ * KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD. Without this, findHelperCandidates
+ * would always return the nearest-ranked willing helper regardless of actual
+ * relevance (searchMemberInterests/who_is_into has the same no-floor shape,
+ * but it only ever surfaces a list for the REQUESTER to judge; find_helper
+ * acts on the match autonomously by sending a DM, so "match" must mean
+ * something or AC #5's "no one available" outcome could never be reached).
+ */
+export const FIND_HELPER_RELEVANCE_THRESHOLD = KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
+
+export type SetHelperAvailabilityResult = { ok: true } | { ok: false; reason: 'no_interests_row' };
+
+/**
+ * Self-scoped flip of the caller's OWN willing_to_help flag. Requires an
+ * existing member_interests row (set via set_my_interests) — matching needs
+ * that row's published text/embedding to work at all, so there is nothing to
+ * flip a flag on for a caller who has never published interests. Instantly
+ * reversible either direction, same "one row, caller's own writes replace it"
+ * model setMemberInterests uses.
+ */
+export async function setHelperAvailability(
+  platform: Platform,
+  userId: string,
+  available: boolean,
+): Promise<SetHelperAvailabilityResult> {
+  const { rowCount } = await pool.query(
+    `UPDATE member_interests SET willing_to_help = $3 WHERE platform = $1 AND user_id = $2`,
+    [platform, userId, available],
+  );
+  return (rowCount ?? 0) > 0 ? { ok: true } : { ok: false, reason: 'no_interests_row' };
+}
+
+/**
+ * True if `platform`/`userId` has hit FIND_HELPER_REQUESTER_DAILY_LIMIT
+ * successful find_helper handoffs (rows where they're the requester) in the
+ * trailing 24h — a call that finds no eligible helper writes no row, so it
+ * doesn't count against this cap. Checked BEFORE matching runs (issue #729 AC
+ * #6), same DB-backed COUNT(*) shape as createKnowledgeTip's rate cap rather
+ * than an in-memory counter.
+ */
+export async function isFindHelperRequesterAtDailyCap(platform: Platform, userId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM helper_notifications
+      WHERE requester_platform = $1 AND requester_user_id = $2
+        AND created_at > now() - interval '24 hours'`,
+    [platform, userId],
+  );
+  return Number(rows[0]?.n ?? 0) >= FIND_HELPER_REQUESTER_DAILY_LIMIT;
+}
+
+export interface HelperCandidate {
+  platform: Platform;
+  userId: string;
+}
+
+/**
+ * find_helper's match query — searchMemberInterests' exact shape (embedding-
+ * similarity over member_interests, embedding IS NOT NULL), additionally
+ * filtered to willing_to_help = true and excluding the requester's own row
+ * (SECURITY: issue #729 — self-matching must be impossible even when the
+ * requester has willing_to_help = true for their own row). Returns bare
+ * candidate identities only, ranked best-first — never the interests text,
+ * since the requester's tool result must never see it (that stays
+ * who_is_into-only, and even there only for a caller who searches themselves).
+ */
+export async function findHelperCandidates(
+  topic: string,
+  excludePlatform: Platform,
+  excludeUserId: string,
+  limit = FIND_HELPER_CANDIDATE_SCAN_LIMIT,
+): Promise<HelperCandidate[]> {
+  let queryVec: number[];
+  try {
+    queryVec = await embed(topic);
+  } catch (err) {
+    logger.warn({ err }, 'Embedding failed for find_helper topic');
+    return [];
+  }
+  const { rows } = await pool.query(
+    `SELECT platform, user_id
+       FROM member_interests
+      WHERE willing_to_help = true AND embedding IS NOT NULL
+        AND NOT (platform = $2 AND user_id = $3)
+        AND 1 - (embedding <=> $1) >= $5
+      ORDER BY embedding <=> $1
+      LIMIT $4`,
+    [pgvector.toSql(queryVec), excludePlatform, excludeUserId, limit, FIND_HELPER_RELEVANCE_THRESHOLD],
+  );
+  return rows.map((r) => ({ platform: r.platform as Platform, userId: r.user_id }));
+}
+
+/**
+ * Atomically claims one notification slot for a candidate helper if they're
+ * under FIND_HELPER_WEEKLY_LIMIT_PER_HELPER in the trailing 7 days — same
+ * `WITH recent AS (...)` restart-proof pattern as createKnowledgeTip, never
+ * an in-memory counter (issue #729 SECURITY criterion: pinned by a test that
+ * seeds helper_notifications rows directly). Returns false (no row inserted,
+ * no DM should be sent) when the helper is already at cap, so the caller can
+ * move on to the next candidate; true means this row IS the one-and-only
+ * notification for this find_helper call and the caller should now send the DM.
+ */
+export async function recordHelperNotificationIfUnderCap(
+  helperPlatform: Platform,
+  helperUserId: string,
+  requesterPlatform: Platform,
+  requesterUserId: string,
+  topic: string,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM helper_notifications
+        WHERE helper_platform = $1 AND helper_user_id = $2
+          AND created_at > now() - interval '7 days'
+     )
+     INSERT INTO helper_notifications
+       (helper_platform, helper_user_id, requester_platform, requester_user_id, topic)
+     SELECT $1, $2, $3, $4, $5
+      WHERE (SELECT n FROM recent) < $6
+     RETURNING id`,
+    [
+      helperPlatform,
+      helperUserId,
+      requesterPlatform,
+      requesterUserId,
+      topic,
+      FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
+    ],
+  );
+  return rows.length > 0;
+}
+
 // --- Member projects (self-declared project showcase, issue #646) -----------
 //
 // Second instance of #634's self-declared-member-table pattern: opt-in,
@@ -4211,6 +4374,18 @@ export async function markRosterLeave(platform: Platform, userId: string): Promi
     await pool
       .query(`DELETE FROM member_interests WHERE platform = $1 AND user_id = $2`, [platform, userId])
       .catch((err) => logger.warn({ err, platform }, 'Roster-leave member_interests cleanup failed'));
+    // helper_notifications (issue #729) rides along the same departure, in
+    // EITHER role — a departed member's find_helper handoff log (as helper
+    // or requester) shouldn't linger once member_interests/member_projects
+    // above are already gone for them.
+    await pool
+      .query(
+        `DELETE FROM helper_notifications
+          WHERE (helper_platform = $1 AND helper_user_id = $2)
+             OR (requester_platform = $1 AND requester_user_id = $2)`,
+        [platform, userId],
+      )
+      .catch((err) => logger.warn({ err, platform }, 'Roster-leave helper_notifications cleanup failed'));
   }
   return left;
 }

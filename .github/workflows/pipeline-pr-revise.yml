@@ -132,7 +132,7 @@ jobs:
           verdict_pending="$(jq -r '
             [.comments[] | select(.body | contains("PR review (automated)"))] | last
             | ((.body // "") | split("\n")[0:4]
-               | map(select(test("^[[:space:]]*[-*]") | not)) | join("\n")
+               | map(select(test("^[[:space:]]*[-*][[:space:]]") | not)) | join("\n")
                | test("[Cc]hanges requested"))
           ' <<<"$info")"
           attempts="$(jq --arg m "$ATTEMPT_MARKER" -r \
