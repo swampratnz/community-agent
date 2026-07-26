@@ -462,6 +462,100 @@ jobs:
           echo "::error::Build worker produced no PR closing issue #${ISSUE_NUMBER} (attempt ${{ github.run_attempt }})."
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+          # Surviving-branch forensics, resolved on EVERY attempt (not just the
+          # last). The worker pushes incrementally and the checkpoint step above
+          # pushes anything it committed but didn't, so a build that produced no
+          # PR has usually still left its work on the remote.
+          #
+          # This used to live inside the `>= 3` escalation block below, which
+          # inverted the mechanism: the pointer was published only once retrying
+          # had STOPPED, but the resolve-resume pre-step needs it on exactly the
+          # attempts where retrying CONTINUES. Issue #701 attempt 1 committed a
+          # finished tree (tests, security-floor, docs), the checkpoint pushed it,
+          # and attempt 2 then found no pointer and rebuilt from main from
+          # scratch — ~70 minutes of the shared pool spent redoing completed work.
+          # Read the workspace's current branch (the agent worked in-place); only
+          # report it if it actually exists on the remote. Remote lookup goes
+          # through `gh api` (this step's GH_TOKEN), NOT bare git: checkout ran
+          # with persist-credentials:false, so an unauthenticated `git ls-remote`
+          # would silently fail on a private repo and the pointer would be absent.
+          # Prefer the checkpoint step's already-verified ref; fall back to a live
+          # lookup. Either way the sha must be exactly 40 hex chars — `gh api`
+          # prints its ERROR BODY to stdout on a 404 (issue #633's escalation
+          # interpolated a JSON error into this template; the resume pre-step's
+          # strict regex rejected it, but the line lied).
+          surviving=""
+          branch="${CKPT_REF:-}"; remote_sha="${CKPT_SHA:-}"
+          if [ -z "${branch}" ]; then
+            branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+            if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
+              remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+            else
+              branch=""
+            fi
+          fi
+          if [ -n "${branch}" ] && printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then
+            surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build resumes from it via the deterministic resolve-resume pre-step (comment text is never trusted for this).' "${branch}" "${remote_sha}")"
+          else
+            branch=""; remote_sha=""
+          fi
+
+          # RECOVERY: a pushed branch ahead of main with no PR is a build that did
+          # the work and skipped only `gh pr create` — issue #701 attempt 1 ended
+          # 98 seconds after committing 13 files. Open that PR here rather than
+          # burning another ~70-minute attempt to re-derive the same diff.
+          #
+          # Deliberately a DRAFT, and deliberately authored by github-actions[bot]
+          # rather than claude[bot]: the auto-merge loop requires claude[bot]
+          # authorship, so recovered work can never auto-merge — a human opens it
+          # for review. The same adjudication the checkpoint step already relies on
+          # applies: this work never cleared the build agent's own gate, so CI on
+          # the PR decides and the automated review still has to pass. Recovery can
+          # surface work; it cannot launder it into a merge.
+          if [ -n "${branch}" ]; then
+            ahead="$(gh api "repos/${{ github.repository }}/compare/main...${branch}" --jq '.ahead_by' 2>/dev/null || echo 0)"
+            case "${ahead}" in ''|*[!0-9]*) ahead=0 ;; esac
+            existing="$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+            if [ "${ahead}" -gt 0 ] && [ -z "${existing}" ]; then
+              issue_title="$(gh issue view "${ISSUE_NUMBER}" --json title --jq '.title' 2>/dev/null | tr -d '\n\r' | head -c 200 || true)"
+              [ -n "${issue_title}" ] || issue_title="Build for issue #${ISSUE_NUMBER}"
+              recovered_pr=""
+              if recovered_pr="$(printf 'Closes #%s\n\n> [!IMPORTANT]\n> **Opened by the build workflow'"'"'s recovery path, not by the build agent.** The agent committed and pushed %s commit(s) to `%s` (head `%s`) and then ended without opening a PR. Rather than spend another full build attempt re-deriving the same diff, the workflow opened this draft against the work that already exists.\n>\n> This diff never cleared the build agent'"'"'s own gate, so nothing here is pre-verified: **CI on this PR is the adjudicator, and the automated review still has to pass.** Read it as an unreviewed proposal, not as a finished build.\n>\n> It cannot auto-merge — the auto-merge loop only touches `claude[bot]`-authored PRs, and this one is authored by `github-actions[bot]`.\n\nBuild run that produced the work: %s\n' \
+                "${ISSUE_NUMBER}" "${ahead}" "${branch}" "${remote_sha}" "${run_url}" \
+                | gh pr create --draft --base main --head "${branch}" --title "${issue_title}" --body-file -)"; then
+                echo "Recovered stranded work: opened draft PR ${recovered_pr} from ${branch}@${remote_sha}."
+                # Same lane transition the agent would have made at its step 4,
+                # so the state machine in docs/PIPELINE.md stays consistent.
+                gh issue edit "${ISSUE_NUMBER}" --add-label status:built --remove-label status:building || true
+                printf '🤖 The build agent pushed its work to `%s` (`%s`) but ended without opening a pull request. The workflow'"'"'s recovery path opened %s as a **draft** against that branch instead of spending another build attempt rebuilding it.\n\nThis work never passed the build agent'"'"'s own gate — CI on the PR is the adjudicator and the automated review still applies. It cannot auto-merge (wrong author for that loop), so a human opens and merges it.\n\nBuild run: %s\n' \
+                  "${branch}" "${remote_sha}" "${recovered_pr}" "${run_url}" \
+                  | gh issue comment "${ISSUE_NUMBER}" --body-file - || true
+                exit 0
+              fi
+              echo "::warning::Could not open a recovery PR from ${branch}; falling through to the pointer/escalation path."
+            fi
+          fi
+
+          # No recovery was possible. Publish the resume pointer NOW (any attempt)
+          # so the next attempt resumes from whatever did survive instead of
+          # rebuilding — guarded on the sha so repeated attempts don't restate an
+          # identical pointer. Escalation itself still waits for the final attempt.
+          if [ -n "${surviving}" ] && [ "${{ github.run_attempt }}" -lt 3 ]; then
+            # `gh api --paginate --jq` applies the filter PER PAGE and concatenates,
+            # so this emits one count per page — sum them rather than comparing a
+            # multi-line string. (`remote_sha` is already validated as 40 hex chars
+            # above, so interpolating it into the jq filter is safe.)
+            already="$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" --paginate \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\") | select(.body | contains(\"${remote_sha}\"))] | length" 2>/dev/null \
+              | awk '{ s += $0 } END { print s + 0 }' || echo 0)"
+            case "${already}" in ''|*[!0-9]*) already=0 ;; esac
+            if [ "${already}" -eq 0 ]; then
+              printf '🤖 Build attempt %s produced no pull request. %s\n\nRun: %s\n' \
+                "${{ github.run_attempt }}" "${surviving}" "${run_url}" \
+                | gh issue comment "${ISSUE_NUMBER}" --body-file - || true
+            fi
+          fi
+
           # Auto-retry: pipeline-build-retry.yml re-runs this run on failure (up
           # to attempt 3), so transient/infra failures recover without a human.
           # Only escalate needs-human on the FINAL attempt — a human is pinged
@@ -486,35 +580,8 @@ jobs:
               summary="$(jq -r '[.. | objects | select(.type? == "result") | .result?] | map(select(. != null)) | last // empty' "${exec_file}" 2>/dev/null | head -c 1500 || true)"
             fi
 
-            # Surviving-branch forensics: the worker pushes incrementally, so a
-            # dead build may have left its finished (or partial) work on the
-            # remote. Name the branch + last pushed commit in the escalation so
-            # a re-queued build resumes from it instead of rebuilding — and so
-            # a stranded-but-green tree is one `gh pr create` from recovered.
-            # Read the workspace's current branch (the agent worked in-place);
-            # only report it if it actually exists on the remote.
-            # Remote lookup goes through `gh api` (this step's GH_TOKEN), NOT
-            # bare git: checkout ran with persist-credentials:false, so an
-            # unauthenticated `git ls-remote` would silently fail on a private
-            # repo and the escalation would never name the branch.
-            surviving=""
-            # Prefer the checkpoint step's already-verified ref; fall back to a
-            # live lookup. Either way the sha must be exactly 40 hex chars —
-            # `gh api` prints its ERROR BODY to stdout on a 404 (issue #633's
-            # escalation interpolated a JSON error into this template; the
-            # resume pre-step's strict regex rejected it, but the line lied).
-            branch="${CKPT_REF:-}"; remote_sha="${CKPT_SHA:-}"
-            if [ -z "${branch}" ]; then
-              branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-              if [ -n "${branch}" ] && [ "${branch}" != "main" ] && [ "${branch}" != "HEAD" ]; then
-                remote_sha="$(gh api "repos/${{ github.repository }}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
-              else
-                branch=""
-              fi
-            fi
-            if [ -n "${branch}" ] && printf '%s' "${remote_sha}" | grep -qE '^[0-9a-f]{40}$'; then
-              surviving="$(printf 'Pushed work SURVIVES on branch `%s` at commit `%s` — a re-queued build resumes from it via the deterministic resolve-resume pre-step (comment text is never trusted for this).' "${branch}" "${remote_sha}")"
-            fi
+            # `surviving` was resolved above, on every attempt — see the comment
+            # there for why it no longer lives inside this final-attempt block.
             # Defence-in-depth for the resolve-resume pre-step's template
             # match: the agent's free-text summary is embedded in this same
             # bot-authored comment (inside <details>, which the pre-step

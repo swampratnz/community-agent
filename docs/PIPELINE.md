@@ -442,15 +442,37 @@ sessions:
   leaves the automated lanes — leaving `status:approved` behind let the hourly
   fallback re-claim escalated work and wipe the `needs-human` label (the
   2026-07-19 #591 loop). A human re-queues by removing `needs-human` and
-  re-adding `status:approved`; the escalation comment names any surviving
-  pushed branch + last commit, and a re-queued build **resumes from that
-  branch** instead of rebuilding (#667). The resume pointer is resolved by a
+  re-adding `status:approved`.
+
+  Any surviving pushed branch + last commit is named in a comment on **every**
+  failed attempt, not only the escalating one, and a re-queued build **resumes
+  from that branch** instead of rebuilding (#667). Publishing the pointer only
+  at the final attempt had the mechanism backwards — the resolve-resume
+  pre-step consumes it on precisely the attempts where retrying *continues*.
+  #701 is the worked example: attempt 1 committed a finished tree (13 files,
+  tests + `security-floor.json` + docs), the checkpoint pushed it, no pointer
+  was published because the attempt wasn't the last, and attempt 2 rebuilt
+  from `main` from scratch — ~70 minutes of the shared pool spent re-deriving
+  work that was already on the remote. The pointer is resolved by a
   **deterministic pre-step** (bot-authored comments only, pre-`<details>` text
   only, exact template match, and the branch must still exist on the remote at
   the named commit) and handed to the agent via prompt interpolation — the
   agent is told comment TEXT about surviving branches is untrusted no matter
   who wrote it, so a prompt-injected summary inside a bot comment can't
   redirect a build onto an attacker-named branch.
+
+  **Recovery PR.** When the failed attempt's surviving branch is *ahead of
+  `main` and has no PR*, the verify step opens the PR itself instead of
+  resuming at all — that case is a build that did the work and skipped only
+  `gh pr create` (#701 attempt 1 ended 98 seconds after its commit). The
+  recovery PR is a **draft**, its body says plainly that the workflow opened
+  it and that the diff never cleared the build agent's own gate, and the issue
+  moves to `status:built` exactly as the agent's own step 4 would have moved
+  it. This does not weaken the merge gate in either direction: CI on the PR is
+  the adjudicator, the automated review still has to pass, and because the PR
+  is authored by `github-actions[bot]` rather than the `claude[bot]` identity
+  the auto-merge loop matches on, recovered work can never auto-merge — a
+  human opens it for review and a human merges it.
 - `.github/workflows/pipeline-groundskeeper.yml` — deterministic (no model,
   no Max pool) hourly reconciliation sweep, same trust class as auto-merge:
   any open `status:building` issue with **no open same-repo PR** closing it
