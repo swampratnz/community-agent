@@ -14,6 +14,7 @@ const {
   GATED_NOTICE,
   GATED_NOTICE_MAX_ADMIN_NAMES,
   appendWaitClause,
+  appendWaitClauseMi,
   makeGatedNoticeBuilder,
   renderGatedNotice,
   waitDaysSince,
@@ -131,6 +132,41 @@ test('SECURITY: appendWaitClause never claims an admin was actively notified —
   assert.ok(
     !/notif|let them know/i.test(notice),
     'the wording must stay true regardless of whether the flag-gated real-time admin alert (#480) actually fired',
+  );
+});
+
+// appendWaitClauseMi: te reo sibling of appendWaitClause (issue #716) — same
+// pure-function unit tests as above, mirroring appendWaitClause's coverage.
+
+test('appendWaitClauseMi: undefined waitDays renders byte-identical to the input notice (a first-ever, 0-day guest)', () => {
+  assert.equal(appendWaitClauseMi(GATED_NOTICE, undefined), GATED_NOTICE);
+});
+
+test('appendWaitClauseMi: waitDays === 0 renders byte-identical to the input notice', () => {
+  assert.equal(appendWaitClauseMi(GATED_NOTICE, 0), GATED_NOTICE);
+});
+
+test('appendWaitClauseMi: waitDays === 1 appends the singular te reo form', () => {
+  assert.equal(
+    appendWaitClauseMi(GATED_NOTICE, 1),
+    `${GATED_NOTICE} (Nāu i pātai tuatahi mai i te rā kotahi kua pahure — kei te mau tonu tō tono.)`,
+  );
+});
+
+test('appendWaitClauseMi: waitDays === 6 appends the plural te reo form naming 6', () => {
+  assert.equal(
+    appendWaitClauseMi(GATED_NOTICE, 6),
+    `${GATED_NOTICE} (Nāu i pātai tuatahi mai i ngā rā e 6 kua pahure — kei te mau tonu tō tono.)`,
+  );
+});
+
+test('SECURITY: appendWaitClauseMi interpolates only a plain integer day count — the clause matches a fixed, no-free-text pattern', () => {
+  const notice = appendWaitClauseMi(GATED_NOTICE, 6);
+  const suffix = notice.slice(GATED_NOTICE.length);
+  assert.match(
+    suffix,
+    /^ \(Nāu i pātai tuatahi mai i (?:te rā kotahi|ngā rā e \d+) kua pahure — kei te mau tonu tō tono\.\)$/,
+    'the appended suffix must be exactly this fixed template with only a \\d+ day count substituted',
   );
 });
 

@@ -56,20 +56,37 @@ export function renderGatedNotice(names: string[]): string {
  * Returning-guest wait clause (issue #591): appended by `router.ts` to
  * whichever English gated-notice variant it settles on (the dynamic
  * admin-naming notice above, or the static `GATED_NOTICE`/`GATED_NOTICE_PLAIN`
- * fallbacks) — never to `GATED_NOTICE_MI`, which stays untouched as a
- * documented te reo follow-up. `waitDays` is `undefined`/`0` on a guest's
- * first-ever addressed message, rendering byte-identical to today; `>= 1`
- * appends a fixed suffix naming the whole-day count. The suffix interpolates
- * only a plain integer — never a name or message content — so it needs no
- * `sanitizeName`-style treatment and carries no injection surface. Wording is
- * deliberately neutral ("on record") rather than "I've let them know": the
- * real-time admin alert (issue #480) is flag-gated and may not have fired for
- * this request, so the clause must stay true regardless of that config.
+ * fallbacks). `waitDays` is `undefined`/`0` on a guest's first-ever addressed
+ * message, rendering byte-identical to today; `>= 1` appends a fixed suffix
+ * naming the whole-day count. The suffix interpolates only a plain integer —
+ * never a name or message content — so it needs no `sanitizeName`-style
+ * treatment and carries no injection surface. Wording is deliberately neutral
+ * ("on record") rather than "I've let them know": the real-time admin alert
+ * (issue #480) is flag-gated and may not have fired for this request, so the
+ * clause must stay true regardless of that config. See `appendWaitClauseMi`
+ * (issue #716) for the te reo sibling, wired into `router.ts`'s `'mi'` branch.
  */
 export function appendWaitClause(notice: string, waitDays?: number): string {
   if (!waitDays || waitDays < 1) return notice;
   const days = Math.floor(waitDays);
   return `${notice} (You first asked ${days} day${days === 1 ? '' : 's'} ago — your request is on record.)`;
+}
+
+/**
+ * Te reo Māori sibling of `appendWaitClause` (issue #716), appended by
+ * `router.ts` to `GATED_NOTICE_MI` — the one gated-notice variant #591 left
+ * without the returning-guest wait clause. Same shape and same
+ * `waitDays === undefined || waitDays < 1` no-op guard as the English
+ * function, applied to a fixed, human-authored te reo suffix instead of a
+ * machine translation, matching every other `_MI` constant in this codebase.
+ * Like `appendWaitClause`, the suffix interpolates only a plain integer day
+ * count — no name or message content — so it carries no injection surface.
+ */
+export function appendWaitClauseMi(notice: string, waitDays?: number): string {
+  if (!waitDays || waitDays < 1) return notice;
+  const days = Math.floor(waitDays);
+  const whenClause = days === 1 ? 'i te rā kotahi kua pahure' : `i ngā rā e ${days} kua pahure`;
+  return `${notice} (Nāu i pātai tuatahi mai ${whenClause} — kei te mau tonu tō tono.)`;
 }
 
 /**

@@ -10,6 +10,19 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+## 2026-07-27
+
+### Fixed
+- **The gated-notice returning-guest wait clause now also reaches te reo
+  Māori** (#716), closing the follow-up #591 itself deferred: since #591, an
+  English-preference returning guest sees *"(You first asked N days ago —
+  your request is on record.)"*, but a `'mi'`-preference guest got the
+  unchanged `GATED_NOTICE_MI` on their first message and their fiftieth
+  alike. A new `appendWaitClauseMi` mirrors `appendWaitClause` with a fixed,
+  human-authored te reo suffix, wired into the one `router.ts` branch that
+  previously skipped it — no new tool, table, or query; it reuses the
+  already-computed `firstRequestedAt` lookup.
+
 ## 2026-07-26
 
 ### Added
