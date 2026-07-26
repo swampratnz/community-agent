@@ -3536,7 +3536,9 @@ type DiscordVoiceAdapter = Adapter & {
 
 /** Reaches the private onDiscordMessage handler directly. */
 function fireDiscordMessage(adapter: Adapter, message: unknown): Promise<void> {
-  return (adapter as unknown as { onDiscordMessage: (m: unknown) => Promise<void> }).onDiscordMessage(message);
+  return (adapter as unknown as { onDiscordMessage: (m: unknown) => Promise<void> }).onDiscordMessage(
+    message,
+  );
 }
 
 /**
@@ -3638,7 +3640,10 @@ test('Discord voice: an enabled super-admin voice message is transcribed and act
   });
   adapter.transcribeAttachment = async () => 'hello from discord voice';
   await withDiscordVoice({ enabled: true, superAdmins: ['user-732-1'] }, () =>
-    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-1', attachments: [{ duration: 8 }] })),
+    fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-1', attachments: [{ duration: 8 }] }),
+    ),
   );
   assert.ok(seen, 'the transcript must reach the handler as a normal IncomingMessage');
   assert.equal((seen as unknown as IncomingMessage).text, 'hello from discord voice');
@@ -3662,8 +3667,16 @@ test('SECURITY: a regular file attachment (no duration_secs) is never fetched or
         discordVoiceMessage({ authorId: 'user-732-2', attachments: [{ duration: null }] }),
       ),
     );
-    assert.equal(seamCalls, 0, `a non-voice attachment must never be fetched/transcribed (enabled=${enabled})`);
-    assert.equal(handlerCalls, 1, 'the message still reaches the handler, with empty text, unchanged from today');
+    assert.equal(
+      seamCalls,
+      0,
+      `a non-voice attachment must never be fetched/transcribed (enabled=${enabled})`,
+    );
+    assert.equal(
+      handlerCalls,
+      1,
+      'the message still reaches the handler, with empty text, unchanged from today',
+    );
   }
 });
 
@@ -3681,7 +3694,10 @@ test('SECURITY: with the default DISCORD_VOICE_MIN_ROLE (super_admin), a non-sup
     return 'must never run';
   };
   await withDiscordVoice({ enabled: true, superAdmins: ['some-other-admin'] }, () =>
-    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-3', attachments: [{ duration: 5 }] })),
+    fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-3', attachments: [{ duration: 5 }] }),
+    ),
   );
   assert.equal(seamCalls, 0, 'a non-super-admin must never be fetched/transcribed at the default minRole');
   assert.equal(
@@ -3691,7 +3707,7 @@ test('SECURITY: with the default DISCORD_VOICE_MIN_ROLE (super_admin), a non-sup
   );
 });
 
-test("SECURITY: a below-DISCORD_VOICE_MIN_ROLE sender (role resolved via platform identity -> DB, never message content) has their voice message left as empty text, with zero fetch/model call (issue #732)", async (t) => {
+test('SECURITY: a below-DISCORD_VOICE_MIN_ROLE sender (role resolved via platform identity -> DB, never message content) has their voice message left as empty text, with zero fetch/model call (issue #732)', async (t) => {
   mockDiscordMemberRole(t, 'user-732-4', null); // no stored row => resolves to 'guest'
   const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
   let seen: IncomingMessage | null = null;
@@ -3704,7 +3720,10 @@ test("SECURITY: a below-DISCORD_VOICE_MIN_ROLE sender (role resolved via platfor
     return 'must never run';
   };
   await withDiscordVoice({ enabled: true, minRole: 'member' }, () =>
-    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-4', attachments: [{ duration: 5 }] })),
+    fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-4', attachments: [{ duration: 5 }] }),
+    ),
   );
   assert.equal(seamCalls, 0, 'a below-tier sender must never be fetched/transcribed');
   assert.equal(
@@ -3781,7 +3800,10 @@ test('SECURITY: DISCORD_VOICE_ENABLED unset/false leaves every voice-message cas
   // Sender IS a super admin and well under every cap — proving it's the
   // flag, not the tier or the caps, that blocks.
   await withDiscordVoice({ superAdmins: ['user-732-7'] }, () =>
-    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-7', attachments: [{ duration: 5 }] })),
+    fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-7', attachments: [{ duration: 5 }] }),
+    ),
   );
   assert.equal(seamCalls, 0);
   assert.equal((seen as unknown as IncomingMessage).text, '');

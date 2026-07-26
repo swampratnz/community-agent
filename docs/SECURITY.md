@@ -1674,7 +1674,7 @@ deliberately narrow:
   first non-Anthropic/Discord/WhatsApp destination; noted with the residual-risk
   egress item below. Off by default (`GITHUB_ISSUE_ENABLED`).
 
-### 13. WhatsApp voice-note transcription (configurable min tier, opt-in)
+### 13. WhatsApp/Discord voice transcription (configurable min tier, opt-in)
 
 When `WHATSAPP_VOICE_ENABLED=true`, an eligible caller's WhatsApp voice note is
 transcribed to text locally and then flows through the *identical* pipeline as a
@@ -1763,6 +1763,46 @@ The controls:
   tier, table, or migration — a read-only reuse of the existing
   `language_prefs` read; a `SECURITY:` test pins that firing (or not) never
   performs any repository access beyond that single read.
+
+**Discord counterpart (`DISCORD_VOICE_ENABLED`, off by default, issue #732).**
+The same feature for Discord's native voice-message bubble (an attachment
+reporting `duration_secs`, distinct from a regular file upload), reusing
+`voiceTranscribe.ts`/`voiceLanguageCaveatNotice.ts` verbatim:
+
+- **Same gate order, independently configured.** `maybeTranscribeVoiceMessage`
+  (`src/platforms/discord/adapter.ts`) mirrors `maybeTranscribeVoiceNote`'s
+  order exactly: flag → `DISCORD_VOICE_MIN_ROLE` (default `'super_admin'`,
+  the pure `isSuperAdmin('discord', senderId)` env check with no DB call at
+  that default, else `resolveRole`/`atLeast`) → `DISCORD_VOICE_MAX_SECONDS`
+  (checked against the attachment's reported `duration_secs`, before any
+  fetch) → `DISCORD_VOICE_RATE_LIMIT_PER_HOUR` (checked before any fetch) →
+  fetch the attachment URL, decode, transcribe. `DISCORD_VOICE_*` is a
+  separate config block from `WHATSAPP_VOICE_*` (not shared defaults/state)
+  since a guild is a larger, less-trusted population than a single WhatsApp
+  number. An attachment without `duration_secs` (a regular file upload) is
+  never fetched or transcribed, flag or role state notwithstanding — pinned
+  by a `SECURITY:` test.
+- **Off by default; every refusal path pre-fetch.** Pinned by `SECURITY:`
+  tests: flag-off is byte-identical to today; a below-tier sender, an
+  over-length message, and a rate-capped sender are each refused with zero
+  fetch/model calls.
+- **Platform-qualified rate-limit key.** `reserveVoiceTranscriptionSlot`
+  (`src/agent/tools.ts`) now takes an already-qualified key
+  (`` `discord:${senderId}` `` / `` `whatsapp:${senderId}` ``) rather than a
+  bare sender id — closing a latent bug where a WhatsApp phone number and a
+  Discord snowflake that happened to collide would have shared one hourly
+  quota. Pinned by a `SECURITY:` test that seeds a colliding bare id across
+  both platform-qualified keys and asserts independent exhaustion; the
+  existing WhatsApp voice rate-cap test continues to pass unchanged against
+  the now-qualified key.
+- **Same caveat DM, reused verbatim.** A successful transcription sends the
+  identical `VOICE_LANGUAGE_CAVEAT_TEXT`/`_MI` DM (per the sender's stored
+  `language_prefs`), debounced identically to the WhatsApp path — no
+  Discord-specific copy.
+- **No new authority, no new egress, no new table.** Same local, offline
+  transformers.js Whisper pipeline; the transcript populates `text` and
+  flows through the identical RBAC/tool-gating/CONFIRM pipeline a typed
+  message would — never more than the caller's own tier already grants.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 
