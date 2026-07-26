@@ -13586,6 +13586,85 @@ test(
 );
 
 test(
+  "SECURITY: rate_answer caps how many DIFFERENT victims one rater can drain via the mismatched-attribution fallback, even though each individual victim's own createKnowledgeTip quota is untouched (issue #726 review follow-up)",
+  { skip },
+  async () => {
+    const rater = `${RUN}-answer-candidate-grief-rater`;
+    // One distinct victim per attempt, plus one over the rater's cap — each
+    // in their OWN conversation, so `resolveAnswerFeedbackTarget`'s fallback
+    // binds `rater`'s rating to THAT victim's reply every time (`rater` is
+    // never personally replied-to in any of these conversations, same setup
+    // as the AC10 test above, just repeated across multiple victims).
+    const WORDS = [
+      'a plaid gecko rehearsing bagpipes',
+      'six dusty quokkas auditing a ferris wheel',
+      'a jittery walrus cataloguing teacups',
+      'four bashful newts rewiring a jukebox',
+    ];
+    assert.ok(
+      WORDS.length > KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+      'fixture must exceed the rater cap by at least one distinct victim',
+    );
+
+    const victims = WORDS.map((_, i) => `${RUN}-answer-candidate-grief-victim-${i}`);
+    const conversationIds = WORDS.map((_, i) => `${RUN}-c-answer-candidate-grief-${i}`);
+
+    await withAnswerCandidateFlag(true, async () => {
+      for (let i = 0; i < WORDS.length; i++) {
+        await recordInteraction({
+          platform: 'discord',
+          conversationId: conversationIds[i],
+          userId: victims[i],
+          role: 'member',
+          direction: 'inbound',
+          content: `${RUN} ${WORDS[i]}`,
+        });
+        await recordInteraction({
+          platform: 'discord',
+          conversationId: conversationIds[i],
+          userId: 'bot',
+          role: 'member',
+          direction: 'outbound',
+          content: `answer about ${WORDS[i]}`,
+          meta: { replyToUserId: victims[i] },
+        });
+        const result = await rateAnswerHandler(rater, conversationIds[i]).handler({ helpful: true });
+        assert.notEqual(
+          result.isError,
+          true,
+          `rating ${i} itself must still succeed regardless of the rater's draft cap`,
+        );
+      }
+    });
+
+    const draftedCount = await pool.query(
+      `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = ANY($1)`,
+      [victims],
+    );
+    assert.equal(
+      draftedCount.rows[0].n,
+      KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+      'SECURITY: the rater cannot trigger more mismatched drafts than the shared per-victim cap allows, ' +
+        'even spread across many different victims',
+    );
+
+    const lastVictimRows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      victims[victims.length - 1],
+    ]);
+    assert.equal(
+      lastVictimRows.rows.length,
+      0,
+      "SECURITY: the over-cap victim's own quota was never touched (0 of their own tips used), yet the " +
+        'rater is still blocked from drafting against them — the cap is on the RATER, not the victim',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = ANY($1)`, [victims]);
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [rater]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [conversationIds]);
+  },
+);
+
+test(
   'rate_answer dedup guard: a question already queued/reviewed as a knowledge candidate suppresses drafting, reusing candidateTopicAlreadyReviewed verbatim (issue #726 acceptance criterion 5)',
   { skip },
   async () => {

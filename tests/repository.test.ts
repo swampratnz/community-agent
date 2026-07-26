@@ -2156,19 +2156,28 @@ test(
     assert.equal(row.rows[0].source_user_id, userId);
 
     // Length caps truncate rather than reject (mirrors createSuggestion).
+    // `topic` is capped the same as `title` (issue #726 review follow-up):
+    // suggest_knowledge always passes topic = args.title (already zod-capped
+    // at KNOWLEDGE_TIP_TITLE_MAX_CHARS), but the rate_answer implicit-
+    // drafting path passes the raw recovered question, which isn't bounded
+    // by that zod schema — without truncation it could land longer than the
+    // (truncated) title holding the same text.
+    const longTopic = 'z'.repeat(KNOWLEDGE_TIP_TITLE_MAX_CHARS + 50);
     const longTitle = 'x'.repeat(KNOWLEDGE_TIP_TITLE_MAX_CHARS + 50);
     const longContent = 'y'.repeat(KNOWLEDGE_TIP_CONTENT_MAX_CHARS + 50);
     const truncated = await createKnowledgeTip({
       platform,
       userId: `${userId}-lengths`,
-      topic: `${RUN} tip length topic`,
+      topic: longTopic,
       title: longTitle,
       content: longContent,
     });
     assert.ok(truncated);
-    const truncatedRow = await pool.query(`SELECT title, content FROM knowledge_candidates WHERE id = $1`, [
-      truncated.id,
-    ]);
+    const truncatedRow = await pool.query(
+      `SELECT topic, title, content FROM knowledge_candidates WHERE id = $1`,
+      [truncated.id],
+    );
+    assert.equal(truncatedRow.rows[0].topic.length, KNOWLEDGE_TIP_TITLE_MAX_CHARS);
     assert.equal(truncatedRow.rows[0].title.length, KNOWLEDGE_TIP_TITLE_MAX_CHARS);
     assert.equal(truncatedRow.rows[0].content.length, KNOWLEDGE_TIP_CONTENT_MAX_CHARS);
 

@@ -22,6 +22,7 @@ import {
   clearAccessRequest,
   clearWarnings,
   countActiveWarnings,
+  countMismatchedHelpfulRatings,
   countRecentDmReportsByReporterAndTarget,
   countRepliesToUser,
   createAnswerFeedback,
@@ -3589,20 +3590,37 @@ export function buildToolServer(
           grounding.questionContent !== null &&
           grounding.questionUserId !== null
         ) {
-          const { blocked, embedding: topicEmbedding } = await candidateTopicAlreadyReviewed(
-            grounding.questionContent,
-          );
-          if (!blocked) {
-            const covering = await findKnowledgeCoveringTopic(topicEmbedding);
-            if (!covering) {
-              await createKnowledgeTip({
-                platform: caller.platform,
-                userId: grounding.questionUserId,
-                topic: grounding.questionContent,
-                title: grounding.questionContent,
-                content: grounding.answerContent,
-                topicEmbedding,
-              });
+          // SECURITY (issue #726 follow-up): createKnowledgeTip's cap alone
+          // bounds how much of a single VICTIM's quota this can absorb, not
+          // how many DIFFERENT victims one rater can draft against via the
+          // mismatched-attribution fallback above — rate_answer's own daily
+          // cap (RATE_ANSWER_DAILY_LIMIT, 20/day) is far looser than any one
+          // victim's KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY (3/day). A matched
+          // self-rating is exempt: that case is already bounded by
+          // createKnowledgeTip's own per-source-user cap. Fails closed
+          // (silently, same as every other branch here) rather than erroring
+          // the rating itself.
+          const mismatched = grounding.questionUserId !== caller.userId;
+          const raterExhausted =
+            mismatched &&
+            (await countMismatchedHelpfulRatings(caller.platform, caller.userId)) >
+              KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY;
+          if (!raterExhausted) {
+            const { blocked, embedding: topicEmbedding } = await candidateTopicAlreadyReviewed(
+              grounding.questionContent,
+            );
+            if (!blocked) {
+              const covering = await findKnowledgeCoveringTopic(topicEmbedding);
+              if (!covering) {
+                await createKnowledgeTip({
+                  platform: caller.platform,
+                  userId: grounding.questionUserId,
+                  topic: grounding.questionContent,
+                  title: grounding.questionContent,
+                  content: grounding.answerContent,
+                  topicEmbedding,
+                });
+              }
             }
           }
         }

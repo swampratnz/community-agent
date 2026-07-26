@@ -1097,15 +1097,34 @@ evaporates.
   preceding question was recovered, `rate_answer` runs the identical
   `candidateTopicAlreadyReviewed` + `findKnowledgeCoveringTopic` dedup guard
   `suggest_knowledge` runs, then calls the SAME `createKnowledgeTip` — no new
-  table, no new rate-limit constant, no model call. The shared
-  `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY` cap and the `[member-suggested by
-  <name>]` rendering/purge machinery above apply automatically.
+  table, no model call. The shared `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY` cap and
+  the `[member-suggested by <name>]` rendering/purge machinery above apply
+  automatically. `createKnowledgeTip` truncates `topic` to
+  `KNOWLEDGE_TIP_TITLE_MAX_CHARS` the same as `title`, since this path's topic
+  is the raw recovered question rather than `suggest_knowledge`'s already
+  zod-capped `args.title`.
 - **Attribution tracks the question, not the rater**: the drafted row's
   `source_platform`/`source_user_id` are the ADDRESSED member's identity
   (`replyToUserId`) — not necessarily the `rate_answer` caller, since
   `resolveAnswerFeedbackTarget` can bind a rating to a reply addressed to
   someone else. A grounded reply, a `helpful: false` rating, or a reply with
   no recoverable preceding question all fail closed — no draft.
+- **Rater-scoped cap on the mismatched case (SECURITY, issue #726
+  follow-up)**: `createKnowledgeTip`'s cap alone bounds how much of a single
+  victim's quota this absorbs, not how many DIFFERENT victims one rater can
+  draft against — `rate_answer`'s own daily cap (`RATE_ANSWER_DAILY_LIMIT`,
+  20/day) is far looser than any one victim's 3/day quota, so without this a
+  rater who has never personally been answered could silently drain several
+  other members' entire daily `suggest_knowledge` quota in one busy channel.
+  `countMismatchedHelpfulRatings` counts this rater's own `helpful: true`
+  `answer_feedback` rows in the last 24h whose bound interaction was
+  addressed to someone else (reusing `answer_feedback_user_rate_idx`, no new
+  table or column); once that exceeds `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY`, this
+  rater's further mismatched drafts fail closed for the rest of the day,
+  regardless of the addressed member's own untouched quota. A matched
+  self-rating (rater is the addressed member) is exempt — that case is
+  already bounded by `createKnowledgeTip`'s own per-source-user cap, same as
+  a member's own `suggest_knowledge` calls.
 - **Silent side effect**: `rate_answer`'s own reply text
   (`'Thanks, glad that helped!'`) is unchanged either way; drafting is never
   announced to the member, unlike the deliberate `suggest_knowledge` flow.
