@@ -8,11 +8,12 @@ import type { PlatformAdapter } from '../src/platforms/types.js';
 // queueForWindowReopen instead of logging and dropping the DM — but that fix
 // was deliberately scoped to admin/super-admin alerts (see
 // tests/notifyAdminsWindowReopenQueue.test.ts). This file extends the same
-// coverage to the 4 MEMBER-facing resolution DMs that never got it:
-// notifyMemberApproved, notifySuggestionResolved, notifyReportResolved, and
-// notifyAppealResolved (all in src/agent/tools.ts).
+// coverage to the MEMBER-facing resolution DMs that never got it:
+// notifyMemberApproved, notifySuggestionResolved, notifyReportResolved,
+// notifyAppealResolved, and (issue #703) notifyKnowledgeTipResolved (all in
+// src/agent/tools.ts).
 //
-// Unlike tools.ts's admin-alert path, none of these 4 functions touch
+// Unlike tools.ts's admin-alert path, none of these functions touch
 // listAdmins() or any other static repository import — they take the
 // adapter and userId directly — so, unlike
 // tests/notifyAdminsWindowReopenQueue.test.ts, no module-mocking trap
@@ -23,8 +24,13 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-const { notifyMemberApproved, notifySuggestionResolved, notifyReportResolved, notifyAppealResolved } =
-  await import('../src/agent/tools.js');
+const {
+  notifyMemberApproved,
+  notifySuggestionResolved,
+  notifyReportResolved,
+  notifyAppealResolved,
+  notifyKnowledgeTipResolved,
+} = await import('../src/agent/tools.js');
 const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 
 /**
@@ -192,7 +198,28 @@ test('notifyAppealResolved: a non-WindowClosedError rejection is unaffected (reg
   assert.deepEqual(queued, []);
 });
 
-test('an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection from any of the 4 producers — no crash, byte-identical drop behavior', async () => {
+test('notifyKnowledgeTipResolved: a WindowClosedError rejection queues via queueForWindowReopen at low priority with the byte-identical message (issue #703 acceptance criterion #5)', async () => {
+  const { adapter, queued } = makeFakeCloudAdapter(new WindowClosedError('member-5'));
+
+  await notifyKnowledgeTipResolved(adapter, 'member-5', 'accepted', 'how to reset your password', 'whatsapp');
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'member-5');
+  assert.equal(queued[0]?.priority, 'low');
+  assert.match(queued[0]?.message ?? '', /how to reset your password/);
+});
+
+test('notifyKnowledgeTipResolved: a non-WindowClosedError rejection is unaffected (regression, acceptance criterion 2)', async () => {
+  const { adapter, queued } = makeFakeCloudAdapter(new Error('502 from Graph API'));
+
+  await assert.doesNotReject(
+    notifyKnowledgeTipResolved(adapter, 'member-5', 'accepted', 'how to reset your password', 'whatsapp'),
+  );
+
+  assert.deepEqual(queued, []);
+});
+
+test('an adapter with no queueForWindowReopen (Discord/Baileys shape) falls through to log-and-drop for a WindowClosedError rejection from any of the 5 producers — no crash, byte-identical drop behavior', async () => {
   const approved = makeAdapterWithoutQueueMethod(new WindowClosedError('member-1'));
   const delivered = await notifyMemberApproved(approved.adapter, 'member-1', false, 'discord');
   assert.equal(delivered, false, 'no queueForWindowReopen to fall back to, so this is a plain drop');
@@ -211,10 +238,15 @@ test('an adapter with no queueForWindowReopen (Discord/Baileys shape) falls thro
   await assert.doesNotReject(
     notifyAppealResolved(appeal.adapter, 'member-4', 'resolved', 'reason', 'discord'),
   );
+
+  const tip = makeAdapterWithoutQueueMethod(new WindowClosedError('member-5'));
+  await assert.doesNotReject(
+    notifyKnowledgeTipResolved(tip.adapter, 'member-5', 'accepted', 'tip title', 'discord'),
+  );
 });
 
 test(
-  "SECURITY: a 'low'-priority entry produced by any of the 4 new member-facing producers can never evict a " +
+  "SECURITY: a 'low'-priority entry produced by any of the 5 new member-facing producers can never evict a " +
     "'system'-priority entry queued for the same recipient — extends #602/#545's priority-eviction invariant " +
     'to these new producers, exercised against the REAL WhatsAppCloudAdapter.queueForWindowReopen ' +
     '(acceptance criterion 5)',
@@ -272,6 +304,10 @@ test(
     await assertLowNeverEvictsSystem(
       (adapter) => notifyAppealResolved(adapter, 'r4', 'resolved', 'reason', 'whatsapp'),
       'r4',
+    );
+    await assertLowNeverEvictsSystem(
+      (adapter) => notifyKnowledgeTipResolved(adapter, 'r5', 'accepted', 'tip title', 'whatsapp'),
+      'r5',
     );
   },
 );

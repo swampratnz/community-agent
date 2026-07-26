@@ -41,6 +41,7 @@ import {
   getMyDataSummary,
   hasConflictAmongIds,
   insertDevTeamWatch,
+  type KnowledgeCandidate,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
@@ -1901,6 +1902,58 @@ export async function notifyAppealResolved(
       return;
     }
     logger.warn({ err, userId: hashId(userId) }, 'Appeal resolution DM failed');
+  });
+}
+
+/**
+ * Best-effort confirmation DM to a member when their `suggest_knowledge` tip
+ * (issue #633) is resolved via `accept_knowledge_candidate`/
+ * `decline_knowledge_candidate` — closes #633's own named-and-unbuilt growth
+ * path (issue #703), the one member-initiated flow whose resolution was
+ * otherwise silent to the person who started it. Mirrors
+ * `notifyAppealResolved`'s shape exactly: fire-and-forget, `.catch(logger.warn)`,
+ * never blocks or changes the accept/decline tool's own reported outcome.
+ * `decline_knowledge_candidate` takes no reason argument, so the `declined`
+ * wording is neutral-to-supportive (mirroring `notifyAppealResolved`'s
+ * `dismissed` case) rather than fabricating one. Only ever echoes the
+ * (possibly admin-overridden) title of the member's own previously-submitted
+ * tip via `truncateForEcho` — never any other candidate's fields. Exported
+ * separately so it's unit-testable without the MCP tool-call transport, same
+ * convention as `notifyAppealResolved`. Honours the submitter's standing
+ * `'mi'` language preference (issue #331), same degrade-to-`'auto'`-on-
+ * failure shape. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #644, same #602 recovery extended to this member-facing DM); any
+ * other rejection is unaffected.
+ */
+export async function notifyKnowledgeTipResolved(
+  adapter: PlatformAdapter,
+  userId: string,
+  status: 'accepted' | 'declined',
+  title: string,
+  platform: Platform,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+): Promise<void> {
+  const echoed = truncateForEcho(title);
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message =
+    lang === 'mi'
+      ? status === 'declined'
+        ? `Ngā mihi mō tō koha mātauranga — i muri i te arotake, kāore i tāpirihia ā tōna wā: "${echoed}"`
+        : `Kua tāpirihia tō koha ki te pātaka mātauranga — ngā mihi mō tō koha! ("${echoed}")`
+      : status === 'declined'
+        ? `Thanks for the knowledge tip — after review it wasn't added this time: "${echoed}"`
+        : `Your knowledge tip has been added to the knowledge base — thanks for the contribution! ("${echoed}")`;
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Knowledge tip resolution DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Knowledge tip resolution DM failed');
   });
 }
 
@@ -5296,7 +5349,13 @@ export function buildToolServer(
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'accept_knowledge_candidate');
       const state: {
-        outcome: { knowledgeId: number; similarEntry?: KnowledgeDuplicateMatch } | null;
+        outcome: {
+          knowledgeId: number;
+          similarEntry?: KnowledgeDuplicateMatch;
+          title: string;
+          sourcePlatform: Platform | null;
+          sourceUserId: string | null;
+        } | null;
       } = { outcome: null };
       const { success, result } = await audited({
         actionKind: 'accept_knowledge_candidate',
@@ -5322,6 +5381,24 @@ export function buildToolServer(
         },
       });
       if (!success || !state.outcome) return text(`Failed: ${result}`, true);
+      // Cross-platform resolution DM (issue #703, mirroring resolve_appeal's
+      // #622 mechanism): only fires for a member-submitted tip (non-null
+      // sourceUserId — a machine-drafted candidate has no member to notify),
+      // routed via the tip's ORIGIN platform, never the resolving admin's own.
+      // The target is always state.outcome's own sourcePlatform/sourceUserId —
+      // never any accept_knowledge_candidate argument — so no caller-supplied
+      // value can redirect it.
+      if (state.outcome.sourceUserId && state.outcome.sourcePlatform) {
+        const target = adapterFor(state.outcome.sourcePlatform);
+        if (target)
+          await notifyKnowledgeTipResolved(
+            target,
+            state.outcome.sourceUserId,
+            'accepted',
+            state.outcome.title,
+            state.outcome.sourcePlatform,
+          );
+      }
       let reply = `Accepted candidate #${args.id} — saved as knowledge entry #${state.outcome.knowledgeId}.`;
       if (state.outcome.similarEntry) {
         const { similarEntry } = state.outcome;
@@ -5341,15 +5418,30 @@ export function buildToolServer(
     { id: z.number().describe('Candidate id (from list_knowledge_candidates)') },
     async (args) => {
       assertAtLeast(caller.role, 'admin', 'decline_knowledge_candidate');
+      const state: { row: KnowledgeCandidate | null } = { row: null };
       const { success, result } = await audited({
         actionKind: 'decline_knowledge_candidate',
         params: { id: args.id },
         run: async () => {
           const declined = await declineKnowledgeCandidate(args.id, caller.userId);
           if (!declined) throw new Error(`No pending knowledge candidate with id ${args.id}.`);
+          state.row = declined;
           return 'declined';
         },
       });
+      // See the matching comment on accept_knowledge_candidate above — same
+      // provenance-gated, origin-platform-routed DM, never caller-redirectable.
+      if (success && state.row?.sourceUserId && state.row.sourcePlatform) {
+        const target = adapterFor(state.row.sourcePlatform);
+        if (target)
+          await notifyKnowledgeTipResolved(
+            target,
+            state.row.sourceUserId,
+            'declined',
+            state.row.title,
+            state.row.sourcePlatform,
+          );
+      }
       return text(success ? `Declined candidate #${args.id}.` : `Failed: ${result}`, !success);
     },
   );

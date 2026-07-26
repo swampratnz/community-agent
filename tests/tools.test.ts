@@ -40,6 +40,7 @@ const {
   notifyReportWithdrawn,
   notifyAppealFiled,
   notifyAppealResolved,
+  notifyKnowledgeTipResolved,
   buildToolServer,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
@@ -168,6 +169,7 @@ const CATCH_UP_HANDLER_SCOPE = `${RUN}-catch-up-handler`;
 const CATCH_UP_HANDLER_OTHER_SCOPE = `${RUN}-catch-up-handler-other`;
 const RATE_ANSWER_HANDLER_USER = `${RUN}-rate-answer-handler`;
 const KNOWLEDGE_CANDIDATE_HANDLER_ADMIN = `${RUN}-kc-admin`;
+const KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER = `${RUN}-kc-tip-resolution-handler`;
 const MY_SUBMISSIONS_HANDLER_USER = `${RUN}-my-submissions-handler`;
 const POLL_HANDLER_ADMIN = `${RUN}-poll-handler-admin`;
 const THREAD_HANDLER_ADMIN = `${RUN}-thread-handler-admin`;
@@ -214,6 +216,23 @@ after(async () => {
       `DELETE FROM admin_audit WHERE action_kind IN ('accept_knowledge_candidate', 'decline_knowledge_candidate') AND actor_user_id = $1`,
       [KNOWLEDGE_CANDIDATE_HANDLER_ADMIN],
     );
+    // Safety net for the knowledge-tip resolution DM tests (issue #703): the
+    // source_user_id is unique to this scope, so this can't collide with any
+    // other test's rows even if an assertion fails mid-test.
+    {
+      const { rows: leftoverKnowledgeIds } = await pool.query(
+        `SELECT k.id FROM knowledge k
+           JOIN knowledge_candidates kc ON kc.title = k.title
+          WHERE kc.source_user_id = $1`,
+        [KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER],
+      );
+      if (leftoverKnowledgeIds.length > 0) {
+        await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [leftoverKnowledgeIds.map((r) => r.id)]);
+      }
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [
+        KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      ]);
+    }
     await pool.query(`DELETE FROM interactions WHERE conversation_id LIKE $1`, [
       `${RATE_ANSWER_HANDLER_USER}%`,
     ]);
@@ -1062,6 +1081,116 @@ test("SECURITY: notifyAppealResolved degrades to the English default, rather tha
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /reviewed and resolved/);
+});
+
+// notifyKnowledgeTipResolved holds all of accept_knowledge_candidate /
+// decline_knowledge_candidate's new (issue #703) notification behaviour —
+// #633's own named-and-unbuilt growth path — tested directly here the same
+// way notifyAppealResolved is above.
+test('notifyKnowledgeTipResolved sends a DM naming the tip title, wording differing per status', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'how to reset your password', 'discord');
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'how to reset your password', 'discord');
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /added to the knowledge base/i);
+  assert.match(calls[0][1], /how to reset your password/);
+  assert.notEqual(calls[0][1], calls[1][1], 'accepted and declined get distinct wording');
+});
+
+test('notifyKnowledgeTipResolved keeps the declined-path wording neutral-to-supportive, not a bare rejection (issue #703)', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'declined', 'how to reset your password', 'discord');
+
+  assert.match(calls[0], /thanks/i, 'declined copy still acknowledges the contributor');
+  assert.doesNotMatch(
+    calls[0],
+    /wrong|rejected|denied|bad/i,
+    'declined copy must not read as a punitive rejection of the underlying tip',
+  );
+});
+
+test('notifyKnowledgeTipResolved truncates a long tip title in the echoed confirmation', async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+  const longTitle = 'x'.repeat(500);
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', longTitle, 'discord');
+
+  assert.ok(!calls[0].includes(longTitle), 'the full 500-char title must not appear verbatim');
+  assert.match(calls[0], /x{100,140}\.\.\./, 'the echoed title is truncated with an ellipsis');
+});
+
+test('notifyKnowledgeTipResolved swallows a DM failure rather than throwing (resolution stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord'));
+});
+
+test("notifyKnowledgeTipResolved sends the te reo Māori variant for each status for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'accepted',
+    'how to reset your password',
+    'discord',
+    async () => 'mi',
+  );
+  await notifyKnowledgeTipResolved(
+    adapter,
+    'user-1',
+    'declined',
+    'how to reset your password',
+    'discord',
+    async () => 'mi',
+  );
+
+  assert.match(calls[0], /Kua tāpirihia/);
+  assert.match(calls[1], /kāore i tāpirihia/);
+  calls.forEach((c) => assert.match(c, /how to reset your password/, 'the echoed title stays untranslated'));
+});
+
+test("notifyKnowledgeTipResolved sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', async () => 'auto');
+
+  assert.match(calls[0], /added to the knowledge base/i);
+});
+
+test("SECURITY: notifyKnowledgeTipResolved degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyKnowledgeTipResolved(adapter, 'user-1', 'accepted', 'title', 'discord', async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /added to the knowledge base/i);
 });
 
 // notifyReportFiled (issue #90): a report proactively alerts every configured
@@ -13691,17 +13820,25 @@ test(
 // durable knowledge entry. RBAC gating itself is pinned in rbac.test.ts; these
 // exercise the handlers' wiring against a real DB — the audit trail and the
 // no-auto-publish gate in particular.
-function knowledgeCandidateHandlers() {
-  const adapter = stubAdapter(async () => {});
+function knowledgeCandidateHandlers(
+  opts: {
+    platform?: 'discord' | 'whatsapp';
+    userId?: string;
+    adapter?: PlatformAdapter;
+    getAdapter?: AdapterLookup;
+  } = {},
+) {
+  const adapter = opts.adapter ?? stubAdapter(async () => {});
   const server = buildToolServer(
     {
-      platform: 'discord' as const,
-      userId: KNOWLEDGE_CANDIDATE_HANDLER_ADMIN,
+      platform: opts.platform ?? 'discord',
+      userId: opts.userId ?? KNOWLEDGE_CANDIDATE_HANDLER_ADMIN,
       userName: 'Admin',
       role: 'admin' as const,
       conversationId: 'convo-1',
     },
     adapter,
+    opts.getAdapter,
   );
   return (
     server.instance as unknown as {
@@ -13921,6 +14058,282 @@ test(
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
     await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[candidateId, candidateId2]]);
     await pool.query(`DELETE FROM context_digests WHERE id = ANY($1)`, [[digestId, digestId2]]);
+  },
+);
+
+// accept_knowledge_candidate / decline_knowledge_candidate's resolution DM
+// (issue #703, #633's own named-and-unbuilt growth path, mirroring
+// resolve_appeal's #622/#157 mechanism): notifyKnowledgeTipResolved itself is
+// unit-tested above without the MCP transport; these exercise the handlers'
+// wiring — provenance gating and origin-platform routing in particular —
+// against real candidate rows, which requires the DB. Same pattern as the
+// resolve_appeal handler tests above.
+test(
+  'accept_knowledge_candidate DMs the submitter on their own platform, naming the (possibly overridden) title (issue #703 acceptance criterion #1)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-accept-topic`,
+      title: 'original tip title',
+      content: `${RUN} kc-tip-resolution-accept content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, text) => {
+      calls.push([userId, text]);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['accept_knowledge_candidate'].handler({
+      id: candidateId,
+      title: 'overridden tip title',
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1, 'exactly one DM is sent to the submitter');
+    assert.equal(calls[0][0], KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER);
+    assert.match(calls[0][1], /added to the knowledge base/i);
+    assert.match(
+      calls[0][1],
+      /overridden tip title/,
+      'the DM names the OVERRIDDEN title, not the drafted one',
+    );
+
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE title = $1`, [
+      'overridden tip title',
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  'decline_knowledge_candidate DMs the submitter a neutral, non-punitive message on their own platform (issue #703 acceptance criterion #2)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-decline-topic`,
+      title: 'declined tip title',
+      content: `${RUN} kc-tip-resolution-decline content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (_userId, message) => {
+      calls.push(message);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['decline_knowledge_candidate'].handler({ id: candidateId });
+
+    assert.equal(result.isError, false);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /declined tip title/);
+    assert.doesNotMatch(calls[0], /wrong|rejected|denied|bad/i, 'decline copy stays neutral-to-supportive');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  'SECURITY: machine-drafted candidates (source_user_id IS NULL) never trigger a DM on accept OR decline, regardless of resolution outcome (issue #703 acceptance criterion #3/#7)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-tip-machine-topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const acceptedCandidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tip-machine-topic-accept`,
+      title: 'machine-drafted accept fixture',
+      content: `${RUN} kc-tip-machine accept content`,
+    });
+    const declinedCandidateId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-tip-machine-topic-decline`,
+      title: 'machine-drafted decline fixture',
+      content: `${RUN} kc-tip-machine decline content`,
+    });
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+
+    const acceptResult = await tools['accept_knowledge_candidate'].handler({ id: acceptedCandidateId });
+    assert.equal(acceptResult.isError, false);
+    const declineResult = await tools['decline_knowledge_candidate'].handler({ id: declinedCandidateId });
+    assert.equal(declineResult.isError, false);
+
+    assert.equal(calls.length, 0, 'a machine-drafted candidate has no member to notify on either path');
+
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
+      `${RUN} kc-tip-machine accept content`,
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [acceptedCandidateId, declinedCandidateId],
+    ]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  "SECURITY: accept_knowledge_candidate routes a cross-platform DM through the tip's origin adapter, never the resolving admin's current-turn adapter, and no accept_knowledge_candidate argument (id, title, content, sourceUrl, sourceTitle) can redirect it (issue #703 acceptance criterion #4/#7)",
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-cross-platform-topic`,
+      title: 'cross-platform tip title',
+      content: `${RUN} kc-tip-resolution-cross-platform content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const adminTurnCalls: string[] = [];
+    const adminTurnAdapter = stubAdapter(async (userId) => {
+      adminTurnCalls.push(userId);
+    });
+    const originCalls: Array<[string, string]> = [];
+    const originAdapter = stubAdapter(async (userId, text) => {
+      originCalls.push([userId, text]);
+    });
+
+    // The tip was filed on whatsapp; the admin resolving it is calling from
+    // discord, and accept_knowledge_candidate's own args (id, title, content,
+    // sourceUrl, sourceTitle) carry no identity/platform field at all — the
+    // DM must go out through the whatsapp adapter (looked up via getAdapter)
+    // resolved from the persisted row, never through the discord adapter the
+    // current turn happens to be using.
+    const tools = knowledgeCandidateHandlers({
+      platform: 'discord',
+      adapter: adminTurnAdapter,
+      getAdapter: (platform) => (platform === 'whatsapp' ? originAdapter : undefined),
+    });
+    const result = await tools['accept_knowledge_candidate'].handler({
+      id: candidateId,
+      title: 'attacker-supplied title cannot redirect the DM target',
+      sourceUrl: 'https://example.com/not-a-redirect',
+      sourceTitle: 'not a redirect either',
+    });
+
+    assert.equal(result.isError, false, 'resolution itself still succeeds');
+    assert.equal(adminTurnCalls.length, 0, "never misaddressed through the resolving admin's own adapter");
+
+    const submitterCalls = originCalls.filter(([userId]) => userId === KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER);
+    assert.equal(submitterCalls.length, 1, "the submitter is notified via the tip's origin platform");
+    assert.match(submitterCalls[0][1], /added to the knowledge base/i);
+
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
+      `${RUN} kc-tip-resolution-cross-platform content`,
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  'accept_knowledge_candidate falls back to a silent skip when the origin platform has no adapter registered (issue #703 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-unregistered-topic`,
+      title: 'unregistered-platform tip title',
+      content: `${RUN} kc-tip-resolution-unregistered content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    // whatsapp isn't registered in this deployment (getAdapter returns
+    // undefined) — must degrade to silence, never throw and never fall back
+    // to the resolving admin's own (wrong) adapter.
+    const tools = knowledgeCandidateHandlers({
+      platform: 'discord',
+      adapter,
+      getAdapter: () => undefined,
+    });
+    const result = await tools['accept_knowledge_candidate'].handler({ id: candidateId });
+
+    assert.equal(result.isError, false, 'resolution itself still succeeds');
+    assert.equal(calls.length, 0, 'no adapter registered for the origin platform means no notification');
+
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
+      `${RUN} kc-tip-resolution-unregistered content`,
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  "accept_knowledge_candidate's own reported outcome is unaffected by a DM delivery failure (issue #703 acceptance criterion #5)",
+  { skip },
+  async () => {
+    const tip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: KNOWLEDGE_TIP_RESOLUTION_HANDLER_USER,
+      topic: `${RUN} kc-tip-resolution-dm-fails-topic`,
+      title: 'dm-fails tip title',
+      content: `${RUN} kc-tip-resolution-dm-fails content`,
+    });
+    assert.ok(tip);
+    const candidateId = tip.id;
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['accept_knowledge_candidate'].handler({ id: candidateId });
+
+    assert.equal(result.isError, false, 'accept_knowledge_candidate still reports success');
+    assert.match(result.content[0]?.text ?? '', /Accepted candidate/);
+
+    const knowledgeRows = await pool.query(`SELECT id FROM knowledge WHERE content = $1`, [
+      `${RUN} kc-tip-resolution-dm-fails content`,
+    ]);
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [knowledgeRows.rows.map((r) => r.id)]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+  },
+);
+
+test(
+  'accept_knowledge_candidate sends no DM and reports failure for an unknown candidate id (issue #703)',
+  { skip },
+  async () => {
+    const calls: string[] = [];
+    const adapter = stubAdapter(async (userId) => {
+      calls.push(userId);
+    });
+
+    const tools = knowledgeCandidateHandlers({ platform: 'discord', adapter });
+    const result = await tools['accept_knowledge_candidate'].handler({ id: 999_999_999 });
+
+    assert.match(result.content[0]?.text ?? '', /Failed/);
+    assert.equal(calls.length, 0, 'no row resolved means no notification');
   },
 );
 
