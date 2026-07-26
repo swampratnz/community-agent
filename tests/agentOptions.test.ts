@@ -48,6 +48,37 @@ test('SECURITY: settingSources is empty for every tier (host ~/.claude config is
   }
 });
 
+// Agent Skills (issue #741) — flag-off invariant. This test process never
+// sets AGENT_SKILLS_ENABLED, so config.agentSkills.enabled is false (default)
+// here — the flag-on happy path is covered independently by
+// agentSkillsEnabled.test.ts (its own process/env, since config validates at
+// import time and can't be toggled mid-process).
+
+test('SECURITY: AC1 — AGENT_SKILLS_ENABLED unset (default): buildQueryOptions carries no plugins/skills key, tools is byte-identical to pre-#741, and the assembled system prompt still contains the prompt-review checklist, for every role', async () => {
+  assert.equal(config.agentSkills.enabled, false, 'precondition: agent skills are off in this test process');
+  const { buildSystemPrompt } = await import('../src/agent/systemPrompt.js');
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
+    assert.ok(!('plugins' in opts), `${role}: no plugins key when the flag is off`);
+    assert.ok(!('skills' in opts), `${role}: no skills key when the flag is off`);
+    const webSearch = role === 'admin' || role === 'super_admin';
+    assert.deepEqual(
+      opts.tools,
+      webSearch ? ['WebSearch'] : [],
+      `${role}: tools must be byte-identical to pre-#741 behaviour when the flag is off`,
+    );
+    const prompt = buildSystemPrompt(
+      { platform: 'discord', userId: 'u1', userName: 'X', role, conversationId: 'c1' },
+      { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
+    );
+    assert.match(
+      prompt,
+      /Reviewing a member's own prompt\/system prompt\/tool schema/,
+      `${role}: system prompt must still carry the prompt-review checklist when the skill is not active`,
+    );
+  }
+});
+
 // The 11 tools issue #535 (extended by issue #729) filters out of
 // allowedTools when their config flag is off (default). Kept in one place
 // here so the two tests below (the no-drift pin and the default-config

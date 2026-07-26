@@ -86,6 +86,20 @@ const EnvSchema = z.object({
   // any windowed history entry meets this floor. Same default/validation
   // shape as KNOWLEDGE_SHORTCUT_THRESHOLD, the precedent this mirrors.
   AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.9),
+  // Wires the SDK's Agent Skills mechanism (issue #741): when on,
+  // buildQueryOptions (agent/core.ts) adds 'Skill' to the base tools array
+  // and loads the repo-bundled agent/skills/ plugin directory (skills:
+  // ['prompt-review'], never 'all'), and the #635 prompt-review checklist
+  // moves out of the always-on GUIDELINES system-prompt block into
+  // skills/prompt-review/SKILL.md — a lower per-turn cached-prefix token
+  // count for the overwhelming majority of turns that never invoke it. Off
+  // by default, same convention as every other opt-in flag here; while off,
+  // the checklist stays inline in GUIDELINES exactly as before, so there is
+  // no configuration in which the prompt-review capability is absent.
+  AGENT_SKILLS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
 
   // Discord
   DISCORD_BOT_TOKEN: z.string().min(1),
@@ -1013,6 +1027,9 @@ export const config = {
     webSearchDedupWindowSeconds: env.AGENT_WEB_SEARCH_DEDUP_WINDOW_SECONDS,
     webSearchDedupHistorySize: env.AGENT_WEB_SEARCH_DEDUP_HISTORY_SIZE,
     webSearchDedupSimilarityThreshold: env.AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD,
+  },
+  agentSkills: {
+    enabled: env.AGENT_SKILLS_ENABLED ?? false,
   },
   discord: {
     botToken: env.DISCORD_BOT_TOKEN,
