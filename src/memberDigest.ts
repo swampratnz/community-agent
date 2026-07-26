@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { scrubPII } from './context/export.js';
 import {
+  countProjectsSharedSince,
   listContextDigests,
   listCuratedKnowledgeCreatedSince,
   recordMemberDigestSent,
@@ -20,16 +21,18 @@ const MAX_NEW_KNOWLEDGE_TITLES = 10;
  * Pure message builder (issue #645) — this week's `context_digests` topics
  * (title + question count, the same aggregate fields `list_context_digests`
  * already renders to admins) plus a "new in the knowledge base" line of
- * curated-only titles. `null` when there is nothing to say (both inputs
- * empty) so the caller can skip the send entirely — silence over noise, a
- * week with zero digests and zero new curated entries posts nothing.
+ * curated-only titles, plus a bare project-showcase count (issue #714).
+ * `null` when there is nothing to say (all three inputs empty) so the
+ * caller can skip the send entirely — silence over noise, a week with
+ * zero digests, zero new curated entries, and zero new projects posts
+ * nothing.
  *
  * Every input here is already aggregate-by-construction: `topic` is the
  * offline builder's own no-names/no-handles summary label (`builder.ts`'s
  * `summarizeCluster` prompt contract), `questionCount` is a bare integer,
- * and `newKnowledgeTitles` are knowledge-entry titles, never message
- * content or a member identifier — this function only ever renders
- * topic-level text and counts.
+ * `newKnowledgeTitles` are knowledge-entry titles, never message content or
+ * a member identifier, and `newProjectCount` is a bare integer — this
+ * function only ever renders topic-level text and counts.
  *
  * `topic` is run through the same lexical `scrubPII` (issue #53's
  * `context/export.ts`) the community-context export applies before its
@@ -37,12 +40,22 @@ const MAX_NEW_KNOWLEDGE_TITLES = 10;
  * the builder's "no names/handles" contract is prompt-only, and this is now
  * a public, all-members Discord post rather than a private-repo export, so
  * the same belt-and-braces scrub applies here too.
+ *
+ * `newProjectCount` deliberately takes only a bare count, never a project
+ * row/list — `share_project`'s own description promises visibility scoped
+ * to "every other member via `list_projects`" (an RBAC-gated, member-tier
+ * tool), while this digest is an ungated public channel post. Surfacing a
+ * project's name/description/link/owner here would widen that audience
+ * beyond what a member consented to when they shared, so this function's
+ * signature makes that leak structurally impossible rather than relying on
+ * callers to remember to omit fields.
  */
 export function formatMemberDigestMessage(
   topics: ReadonlyArray<{ topic: string; questionCount: number }>,
   newKnowledgeTitles: readonly string[],
+  newProjectCount: number,
 ): string | null {
-  if (topics.length === 0 && newKnowledgeTitles.length === 0) return null;
+  if (topics.length === 0 && newKnowledgeTitles.length === 0 && newProjectCount === 0) return null;
 
   const sections: string[] = [];
   if (topics.length > 0) {
@@ -58,6 +71,11 @@ export function formatMemberDigestMessage(
   if (newKnowledgeTitles.length > 0) {
     sections.push(
       `📚 New in the knowledge base (${newKnowledgeTitles.length}): ${newKnowledgeTitles.join(', ')}`,
+    );
+  }
+  if (newProjectCount > 0) {
+    sections.push(
+      `🚀 ${newProjectCount} new project${newProjectCount === 1 ? '' : 's'} added to the showcase this week — ask me to show the project showcase to browse.`,
     );
   }
   return sections.join('\n\n');
@@ -76,12 +94,14 @@ export function makeDefaultMemberDigestRun(
     wasSentRecently?: (days: number) => Promise<boolean>;
     getDigests?: (days: number, limit: number) => Promise<ContextDigest[]>;
     getNewKnowledgeTitles?: (since: Date, limit: number) => Promise<string[]>;
+    getNewProjectCount?: (since: Date) => Promise<number>;
     recordSent?: () => Promise<void>;
   } = {},
 ): () => Promise<void> {
   const wasSentRecently = deps.wasSentRecently ?? wasMemberDigestSentRecently;
   const getDigests = deps.getDigests ?? listContextDigests;
   const getNewKnowledgeTitles = deps.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
+  const getNewProjectCount = deps.getNewProjectCount ?? countProjectsSharedSince;
   const recordSent = deps.recordSent ?? recordMemberDigestSent;
 
   return async () => {
@@ -104,9 +124,10 @@ export function makeDefaultMemberDigestRun(
     }
 
     const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
-    const [digests, newKnowledgeTitles] = await Promise.all([
+    const [digests, newKnowledgeTitles, newProjectCount] = await Promise.all([
       getDigests(FRESHNESS_DAYS, MAX_TOPICS),
       getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
+      getNewProjectCount(since),
     ]);
     // Two independent floors before a digest topic reaches this public
     // surface (PR #651 review):
@@ -127,6 +148,7 @@ export function makeDefaultMemberDigestRun(
     const message = formatMemberDigestMessage(
       eligible.map((d) => ({ topic: d.topic, questionCount: d.questionCount })),
       newKnowledgeTitles,
+      newProjectCount,
     );
     // Quiet week — nothing to post. Deliberately leaves the freshness row
     // untouched (same convention as adminDigest.ts's quiet-week skip) so a

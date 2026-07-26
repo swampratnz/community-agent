@@ -1224,9 +1224,24 @@ upgrade).
   `scope = 'global'` only (the same reasoning the gated-guest knowledge
   shortcut's `scopeRestriction: 'global-only'` already applies), so a
   channel- or conversation-scoped curated entry never leaks into the public
-  digest. A week with zero digests and zero new curated entries posts
-  nothing (`formatMemberDigestMessage` returns `null`) — silence over noise,
-  matching every other digest job's quiet-week convention.
+  digest. A week with zero digests, zero new curated entries, and zero new
+  showcase projects posts nothing (`formatMemberDigestMessage` returns
+  `null`) — silence over noise, matching every other digest job's
+  quiet-week convention.
+- **Project-showcase awareness, count-only (issue #714)**: a third section,
+  `🚀 N new project(s) added to the showcase this week`, appears when
+  `countProjectsSharedSince` (active, i.e. non-soft-removed, `member_projects`
+  rows created in the same freshness window) is `> 0`. This is deliberately
+  a bare integer, never project names/descriptions/links/owners —
+  `formatMemberDigestMessage` takes only `newProjectCount: number`, so
+  leakage is structurally impossible, not just policy. The reason is a
+  consent-boundary asymmetry: `share_project`'s own description promises
+  visibility scoped to "every other member via `list_projects`", and
+  `list_projects` floors at the `member` RBAC tier — but the member digest is
+  an ungated public channel post, a wider audience than what a member
+  consented to when they shared. A count carries zero per-project content, so
+  it can never widen that boundary; a member who wants the actual content is
+  nudged toward the existing member-gated `list_projects` tool instead.
 - **Two independent floors, widened-audience-aware (PR #651 review)**: this
   surface is more exposed than either existing `context_digests` consumer
   (admin-only `list_context_digests`, and the export's own

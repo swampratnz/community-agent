@@ -33,6 +33,8 @@ const {
   recordMemberDigestSent,
   listCuratedKnowledgeCreatedSince,
   saveKnowledge,
+  countProjectsSharedSince,
+  shareProject,
 } = await import('../src/storage/repository.js');
 const { config } = await import('../src/config.js');
 
@@ -88,35 +90,39 @@ function makeDigest(overrides: Partial<ContextDigest> = {}): ContextDigest {
 
 // --- formatMemberDigestMessage (pure, byte-tested) --------------------------
 
-test('formatMemberDigestMessage: no topics and no new knowledge titles renders null — silence over noise', () => {
-  assert.equal(formatMemberDigestMessage([], []), null);
+test('formatMemberDigestMessage: no topics, no new knowledge titles, no new projects renders null — silence over noise', () => {
+  assert.equal(formatMemberDigestMessage([], [], 0), null);
 });
 
-test('formatMemberDigestMessage: topics only renders the topic section, no knowledge-base line', () => {
+test('formatMemberDigestMessage: topics only renders the topic section, no knowledge-base line, no project line', () => {
   const message = formatMemberDigestMessage(
     [
       { topic: 'MCP server auth', questionCount: 4 },
       { topic: 'Bedrock region gotchas', questionCount: 1 },
     ],
     [],
+    0,
   );
   assert.equal(
     message,
     "📅 This week's topics:\n• MCP server auth (4 questions)\n• Bedrock region gotchas (1 question)",
   );
   assert.doesNotMatch(message ?? '', /knowledge base/i);
+  assert.doesNotMatch(message ?? '', /showcase/i);
 });
 
-test('formatMemberDigestMessage: new knowledge titles only renders the knowledge-base line, no topics section', () => {
-  const message = formatMemberDigestMessage([], ['Setting up MCP auth', 'Bedrock region checklist']);
+test('formatMemberDigestMessage: new knowledge titles only renders the knowledge-base line, no topics section, no project line', () => {
+  const message = formatMemberDigestMessage([], ['Setting up MCP auth', 'Bedrock region checklist'], 0);
   assert.equal(message, '📚 New in the knowledge base (2): Setting up MCP auth, Bedrock region checklist');
   assert.doesNotMatch(message ?? '', /This week's topics/);
+  assert.doesNotMatch(message ?? '', /showcase/i);
 });
 
 test('formatMemberDigestMessage: both sections present render topics then the knowledge-base line, separated by a blank line', () => {
   const message = formatMemberDigestMessage(
     [{ topic: 'MCP server auth', questionCount: 1 }],
     ['Setting up MCP auth'],
+    0,
   );
   assert.equal(
     message,
@@ -131,6 +137,7 @@ test('formatMemberDigestMessage: singular/plural "question(s)" agrees with the e
       { topic: 'Multi-question topic', questionCount: 2 },
     ],
     [],
+    0,
   );
   assert.match(message ?? '', /One-question topic \(1 question\)/);
   assert.match(message ?? '', /Multi-question topic \(2 questions\)/);
@@ -140,10 +147,59 @@ test('SECURITY: formatMemberDigestMessage scrubs PII out of a topic label before
   const message = formatMemberDigestMessage(
     [{ topic: 'Contact alice@example.com or @alice_h about MCP auth', questionCount: 2 }],
     [],
+    0,
   );
   assert.doesNotMatch(message ?? '', /alice@example\.com|@alice_h/);
   assert.match(message ?? '', /\[email\]/);
   assert.match(message ?? '', /\[handle\]/);
+});
+
+// --- formatMemberDigestMessage: project-showcase count (issue #714) --------
+
+test('formatMemberDigestMessage: newProjectCount > 0 renders the showcase section with singular/plural agreement', () => {
+  const singular = formatMemberDigestMessage([], [], 1);
+  assert.equal(
+    singular,
+    '🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.',
+  );
+  const plural = formatMemberDigestMessage([], [], 3);
+  assert.equal(
+    plural,
+    '🚀 3 new projects added to the showcase this week — ask me to show the project showcase to browse.',
+  );
+});
+
+test("formatMemberDigestMessage: newProjectCount === 0 renders byte-identical to today's two-section output — no third section, no trailing separator", () => {
+  const withoutProjectArg = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    0,
+  );
+  assert.equal(
+    withoutProjectArg,
+    "📅 This week's topics:\n• MCP server auth (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
+  );
+});
+
+test('formatMemberDigestMessage: an only-projects week (zero topics, zero new knowledge, newProjectCount > 0) still returns a non-null message containing only the project section', () => {
+  const message = formatMemberDigestMessage([], [], 2);
+  assert.equal(
+    message,
+    '🚀 2 new projects added to the showcase this week — ask me to show the project showcase to browse.',
+  );
+  assert.doesNotMatch(message ?? '', /This week's topics|knowledge base/);
+});
+
+test('formatMemberDigestMessage: project section renders last, after topics and knowledge-base sections', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+  );
+  assert.equal(
+    message,
+    "📅 This week's topics:\n• MCP server auth (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.",
+  );
 });
 
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
@@ -209,13 +265,14 @@ test('makeDefaultMemberDigestRun: no connected Discord adapter — no-op, no thr
   assert.equal(sent.length, 0, 'never sends over a non-Discord adapter, even when content exists');
 });
 
-test('makeDefaultMemberDigestRun: a quiet week (no digests, no new knowledge) sends nothing and does not record — silence over noise', async () => {
+test('makeDefaultMemberDigestRun: a quiet week (no digests, no new knowledge, no new projects) sends nothing and does not record — silence over noise', async () => {
   const { adapter, sent } = makeAdapter();
   let recordCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -232,6 +289,7 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
     getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+    getNewProjectCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -243,6 +301,54 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
     "📅 This week's topics:\n• MCP server auth (4 questions)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
   );
   assert.equal(recordCalled, true, 'a real send stamps the freshness guard');
+});
+
+test("makeDefaultMemberDigestRun: an only-projects week (zero topics, zero new knowledge, newProjectCount > 0) still posts — the null-guard's OR condition covers all three inputs", async () => {
+  const { adapter, sent } = makeAdapter();
+  let recordCalled = false;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 2,
+    recordSent: async () => {
+      recordCalled = true;
+    },
+  });
+  await runOnce();
+  assert.equal(sent.length, 1, 'a week with only new projects still posts');
+  assert.equal(
+    sent[0].text,
+    '🚀 2 new projects added to the showcase this week — ask me to show the project showcase to browse.',
+  );
+  assert.equal(recordCalled, true);
+});
+
+test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact same `since` instant already computed for getNewKnowledgeTitles — one window, no second Date.now() call', async () => {
+  const { adapter, sent } = makeAdapter();
+  let knowledgeSince: Date | undefined;
+  let projectSince: Date | undefined;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async (since) => {
+      knowledgeSince = since;
+      return [];
+    },
+    getNewProjectCount: async (since) => {
+      projectSince = since;
+      return 0;
+    },
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.ok(knowledgeSince instanceof Date && projectSince instanceof Date);
+  assert.equal(
+    projectSince?.getTime(),
+    knowledgeSince?.getTime(),
+    'getNewProjectCount receives the exact same since instant as getNewKnowledgeTitles',
+  );
+  assert.equal(sent.length, 0, 'both inputs still empty this run — nothing to post');
 });
 
 test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
@@ -257,6 +363,7 @@ test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIG
         makeDigest({ topic: 'at floor', distinctUsers: 3, questionCount: 1 }),
       ],
       getNewKnowledgeTitles: async () => [],
+      getNewProjectCount: async () => 0,
       recordSent: async () => {},
     });
     await runOnce();
@@ -278,6 +385,7 @@ test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'below floor', distinctUsers: 2 })],
       getNewKnowledgeTitles: async () => [],
+      getNewProjectCount: async () => 0,
       recordSent: async () => {
         recordCalled = true;
       },
@@ -300,6 +408,7 @@ test("SECURITY: makeDefaultMemberDigestRun never surfaces a WhatsApp-sourced dig
       makeDigest({ topic: 'cross-platform topic', platform: null, questionCount: 1 }),
     ],
     getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -324,6 +433,7 @@ test('SECURITY: makeDefaultMemberDigestRun posts to exactly MEMBER_DIGEST_CHANNE
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
     getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -351,6 +461,7 @@ test("SECURITY: makeDefaultMemberDigestRun never leaks a ContextDigest's distinc
     wasSentRecently: async () => false,
     getDigests: async () => [adversarialDigest],
     getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -516,5 +627,85 @@ test(
     assert.ok(!titles.includes(`${marker}-title`), 'an entry older than the window is excluded');
 
     await pool.query('DELETE FROM knowledge WHERE id = $1', [id]);
+  },
+);
+
+// --- Repository: project-showcase count (issue #714, DB-integration) -------
+
+test(
+  "SECURITY: repository: countProjectsSharedSince + formatMemberDigestMessage never leak a project's name/description/link/owner — only the integer count and fixed nudge text ever reach the rendered digest",
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-leak`;
+    const owner = `${marker}-owner`;
+    const adversarialName = `${marker}-name <script>alert(1)</script> impersonating-admin`;
+    const adversarialDescription = `${marker}-description visit http://evil.example/${marker}`;
+    const adversarialLink = `http://evil.example/${marker}`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    const shared = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: adversarialName,
+      description: adversarialDescription,
+      link: adversarialLink,
+    });
+    assert.ok(shared.ok, 'seed project shared successfully');
+
+    const count = await countProjectsSharedSince(since);
+    assert.ok(count >= 1, 'the seeded project is counted');
+
+    const message = formatMemberDigestMessage([], [], count);
+    assert.ok(message);
+    assert.doesNotMatch(
+      message,
+      new RegExp(marker),
+      "no project field value (name/description/link/owner user_id) ever appears in the rendered message — formatMemberDigestMessage's signature takes only a bare count",
+    );
+    assert.match(
+      message,
+      /new projects? added to the showcase this week — ask me to show the project showcase to browse\.$/,
+    );
+
+    await pool.query('DELETE FROM member_projects WHERE user_id = $1', [owner]);
+  },
+);
+
+test(
+  'SECURITY: repository: countProjectsSharedSince excludes soft-removed rows — the digest count never implies content list_projects can no longer show',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-removed`;
+    const activeUser = `${marker}-active`;
+    const removedUser = `${marker}-removed`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    const before = await countProjectsSharedSince(since);
+
+    const active = await shareProject({
+      platform: 'discord',
+      userId: activeUser,
+      name: 'active project',
+      description: 'still visible via list_projects',
+    });
+    const removed = await shareProject({
+      platform: 'discord',
+      userId: removedUser,
+      name: 'removed project',
+      description: 'soft-removed, must not be counted',
+    });
+    assert.ok(active.ok && removed.ok);
+    await pool.query('UPDATE member_projects SET removed_at = now() WHERE id = $1', [
+      removed.ok ? removed.id : -1,
+    ]);
+
+    const after = await countProjectsSharedSince(since);
+    assert.equal(
+      after - before,
+      1,
+      'only the active project increments the count; the soft-removed one is excluded',
+    );
+
+    await pool.query('DELETE FROM member_projects WHERE user_id = ANY($1)', [[activeUser, removedUser]]);
   },
 );
