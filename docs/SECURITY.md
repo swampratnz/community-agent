@@ -2510,7 +2510,11 @@ number could reach an unrelated person).
       disk to retarget a push, so the tool restrictions are defence-in-depth, not
       the guarantee. Branch protection (server-side) is what actually guarantees
       nothing reaches `main` except through a PR that passed the required checks.
-      Enable it before relying on these loops.
+      Enable it before relying on these loops. (The branch janitor
+      (`branch-janitor.yml`) also holds `contents: write`, but is a much
+      narrower holder: deterministic shell only — no agent, no code execution
+      from judged branches — and its write capability is ref deletion, which
+      branch protection blocks for `main` like any other write.)
 - [ ] **Auto-merge posture (`pipeline-pr-automerge.yml`) is a conscious
       decision.** By default the pipeline requires a **human** to merge every PR,
       which is the backstop against the PR-review LLM itself being prompt-injected

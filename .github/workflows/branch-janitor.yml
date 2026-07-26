@@ -32,7 +32,12 @@ on:
       dry_run:
         description: 'List what would be deleted without deleting'
         type: boolean
-        default: false
+        # true so a bare manual dispatch can never accidentally sweep live —
+        # a live manual run must say dry_run=false explicitly. The weekly
+        # cron supplies no inputs at all, so this default does NOT apply
+        # there: `inputs.dry_run` renders empty, != 'true', and the
+        # scheduled sweep runs live as intended.
+        default: true
       extra:
         description: 'Comma-separated branch names to also delete (rule 3)'
         type: string
@@ -90,7 +95,11 @@ jobs:
             fi
             # Rule 2: every PR with this head is MERGED (>=1 PR required).
             # States read strictly as jq data from the PR ledger.
-            states="$(gh pr list --repo "$REPO" --head "$b" --state all \
+            # --limit 100: the default (30) could silently truncate the state
+            # list for a branch with many reopened PRs, and a truncated list
+            # that happened to be all-MERGED would wrongly qualify a branch
+            # that still has an open/rejected PR beyond the cap.
+            states="$(gh pr list --repo "$REPO" --head "$b" --state all --limit 100 \
               --json state --jq 'map(.state) | unique | join(",")' 2>/dev/null || echo '')"
             if [ "$states" = 'MERGED' ]; then
               delete_ref "$b" 'all PRs merged'
