@@ -187,7 +187,15 @@ jobs:
           # the exact stall the loop exists to prevent). Evaluate "needs a
           # human decision" BEFORE "changes requested" so a needs-human verdict
           # that happens to mention changes isn't sent to revise instead.
-          verdict="$(head -n 4 review.txt | grep -vE '^[[:space:]]*[-*]')"
+          # The bullet filter requires whitespace AFTER the marker: a real
+          # markdown bullet is `- text`/`* text`, but a verdict the review
+          # model renders in BOLD starts `**Changes requested**` — marker
+          # then another asterisk, no space. The original `^[[:space:]]*[-*]`
+          # ate the bolded verdict line itself, so PR #730's Changes-requested
+          # verdict matched nothing and the revise dispatch silently never
+          # fired (and revise's own precheck, sharing the pattern, would have
+          # no-op'd on a manual dispatch too).
+          verdict="$(head -n 4 review.txt | grep -vE '^[[:space:]]*[-*][[:space:]]')"
           if printf '%s' "$verdict" | grep -qiE 'needs a human decision'; then
             gh pr edit "$PR" --add-label needs-human ||
               echo "::warning::Could not add needs-human label"
