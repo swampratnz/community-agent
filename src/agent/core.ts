@@ -361,6 +361,11 @@ export function buildQueryOptions(
     // already applies to maxTurns. Unset (the default) falls back to
     // config.llm.model for every role — byte-identical to pre-#382 behaviour.
     model: atLeast(role, 'admin') ? config.llm.model : (config.llm.memberModel ?? config.llm.model),
+    // Optional SDK-native fallback (issue #738): applies uniformly regardless
+    // of caller role/tier, since an overload condition on the shared usage
+    // pool isn't role-specific. Unset (the default): no fallbackModel key at
+    // all, byte-identical to pre-#738 behaviour.
+    ...(config.llm.fallbackModel ? { fallbackModel: config.llm.fallbackModel } : {}),
     systemPrompt,
     mcpServers,
     // The base built-in tool set. Empty = no built-ins at all; admin+ get
