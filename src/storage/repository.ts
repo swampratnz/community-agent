@@ -3278,7 +3278,14 @@ export async function createKnowledgeTip(input: {
     [
       input.platform,
       input.userId,
-      input.topic,
+      // Mirrors title's truncation: suggest_knowledge's topic is always
+      // args.title (already zod-capped at KNOWLEDGE_TIP_TITLE_MAX_CHARS), but
+      // the rate_answer implicit-drafting path (issue #726) passes the raw
+      // recovered question as topic, which is only platform-message-length
+      // bounded — without this it could land longer than the title holding
+      // the same text and get embedded via candidateTopicAlreadyReviewed at
+      // full length.
+      input.topic.slice(0, KNOWLEDGE_TIP_TITLE_MAX_CHARS),
       input.title.slice(0, KNOWLEDGE_TIP_TITLE_MAX_CHARS),
       input.content.slice(0, KNOWLEDGE_TIP_CONTENT_MAX_CHARS),
       input.topicEmbedding ? pgvector.toSql(input.topicEmbedding) : null,
@@ -6511,7 +6518,7 @@ export async function createAnswerFeedback(input: {
   helpful: boolean;
   /** Optional free-text reason (issue #354); normalized (control-char-stripped, ≤200 chars) before storage. */
   comment?: string;
-}): Promise<{ id: number } | 'no_recent_answer' | 'rate_limited'> {
+}): Promise<{ id: number; interactionId: number } | 'no_recent_answer' | 'rate_limited'> {
   const interactionId = await resolveAnswerFeedbackTarget(input.platform, input.conversationId, input.userId);
   if (interactionId === null) return 'no_recent_answer';
 
@@ -6537,7 +6544,107 @@ export async function createAnswerFeedback(input: {
       normalizeAnswerFeedbackComment(input.comment),
     ],
   );
-  return rows[0] ? { id: Number(rows[0].id) } : 'rate_limited';
+  return rows[0] ? { id: Number(rows[0].id), interactionId } : 'rate_limited';
+}
+
+/**
+ * Grounding lookup for the answered-question -> knowledge-base loop (issue
+ * #726): given the `interactions.id` of a rated OUTBOUND reply, recovers
+ * whether it was knowledge-grounded and, when not, the preceding question it
+ * answered. Two reads, no new index: the outbound row's own `content`/
+ * `meta->>'knowledgeEntryId'`/`meta->>'replyToUserId'` (the caller `rate_answer`
+ * itself bound to via `resolveAnswerFeedbackTarget` above), then — only when a
+ * `replyToUserId` exists — the most recent INBOUND row from that SAME member
+ * in the SAME conversation at or before the reply's `created_at`, served by
+ * `interactions_user_idx (platform, user_id, created_at DESC)`.
+ *
+ * `questionUserId` deliberately names the addressed member (`replyToUserId`),
+ * NOT the `rate_answer` caller — `resolveAnswerFeedbackTarget` can bind a
+ * rating to a reply addressed to someone else (the "rater observed, didn't
+ * ask" case), so attribution must track the row this returns, never the
+ * caller blindly (SECURITY, issue #726 AC10). Returns `null` when
+ * `interactionId` doesn't name an outbound row at all; `questionContent`/
+ * `questionUserId` are independently `null` (fail closed for the caller) when
+ * there is no `replyToUserId` or no qualifying preceding inbound row.
+ */
+export async function answerFeedbackGrounding(interactionId: number): Promise<{
+  knowledgeEntryId: number | null;
+  answerContent: string;
+  questionContent: string | null;
+  questionUserId: string | null;
+} | null> {
+  const { rows: outboundRows } = await pool.query(
+    `SELECT platform, conversation_id, content, created_at,
+            (meta->>'knowledgeEntryId')::bigint AS knowledge_entry_id,
+            meta->>'replyToUserId' AS reply_to_user_id
+       FROM interactions
+      WHERE id = $1 AND direction = 'outbound'`,
+    [interactionId],
+  );
+  const outbound = outboundRows[0];
+  if (!outbound) return null;
+
+  let questionContent: string | null = null;
+  let questionUserId: string | null = null;
+  if (outbound.reply_to_user_id) {
+    const { rows: inboundRows } = await pool.query(
+      `SELECT content, user_id FROM interactions
+        WHERE platform = $1 AND conversation_id = $2 AND direction = 'inbound'
+          AND user_id = $3 AND created_at <= $4
+        ORDER BY created_at DESC LIMIT 1`,
+      [outbound.platform, outbound.conversation_id, outbound.reply_to_user_id, outbound.created_at],
+    );
+    if (inboundRows[0]) {
+      questionContent = inboundRows[0].content;
+      questionUserId = inboundRows[0].user_id;
+    }
+  }
+
+  return {
+    knowledgeEntryId: outbound.knowledge_entry_id != null ? Number(outbound.knowledge_entry_id) : null,
+    answerContent: outbound.content,
+    questionContent,
+    questionUserId,
+  };
+}
+
+/**
+ * SECURITY (issue #726 follow-up): rater-scoped counterpart to
+ * `createKnowledgeTip`'s per-question-author cap. That cap alone bounds how
+ * many candidates a single VICTIM's quota can absorb, but not how many
+ * DIFFERENT victims one rater can draft against — `resolveAnswerFeedbackTarget`
+ * can bind a rating to a reply addressed to someone else (the "rater
+ * observed, didn't ask" fallback, see `answerFeedbackGrounding` above and its
+ * AC10 test), and `rate_answer`'s own daily cap (`RATE_ANSWER_DAILY_LIMIT`,
+ * 20/day) is far looser than any one victim's 3/day quota. Without this, a
+ * rater who has never personally been answered could silently drain several
+ * other members' entire daily `suggest_knowledge` quota in one busy channel.
+ *
+ * Counts this rater's OWN `helpful: true` `answer_feedback` rows in the last
+ * 24h whose bound interaction was addressed to someone else — i.e., every
+ * attempt (successful or not) at the mismatched-attribution drafting path.
+ * A matched self-rating (rater === addressed member) is deliberately
+ * excluded: that case is already bounded by `createKnowledgeTip`'s own
+ * per-source-user cap, same as a member's own `suggest_knowledge` calls.
+ * Backed by the existing `answer_feedback_user_rate_idx (platform, user_id,
+ * created_at DESC)`; the join to `interactions` is on its primary key and
+ * scans at most `RATE_ANSWER_DAILY_LIMIT` rows.
+ */
+export async function countMismatchedHelpfulRatings(
+  platform: Platform,
+  raterUserId: string,
+): Promise<number> {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS n
+       FROM answer_feedback af
+       JOIN interactions i ON i.id = af.interaction_id
+      WHERE af.platform = $1 AND af.user_id = $2 AND af.helpful = true
+        AND af.created_at > now() - interval '24 hours'
+        AND i.meta->>'replyToUserId' IS NOT NULL
+        AND i.meta->>'replyToUserId' <> $2`,
+    [platform, raterUserId],
+  );
+  return rows[0]?.n ?? 0;
 }
 
 /**

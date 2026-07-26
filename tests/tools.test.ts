@@ -130,6 +130,7 @@ const {
   unblockUser,
   shareProject,
   setMemberInterests,
+  purgeUserData,
 } = await import('../src/storage/repository.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { embed } = await import('../src/storage/embeddings.js');
@@ -8165,8 +8166,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    38,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for DISCORD_VOICE_ENABLED landing with #732)",
+    39,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -13420,6 +13421,887 @@ test(
       Number(countRow.rows[0].n),
       RATE_ANSWER_DAILY_LIMIT,
       'the over-cap attempt must not insert another row',
+    );
+  },
+);
+
+// rate_answer -> implicit knowledge-candidate drafting (issue #726,
+// CAPABILITY-IDEAS.md §D2): a genuinely helpful, UNGROUNDED answer silently
+// drafts a knowledge_candidates row via the SAME createKnowledgeTip/
+// candidateTopicAlreadyReviewed/findKnowledgeCoveringTopic path
+// suggest_knowledge (#633) uses. Gated behind KNOWLEDGE_ANSWER_CANDIDATE_ENABLED
+// (off by default).
+async function withAnswerCandidateFlag<T>(enabled: boolean, fn: () => Promise<T>): Promise<T> {
+  const original = config.knowledgeAnswerCandidate.enabled;
+  (config.knowledgeAnswerCandidate as { enabled: boolean }).enabled = enabled;
+  try {
+    return await fn();
+  } finally {
+    (config.knowledgeAnswerCandidate as { enabled: boolean }).enabled = original;
+  }
+}
+
+test(
+  'rate_answer (KNOWLEDGE_ANSWER_CANDIDATE_ENABLED=true): a helpful rating on an ungrounded answer drafts exactly one knowledge_candidates row attributed to the asking member, with the member-facing reply unchanged (issue #726 acceptance criteria 1, 7)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-basic`;
+    const conversationId = `${RUN}-c-answer-candidate-basic`;
+    // Whimsical, unrelated-to-tech-support wording (same corpus-collision
+    // concern the suggest_knowledge rate-cap test documents): the dedup
+    // guard's findKnowledgeCoveringTopic scans the FULL shared knowledge
+    // table at a loose 0.35 relevance floor, and a realistic-sounding
+    // troubleshooting phrase risks crossing it against some unrelated
+    // fixture, silently suppressing the draft this test means to prove.
+    // Deliberately NO ${RUN} prefix in any EMBEDDED text: the numeric run
+    // token dominates the embedding and scores 0.35+ against any other
+    // token-prefixed fixture in the shared tables (measured up to 0.99 for
+    // a repeated phrase), which is exactly the lottery that flaked the
+    // rater-cap test below. Cross-run uniqueness comes from the RUN-scoped
+    // user/conversation ids plus the pre-clean of stranded same-topic rows.
+    const question = 'why does the giggling teal marmoset keep unplugging the router';
+    const answer = 'unscrew the marmoset panel and re-latch the teal clip';
+    // A prior FAILED run of this test exits before its cleanup, stranding a
+    // candidate row whose identical topic would trip the exact-match half of
+    // the dedup guard on this run — clear it first.
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
+
+    try {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: askingMember,
+        role: 'member',
+        direction: 'inbound',
+        content: question,
+      });
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: answer,
+        meta: { replyToUserId: askingMember },
+      });
+
+      await withAnswerCandidateFlag(true, async () => {
+        const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+        assert.notEqual(result.isError, true);
+        assert.match(
+          result.content[0]?.text ?? '',
+          /glad that helped/i,
+          'the reply text is unchanged either way — drafting is a silent side effect',
+        );
+      });
+
+      const rows = await pool.query(
+        `SELECT topic, title, content, source_platform, source_user_id FROM knowledge_candidates WHERE source_user_id = $1`,
+        [askingMember],
+      );
+      assert.equal(rows.rows.length, 1, 'exactly one candidate is drafted');
+      assert.equal(rows.rows[0].source_platform, 'discord');
+      assert.equal(rows.rows[0].topic, question);
+      assert.equal(rows.rows[0].title, question);
+      assert.equal(rows.rows[0].content, answer);
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+test(
+  'rate_answer (KNOWLEDGE_ANSWER_CANDIDATE_ENABLED unset/false, the default): no candidate is drafted and the grounding read is never issued — byte-identical to before issue #726 (acceptance criterion 2)',
+  { skip },
+  async (t) => {
+    assert.equal(
+      config.knowledgeAnswerCandidate.enabled,
+      false,
+      'this test requires the flag at its off default',
+    );
+    const askingMember = `${RUN}-answer-candidate-flag-off`;
+    const conversationId = `${RUN}-c-answer-candidate-flag-off`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} what does the flag-off fixture do`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'it stays off by default',
+      meta: { replyToUserId: askingMember },
+    });
+
+    const querySpy = t.mock.method(pool, 'query');
+    const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+    assert.notEqual(result.isError, true);
+
+    const groundingQueryIssued = querySpy.mock.calls.some((call) =>
+      String(call.arguments[0]).includes('reply_to_user_id'),
+    );
+    assert.equal(
+      groundingQueryIssued,
+      false,
+      'SECURITY: answerFeedbackGrounding (identifiable by its own reply_to_user_id column alias) must never be queried when the flag is off',
+    );
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(rows.rows.length, 0, 'no candidate is drafted when the flag is off');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: rate_answer in a 1:1 DM never drafts a candidate, flag on — a DM Q&A only enters the guild-wide admin-visible queue via the explicit suggest_knowledge act, never implicitly from a helpful rating (issue #730 review)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-dm`;
+    const conversationId = `${RUN}-c-answer-candidate-dm`;
+    // Same whimsical-wording, no-RUN-token discipline as the basic drafting
+    // test above, so the shared-table dedup guard can't silently suppress the
+    // draft this test must prove is suppressed by the DM check ALONE.
+    const question = 'why does the sombre plaid axolotl refuse the stairlift';
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: question,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'gently decant the axolotl before engaging the stairlift',
+      meta: { replyToUserId: askingMember },
+    });
+
+    // Same shape as rateAnswerHandler, with the one difference under test.
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: askingMember,
+        userName: 'Rating Member',
+        role: 'member' as const,
+        conversationId,
+        isDirect: true,
+      },
+      adapter,
+    );
+    const handler = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              helpful: boolean;
+            }) => Promise<{ isError?: boolean; content: Array<{ text?: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['rate_answer'];
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await handler.handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+      assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+    });
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(
+      rows.rows.length,
+      0,
+      'SECURITY: a helpful rating in a DM must never draft a candidate — same fixture drafts in a channel (see the basic test above), so the DM check alone is what suppressed it',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "SECURITY: rate_answer from an open-mode GUEST never drafts a candidate, flag on — writing into knowledge_candidates is member+ (suggest_knowledge asserts the same tier on the same createKnowledgeTip path), and a guest rating a MEMBER-addressed reply must not draft against that member either; the guest's rating itself still records (issue #730 review, round 2)",
+  { skip },
+  async () => {
+    const memberAsker = `${RUN}-answer-candidate-guest-victim`;
+    const guestRater = `${RUN}-answer-candidate-guest-rater`;
+    const conversationId = `${RUN}-c-answer-candidate-guest`;
+    // Same whimsical-wording, no-RUN-token discipline as the sibling tests
+    // above, so the dedup guard can't be what suppressed the draft — the tier
+    // gate alone must be. This fixture is the AC10 shape (rater ≠ asker, so
+    // resolveAnswerFeedbackTarget's fallback binds the guest's rating to the
+    // member-addressed reply): a MEMBER observer here drafts against the
+    // asker (proven by the attribution test above), so a guest must not.
+    const question = 'can a lavender ibis referee the marble tournament';
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: memberAsker,
+      role: 'member',
+      direction: 'inbound',
+      content: question,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'only if the ibis declares its whistle before the first flick',
+      meta: { replyToUserId: memberAsker },
+    });
+
+    // Same shape as rateAnswerHandler, with the one difference under test.
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: guestRater,
+        userName: 'Open-Mode Guest',
+        role: 'guest' as const,
+        conversationId,
+      },
+      adapter,
+    );
+    const handler = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              helpful: boolean;
+            }) => Promise<{ isError?: boolean; content: Array<{ text?: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['rate_answer'];
+
+    try {
+      await withAnswerCandidateFlag(true, async () => {
+        const result = await handler.handler({ helpful: true });
+        assert.notEqual(
+          result.isError,
+          true,
+          'the guest RATING itself must still succeed — only the drafting side effect is tier-gated',
+        );
+        assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+      });
+
+      const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = ANY($1)`, [
+        [memberAsker, guestRater],
+      ]);
+      assert.equal(
+        rows.rows.length,
+        0,
+        'SECURITY: a guest rating must never draft a candidate — neither attributed to the addressed member nor to the guest',
+      );
+    } finally {
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [guestRater]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+test(
+  'rate_answer: a transient failure inside the drafting side effect never surfaces as a tool error — the rating is recorded and the reply text is unchanged (issue #730 review)',
+  { skip },
+  async (t) => {
+    const askingMember = `${RUN}-answer-candidate-outage`;
+    const conversationId = `${RUN}-c-answer-candidate-outage`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} where does the burgundy heron store its spare monocle`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'in the velvet alcove behind the reeds',
+      meta: { replyToUserId: askingMember },
+    });
+
+    // Fail exactly the grounding read (identifiable by its own
+    // reply_to_user_id alias, same marker the flag-off spy test keys on);
+    // every other query proceeds normally, so the rating insert succeeds
+    // before the simulated outage hits the side effect.
+    const original = pool.query.bind(pool);
+    t.mock.method(pool, 'query', ((...queryArgs: Parameters<typeof pool.query>) => {
+      if (String(queryArgs[0]).includes('reply_to_user_id')) {
+        throw new Error('simulated grounding outage');
+      }
+      return original(...queryArgs);
+    }) as typeof pool.query);
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+      assert.notEqual(
+        result.isError,
+        true,
+        'a drafting failure must degrade to "no draft", never error the rating',
+      );
+      assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+    });
+
+    const feedback = await pool.query(`SELECT 1 FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    assert.equal(feedback.rows.length, 1, 'the rating itself was recorded before the outage');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: rate_answer never drafts a candidate for a GROUNDED answer (meta.knowledgeEntryId set), flag on — independent of the ungrounded-answer draft path (issue #726 acceptance criteria 3, 9)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-grounded`;
+    const conversationId = `${RUN}-c-answer-candidate-grounded`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} when is the next meetup`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the next meetup is the third Thursday',
+      meta: { replyToUserId: askingMember, knowledgeShortcut: true, knowledgeEntryId: 999999 },
+    });
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    });
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(
+      rows.rows.length,
+      0,
+      'SECURITY: a knowledge-grounded answer never drafts a candidate, flag on',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'rate_answer: a helpful:false rating never drafts a candidate, flag on (issue #726 acceptance criterion 4)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-unhelpful`;
+    const conversationId = `${RUN}-c-answer-candidate-unhelpful`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} how do I configure the Vorlantex module`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'set the config flag to true',
+      meta: { replyToUserId: askingMember },
+    });
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: false });
+      assert.notEqual(result.isError, true);
+    });
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(rows.rows.length, 0, 'an unhelpful rating never drafts a candidate');
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "SECURITY: rate_answer attributes a drafted candidate to the QUESTION's author, never blindly the rater, when they differ (issue #726 acceptance criterion 10)",
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-asker`;
+    const observer = `${RUN}-answer-candidate-observer`;
+    const conversationId = `${RUN}-c-answer-candidate-attribution`;
+    // No RUN token in embedded text + pre-clean of stranded same-topic rows —
+    // see the basic drafting test above for why.
+    const question = 'how do I pair my Blorptastic sensor';
+    const answer = 'hold the pair button until the light blinks blue';
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
+
+    try {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: askingMember,
+        role: 'member',
+        direction: 'inbound',
+        content: question,
+      });
+      // Only the ASKER has a reply addressed to them (replyToUserId) — the
+      // OBSERVER below has none, so resolveAnswerFeedbackTarget's fallback
+      // binds their rating to this same reply (the "rater observed, didn't
+      // ask" case the adversarial review named).
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: answer,
+        meta: { replyToUserId: askingMember },
+      });
+
+      await withAnswerCandidateFlag(true, async () => {
+        const result = await rateAnswerHandler(observer, conversationId).handler({ helpful: true });
+        assert.notEqual(result.isError, true);
+      });
+
+      const askerRows = await pool.query(
+        `SELECT topic, content FROM knowledge_candidates WHERE source_user_id = $1`,
+        [askingMember],
+      );
+      assert.equal(askerRows.rows.length, 1, "the drafted candidate is attributed to the QUESTION's author");
+      assert.equal(askerRows.rows[0].topic, question);
+      assert.equal(askerRows.rows[0].content, answer);
+
+      const observerRows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+        observer,
+      ]);
+      assert.equal(
+        observerRows.rows.length,
+        0,
+        'SECURITY: the rater (observer) is never the attributed author',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [observer]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+test(
+  "SECURITY: rate_answer caps how many DIFFERENT victims one rater can drain via the mismatched-attribution fallback, even though each individual victim's own createKnowledgeTip quota is untouched (issue #726 review follow-up)",
+  { skip },
+  async () => {
+    const rater = `${RUN}-answer-candidate-grief-rater`;
+    // One distinct victim per attempt, plus one over the rater's cap — each
+    // in their OWN conversation, so `resolveAnswerFeedbackTarget`'s fallback
+    // binds `rater`'s rating to THAT victim's reply every time (`rater` is
+    // never personally replied-to in any of these conversations, same setup
+    // as the AC10 test above, just repeated across multiple victims).
+    // No RUN token in the question text: this test originally embedded
+    // `${RUN} ${WORDS[i]}`, and the shared numeric token pushed these topics
+    // to 0.35+ similarity against unrelated token-prefixed fixtures in the
+    // shared knowledge table (and 0.98+ against this test's OWN stranded
+    // rows from a prior failed run), so the dedup guard suppressed drafts
+    // this test needs to happen. Plain phrases measure ≤0.29 against each
+    // other and ≤0.19 against realistic debris — safely under both the 0.35
+    // coverage floor and the 0.92 candidate-dedup bar.
+    const WORDS = [
+      'a plaid gecko rehearsing bagpipes',
+      'six dusty quokkas auditing a ferris wheel',
+      'a jittery walrus cataloguing teacups',
+      'four bashful newts rewiring a jukebox',
+    ];
+    assert.ok(
+      WORDS.length > KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+      'fixture must exceed the rater cap by at least one distinct victim',
+    );
+
+    const victims = WORDS.map((_, i) => `${RUN}-answer-candidate-grief-victim-${i}`);
+    const conversationIds = WORDS.map((_, i) => `${RUN}-c-answer-candidate-grief-${i}`);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = ANY($1)`, [WORDS]);
+
+    try {
+      await withAnswerCandidateFlag(true, async () => {
+        for (let i = 0; i < WORDS.length; i++) {
+          await recordInteraction({
+            platform: 'discord',
+            conversationId: conversationIds[i],
+            userId: victims[i],
+            role: 'member',
+            direction: 'inbound',
+            content: WORDS[i],
+          });
+          await recordInteraction({
+            platform: 'discord',
+            conversationId: conversationIds[i],
+            userId: 'bot',
+            role: 'member',
+            direction: 'outbound',
+            content: `answer about ${WORDS[i]}`,
+            meta: { replyToUserId: victims[i] },
+          });
+          const result = await rateAnswerHandler(rater, conversationIds[i]).handler({ helpful: true });
+          assert.notEqual(
+            result.isError,
+            true,
+            `rating ${i} itself must still succeed regardless of the rater's draft cap`,
+          );
+        }
+      });
+
+      const draftedCount = await pool.query(
+        `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = ANY($1)`,
+        [victims],
+      );
+      assert.equal(
+        draftedCount.rows[0].n,
+        KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+        'SECURITY: the rater cannot trigger more mismatched drafts than the shared per-victim cap allows, ' +
+          'even spread across many different victims',
+      );
+
+      const lastVictimRows = await pool.query(
+        `SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`,
+        [victims[victims.length - 1]],
+      );
+      assert.equal(
+        lastVictimRows.rows.length,
+        0,
+        "SECURITY: the over-cap victim's own quota was never touched (0 of their own tips used), yet the " +
+          'rater is still blocked from drafting against them — the cap is on the RATER, not the victim',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = ANY($1)`, [victims]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [rater]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [conversationIds]);
+    }
+  },
+);
+
+test(
+  'rate_answer dedup guard: a question already queued/reviewed as a knowledge candidate suppresses drafting, reusing candidateTopicAlreadyReviewed verbatim (issue #726 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-dedup-queued`;
+    const conversationId = `${RUN}-c-answer-candidate-dedup-queued`;
+    const question = `${RUN} why does the Fizzlewhomp keep beeping`;
+
+    const priorTip = await createKnowledgeTip({
+      platform: 'discord',
+      userId: `${RUN}-answer-candidate-dedup-other-member`,
+      topic: question,
+      title: question,
+      content: 'a prior answer about the beeping',
+    });
+    assert.ok(priorTip, 'fixture: the prior tip must queue successfully');
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: question,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'check the battery compartment for corrosion',
+      meta: { replyToUserId: askingMember },
+    });
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    });
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(rows.rows.length, 0, 'an already-queued topic is not drafted a second time');
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [priorTip.id]);
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'rate_answer dedup guard: an existing knowledge entry already covering the question suppresses drafting (issue #726 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-dedup-covered`;
+    const conversationId = `${RUN}-c-answer-candidate-dedup-covered`;
+
+    const { id: knowledgeId } = await saveKnowledge({
+      title: `${RUN} Quizzlorath upgrade steps`,
+      content: `${RUN} Quizzlorath upgrade steps: run the migrate command then restart the service.`,
+      scope: 'global',
+    });
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: `${RUN} quizzlorath upgrade steps`,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'run the migrate command then restart the service',
+      meta: { replyToUserId: askingMember },
+    });
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    });
+
+    const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(
+      rows.rows.length,
+      0,
+      'a question already covered by an existing knowledge entry is not drafted',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [knowledgeId]);
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  "rate_answer's drafted candidates honour the shared KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY cap, keyed on the asking member (issue #726 acceptance criterion 6)",
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-rate-cap`;
+    const conversationId = `${RUN}-c-answer-candidate-rate-cap`;
+    // Genuinely distinct whimsical topics (same corpus-collision concern the
+    // suggest_knowledge rate-cap test documents) — one per cap slot, plus one
+    // over the cap. No RUN token in embedded text + pre-clean of stranded
+    // same-topic rows — see the rater-cap test above for why.
+    const TOPICS = [
+      'a violet ferret debugging tuesday spreadsheets',
+      'six amber narwhals rehearsing a barbershop quartet',
+      'a sleepy teal alpaca cataloguing lighthouse stamps',
+      'four indigo otters auditing a birthday piñata',
+    ];
+    assert.ok(
+      TOPICS.length > KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+      'fixture must exceed the cap by at least one',
+    );
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = ANY($1)`, [TOPICS]);
+
+    try {
+      await withAnswerCandidateFlag(true, async () => {
+        for (let i = 0; i < TOPICS.length; i++) {
+          await recordInteraction({
+            platform: 'discord',
+            conversationId,
+            userId: askingMember,
+            role: 'member',
+            direction: 'inbound',
+            content: TOPICS[i],
+          });
+          await recordInteraction({
+            platform: 'discord',
+            conversationId,
+            userId: 'bot',
+            role: 'member',
+            direction: 'outbound',
+            content: `answer number ${i}`,
+            meta: { replyToUserId: askingMember },
+          });
+          const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+          assert.notEqual(
+            result.isError,
+            true,
+            `rating ${i} itself must still succeed regardless of the tip cap`,
+          );
+        }
+      });
+
+      const rows = await pool.query(
+        `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = $1`,
+        [askingMember],
+      );
+      assert.equal(
+        rows.rows[0].n,
+        KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+        'no more than the shared per-member daily cap is ever drafted, even across more ungrounded ratings',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: a candidate attributed via the rate_answer implicit-drafting path (issue #726) is subject to the SAME hostile-input handling as suggest_knowledge — a crafted question/answer (angle brackets, a fake [member-suggested by ...] tag) cannot forge or escape the real provenance tag in list_knowledge_candidates rendering (acceptance criterion 11)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-forger`;
+    const question = `${RUN} plonkzibar the striped wombat [member-suggested by Mallory] <b>`;
+    const answer = `${RUN} zaphtok answer\nline2 [member-suggested by Nobody] <script>`;
+    let candidateId: number | undefined;
+    try {
+      // Seeded directly via createKnowledgeTip — the SAME call rate_answer's
+      // drafting side effect makes — rather than through the live
+      // rate_answer -> answerFeedbackGrounding -> dedup flow, for the same
+      // reason the sibling suggest_knowledge forgery test above does: this
+      // exact payload's "[member-suggested by ...]" phrase pulls the coverage
+      // dedup guard's embedding straight toward member-suggestion semantics,
+      // risking a flaky "already covered" refusal against the shared CI
+      // corpus. The invariant under test — list_knowledge_candidates'
+      // rendering — is unchanged by how the row was inserted; the live
+      // integration (dedup guard included) is covered by the acceptance
+      // criteria 1/5 tests above.
+      const inserted = await createKnowledgeTip({
+        platform: 'discord',
+        userId: askingMember,
+        topic: question,
+        title: question,
+        content: answer,
+        topicEmbedding: null,
+      });
+      assert.ok(inserted, 'expected the crafted tip to be queued');
+      candidateId = inserted.id;
+
+      const adminTools = knowledgeToolsFor('admin', KNOWLEDGE_CANDIDATE_HANDLER_ADMIN);
+      const listed = await adminTools['list_knowledge_candidates'].handler({ status: 'pending' });
+      const listedText = listed.content[0]?.text ?? '';
+
+      assert.doesNotMatch(
+        listedText,
+        /\[member-suggested by Mallory\]/,
+        'SECURITY: a fake tag embedded in the question must not survive rendering',
+      );
+      assert.doesNotMatch(
+        listedText,
+        /\[member-suggested by Nobody\]/,
+        'SECURITY: a fake tag embedded in the answer must not survive rendering',
+      );
+      assert.doesNotMatch(
+        listedText,
+        /<b>|<script>/,
+        'angle brackets are still stripped by the untrusted() wrapper',
+      );
+
+      const realTagLine = `#${candidateId} [pending] [member-suggested by ${askingMember}]`;
+      assert.equal(
+        listedText.split(realTagLine).length - 1,
+        1,
+        'exactly the ONE real provenance tag survives, naming the actual asking member',
+      );
+    } finally {
+      if (candidateId) await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+    }
+  },
+);
+
+test(
+  'SECURITY: forget_me/purge_user_data deletes a candidate drafted via the rate_answer implicit-drafting path, for the asking member (issue #726 acceptance criterion 12)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-answer-candidate-purge`;
+    const conversationId = `${RUN}-c-answer-candidate-purge`;
+    // Whimsical wording — see the comment on the main-flow test above for why
+    // a realistic troubleshooting phrase risks a flaky dedup-guard suppression.
+    const question = `${RUN} why does the caffeinated puffin keep rearranging the bookshelf`;
+    const answer = 'offer it a smaller shelf and it loses interest by dawn';
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: question,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: answer,
+      meta: { replyToUserId: askingMember },
+    });
+
+    await withAnswerCandidateFlag(true, async () => {
+      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+      assert.notEqual(result.isError, true);
+    });
+
+    const before = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(before.rows.length, 1, 'fixture: the candidate must be drafted before purging');
+
+    await purgeUserData('discord', askingMember);
+
+    const after = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+      askingMember,
+    ]);
+    assert.equal(
+      after.rows.length,
+      0,
+      "SECURITY: the drafted candidate is deleted by the asking member's own purge",
     );
   },
 );
