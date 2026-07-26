@@ -160,6 +160,7 @@ const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A = `${RUN}-knowledge-entry-id-scope-l
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B = `${RUN}-knowledge-entry-id-scope-leak-b`;
 const KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-knowledge-lexical-not-invoked`;
 const KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-knowledge-lexical-fallback`;
+const KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE = `${RUN}-knowledge-stale-alert-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const RESOLVE_APPEAL_HANDLER_USER = `${RUN}-resolve-appeal-handler`;
@@ -238,6 +239,9 @@ after(async () => {
     ]);
     await pool.query(`DELETE FROM suggestions WHERE user_id LIKE $1`, [`${MY_SUBMISSIONS_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
+      `${MY_SUBMISSIONS_HANDLER_USER}%`,
+    ]);
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [
       `${MY_SUBMISSIONS_HANDLER_USER}%`,
     ]);
     await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${MY_WARNINGS_HANDLER_USER}%`]);
@@ -8147,8 +8151,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    34,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650)",
+    35,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -9112,6 +9116,104 @@ test(
       3,
       'recordKnowledgeGap must still record every miss — only the alert path is gated',
     );
+  },
+);
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_STALE_ALERT_ENABLED=true): a served, stale, unalerted hit pushes its id onto turnState.staleKnowledgeAlertIds (issue #701 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const originalEnabled = config.knowledgeStaleAlert.enabled;
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    (config.knowledgeStaleAlert as { enabled: boolean }).enabled = true;
+    config.adminDigest.knowledgeStaleDays = 30;
+    try {
+      const uniqueTitle = `Quazzledorf renewal steps ${RUN}`;
+      const { id: staleId } = await saveKnowledge({
+        title: uniqueTitle,
+        content: 'To renew your Quazzledorf membership, email the treasurer with your member number.',
+        scope: KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE,
+      });
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+        staleId,
+      ]);
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-stale-alert-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE,
+      };
+      const turnState: { lastKnowledgeHitId: number | null; staleKnowledgeAlertIds?: number[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const server = buildToolServer(caller, adapter, undefined, turnState);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+
+      await registeredTool.handler({ query: 'how do I renew my Quazzledorf membership' });
+      assert.deepEqual(
+        turnState.staleKnowledgeAlertIds,
+        [staleId],
+        'a served hit that is stale and unalerted must have its id pushed onto turnState.staleKnowledgeAlertIds',
+      );
+    } finally {
+      (config.knowledgeStaleAlert as { enabled: boolean }).enabled = originalEnabled;
+      config.adminDigest.knowledgeStaleDays = originalStaleDays;
+    }
+  },
+);
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_STALE_ALERT_ENABLED unset/false, the default): a served, stale hit never sets turnState.staleKnowledgeAlertIds — byte-identical to before issue #701 (acceptance criterion 4)',
+  { skip },
+  async () => {
+    assert.equal(config.knowledgeStaleAlert.enabled, false, 'this test requires the flag at its off default');
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    config.adminDigest.knowledgeStaleDays = 30;
+    try {
+      const uniqueTitle = `Quazzledorf renewal steps (no-alert) ${RUN}`;
+      const { id: staleId } = await saveKnowledge({
+        title: uniqueTitle,
+        content: 'To renew your Quazzledorf membership, email the treasurer with your member number.',
+        scope: `${KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE}-off`,
+      });
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+        staleId,
+      ]);
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-stale-alert-off-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE}-off`,
+      };
+      const turnState: { lastKnowledgeHitId: number | null; staleKnowledgeAlertIds?: number[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const server = buildToolServer(caller, adapter, undefined, turnState);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+
+      await registeredTool.handler({ query: 'how do I renew my Quazzledorf membership' });
+      assert.equal(
+        turnState.staleKnowledgeAlertIds,
+        undefined,
+        'the flag being off must never set turnState.staleKnowledgeAlertIds, even for a stale served hit',
+      );
+    } finally {
+      config.adminDigest.knowledgeStaleDays = originalStaleDays;
+    }
   },
 );
 
@@ -14798,7 +14900,7 @@ test(
 );
 
 test(
-  "my_submissions lists the caller's own suggestion and report with status and content preview (issue #160)",
+  "my_submissions lists the caller's own suggestion, report, and appeal with status and content preview (issue #160, #709)",
   { skip },
   async () => {
     const userId = `${MY_SUBMISSIONS_HANDLER_USER}-basic`;
@@ -14813,7 +14915,15 @@ test(
       conversationId: 'convo-1',
       reason: 'someone was spamming',
     });
-    assert.ok(suggestion && report, 'fixtures recorded');
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'the warning was a false positive',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(suggestion && report && appeal, 'fixtures recorded');
 
     const result = await mySubmissionsHandler(userId).handler();
     const output = result.content[0]?.text ?? '';
@@ -14821,11 +14931,45 @@ test(
     assert.equal(result.isError, false);
     assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add a dark mode`));
     assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*someone was spamming`));
+    assert.match(output, new RegExp(`#${appeal.id}.*\\[open\\].*the warning was a false positive`));
+    assert.match(
+      output,
+      /Your suggestions:[\s\S]*\n\nYour reports:[\s\S]*\n\nYour appeals:/,
+      'the appeals block is rendered alongside the suggestions/reports blocks, separated by a blank line',
+    );
   },
 );
 
 test(
-  "SECURITY: my_submissions never leaks another member's content or the reviewing admin's identity (issue #160)",
+  'my_submissions omits the "Your appeals:" block when the caller has none, leaving suggestions/reports rendering unchanged (issue #709)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-no-appeals`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add dark mode too',
+    });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'more spam',
+    });
+    assert.ok(suggestion && report, 'fixtures recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add dark mode too`));
+    assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*more spam`));
+    assert.doesNotMatch(output, /Your appeals:/, 'no appeals filed, so no appeals header at all');
+  },
+);
+
+test(
+  "SECURITY: my_submissions never leaks another member's content, appeal, or the reviewing admin's identity (issue #160, #709)",
   { skip },
   async () => {
     const userId = `${MY_SUBMISSIONS_HANDLER_USER}-security`;
@@ -14851,8 +14995,17 @@ test(
       conversationId: 'convo-1',
       reason: "someone else's private report",
     });
-    assert.ok(theirs && theirReport);
+    const theirAppeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: otherUser,
+      userName: 'Other Member',
+      reason: "someone else's private appeal reason",
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    assert.ok(theirs && theirReport && theirAppeal);
     await resolveContentReport(theirReport.id, 'resolved', resolverAdminId);
+    await resolveModerationAppeal(theirAppeal.id, 'resolved', resolverAdminId);
 
     const result = await mySubmissionsHandler(userId).handler();
     const output = result.content[0]?.text ?? '';
@@ -14872,6 +15025,56 @@ test(
       output,
       /someone else's private report/,
       "SECURITY: another member's report content must never leak",
+    );
+    assert.doesNotMatch(
+      output,
+      /someone else's private appeal reason/,
+      "SECURITY: another member's appeal reason must never leak",
+    );
+    assert.doesNotMatch(output, /Your appeals:/, 'the caller filed no appeals of their own');
+  },
+);
+
+test(
+  "SECURITY: my_submissions never renders an appeal's admin-only activeWarnings/strikeLimit/resolvedBy fields (issue #709)",
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-appeal-admin-fields`;
+    const resolverAdminId = `${MY_SUBMISSIONS_HANDLER_USER}-appeal-admin-fields-resolver`;
+
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'please review my mute',
+      activeWarnings: 987,
+      strikeLimit: 654,
+    });
+    assert.ok(appeal);
+    await resolveModerationAppeal(appeal.id, 'resolved', resolverAdminId);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(
+      output,
+      new RegExp(`#${appeal.id}.*please review my mute`),
+      'the caller sees their own appeal',
+    );
+    assert.doesNotMatch(
+      output,
+      /987/,
+      "SECURITY: activeWarnings value must never appear in the caller's own view",
+    );
+    assert.doesNotMatch(
+      output,
+      /654/,
+      "SECURITY: strikeLimit value must never appear in the caller's own view",
+    );
+    assert.doesNotMatch(
+      output,
+      new RegExp(resolverAdminId),
+      "SECURITY: resolvedBy (the reviewing admin's identity) must never appear in the caller's own view",
     );
   },
 );

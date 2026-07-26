@@ -1073,6 +1073,54 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `recordKnowledgeGap` call stays exactly the fire-and-forget it was before
   #650: no extra cluster query, no await, no DM — byte-identical to today,
   pinned by a `SECURITY:` test.
+- **Real-time stale-knowledge alert** (`KNOWLEDGE_STALE_ALERT_ENABLED`, off
+  by default, issue #701): the per-entry, real-time complement to the weekly
+  digest's bare `staleKnowledgeCount` integer — the stale-knowledge half
+  #650 explicitly deferred as a separate, smaller follow-up. **No new tool,
+  no new privileged data access, no broadened recipient set, and a LOWER
+  untrusted-content risk than its own #650 precedent**: the alert names a
+  knowledge entry's `title` (or a `truncateForEcho`-bounded excerpt of
+  `content` for an untitled entry) plus a relative age — both already
+  admin-authored/admin-reviewed (`save_knowledge`/`update_knowledge`/
+  `accept_knowledge_candidate` are all admin-gated) and already visible via
+  admin-tier `list_knowledge`, never a member/user identity, raw query text,
+  or conversation id, pinned by a `SECURITY:` test. Delivered only to
+  `listAdmins()`, the identical guild-wide recipient set #479/#480/#650
+  already use, via the existing `notifyAdmins` queue. Fires at the three
+  points that already compute staleness (`isKnowledgeStale`, #308/#380/#381)
+  for the member-facing "(may be outdated)" caveat: the `knowledge_search`
+  tool handler (threaded as turn-scoped state,
+  `ToolServerTurnState.staleKnowledgeAlertIds` → `TurnOutcome` →
+  `AgentReply`, the same non-model pattern `knowledgeGapCluster`/
+  `unhelpfulAnswerRated` already established — `notifyAdmins` is never
+  called from `tools.ts` itself) and the two knowledge shortcuts
+  (`sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`, which call the
+  shared alert helper directly since they already live in `router.ts`).
+  **Single-shot per staleness episode, re-arming on edit**: a new
+  `stale_alerted_at TIMESTAMPTZ` column on `knowledge` (NULL until stamped,
+  excluded from the `knowledge_set_updated_at` trigger like
+  `retrieval_count`/`source_url`/`source_unreachable`) is checked and
+  stamped in one atomic `UPDATE ... WHERE stale_alerted_at IS NULL OR
+  stale_alerted_at < updated_at ... RETURNING` (`markStaleKnowledgeAlerted`)
+  — race-safe against two concurrent serves of the same row — so an admin
+  edit through `update_knowledge`/`accept_knowledge_candidate` (which bumps
+  `updated_at`) automatically re-arms the gate with no separate reset logic,
+  pinned by `repository.test.ts`. **Guild-wide rolling-hour cap**,
+  `KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR` (default 5, identical
+  sliding-window shape to `reserveKnowledgeGapAlertSlot`), bounds worst-case
+  admin DM volume from an organic or adversarial serve burst, pinned by a
+  `SECURITY:` test. **Deliberate divergence from #650's rate-limit-miss
+  behaviour**: `markStaleKnowledgeAlerted` always stamps the row FIRST,
+  regardless of whether the rate-limit reservation then succeeds — unlike
+  the knowledge-gap alert, which leaves a rate-limited cluster's rows
+  unmarked so a later gap can retry, a rate-limited stale entry here is
+  still marked, so it cannot retry-storm an admin DM attempt on every
+  subsequent serve for as long as it stays stale; the rate limit only ever
+  gates whether the `notifyAdmins` DM itself goes out, pinned by a
+  `SECURITY:` test. With the flag unset/false, every call site's staleness
+  check runs exactly as it did before #701 (the member-facing caveat is
+  unaffected) — no extra query, no write, no DM, pinned by a `SECURITY:`
+  test.
 - **Returning-guest wait clause** (`appendWaitClause`/`waitDaysSince`,
   `src/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
   age the admin-facing digest/`list_access_requests` (issue #515, above)

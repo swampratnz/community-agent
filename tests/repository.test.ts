@@ -70,6 +70,7 @@ const {
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
   findCrossedKnowledgeGapCluster,
   markKnowledgeGapsAlerted,
+  markStaleKnowledgeAlerted,
   recentModerationEntries,
   adminActivitySummary,
   listDocsIngestUrlFailures,
@@ -150,6 +151,7 @@ const {
   getInteractionContentByMessageId,
   createModerationAppeal,
   listAppeals,
+  listOwnAppeals,
   resolveModerationAppeal,
   countOpenAppeals,
   blockUser,
@@ -2676,6 +2678,78 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: markStaleKnowledgeAlerted atomically gates + stamps a served-stale entry, and is single-shot until the row is edited (issue #701 acceptance criteria 1+2)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} an entry that will be marked stale`,
+      title: 'stale-alert-entry',
+      scope: 'global',
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+    const first = await markStaleKnowledgeAlerted(id);
+    assert.ok(first, 'an unalerted-since-edit row must pass the gate and be stamped');
+    assert.equal(first?.title, 'stale-alert-entry');
+    assert.equal(first?.content, `${RUN} an entry that will be marked stale`);
+    assert.ok(first?.updatedAt instanceof Date);
+
+    const { rows } = await pool.query(`SELECT stale_alerted_at FROM knowledge WHERE id = $1`, [id]);
+    assert.ok(rows[0].stale_alerted_at, 'stale_alerted_at must be stamped on the row');
+
+    const second = await markStaleKnowledgeAlerted(id);
+    assert.equal(
+      second,
+      null,
+      'a later call on the same (still stale, still-alerted, unedited) row must not pass the gate again',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'repository: markStaleKnowledgeAlerted re-arms after an admin edit bumps updated_at, and stamping alone never bumps updated_at itself (issue #701 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} an entry that will be edited and re-alerted`,
+      title: 're-arm-entry',
+      scope: 'global',
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+    const first = await markStaleKnowledgeAlerted(id);
+    assert.ok(first, 'first stamp must succeed');
+
+    const { rows: afterStampRows } = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+    assert.deepEqual(
+      afterStampRows[0].updated_at,
+      first?.updatedAt,
+      'stamping stale_alerted_at alone must NOT bump updated_at — the knowledge_set_updated_at trigger ' +
+        'excludes this column',
+    );
+
+    const notYetReArmed = await markStaleKnowledgeAlerted(id);
+    assert.equal(notYetReArmed, null, 'still not re-armed — no edit has happened yet');
+
+    const { updated } = await updateKnowledge({ id, content: `${RUN} edited content re-arms the gate` });
+    assert.ok(updated, 'the edit must apply');
+
+    const { rows: afterEditRows } = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+    assert.ok(
+      afterEditRows[0].updated_at.getTime() > afterStampRows[0].updated_at.getTime(),
+      'the knowledge_set_updated_at trigger must bump updated_at on a genuine content edit',
+    );
+
+    const reArmed = await markStaleKnowledgeAlerted(id);
+    assert.ok(reArmed, 'a fresh edit re-arms the gate — the row can be alerted again');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
   },
 );
 
@@ -6516,6 +6590,71 @@ test(
     );
 
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[a1.id, b1.id, aIsTarget.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnAppeals only returns appeals the caller filed — never another identity's, never cross-platform, newest-first, limit clamped (issue #709)",
+  { skip },
+  async () => {
+    const userA = `${RUN}-my-appeal-A`;
+    const userB = `${RUN}-my-appeal-B`;
+
+    const a1 = await createModerationAppeal({
+      platform: 'discord',
+      userId: userA,
+      userName: 'A',
+      reason: "A's first appeal",
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    const a2 = await createModerationAppeal({
+      platform: 'discord',
+      userId: userA,
+      userName: 'A',
+      reason: "A's second appeal",
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    const b1 = await createModerationAppeal({
+      platform: 'discord',
+      userId: userB,
+      userName: 'B',
+      reason: "B's appeal",
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(a1 && a2 && b1, 'fixtures recorded');
+
+    const ownA = await listOwnAppeals('discord', userA);
+    assert.deepEqual(
+      ownA.map((a) => a.id),
+      [a2.id, a1.id],
+      "only A's own appeals are returned, newest-first",
+    );
+    assert.ok(
+      !ownA.some((a) => a.id === b1.id),
+      "SECURITY: B's appeal must never appear in A's own-appeals list",
+    );
+
+    assert.deepEqual(
+      await listOwnAppeals('whatsapp', userA),
+      [],
+      'platform is part of the scope — A has no whatsapp appeals',
+    );
+
+    assert.equal(
+      (await listOwnAppeals('discord', userA, -5)).length,
+      1,
+      'a non-positive limit is clamped to a floor of 1, mirroring listOwnReports',
+    );
+    assert.equal(
+      (await listOwnAppeals('discord', userA, 999)).length,
+      2,
+      'an over-large limit is clamped to a ceiling of 50, not passed straight through — still returns only the 2 real rows here',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
   },
 );
 

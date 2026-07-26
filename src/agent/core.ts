@@ -141,6 +141,17 @@ export interface AgentReply {
    * inside, any model-callable tool.
    */
   knowledgeGapCluster?: CrossedKnowledgeGapCluster;
+  /**
+   * Ids of `knowledge_search` hits served this turn that were newly stale and
+   * unalerted at serve time (issue #701), threaded from
+   * `TurnOutcome.staleKnowledgeAlertIds` via the same turn-scoped-ref pattern
+   * as `knowledgeGapCluster` above. `undefined`/empty whenever the flag is
+   * off, no served hit was stale this turn, or the turn didn't end in genuine
+   * success (`ok !== true`). Consumed by the router's post-turn deterministic
+   * alert branch — never read by, or acted on inside, any model-callable
+   * tool.
+   */
+  staleKnowledgeAlertIds?: number[];
 }
 
 /**
@@ -236,6 +247,7 @@ interface TurnOutcome {
   knowledgeEntryId?: number;
   unhelpfulAnswerRated?: boolean;
   knowledgeGapCluster?: CrossedKnowledgeGapCluster;
+  staleKnowledgeAlertIds?: number[];
 }
 
 /**
@@ -649,6 +661,7 @@ export async function runAgentTurn(
     knowledgeEntryId: outcome.knowledgeEntryId,
     unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
     knowledgeGapCluster: outcome.knowledgeGapCluster,
+    staleKnowledgeAlertIds: outcome.staleKnowledgeAlertIds,
   };
 }
 
@@ -733,6 +746,7 @@ async function execTurn(
     lastKnowledgeHitId: null,
     unhelpfulAnswerRated: false,
     knowledgeGapCluster: null,
+    staleKnowledgeAlertIds: [],
   };
   const toolServer = buildToolServer(caller, adapter, getAdapter, turnState);
 
@@ -871,5 +885,8 @@ async function execTurn(
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
     ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
     ...(turnState.knowledgeGapCluster ? { knowledgeGapCluster: turnState.knowledgeGapCluster } : {}),
+    ...(turnState.staleKnowledgeAlertIds && turnState.staleKnowledgeAlertIds.length > 0
+      ? { staleKnowledgeAlertIds: turnState.staleKnowledgeAlertIds }
+      : {}),
   };
 }

@@ -4605,6 +4605,42 @@ export async function markKnowledgeGapsAlerted(ids: readonly number[]): Promise<
   await pool.query(`UPDATE knowledge_gaps SET alerted_at = now() WHERE id = ANY($1)`, [[...ids]]);
 }
 
+/**
+ * Real-time stale-knowledge admin nudge (issue #701): atomically checks the
+ * re-arm gate — `stale_alerted_at IS NULL OR stale_alerted_at < updated_at` —
+ * and, if it passes, stamps `stale_alerted_at = now()` in the SAME statement,
+ * so two concurrent calls for the same row (e.g. two knowledge_search hits in
+ * one turn) can't both pass the gate. Returns the row's `title`/`content`/
+ * `updatedAt` (enough for the caller to build the DM body via
+ * `formatRelativeAge`/`truncateForEcho`) only when the stamp happened; `null`
+ * when the row was already alerted since its last edit — an admin edit via
+ * `update_knowledge`/`accept_knowledge_candidate` bumps `updated_at` (the
+ * `knowledge_set_updated_at` trigger) and so re-arms the gate automatically,
+ * no separate reset needed.
+ *
+ * Called unconditionally by the caller whenever a served hit is stale,
+ * REGARDLESS of whether the guild-wide rate limit has a free slot — the
+ * opposite of `markKnowledgeGapsAlerted`'s "only stamp once the alert is
+ * actually reserved" precedent. This must always stamp so a rate-limited
+ * entry doesn't retry-storm on every subsequent serve for as long as it stays
+ * stale (acceptance criterion 5c); the rate limit only ever gates the
+ * `notifyAdmins` call itself, never this stamp.
+ */
+export async function markStaleKnowledgeAlerted(
+  id: number,
+): Promise<{ title: string | null; content: string; updatedAt: Date } | null> {
+  const { rows } = await pool.query(
+    `UPDATE knowledge
+        SET stale_alerted_at = now()
+      WHERE id = $1
+        AND (stale_alerted_at IS NULL OR stale_alerted_at < updated_at)
+      RETURNING title, content, updated_at`,
+    [id],
+  );
+  if (rows.length === 0) return null;
+  return { title: rows[0].title, content: rows[0].content, updatedAt: rows[0].updated_at };
+}
+
 // --- Admin digest freshness guard (issue #97) --------------------------------
 
 /**
@@ -5869,6 +5905,31 @@ export async function createModerationAppeal(input: {
     ],
   );
   return { id: Number(rows[0].id) };
+}
+
+/**
+ * Self-scoped read of a member's OWN filed appeals (issue #709) — mirrors
+ * `listOwnReports`'s exact narrowing of `listReports`'s shape, appending
+ * `platform = $1 AND user_id = $2` (resolved from caller context, never a
+ * tool-argument-supplied id) to `listAppeals`'s query, so a member can only
+ * ever see appeals they themselves filed.
+ */
+export async function listOwnAppeals(
+  platform: Platform,
+  userId: string,
+  limit = 10,
+): Promise<ModerationAppeal[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, user_name, reason, active_warnings, strike_limit,
+            status, created_at, resolved_by, resolved_at
+       FROM moderation_appeals
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
+  );
+  return rows.map(mapModerationAppeal);
 }
 
 /**
