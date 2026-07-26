@@ -492,6 +492,18 @@ sessions:
   previously zombied forever (the 2026-07-20 incident: four zombie
   `status:building` issues, zero open PRs, the approved queue starved behind
   them).
+- `.github/workflows/branch-janitor.yml` — deterministic (no model, no Max
+  pool) weekly sweep deleting stale branches, same trust class as the
+  groundskeeper: a branch is deleted only when its tip is ancestry-merged
+  into the default branch, or when it is the head of at least one PR and
+  **every** PR with that head is MERGED (the squash-merge case — a single
+  open or closed-unmerged PR vetoes, since a closed-unmerged PR is a human
+  rejection whose branch a human may still want). Never-PR'd branches and
+  `-ckpt-` refs are never touched automatically; a maintainer can name
+  specific branches via the `extra` dispatch input, and `dry_run` previews a
+  sweep. Exists because squash merges leave no ancestry trail (1 of 76 stale
+  branches was ancestry-merged when this shipped) and the auto-merge loop
+  only started deleting head branches on merge late in the day.
 - `.github/workflows/pipeline-pr-review.yml` — fires on `pull_request`
   events; reviews the diff (security-focused), comments/approves, never merges.
   On a "Changes requested" verdict it dispatches the revise worker; on a
