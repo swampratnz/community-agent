@@ -308,6 +308,32 @@ const EnvSchema = z.object({
   // resource-exhaustion surface a much larger population could otherwise hit.
   WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
 
+  // Discord counterpart to WHATSAPP_VOICE_* above (issue #732): transcribes a
+  // native Discord voice-message bubble (an attachment reporting
+  // `duration_secs`) via the exact same local, offline transformers.js
+  // Whisper pipeline — no new dependency, network call, or cost centre.
+  // Independently configurable from the WhatsApp knobs since a guild's risk
+  // profile (public-ish, larger membership) differs from a single WhatsApp
+  // number. OFF by default; SUPER-ADMIN ONLY at the default minRole, enforced
+  // in the adapter before any attachment is fetched (see docs/SECURITY.md).
+  DISCORD_VOICE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  DISCORD_VOICE_MODEL: z.string().default('Xenova/whisper-base.en'),
+  // Voice messages longer than this are ignored WITHOUT fetching the
+  // attachment — bounds the per-message CPU/latency of local transcription.
+  DISCORD_VOICE_MAX_SECONDS: z.coerce.number().int().positive().default(120),
+  // Minimum tier eligible for voice transcription. Defaults to 'super_admin' —
+  // the pure isSuperAdmin env check with no DB call — mirroring
+  // WHATSAPP_VOICE_MIN_ROLE's conservative default.
+  DISCORD_VOICE_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Rolling hourly cap on transcribed voice messages per sender (0 =
+  // unlimited). Only bites once an operator lowers DISCORD_VOICE_MIN_ROLE
+  // below 'super_admin' — bounds the resource-exhaustion surface a larger,
+  // less-trusted guild population could otherwise hit.
+  DISCORD_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
+
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
   SUPER_ADMIN_WHATSAPP_NUMBERS: z.string().optional(),
@@ -1013,6 +1039,13 @@ export const config = {
     assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
     autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),
     autoAnswerRateLimitPerHour: env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR,
+    voice: {
+      enabled: env.DISCORD_VOICE_ENABLED ?? false,
+      model: env.DISCORD_VOICE_MODEL,
+      maxSeconds: env.DISCORD_VOICE_MAX_SECONDS,
+      minRole: env.DISCORD_VOICE_MIN_ROLE,
+      rateLimitPerHour: env.DISCORD_VOICE_RATE_LIMIT_PER_HOUR,
+    },
   },
   moderation: {
     enabled: env.DISCORD_MODERATION_ENABLED ?? false,

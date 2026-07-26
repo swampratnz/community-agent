@@ -8,6 +8,7 @@ import {
   MessageFlags,
   Partials,
   PermissionFlagsBits,
+  type Attachment,
   type GuildMember,
   type Guild,
   type Role,
@@ -29,9 +30,15 @@ import {
 } from 'discord.js';
 import { config } from '../../config.js';
 import { formatNzEventTime } from '../../util/nzTime.js';
-import { logger } from '../../logger.js';
+import { logger, hashId } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
+import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
+import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
+import {
+  VOICE_LANGUAGE_CAVEAT_TEXT_MI,
+  shouldNotify as shouldNotifyVoiceLanguageCaveat,
+} from '../../voiceLanguageCaveatNotice.js';
 import {
   getCodeAnswersPolicy,
   getCommunityGuidelines,
@@ -40,7 +47,7 @@ import {
 } from '../../storage/policies.js';
 import { createModerator, type ModerationEnforcer, type Moderator } from '../../moderation/index.js';
 import { atLeast } from '../../auth/rbac.js';
-import { resolveRole, superAdminIds } from '../../auth/roles.js';
+import { isSuperAdmin, resolveRole, superAdminIds } from '../../auth/roles.js';
 import {
   autoEnrollMemberWithAudit,
   countActiveWarnings,
@@ -81,6 +88,9 @@ const MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS = 500;
 // 15 minutes — mirrors #203's BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS shape; a
 // permission-overwrite failure is a systemic condition, not a per-channel one.
 const MUTED_ROLE_ALERT_WINDOW_MS = 900_000;
+// Debounce window for the voice-language caveat (issue #732, mirrors #655's
+// WhatsApp constant) — "at most once per sender per week".
+const VOICE_LANGUAGE_CAVEAT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 /** Maps discord.js's numeric `GuildScheduledEventStatus` to `ScheduledEventLookup`'s closed string union. */
 function mapScheduledEventStatus(status: GuildScheduledEventStatus): ScheduledEventLookup['status'] {
@@ -162,6 +172,9 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   // alert (issue #276) — a systemic condition, not a per-channel one, so a
   // burst of failing channels/scans collapses into a single DM.
   private mutedRoleAlertNotifiedAt: number | undefined;
+  // senderId -> last-notified epoch ms for the voice-language caveat DM,
+  // checked via `shouldNotifyVoiceLanguageCaveat` (mirrors baileysAdapter.ts).
+  private readonly voiceLanguageCaveatNotified = new Map<string, number>();
 
   constructor(private readonly mutedRoleOverwriteRetryDelayMs = MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS) {
     this.moderator = createModerator(this);
@@ -377,17 +390,40 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       return;
     }
 
+    // Discord voice-message transcription (opt-in, DISCORD_VOICE_ENABLED,
+    // issue #732): a native voice-message bubble carries no `content` text but
+    // exactly one attachment reporting `duration_secs` (surfaced by
+    // discord.js as `.duration`) — the marker that distinguishes it from a
+    // regular file upload, which is left untouched regardless of
+    // flag/role state. Mirrors WhatsApp's `maybeTranscribeVoiceNote` gate
+    // order exactly: flag -> caller-tier-vs-minRole -> length cap (pre-fetch)
+    // -> rate cap (pre-fetch) -> fetch+decode+transcribe, any failure
+    // caught/logged/dropped rather than thrown into this handler. Resolved
+    // BEFORE the moderation scan below (issue #735) so a guild voice
+    // message's transcript is scanned exactly like a typed message's text
+    // would be — a scan fired against `message.content` here would always
+    // see the empty native content a voice-message bubble carries.
+    let text = this.cleanContent(message.content);
+    const voiceAttachment = message.attachments.size === 1 ? message.attachments.first() : undefined;
+    if (!text && voiceAttachment && voiceAttachment.duration != null) {
+      text = await this.maybeTranscribeVoiceMessage(voiceAttachment, message.author.id);
+      if (text) {
+        await this.maybeSendVoiceLanguageCaveat(message.author.id);
+      }
+    }
+
     // Auto-moderation scans EVERY in-scope guild message (not just addressed
     // ones), independently of the agent path below. Fire-and-forget so a scan
     // failure can never block or delay normal handling. DMs aren't scanned —
     // muting is a guild concept. A no-op unless DISCORD_MODERATION_ENABLED.
+    // `text` already reflects a transcribed voice message, if any (above).
     if (!isDM) {
       void this.moderator
         .scan({
           platform: 'discord',
           userId: message.author.id,
           userName: message.member?.displayName ?? message.author.username,
-          text: this.cleanContent(message.content),
+          text,
           channelId: message.channelId,
         })
         .catch((err) => logger.warn({ err }, 'Moderation scan failed'));
@@ -403,7 +439,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       conversationId: message.channelId,
       userId: message.author.id,
       userName: message.member?.displayName ?? message.author.username,
-      text: this.cleanContent(message.content),
+      text,
       isDirect: isDM,
       addressedToBot: mentioned || repliedToBot,
       // Belt-and-braces alongside the early `message.author.bot` return above
@@ -417,6 +453,114 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     };
 
     await this.handler(normalised);
+  }
+
+  /**
+   * Transcribe a Discord voice-message attachment to text, or return '' to
+   * drop it — the SINGLE gate for the feature, mirroring
+   * `BaileysAdapter.maybeTranscribeVoiceNote`'s exact order:
+   *   1. DISCORD_VOICE_ENABLED must be on (off by default);
+   *   2. the sender's resolved tier must meet DISCORD_VOICE_MIN_ROLE (default
+   *      'super_admin'). At the default, this stays a pure `isSuperAdmin`
+   *      env check (SUPER_ADMIN_DISCORD_IDS) — never the DB — so the default
+   *      configuration makes no new DB call. Only when an operator has
+   *      lowered `minRole` does this call the same `resolveRole`/`atLeast`
+   *      primitives every other tier-gated surface uses. Either way this is
+   *      enforced BEFORE any attachment is fetched, so a below-tier sender's
+   *      audio is never downloaded or transcribed;
+   *   3. messages longer than DISCORD_VOICE_MAX_SECONDS are ignored WITHOUT
+   *      fetching, bounding per-message transcription cost;
+   *   4. once DISCORD_VOICE_RATE_LIMIT_PER_HOUR is set (non-zero), a sender
+   *      who already hit the cap within the rolling hour is refused WITHOUT
+   *      fetching. The rate-limit key is platform-qualified
+   *      (`` `discord:${senderId}` ``, issue #732) so a Discord id can never
+   *      share a quota bucket with a colliding WhatsApp id.
+   * Any fetch/decode/model failure is logged and swallowed (returns '') so a
+   * bad message is dropped rather than crashing the loop or leaking
+   * internals. The transcript is returned verbatim; every downstream gate
+   * still applies — a mis-heard destructive command cannot fire without the
+   * (spoken or typed) CONFIRM the tool layer already demands, and the
+   * transcript is granted exactly the caller's own tier's tool set, never
+   * more.
+   */
+  private async maybeTranscribeVoiceMessage(attachment: Attachment, senderId: string): Promise<string> {
+    if (!config.discord.voice.enabled) return '';
+    const minRole = config.discord.voice.minRole;
+    if (minRole === 'super_admin') {
+      if (!isSuperAdmin('discord', senderId)) return '';
+    } else {
+      const role = await resolveRole('discord', senderId);
+      if (!atLeast(role, minRole)) return '';
+    }
+    const seconds = attachment.duration ?? 0;
+    if (seconds > config.discord.voice.maxSeconds) {
+      logger.info(
+        { seconds, cap: config.discord.voice.maxSeconds },
+        'Discord voice message over the length cap — ignored without fetching',
+      );
+      return '';
+    }
+    const rateLimit = config.discord.voice.rateLimitPerHour;
+    if (rateLimit > 0 && !reserveVoiceTranscriptionSlot(`discord:${senderId}`, rateLimit)) {
+      logger.info(
+        { sender: hashId(senderId), limit: rateLimit },
+        'Discord voice message refused — sender hit the hourly transcription cap',
+      );
+      return '';
+    }
+    try {
+      return await this.transcribeAttachment(attachment.url, seconds);
+    } catch (err) {
+      logger.warn({ err }, 'Discord voice-message transcription failed — dropping the message');
+      return '';
+    }
+  }
+
+  /**
+   * Download the voice-message attachment's bytes over HTTPS and transcribe
+   * them locally. Split out from the gate above as the single seam that
+   * touches the network and the Whisper model — overridden in tests so the
+   * gate logic can be exercised without a real fetch or model download. Never
+   * called for a below-tier sender, a disabled feature, a rate-capped
+   * sender, or an over-length message (the gate returns first).
+   */
+  private async transcribeAttachment(url: string, seconds: number): Promise<string> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Discord voice attachment (status ${response.status})`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const transcript = await transcribeVoiceNote(buffer, config.discord.voice.model);
+    logger.info({ chars: transcript.length, seconds }, 'Transcribed Discord voice message');
+    return transcript;
+  }
+
+  /**
+   * After a successful voice-message transcription, DM the sender a fixed
+   * caveat if their stored language preference is 'mi' (issue #732, mirrors
+   * WhatsApp's #655 notice): `DISCORD_VOICE_MODEL` is English-only, so their
+   * transcript may be garbled with no other signal that anything went wrong.
+   * Purely a side notice — never touches `text` or the downstream pipeline.
+   * Debounced to at most once per sender per `VOICE_LANGUAGE_CAVEAT_WINDOW_MS`.
+   */
+  private async maybeSendVoiceLanguageCaveat(senderId: string): Promise<void> {
+    const language = await getLanguagePreference('discord', senderId);
+    if (language !== 'mi') return;
+    if (
+      !shouldNotifyVoiceLanguageCaveat(
+        this.voiceLanguageCaveatNotified.get(senderId),
+        Date.now(),
+        VOICE_LANGUAGE_CAVEAT_WINDOW_MS,
+      )
+    ) {
+      return;
+    }
+    this.voiceLanguageCaveatNotified.set(senderId, Date.now());
+    try {
+      await this.sendDirectMessage(senderId, VOICE_LANGUAGE_CAVEAT_TEXT_MI);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send Discord voice-language caveat notice');
+    }
   }
 
   /** Strip the bot mention from message text for a clean prompt. */

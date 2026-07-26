@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { config } from '../config.js';
 import { logger } from '../logger.js';
 
 /**
@@ -86,34 +85,39 @@ type Transcriber = (
   opts: { chunk_length_s: number; stride_length_s: number },
 ) => Promise<{ text: string }>;
 
-let transcriberPromise: Promise<Transcriber> | null = null;
+// Keyed by model id so WhatsApp and Discord can run independently configured
+// models (DISCORD_VOICE_MODEL vs WHATSAPP_VOICE_MODEL) side by side without
+// one platform's setting silently overriding the other's.
+const transcriberPromises = new Map<string, Promise<Transcriber>>();
 
-async function getTranscriber(): Promise<Transcriber> {
+async function getTranscriber(model: string): Promise<Transcriber> {
+  let transcriberPromise = transcriberPromises.get(model);
   if (!transcriberPromise) {
     transcriberPromise = (async () => {
       const { pipeline, env } = await import('@huggingface/transformers');
       env.allowLocalModels = true; // offline-friendly after first download
-      logger.info({ model: config.whatsapp.voice.model }, 'Loading voice transcription model');
-      const pipe = (await pipeline(
-        'automatic-speech-recognition',
-        config.whatsapp.voice.model,
-      )) as unknown as Transcriber;
-      logger.info('Voice transcription model ready');
+      logger.info({ model }, 'Loading voice transcription model');
+      const pipe = (await pipeline('automatic-speech-recognition', model)) as unknown as Transcriber;
+      logger.info({ model }, 'Voice transcription model ready');
       return pipe;
     })();
+    transcriberPromises.set(model, transcriberPromise);
   }
   return transcriberPromise;
 }
 
 /**
- * Decode + transcribe a WhatsApp voice note to plain text. Returns the trimmed
- * transcript (may be empty for silence/noise). Throws on decode/model failure —
- * the adapter catches and drops the note rather than surfacing internals.
+ * Decode + transcribe a voice note/message to plain text using the given
+ * Whisper model id (callers pass their own `*_VOICE_MODEL` config so
+ * WhatsApp and Discord stay independently configurable). Returns the
+ * trimmed transcript (may be empty for silence/noise). Throws on
+ * decode/model failure — the adapter catches and drops the note rather than
+ * surfacing internals.
  */
-export async function transcribeVoiceNote(audio: Buffer): Promise<string> {
+export async function transcribeVoiceNote(audio: Buffer, model: string): Promise<string> {
   const pcm = await decodeToPcm(audio);
   if (pcm.length === 0) return '';
-  const transcriber = await getTranscriber();
+  const transcriber = await getTranscriber(model);
   // chunk_length_s enables Whisper's long-form chunking so a note longer than
   // the model's 30 s window still transcribes fully (we cap total length in the
   // adapter regardless).

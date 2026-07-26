@@ -190,6 +190,31 @@ transcript may not match what they actually said (issue #655). It never
 gates or alters the transcript itself; see `src/voiceLanguageCaveatNotice.ts`
 and SECURITY.md §13 for the full behaviour.
 
+## Discord voice-message transcription
+
+`DISCORD_VOICE_ENABLED` (issue #732; **off by default**) is the Discord
+counterpart to WhatsApp voice above: a native Discord voice-message bubble
+(an attachment reporting `duration_secs`, not a regular file upload) is
+transcribed via the exact same local, offline `voiceTranscribe.ts` pipeline
+and the transcript flows through the identical downstream pipeline a typed
+message would. Configured independently via `DISCORD_VOICE_MODEL`/
+`DISCORD_VOICE_MAX_SECONDS`/`DISCORD_VOICE_MIN_ROLE`/
+`DISCORD_VOICE_RATE_LIMIT_PER_HOUR` — not shared with the `WHATSAPP_VOICE_*`
+knobs — since a guild's risk profile (public-ish, larger membership) differs
+from a single WhatsApp number; `DISCORD_VOICE_MIN_ROLE` also defaults to
+`'super_admin'`. The gate (`maybeTranscribeVoiceMessage` in
+`src/platforms/discord/adapter.ts`) mirrors `maybeTranscribeVoiceNote`'s
+order exactly, and the same `'mi'`-preference caveat DM (verbatim, reused
+from `voiceLanguageCaveatNotice.ts`) is sent after a successful
+transcription. The hourly rate-limit key is now platform-qualified
+(`` `discord:${id}` `` / `` `whatsapp:${id}` ``) so a collision between a
+Discord snowflake and a WhatsApp phone number can never share a quota. The
+transcript is resolved BEFORE the guild auto-moderation scan (issue #735), so
+a guild voice message is scanned on its transcript exactly like a typed
+message would be — a scan fired against the message's native (always empty,
+for a voice bubble) `content` would never see what was actually said. See
+SECURITY.md §13 for the full posture.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
