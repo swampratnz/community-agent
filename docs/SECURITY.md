@@ -799,6 +799,25 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   same-shape lookup (`areKnowledgeEntriesLowRated`) that fails safe to no
   caveat on a lookup error and renders per-hit rather than as one trailing
   line.
+  `list_unhelpful_themes` (issue #724) is the cross-cutting complement to
+  `list_low_rated_knowledge`: instead of grouping by knowledge entry (and
+  excluding ungrounded answers), it greedily clusters `helpful = false AND
+  comment IS NOT NULL` ratings by embedding similarity — reusing
+  `question_digest`/`list_knowledge_gaps`'s exact clustering code, threshold,
+  and `count >= 2` "theme" floor — across BOTH grounded and ungrounded
+  answers. Same admin gate and `conversation_id = ANY(...)` scope filter as
+  every sibling read here (a rating outside the caller's scope is excluded
+  from clustering entirely, not merely hidden from view, pinned by a
+  `SECURITY:` test), same `untrusted()` wrapping the representative comment
+  as `list_answer_feedback`'s own comment rendering (pinned with the same
+  hostile-input fixtures). No new stored data or schema change: each
+  qualifying comment is embedded at READ time via the same local, offline
+  `embed()` `knowledge_search` already uses (no persisted `embedding` column
+  on `answer_feedback`), so purge-coherence is unaffected — `forget_me`/
+  `purge_user_data` deleting the rater's row simply removes it from the next
+  read's input set. The weekly digest line this feeds is a bare integer plus
+  its trend only, never a comment or rater identity, matching
+  `ARCHITECTURE.md`'s digest-privacy invariant.
 - **Member notes** (`member_notes`, issue #45): admins can attach durable,
   person-scoped context notes to *known* members (unknown identities are
   refused). This is a deliberate, owner-approved PII surface with hard

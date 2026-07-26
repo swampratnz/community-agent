@@ -94,6 +94,7 @@ import {
   type CrossedKnowledgeGapCluster,
   recentModerationEntries,
   recentQuestionClusters,
+  recentUnhelpfulFeedbackClusters,
   recordAdminAction,
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
@@ -1461,7 +1462,7 @@ const ADMIN_CAPABILITIES_TEXT =
   'As an admin, you also have:\n' +
   "- Moderate the community: warn, mute, kick, or remove a message, clear a member's warnings, archive a Discord thread, review the moderation history log, pull one member's full warning history, list everyone who's currently muted, or review and resolve filed appeals\n" +
   "- Manage membership: add a new member, remove a member, link a member's cross-platform identity, or unlink a member's cross-platform identity\n" +
-  '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, and check which knowledge entries are rated poorly\n' +
+  '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
   "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
@@ -5899,6 +5900,33 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const listUnhelpfulThemesTool = tool(
+    'list_unhelpful_themes',
+    'Show recurring themes (count >= 2) across unhelpful (thumbs-down) answer ratings that carry a member ' +
+      'comment, clustered by similarity — the cross-cutting complement to list_low_rated_knowledge (which is ' +
+      "per-entry and excludes ungrounded answers) and list_answer_feedback's raw per-rating list. Covers BOTH " +
+      "knowledge-grounded and ungrounded answers. A comment from a conversation you don't participate in is not " +
+      'counted here even for admins — only for a super admin. Admin only.',
+    {
+      days: z.number().optional().describe('Window in days (default 7, max 30)'),
+      limit: z.number().optional().describe('Max themes to return (default 10)'),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'list_unhelpful_themes');
+      const allowed = await callerScope();
+      const clusters = await recentUnhelpfulFeedbackClusters(allowed, args.days ?? 7, args.limit ?? 10);
+      if (clusters.length === 0)
+        return text('No recurring unhelpful-answer themes in that window (within your conversations).');
+      return text(
+        untrusted(
+          'Recurring unhelpful-answer themes',
+          clusters.map((c, i) => `${i + 1}. (${c.count}x) ${c.representative.slice(0, 300)}`).join('\n'),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const addMember = tool(
     'add_member',
     'Register a user as a community member so the bot will talk to them (gated mode). Admin only; grants member tier only.',
@@ -7008,6 +7036,7 @@ export function buildToolServer(
       resolveReportTool,
       listAnswerFeedbackTool,
       listLowRatedKnowledgeTool,
+      listUnhelpfulThemesTool,
       listSuggestionsTool,
       resolveSuggestionTool,
       addMember,
