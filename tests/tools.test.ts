@@ -13452,50 +13452,62 @@ test(
     // table at a loose 0.35 relevance floor, and a realistic-sounding
     // troubleshooting phrase risks crossing it against some unrelated
     // fixture, silently suppressing the draft this test means to prove.
-    const question = `${RUN} why does the giggling teal marmoset keep unplugging the router`;
+    // Deliberately NO ${RUN} prefix in any EMBEDDED text: the numeric run
+    // token dominates the embedding and scores 0.35+ against any other
+    // token-prefixed fixture in the shared tables (measured up to 0.99 for
+    // a repeated phrase), which is exactly the lottery that flaked the
+    // rater-cap test below. Cross-run uniqueness comes from the RUN-scoped
+    // user/conversation ids plus the pre-clean of stranded same-topic rows.
+    const question = 'why does the giggling teal marmoset keep unplugging the router';
     const answer = 'unscrew the marmoset panel and re-latch the teal clip';
+    // A prior FAILED run of this test exits before its cleanup, stranding a
+    // candidate row whose identical topic would trip the exact-match half of
+    // the dedup guard on this run — clear it first.
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
 
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: askingMember,
-      role: 'member',
-      direction: 'inbound',
-      content: question,
-    });
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: 'bot',
-      role: 'member',
-      direction: 'outbound',
-      content: answer,
-      meta: { replyToUserId: askingMember },
-    });
+    try {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: askingMember,
+        role: 'member',
+        direction: 'inbound',
+        content: question,
+      });
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: answer,
+        meta: { replyToUserId: askingMember },
+      });
 
-    await withAnswerCandidateFlag(true, async () => {
-      const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
-      assert.notEqual(result.isError, true);
-      assert.match(
-        result.content[0]?.text ?? '',
-        /glad that helped/i,
-        'the reply text is unchanged either way — drafting is a silent side effect',
+      await withAnswerCandidateFlag(true, async () => {
+        const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+        assert.notEqual(result.isError, true);
+        assert.match(
+          result.content[0]?.text ?? '',
+          /glad that helped/i,
+          'the reply text is unchanged either way — drafting is a silent side effect',
+        );
+      });
+
+      const rows = await pool.query(
+        `SELECT topic, title, content, source_platform, source_user_id FROM knowledge_candidates WHERE source_user_id = $1`,
+        [askingMember],
       );
-    });
-
-    const rows = await pool.query(
-      `SELECT topic, title, content, source_platform, source_user_id FROM knowledge_candidates WHERE source_user_id = $1`,
-      [askingMember],
-    );
-    assert.equal(rows.rows.length, 1, 'exactly one candidate is drafted');
-    assert.equal(rows.rows[0].source_platform, 'discord');
-    assert.equal(rows.rows[0].topic, question);
-    assert.equal(rows.rows[0].title, question);
-    assert.equal(rows.rows[0].content, answer);
-
-    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
-    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
-    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      assert.equal(rows.rows.length, 1, 'exactly one candidate is drafted');
+      assert.equal(rows.rows[0].source_platform, 'discord');
+      assert.equal(rows.rows[0].topic, question);
+      assert.equal(rows.rows[0].title, question);
+      assert.equal(rows.rows[0].content, answer);
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
   },
 );
 
@@ -13558,10 +13570,11 @@ test(
   async () => {
     const askingMember = `${RUN}-answer-candidate-dm`;
     const conversationId = `${RUN}-c-answer-candidate-dm`;
-    // Same whimsical-wording discipline as the basic drafting test above, so
-    // the shared-table dedup guard can't silently suppress the draft this
-    // test must prove is suppressed by the DM check ALONE.
-    const question = `${RUN} why does the sombre plaid axolotl refuse the stairlift`;
+    // Same whimsical-wording, no-RUN-token discipline as the basic drafting
+    // test above, so the shared-table dedup guard can't silently suppress the
+    // draft this test must prove is suppressed by the DM check ALONE.
+    const question = 'why does the sombre plaid axolotl refuse the stairlift';
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
 
     await recordInteraction({
       platform: 'discord',
@@ -13773,56 +13786,61 @@ test(
     const askingMember = `${RUN}-answer-candidate-asker`;
     const observer = `${RUN}-answer-candidate-observer`;
     const conversationId = `${RUN}-c-answer-candidate-attribution`;
-    const question = `${RUN} how do I pair my Blorptastic sensor`;
+    // No RUN token in embedded text + pre-clean of stranded same-topic rows —
+    // see the basic drafting test above for why.
+    const question = 'how do I pair my Blorptastic sensor';
     const answer = 'hold the pair button until the light blinks blue';
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
 
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: askingMember,
-      role: 'member',
-      direction: 'inbound',
-      content: question,
-    });
-    // Only the ASKER has a reply addressed to them (replyToUserId) — the
-    // OBSERVER below has none, so resolveAnswerFeedbackTarget's fallback
-    // binds their rating to this same reply (the "rater observed, didn't
-    // ask" case the adversarial review named).
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: 'bot',
-      role: 'member',
-      direction: 'outbound',
-      content: answer,
-      meta: { replyToUserId: askingMember },
-    });
+    try {
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: askingMember,
+        role: 'member',
+        direction: 'inbound',
+        content: question,
+      });
+      // Only the ASKER has a reply addressed to them (replyToUserId) — the
+      // OBSERVER below has none, so resolveAnswerFeedbackTarget's fallback
+      // binds their rating to this same reply (the "rater observed, didn't
+      // ask" case the adversarial review named).
+      await recordInteraction({
+        platform: 'discord',
+        conversationId,
+        userId: 'bot',
+        role: 'member',
+        direction: 'outbound',
+        content: answer,
+        meta: { replyToUserId: askingMember },
+      });
 
-    await withAnswerCandidateFlag(true, async () => {
-      const result = await rateAnswerHandler(observer, conversationId).handler({ helpful: true });
-      assert.notEqual(result.isError, true);
-    });
+      await withAnswerCandidateFlag(true, async () => {
+        const result = await rateAnswerHandler(observer, conversationId).handler({ helpful: true });
+        assert.notEqual(result.isError, true);
+      });
 
-    const askerRows = await pool.query(
-      `SELECT topic, content FROM knowledge_candidates WHERE source_user_id = $1`,
-      [askingMember],
-    );
-    assert.equal(askerRows.rows.length, 1, "the drafted candidate is attributed to the QUESTION's author");
-    assert.equal(askerRows.rows[0].topic, question);
-    assert.equal(askerRows.rows[0].content, answer);
+      const askerRows = await pool.query(
+        `SELECT topic, content FROM knowledge_candidates WHERE source_user_id = $1`,
+        [askingMember],
+      );
+      assert.equal(askerRows.rows.length, 1, "the drafted candidate is attributed to the QUESTION's author");
+      assert.equal(askerRows.rows[0].topic, question);
+      assert.equal(askerRows.rows[0].content, answer);
 
-    const observerRows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
-      observer,
-    ]);
-    assert.equal(
-      observerRows.rows.length,
-      0,
-      'SECURITY: the rater (observer) is never the attributed author',
-    );
-
-    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
-    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [observer]);
-    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      const observerRows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
+        observer,
+      ]);
+      assert.equal(
+        observerRows.rows.length,
+        0,
+        'SECURITY: the rater (observer) is never the attributed author',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [observer]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
   },
 );
 
@@ -13836,6 +13854,14 @@ test(
     // binds `rater`'s rating to THAT victim's reply every time (`rater` is
     // never personally replied-to in any of these conversations, same setup
     // as the AC10 test above, just repeated across multiple victims).
+    // No RUN token in the question text: this test originally embedded
+    // `${RUN} ${WORDS[i]}`, and the shared numeric token pushed these topics
+    // to 0.35+ similarity against unrelated token-prefixed fixtures in the
+    // shared knowledge table (and 0.98+ against this test's OWN stranded
+    // rows from a prior failed run), so the dedup guard suppressed drafts
+    // this test needs to happen. Plain phrases measure ≤0.29 against each
+    // other and ≤0.19 against realistic debris — safely under both the 0.35
+    // coverage floor and the 0.92 candidate-dedup bar.
     const WORDS = [
       'a plaid gecko rehearsing bagpipes',
       'six dusty quokkas auditing a ferris wheel',
@@ -13849,59 +13875,63 @@ test(
 
     const victims = WORDS.map((_, i) => `${RUN}-answer-candidate-grief-victim-${i}`);
     const conversationIds = WORDS.map((_, i) => `${RUN}-c-answer-candidate-grief-${i}`);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = ANY($1)`, [WORDS]);
 
-    await withAnswerCandidateFlag(true, async () => {
-      for (let i = 0; i < WORDS.length; i++) {
-        await recordInteraction({
-          platform: 'discord',
-          conversationId: conversationIds[i],
-          userId: victims[i],
-          role: 'member',
-          direction: 'inbound',
-          content: `${RUN} ${WORDS[i]}`,
-        });
-        await recordInteraction({
-          platform: 'discord',
-          conversationId: conversationIds[i],
-          userId: 'bot',
-          role: 'member',
-          direction: 'outbound',
-          content: `answer about ${WORDS[i]}`,
-          meta: { replyToUserId: victims[i] },
-        });
-        const result = await rateAnswerHandler(rater, conversationIds[i]).handler({ helpful: true });
-        assert.notEqual(
-          result.isError,
-          true,
-          `rating ${i} itself must still succeed regardless of the rater's draft cap`,
-        );
-      }
-    });
+    try {
+      await withAnswerCandidateFlag(true, async () => {
+        for (let i = 0; i < WORDS.length; i++) {
+          await recordInteraction({
+            platform: 'discord',
+            conversationId: conversationIds[i],
+            userId: victims[i],
+            role: 'member',
+            direction: 'inbound',
+            content: WORDS[i],
+          });
+          await recordInteraction({
+            platform: 'discord',
+            conversationId: conversationIds[i],
+            userId: 'bot',
+            role: 'member',
+            direction: 'outbound',
+            content: `answer about ${WORDS[i]}`,
+            meta: { replyToUserId: victims[i] },
+          });
+          const result = await rateAnswerHandler(rater, conversationIds[i]).handler({ helpful: true });
+          assert.notEqual(
+            result.isError,
+            true,
+            `rating ${i} itself must still succeed regardless of the rater's draft cap`,
+          );
+        }
+      });
 
-    const draftedCount = await pool.query(
-      `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = ANY($1)`,
-      [victims],
-    );
-    assert.equal(
-      draftedCount.rows[0].n,
-      KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
-      'SECURITY: the rater cannot trigger more mismatched drafts than the shared per-victim cap allows, ' +
-        'even spread across many different victims',
-    );
+      const draftedCount = await pool.query(
+        `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = ANY($1)`,
+        [victims],
+      );
+      assert.equal(
+        draftedCount.rows[0].n,
+        KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+        'SECURITY: the rater cannot trigger more mismatched drafts than the shared per-victim cap allows, ' +
+          'even spread across many different victims',
+      );
 
-    const lastVictimRows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
-      victims[victims.length - 1],
-    ]);
-    assert.equal(
-      lastVictimRows.rows.length,
-      0,
-      "SECURITY: the over-cap victim's own quota was never touched (0 of their own tips used), yet the " +
-        'rater is still blocked from drafting against them — the cap is on the RATER, not the victim',
-    );
-
-    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = ANY($1)`, [victims]);
-    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [rater]);
-    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [conversationIds]);
+      const lastVictimRows = await pool.query(
+        `SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`,
+        [victims[victims.length - 1]],
+      );
+      assert.equal(
+        lastVictimRows.rows.length,
+        0,
+        "SECURITY: the over-cap victim's own quota was never touched (0 of their own tips used), yet the " +
+          'rater is still blocked from drafting against them — the cap is on the RATER, not the victim',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = ANY($1)`, [victims]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [rater]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [conversationIds]);
+    }
   },
 );
 
@@ -14015,59 +14045,63 @@ test(
     const conversationId = `${RUN}-c-answer-candidate-rate-cap`;
     // Genuinely distinct whimsical topics (same corpus-collision concern the
     // suggest_knowledge rate-cap test documents) — one per cap slot, plus one
-    // over the cap.
+    // over the cap. No RUN token in embedded text + pre-clean of stranded
+    // same-topic rows — see the rater-cap test above for why.
     const TOPICS = [
-      `${RUN} a violet ferret debugging tuesday spreadsheets`,
-      `${RUN} six amber narwhals rehearsing a barbershop quartet`,
-      `${RUN} a sleepy teal alpaca cataloguing lighthouse stamps`,
-      `${RUN} four indigo otters auditing a birthday piñata`,
+      'a violet ferret debugging tuesday spreadsheets',
+      'six amber narwhals rehearsing a barbershop quartet',
+      'a sleepy teal alpaca cataloguing lighthouse stamps',
+      'four indigo otters auditing a birthday piñata',
     ];
     assert.ok(
       TOPICS.length > KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
       'fixture must exceed the cap by at least one',
     );
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = ANY($1)`, [TOPICS]);
 
-    await withAnswerCandidateFlag(true, async () => {
-      for (let i = 0; i < TOPICS.length; i++) {
-        await recordInteraction({
-          platform: 'discord',
-          conversationId,
-          userId: askingMember,
-          role: 'member',
-          direction: 'inbound',
-          content: TOPICS[i],
-        });
-        await recordInteraction({
-          platform: 'discord',
-          conversationId,
-          userId: 'bot',
-          role: 'member',
-          direction: 'outbound',
-          content: `answer number ${i}`,
-          meta: { replyToUserId: askingMember },
-        });
-        const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
-        assert.notEqual(
-          result.isError,
-          true,
-          `rating ${i} itself must still succeed regardless of the tip cap`,
-        );
-      }
-    });
+    try {
+      await withAnswerCandidateFlag(true, async () => {
+        for (let i = 0; i < TOPICS.length; i++) {
+          await recordInteraction({
+            platform: 'discord',
+            conversationId,
+            userId: askingMember,
+            role: 'member',
+            direction: 'inbound',
+            content: TOPICS[i],
+          });
+          await recordInteraction({
+            platform: 'discord',
+            conversationId,
+            userId: 'bot',
+            role: 'member',
+            direction: 'outbound',
+            content: `answer number ${i}`,
+            meta: { replyToUserId: askingMember },
+          });
+          const result = await rateAnswerHandler(askingMember, conversationId).handler({ helpful: true });
+          assert.notEqual(
+            result.isError,
+            true,
+            `rating ${i} itself must still succeed regardless of the tip cap`,
+          );
+        }
+      });
 
-    const rows = await pool.query(
-      `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = $1`,
-      [askingMember],
-    );
-    assert.equal(
-      rows.rows[0].n,
-      KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
-      'no more than the shared per-member daily cap is ever drafted, even across more ungrounded ratings',
-    );
-
-    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
-    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
-    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+      const rows = await pool.query(
+        `SELECT count(*)::int AS n FROM knowledge_candidates WHERE source_user_id = $1`,
+        [askingMember],
+      );
+      assert.equal(
+        rows.rows[0].n,
+        KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+        'no more than the shared per-member daily cap is ever drafted, even across more ungrounded ratings',
+      );
+    } finally {
+      await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
   },
 );
 
