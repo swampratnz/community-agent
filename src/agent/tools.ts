@@ -69,6 +69,7 @@ import {
   listContextDigests,
   listKnowledge,
   listKnowledgeFeedbackSummary,
+  listOwnAppeals,
   listOwnReports,
   listOwnSuggestions,
   listRecentProjects,
@@ -3122,19 +3123,20 @@ export function buildToolServer(
 
   const mySubmissions = tool(
     'my_submissions',
-    "List the caller's OWN previously-filed suggestions and content reports — id, a short content preview, " +
-      'current status, and when each was filed. Use this when a member asks what happened to something ' +
-      'they submitted earlier (e.g. "what happened to my report?"). Never returns another member\'s ' +
-      "content or the reviewing admin's identity — only the shared admin queue (list_suggestions/" +
-      'list_reports) exposes that, and this tool never reaches it.',
+    "List the caller's OWN previously-filed suggestions, content reports, and moderation appeals — id, a " +
+      'short content preview, current status, and when each was filed. Use this when a member asks what ' +
+      'happened to something they submitted earlier (e.g. "what happened to my report?"). Never returns ' +
+      "another member's content or the reviewing admin's identity — only the shared admin queue " +
+      '(list_suggestions/list_reports/list_appeals) exposes that, and this tool never reaches it.',
     {},
     async () => {
-      const [suggestions, reports] = await Promise.all([
+      const [suggestions, reports, appeals] = await Promise.all([
         listOwnSuggestions(caller.platform, caller.userId, 10),
         listOwnReports(caller.platform, caller.userId, 10),
+        listOwnAppeals(caller.platform, caller.userId, 10),
       ]);
 
-      if (suggestions.length === 0 && reports.length === 0) {
+      if (suggestions.length === 0 && reports.length === 0 && appeals.length === 0) {
         return text("You haven't filed any suggestions or reports yet.", true);
       }
 
@@ -3154,6 +3156,14 @@ export function buildToolServer(
           lines.push(
             `- #${r.id} [${r.status}] ${truncateForEcho(r.reason)} — filed ${formatRelativeAge(r.createdAt)}`,
           );
+        }
+      }
+      if (appeals.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('Your appeals:');
+        for (const a of appeals) {
+          const reason = a.reason ? truncateForEcho(a.reason) : 'no reason given';
+          lines.push(`- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`);
         }
       }
       return text(lines.join('\n'));

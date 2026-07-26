@@ -498,6 +498,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
+| `my_submissions` (read back the caller's OWN previously-filed suggestions, content reports, and moderation appeals, self-scoped in SQL — a pull-based fallback for a missed resolution DM) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |

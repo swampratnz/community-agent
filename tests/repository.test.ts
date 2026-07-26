@@ -151,6 +151,7 @@ const {
   getInteractionContentByMessageId,
   createModerationAppeal,
   listAppeals,
+  listOwnAppeals,
   resolveModerationAppeal,
   countOpenAppeals,
   blockUser,
@@ -6589,6 +6590,71 @@ test(
     );
 
     await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [[a1.id, b1.id, aIsTarget.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnAppeals only returns appeals the caller filed — never another identity's, never cross-platform, newest-first, limit clamped (issue #709)",
+  { skip },
+  async () => {
+    const userA = `${RUN}-my-appeal-A`;
+    const userB = `${RUN}-my-appeal-B`;
+
+    const a1 = await createModerationAppeal({
+      platform: 'discord',
+      userId: userA,
+      userName: 'A',
+      reason: "A's first appeal",
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    const a2 = await createModerationAppeal({
+      platform: 'discord',
+      userId: userA,
+      userName: 'A',
+      reason: "A's second appeal",
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    const b1 = await createModerationAppeal({
+      platform: 'discord',
+      userId: userB,
+      userName: 'B',
+      reason: "B's appeal",
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(a1 && a2 && b1, 'fixtures recorded');
+
+    const ownA = await listOwnAppeals('discord', userA);
+    assert.deepEqual(
+      ownA.map((a) => a.id),
+      [a2.id, a1.id],
+      "only A's own appeals are returned, newest-first",
+    );
+    assert.ok(
+      !ownA.some((a) => a.id === b1.id),
+      "SECURITY: B's appeal must never appear in A's own-appeals list",
+    );
+
+    assert.deepEqual(
+      await listOwnAppeals('whatsapp', userA),
+      [],
+      'platform is part of the scope — A has no whatsapp appeals',
+    );
+
+    assert.equal(
+      (await listOwnAppeals('discord', userA, -5)).length,
+      1,
+      'a non-positive limit is clamped to a floor of 1, mirroring listOwnReports',
+    );
+    assert.equal(
+      (await listOwnAppeals('discord', userA, 999)).length,
+      2,
+      'an over-large limit is clamped to a ceiling of 50, not passed straight through — still returns only the 2 real rows here',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
   },
 );
 
