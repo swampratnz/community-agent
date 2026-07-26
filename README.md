@@ -117,6 +117,8 @@ approved ones on a branch and opens a PR — **a human always merges**. See
 - [Security](docs/SECURITY.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Vision](docs/VISION.md) — the north star + value rubric for the pipeline
+- [Capability ideas](docs/CAPABILITY-IDEAS.md) — curated backlog of candidate
+  directions (not commitments)
 - [Pipeline](docs/PIPELINE.md) — the self-improving research/review/build loops
 - [Personas](docs/PERSONAS.md) — the bot's voice ("Dave")
 - [Standards](docs/STANDARDS.md) · [Red-team](docs/RED-TEAM.md)
