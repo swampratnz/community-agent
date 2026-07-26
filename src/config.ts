@@ -466,6 +466,24 @@ const EnvSchema = z.object({
   // still recorded (and still counted by the weekly digest) but does not
   // notify; the row is left unalerted so it can retry once the window frees.
   KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
+  // Real-time admin nudge (issue #701) fired the moment a served
+  // knowledge_search hit or knowledge shortcut is stale (isKnowledgeStale)
+  // and unalerted since its last edit (stale_alerted_at IS NULL OR
+  // stale_alerted_at < updated_at) — the per-entry counterpart to the weekly
+  // digest's bare staleKnowledgeCount, promoted to an instant, rate-limited
+  // notifyAdmins DM, identical mechanism shape to KNOWLEDGE_GAP_ALERT_ENABLED
+  // above (#650). Off by default, consistent with this repo's convention for
+  // new proactive DMs.
+  KNOWLEDGE_STALE_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Guild-wide rolling-hour cap on stale-knowledge alerts, same sliding-window
+  // shape as KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR. Unlike that sibling cap,
+  // once exhausted within the trailing hour the served row is still
+  // stale_alerted_at-stamped (see markStaleKnowledgeAlerted's doc comment) so
+  // a rate-limited entry does not retry-storm on every subsequent serve.
+  KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
   // Weekly member-facing digest post (issue #645): widens the audience of
   // already-admin-visible k-floored `context_digests` topics + curated
   // "new in the knowledge base" titles to a Discord channel, so a member who
@@ -1075,6 +1093,10 @@ export const config = {
     enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
     threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
     rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
+  },
+  knowledgeStaleAlert: {
+    enabled: env.KNOWLEDGE_STALE_ALERT_ENABLED ?? false,
+    rateLimitPerHour: env.KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR,
   },
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,

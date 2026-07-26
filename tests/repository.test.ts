@@ -70,6 +70,7 @@ const {
   KNOWLEDGE_GAP_QUERY_MAX_CHARS,
   findCrossedKnowledgeGapCluster,
   markKnowledgeGapsAlerted,
+  markStaleKnowledgeAlerted,
   recentModerationEntries,
   adminActivitySummary,
   listDocsIngestUrlFailures,
@@ -2676,6 +2677,78 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge_gaps WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: markStaleKnowledgeAlerted atomically gates + stamps a served-stale entry, and is single-shot until the row is edited (issue #701 acceptance criteria 1+2)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} an entry that will be marked stale`,
+      title: 'stale-alert-entry',
+      scope: 'global',
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+    const first = await markStaleKnowledgeAlerted(id);
+    assert.ok(first, 'an unalerted-since-edit row must pass the gate and be stamped');
+    assert.equal(first?.title, 'stale-alert-entry');
+    assert.equal(first?.content, `${RUN} an entry that will be marked stale`);
+    assert.ok(first?.updatedAt instanceof Date);
+
+    const { rows } = await pool.query(`SELECT stale_alerted_at FROM knowledge WHERE id = $1`, [id]);
+    assert.ok(rows[0].stale_alerted_at, 'stale_alerted_at must be stamped on the row');
+
+    const second = await markStaleKnowledgeAlerted(id);
+    assert.equal(
+      second,
+      null,
+      'a later call on the same (still stale, still-alerted, unedited) row must not pass the gate again',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'repository: markStaleKnowledgeAlerted re-arms after an admin edit bumps updated_at, and stamping alone never bumps updated_at itself (issue #701 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} an entry that will be edited and re-alerted`,
+      title: 're-arm-entry',
+      scope: 'global',
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+    const first = await markStaleKnowledgeAlerted(id);
+    assert.ok(first, 'first stamp must succeed');
+
+    const { rows: afterStampRows } = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+    assert.deepEqual(
+      afterStampRows[0].updated_at,
+      first?.updatedAt,
+      'stamping stale_alerted_at alone must NOT bump updated_at — the knowledge_set_updated_at trigger ' +
+        'excludes this column',
+    );
+
+    const notYetReArmed = await markStaleKnowledgeAlerted(id);
+    assert.equal(notYetReArmed, null, 'still not re-armed — no edit has happened yet');
+
+    const { updated } = await updateKnowledge({ id, content: `${RUN} edited content re-arms the gate` });
+    assert.ok(updated, 'the edit must apply');
+
+    const { rows: afterEditRows } = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+    assert.ok(
+      afterEditRows[0].updated_at.getTime() > afterStampRows[0].updated_at.getTime(),
+      'the knowledge_set_updated_at trigger must bump updated_at on a genuine content edit',
+    );
+
+    const reArmed = await markStaleKnowledgeAlerted(id);
+    assert.ok(reArmed, 'a fresh edit re-arms the gate — the row can be alerted again');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
   },
 );
 

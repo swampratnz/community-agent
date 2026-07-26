@@ -114,6 +114,16 @@ ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_unreachable BOOLEAN;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_checked_at TIMESTAMPTZ;
 
+-- Real-time stale-knowledge admin nudge (issue #701): stamped the moment a
+-- served, already-stale entry (isKnowledgeStale) is unalerted since its last
+-- edit — stale_alerted_at IS NULL OR stale_alerted_at < updated_at. An admin
+-- edit via update_knowledge/accept_knowledge_candidate bumps updated_at
+-- (below) and so automatically re-arms the gate with no separate reset.
+-- Deliberately excluded from the knowledge_set_updated_at trigger's column
+-- list below, same exclusion as retrieval_count/source_url/source_unreachable
+-- above: stamping this alone must never look like a content edit.
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS stale_alerted_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
 

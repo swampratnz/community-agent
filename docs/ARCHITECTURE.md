@@ -1151,6 +1151,40 @@ serve. That decision used to be made and thrown away in the same request;
   work in the issue): auto-posting into the channel/thread where the
   questions were asked, and extending the same real-time-nudge treatment to
   the stale-knowledge/generic-repeat-question signals.
+- **Real-time stale-knowledge alert (issue #701, `KNOWLEDGE_STALE_ALERT_ENABLED`,
+  off by default).** The stale-knowledge half #650 explicitly deferred:
+  promotes the once-weekly digest's bare `staleKnowledgeCount` integer to an
+  instant, per-entry admin DM the moment an already-stale entry
+  (`isKnowledgeStale`, #308/#380/#381) is actually served to a member — the
+  three points that already compute staleness for the member-facing
+  "(may be outdated)" caveat: `knowledge_search`'s handler and both knowledge
+  shortcuts (`sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`). A new
+  `stale_alerted_at TIMESTAMPTZ` column on `knowledge` (NULL until stamped,
+  excluded from the `knowledge_set_updated_at` trigger like
+  `retrieval_count`/`source_url`) makes this single-shot per staleness
+  episode via one atomic `UPDATE ... WHERE stale_alerted_at IS NULL OR
+  stale_alerted_at < updated_at ... RETURNING` (`markStaleKnowledgeAlerted`)
+  — an admin edit through `update_knowledge`/`accept_knowledge_candidate`
+  bumps `updated_at` and so re-arms the gate automatically, no separate
+  reset. `knowledge_search`'s served-and-stale ids are threaded through
+  `ToolServerTurnState.staleKnowledgeAlertIds` → `TurnOutcome`/`AgentReply`,
+  the same turn-scoped-ref pattern `knowledgeGapCluster` uses — `notifyAdmins`
+  is never called from `tools.ts` itself; `router.ts` reads the ids
+  post-turn. The two shortcut call sites already live in `router.ts`, so they
+  call the same shared `maybeAlertStaleKnowledge` helper directly. Unlike
+  #650's "leave the rate-limited row unmarked so it can retry" precedent,
+  `markStaleKnowledgeAlerted` always stamps first, REGARDLESS of the guild-
+  wide rolling-hour cap (`KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR`, default
+  5) — the rate check (`reserveStaleKnowledgeAlertSlot`, identical
+  sliding-window shape) only gates whether the `notifyAdmins` DM itself goes
+  out, so a rate-limited entry can't retry-storm on every subsequent serve
+  for as long as it stays stale. The DM names the entry's title (or a
+  `truncateForEcho`-bounded excerpt for an untitled entry) and a relative
+  age (`formatRelativeAge`) — admin-authored/reviewed data already visible
+  via `list_knowledge`, never a member identity, query text, or conversation
+  id. With the flag off, every call site's staleness check runs exactly as
+  before #701 (the member-facing caveat is unaffected) with no extra query,
+  no write, no DM.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,
