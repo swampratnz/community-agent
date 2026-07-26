@@ -18,9 +18,9 @@ const { buildQueryOptions } = await import('../src/agent/core.js');
 const { toolsForRole } = await import('../src/auth/rbac.js');
 
 // Same feature-flagged set as tests/agentOptions.test.ts — this process also
-// leaves IMAGE_GEN_ENABLED/GITHUB_ISSUE_ENABLED/DEV_TEAM_ENABLED unset
-// (default off), so buildQueryOptions drops these from allowedTools too
-// (issue #535).
+// leaves IMAGE_GEN_ENABLED/GITHUB_ISSUE_ENABLED/DEV_TEAM_ENABLED/
+// FIND_HELPER_ENABLED unset (default off), so buildQueryOptions drops these
+// from allowedTools too (issue #535, extended by issue #729).
 const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__generate_image',
   'mcp__community__suggest_issue',
@@ -30,6 +30,8 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__dev_team_backlog',
   'mcp__community__dev_team_findings',
   'mcp__community__dev_team_verify',
+  'mcp__community__set_helper_availability',
+  'mcp__community__find_helper',
 ] as const;
 
 test('config: AGENT_MODEL_MEMBER set resolves to config.llm.memberModel (issue #382)', () => {

@@ -146,7 +146,7 @@ const {
 } = await import('../src/storage/policies.js');
 const { MEMBER_TOOLS, ADMIN_TOOLS, SUPER_ADMIN_TOOLS } = await import('../src/auth/rbac.js');
 const { superAdminIds } = await import('../src/auth/roles.js');
-const { WhatsAppCloudAdapter } = await import('../src/platforms/whatsapp/cloudAdapter.js');
+const { WhatsAppCloudAdapter, WindowClosedError } = await import('../src/platforms/whatsapp/cloudAdapter.js');
 const { buildAdminDigestForAdmin } = await import('../src/adminDigest.js');
 const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('../src/pendingAlertQueue.js');
 
@@ -2491,8 +2491,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // share_project/list_projects line, and again for issue #634's
   // set_my_interests/who_is_into line. Still a hard cap, not a soft
   // heuristic — a future addition that isn't consolidated should fail this
-  // rather than silently growing into a wall of text.
-  assert.ok(replyText.length < 1550, `reply should stay short; was ${replyText.length} chars`);
+  // rather than silently growing into a wall of text. Bumped again for issue
+  // #729's set_helper_availability/find_helper line.
+  assert.ok(replyText.length < 1800, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2601,6 +2602,8 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__list_projects', /browse what others have shared/i],
   ['mcp__community__set_my_interests', /who's into RAG/i],
   ['mcp__community__who_is_into', /who's working on Discord bots/i],
+  ['mcp__community__set_helper_availability', /opt in\/out of being notified/i],
+  ['mcp__community__find_helper', /can someone help with/i],
 ]);
 // community_info is self-referential — it describes every OTHER member
 // tool, so it needs no line about itself.
@@ -2672,6 +2675,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'project", "what has everyone built?")\n' +
     '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
+    '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
+    'X?"), or opt in/out of being notified for other members\' requests\n' +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
@@ -2680,7 +2685,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
       'list_events line, issue #437 added the list_knowledge_topics line, issue #496 added the ' +
       'appeal_moderation line, issue #646 added the share_project/list_projects line, issue #634 added the ' +
-      'set_my_interests/who_is_into line; otherwise unchanged since #367)',
+      'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line; ' +
+      'otherwise unchanged since #367)',
   );
 });
 
@@ -2803,8 +2809,10 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // for issue #646's share_project/list_projects line, and again for issue
   // #634's set_my_interests/who_is_into line; bumped again for issue #724's
   // list_unhelpful_themes clause (consolidated into the existing
-  // reports/suggestions/feedback bullet, not a new one).
-  assert.ok(adminReply.length < 3300, `admin reply should stay short; was ${adminReply.length} chars`);
+  // reports/suggestions/feedback bullet, not a new one); bumped again
+  // alongside the member cap for issue #729's set_helper_availability/
+  // find_helper line.
+  assert.ok(adminReply.length < 3500, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -2931,9 +2939,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // alongside the member/admin caps for issue #646's share_project/
   // list_projects line, and again for issue #634's set_my_interests/
   // who_is_into line; bumped again alongside the admin cap for issue #724's
-  // list_unhelpful_themes clause.
+  // list_unhelpful_themes clause; bumped again alongside the member/admin
+  // caps for issue #729's set_helper_availability/find_helper line.
   assert.ok(
-    superAdminReply.length < 3950,
+    superAdminReply.length < 4200,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -8156,8 +8165,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    36,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for DISCORD_VOICE_ENABLED landing with #732)",
+    37,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for FIND_HELPER_ENABLED landing with #729)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -13033,6 +13042,108 @@ test(
     await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [userId]);
   },
 );
+
+// set_helper_availability / find_helper (issue #729): the opt-in member-to-
+// member help handoff, the active-side consumer of #634's member_interests/
+// willing_to_help column. This process leaves FIND_HELPER_ENABLED unset
+// (default off), so these tests cover the assertAtLeast re-check and the
+// handler-level disabled friendly message (defense in depth, issue #535's
+// convention) — the full enabled lifecycle lives in its own process,
+// tests/findHelperTools.test.ts, same split as tests/devTeamTools.test.ts vs
+// this file for DEV_TEAM_ENABLED.
+function setHelperAvailabilityHandlerDisabled(caller: {
+  role?: 'member' | 'guest' | 'admin' | 'super_admin';
+}) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: 'find-helper-disabled-caller',
+      userName: 'Member',
+      role: caller.role ?? 'member',
+      conversationId: 'convo-set-helper-availability-disabled',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            available: boolean;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['set_helper_availability'];
+}
+
+function findHelperHandlerDisabled(caller: { role?: 'member' | 'guest' | 'admin' | 'super_admin' }) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord',
+      userId: 'find-helper-disabled-caller',
+      userName: 'Member',
+      role: caller.role ?? 'member',
+      conversationId: 'convo-find-helper-disabled',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            topic: string;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['find_helper'];
+}
+
+test('SECURITY: set_helper_availability and find_helper refuse a guest-tier caller before any DB write/read (assertAtLeast re-check, issue #729)', async () => {
+  const setTool = setHelperAvailabilityHandlerDisabled({ role: 'guest' });
+  await assert.rejects(
+    () => setTool.handler({ available: true }),
+    /Permission denied/,
+    'set_helper_availability must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+  const findTool = findHelperHandlerDisabled({ role: 'guest' });
+  await assert.rejects(
+    () => findTool.handler({ topic: 'RAG' }),
+    /Permission denied/,
+    'find_helper must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+});
+
+test('set_helper_availability / find_helper return a friendly disabled message (not an error throw) when FIND_HELPER_ENABLED is off, independent of the allowedTools filtering (issue #729)', async () => {
+  assert.equal(
+    config.findHelper.enabled,
+    false,
+    'precondition: find-helper feature is off in this test process',
+  );
+  const setTool = setHelperAvailabilityHandlerDisabled({});
+  const setResult = await setTool.handler({ available: true });
+  assert.equal(setResult.isError, true);
+  assert.match(
+    setResult.content[0]?.text ?? '',
+    /not enabled/i,
+    'disabled feature must return a friendly message',
+  );
+
+  const findTool = findHelperHandlerDisabled({});
+  const findResult = await findTool.handler({ topic: 'RAG' });
+  assert.equal(findResult.isError, true);
+  assert.match(
+    findResult.content[0]?.text ?? '',
+    /not enabled/i,
+    'disabled feature must return a friendly message',
+  );
+});
 
 // list_events tool handler (issue #388): the read counterpart to create_event
 // (issue #230). No arguments, no CONFIRM — the fetch/filter/sort/cache logic

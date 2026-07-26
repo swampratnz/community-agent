@@ -535,8 +535,10 @@ flags (issue #535): `toolsForRole` itself drops Discord-only tools
 gated on a Discord-only `PlatformAdapter` capability, per
 `DISCORD_ONLY_TOOLS` in `src/auth/rbac.ts`) on WhatsApp, and
 `buildQueryOptions` (`src/agent/core.ts`) further drops `generate_image`/
-`suggest_issue`/the 6 `dev_team_*` tools when their respective
-`IMAGE_GEN_ENABLED`/`GITHUB_ISSUE_ENABLED`/`DEV_TEAM_ENABLED` flag is off. So
+`suggest_issue`/the 6 `dev_team_*` tools/`set_helper_availability`+`find_helper`
+when their respective
+`IMAGE_GEN_ENABLED`/`GITHUB_ISSUE_ENABLED`/`DEV_TEAM_ENABLED`/`FIND_HELPER_ENABLED`
+flag is off. So
 the "isn't even offered to the model" property holds for these tools too, not
 just tier gating — a tool nothing on this deployment can ever successfully
 call never reaches the model's context. Each handler's own flag/capability
@@ -558,6 +560,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718) | ❌ | ✅ | ✅ | ✅ |
 | `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718) | ❌ | ✅ | ✅ | ✅ |
+| `set_helper_availability` (opt in/out of being notified for `find_helper` requests matching the caller's own published interests; requires an existing `set_my_interests` row; instantly reversible, no CONFIRM) / `find_helper` (ask for member-to-member help; embedding-matches `topic` against opted-in helpers and sends AT MOST ONE DM, to the single best eligible candidate — never a broadcast, never a name/handle disclosed back to the requester; both rate-capped, both behind `FIND_HELPER_ENABLED`, off by default — issue #729) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `set_language_preference` (standing reply-language preference: auto/en/mi; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `react_to_message` (emoji ack instead of a text reply; closed ✅/👍/👀/🎉 allowlist, target must be a message the bot has seen in the caller's own conversation, rate-capped 20/24h; Discord only) | ❌ | ✅ | ✅ | ✅ |
@@ -592,6 +595,44 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `admin_activity` (per-admin `admin_audit` action-volume rollup over a trailing window — days-windowed, read-only, unscoped; the aggregated complement to `audit_view`'s flat log; issue #488) | ❌ | ❌ | ❌ | ✅ |
 | `feature_flags` (grouped On/Off listing of the ~28 boolean `*_ENABLED` config flags plus a small "Other configured knobs" section of 5 non-boolean knobs, both from fixed allowlists; no arguments, read-only, no CONFIRM; issues #559, #616) | ❌ | ❌ | ❌ | ✅ |
 | `redeploy_bot` (trigger an immediate redeploy from `origin/main`; no arguments, confirm-gated) | ❌ | ❌ | ❌ | ✅ |
+
+### Peer help handoff (`set_helper_availability` / `find_helper`, issue #729)
+
+The active-side consumer of #634's `member_interests`/`who_is_into`: a
+`willing_to_help` boolean rides the caller's own `member_interests` row
+(`set_helper_availability` refuses with a pointer to `set_my_interests` if
+that row doesn't exist yet — matching needs the published text/embedding to
+work at all). `find_helper(topic)` embeds `topic` with the same local,
+offline `embed()` `who_is_into` already uses, matches against
+`willing_to_help = true` rows only (excluding the caller's own, even if it is
+itself `willing_to_help = true`), and walks candidates best-match-first. This
+is the first proactive, bot-initiated member→member DM in the system — an
+adversarial review escalated it `needs-human` over exactly that precedent and
+an asymmetric disclosure (the requester's own result never reveals who — or
+whether — was contacted, but the helper's DM does name the requester so they
+know who to reply to) before the owner approved it.
+
+Two independent, DB-backed rolling-window caps in a new `helper_notifications`
+log (never in-memory counters, so both survive a restart): a per-helper
+`FIND_HELPER_WEEKLY_LIMIT_PER_HELPER` (default 3/7 days) skips an over-quota
+candidate in favour of the next one, and a per-requester
+`FIND_HELPER_REQUESTER_DAILY_LIMIT` (default 3/24h) refuses before any
+matching runs at all. At most one DM is ever sent per call, regardless of how
+many candidates matched. The DM reuses the exact `sendDirectMessage` /
+`WindowClosedError` → `queueForWindowReopen` best-effort pattern
+`notifySuggestionResolved`/`notifyKnowledgeTipResolved` already establish, and
+wraps the requester-supplied `topic` in the same `untrusted()` quarantine
+`list_answer_feedback`'s comment field uses before it reaches a different
+member's DM. Both tools sit behind `FIND_HELPER_ENABLED` (off by default),
+dropped from `allowedTools` entirely when off (issue #535's convention)
+in addition to each handler's own defense-in-depth refusal.
+
+Purge coverage: `willing_to_help` rides the existing `member_interests` row,
+so `purgeSingleIdentity`/`markRosterLeave`'s existing `member_interests`
+delete already covers it with zero new code. `helper_notifications` is new,
+so both purge paths gained one new statement each, deleting a departed
+identity's rows in EITHER role (as the notified helper, or as the requester
+who triggered the notification).
 
 Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),
