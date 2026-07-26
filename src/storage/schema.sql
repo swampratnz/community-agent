@@ -359,6 +359,13 @@ CREATE TABLE IF NOT EXISTS member_interests (
 CREATE INDEX IF NOT EXISTS member_interests_embedding_idx
   ON member_interests USING hnsw (embedding vector_cosine_ops);
 
+-- Opt-in "notify me to help" flag for find_helper (issue #729) — rides the
+-- existing member_interests row rather than a new table, so the existing
+-- purgeSingleIdentity/markRosterLeave deletes of member_interests already
+-- cover it with zero new purge code. Same ADD COLUMN IF NOT EXISTS
+-- convention as member_projects.removed_at below.
+ALTER TABLE member_interests ADD COLUMN IF NOT EXISTS willing_to_help BOOLEAN NOT NULL DEFAULT false;
+
 -- ---------------------------------------------------------------------------
 -- Member-declared project showcase (issue #646) — the second instance of
 -- #634's self-declared-member-table pattern: opt-in, self-scoped, embedded,
@@ -413,6 +420,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS member_projects_active_name_idx
 
 CREATE INDEX IF NOT EXISTS member_projects_embedding_idx
   ON member_projects USING hnsw (embedding vector_cosine_ops);
+
+-- ---------------------------------------------------------------------------
+-- Notification log for find_helper's opt-in member-to-member help handoff
+-- (issue #729) — the active-side consumer of member_interests.willing_to_help
+-- above. Backs both the per-helper rolling-7-day cap and the per-requester
+-- rolling-24h cap (repository.ts recordHelperNotificationIfUnderCap /
+-- isFindHelperRequesterAtDailyCap), DB-backed so neither is an in-memory
+-- counter that resets on restart. Also gives purgeSingleIdentity/
+-- markRosterLeave rows to delete in EITHER role (helper or requester).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS helper_notifications (
+  id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  helper_platform    TEXT        NOT NULL,
+  helper_user_id     TEXT        NOT NULL,
+  requester_platform TEXT        NOT NULL,
+  requester_user_id  TEXT        NOT NULL,
+  topic              TEXT        NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Backs the per-helper rolling-7-day cap check inside
+-- recordHelperNotificationIfUnderCap's own INSERT ... WHERE (SELECT ...).
+CREATE INDEX IF NOT EXISTS helper_notifications_helper_idx
+  ON helper_notifications (helper_platform, helper_user_id, created_at DESC);
+
+-- Backs the per-requester rolling-24h cap check in
+-- isFindHelperRequesterAtDailyCap.
+CREATE INDEX IF NOT EXISTS helper_notifications_requester_idx
+  ON helper_notifications (requester_platform, requester_user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Admin-curated context notes about known community members (issue #45).

@@ -111,11 +111,18 @@ import {
   getLanguagePreference,
   getResponseStyle,
   type ResponseStyle,
+  setHelperAvailability,
   setLanguagePreference,
   setMemberInterests,
   setResponseStyle,
   searchMemberInterests,
   shareProject,
+  findHelperCandidates,
+  recordHelperNotificationIfUnderCap,
+  isFindHelperRequesterAtDailyCap,
+  FIND_HELPER_TOPIC_MAX_CHARS,
+  FIND_HELPER_REQUESTER_DAILY_LIMIT,
+  FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
   withdrawOwnReports,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
@@ -1209,6 +1216,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'MEMBER_DIGEST_ENABLED',
     configPath: 'memberDigest.enabled',
     label: 'Weekly member-facing digest',
+    category: 'Community',
+  },
+  {
+    envVar: 'FIND_HELPER_ENABLED',
+    configPath: 'findHelper.enabled',
+    label: 'Peer help handoff (find_helper)',
     category: 'Community',
   },
 ] as const;
@@ -3812,6 +3825,114 @@ export function buildToolServer(
       return text(await formatInterestResults(hits));
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const setHelperAvailabilityTool = tool(
+    'set_helper_availability',
+    "Opt in or out of being notified when another member's find_helper topic matches the caller's own " +
+      'published interests (set via set_my_interests). Requires an existing published interests row — call ' +
+      "set_my_interests first if you haven't. Instantly reversible, same shape as set_response_style. Behind " +
+      'a feature flag; if unavailable on this server, this tool will not appear at all.',
+    {
+      available: z
+        .boolean()
+        .describe(
+          'true to opt in to being notified for find_helper requests matching your published interests; ' +
+            'false to opt out',
+        ),
+    },
+    async (args) => {
+      // MEMBER_TOOLS' floor re-check discipline for a self-service write that
+      // reaches other members, same as set_my_interests/share_project above.
+      assertAtLeast(caller.role, 'member', 'set_helper_availability');
+      if (!config.findHelper.enabled) {
+        return text('Peer-help handoff is not enabled on this server.', true);
+      }
+      const result = await setHelperAvailability(caller.platform, caller.userId, args.available);
+      if (!result.ok) {
+        return text(
+          "You don't have published interests yet — call set_my_interests first, then " +
+            'set_helper_availability can turn on notifications for topics matching them.',
+          true,
+        );
+      }
+      return text(
+        args.available
+          ? `You'll now be notified (at most ${FIND_HELPER_WEEKLY_LIMIT_PER_HELPER} times a week) when ` +
+              "another member's find_helper topic matches your published interests."
+          : "You won't be notified for find_helper requests anymore.",
+      );
+    },
+  );
+
+  const findHelperTool = tool(
+    'find_helper',
+    'Ask for member-to-member help on a topic. Matches your topic against members who have opted in via ' +
+      'set_helper_availability(true) and sends AT MOST ONE direct message, to the single best match — never ' +
+      'a broadcast. Never reveals who (if anyone) was contacted, their handle, or their interest text — only ' +
+      `whether someone was reached. Capped to ${FIND_HELPER_REQUESTER_DAILY_LIMIT} calls per rolling 24 hours. ` +
+      'Behind a feature flag; if unavailable on this server, this tool will not appear at all.',
+    {
+      topic: z
+        .string()
+        .min(1)
+        .max(FIND_HELPER_TOPIC_MAX_CHARS)
+        .describe(`What you need help with (max ${FIND_HELPER_TOPIC_MAX_CHARS} characters)`),
+    },
+    async (args) => {
+      assertAtLeast(caller.role, 'member', 'find_helper');
+      if (!config.findHelper.enabled) {
+        return text('Peer-help handoff is not enabled on this server.', true);
+      }
+      if (await isFindHelperRequesterAtDailyCap(caller.platform, caller.userId)) {
+        return text(
+          `You've hit today's ask-for-help limit (${FIND_HELPER_REQUESTER_DAILY_LIMIT}). Try again tomorrow.`,
+          true,
+        );
+      }
+      // Walks best-match-first; the FIRST candidate under its own weekly cap
+      // wins and the loop stops — at most one DM is ever sent per call
+      // (issue #729 SECURITY criterion), regardless of how many candidates
+      // matched. A candidate on a platform with no registered adapter in
+      // this deployment is skipped without consuming their weekly cap slot.
+      const candidates = await findHelperCandidates(args.topic, caller.platform, caller.userId);
+      for (const candidate of candidates) {
+        const target = adapterFor(candidate.platform);
+        if (!target) continue;
+        const claimed = await recordHelperNotificationIfUnderCap(
+          candidate.platform,
+          candidate.userId,
+          caller.platform,
+          caller.userId,
+          args.topic,
+        );
+        if (!claimed) continue;
+        const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
+        // untrusted() quarantines the requester's free-text topic before it
+        // reaches a DIFFERENT member's DM (issue #729 SECURITY criterion) —
+        // same discipline list_answer_feedback's comment field already uses.
+        const message =
+          `${requesterLabel} could use some help with something you're into — reach out if you're able to.\n` +
+          untrusted('topic', args.topic);
+        // Best-effort send, same fire-and-forget/WindowClosedError-queue
+        // shape as notifySuggestionResolved/notifyReportResolved — a failed
+        // or queued send still counts as "the one DM this call sends" (the
+        // notification row above is already committed).
+        await target.sendDirectMessage(candidate.userId, message).catch((err) => {
+          if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+            target.queueForWindowReopen(candidate.userId, message, 'low');
+            logger.warn(
+              { userId: hashId(candidate.userId), platform: candidate.platform },
+              "find_helper DM: recipient's window is closed, queued for reopen",
+            );
+            return;
+          }
+          logger.warn({ err, userId: hashId(candidate.userId) }, 'find_helper DM failed');
+        });
+        return text('Reached out to someone who may be able to help — hang tight.');
+      }
+      return text('No one available to help with that right now.');
+    },
   );
 
   const shareProjectTool = tool(
@@ -6994,6 +7115,8 @@ export function buildToolServer(
       reactToMessage,
       setMyInterestsTool,
       whoIsIntoTool,
+      setHelperAvailabilityTool,
+      findHelperTool,
       shareProjectTool,
       listProjectsTool,
       whatsNew,
