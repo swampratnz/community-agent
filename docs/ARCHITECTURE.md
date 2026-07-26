@@ -1542,7 +1542,12 @@ enabled (every message is inspected) — treat it like ambient archiving.
   call per escalated message on the shared Max pool, so it's opt-in. That
   call's model is optionally tiered by `AGENT_MODEL_CLASSIFIER` (issue #394):
   unset (default) it uses `AGENT_MODEL` like every other call; set, it runs
-  the fixed-format, tool-less classification on a lighter model instead.
+  the fixed-format, tool-less classification on a lighter model instead. The
+  verdict is schema-constrained via the SDK's `outputFormat: { type:
+  'json_schema' }`, read off `structured_output` (issue #720) — not parsed
+  from free text — so a model response that judges "abuse" but phrases it
+  oddly (a preamble, extra commentary, a reformatted line) still yields a
+  decisive verdict instead of silently falling back to "clean".
 - **Strikes** live in `member_warnings` (keyed on raw `(platform, user_id)`,
   like `response_style_prefs`). Each detection records one `source='auto'`
   warning; the member gets a warning DM and the alert goes to a private

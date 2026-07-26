@@ -24,6 +24,7 @@ function mockQuery(args: { prompt: string; options: Record<string, unknown> }) {
       type: 'result',
       subtype: 'success',
       result: 'CLEAN',
+      structured_output: { verdict: 'CLEAN' },
       session_id: 'sess-1',
       total_cost_usd: 0,
     };

@@ -16,8 +16,8 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 
-type MockResult = { result?: string; totalCostUsd?: unknown };
-let nextResult: MockResult = { result: 'CLEAN', totalCostUsd: 0 };
+type MockResult = { result?: string; totalCostUsd?: unknown; structuredOutput?: unknown };
+let nextResult: MockResult = { result: 'CLEAN', totalCostUsd: 0, structuredOutput: { verdict: 'CLEAN' } };
 
 function mockQuery() {
   return (async function* () {
@@ -28,6 +28,7 @@ function mockQuery() {
     };
     if (nextResult.result !== undefined) msg.result = nextResult.result;
     if (nextResult.totalCostUsd !== undefined) msg.total_cost_usd = nextResult.totalCostUsd;
+    if (nextResult.structuredOutput !== undefined) msg.structured_output = nextResult.structuredOutput;
     yield msg;
   })();
 }
@@ -81,7 +82,7 @@ test('classifyAbuseWithLlm: a positive total_cost_usd records a moderation_llm b
   const { classifyAbuseWithLlm } = await modules(t);
   recordCalls = [];
   recordShouldReject = false;
-  nextResult = { result: 'CLEAN', totalCostUsd: 0.0042 };
+  nextResult = { result: 'CLEAN', totalCostUsd: 0.0042, structuredOutput: { verdict: 'CLEAN' } };
 
   await classifyAbuseWithLlm('some test message');
 
@@ -94,7 +95,7 @@ test('classifyAbuseWithLlm: total_cost_usd absent, 0, or non-numeric records no 
   for (const totalCostUsd of [undefined, 0, NaN, 'not-a-number']) {
     recordCalls = [];
     recordShouldReject = false;
-    nextResult = { result: 'CLEAN', totalCostUsd };
+    nextResult = { result: 'CLEAN', totalCostUsd, structuredOutput: { verdict: 'CLEAN' } };
     await classifyAbuseWithLlm('some test message');
     assert.deepEqual(recordCalls, [], `no row recorded for total_cost_usd = ${String(totalCostUsd)}`);
   }
@@ -104,7 +105,11 @@ test('SECURITY: classifyAbuseWithLlm still returns its normal result when record
   const { classifyAbuseWithLlm } = await modules(t);
   recordCalls = [];
   recordShouldReject = true;
-  nextResult = { result: 'ABUSE: targeted insult', totalCostUsd: 0.01 };
+  nextResult = {
+    result: 'ABUSE: targeted insult',
+    totalCostUsd: 0.01,
+    structuredOutput: { verdict: 'ABUSE', reason: 'targeted insult' },
+  };
 
   const detection = await classifyAbuseWithLlm('some test message');
 

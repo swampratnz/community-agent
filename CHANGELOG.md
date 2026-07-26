@@ -12,6 +12,19 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-27
 
+### Fixed
+- **The moderation abuse classifier no longer silently misses abuse on a
+  format slip** (#720). Stage 2 of auto-moderation (`MODERATION_LLM_ABUSE_ENABLED`)
+  used to ask the model for one line of free text and parse it with a regex;
+  any reply that didn't match exactly — a preamble, a reformatted line, extra
+  commentary — silently fell back to "clean", indistinguishable from a
+  genuine not-abusive call. The verdict is now schema-constrained via the
+  SDK's structured output, so a model that correctly judges a message
+  abusive but phrases its answer oddly still returns a decisive result. A
+  missing or malformed structured response now throws instead of defaulting
+  to clean, preserving the existing "never cache a failed call as clean"
+  guarantee.
+
 ### Added
 - **`who_is_into` and `list_projects` now cross-reference each other** (#718),
   closing the growth path both #634 and #646 named in their own follow-up
