@@ -399,22 +399,6 @@ jobs:
       # branch pushes trigger no workflows. If the remote branch exists with
       # different history (a prior attempt), the checkpoint goes to a unique
       # -ckpt-<run_id> ref instead of force-pushing over anything.
-      # The action streams only init/result frames to the job log ("full
-      # output hidden for security"); the turn-by-turn transcript lives in
-      # claude-execution-output.json on the runner and dies with it. #701
-      # attempt 1 ended 98s after its only commit with no PR, no blocker
-      # comment, and 20 permission denials — and the WHY was unrecoverable
-      # because this file wasn't preserved. Short retention: forensics, not
-      # archive. Named per-attempt so a retry never overwrites it.
-      - name: Preserve agent transcript (forensics)
-        if: always() && env.HAS_TOKEN == 'true' && steps.build.outputs.execution_file != ''
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: claude-execution-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.build.outputs.execution_file }}
-          retention-days: 14
-          if-no-files-found: ignore
-
       - name: Checkpoint unpushed work (deterministic)
         if: always() && env.HAS_TOKEN == 'true'
         env:
@@ -649,3 +633,59 @@ jobs:
           fi
 
           exit 1
+
+      # The action streams only init/result frames to the job log ("full
+      # output hidden for security"); the turn-by-turn transcript lives in
+      # claude-execution-output.json on the runner and normally dies with it.
+      # #701 attempt 1 ended 98s after its only commit with no PR, no blocker
+      # comment, and 20 permission denials — and the WHY was unrecoverable
+      # because this file wasn't preserved. Preserve it for forensics, but on
+      # THIS repo (public) an artifact is world-downloadable and GitHub's
+      # secret masking scrubs only the live log stream, never files — so:
+      # FAILED runs only (`if: failure()` — a green build needs no forensics),
+      # scrubbed of every secret this job holds plus token-shaped patterns
+      # before anything leaves the runner, and short retention. Named
+      # per-attempt so a retry never overwrites it.
+      - name: Scrub agent transcript for forensics (failures only)
+        id: scrub
+        if: failure() && env.HAS_TOKEN == 'true' && steps.build.outputs.execution_file != ''
+        env:
+          EXEC_FILE: ${{ steps.build.outputs.execution_file }}
+          SECRET_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SECRET_GH: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -f "${EXEC_FILE}" ] || { echo "No execution file on disk — nothing to preserve."; exit 0; }
+          python3 - <<'PY'
+          import os, re
+          data = open(os.environ['EXEC_FILE'], encoding='utf-8', errors='replace').read()
+          # Exact-value scrub of every secret this job can see. DATABASE_URL is
+          # a throwaway CI-local URL, but scrub it anyway — defence in depth.
+          for name in ('SECRET_OAUTH', 'SECRET_GH', 'DATABASE_URL'):
+              v = os.environ.get(name) or ''
+              if len(v) >= 8:
+                  data = data.replace(v, f'[redacted:{name}]')
+          # Pattern scrub for token shapes the exact-value pass can't know
+          # (e.g. the app installation token embedded in the remote URL).
+          for p in (
+              r'gh[pousr]_[A-Za-z0-9]{20,}',
+              r'github_pat_[A-Za-z0-9_]{20,}',
+              r'x-access-token:[^@\s"\']+@',
+              r'sk-ant-[A-Za-z0-9_-]{10,}',
+              r'(?i)(authorization["\s:=]+bearer\s+)[A-Za-z0-9._~+/=-]+',
+          ):
+              data = re.sub(p, '[redacted:pattern]', data)
+          out = os.path.join(os.environ.get('RUNNER_TEMP', '/tmp'), 'claude-execution-scrubbed.json')
+          open(out, 'w', encoding='utf-8').write(data)
+          print(f'Scrubbed transcript written to {out} ({len(data)} bytes)')
+          PY
+          echo "scrubbed=${RUNNER_TEMP}/claude-execution-scrubbed.json" >> "$GITHUB_OUTPUT"
+
+      - name: Preserve scrubbed transcript (forensics artifact)
+        if: failure() && env.HAS_TOKEN == 'true' && steps.scrub.outputs.scrubbed != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: claude-execution-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.scrub.outputs.scrubbed }}
+          retention-days: 7
+          if-no-files-found: ignore
