@@ -12,6 +12,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-26
 
+### Added
+- **Accepting or declining a member-submitted knowledge tip now DMs the
+  submitter** (#703), closing the one gap `suggest_knowledge` (#633) shipped
+  with — the one member-initiated flow whose resolution was previously
+  silent to the person who started it. Mirrors the existing
+  suggestion/report/appeal resolution DMs: fire-and-forget, routed to the
+  tip's origin platform, honours a standing `'mi'` language preference, and
+  never blocks the resolution on a send failure. Machine-drafted candidates
+  (from the context builder) are unaffected — they never notify.
+
 ### Fixed
 - **The changelog-coverage check no longer flags its own housekeeping forever**
   (#698): the check lists merged PRs missing a changelog entry, and its

@@ -520,7 +520,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |
 | `list_roster` (joins/leaves/onboarding queue, identity only) | ❌ | ❌ | ✅ *(guild-wide, not conversation-scoped)* | ✅ |
 | `list_context_digests` (offline-distilled community topics) | ❌ | ❌ | ✅ | ✅ |
-| `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest — OR a member's own `suggest_knowledge` tip — into knowledge; member-sourced rows render a `[member-suggested by <name>]` tag; decline no CONFIRM) | ❌ | ❌ | ✅ | ✅ |
+| `list_knowledge_candidates` / `accept_knowledge_candidate` / `decline_knowledge_candidate` (review queue turning a digest — OR a member's own `suggest_knowledge` tip — into knowledge; member-sourced rows render a `[member-suggested by <name>]` tag; decline no CONFIRM; resolving a member-sourced row DMs the submitter, issue #703) | ❌ | ❌ | ✅ | ✅ |
 | `add_member_note` / `list_member_notes` / `delete_member_note` (person-scoped admin context) | ❌ | ❌ | ✅ *(audited; delete confirm-gated)* | ✅ |
 | `question_digest` (recurring-question clusters) | ❌ | ❌ | ✅ *their conversations* | ✅ all |
 | `admin_digest` (on-demand pull of the caller's own weekly admin-digest snapshot; no arguments, no CONFIRM — never affects the weekly push's cadence) | ❌ | ❌ | ✅ *caller only* | ✅ |
@@ -1025,6 +1025,24 @@ and review flow above, rather than a separate table or a privileged surface:
   above (which only removes a still-pending *machine* row). A member's own
   attributed submission is their data to erase regardless of review status;
   rows with `source_user_id IS NULL` never match this predicate.
+- **Resolution DM (issue #703)**: closes the one gap #633 shipped with —
+  accepting or declining a candidate now best-effort DMs the submitter, but
+  ONLY when the row is member-sourced (`source_user_id` non-null); a
+  machine-drafted candidate never notifies on either path, since there's no
+  member to tell. Mirrors `resolve_appeal`'s `notifyAppealResolved` DM
+  (issue #622) almost exactly: `notifyKnowledgeTipResolved` routes via
+  `adapterFor(candidate.sourcePlatform)` — the tip's *origin* platform, taken
+  from the persisted row, never any `accept_knowledge_candidate`/
+  `decline_knowledge_candidate` argument — degrading to a silent skip if that
+  platform isn't registered in this deployment; honours the submitter's
+  standing `'mi'` language preference (degrading to `'auto'` on a lookup
+  failure); queues via `queueForWindowReopen` at `'low'` priority on a
+  WhatsApp `WindowClosedError` instead of dropping the DM (issue #644); and
+  never blocks or reverses the resolution on a send failure
+  (`.catch(logger.warn)`). The accepted wording names the tip's (possibly
+  admin-overridden) title; the declined wording is neutral-to-supportive,
+  same as `resolve_appeal`'s `dismissed` case — `decline_knowledge_candidate`
+  takes no reason argument, so nothing is fabricated.
 
 ### Knowledge gaps (issue #208)
 

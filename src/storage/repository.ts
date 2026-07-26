@@ -3462,7 +3462,14 @@ export async function acceptKnowledgeCandidate(input: {
   reviewedBy: string;
   sourceUrl?: string;
   sourceTitle?: string;
-}): Promise<{ candidateId: number; knowledgeId: number; similarEntry?: KnowledgeDuplicateMatch } | null> {
+}): Promise<{
+  candidateId: number;
+  knowledgeId: number;
+  similarEntry?: KnowledgeDuplicateMatch;
+  title: string;
+  sourcePlatform: Platform | null;
+  sourceUserId: string | null;
+} | null> {
   const { rows } = await pool.query(
     `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at, source_platform, source_user_id
        FROM knowledge_candidates WHERE id = $1 AND status = 'pending'`,
@@ -3471,8 +3478,9 @@ export async function acceptKnowledgeCandidate(input: {
   const candidate = rows[0] ? toKnowledgeCandidate(rows[0]) : null;
   if (!candidate) return null;
 
+  const title = input.title ?? candidate.title;
   const { id: knowledgeId, similarEntry } = await saveKnowledge({
-    title: input.title ?? candidate.title,
+    title,
     content: input.content ?? candidate.content,
     createdByRole: 'admin',
     sourceUrl: input.sourceUrl,
@@ -3484,7 +3492,14 @@ export async function acceptKnowledgeCandidate(input: {
     [input.id, input.reviewedBy],
   );
 
-  return { candidateId: candidate.id, knowledgeId, similarEntry };
+  return {
+    candidateId: candidate.id,
+    knowledgeId,
+    similarEntry,
+    title,
+    sourcePlatform: candidate.sourcePlatform,
+    sourceUserId: candidate.sourceUserId,
+  };
 }
 
 /**
