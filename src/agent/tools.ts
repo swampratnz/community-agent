@@ -1040,6 +1040,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Knowledge & Learning',
   },
   {
+    envVar: 'RELEASE_WATCH_ENABLED',
+    configPath: 'releaseWatch.enabled',
+    label: 'Anthropic release/deprecation watcher',
+    category: 'Knowledge & Learning',
+  },
+  {
     envVar: 'KNOWLEDGE_LINK_CHECK_ENABLED',
     configPath: 'knowledgeLinkCheck.enabled',
     label: 'Knowledge link check',
