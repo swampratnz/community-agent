@@ -3867,6 +3867,17 @@ export const FIND_HELPER_CANDIDATE_SCAN_LIMIT = 10;
 export const FIND_HELPER_WEEKLY_LIMIT_PER_HELPER = 3;
 /** Per-requester cap on find_helper calls in a rolling 24h — prevents looping over topics to exhaust many helpers' weekly quotas. */
 export const FIND_HELPER_REQUESTER_DAILY_LIMIT = 3;
+/**
+ * Minimum cosine similarity for a willing_to_help row to count as a genuine
+ * match — same floor and same embedding model as
+ * KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD. Without this, findHelperCandidates
+ * would always return the nearest-ranked willing helper regardless of actual
+ * relevance (searchMemberInterests/who_is_into has the same no-floor shape,
+ * but it only ever surfaces a list for the REQUESTER to judge; find_helper
+ * acts on the match autonomously by sending a DM, so "match" must mean
+ * something or AC #5's "no one available" outcome could never be reached).
+ */
+export const FIND_HELPER_RELEVANCE_THRESHOLD = KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD;
 
 export type SetHelperAvailabilityResult = { ok: true } | { ok: false; reason: 'no_interests_row' };
 
@@ -3941,9 +3952,10 @@ export async function findHelperCandidates(
        FROM member_interests
       WHERE willing_to_help = true AND embedding IS NOT NULL
         AND NOT (platform = $2 AND user_id = $3)
+        AND 1 - (embedding <=> $1) >= $5
       ORDER BY embedding <=> $1
       LIMIT $4`,
-    [pgvector.toSql(queryVec), excludePlatform, excludeUserId, limit],
+    [pgvector.toSql(queryVec), excludePlatform, excludeUserId, limit, FIND_HELPER_RELEVANCE_THRESHOLD],
   );
   return rows.map((r) => ({ platform: r.platform as Platform, userId: r.user_id }));
 }

@@ -12,6 +12,23 @@ for anything after ~noon NZST/NZDT). Get today's date with
 
 ## 2026-07-27
 
+### Added
+- **Opt-in "can someone help with X" member-to-member handoff** (#729,
+  `FIND_HELPER_ENABLED`, off by default), the active-side consumer of #634's
+  `who_is_into`: `set_helper_availability(available)` lets a member (who has
+  already published interests via `set_my_interests`) opt in to being
+  notified about matching requests, and `find_helper(topic)` embeds the topic
+  and sends **at most one** DM, to the single best-matching opted-in member —
+  never a broadcast, and the requester's own reply never reveals who (or
+  whether) anyone was contacted. Double rate-capped (a per-helper weekly cap
+  that skips an over-quota candidate for the next one, and a per-requester
+  daily cap checked before any matching runs), both DB-backed so neither
+  resets on a restart, and matching requires a minimum relevance similarity so
+  "no one available" is a reachable outcome rather than always finding
+  *someone*, however unrelated. This is the first proactive, bot-initiated
+  member-to-member DM in the system; an adversarial review flagged that
+  precedent for explicit owner sign-off before it shipped.
+
 ### Fixed
 - **The moderation abuse classifier no longer silently misses abuse on a
   format slip** (#720). Stage 2 of auto-moderation (`MODERATION_LLM_ABUSE_ENABLED`)

@@ -48,10 +48,11 @@ test('SECURITY: settingSources is empty for every tier (host ~/.claude config is
   }
 });
 
-// The 9 tools issue #535 filters out of allowedTools when their config flag
-// is off (default). Kept in one place here so the two tests below (the
-// no-drift pin and the default-config exclusion pin) can't silently disagree
-// about which tools are feature-flagged.
+// The 11 tools issue #535 (extended by issue #729) filters out of
+// allowedTools when their config flag is off (default). Kept in one place
+// here so the two tests below (the no-drift pin and the default-config
+// exclusion pin) can't silently disagree about which tools are
+// feature-flagged.
 const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__generate_image',
   'mcp__community__suggest_issue',
@@ -61,14 +62,18 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__dev_team_backlog',
   'mcp__community__dev_team_findings',
   'mcp__community__dev_team_verify',
+  'mcp__community__set_helper_availability',
+  'mcp__community__find_helper',
 ] as const;
 
 test('SECURITY: allowedTools tracks toolsForRole exactly, modulo feature-flag/platform filtering — no drift between rbac.ts and core.ts', () => {
   // Default config (this test process sets none of IMAGE_GEN_ENABLED /
-  // GITHUB_ISSUE_ENABLED / DEV_TEAM_ENABLED) — all three flags are off.
+  // GITHUB_ISSUE_ENABLED / DEV_TEAM_ENABLED / FIND_HELPER_ENABLED) — all four
+  // flags are off.
   assert.equal(config.imageGen.enabled, false, 'precondition: image-gen is off in this test process');
   assert.equal(config.github.enabled, false, 'precondition: github-issue is off in this test process');
   assert.equal(config.devTeam.enabled, false, 'precondition: dev-team is off in this test process');
+  assert.equal(config.findHelper.enabled, false, 'precondition: find-helper is off in this test process');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     for (const platform of ['discord', 'whatsapp'] as const) {
       const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', platform);

@@ -1458,6 +1458,8 @@ const MEMBER_CAPABILITIES_TEXT =
   'project", "what has everyone built?")\n' +
   '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
   'who\'s into RAG", "who\'s working on Discord bots?")\n' +
+  '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
+  'X?"), or opt in/out of being notified for other members\' requests\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
