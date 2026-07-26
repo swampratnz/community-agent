@@ -80,7 +80,7 @@
   "knowledgeShortcutRouter.test.ts": 3,
   "linkCheck.test.ts": 13,
   "lowRatedCaveatRouter.test.ts": 1,
-  "memberDigest.test.ts": 10,
+  "memberDigest.test.ts": 14,
   "moderation.test.ts": 14,
   "moderationRepo.test.ts": 4,
   "notifyAdminsAccessRequestUnqueued.test.ts": 13,

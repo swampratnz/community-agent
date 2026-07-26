@@ -32,7 +32,9 @@ const {
   wasMemberDigestSentRecently,
   recordMemberDigestSent,
   listCuratedKnowledgeCreatedSince,
+  listReleaseWatchUpdatesSince,
   saveKnowledge,
+  updateKnowledge,
   countProjectsSharedSince,
   shareProject,
 } = await import('../src/storage/repository.js');
@@ -202,6 +204,80 @@ test('formatMemberDigestMessage: project section renders last, after topics and 
   );
 });
 
+// --- formatMemberDigestMessage: release-watch section (issue #733) ---------
+
+test('formatMemberDigestMessage: omitting the 4th argument renders byte-identical to explicitly passing an empty array — existing call sites are unaffected', () => {
+  const withoutArg = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+  );
+  const withEmptyArray = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [],
+  );
+  assert.equal(withoutArg, withEmptyArray);
+});
+
+test('formatMemberDigestMessage: a quiet week across all four inputs (topics, knowledge, projects, release-watch) still renders null', () => {
+  assert.equal(formatMemberDigestMessage([], [], 0, []), null);
+});
+
+test('formatMemberDigestMessage: releaseWatchPages only renders the release-watch section, no other sections', () => {
+  const message = formatMemberDigestMessage([], [], 0, [
+    {
+      title: 'docs: release-notes/overview',
+      url: 'https://platform.claude.com/docs/en/release-notes/overview',
+    },
+  ]);
+  assert.equal(
+    message,
+    '🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/docs/en/release-notes/overview)',
+  );
+  assert.doesNotMatch(message ?? '', /This week's topics|knowledge base|showcase/i);
+});
+
+test('formatMemberDigestMessage: a release-watch page with a null url renders its bare title, not a markdown link', () => {
+  const message = formatMemberDigestMessage([], [], 0, [
+    { title: 'docs: about-claude/model-deprecations', url: null },
+  ]);
+  assert.equal(message, '🆕 Anthropic platform updates this week: docs: about-claude/model-deprecations');
+  assert.doesNotMatch(message ?? '', /\[.*\]\(.*\)/, 'no markdown link syntax when url is null');
+});
+
+test('formatMemberDigestMessage: multiple release-watch pages are comma-joined', () => {
+  const message = formatMemberDigestMessage([], [], 0, [
+    { title: 'docs: release-notes/overview', url: 'https://platform.claude.com/a' },
+    { title: 'docs: about-claude/model-deprecations', url: null },
+  ]);
+  assert.equal(
+    message,
+    '🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/a), docs: about-claude/model-deprecations',
+  );
+});
+
+test('formatMemberDigestMessage: release-watch section renders last, after topics, knowledge-base, and project sections', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: 'https://platform.claude.com/a' }],
+  );
+  assert.equal(
+    message,
+    "📅 This week's topics:\n• MCP server auth (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.\n\n🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/a)",
+  );
+});
+
+test('formatMemberDigestMessage: an only-release-watch week (all other inputs empty) still returns a non-null message containing only that section', () => {
+  const message = formatMemberDigestMessage([], [], 0, [
+    { title: 'docs: release-notes/overview', url: null },
+  ]);
+  assert.equal(message, '🆕 Anthropic platform updates this week: docs: release-notes/overview');
+});
+
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
 
 test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a no-op — no send, no freshness read', async () => {
@@ -349,6 +425,105 @@ test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact sa
     'getNewProjectCount receives the exact same since instant as getNewKnowledgeTitles',
   );
   assert.equal(sent.length, 0, 'both inputs still empty this run — nothing to post');
+});
+
+// --- makeDefaultMemberDigestRun: release-watch wiring (issue #733) ---------
+
+test('SECURITY: makeDefaultMemberDigestRun never calls getReleaseWatchUpdates when RELEASE_WATCH_ENABLED is unset/false, and the digest is byte-identical to today for a fixture with other content', async () => {
+  const original = config.releaseWatch.enabled;
+  config.releaseWatch.enabled = false;
+  try {
+    const { adapter, sent } = makeAdapter();
+    let releaseWatchCalled = false;
+    const runOnce = makeDefaultMemberDigestRun([adapter], {
+      wasSentRecently: async () => false,
+      getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
+      getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+      getNewProjectCount: async () => 0,
+      getReleaseWatchUpdates: async () => {
+        releaseWatchCalled = true;
+        return [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }];
+      },
+      recordSent: async () => {},
+    });
+    await runOnce();
+    assert.equal(releaseWatchCalled, false, 'the new read is never issued while the flag is off');
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      "📅 This week's topics:\n• MCP server auth (4 questions)\n\n📚 New in the knowledge base (1): Setting up MCP auth",
+      'byte-identical to the pre-#733 output — no release-watch section, even though the injected dep would have returned content',
+    );
+  } finally {
+    config.releaseWatch.enabled = original;
+  }
+});
+
+test('makeDefaultMemberDigestRun: with RELEASE_WATCH_ENABLED true, getReleaseWatchUpdates is called with the shared `since` window and configured doc paths, and its result reaches the sent message', async () => {
+  const originalEnabled = config.releaseWatch.enabled;
+  const originalPaths = config.releaseWatch.docPaths;
+  config.releaseWatch.enabled = true;
+  config.releaseWatch.docPaths = ['release-notes', 'about-claude/model-deprecations'];
+  try {
+    const { adapter, sent } = makeAdapter();
+    let receivedSince: Date | undefined;
+    let receivedPaths: readonly string[] | undefined;
+    const runOnce = makeDefaultMemberDigestRun([adapter], {
+      wasSentRecently: async () => false,
+      getDigests: async () => [],
+      getNewKnowledgeTitles: async (since) => {
+        receivedSince = since;
+        return [];
+      },
+      getNewProjectCount: async () => 0,
+      getReleaseWatchUpdates: async (since, pathPrefixes) => {
+        receivedPaths = pathPrefixes;
+        assert.equal(since.getTime(), receivedSince?.getTime(), 'shares the exact same since instant');
+        return [
+          {
+            pageTitle: 'docs: release-notes/overview',
+            sourceUrl: 'https://platform.claude.com/docs/en/release-notes/overview',
+          },
+        ];
+      },
+      recordSent: async () => {},
+    });
+    await runOnce();
+    assert.deepEqual(receivedPaths, ['release-notes', 'about-claude/model-deprecations']);
+    assert.equal(sent.length, 1);
+    assert.equal(
+      sent[0].text,
+      '🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/docs/en/release-notes/overview)',
+    );
+  } finally {
+    config.releaseWatch.enabled = originalEnabled;
+    config.releaseWatch.docPaths = originalPaths;
+  }
+});
+
+test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero new knowledge, zero new projects) still posts — release-watch is a 4th input to the same null-guard OR condition', async () => {
+  const original = config.releaseWatch.enabled;
+  config.releaseWatch.enabled = true;
+  try {
+    const { adapter, sent } = makeAdapter();
+    let recordCalled = false;
+    const runOnce = makeDefaultMemberDigestRun([adapter], {
+      wasSentRecently: async () => false,
+      getDigests: async () => [],
+      getNewKnowledgeTitles: async () => [],
+      getNewProjectCount: async () => 0,
+      getReleaseWatchUpdates: async () => [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }],
+      recordSent: async () => {
+        recordCalled = true;
+      },
+    });
+    await runOnce();
+    assert.equal(sent.length, 1, 'a week with only a release-watch update still posts');
+    assert.equal(sent[0].text, '🆕 Anthropic platform updates this week: docs: release-notes/overview');
+    assert.equal(recordCalled, true);
+  } finally {
+    config.releaseWatch.enabled = original;
+  }
 });
 
 test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
@@ -629,6 +804,160 @@ test(
     await pool.query('DELETE FROM knowledge WHERE id = $1', [id]);
   },
 );
+
+// --- Repository: release-watch "what changed" line (issue #733, DB-integration) --
+
+test(
+  'repository: listReleaseWatchUpdatesSince groups multiple changed chunks of the same page into a single result, keeping its source_url',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const since = new Date(Date.now() - 3_600_000);
+    const pageTitle = `docs: release-notes/${marker}`;
+    const sourceUrl = `https://platform.claude.com/docs/en/release-notes/${marker}`;
+
+    const { id: chunk1 } = await saveKnowledge({
+      title: `${pageTitle} › intro`,
+      content: `${marker} intro content`,
+      createdByRole: 'docs',
+      sourceUrl,
+    });
+    const { id: chunk2 } = await saveKnowledge({
+      title: `${pageTitle} › details`,
+      content: `${marker} details content`,
+      createdByRole: 'docs',
+      sourceUrl,
+    });
+
+    const results = await listReleaseWatchUpdatesSince(since, ['release-notes'], 50);
+    const matches = results.filter((r) => r.pageTitle === pageTitle);
+    assert.equal(matches.length, 1, 'two changed chunks of the same page report once, not twice');
+    assert.equal(matches[0].sourceUrl, sourceUrl);
+
+    await pool.query('DELETE FROM knowledge WHERE id = ANY($1)', [[chunk1, chunk2]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listReleaseWatchUpdatesSince never returns a created_by_role = 'auto' row, even one whose title collides with a configured prefix",
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-auto`;
+    const since = new Date(Date.now() - 3_600_000);
+    const pageTitle = `docs: release-notes/${marker}`;
+
+    const { id } = await saveKnowledge({
+      title: pageTitle,
+      content: `${marker} adversarial auto-provenance content`,
+      createdByRole: 'auto',
+    });
+
+    const results = await listReleaseWatchUpdatesSince(since, ['release-notes'], 50);
+    assert.ok(
+      !results.some((r) => r.pageTitle === pageTitle),
+      "an 'auto'-provenance (unreviewed/quarantined) row is never surfaced even when its title collides with a configured release-watch prefix",
+    );
+
+    await pool.query('DELETE FROM knowledge WHERE id = $1', [id]);
+  },
+);
+
+test(
+  "SECURITY: repository: listReleaseWatchUpdatesSince excludes a 'docs'-provenance page outside the configured prefixes — the feature cannot broadcast the whole docs corpus's weekly edits",
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-outside`;
+    const since = new Date(Date.now() - 3_600_000);
+    const pageTitle = `docs: api/messages/${marker}`;
+
+    const { id } = await saveKnowledge({
+      title: pageTitle,
+      content: `${marker} ordinary API-reference content, not a release note`,
+      createdByRole: 'docs',
+    });
+
+    const results = await listReleaseWatchUpdatesSince(since, ['release-notes'], 50);
+    assert.ok(
+      !results.some((r) => r.pageTitle === pageTitle),
+      'a docs page outside the configured RELEASE_WATCH_DOC_PATHS prefixes is never surfaced',
+    );
+
+    await pool.query('DELETE FROM knowledge WHERE id = $1', [id]);
+  },
+);
+
+test(
+  "SECURITY: repository: listReleaseWatchUpdatesSince surfaces an existing page merely updated in place (updated_at bumped, created_at unchanged and older than the window) — pinning updated_at-based detection over listCuratedKnowledgeCreatedSince's created_at-only behaviour",
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-updated`;
+    const pageTitle = `docs: release-notes/${marker}`;
+
+    const { id } = await saveKnowledge({
+      title: pageTitle,
+      content: `${marker} original content`,
+      createdByRole: 'docs',
+    });
+    // Simulate a pre-existing, not-yet-edited page: both created_at and
+    // updated_at predate the digest window (saveKnowledge stamps both to
+    // "now" at insert, so updated_at must be backdated too, or the "before"
+    // check below would trivially pass on a page that was just inserted).
+    // Neither column is in the knowledge_set_updated_at trigger's own UPDATE
+    // OF list, so this direct assignment isn't overwritten by the trigger.
+    await pool.query(
+      `UPDATE knowledge SET created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $1`,
+      [id],
+    );
+
+    const since = new Date(Date.now() - 7 * 24 * 3_600_000);
+    const before = await listReleaseWatchUpdatesSince(since, ['release-notes'], 50);
+    assert.ok(
+      !before.some((r) => r.pageTitle === pageTitle),
+      'an old, unedited page is not yet surfaced (created_at is outside the window and it has not been updated since)',
+    );
+
+    // Edit in place — content change bumps updated_at via the
+    // knowledge_set_updated_at trigger; created_at stays untouched.
+    await updateKnowledge({ id, content: `${marker} edited content describing a new release` });
+
+    const after = await listReleaseWatchUpdatesSince(since, ['release-notes'], 50);
+    assert.ok(
+      after.some((r) => r.pageTitle === pageTitle),
+      'an existing page edited in place is surfaced via updated_at — not only newly-created pages',
+    );
+
+    await pool.query('DELETE FROM knowledge WHERE id = $1', [id]);
+  },
+);
+
+test(
+  'repository: listReleaseWatchUpdatesSince excludes entries updated before the since cutoff',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-old`;
+    const pageTitle = `docs: release-notes/${marker}`;
+    const { id } = await saveKnowledge({
+      title: pageTitle,
+      content: `${marker} content`,
+      createdByRole: 'docs',
+    });
+    await pool.query(`UPDATE knowledge SET updated_at = now() - interval '30 days' WHERE id = $1`, [id]);
+
+    const since = new Date(Date.now() - 7 * 24 * 3_600_000);
+    const results = await listReleaseWatchUpdatesSince(since, ['release-notes'], 50);
+    assert.ok(
+      !results.some((r) => r.pageTitle === pageTitle),
+      'an entry updated before the window is excluded',
+    );
+
+    await pool.query('DELETE FROM knowledge WHERE id = $1', [id]);
+  },
+);
+
+test('repository: listReleaseWatchUpdatesSince returns [] immediately when pathPrefixes is empty', async () => {
+  const results = await listReleaseWatchUpdatesSince(new Date(0), [], 50);
+  assert.deepEqual(results, []);
+});
 
 // --- Repository: project-showcase count (issue #714, DB-integration) -------
 
