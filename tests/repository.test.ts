@@ -132,6 +132,7 @@ const {
   getLanguagePreference,
   setLanguagePreference,
   createAnswerFeedback,
+  answerFeedbackGrounding,
   listAnswerFeedback,
   listKnowledgeFeedbackSummary,
   isKnowledgeLowRated,
@@ -2213,7 +2214,7 @@ test(
 );
 
 test(
-  "SECURITY: repository: purgeUserData deletes the caller's OWN member-sourced knowledge_candidates rows (suggest_knowledge) in EVERY status — pending AND accepted AND declined — while a machine-drafted row (source_user_id IS NULL) is untouched (issue #633)",
+  "SECURITY: repository: purgeUserData deletes the caller's OWN member-sourced knowledge_candidates rows — both suggest_knowledge tips AND rate_answer-drafted candidates (issue #726, same createKnowledgeTip write path) — in EVERY status — pending AND accepted AND declined — while a machine-drafted row (source_user_id IS NULL) is untouched (issue #633)",
   { skip },
   async () => {
     const platform = 'discord';
@@ -2241,7 +2242,18 @@ test(
       title: 'Will be declined tip',
       content: 'declined tip content',
     });
-    assert.ok(pending && toAccept && toDecline);
+    // Shaped like the rate_answer implicit-drafting path (issue #726):
+    // topic/title = the recovered question, content = the answer — but
+    // written through the exact SAME createKnowledgeTip call, so there is no
+    // separate purge predicate to pin; this just proves that shape purges too.
+    const pendingImplicit = await createKnowledgeTip({
+      platform,
+      userId: victim,
+      topic: `${RUN} how do I reset my Zylotrix widget`,
+      title: `${RUN} how do I reset my Zylotrix widget`,
+      content: 'hold the reset button for five seconds',
+    });
+    assert.ok(pending && toAccept && toDecline && pendingImplicit);
     const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
     assert.ok(accepted);
     const declined = await declineKnowledgeCandidate(toDecline.id, 'admin-1');
@@ -10553,6 +10565,171 @@ test(
     await pool.query(`DELETE FROM answer_feedback WHERE conversation_id = $1`, [conversationId]);
   },
 );
+
+test(
+  "repository: createAnswerFeedback's success return additively includes interactionId, matching the resolved outbound interaction — the existing {id}/'no_recent_answer'/'rate_limited' discriminant is unchanged (issue #726 AC8)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-feedback-interaction-id-field`;
+    const conversationId = `${RUN}-c-feedback-interaction-id-field`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the answer whose id must be threaded back',
+      meta: { replyToUserId: userId },
+    });
+    const result = await createAnswerFeedback({ platform: 'discord', conversationId, userId, helpful: true });
+    if (result === 'no_recent_answer' || result === 'rate_limited') {
+      assert.fail(`expected the rating to be recorded, got "${result}"`);
+    }
+    assert.equal(typeof result.id, 'number');
+    assert.equal(typeof result.interactionId, 'number');
+
+    const outboundRow = await pool.query(
+      `SELECT id FROM interactions WHERE conversation_id = $1 AND direction = 'outbound'`,
+      [conversationId],
+    );
+    assert.equal(outboundRow.rows.length, 1);
+    assert.equal(
+      result.interactionId,
+      Number(outboundRow.rows[0].id),
+      'interactionId names the SAME outbound row resolveAnswerFeedbackTarget bound the rating to',
+    );
+
+    await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+// --- answerFeedbackGrounding (issue #726): the grounding lookup rate_answer's
+// implicit knowledge-candidate drafting is built on. Exercised directly here;
+// the drafting side effect itself (dedup guard, attribution, hostile-input
+// handling, purge coherence) is covered end-to-end via the rate_answer tool
+// handler in tests/tools.test.ts.
+test(
+  'repository: answerFeedbackGrounding recovers the preceding question from the ADDRESSED member (replyToUserId), independent of any later rater, and reports a null knowledgeEntryId for a general-knowledge answer (issue #726)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-grounding-asking-member`;
+    const conversationId = `${RUN}-c-grounding-basic`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: 'how do I reset my Zylotrix widget',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'hold the reset button for five seconds',
+      meta: { replyToUserId: askingMember },
+    });
+
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: askingMember, helpful: true }),
+    );
+    const { rows } = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
+      feedbackId,
+    ]);
+    const interactionId = Number(rows[0].interaction_id);
+
+    const grounding = await answerFeedbackGrounding(interactionId);
+    assert.ok(grounding);
+    assert.equal(grounding.knowledgeEntryId, null, 'a general-knowledge reply carries no knowledgeEntryId');
+    assert.equal(grounding.answerContent, 'hold the reset button for five seconds');
+    assert.equal(grounding.questionContent, 'how do I reset my Zylotrix widget');
+    assert.equal(grounding.questionUserId, askingMember);
+
+    await pool.query(`DELETE FROM answer_feedback WHERE id = $1`, [feedbackId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: answerFeedbackGrounding surfaces the knowledgeEntryId of a knowledge-grounded reply (issue #726)',
+  { skip },
+  async () => {
+    const askingMember = `${RUN}-grounding-grounded-member`;
+    const conversationId = `${RUN}-c-grounding-grounded`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: askingMember,
+      role: 'member',
+      direction: 'inbound',
+      content: 'when is the next meetup',
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'the next meetup is on the third Thursday',
+      meta: { replyToUserId: askingMember, knowledgeShortcut: true, knowledgeEntryId: 4242 },
+    });
+
+    const feedbackId = expectFeedbackId(
+      await createAnswerFeedback({ platform: 'discord', conversationId, userId: askingMember, helpful: true }),
+    );
+    const { rows } = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
+      feedbackId,
+    ]);
+    const interactionId = Number(rows[0].interaction_id);
+
+    const grounding = await answerFeedbackGrounding(interactionId);
+    assert.ok(grounding);
+    assert.equal(grounding.knowledgeEntryId, 4242);
+
+    await pool.query(`DELETE FROM answer_feedback WHERE id = $1`, [feedbackId]);
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: answerFeedbackGrounding fails closed — null questionContent/questionUserId — when the rated reply has no replyToUserId meta (e.g. a legacy row predating that field) (issue #726)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-grounding-no-reply-target`;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'a legacy answer with no replyToUserId stamped',
+    });
+    const { rows: outboundRows } = await pool.query(
+      `SELECT id FROM interactions WHERE conversation_id = $1 AND direction = 'outbound'`,
+      [conversationId],
+    );
+    const interactionId = Number(outboundRows[0].id);
+
+    const grounding = await answerFeedbackGrounding(interactionId);
+    assert.ok(grounding);
+    assert.equal(grounding.questionContent, null, 'fail closed: no replyToUserId means no recoverable question');
+    assert.equal(grounding.questionUserId, null);
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test('repository: answerFeedbackGrounding returns null for an interactionId that names no outbound row (issue #726)', { skip }, async () => {
+  const result = await answerFeedbackGrounding(-1);
+  assert.equal(result, null);
+});
 
 // --- Self-service data summary (my_data, issue #188 — the IPP6 access-right
 // counterpart to forget_me/purge_user_data's deletion path) --------------------
