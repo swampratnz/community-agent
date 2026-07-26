@@ -211,7 +211,16 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `embed()` — a true short circuit. A thrown/rejected `embed()` shares the
   same fail-closed try/catch as the other two checks, and the embedding
   vector itself is held to the same never-logged, never-persisted posture as
-  the query text.
+  the query text. `embed()` is the one genuine `await` in the whole
+  check -> volume-reserve -> record sequence — before #706 the sequence ran
+  with no yield point, so run-to-completion semantics made two "parallel"
+  WebSearch calls in the same turn impossible to interleave. To preserve
+  that atomicity, the whole sequence is now wrapped in
+  `withWebSearchDedupLock` (`src/agent/tools.ts`), a per-conversation promise
+  queue: a second call for the same conversation cannot begin its own check
+  until the first has fully finished, so two near-simultaneous calls can no
+  longer both pass the dedup guard by racing past each other's `embed()`
+  await (adversarial review on issue #706).
 - A thrown `query()` error whose message matches a small, anchored
   usage-limit/overload pattern (`src/agent/upstreamFailure.ts`) gets an
   honest member-facing reply instead of the generic internal-error one, and

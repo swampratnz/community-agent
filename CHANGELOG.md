@@ -21,7 +21,9 @@ for anything after ~noon NZST/NZDT). Get today's date with
   embedding (via the same local, offline model `knowledge_search` already
   uses — no added cost) against recent queries in the conversation and denies
   on high similarity, with a new `AGENT_WEB_SEARCH_DEDUP_SIMILARITY_THRESHOLD`
-  knob (default 0.9).
+  knob (default 0.9). The embedding lookup's one genuine `await` is
+  serialized per conversation so two WebSearch calls issued in the same turn
+  can't both race past the dedup guard before either is recorded.
 - **Accepting or declining a member-submitted knowledge tip now DMs the
   submitter** (#703), closing the one gap `suggest_knowledge` (#633) shipped
   with — the one member-initiated flow whose resolution was previously

@@ -303,6 +303,40 @@ test('issue #706 AC2 — a genuinely distinct pair that embeds BELOW the similar
   );
 });
 
+test('SECURITY: issue #706 AC5 (adversarial review) — two WebSearch calls for the same conversation issued without awaiting between them (parallel tool use in one turn) cannot both bypass dedup for an identical query', async () => {
+  const conversationId = 'ws-dedup-concurrent-race';
+  const fn = webSearchHook(buildQueryOptions('admin', 'prompt', {}, null, conversationId));
+
+  // Deliberately NOT awaited individually — both hook invocations start
+  // before either finishes, exercising the exact interleaving the
+  // `await embed()` yield point (inside isDuplicateWebSearchQuery) opened
+  // up between the dedup check and recordWebSearchQuery. Without
+  // withWebSearchDedupLock serializing the check -> reserve -> record
+  // sequence per conversation, both calls could read the (still-empty)
+  // dedup history before either recorded, and both would be allowed
+  // through — silently defeating the exact-match guard, not just the new
+  // similarity path.
+  const [first, second] = await Promise.all([
+    fn(preToolUseInput('race-1', 'best pgvector index type'), 'race-1', hookOptions),
+    fn(preToolUseInput('race-2', 'best pgvector index type'), 'race-2', hookOptions),
+  ]);
+
+  assert.equal(
+    first.hookSpecificOutput,
+    undefined,
+    'the first of two concurrent identical calls must still be allowed through',
+  );
+  assert.equal(
+    second.hookSpecificOutput?.permissionDecision,
+    'deny',
+    'the second of two concurrent identical calls must be denied by dedup, not race past it',
+  );
+  assert.equal(
+    second.hookSpecificOutput?.permissionDecisionReason,
+    'You already searched for this in the last few minutes — use what you found.',
+  );
+});
+
 // AC-4 (fail-closed) and AC-5 (no-log) each need to t.mock.module a
 // dependency of core.ts BEFORE core.ts's first import — and this file
 // already imports core.js at module top-level above for AC-1/2/3/7 — so

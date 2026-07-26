@@ -14,7 +14,7 @@
   "agentCoreUsageLimitAlert.test.ts": 3,
   "agentModelTiering.test.ts": 1,
   "agentOptions.test.ts": 11,
-  "agentWebSearchDedup.test.ts": 2,
+  "agentWebSearchDedup.test.ts": 3,
   "agentWebSearchDedupEmbedFailClosed.test.ts": 1,
   "agentWebSearchDedupEmbedShortCircuit.test.ts": 1,
   "agentWebSearchDedupFailClosed.test.ts": 1,

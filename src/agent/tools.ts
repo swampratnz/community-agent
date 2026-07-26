@@ -2187,6 +2187,45 @@ const webSearchQueryHistoryByConversation = new Map<
 >();
 
 /**
+ * Per-conversation serialization queue for the dedup check-then-record
+ * critical section (adversarial review on issue #706). Before that PR, the
+ * whole `PreToolUse` hook body ran with no `await` at all, so JS
+ * run-to-completion semantics meant two "parallel" tool-use invocations for
+ * the same turn could never interleave — one hook call always finished
+ * (check AND record) before the next began. Adding `await embed()` inside
+ * `isDuplicateWebSearchQuery` introduced a genuine yield point: without this
+ * lock, two near-simultaneous WebSearch calls in one turn could both read
+ * `recent` before either recorded, both compute embeddings concurrently, and
+ * neither would see the other as a duplicate — defeating even the
+ * exact-match short-circuit for the race window. `withWebSearchDedupLock`
+ * restores the pre-#706 atomicity: the caller in `core.ts` wraps the entire
+ * check -> volume-reserve -> record sequence in this lock, so a second
+ * invocation for the same `conversationId` cannot start its own check until
+ * the first has fully finished (recorded or not). Chained via a promise
+ * queue rather than a real mutex library since Node has no built-in one;
+ * the stored continuation always resolves (never rejects) so one failed
+ * turn's error can't wedge the queue for the rest of the conversation, while
+ * the promise returned to the caller still propagates `fn`'s own
+ * rejection/return value untouched. Never cleared, same as every other
+ * per-conversation map in this file — a restart just forgets, harmless.
+ */
+const webSearchDedupLocks = new Map<string, Promise<void>>();
+
+export function withWebSearchDedupLock<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
+  const prior = webSearchDedupLocks.get(conversationId) ?? Promise.resolve();
+  const settled = prior.catch(() => {});
+  const result = settled.then(fn);
+  webSearchDedupLocks.set(
+    conversationId,
+    result.then(
+      () => {},
+      () => {},
+    ),
+  );
+  return result;
+}
+
+/**
  * Returns `{ duplicate: true }` if `query` either (a) once normalized,
  * exactly matches one of the queries recorded for `conversationId` within
  * `windowMs`, or (b) embeds above `similarityThreshold` cosine similarity
@@ -2275,6 +2314,10 @@ export function recordWebSearchQuery(
   const recent = (webSearchQueryHistoryByConversation.get(conversationId) ?? []).filter(
     (entry) => now - entry.ts < windowMs,
   );
+  // `embedding` is only ever `null` from `isDuplicateWebSearchQuery` when `normalized` was
+  // already empty (this function's own early return above already excludes that) or on an
+  // exact-match duplicate (which the caller never proceeds to record) — so this `?? []` is
+  // defensive against the parameter's type, not a reachable runtime path.
   recent.push({ query: normalized, ts: now, embedding: embedding ?? [] });
   while (recent.length > historySize) recent.shift();
   webSearchQueryHistoryByConversation.set(conversationId, recent);
