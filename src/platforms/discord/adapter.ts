@@ -530,7 +530,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       throw new Error(`Failed to fetch Discord voice attachment (status ${response.status})`);
     }
     const buffer = Buffer.from(await response.arrayBuffer());
-    const transcript = await transcribeVoiceNote(buffer);
+    const transcript = await transcribeVoiceNote(buffer, config.discord.voice.model);
     logger.info({ chars: transcript.length, seconds }, 'Transcribed Discord voice message');
     return transcript;
   }

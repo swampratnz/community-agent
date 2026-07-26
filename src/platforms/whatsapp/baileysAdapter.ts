@@ -488,7 +488,7 @@ export class BaileysAdapter implements PlatformAdapter {
       {},
       { logger, reuploadRequest: this.sock.updateMediaMessage },
     );
-    const transcript = await transcribeVoiceNote(buffer);
+    const transcript = await transcribeVoiceNote(buffer, config.whatsapp.voice.model);
     logger.info({ chars: transcript.length, seconds }, 'Transcribed voice note');
     return transcript;
   }

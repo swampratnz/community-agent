@@ -109,6 +109,7 @@
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 2,
   "usageCostDigest.test.ts": 3,
+  "voiceTranscribeModelRouting.test.ts": 2,
   "whatsappAmbientArchiving.test.ts": 3,
   "whatsappBlockRouter.test.ts": 1,
   "whatsappBlockRouterOpen.test.ts": 1,
