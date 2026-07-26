@@ -26,7 +26,17 @@ test(
       0,
       'sanity: the interactions purge is disabled in this scenario',
     );
-    const timer = startRosterRetentionPurge([]);
+    // Inject a stub purge (same convention as tests/backgroundJobs.test.ts).
+    // startTrackedJob fires `void run()` immediately, not on the first
+    // interval, and the void means clearInterval below cannot cancel it — so
+    // the default purge would run a REAL purgeDepartedRoster against the
+    // shared CI database, deleting every departed roster row past the
+    // configured retention. That raced repository.test.ts's own
+    // purgeDepartedRoster fixtures (issue #136), whose deliberately ancient
+    // rows it deleted first, leaving that test's purge nothing to delete.
+    // This test only asserts the timer-creation gate, so it needs no real DB
+    // write to prove its point.
+    const timer = startRosterRetentionPurge([], async () => 0);
     assert.notEqual(
       timer,
       null,
