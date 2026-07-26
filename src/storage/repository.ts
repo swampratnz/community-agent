@@ -6197,7 +6197,7 @@ export async function createAnswerFeedback(input: {
   helpful: boolean;
   /** Optional free-text reason (issue #354); normalized (control-char-stripped, ≤200 chars) before storage. */
   comment?: string;
-}): Promise<{ id: number } | 'no_recent_answer' | 'rate_limited'> {
+}): Promise<{ id: number; interactionId: number } | 'no_recent_answer' | 'rate_limited'> {
   const interactionId = await resolveAnswerFeedbackTarget(input.platform, input.conversationId, input.userId);
   if (interactionId === null) return 'no_recent_answer';
 
@@ -6223,7 +6223,68 @@ export async function createAnswerFeedback(input: {
       normalizeAnswerFeedbackComment(input.comment),
     ],
   );
-  return rows[0] ? { id: Number(rows[0].id) } : 'rate_limited';
+  return rows[0] ? { id: Number(rows[0].id), interactionId } : 'rate_limited';
+}
+
+/**
+ * Grounding lookup for the answered-question -> knowledge-base loop (issue
+ * #726): given the `interactions.id` of a rated OUTBOUND reply, recovers
+ * whether it was knowledge-grounded and, when not, the preceding question it
+ * answered. Two reads, no new index: the outbound row's own `content`/
+ * `meta->>'knowledgeEntryId'`/`meta->>'replyToUserId'` (the caller `rate_answer`
+ * itself bound to via `resolveAnswerFeedbackTarget` above), then — only when a
+ * `replyToUserId` exists — the most recent INBOUND row from that SAME member
+ * in the SAME conversation at or before the reply's `created_at`, served by
+ * `interactions_user_idx (platform, user_id, created_at DESC)`.
+ *
+ * `questionUserId` deliberately names the addressed member (`replyToUserId`),
+ * NOT the `rate_answer` caller — `resolveAnswerFeedbackTarget` can bind a
+ * rating to a reply addressed to someone else (the "rater observed, didn't
+ * ask" case), so attribution must track the row this returns, never the
+ * caller blindly (SECURITY, issue #726 AC10). Returns `null` when
+ * `interactionId` doesn't name an outbound row at all; `questionContent`/
+ * `questionUserId` are independently `null` (fail closed for the caller) when
+ * there is no `replyToUserId` or no qualifying preceding inbound row.
+ */
+export async function answerFeedbackGrounding(interactionId: number): Promise<{
+  knowledgeEntryId: number | null;
+  answerContent: string;
+  questionContent: string | null;
+  questionUserId: string | null;
+} | null> {
+  const { rows: outboundRows } = await pool.query(
+    `SELECT platform, conversation_id, content, created_at,
+            (meta->>'knowledgeEntryId')::bigint AS knowledge_entry_id,
+            meta->>'replyToUserId' AS reply_to_user_id
+       FROM interactions
+      WHERE id = $1 AND direction = 'outbound'`,
+    [interactionId],
+  );
+  const outbound = outboundRows[0];
+  if (!outbound) return null;
+
+  let questionContent: string | null = null;
+  let questionUserId: string | null = null;
+  if (outbound.reply_to_user_id) {
+    const { rows: inboundRows } = await pool.query(
+      `SELECT content, user_id FROM interactions
+        WHERE platform = $1 AND conversation_id = $2 AND direction = 'inbound'
+          AND user_id = $3 AND created_at <= $4
+        ORDER BY created_at DESC LIMIT 1`,
+      [outbound.platform, outbound.conversation_id, outbound.reply_to_user_id, outbound.created_at],
+    );
+    if (inboundRows[0]) {
+      questionContent = inboundRows[0].content;
+      questionUserId = inboundRows[0].user_id;
+    }
+  }
+
+  return {
+    knowledgeEntryId: outbound.knowledge_entry_id != null ? Number(outbound.knowledge_entry_id) : null,
+    answerContent: outbound.content,
+    questionContent,
+    questionUserId,
+  };
 }
 
 /**

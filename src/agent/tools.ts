@@ -16,6 +16,7 @@ import {
   adminActivitySummary,
   addMemberNote,
   addWarning,
+  answerFeedbackGrounding,
   areKnowledgeEntriesLowRated,
   candidateTopicAlreadyReviewed,
   clearAccessRequest,
@@ -3559,6 +3560,45 @@ export function buildToolServer(
       // a model-callable tool" boundary (see `notifyAdmins`'s doc comment).
       if (turnState && args.helpful === false) {
         turnState.unhelpfulAnswerRated = true;
+      }
+      // Answered-question -> knowledge-base loop (issue #726,
+      // CAPABILITY-IDEAS.md §D2): a genuinely helpful, UNGROUNDED answer is
+      // silently drafted into the SAME admin-reviewed candidate queue
+      // suggest_knowledge (#633) writes into, via the exact same
+      // createKnowledgeTip/candidateTopicAlreadyReviewed/
+      // findKnowledgeCoveringTopic dedup+write path — the member-facing reply
+      // below is byte-identical either way. Fails closed whenever the
+      // grounding lookup can't recover a coherent preceding question (no
+      // `replyToUserId`, or no qualifying inbound row), never on the rater's
+      // own identity — the drafted row is attributed to the QUESTION's
+      // author (`grounding.questionUserId`), which can differ from the rater
+      // when `resolveAnswerFeedbackTarget` bound this rating to a reply
+      // addressed to someone else (SECURITY, issue #726 AC10).
+      if (config.knowledgeAnswerCandidate.enabled && args.helpful === true) {
+        const grounding = await answerFeedbackGrounding(created.interactionId);
+        if (
+          grounding &&
+          grounding.knowledgeEntryId === null &&
+          grounding.questionContent !== null &&
+          grounding.questionUserId !== null
+        ) {
+          const { blocked, embedding: topicEmbedding } = await candidateTopicAlreadyReviewed(
+            grounding.questionContent,
+          );
+          if (!blocked) {
+            const covering = await findKnowledgeCoveringTopic(topicEmbedding);
+            if (!covering) {
+              await createKnowledgeTip({
+                platform: caller.platform,
+                userId: grounding.questionUserId,
+                topic: grounding.questionContent,
+                title: grounding.questionContent,
+                content: grounding.answerContent,
+                topicEmbedding,
+              });
+            }
+          }
+        }
       }
       return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
     },

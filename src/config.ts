@@ -545,6 +545,18 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Close the answered-question -> knowledge-base loop (issue #726,
+  // CAPABILITY-IDEAS.md §D2): when a member rates a helpful:true, UNGROUNDED
+  // reply (no meta->>'knowledgeEntryId'), rate_answer drafts a
+  // knowledge_candidates row from the preceding question/answer via the SAME
+  // createKnowledgeTip/candidateTopicAlreadyReviewed/findKnowledgeCoveringTopic
+  // path suggest_knowledge (#633) uses — no new table, rate-limit constant, or
+  // model call. Off by default, same convention as every other opt-in
+  // behavioural flag above; disabled, rate_answer is byte-identical to today.
+  KNOWLEDGE_ANSWER_CANDIDATE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Daily knowledge refresh: a scheduled job web-researches a small fixed set
   // of fast-moving Claude/Anthropic topics and writes the briefings straight
   // into the knowledge base (one upserted entry per topic, clearly marked
@@ -1077,6 +1089,9 @@ export const config = {
   },
   contextCandidates: {
     enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
+  },
+  knowledgeAnswerCandidate: {
+    enabled: env.KNOWLEDGE_ANSWER_CANDIDATE_ENABLED ?? false,
   },
   contextExport: {
     enabled: env.CONTEXT_EXPORT_ENABLED ?? false,
