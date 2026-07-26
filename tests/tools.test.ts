@@ -12840,12 +12840,13 @@ test(
     const listTool = listProjectsHandler({ platform: 'discord', userId: `${RUN}-crossref-list-viewer` });
     const rendered = (await listTool.handler({ query: 'Discord bot' })).content[0]?.text ?? '';
 
-    const withLine = rendered.match(/Discord Helper Bot.*/);
-    const withoutLine = rendered.match(/Discord Utility Bot.*/);
-    assert.ok(withLine && withoutLine, 'both projects are present');
-    assert.match(withLine[0], /Interests: exploring bot frameworks and NLP/);
+    const lines = rendered.split('\n');
+    const withIdx = lines.findIndex((l) => l.includes('Discord Helper Bot'));
+    const withoutIdx = lines.findIndex((l) => l.includes('Discord Utility Bot'));
+    assert.ok(withIdx !== -1 && withoutIdx !== -1, 'both projects are present');
+    assert.match(lines[withIdx + 1] ?? '', /Interests: exploring bot frameworks and NLP/);
     assert.doesNotMatch(
-      withoutLine[0],
+      lines[withoutIdx + 1] ?? '',
       /Interests:/,
       'a project whose owner has no published interests shows no Interests line',
     );
