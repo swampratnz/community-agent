@@ -6,6 +6,7 @@ import {
   countProjectsSharedSince,
   listContextDigests,
   listCuratedKnowledgeCreatedSince,
+  listReleaseWatchUpdatesSince,
   recordMemberDigestSent,
   wasMemberDigestSentRecently,
   type ContextDigest,
@@ -16,6 +17,7 @@ import type { PlatformAdapter } from './platforms/types.js';
 const FRESHNESS_DAYS = 7;
 const MAX_TOPICS = 10;
 const MAX_NEW_KNOWLEDGE_TITLES = 10;
+const MAX_RELEASE_WATCH_PAGES = 10;
 
 /**
  * Pure message builder (issue #645) — this week's `context_digests` topics
@@ -49,13 +51,28 @@ const MAX_NEW_KNOWLEDGE_TITLES = 10;
  * beyond what a member consented to when they shared, so this function's
  * signature makes that leak structurally impossible rather than relying on
  * callers to remember to omit fields.
+ *
+ * `releaseWatchPages` (issue #733) is a 4th, optional section — Anthropic
+ * release-notes/model-deprecation pages docsIngest re-fetched/diffed this
+ * week (config-fixed doc titles/URLs only, never member-derived, so unlike
+ * the topics section above it needs no `scrubPII` call). Empty by default so
+ * every existing call site (and every existing test's byte-for-byte
+ * expectation) is unaffected; renders only when non-empty, same
+ * add-a-section-only-if-it-has-content convention as the other three.
  */
 export function formatMemberDigestMessage(
   topics: ReadonlyArray<{ topic: string; questionCount: number }>,
   newKnowledgeTitles: readonly string[],
   newProjectCount: number,
+  releaseWatchPages: ReadonlyArray<{ title: string; url: string | null }> = [],
 ): string | null {
-  if (topics.length === 0 && newKnowledgeTitles.length === 0 && newProjectCount === 0) return null;
+  if (
+    topics.length === 0 &&
+    newKnowledgeTitles.length === 0 &&
+    newProjectCount === 0 &&
+    releaseWatchPages.length === 0
+  )
+    return null;
 
   const sections: string[] = [];
   if (topics.length > 0) {
@@ -78,6 +95,13 @@ export function formatMemberDigestMessage(
       `🚀 ${newProjectCount} new project${newProjectCount === 1 ? '' : 's'} added to the showcase this week — ask me to show the project showcase to browse.`,
     );
   }
+  if (releaseWatchPages.length > 0) {
+    sections.push(
+      `🆕 Anthropic platform updates this week: ${releaseWatchPages
+        .map((p) => (p.url ? `[${p.title}](${p.url})` : p.title))
+        .join(', ')}`,
+    );
+  }
   return sections.join('\n\n');
 }
 
@@ -95,6 +119,11 @@ export function makeDefaultMemberDigestRun(
     getDigests?: (days: number, limit: number) => Promise<ContextDigest[]>;
     getNewKnowledgeTitles?: (since: Date, limit: number) => Promise<string[]>;
     getNewProjectCount?: (since: Date) => Promise<number>;
+    getReleaseWatchUpdates?: (
+      since: Date,
+      pathPrefixes: readonly string[],
+      limit: number,
+    ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
     recordSent?: () => Promise<void>;
   } = {},
 ): () => Promise<void> {
@@ -102,6 +131,7 @@ export function makeDefaultMemberDigestRun(
   const getDigests = deps.getDigests ?? listContextDigests;
   const getNewKnowledgeTitles = deps.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
   const getNewProjectCount = deps.getNewProjectCount ?? countProjectsSharedSince;
+  const getReleaseWatchUpdates = deps.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
   const recordSent = deps.recordSent ?? recordMemberDigestSent;
 
   return async () => {
@@ -124,10 +154,17 @@ export function makeDefaultMemberDigestRun(
     }
 
     const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
-    const [digests, newKnowledgeTitles, newProjectCount] = await Promise.all([
+    // RELEASE_WATCH_ENABLED gates the read itself, not just its output — when
+    // off, getReleaseWatchUpdates must never be invoked (issue #733's
+    // byte-identical-when-disabled contract), so this is a conditional
+    // Promise, not a post-hoc empty-array filter.
+    const [digests, newKnowledgeTitles, newProjectCount, releaseWatchPages] = await Promise.all([
       getDigests(FRESHNESS_DAYS, MAX_TOPICS),
       getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
       getNewProjectCount(since),
+      config.releaseWatch.enabled
+        ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
+        : Promise.resolve([]),
     ]);
     // Two independent floors before a digest topic reaches this public
     // surface (PR #651 review):
@@ -149,6 +186,7 @@ export function makeDefaultMemberDigestRun(
       eligible.map((d) => ({ topic: d.topic, questionCount: d.questionCount })),
       newKnowledgeTitles,
       newProjectCount,
+      releaseWatchPages.map((p) => ({ title: p.pageTitle, url: p.sourceUrl })),
     );
     // Quiet week — nothing to post. Deliberately leaves the freshness row
     // untouched (same convention as adminDigest.ts's quiet-week skip) so a
