@@ -375,7 +375,7 @@ jobs:
                 issue_state="$(gh issue view "$closed_issue" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo '')"
                 if [ "$issue_state" = 'OPEN' ]; then
                   gh issue close "$closed_issue" --repo "$REPO" --reason completed \
-                    --comment "🤖 Closed by the auto-merge loop after merging PR #$n (deterministic close — GitHub's keyword auto-close is best-effort and skipped several issues on 2026-07-26)." \
+                    --comment "🤖 Closed by the auto-merge loop after merging PR #$n (deterministic close — GitHub's keyword auto-close is best-effort and has skipped issues before)." \
                     || echo "::warning::Could not close issue #$closed_issue after merging PR #$n — close it manually."
                 fi
               fi
