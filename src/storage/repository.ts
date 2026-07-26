@@ -3992,6 +3992,21 @@ export async function searchProjects(query: string, limit = 8): Promise<MemberPr
   return rows.map((r) => ({ ...mapMemberProjectRow(r), similarity: Number(r.similarity) }));
 }
 
+/**
+ * Count of ACTIVE projects shared since `since` — issue #714's member-digest
+ * awareness nudge. `removed_at IS NULL` mirrors `listRecentProjects`/
+ * `searchProjects` so the number a member sees always matches what
+ * `list_projects` would actually show them right now; a soft-removed row
+ * must never inflate the count.
+ */
+export async function countProjectsSharedSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM member_projects WHERE created_at > $1 AND removed_at IS NULL`,
+    [since],
+  );
+  return Number(rows[0].n);
+}
+
 function mapMemberProjectRow(r: {
   id: number | string;
   platform: string;
