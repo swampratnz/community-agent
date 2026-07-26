@@ -3809,6 +3809,34 @@ export async function searchMemberInterests(
   }));
 }
 
+/**
+ * Batched lookup of published `member_interests` text for a set of owners,
+ * keyed by `"platform:userId"` — used by list_projects' cross-reference
+ * (issue #718) to show a project owner's published interests without an
+ * N+1 query per rendered row. One round trip for the whole result set via
+ * `unnest($1, $2)` zipping the parallel platform/userId arrays into rows,
+ * matched against the composite `(platform, user_id)` key — SECURITY:
+ * issue #718 AC #7, this can only ever return rows for owners in the input
+ * set, never a full-table read. An owner with no published interests (or
+ * who cleared them) simply has no entry in the returned Map.
+ */
+export async function getPublishedInterestsForOwners(
+  owners: ReadonlyArray<{ platform: Platform; userId: string }>,
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (owners.length === 0) return result;
+  const { rows } = await pool.query(
+    `SELECT platform, user_id, interests
+       FROM member_interests
+      WHERE (platform, user_id) IN (SELECT * FROM unnest($1::text[], $2::text[]))`,
+    [owners.map((o) => o.platform), owners.map((o) => o.userId)],
+  );
+  for (const r of rows) {
+    result.set(`${r.platform}:${r.user_id}`, r.interests as string);
+  }
+  return result;
+}
+
 // --- Member projects (self-declared project showcase, issue #646) -----------
 //
 // Second instance of #634's self-declared-member-table pattern: opt-in,
@@ -3990,6 +4018,38 @@ export async function searchProjects(query: string, limit = 8): Promise<MemberPr
     [pgvector.toSql(queryVec), clampedLimit],
   );
   return rows.map((r) => ({ ...mapMemberProjectRow(r), similarity: Number(r.similarity) }));
+}
+
+/**
+ * Batched lookup of ACTIVE (`removed_at IS NULL`) shared-project names for a
+ * set of owners, keyed by `"platform:userId"` — used by who_is_into's
+ * cross-reference (issue #718) to show a matched member's shipped projects
+ * without an N+1 query per rendered row. Same `unnest($1, $2)` composite-key
+ * batching as `getPublishedInterestsForOwners` above — SECURITY: issue #718
+ * AC #7, only ever returns rows for owners in the input set. An owner with
+ * zero active projects (none ever shared, or all soft-removed) simply has no
+ * entry in the returned Map.
+ */
+export async function getActiveProjectNamesForOwners(
+  owners: ReadonlyArray<{ platform: Platform; userId: string }>,
+): Promise<Map<string, string[]>> {
+  const result = new Map<string, string[]>();
+  if (owners.length === 0) return result;
+  const { rows } = await pool.query(
+    `SELECT platform, user_id, name
+       FROM member_projects
+      WHERE removed_at IS NULL
+        AND (platform, user_id) IN (SELECT * FROM unnest($1::text[], $2::text[]))
+      ORDER BY platform, user_id, created_at DESC`,
+    [owners.map((o) => o.platform), owners.map((o) => o.userId)],
+  );
+  for (const r of rows) {
+    const key = `${r.platform}:${r.user_id}`;
+    const names = result.get(key) ?? [];
+    names.push(r.name as string);
+    result.set(key, names);
+  }
+  return result;
 }
 
 /**

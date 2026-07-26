@@ -32,6 +32,7 @@ import {
   declineKnowledgeCandidate,
   deleteKnowledge,
   findKnowledgeCoveringTopic,
+  getActiveProjectNamesForOwners,
   getInteractionContentByMessageId,
   getKnowledgeContentById,
   deleteMemberNote,
@@ -39,6 +40,7 @@ import {
   getMemberNote,
   getMemberRole,
   getMyDataSummary,
+  getPublishedInterestsForOwners,
   hasConflictAmongIds,
   insertDevTeamWatch,
   type KnowledgeCandidate,
@@ -3754,13 +3756,28 @@ export function buildToolServer(
    * interest text can't escape the block or forge another member's
    * attribution (issue #634 AC #5, same quarantine tests as the recall
    * renderers and share_project's own <shared-projects> block).
+   *
+   * Issue #718: appends a `Shared projects: "X", "Y"` line for a matched
+   * member who also has ≥1 active shared project — the strongest signal
+   * they're the right person to talk to, cross-referencing share_project's
+   * directory. One batched lookup for the whole hit set (never N+1), silent
+   * (no line at all) when a member has none, and each project name goes
+   * through the same untrustedEntryContent quarantine as the interest text
+   * it's appended alongside.
    */
   async function formatInterestResults(hits: ReadonlyArray<MemberInterestSearchHit>): Promise<string> {
+    const projectNamesByOwner = await getActiveProjectNamesForOwners(
+      hits.map((h) => ({ platform: h.platform, userId: h.userId })),
+    );
     const lines = await Promise.all(
       hits.map(async (h, i) => {
         const owner = await resolveSanitizedLabel(h.platform, h.userId);
         const interests = untrustedEntryContent(h.interests);
-        return `${i + 1}. ${owner} (${Math.round(h.similarity * 100)}% match): ${interests}`;
+        const projects = projectNamesByOwner.get(`${h.platform}:${h.userId}`);
+        const sharedProjects = projects?.length
+          ? `\n   Shared projects: ${projects.map((p) => `"${untrustedEntryContent(p)}"`).join(', ')}`
+          : '';
+        return `${i + 1}. ${owner} (${Math.round(h.similarity * 100)}% match): ${interests}${sharedProjects}`;
       }),
     );
     return [
@@ -3892,10 +3909,20 @@ export function buildToolServer(
    * crafted project name/description/link can't escape the block or forge
    * another member's attribution (issue #646 AC #5). Links render as plain
    * text alongside, never as a clickable/embeddable form.
+   *
+   * Issue #718: appends an `Interests: <text>` line for a project whose
+   * owner has a published member_interests row — cross-referencing
+   * who_is_into's directory in the opposite direction. One batched lookup
+   * for the whole result set (never N+1), silent when the owner has no
+   * (or cleared) published interests, and the interest text goes through
+   * the same untrustedEntryContent quarantine as the rest of the block.
    */
   async function formatProjectResults(
     projects: ReadonlyArray<MemberProject | MemberProjectSearchHit>,
   ): Promise<string> {
+    const interestsByOwner = await getPublishedInterestsForOwners(
+      projects.map((p) => ({ platform: p.platform, userId: p.userId })),
+    );
     const lines = await Promise.all(
       projects.map(async (p, i) => {
         const owner = await resolveSanitizedLabel(p.platform, p.userId);
@@ -3903,7 +3930,9 @@ export function buildToolServer(
         const description = untrustedEntryContent(p.description);
         const link = p.link ? ` (link: ${untrustedEntryContent(p.link)})` : '';
         const match = 'similarity' in p ? ` — ${Math.round(p.similarity * 100)}% match` : '';
-        return `${i + 1}. "${name}" by ${owner}${match}: ${description}${link}`;
+        const interests = interestsByOwner.get(`${p.platform}:${p.userId}`);
+        const interestsSuffix = interests ? `\n   Interests: ${untrustedEntryContent(interests)}` : '';
+        return `${i + 1}. "${name}" by ${owner}${match}: ${description}${link}${interestsSuffix}`;
       }),
     );
     return [
