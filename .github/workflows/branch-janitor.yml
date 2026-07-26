@@ -1,0 +1,129 @@
+name: Branch janitor
+
+# Deterministic, no-LLM cleanup of stale branches — same trust class as the
+# groundskeeper and auto-merge loops: reads branch/PR state only as data,
+# runs no branch-controlled code (no checkout of the branches it judges).
+#
+# WHY: the auto-merge loop only started deleting head branches on merge
+# recently (`--delete-branch`), and the user-driven squash merges before it
+# never did — by 2026-07-26 the repo had ~76 dead branches. Squash merges
+# also mean `merge-base --is-ancestor` finds almost nothing (1 of 76), so
+# the PR ledger, not git ancestry, is the reliable "this work landed" signal.
+#
+# DELETION RULES (a branch must clear one to be deleted; anything else stays):
+#   1. Ancestry-merged: its tip is an ancestor of the default branch.
+#   2. PR-merged: it is the head of at least one PR and EVERY PR with this
+#      head is MERGED (covers squash merges; a single open or closed-unmerged
+#      PR vetoes — an open PR is live work, a closed-unmerged one is a human
+#      rejection whose branch a human may still want).
+#   3. Explicitly named in the `extra` dispatch input by a maintainer —
+#      the escape hatch for branches rules 1-2 deliberately leave (e.g. a
+#      never-PR'd checkpoint branch whose content shipped via another PR).
+#      Never-PR'd branches and `-ckpt-` refs are otherwise NEVER touched.
+#
+# `main` (the default branch) is excluded structurally, and branch
+# protection on it is the enforceable backstop as everywhere else.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1' # weekly sweep, Monday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be deleted without deleting'
+        type: boolean
+        # true so a bare manual dispatch can never accidentally sweep live —
+        # a live manual run must say dry_run=false explicitly. The weekly
+        # cron supplies no inputs at all, so this default does NOT apply
+        # there: `inputs.dry_run` renders empty, != 'true', and the
+        # scheduled sweep runs live as intended.
+        default: true
+      extra:
+        description: 'Comma-separated branch names to also delete (rule 3)'
+        type: string
+        default: ''
+
+concurrency:
+  group: branch-janitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write # delete refs
+  pull-requests: read # read the PR ledger per branch
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      EXTRA: ${{ inputs.extra }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Sweep stale branches
+        run: |
+          set -euo pipefail
+          default="$(gh api "repos/$REPO" --jq '.default_branch')"
+          git fetch --prune origin "+refs/heads/*:refs/remotes/origin/*"
+          deleted=0; kept=0
+          delete_ref() {
+            local b="$1" why="$2"
+            if [ "$DRY_RUN" = 'true' ]; then
+              echo "DRY RUN: would delete '$b' ($why)"
+            else
+              if gh api -X DELETE "repos/$REPO/git/refs/heads/$b" >/dev/null; then
+                echo "Deleted '$b' ($why)"
+              else
+                echo "::warning::Failed to delete '$b' — skipping."
+                return 0
+              fi
+            fi
+            deleted=$((deleted+1))
+          }
+          for b in $(git for-each-ref 'refs/remotes/origin/**' --format='%(refname:lstrip=3)'); do
+            [ "$b" = "$default" ] && continue
+            [ "$b" = 'HEAD' ] && continue
+            # Rule 1: ancestry-merged into the default branch.
+            if git merge-base --is-ancestor "refs/remotes/origin/$b" "refs/remotes/origin/$default"; then
+              delete_ref "$b" 'ancestry-merged'
+              continue
+            fi
+            # Rule 2: every PR with this head is MERGED (>=1 PR required).
+            # States read strictly as jq data from the PR ledger.
+            # --limit 100: the default (30) could silently truncate the state
+            # list for a branch with many reopened PRs, and a truncated list
+            # that happened to be all-MERGED would wrongly qualify a branch
+            # that still has an open/rejected PR beyond the cap.
+            states="$(gh pr list --repo "$REPO" --head "$b" --state all --limit 100 \
+              --json state --jq 'map(.state) | unique | join(",")' 2>/dev/null || echo '')"
+            if [ "$states" = 'MERGED' ]; then
+              delete_ref "$b" 'all PRs merged'
+              continue
+            fi
+            kept=$((kept+1))
+            echo "Kept '$b' (PR states: ${states:-none})"
+          done
+          # Rule 3: maintainer-named extras, validated to exist and to not be
+          # the default branch. Comma-separated; whitespace trimmed.
+          if [ -n "$EXTRA" ]; then
+            IFS=',' read -ra extras <<<"$EXTRA"
+            for raw in "${extras[@]}"; do
+              b="$(echo "$raw" | xargs)"
+              [ -z "$b" ] && continue
+              if [ "$b" = "$default" ]; then
+                echo "::warning::Refusing to delete the default branch via extra input."
+                continue
+              fi
+              if git show-ref --verify --quiet "refs/remotes/origin/$b"; then
+                delete_ref "$b" 'maintainer-named (extra input)'
+              else
+                echo "::warning::extra branch '$b' does not exist — skipping."
+              fi
+            done
+          fi
+          echo "Sweep done: $deleted deleted, $kept kept."
