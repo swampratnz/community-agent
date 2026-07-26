@@ -72,6 +72,28 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-26
 
 ### Added
+- **Admins can now see recurring themes behind thumbs-down feedback, not just
+  the count** (#728), instrumenting the second, previously-missing half of
+  the answer-quality signal #653 shipped (overall helpful-rate) alongside
+  #724's ask for *why* answers are unhelpful: a new `list_unhelpful_themes`
+  admin tool clusters `answer_feedback` comments marked unhelpful by
+  embedding similarity — mirroring the existing knowledge-gap clustering —
+  and returns each recurring theme as a representative comment plus how many
+  times it's come up. Covers both knowledge-grounded and ungrounded answers,
+  a gap neither existing feedback view closed alone. The weekly digest gains
+  a matching line (`🗂️ N recurring unhelpful-answer theme(s) this week`),
+  shown only when there's a theme to report, pointing admins at the tool.
+  Comments stay scoped to the requesting admin's own conversations, same as
+  `list_answer_feedback`.
+- **The weekly member digest now mentions new showcase projects** (#715),
+  giving the project showcase (`share_project`/`list_projects`, #646) a push
+  channel it previously lacked — members only ever discovered new projects
+  by thinking to run `list_projects` themselves. When at least one project
+  has been shared since the last digest, members now see a
+  `🚀 N new project(s) added to the showcase this week` line nudging them to
+  browse. Only a bare count is shown — never a project's name, description,
+  link, or owner — since the showcase is opt-in and scoped to the gated
+  `list_projects` tool, a narrower audience than the public digest channel.
 - **Admin `WebSearch` dedup now catches near-paraphrases, not just verbatim
   repeats** (#706), closing the growth path #589 itself named: reformulating
   a search almost identically ("NZ contractor tax rules" → "New Zealand tax
