@@ -8152,8 +8152,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    35,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701)",
+    36,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -13331,8 +13331,14 @@ test(
   async () => {
     const askingMember = `${RUN}-answer-candidate-basic`;
     const conversationId = `${RUN}-c-answer-candidate-basic`;
-    const question = `${RUN} how do I reset my Kevlonix widget`;
-    const answer = 'hold the reset button on the Kevlonix for five seconds';
+    // Whimsical, unrelated-to-tech-support wording (same corpus-collision
+    // concern the suggest_knowledge rate-cap test documents): the dedup
+    // guard's findKnowledgeCoveringTopic scans the FULL shared knowledge
+    // table at a loose 0.35 relevance floor, and a realistic-sounding
+    // troubleshooting phrase risks crossing it against some unrelated
+    // fixture, silently suppressing the draft this test means to prove.
+    const question = `${RUN} why does the giggling teal marmoset keep unplugging the router`;
+    const answer = 'unscrew the marmoset panel and re-latch the teal clip';
 
     await recordInteraction({
       platform: 'discord',
@@ -13464,7 +13470,11 @@ test(
     const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
       askingMember,
     ]);
-    assert.equal(rows.rows.length, 0, 'SECURITY: a knowledge-grounded answer never drafts a candidate, flag on');
+    assert.equal(
+      rows.rows.length,
+      0,
+      'SECURITY: a knowledge-grounded answer never drafts a candidate, flag on',
+    );
 
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
@@ -13559,7 +13569,11 @@ test(
     const observerRows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = $1`, [
       observer,
     ]);
-    assert.equal(observerRows.rows.length, 0, 'SECURITY: the rater (observer) is never the attributed author');
+    assert.equal(
+      observerRows.rows.length,
+      0,
+      'SECURITY: the rater (observer) is never the attributed author',
+    );
 
     await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id = $1`, [askingMember]);
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [observer]);
@@ -13612,7 +13626,7 @@ test(
     ]);
     assert.equal(rows.rows.length, 0, 'an already-queued topic is not drafted a second time');
 
-    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [priorTip!.id]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [priorTip.id]);
     await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [askingMember]);
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
@@ -13797,13 +13811,15 @@ test(
 );
 
 test(
-  "SECURITY: forget_me/purge_user_data deletes a candidate drafted via the rate_answer implicit-drafting path, for the asking member (issue #726 acceptance criterion 12)",
+  'SECURITY: forget_me/purge_user_data deletes a candidate drafted via the rate_answer implicit-drafting path, for the asking member (issue #726 acceptance criterion 12)',
   { skip },
   async () => {
     const askingMember = `${RUN}-answer-candidate-purge`;
     const conversationId = `${RUN}-c-answer-candidate-purge`;
-    const question = `${RUN} how do I recalibrate the Thrumdoodle sensor`;
-    const answer = 'power cycle it twice within ten seconds';
+    // Whimsical wording — see the comment on the main-flow test above for why
+    // a realistic troubleshooting phrase risks a flaky dedup-guard suppression.
+    const question = `${RUN} why does the caffeinated puffin keep rearranging the bookshelf`;
+    const answer = 'offer it a smaller shelf and it loses interest by dawn';
 
     await recordInteraction({
       platform: 'discord',

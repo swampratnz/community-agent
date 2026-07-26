@@ -1021,6 +1021,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Knowledge & Learning',
   },
   {
+    envVar: 'KNOWLEDGE_ANSWER_CANDIDATE_ENABLED',
+    configPath: 'knowledgeAnswerCandidate.enabled',
+    label: 'Draft knowledge candidate from a helpful, ungrounded rate_answer',
+    category: 'Knowledge & Learning',
+  },
+  {
     envVar: 'KNOWLEDGE_REFRESH_ENABLED',
     configPath: 'knowledgeRefresh.enabled',
     label: 'Knowledge refresh',

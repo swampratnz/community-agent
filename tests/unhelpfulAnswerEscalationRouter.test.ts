@@ -255,7 +255,9 @@ test('SECURITY: rate_answer tool handler never calls notifyAdmins directly — t
   // The handler body runs from its `async (args) => {` opener through to the
   // closing `},\n  );` that ends the `tool(...)` call — mirrors the
   // feature_flags handler-body extraction in tests/tools.test.ts.
-  const region = source.slice(defStart, defStart + 3000);
+  // Window generous enough to reach the closing delimiter even after issue
+  // #726 lengthened the handler with the knowledge-candidate drafting branch.
+  const region = source.slice(defStart, defStart + 6000);
   const handlerMatch = region.match(/async \(args\) => \{([\s\S]*?)\n {4}\},\n {2}\);/);
   assert.ok(handlerMatch, 'rate_answer handler body not found');
   const body = handlerMatch[1];

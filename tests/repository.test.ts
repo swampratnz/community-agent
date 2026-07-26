@@ -2221,12 +2221,18 @@ test(
     const victim = `${RUN}-tip-purge-victim`;
     const bystander = `${RUN}-tip-purge-bystander`;
 
+    // Shaped like the rate_answer implicit-drafting path (issue #726):
+    // topic/title = the recovered question, content = the answer — but
+    // written through the exact SAME createKnowledgeTip call, so there is no
+    // separate purge predicate to pin; this just proves that shape purges too
+    // (kept to 3 tips total for `victim`, at KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
+    // rather than adding a 4th that would itself be rate-capped away).
     const pending = await createKnowledgeTip({
       platform,
       userId: victim,
-      topic: `${RUN} tip purge pending topic`,
-      title: 'Still pending tip',
-      content: 'pending tip content',
+      topic: `${RUN} how do I reset my Zylotrix widget`,
+      title: `${RUN} how do I reset my Zylotrix widget`,
+      content: 'hold the reset button for five seconds',
     });
     const toAccept = await createKnowledgeTip({
       platform,
@@ -2242,18 +2248,7 @@ test(
       title: 'Will be declined tip',
       content: 'declined tip content',
     });
-    // Shaped like the rate_answer implicit-drafting path (issue #726):
-    // topic/title = the recovered question, content = the answer — but
-    // written through the exact SAME createKnowledgeTip call, so there is no
-    // separate purge predicate to pin; this just proves that shape purges too.
-    const pendingImplicit = await createKnowledgeTip({
-      platform,
-      userId: victim,
-      topic: `${RUN} how do I reset my Zylotrix widget`,
-      title: `${RUN} how do I reset my Zylotrix widget`,
-      content: 'hold the reset button for five seconds',
-    });
-    assert.ok(pending && toAccept && toDecline && pendingImplicit);
+    assert.ok(pending && toAccept && toDecline);
     const accepted = await acceptKnowledgeCandidate({ id: toAccept.id, reviewedBy: 'admin-1' });
     assert.ok(accepted);
     const declined = await declineKnowledgeCandidate(toDecline.id, 'admin-1');
@@ -10636,7 +10631,12 @@ test(
     });
 
     const feedbackId = expectFeedbackId(
-      await createAnswerFeedback({ platform: 'discord', conversationId, userId: askingMember, helpful: true }),
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: askingMember,
+        helpful: true,
+      }),
     );
     const { rows } = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
       feedbackId,
@@ -10681,7 +10681,12 @@ test(
     });
 
     const feedbackId = expectFeedbackId(
-      await createAnswerFeedback({ platform: 'discord', conversationId, userId: askingMember, helpful: true }),
+      await createAnswerFeedback({
+        platform: 'discord',
+        conversationId,
+        userId: askingMember,
+        helpful: true,
+      }),
     );
     const { rows } = await pool.query(`SELECT interaction_id FROM answer_feedback WHERE id = $1`, [
       feedbackId,
@@ -10719,17 +10724,25 @@ test(
 
     const grounding = await answerFeedbackGrounding(interactionId);
     assert.ok(grounding);
-    assert.equal(grounding.questionContent, null, 'fail closed: no replyToUserId means no recoverable question');
+    assert.equal(
+      grounding.questionContent,
+      null,
+      'fail closed: no replyToUserId means no recoverable question',
+    );
     assert.equal(grounding.questionUserId, null);
 
     await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
-test('repository: answerFeedbackGrounding returns null for an interactionId that names no outbound row (issue #726)', { skip }, async () => {
-  const result = await answerFeedbackGrounding(-1);
-  assert.equal(result, null);
-});
+test(
+  'repository: answerFeedbackGrounding returns null for an interactionId that names no outbound row (issue #726)',
+  { skip },
+  async () => {
+    const result = await answerFeedbackGrounding(-1);
+    assert.equal(result, null);
+  },
+);
 
 // --- Self-service data summary (my_data, issue #188 — the IPP6 access-right
 // counterpart to forget_me/purge_user_data's deletion path) --------------------
