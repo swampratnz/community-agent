@@ -1380,6 +1380,25 @@ upgrade).
   consented to when they shared. A count carries zero per-project content, so
   it can never widen that boundary; a member who wants the actual content is
   nudged toward the existing member-gated `list_projects` tool instead.
+- **Anthropic platform-update awareness, docs-provenance only (issue #733)**:
+  a fourth section, `🆕 Anthropic platform updates this week: <title>, ...`,
+  surfaces the page title/link of any Anthropic release-notes/model-
+  deprecation doc page `docsIngest.ts` (above) created or updated this week,
+  under `RELEASE_WATCH_ENABLED` (default off). No new fetch, source, or
+  provenance value — purely a read (`listReleaseWatchUpdatesSince`) over
+  `'docs'`-provenance rows `docsIngest` already writes, filtered to page
+  paths matching `RELEASE_WATCH_DOC_PATHS` and grouped by `docsIngest.ts`'s
+  own `pageKeyOf` so a page with several changed chunks in a week is reported
+  once. Filters on `updated_at`, not `created_at`, so an existing page edited
+  in place (docs-ingest's `updated` outcome) is caught too, not only
+  brand-new pages. Reuses the exact same `created_by_role != 'auto'`
+  quarantine-exclusion boundary `listCuratedKnowledgeCreatedSince` above
+  already enforces (never a narrower `= 'docs'` allowlist), so a future
+  auto-refresh path can never reach this surface even via a colliding title.
+  Depends on `DOCS_INGEST_ENABLED` also being on — if it's off, this
+  degrades to a permanently-empty section, never an error. No member data
+  anywhere in this path (config-fixed doc titles/URLs only), so unlike the
+  topics section it needs no `scrubPII` call.
 - **Two independent floors, widened-audience-aware (PR #651 review)**: this
   surface is more exposed than either existing `context_digests` consumer
   (admin-only `list_context_digests`, and the export's own

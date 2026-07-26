@@ -620,6 +620,23 @@ const EnvSchema = z.object({
   // fetch set with no operator action. Never 0 — a 0-day cooldown would re-probe
   // every run and defeat the point.
   DOCS_INGEST_DEAD_URL_RECHECK_DAYS: z.coerce.number().int().positive().max(365).default(30),
+  // Release/deprecation watcher (issue #733): surface docsIngest's own
+  // weekly diff of Anthropic release-notes/model-deprecation pages in the
+  // member digest, instead of discarding the "which page changed" signal.
+  // No new fetch — purely a read over rows docsIngest already wrote.
+  // Inert (permanently-empty section) unless DOCS_INGEST_ENABLED is also on.
+  RELEASE_WATCH_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Doc-path prefixes to INCLUDE (comma-separated, matched against the same
+  // page path docsIngest computes). Default is the exact release-notes/
+  // model-whats-new/model-deprecations prefixes confirmed live against
+  // Anthropic's docs index at proposal time; adjustable if Anthropic
+  // restructures the docs site.
+  RELEASE_WATCH_DOC_PATHS: z
+    .string()
+    .default('release-notes,about-claude/models/whats-new,about-claude/model-deprecations'),
   // Knowledge link-rot check (issue #448): a weekly background job HEAD-checks
   // every knowledge entry's sourceUrl and flags dead citations for admin
   // review (list_knowledge sourceUnreachable filter). OFF by default, matching
@@ -1147,6 +1164,10 @@ export const config = {
     enabled: env.MEMBER_DIGEST_ENABLED ?? false,
     channelId: env.MEMBER_DIGEST_CHANNEL_ID,
     minDistinctUsers: env.MEMBER_DIGEST_MIN_DISTINCT_USERS,
+  },
+  releaseWatch: {
+    enabled: env.RELEASE_WATCH_ENABLED ?? false,
+    docPaths: csv(env.RELEASE_WATCH_DOC_PATHS),
   },
   findHelper: {
     enabled: env.FIND_HELPER_ENABLED ?? false,
