@@ -227,7 +227,10 @@ test('formatMemberDigestMessage: a quiet week across all four inputs (topics, kn
 
 test('formatMemberDigestMessage: releaseWatchPages only renders the release-watch section, no other sections', () => {
   const message = formatMemberDigestMessage([], [], 0, [
-    { title: 'docs: release-notes/overview', url: 'https://platform.claude.com/docs/en/release-notes/overview' },
+    {
+      title: 'docs: release-notes/overview',
+      url: 'https://platform.claude.com/docs/en/release-notes/overview',
+    },
   ]);
   assert.equal(
     message,
@@ -269,7 +272,9 @@ test('formatMemberDigestMessage: release-watch section renders last, after topic
 });
 
 test('formatMemberDigestMessage: an only-release-watch week (all other inputs empty) still returns a non-null message containing only that section', () => {
-  const message = formatMemberDigestMessage([], [], 0, [{ title: 'docs: release-notes/overview', url: null }]);
+  const message = formatMemberDigestMessage([], [], 0, [
+    { title: 'docs: release-notes/overview', url: null },
+  ]);
   assert.equal(message, '🆕 Anthropic platform updates this week: docs: release-notes/overview');
 });
 
