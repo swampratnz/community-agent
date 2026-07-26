@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { pool } from './db.js';
 import { embed } from './embeddings.js';
 import { config } from '../config.js';
+import { pageKeyOf } from '../context/docsIngest.js';
 
 export interface InteractionInput {
   platform: Platform;
@@ -5020,6 +5021,61 @@ export async function listCuratedKnowledgeCreatedSince(since: Date, limit: numbe
     [since, clampedLimit],
   );
   return rows.map((r) => r.title);
+}
+
+/**
+ * Release/deprecation watcher (issue #733): docsIngest already fetches,
+ * diffs, and stores Anthropic's release-notes/model-deprecation pages
+ * weekly under `created_by_role = 'docs'`, but discards the "which page
+ * changed" signal after the run. This surfaces it for the member digest
+ * without a new fetch, source, or provenance value — purely a read over
+ * rows docsIngest already wrote.
+ *
+ * Filters on `updated_at` (not `created_at` like `listCuratedKnowledgeCreatedSince`
+ * above) so an EXISTING page edited in place — docsIngest's `updated` outcome,
+ * e.g. `release-notes/overview` gaining a new entry — is caught, not just
+ * brand-new pages.
+ *
+ * `created_by_role != 'auto'` reuses the exact same quarantine-exclusion
+ * filter as `listCuratedKnowledgeCreatedSince` above (never `= 'docs'`
+ * specifically) so a future auto-refresh path can never reach this surface
+ * even via a colliding title — the quarantine boundary, not a narrower
+ * docs-only allowlist, is what's load-bearing here.
+ *
+ * `pathPrefixes` are matched against the same `docs: <path>` title prefix
+ * `docsIngest.ts`'s `titleForUrl` already produces (config-fixed values,
+ * never chat/user-derived — same trust level `docsIngest`'s own
+ * `excludePaths` already has). One page can produce several changed chunks
+ * in a week (e.g. `release-notes/overview › section`); grouping by
+ * `pageKeyOf` (docsIngest's own page-grouping helper, reused verbatim so the
+ * two stay in lockstep) reports each page once, keeping its most-recently
+ * updated chunk's `source_url`.
+ */
+export async function listReleaseWatchUpdatesSince(
+  since: Date,
+  pathPrefixes: readonly string[],
+  limit: number,
+): Promise<Array<{ pageTitle: string; sourceUrl: string | null }>> {
+  if (pathPrefixes.length === 0) return [];
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const likePatterns = pathPrefixes.map((p) => `docs: ${p}%`);
+  const { rows } = await pool.query<{ title: string; source_url: string | null }>(
+    `SELECT title, source_url FROM knowledge
+      WHERE updated_at > $1
+        AND created_by_role != 'auto'
+        AND scope = 'global'
+        AND title IS NOT NULL
+        AND trim(title) != ''
+        AND title LIKE ANY($2)
+      ORDER BY updated_at DESC`,
+    [since, likePatterns],
+  );
+  const byPage = new Map<string, { pageTitle: string; sourceUrl: string | null }>();
+  for (const row of rows) {
+    const page = pageKeyOf(row.title);
+    if (!byPage.has(page)) byPage.set(page, { pageTitle: page, sourceUrl: row.source_url });
+  }
+  return [...byPage.values()].slice(0, clampedLimit);
 }
 
 // --- Standing response-style preference (issue #126) ------------------------
