@@ -167,11 +167,27 @@ ownership rules:
   contract is unchanged. A deterministic post-agent **checkpoint step** pushes
   any committed-but-unpushed work with the job's GITHUB_TOKEN (agents have
   finished whole builds without ever pushing — #633), so nothing committed can
-  die with the runner. Its escalation comment names any surviving pushed
-  branch + commit, and a re-queued build resumes from that branch instead of
-  rebuilding (issue #667) — the pointer is resolved by a deterministic
-  pre-step (bot comments only, exact template, remote-verified), never by the
-  agent reading comment text.
+  die with the runner. The surviving pushed branch + commit is published on
+  **every** failed attempt, not only the last, and a re-queued build resumes
+  from that branch instead of rebuilding (issue #667) — the pointer is
+  resolved by a deterministic pre-step (bot comments only, exact template,
+  remote-verified), never by the agent reading comment text. Publishing it
+  only at the final attempt inverted the mechanism: retries need the pointer
+  on exactly the attempts where retrying *continues*, and #701 attempt 1
+  pushed a finished tree that attempt 2 then rebuilt from `main` from
+  scratch.
+  When a failed attempt leaves a pushed branch **ahead of `main` with no PR**
+  — a build that did the work and skipped only `gh pr create` — the verify
+  step opens that PR itself, as a **draft**, and relabels `status:built`
+  rather than spending another attempt re-deriving the same diff. Recovery
+  fires only while the issue is still `status:building` with no `needs-human`
+  (an agent's deliberate step-5 refusal also leaves a branch ahead of `main`,
+  and must stand), and never for a branch that has ever had a PR in any
+  state (a closed-unmerged one means a human already rejected that work). Recovered
+  work is not laundered by this: it never cleared the build agent's own gate,
+  so CI on the PR adjudicates and the automated review still applies, and the
+  PR is authored by `github-actions[bot]` — not the `claude[bot]` identity the
+  auto-merge loop requires — so it can never auto-merge.
 - **All three PR-fixing loops (autofix, conflict-resolver, revise) carry the
   same deterministic checkpoint** as the build worker, for the same reason.
   Each already instructs its agent to run every command synchronously and to
