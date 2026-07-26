@@ -242,6 +242,49 @@ async function assertTopUsersScopedToPlatform(
   );
 }
 
+/**
+ * Ground truth for a test's OWN rows only, scoped by `conversation_id` (issue
+ * #719) — the same fix shape as `assertTopUsersScopedToPlatform` above and
+ * #704's `ownCorpus`: read the shared table narrowed to rows this test
+ * itself inserted, so the result can never be perturbed by another
+ * concurrently-running test file (or a deliberately-seeded foreign row used
+ * to reproduce that contamination in-test). Mirrors `usageStats`'
+ * `costByRole` query exactly, minus the window/platform filter (a unique
+ * `conversation_id` is narrower than either).
+ */
+async function ownCostByRole(
+  conversationId: string,
+): Promise<Map<string, { costUsd: number; replies: number }>> {
+  const { rows } = await pool.query(
+    `SELECT role, coalesce(sum(cost_usd), 0) AS cost, count(*) AS n
+       FROM interactions WHERE conversation_id = $1 AND direction = 'outbound'
+      GROUP BY role`,
+    [conversationId],
+  );
+  return new Map(rows.map((r) => [r.role, { costUsd: Number(r.cost), replies: Number(r.n) }]));
+}
+
+/** Same shape as {@link ownCostByRole}, mirroring `usageStats`' `byPlatform` query. */
+async function ownByPlatform(
+  conversationId: string,
+): Promise<Map<string, { inbound: number; outbound: number; costUsd: number }>> {
+  const { rows } = await pool.query(
+    `SELECT platform,
+       count(*) FILTER (WHERE direction = 'inbound') AS inbound,
+       count(*) FILTER (WHERE direction = 'outbound') AS outbound,
+       coalesce(sum(cost_usd), 0) AS cost
+     FROM interactions WHERE conversation_id = $1
+     GROUP BY platform`,
+    [conversationId],
+  );
+  return new Map(
+    rows.map((r) => [
+      r.platform,
+      { inbound: Number(r.inbound), outbound: Number(r.outbound), costUsd: Number(r.cost) },
+    ]),
+  );
+}
+
 async function retryOnSharedTableInterference(attempts: number, run: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -3577,85 +3620,148 @@ test(
   { skip },
   async () => {
     const conversationId = `${RUN}-c-cost-role`;
+    const foreignConversationId = `${RUN}-c-cost-role-foreign`;
     const adminUser = `${RUN}-cost-admin`;
     const memberUser = `${RUN}-cost-member`;
     const guestUser = `${RUN}-cost-guest`;
+    const foreignAdminUser = `${RUN}-cost-admin-foreign`;
 
     const days = 1;
-    const before = await usageStats(days);
-    const beforeByRole = new Map(before.costByRole.map((r) => [r.role, r]));
+    // Exact-delta assertions over whole-table aggregates race with other test
+    // FILES writing interactions concurrently (parallel file execution, one
+    // shared DB) — retry the full read-seed-read sequence, cleaning seeds
+    // between attempts (see retryOnSharedTableInterference above).
+    await retryOnSharedTableInterference(4, async () => {
+      try {
+        const before = await usageStats(days);
+        const beforeByRole = new Map(before.costByRole.map((r) => [r.role, r]));
 
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: adminUser,
-      role: 'admin',
-      direction: 'outbound',
-      content: 'admin reply 1',
-      costUsd: 2.5,
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: adminUser,
+          role: 'admin',
+          direction: 'outbound',
+          content: 'admin reply 1',
+          costUsd: 2.5,
+        });
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: adminUser,
+          role: 'admin',
+          direction: 'outbound',
+          content: 'admin reply 2',
+          costUsd: 1.5,
+        });
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: memberUser,
+          role: 'member',
+          direction: 'outbound',
+          content: 'member reply',
+          costUsd: 0.25,
+        });
+        // Inbound-only role: costByRole is scoped to direction = 'outbound', so this
+        // must not create or bump a 'guest' entry.
+        await recordInteraction({
+          platform: 'discord',
+          conversationId,
+          userId: guestUser,
+          role: 'guest',
+          direction: 'inbound',
+          content: 'guest asks a question',
+        });
+
+        // Deliberately seed a FOREIGN admin-role outbound row under a
+        // different conversation_id (issue #719): reproduces, in-test, the
+        // exact contamination class that broke exact-delta assertions on CI
+        // run 30204969555 ("costByRole counted 5 rows where the test seeded
+        // 1") — a concurrently-running test file inserting into the same
+        // role/window. Every assertion below must hold with this row present.
+        await recordInteraction({
+          platform: 'discord',
+          conversationId: foreignConversationId,
+          userId: foreignAdminUser,
+          role: 'admin',
+          direction: 'outbound',
+          content: 'unrelated concurrent admin reply',
+          costUsd: 9.99,
+        });
+
+        const after = await usageStats(days);
+        const afterByRole = new Map(after.costByRole.map((r) => [r.role, r]));
+
+        // Ground truth for THIS test's own rows only, scoped by
+        // conversation_id — immune to the foreign row seeded above and to
+        // any other concurrently-running test file (see ownCostByRole).
+        const ownByRole = await ownCostByRole(conversationId);
+        const ownAdmin = ownByRole.get('admin');
+        assert.ok(ownAdmin, 'own admin rows appear, scoped to this test');
+        assert.ok(
+          Math.abs(ownAdmin.costUsd - 4) < 1e-9,
+          'own admin rows sum to exactly the seeded 2.5 + 1.5',
+        );
+        assert.equal(ownAdmin.replies, 2, 'own admin rows: exactly the two seeded outbound replies');
+
+        const ownMember = ownByRole.get('member');
+        assert.ok(ownMember, 'own member row appears, scoped to this test');
+        assert.ok(
+          Math.abs(ownMember.costUsd - 0.25) < 1e-9,
+          'own member row reflects exactly the seeded 0.25',
+        );
+        assert.equal(ownMember.replies, 1);
+
+        assert.ok(
+          !ownByRole.has('guest'),
+          'guest had only an inbound row in this test — costByRole is outbound-only, so scoped to ' +
+            'our own rows it must not appear at all, not merely be unchanged in the (contaminable) global read',
+        );
+
+        // The global usageStats() delta must reflect AT LEAST our own
+        // contribution — monotone-safe under foreign rows landing in the
+        // same role/window (cost_usd/counts are never negative, so a
+        // foreign row can only add, never subtract); exact equality would
+        // fail whenever contamination (deliberate above, or a real
+        // concurrent test file) adds cost or replies.
+        const adminBeforeCost = beforeByRole.get('admin')?.costUsd ?? 0;
+        const adminBeforeReplies = beforeByRole.get('admin')?.replies ?? 0;
+        const adminAfter = afterByRole.get('admin');
+        assert.ok(adminAfter, 'admin role appears after seeding outbound admin cost');
+        assert.ok(
+          adminAfter.costUsd - adminBeforeCost >= 4 - 1e-9,
+          'admin cost delta is at least the seeded 2.5 + 1.5',
+        );
+        assert.ok(
+          adminAfter.replies - adminBeforeReplies >= 2,
+          'admin reply count delta is at least the two seeded outbound rows',
+        );
+
+        const memberBeforeCost = beforeByRole.get('member')?.costUsd ?? 0;
+        const memberBeforeReplies = beforeByRole.get('member')?.replies ?? 0;
+        const memberAfter = afterByRole.get('member');
+        assert.ok(memberAfter, 'member role appears after seeding outbound member cost');
+        assert.ok(
+          memberAfter.costUsd - memberBeforeCost >= 0.25 - 1e-9,
+          'member cost delta is at least the seeded 0.25',
+        );
+        assert.ok(memberAfter.replies - memberBeforeReplies >= 1);
+
+        for (let i = 1; i < after.costByRole.length; i++) {
+          const prev = after.costByRole[i - 1];
+          const curr = after.costByRole[i];
+          assert.ok(
+            prev.costUsd > curr.costUsd || (prev.costUsd === curr.costUsd && prev.role < curr.role),
+            'costByRole is ordered by cost_usd desc, then role asc as a deterministic tiebreaker',
+          );
+        }
+      } finally {
+        await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+          [conversationId, foreignConversationId],
+        ]);
+      }
     });
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: adminUser,
-      role: 'admin',
-      direction: 'outbound',
-      content: 'admin reply 2',
-      costUsd: 1.5,
-    });
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: memberUser,
-      role: 'member',
-      direction: 'outbound',
-      content: 'member reply',
-      costUsd: 0.25,
-    });
-    // Inbound-only role: costByRole is scoped to direction = 'outbound', so this
-    // must not create or bump a 'guest' entry.
-    await recordInteraction({
-      platform: 'discord',
-      conversationId,
-      userId: guestUser,
-      role: 'guest',
-      direction: 'inbound',
-      content: 'guest asks a question',
-    });
-
-    const after = await usageStats(days);
-    const afterByRole = new Map(after.costByRole.map((r) => [r.role, r]));
-
-    const adminBeforeCost = beforeByRole.get('admin')?.costUsd ?? 0;
-    const adminBeforeReplies = beforeByRole.get('admin')?.replies ?? 0;
-    const adminAfter = afterByRole.get('admin');
-    assert.ok(adminAfter, 'admin role appears after seeding outbound admin cost');
-    assert.equal(adminAfter.costUsd - adminBeforeCost, 4, 'admin cost sums the seeded 2.5 + 1.5');
-    assert.equal(adminAfter.replies - adminBeforeReplies, 2, 'admin reply count reflects both outbound rows');
-
-    const memberBeforeCost = beforeByRole.get('member')?.costUsd ?? 0;
-    const memberBeforeReplies = beforeByRole.get('member')?.replies ?? 0;
-    const memberAfter = afterByRole.get('member');
-    assert.ok(memberAfter, 'member role appears after seeding outbound member cost');
-    assert.equal(memberAfter.costUsd - memberBeforeCost, 0.25, 'member cost reflects the seeded 0.25');
-    assert.equal(memberAfter.replies - memberBeforeReplies, 1);
-
-    assert.deepEqual(
-      afterByRole.get('guest'),
-      beforeByRole.get('guest'),
-      'guest had only an inbound row in this test, so its costByRole entry (or absence) is unchanged — not a spurious zero-cost row',
-    );
-
-    for (let i = 1; i < after.costByRole.length; i++) {
-      const prev = after.costByRole[i - 1];
-      const curr = after.costByRole[i];
-      assert.ok(
-        prev.costUsd > curr.costUsd || (prev.costUsd === curr.costUsd && prev.role < curr.role),
-        'costByRole is ordered by cost_usd desc, then role asc as a deterministic tiebreaker',
-      );
-    }
-
-    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
@@ -3664,8 +3770,11 @@ test(
   { skip },
   async () => {
     const conversationId = `${RUN}-c-platform-split`;
+    const foreignConversationId = `${RUN}-c-platform-split-foreign`;
     const discordUser = `${RUN}-platform-discord`;
     const whatsappUser = `${RUN}-platform-whatsapp`;
+    const foreignDiscordUser = `${RUN}-platform-discord-foreign`;
+    const foreignWhatsappUser = `${RUN}-platform-whatsapp-foreign`;
 
     const days = 1;
     // Exact-delta assertions over whole-table aggregates race with other test
@@ -3712,22 +3821,69 @@ test(
           costUsd: 0.3,
         });
 
+        // Deliberately seed FOREIGN rows on both platforms under a different
+        // conversation_id (issue #719): reproduces, in-test, the exact
+        // contamination class from CI run 30204969555 (byPlatform cost delta
+        // "1.2000000000000002 !== 1.2" surviving retryOnSharedTableInterference,
+        // since a retry cannot fix a stably-contaminated sum). Every
+        // assertion below must hold with these rows present.
+        await recordInteraction({
+          platform: 'discord',
+          conversationId: foreignConversationId,
+          userId: foreignDiscordUser,
+          role: 'member',
+          direction: 'outbound',
+          content: 'unrelated concurrent discord reply',
+          costUsd: 3.7,
+        });
+        await recordInteraction({
+          platform: 'whatsapp',
+          conversationId: foreignConversationId,
+          userId: foreignWhatsappUser,
+          role: 'member',
+          direction: 'outbound',
+          content: 'unrelated concurrent whatsapp reply',
+          costUsd: 5.5,
+        });
+
         const after = await usageStats(days);
         const afterByPlatform = new Map(after.byPlatform.map((r) => [r.platform, r]));
 
+        // Ground truth for THIS test's own rows only, scoped by
+        // conversation_id — immune to the foreign rows seeded above and to
+        // any other concurrently-running test file (see ownByPlatform).
+        const ownPlatform = await ownByPlatform(conversationId);
+        const ownDiscord = ownPlatform.get('discord');
+        assert.ok(ownDiscord, 'own discord rows appear, scoped to this test');
+        assert.equal(ownDiscord.inbound, 1);
+        assert.equal(ownDiscord.outbound, 1);
+        assert.ok(Math.abs(ownDiscord.costUsd - 1.2) < 1e-9, 'own discord cost is exactly the seeded 1.2');
+
+        const ownWhatsapp = ownPlatform.get('whatsapp');
+        assert.ok(ownWhatsapp, 'own whatsapp rows appear, scoped to this test');
+        assert.equal(ownWhatsapp.inbound, 1);
+        assert.equal(ownWhatsapp.outbound, 1);
+        assert.ok(Math.abs(ownWhatsapp.costUsd - 0.3) < 1e-9, 'own whatsapp cost is exactly the seeded 0.3');
+
+        // The global usageStats() delta must reflect AT LEAST our own
+        // contribution — monotone-safe under foreign rows landing in the
+        // same platform/window (counts/cost_usd are never negative, so a
+        // foreign row can only add, never subtract); exact equality would
+        // fail whenever contamination (deliberate above, or a real
+        // concurrent test file) adds volume or cost.
         const discordBefore = beforeByPlatform.get('discord');
         const discordAfter = afterByPlatform.get('discord');
         assert.ok(discordAfter, 'discord appears in byPlatform after seeding a discord row');
-        assert.equal(discordAfter.inbound - (discordBefore?.inbound ?? 0), 1);
-        assert.equal(discordAfter.outbound - (discordBefore?.outbound ?? 0), 1);
-        assert.equal(discordAfter.costUsd - (discordBefore?.costUsd ?? 0), 1.2);
+        assert.ok(discordAfter.inbound - (discordBefore?.inbound ?? 0) >= 1);
+        assert.ok(discordAfter.outbound - (discordBefore?.outbound ?? 0) >= 1);
+        assert.ok(discordAfter.costUsd - (discordBefore?.costUsd ?? 0) >= 1.2 - 1e-9);
 
         const whatsappBefore = beforeByPlatform.get('whatsapp');
         const whatsappAfter = afterByPlatform.get('whatsapp');
         assert.ok(whatsappAfter, 'whatsapp appears in byPlatform after seeding a whatsapp row');
-        assert.equal(whatsappAfter.inbound - (whatsappBefore?.inbound ?? 0), 1);
-        assert.equal(whatsappAfter.outbound - (whatsappBefore?.outbound ?? 0), 1);
-        assert.equal(whatsappAfter.costUsd - (whatsappBefore?.costUsd ?? 0), 0.3);
+        assert.ok(whatsappAfter.inbound - (whatsappBefore?.inbound ?? 0) >= 1);
+        assert.ok(whatsappAfter.outbound - (whatsappBefore?.outbound ?? 0) >= 1);
+        assert.ok(whatsappAfter.costUsd - (whatsappBefore?.costUsd ?? 0) >= 0.3 - 1e-9);
 
         // Criterion 3: summing byPlatform must equal the top-level totals exactly (same
         // table/window/direction semantics as `totals`, differing only by GROUP BY platform).
@@ -3750,7 +3906,9 @@ test(
           );
         }
       } finally {
-        await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+        await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+          [conversationId, foreignConversationId],
+        ]);
       }
     });
   },
@@ -3827,7 +3985,11 @@ test(
         );
         const discordAfterByRole = new Map(afterDiscord.costByRole.map((r) => [r.role, r.costUsd]));
         const discordBeforeByRole = new Map(beforeDiscord.costByRole.map((r) => [r.role, r.costUsd]));
-        assert.equal((discordAfterByRole.get('member') ?? 0) - (discordBeforeByRole.get('member') ?? 0), 1.2);
+        assert.ok(
+          Math.abs((discordAfterByRole.get('member') ?? 0) - (discordBeforeByRole.get('member') ?? 0) - 1.2) <
+            1e-9,
+          'discord-scoped costByRole member delta reflects the seeded 1.2 (tolerance-based — issue #719)',
+        );
         assert.equal(
           (discordAfterByRole.get('admin') ?? 0) - (discordBeforeByRole.get('admin') ?? 0),
           0,
