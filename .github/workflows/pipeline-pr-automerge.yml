@@ -359,6 +359,26 @@ jobs:
             if gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" \
               --match-head-commit "$head_sha" --delete-branch; then
               echo "Merged PR #$n."
+              # Close the linked issue DETERMINISTICALLY rather than trusting
+              # GitHub's keyword auto-close. On 2026-07-26 three of five
+              # auto-merged PRs (#712, #721, #722) left their `Closes #N`
+              # issues open while two closed normally — same repo, same loop,
+              # same body format, so the platform's async issue-linkage is
+              # best-effort, not a contract. A closed-PR/open-issue zombie is
+              # invisible to the groundskeeper (which keys on status:building,
+              # not status:built) and wedges nothing but lies to every label
+              # scan. The number comes from the same `Closes #N` body match
+              # the eligibility gate above already required; skip silently if
+              # the platform got there first (the normal case).
+              closed_issue="$(jq -r '(.body // "") | capture("[Cc]loses #(?<num>[0-9]+)").num // empty' <<<"$struct")"
+              if [ -n "$closed_issue" ]; then
+                issue_state="$(gh issue view "$closed_issue" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo '')"
+                if [ "$issue_state" = 'OPEN' ]; then
+                  gh issue close "$closed_issue" --repo "$REPO" --reason completed \
+                    --comment "🤖 Closed by the auto-merge loop after merging PR #$n (deterministic close — GitHub's keyword auto-close is best-effort and skipped several issues on 2026-07-26)." \
+                    || echo "::warning::Could not close issue #$closed_issue after merging PR #$n — close it manually."
+                fi
+              fi
               # main advanced — rebase whatever now conflicts. A GITHUB_TOKEN
               # merge does NOT itself trigger the resolver's push-to-main
               # trigger, so dispatch its discover run explicitly (empty input =
