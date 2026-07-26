@@ -3618,12 +3618,25 @@ export function buildToolServer(
       // suggest_knowledge act — never implicitly from a "helpful" rating.
       // In a channel the exchange was already visible to the room; in a DM
       // the member may reasonably assume privacy, and "helpful" is not
-      // consent to republish. Whole block is try/caught: drafting is a
+      // consent to republish.
+      // Tier gate (issue #730 review, round 2): open-mode guests hold
+      // rate_answer (MEMBER_TOOLS surface), but writing into the
+      // knowledge_candidates queue is a member+ capability — suggest_knowledge
+      // asserts exactly that on the SAME createKnowledgeTip path. `atLeast`
+      // (not assertAtLeast) because the RATING itself stays guest-allowed:
+      // a guest's helpful rating records normally and only the drafting side
+      // effect is silently suppressed, same shape as the DM exclusion.
+      // Whole block is try/caught: drafting is a
       // silent side effect on an already-recorded rating, so a transient
       // failure in any of its reads/writes must degrade to "no draft" —
       // never surface as a tool error on the rating itself (same fail-open
       // posture as the gap/stale/retrieval supplements in knowledge_search).
-      if (config.knowledgeAnswerCandidate.enabled && args.helpful === true && !caller.isDirect) {
+      if (
+        config.knowledgeAnswerCandidate.enabled &&
+        args.helpful === true &&
+        !caller.isDirect &&
+        atLeast(caller.role, 'member')
+      ) {
         try {
           const grounding = await answerFeedbackGrounding(created.interactionId);
           if (

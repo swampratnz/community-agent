@@ -1197,6 +1197,17 @@ evaporates.
   "helpful" rating is not consent to republish into the guild-wide,
   admin-visible candidate queue — a DM Q&A only enters that queue via the
   EXPLICIT `suggest_knowledge` act.
+- **Tier gate (issue #730 review, round 2)**: no draft is ever attempted
+  for a caller below member. Open-mode guests hold `rate_answer` (it's on
+  the shared `MEMBER_TOOLS` surface), but writing into
+  `knowledge_candidates` is a member+ capability — `suggest_knowledge`
+  asserts exactly that on the same `createKnowledgeTip` path. The gate is a
+  silent `atLeast(caller.role, 'member')` condition rather than a throwing
+  `assertAtLeast`, because the guest's RATING itself stays allowed — only
+  the drafting side effect is suppressed, same shape as the DM exclusion.
+  Without it, a guest in a shared channel could rate-`helpful` a
+  member-addressed reply and draft a candidate attributed to that member
+  without ever holding member tier.
 - **Silent side effect, failure-isolated**: `rate_answer`'s own reply text
   (`'Thanks, glad that helped!'`) is unchanged either way; drafting is never
   announced to the member, unlike the deliberate `suggest_knowledge` flow.

@@ -13642,6 +13642,91 @@ test(
 );
 
 test(
+  "SECURITY: rate_answer from an open-mode GUEST never drafts a candidate, flag on — writing into knowledge_candidates is member+ (suggest_knowledge asserts the same tier on the same createKnowledgeTip path), and a guest rating a MEMBER-addressed reply must not draft against that member either; the guest's rating itself still records (issue #730 review, round 2)",
+  { skip },
+  async () => {
+    const memberAsker = `${RUN}-answer-candidate-guest-victim`;
+    const guestRater = `${RUN}-answer-candidate-guest-rater`;
+    const conversationId = `${RUN}-c-answer-candidate-guest`;
+    // Same whimsical-wording, no-RUN-token discipline as the sibling tests
+    // above, so the dedup guard can't be what suppressed the draft — the tier
+    // gate alone must be. This fixture is the AC10 shape (rater ≠ asker, so
+    // resolveAnswerFeedbackTarget's fallback binds the guest's rating to the
+    // member-addressed reply): a MEMBER observer here drafts against the
+    // asker (proven by the attribution test above), so a guest must not.
+    const question = 'can a lavender ibis referee the marble tournament';
+    await pool.query(`DELETE FROM knowledge_candidates WHERE topic = $1`, [question]);
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: memberAsker,
+      role: 'member',
+      direction: 'inbound',
+      content: question,
+    });
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'only if the ibis declares its whistle before the first flick',
+      meta: { replyToUserId: memberAsker },
+    });
+
+    // Same shape as rateAnswerHandler, with the one difference under test.
+    const adapter = stubAdapter(async () => {});
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: guestRater,
+        userName: 'Open-Mode Guest',
+        role: 'guest' as const,
+        conversationId,
+      },
+      adapter,
+    );
+    const handler = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: {
+              helpful: boolean;
+            }) => Promise<{ isError?: boolean; content: Array<{ text?: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['rate_answer'];
+
+    try {
+      await withAnswerCandidateFlag(true, async () => {
+        const result = await handler.handler({ helpful: true });
+        assert.notEqual(
+          result.isError,
+          true,
+          'the guest RATING itself must still succeed — only the drafting side effect is tier-gated',
+        );
+        assert.match(result.content[0]?.text ?? '', /glad that helped/i);
+      });
+
+      const rows = await pool.query(`SELECT 1 FROM knowledge_candidates WHERE source_user_id = ANY($1)`, [
+        [memberAsker, guestRater],
+      ]);
+      assert.equal(
+        rows.rows.length,
+        0,
+        'SECURITY: a guest rating must never draft a candidate — neither attributed to the addressed member nor to the guest',
+      );
+    } finally {
+      await pool.query(`DELETE FROM answer_feedback WHERE user_id = $1`, [guestRater]);
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
+test(
   'rate_answer: a transient failure inside the drafting side effect never surfaces as a tool error — the rating is recorded and the reply text is unchanged (issue #730 review)',
   { skip },
   async (t) => {
