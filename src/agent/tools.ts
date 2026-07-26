@@ -722,7 +722,11 @@ export async function claimStaleKnowledgeAlert(
 ): Promise<StaleKnowledgeAlertCandidate | null> {
   if (!config.knowledgeStaleAlert.enabled) return null;
   if (
-    !isKnowledgeStale({ updatedAt: entry.updatedAt, lastRetrievedAt: entry.lastRetrievedAt }, staleDays, maxAgeDays)
+    !isKnowledgeStale(
+      { updatedAt: entry.updatedAt, lastRetrievedAt: entry.lastRetrievedAt },
+      staleDays,
+      maxAgeDays,
+    )
   ) {
     return null;
   }
@@ -1027,12 +1031,12 @@ export interface FeatureFlagEntry {
 }
 
 /**
- * Fixed, hand-maintained allowlist mapping the 28 existing boolean
+ * Fixed, hand-maintained allowlist mapping the 35 existing boolean
  * `*_ENABLED` config flags to a human label and category (issue #559).
  * Deliberately NOT derived by walking `config` — a missing entry here only
  * under-reports a flag, and can never over-expose a non-boolean field (a
  * token, URL, or id) just by that field existing on `config`. When adding a
- * 29th `*_ENABLED` flag, add a matching entry here or the anti-drift test
+ * 36th `*_ENABLED` flag, add a matching entry here or the anti-drift test
  * (tests/tools.test.ts) fails CI.
  */
 export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
@@ -1221,6 +1225,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'KNOWLEDGE_GAP_ALERT_ENABLED',
     configPath: 'knowledgeGapAlert.enabled',
     label: 'Real-time knowledge-gap-cluster alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'KNOWLEDGE_STALE_ALERT_ENABLED',
+    configPath: 'knowledgeStaleAlert.enabled',
+    label: 'Real-time stale-knowledge alert',
     category: 'Admin Alerts & Digest',
   },
   {
@@ -2903,7 +2913,8 @@ export function buildToolServer(
       // query, so this loop is a no-op cost, and `turnState.
       // staleKnowledgeAlerts` never gets set (acceptance criterion 4).
       if (turnState) {
-        const servedHits = lexicalHits.length > 0 ? lexicalHits : hits.filter((h) => relevantIds.includes(h.id));
+        const servedHits =
+          lexicalHits.length > 0 ? lexicalHits : hits.filter((h) => relevantIds.includes(h.id));
         for (const hit of servedHits) {
           const claim = await claimStaleKnowledgeAlert(hit).catch((err) => {
             logger.warn({ err }, 'Stale knowledge alert claim failed');

@@ -73,6 +73,7 @@
   "knowledgeSearchFailSafe.test.ts": 2,
   "knowledgeSearchLowRatedCaveat.test.ts": 1,
   "knowledgeShortcutRouter.test.ts": 3,
+  "knowledgeStaleAlert.router.test.ts": 4,
   "linkCheck.test.ts": 13,
   "lowRatedCaveatRouter.test.ts": 1,
   "memberDigest.test.ts": 8,

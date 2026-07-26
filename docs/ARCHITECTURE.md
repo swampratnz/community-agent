@@ -1132,7 +1132,43 @@ serve. That decision used to be made and thrown away in the same request;
   #650 — no extra query, no await. Explicitly out of scope (named future
   work in the issue): auto-posting into the channel/thread where the
   questions were asked, and extending the same real-time-nudge treatment to
-  the stale-knowledge/generic-repeat-question signals.
+  the generic-repeat-question signal (the stale-knowledge half shipped as
+  #701, below).
+- **Real-time stale-knowledge alert (issue #701, `KNOWLEDGE_STALE_ALERT_ENABLED`,
+  off by default).** The per-entry counterpart to the cluster alert above —
+  mirrors its mechanism, substituting `isKnowledgeStale` for the gap-cluster
+  predicate. Promotes the weekly digest's bare `staleKnowledgeCount` to an
+  instant admin DM the moment a specific entry `isKnowledgeStale` returns
+  `true` for is actually served to a member, at any of the three serve sites
+  that already render the "may be outdated" caveat: the `knowledge_search`
+  tool handler and both `sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`
+  (issue #214). A new `stale_alerted_at TIMESTAMPTZ` column on `knowledge`
+  (NULL until stamped, excluded from the `knowledge_set_updated_at` trigger's
+  column list — same treatment as `retrieval_count`/`source_url`) makes this
+  single-shot per staleness episode: `reserveStaleKnowledgeAlert` atomically
+  claims the row with `stale_alerted_at IS NULL OR stale_alerted_at <
+  updated_at`, so a later `update_knowledge`/`accept_knowledge_candidate`
+  edit re-arms the alert automatically (the trigger's `updated_at` bump is
+  the only reset needed). Because this alert can fire from three independent
+  serve paths — one inside a model turn, two deterministic shortcuts that
+  never involve the model — the claim (`claimStaleKnowledgeAlert`,
+  `agent/tools.ts`) and the send are split: the tool-handler path threads its
+  claims through `ToolServerTurnState.staleKnowledgeAlerts` →
+  `TurnOutcome`/`AgentReply` exactly like `knowledgeGapCluster` above
+  (`notifyAdmins` is never called from `tools.ts` itself), while the two
+  router-owned shortcuts call the same claim function directly since they
+  never go through a turn. All three converge on one `router.ts` method,
+  `fireStaleKnowledgeAlert`, which reserves a guild-wide rolling-hour slot
+  (`KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR`, default 5, identical shape to
+  `reserveKnowledgeGapAlertSlot`) and fires one `notifyAdmins` DM naming the
+  entry's title (or a `truncateForEcho`-bounded excerpt for an untitled
+  entry) and `formatRelativeAge(updatedAt)`. Unlike the gap-cluster alert,
+  the claim (and its `stale_alerted_at` stamp) happens unconditionally before
+  the rate-limit check, not after: a stale entry must not retry-storm on
+  every subsequent serve once the hourly cap is exhausted, so the row stays
+  claimed either way and only the DM itself is skipped. With the flag off,
+  every serve path is byte-identical to before #701 — no extra query, no
+  write, no DM.
 
 On top of the digests sits the **anonymised community-context export**
 (issue #53, `CONTEXT_EXPORT_ENABLED`): after a producing builder run,

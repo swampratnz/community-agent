@@ -38,6 +38,7 @@ const {
   deleteKnowledge,
   listKnowledge,
   isKnowledgeStale,
+  reserveStaleKnowledgeAlert,
   recordKnowledgeRetrieval,
   insertContextDigest,
   insertKnowledgeCandidate,
@@ -5850,6 +5851,102 @@ test(
     );
 
     await pool.query(`DELETE FROM knowledge WHERE id = $1`, [popularAncient]);
+  },
+);
+
+test(
+  'repository: reserveStaleKnowledgeAlert claims a fresh (never-alerted) row and stamps stale_alerted_at (issue #701 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} stale-alert fresh row`,
+      title: 'stale-alert-fresh',
+    });
+
+    const claimed = await reserveStaleKnowledgeAlert(id);
+    assert.equal(claimed, true, 'a never-alerted row must be claimable');
+
+    const { rows } = await pool.query(`SELECT stale_alerted_at FROM knowledge WHERE id = $1`, [id]);
+    assert.ok(rows[0].stale_alerted_at instanceof Date, 'stale_alerted_at must be stamped by the claim');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'repository: reserveStaleKnowledgeAlert is single-shot per staleness episode — a second claim on the same, unedited row is refused (issue #701 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} stale-alert single-shot row`,
+      title: 'stale-alert-single-shot',
+    });
+
+    const firstClaim = await reserveStaleKnowledgeAlert(id);
+    assert.equal(firstClaim, true);
+    const secondClaim = await reserveStaleKnowledgeAlert(id);
+    assert.equal(secondClaim, false, 'the same episode must not be claimable twice');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'repository: reserveStaleKnowledgeAlert re-arms once an admin edit (updateKnowledge) bumps updated_at past the stamp (issue #701 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} stale-alert re-arm row`,
+      title: 'stale-alert-re-arm',
+    });
+
+    const firstClaim = await reserveStaleKnowledgeAlert(id);
+    assert.equal(firstClaim, true);
+    const beforeEdit = await pool.query(`SELECT updated_at, stale_alerted_at FROM knowledge WHERE id = $1`, [
+      id,
+    ]);
+    assert.ok(
+      beforeEdit.rows[0].stale_alerted_at.getTime() >= beforeEdit.rows[0].updated_at.getTime(),
+      'immediately after the claim, the stamp must not be earlier than updated_at',
+    );
+
+    const { updated } = await updateKnowledge({ id, content: `${RUN} stale-alert re-arm row — edited` });
+    assert.equal(updated, true);
+    const afterEdit = await pool.query(`SELECT updated_at, stale_alerted_at FROM knowledge WHERE id = $1`, [
+      id,
+    ]);
+    assert.ok(
+      afterEdit.rows[0].updated_at.getTime() > afterEdit.rows[0].stale_alerted_at.getTime(),
+      'updateKnowledge must bump updated_at past the earlier stale_alerted_at stamp — the knowledge_set_updated_at trigger fires on a content edit',
+    );
+
+    const reArmedClaim = await reserveStaleKnowledgeAlert(id);
+    assert.equal(reArmedClaim, true, 'a fresh serve after the edit must be claimable again');
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'repository: reserveStaleKnowledgeAlert stamping stale_alerted_at alone never bumps updated_at — the knowledge_set_updated_at trigger excludes it, same treatment as retrieval_count/source_url (issue #701 acceptance criterion 6)',
+  { skip },
+  async () => {
+    const { id } = await saveKnowledge({
+      content: `${RUN} stale-alert trigger-exclusion row`,
+      title: 'stale-alert-trigger-exclusion',
+    });
+    const before = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+
+    await reserveStaleKnowledgeAlert(id);
+
+    const after = await pool.query(`SELECT updated_at FROM knowledge WHERE id = $1`, [id]);
+    assert.equal(
+      after.rows[0].updated_at.getTime(),
+      before.rows[0].updated_at.getTime(),
+      'stamping stale_alerted_at must not be treated as a content edit — updated_at must be untouched',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [id]);
   },
 );
 

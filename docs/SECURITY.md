@@ -1049,6 +1049,58 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   `recordKnowledgeGap` call stays exactly the fire-and-forget it was before
   #650: no extra cluster query, no await, no DM — byte-identical to today,
   pinned by a `SECURITY:` test.
+- **Real-time stale-knowledge alert** (`KNOWLEDGE_STALE_ALERT_ENABLED`, off by
+  default, issue #701): the per-entry counterpart to the knowledge-gap-cluster
+  alert above, mirroring its mechanism and every security property —
+  substitutes the existing `isKnowledgeStale` predicate (#214/#308/#380) for
+  the gap-cluster predicate, so this adds no new staleness concept. **No new
+  tool, no new privileged data access, no broadened recipient set**: the
+  alert content (an entry's title/excerpt + a relative age) is a strict
+  subset of what admin-tier `list_knowledge`/`knowledge_search` already
+  return; this changes only *when* it's seen, not what's visible. Delivered
+  only to `listAdmins()` via the same `notifyAdmins` queue as every other
+  real-time nudge above — pinned by a `SECURITY:` test asserting
+  `fireStaleKnowledgeAlert` (the single `router.ts` method every serve path
+  funnels through) never reaches a broader-audience send path
+  (`notifySuperAdmins`/`superAdminIds`). **Lower untrusted-content risk than
+  its own precedent**: unlike the gap-cluster alert's member-authored query
+  text, the DM names a knowledge entry's title/content excerpt — admin-authored
+  or admin-reviewed data (`save_knowledge`/`update_knowledge`/
+  `accept_knowledge_candidate` are all admin-gated), not a new untrusted-input
+  surface. The untitled-excerpt fallback is still bounded via the identical
+  `truncateForEcho` 120-char cap the gap-cluster/escalation alerts already
+  use, pinned by a `SECURITY:` test — and the DM is asserted to never contain
+  a member identity, query text, or conversation id, also pinned by a
+  `SECURITY:` test. **Single-shot per staleness episode**: a new
+  `stale_alerted_at TIMESTAMPTZ` column on `knowledge` (NULL until stamped,
+  excluded from the `knowledge_set_updated_at` trigger's column list — same
+  treatment as `retrieval_count`/`source_url`/`source_unreachable`) is
+  atomically claimed and stamped in one `UPDATE ... WHERE stale_alerted_at IS
+  NULL OR stale_alerted_at < updated_at` (`reserveStaleKnowledgeAlert`,
+  `storage/repository.ts`), so a concurrent serve of the same newly-stale
+  entry can't double-claim, and a later `update_knowledge`/
+  `accept_knowledge_candidate` edit re-arms the alert purely by bumping
+  `updated_at` — no separate reset path, pinned by `SECURITY:`/DB-integration
+  tests. This entry point is called from three serve sites — the
+  `knowledge_search` tool handler and both `sendKnowledgeShortcut`/
+  `sendGuestKnowledgeShortcut` — but `notifyAdmins` is still never called from
+  `tools.ts` itself: the tool-handler path threads its claims through
+  `ToolServerTurnState.staleKnowledgeAlerts` → `TurnOutcome`/`AgentReply`,
+  the identical non-model turn-scoped-ref pattern `knowledgeGapCluster`
+  (#650) and `unhelpfulAnswerRated` (#598) already established, while the two
+  router-owned shortcuts (which never go through a turn) call the claim
+  function directly — so this adds no new model-reachable path to an admin
+  DM either way. **Guild-wide rolling-hour cap**,
+  `KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR` (default 5, identical
+  sliding-window shape to `reserveKnowledgeGapAlertSlot`), bounds worst-case
+  admin DM volume from an organic or adversarial serve burst, pinned by a
+  `SECURITY:` test. Unlike the gap-cluster alert, the claim/stamp happens
+  BEFORE the rate-limit check and regardless of its outcome — a rate-limited
+  entry stays stamped, so it does not retry-storm on every subsequent serve
+  once the hourly cap frees; only the DM itself is skipped, pinned by a
+  `SECURITY:` test. With the flag unset/false, every serve path is
+  byte-identical to before #701: `claimStaleKnowledgeAlert` returns
+  immediately with no query, no write, no DM.
 - **Returning-guest wait clause** (`appendWaitClause`/`waitDaysSince`,
   `src/gatedNotice.ts`, issue #591): surfaces the same `first_requested_at`
   age the admin-facing digest/`list_access_requests` (issue #515, above)

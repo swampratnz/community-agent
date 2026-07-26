@@ -123,6 +123,7 @@ const {
   recordAdminAction,
   searchKnowledge,
   searchKnowledgeLexical,
+  updateKnowledge,
   isUserBlocked,
   blockUser,
   unblockUser,
@@ -154,6 +155,7 @@ const { getPendingAlertsForTests, resetPendingAlertsForTests } = await import('.
 const RUN = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 const KNOWLEDGE_SEARCH_HANDLER_SCOPE = `${RUN}-knowledge-search-handler`;
 const KNOWLEDGE_GAP_HANDLER_SCOPE = `${RUN}-knowledge-gap-handler`;
+const KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE = `${RUN}-knowledge-stale-alert-handler`;
 const KNOWLEDGE_ENTRY_ID_TURN_STATE_SCOPE = `${RUN}-knowledge-entry-id-turn-state`;
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A = `${RUN}-knowledge-entry-id-scope-leak-a`;
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B = `${RUN}-knowledge-entry-id-scope-leak-b`;
@@ -8018,8 +8020,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    34,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650)",
+    35,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -9000,6 +9002,180 @@ test("SECURITY: the knowledge_search tool handler never calls notifyAdmins direc
     'knowledge_search handler must never call notifyAdmins directly — only router.ts may, post-turn',
   );
 });
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_STALE_ALERT_ENABLED=true): a served stale hit claims the alert slot and stamps stale_alerted_at exactly once; a second identical serve claims nothing; re-arms after an edit (issue #701 acceptance criteria 1-3)',
+  { skip },
+  async () => {
+    const originalAlertEnabled = config.knowledgeStaleAlert.enabled;
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    (config.knowledgeStaleAlert as { enabled: boolean }).enabled = true;
+    (config.adminDigest as { knowledgeStaleDays: number }).knowledgeStaleDays = 30;
+    try {
+      const scope = `${KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE}-1`;
+      const { id } = await saveKnowledge({
+        title: `Quazzledorf renewal policy (stale alert) ${RUN}`,
+        content: 'Quazzledorf memberships renew every 12 months by emailing the treasurer.',
+        scope,
+      });
+      // Force the entry ancient so isKnowledgeStale is true regardless of clock skew.
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-stale-alert-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      const query = 'how does the Quazzledorf renewal policy work (stale alert test)';
+
+      // Call 1: fresh episode — must claim exactly one alert and stamp the row.
+      const turnState1: { lastKnowledgeHitId: number | null; staleKnowledgeAlerts?: unknown[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const adapter = stubAdapter(async () => {});
+      const server1 = buildToolServer(caller, adapter, undefined, turnState1);
+      const tool1 = (
+        server1.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+      await tool1.handler({ query });
+
+      assert.equal(turnState1.staleKnowledgeAlerts?.length, 1, 'call 1 must claim exactly one stale alert');
+      const claim1 = turnState1.staleKnowledgeAlerts?.[0] as { id: number; title: string | null };
+      assert.equal(claim1.id, id);
+      assert.equal(claim1.title, `Quazzledorf renewal policy (stale alert) ${RUN}`);
+
+      const { rows: afterFirst } = await pool.query(`SELECT stale_alerted_at FROM knowledge WHERE id = $1`, [
+        id,
+      ]);
+      assert.ok(
+        afterFirst[0].stale_alerted_at instanceof Date,
+        'the row must be stamped after the first claim',
+      );
+
+      // Call 2: same episode, unedited — must claim nothing (single-shot).
+      const turnState2: { lastKnowledgeHitId: number | null; staleKnowledgeAlerts?: unknown[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const server2 = buildToolServer(caller, adapter, undefined, turnState2);
+      const tool2 = (
+        server2.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+      await tool2.handler({ query });
+      assert.equal(
+        turnState2.staleKnowledgeAlerts,
+        undefined,
+        'a second serve of the same, still-stale, already-alerted entry must claim nothing',
+      );
+
+      // Re-arm: an admin edit (updateKnowledge) bumps updated_at past the
+      // stamp via the trigger — verified directly against the trigger in
+      // repository.test.ts's dedicated re-arm test. To exercise the
+      // re-armed claim through the real tool handler without waiting
+      // KNOWLEDGE_STALE_DAYS of actual wall-clock time, this ages both
+      // columns directly afterwards to the exact relative state a genuine
+      // edit-then-stale-again episode reaches (stale_alerted_at older than
+      // updated_at, and updated_at old enough for isKnowledgeStale). Setting
+      // only updated_at/stale_alerted_at (never scope/title/content/...)
+      // never re-fires knowledge_set_updated_at, so these explicit values
+      // are not overwritten.
+      await updateKnowledge({ id, content: 'Quazzledorf memberships renew every 12 months — edited.' });
+      // Calls 1/2 above each fire recordKnowledgeRetrieval fire-and-forget
+      // (never awaited by the handler) — wait for those in-flight
+      // last_retrieved_at bumps to land before backdating below, or a
+      // late-landing bump could reset last_retrieved_at to "now" right
+      // after and silently un-stale the row again (isKnowledgeStale takes
+      // the MAX of updated_at/last_retrieved_at).
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await pool.query(
+        `UPDATE knowledge
+            SET updated_at = now() - interval '400 days',
+                stale_alerted_at = now() - interval '450 days',
+                last_retrieved_at = NULL
+          WHERE id = $1`,
+        [id],
+      );
+
+      const turnState3: { lastKnowledgeHitId: number | null; staleKnowledgeAlerts?: unknown[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const server3 = buildToolServer(caller, adapter, undefined, turnState3);
+      const tool3 = (
+        server3.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+      await tool3.handler({ query });
+      assert.equal(
+        turnState3.staleKnowledgeAlerts?.length,
+        1,
+        'a fresh staleness serve after an edit must claim a new alert (re-arm)',
+      );
+    } finally {
+      (config.knowledgeStaleAlert as { enabled: boolean }).enabled = originalAlertEnabled;
+      (config.adminDigest as { knowledgeStaleDays: number }).knowledgeStaleDays = originalStaleDays;
+    }
+  },
+);
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_STALE_ALERT_ENABLED unset/false, the default): a stale hit never claims an alert and stale_alerted_at is never written — byte-identical to before issue #701 (acceptance criterion 4)',
+  { skip },
+  async () => {
+    assert.equal(config.knowledgeStaleAlert.enabled, false, 'this test requires the flag at its off default');
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    (config.adminDigest as { knowledgeStaleDays: number }).knowledgeStaleDays = 30;
+    try {
+      const scope = `${KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE}-off`;
+      const { id } = await saveKnowledge({
+        title: `Quazzledorf renewal policy (no stale alert) ${RUN}`,
+        content: 'Quazzledorf memberships renew every 12 months by emailing the treasurer.',
+        scope,
+      });
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [id]);
+
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-stale-no-alert-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: scope,
+      };
+      const query = 'how does the Quazzledorf renewal policy work (no-alert test)';
+
+      const turnState: { lastKnowledgeHitId: number | null; staleKnowledgeAlerts?: unknown[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const adapter = stubAdapter(async () => {});
+      const server = buildToolServer(caller, adapter, undefined, turnState);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+      await registeredTool.handler({ query });
+
+      assert.equal(
+        turnState.staleKnowledgeAlerts,
+        undefined,
+        'the flag being off must never set turnState.staleKnowledgeAlerts, even for a served stale hit',
+      );
+      const { rows } = await pool.query(`SELECT stale_alerted_at FROM knowledge WHERE id = $1`, [id]);
+      assert.equal(
+        rows[0].stale_alerted_at,
+        null,
+        'stale_alerted_at must never be written while the flag is off',
+      );
+    } finally {
+      (config.adminDigest as { knowledgeStaleDays: number }).knowledgeStaleDays = originalStaleDays;
+    }
+  },
+);
 
 test(
   'knowledge_search tool handler writes the top-scoring qualifying hit id into turnState.lastKnowledgeHitId, and a later below-floor call does not clear it (issue #411, acceptance criterion 3)',
