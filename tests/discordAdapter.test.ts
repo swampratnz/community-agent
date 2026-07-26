@@ -3524,9 +3524,12 @@ test('isConnected() recovers after a re-identify: ShardReady restores connected,
 // message, or a rate-capped sender is dropped BEFORE any attachment is
 // fetched or transcribed. The download+Whisper step is isolated behind the
 // private `transcribeAttachment` seam, overridden here so the gate runs for
-// real without a network fetch or a model download. Fixtures are always DMs
+// real without a network fetch or a model download. Most fixtures are DMs
 // (`ChannelType.DM`) so the moderation-scan branch (`!isDM`), which would
-// otherwise hit the unreachable dummy DATABASE_URL, is never reached.
+// otherwise hit the unreachable dummy DATABASE_URL via the real Moderator,
+// is never reached; the one guild-scoped test below (issue #735) mocks the
+// adapter's `moderator.scan` directly instead of letting it run for real, so
+// it can assert on the scanned text without needing a live Postgres.
 // --------------------------------------------------------------------------
 
 type DiscordVoiceAdapter = Adapter & {
@@ -3542,28 +3545,34 @@ function fireDiscordMessage(adapter: Adapter, message: unknown): Promise<void> {
 }
 
 /**
- * A DM voice message from `authorId`. With `attachments` given exactly one
+ * A voice message from `authorId`. With `attachments` given exactly one
  * entry, a `duration` of `null` (the default) mirrors a regular file upload
  * (no `duration_secs` in Discord's payload); a numeric `duration` mirrors a
- * native voice-message bubble.
+ * native voice-message bubble. Defaults to a DM; pass `guildId` to build an
+ * in-scope guild message instead (needed to reach the moderation-scan branch).
  */
 function discordVoiceMessage(opts: {
   authorId: string;
   content?: string;
   attachments?: Array<{ url?: string; duration?: number | null }>;
+  guildId?: string;
 }): unknown {
   const attachmentsArr = (opts.attachments ?? []).map((a, i) => ({
     id: `att-${i}`,
     url: a.url ?? 'https://cdn.discordapp.com/attachments/1/2/voice-message.ogg',
     duration: a.duration ?? null,
   }));
+  const isGuild = opts.guildId != null;
   return {
     author: { id: opts.authorId, bot: false, username: 'Tester' },
-    member: null,
+    member: isGuild ? { displayName: 'Tester' } : null,
     content: opts.content ?? '',
-    channelId: `dm-${opts.authorId}`,
-    channel: { type: ChannelType.DM, isThread: () => false },
-    guildId: null,
+    channelId: isGuild ? `guild-chan-${opts.authorId}` : `dm-${opts.authorId}`,
+    channel: {
+      type: isGuild ? ChannelType.GuildText : ChannelType.DM,
+      isThread: () => false,
+    },
+    guildId: opts.guildId ?? null,
     webhookId: null,
     mentions: { users: { has: () => false } },
     reference: null,
@@ -3850,4 +3859,35 @@ test("Discord voice: senders with an 'en', 'auto', or unset language preference 
     );
     assert.equal(sent.length, 0, `a '${language ?? 'unset'}' preference must never receive the caveat DM`);
   }
+});
+
+test('SECURITY: a guild voice message is auto-moderation-scanned using the transcript, not the empty native content (issue #732/#735)', async (t) => {
+  mockDiscordMemberRole(t, 'user-732-10', 'member');
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  adapter.onMessage(async () => {});
+  adapter.transcribeAttachment = async () => 'transcribed message content';
+  const scanned: Array<{ text: string }> = [];
+  t.mock.method(
+    (adapter as unknown as { moderator: { scan: (ctx: { text: string }) => Promise<void> } }).moderator,
+    'scan',
+    async (ctx: { text: string }) => {
+      scanned.push(ctx);
+    },
+  );
+  await withDiscordVoice({ enabled: true, minRole: 'member' }, () =>
+    fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({
+        authorId: 'user-732-10',
+        attachments: [{ duration: 5 }],
+        guildId: config.discord.guildId,
+      }),
+    ),
+  );
+  assert.equal(scanned.length, 1, 'a guild voice message must still be moderation-scanned');
+  assert.equal(
+    scanned[0].text,
+    'transcribed message content',
+    "the scan must see the transcript, not the message's always-empty native content",
+  );
 });

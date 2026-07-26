@@ -1803,6 +1803,16 @@ reporting `duration_secs`, distinct from a regular file upload), reusing
   transformers.js Whisper pipeline; the transcript populates `text` and
   flows through the identical RBAC/tool-gating/CONFIRM pipeline a typed
   message would — never more than the caller's own tier already grants.
+- **The transcript is scanned by guild auto-moderation too (issue #735).**
+  `onDiscordMessage` resolves `text` (transcribing the voice message first,
+  if any) BEFORE firing `this.moderator.scan(...)` for in-scope guild
+  messages, so a transcribed slur/harassment message is scanned exactly like
+  a typed one — a scan fired against the message's native `content` (always
+  empty for a voice-message bubble) would never see what was actually said,
+  which matters most once an operator lowers `DISCORD_VOICE_MIN_ROLE` below
+  `super_admin` for wider guild rollout. Pinned by a `SECURITY:` test that
+  fires a guild (not DM) voice message and asserts the scan call's `text`
+  equals the transcript, not the empty native content.
 
 ### 14. Real-time admin escalation after a max-turns failure (`ESCALATION_TO_ADMIN_ENABLED`, off by default, issue #479)
 

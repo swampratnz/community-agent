@@ -208,7 +208,11 @@ order exactly, and the same `'mi'`-preference caveat DM (verbatim, reused
 from `voiceLanguageCaveatNotice.ts`) is sent after a successful
 transcription. The hourly rate-limit key is now platform-qualified
 (`` `discord:${id}` `` / `` `whatsapp:${id}` ``) so a collision between a
-Discord snowflake and a WhatsApp phone number can never share a quota. See
+Discord snowflake and a WhatsApp phone number can never share a quota. The
+transcript is resolved BEFORE the guild auto-moderation scan (issue #735), so
+a guild voice message is scanned on its transcript exactly like a typed
+message would be — a scan fired against the message's native (always empty,
+for a voice bubble) `content` would never see what was actually said. See
 SECURITY.md §13 for the full posture.
 
 ## Memory & "learning"

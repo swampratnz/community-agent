@@ -390,17 +390,40 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       return;
     }
 
+    // Discord voice-message transcription (opt-in, DISCORD_VOICE_ENABLED,
+    // issue #732): a native voice-message bubble carries no `content` text but
+    // exactly one attachment reporting `duration_secs` (surfaced by
+    // discord.js as `.duration`) — the marker that distinguishes it from a
+    // regular file upload, which is left untouched regardless of
+    // flag/role state. Mirrors WhatsApp's `maybeTranscribeVoiceNote` gate
+    // order exactly: flag -> caller-tier-vs-minRole -> length cap (pre-fetch)
+    // -> rate cap (pre-fetch) -> fetch+decode+transcribe, any failure
+    // caught/logged/dropped rather than thrown into this handler. Resolved
+    // BEFORE the moderation scan below (issue #735) so a guild voice
+    // message's transcript is scanned exactly like a typed message's text
+    // would be — a scan fired against `message.content` here would always
+    // see the empty native content a voice-message bubble carries.
+    let text = this.cleanContent(message.content);
+    const voiceAttachment = message.attachments.size === 1 ? message.attachments.first() : undefined;
+    if (!text && voiceAttachment && voiceAttachment.duration != null) {
+      text = await this.maybeTranscribeVoiceMessage(voiceAttachment, message.author.id);
+      if (text) {
+        await this.maybeSendVoiceLanguageCaveat(message.author.id);
+      }
+    }
+
     // Auto-moderation scans EVERY in-scope guild message (not just addressed
     // ones), independently of the agent path below. Fire-and-forget so a scan
     // failure can never block or delay normal handling. DMs aren't scanned —
     // muting is a guild concept. A no-op unless DISCORD_MODERATION_ENABLED.
+    // `text` already reflects a transcribed voice message, if any (above).
     if (!isDM) {
       void this.moderator
         .scan({
           platform: 'discord',
           userId: message.author.id,
           userName: message.member?.displayName ?? message.author.username,
-          text: this.cleanContent(message.content),
+          text,
           channelId: message.channelId,
         })
         .catch((err) => logger.warn({ err }, 'Moderation scan failed'));
@@ -410,24 +433,6 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     const mentioned = botId ? message.mentions.users.has(botId) : false;
     const repliedToBot =
       message.reference?.messageId != null && (await this.isReplyToBot(message).catch(() => false));
-
-    // Discord voice-message transcription (opt-in, DISCORD_VOICE_ENABLED,
-    // issue #732): a native voice-message bubble carries no `content` text but
-    // exactly one attachment reporting `duration_secs` (surfaced by
-    // discord.js as `.duration`) — the marker that distinguishes it from a
-    // regular file upload, which is left untouched regardless of
-    // flag/role state. Mirrors WhatsApp's `maybeTranscribeVoiceNote` gate
-    // order exactly: flag -> caller-tier-vs-minRole -> length cap (pre-fetch)
-    // -> rate cap (pre-fetch) -> fetch+decode+transcribe, any failure
-    // caught/logged/dropped rather than thrown into this handler.
-    let text = this.cleanContent(message.content);
-    const voiceAttachment = message.attachments.size === 1 ? message.attachments.first() : undefined;
-    if (!text && voiceAttachment && voiceAttachment.duration != null) {
-      text = await this.maybeTranscribeVoiceMessage(voiceAttachment, message.author.id);
-      if (text) {
-        await this.maybeSendVoiceLanguageCaveat(message.author.id);
-      }
-    }
 
     const normalised: IncomingMessage = {
       platform: 'discord',
