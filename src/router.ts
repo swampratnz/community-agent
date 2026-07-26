@@ -69,7 +69,13 @@ import {
   DAILY_REPLY_BUDGET_WARNING_TEXT_PLAIN,
 } from './dailyReplyBudgetWarning.js';
 import { shouldNotifyBudgetCheckFailed } from './budgetCheckFailureNotice.js';
-import { appendWaitClause, buildGatedNotice, GATED_NOTICE, waitDaysSince } from './gatedNotice.js';
+import {
+  appendWaitClause,
+  appendWaitClauseMi,
+  buildGatedNotice,
+  GATED_NOTICE,
+  waitDaysSince,
+} from './gatedNotice.js';
 
 // Fixed, human-authored te reo Māori variant (issue #363), served instead of
 // GATED_NOTICE to a gated guest with a standing 'mi' language_prefs row
@@ -935,8 +941,9 @@ export class Router {
             // rate-limited path (the `if (!this.rateLimited(userKey))` guard),
             // so no extra DB read is paid where no gated notice is sent
             // (issue #363 adversarial review). A standing 'mi' preference
-            // gets the fixed, human-authored translation as-is (no admin-name
-            // enumeration); everyone else gets the dynamic, admin-naming
+            // gets the fixed, human-authored translation (no admin-name
+            // enumeration), plus the te reo wait clause for a returning guest
+            // (issue #716); everyone else gets the dynamic, admin-naming
             // English builder (issue #360), which already degrades to the
             // static GATED_NOTICE internally on a DB failure — the extra
             // catch here is defense-in-depth so an injected/future builder
@@ -944,7 +951,12 @@ export class Router {
             const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
             let notice: string;
             if (lang === 'mi') {
-              notice = GATED_NOTICE_MI;
+              // Returning-guest wait clause, te reo parity (issue #716):
+              // reuses the same firstRequestedAtPromise already created
+              // above — no new DB round-trip on this branch.
+              const firstRequestedAt = await firstRequestedAtPromise;
+              const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
+              notice = appendWaitClauseMi(GATED_NOTICE_MI, waitDays);
             } else {
               notice = await this.getGatedNotice(msg.platform).catch((err) => {
                 logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
@@ -961,12 +973,11 @@ export class Router {
                 );
                 if (style === 'plain') notice = GATED_NOTICE_PLAIN;
               }
-              // Returning-guest wait clause (issue #591): this is the one
-              // branch that actually sends a static gated notice, so this is
-              // the one place firstRequestedAtPromise is awaited — an
-              // intentional, bounded exception to #480's fire-and-forget
-              // default, matching the notice path's existing awaits above.
-              // GATED_NOTICE_MI is deliberately excluded (untouched, above).
+              // Returning-guest wait clause (issue #591): this branch (and
+              // the 'mi' branch above, issue #716) awaits
+              // firstRequestedAtPromise — an intentional, bounded exception
+              // to #480's fire-and-forget default, matching the notice
+              // path's existing awaits above.
               const firstRequestedAt = await firstRequestedAtPromise;
               const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
               notice = appendWaitClause(notice, waitDays);
