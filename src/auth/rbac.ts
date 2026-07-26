@@ -146,6 +146,22 @@ export const MEMBER_TOOLS = [
   // Read-only counterpart to share_project — most-recent or embedding-
   // similarity search over member_projects only, same 'member' floor check.
   'mcp__community__list_projects',
+  // Opt-in "notify me to help" flag riding the caller's own member_interests
+  // row (issue #729) — self-scoped, instantly reversible like
+  // set_response_style, so no CONFIRM gate. Behind FIND_HELPER_ENABLED
+  // (agent/core.ts FEATURE_FLAGGED_TOOL_GROUPS); listed here unconditionally
+  // like every other MEMBER_TOOLS entry, same layering as
+  // generate_image/suggest_issue/dev_team_* above.
+  'mcp__community__set_helper_availability',
+  // The active-side handoff itself (issue #729): matches the caller's topic
+  // against opted-in helpers and sends at most one DM. Re-checks 'member' in
+  // the handler like set_my_interests/share_project — this is the first
+  // MEMBER_TOOLS write that DMs a DIFFERENT member as a side effect, so it's
+  // rate-capped on both the requester and the notified-helper side (see
+  // repository.ts FIND_HELPER_REQUESTER_DAILY_LIMIT /
+  // FIND_HELPER_WEEKLY_LIMIT_PER_HELPER). Same FIND_HELPER_ENABLED gate as
+  // set_helper_availability above.
+  'mcp__community__find_helper',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */

@@ -747,6 +747,57 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   content, so this is no more exposure than a queryable "intros channel";
   the 5-result cap limits per-query yield, not enumeration across many
   queries. Revisit if abused.
+- **Peer help handoff** (`set_helper_availability`/`find_helper`, issue #729):
+  the active-side consumer of `member_interests` above — the first
+  **proactive, bot-initiated member→member DM** in the system. An adversarial
+  review escalated the original proposal `needs-human` specifically over this
+  precedent, plus a **consent-model asymmetry**: the flag a helper sets
+  (`willing_to_help`) is consent to *be pinged about a stranger's arbitrary
+  topic*, not consent to have their identity disclosed to that stranger — and
+  the requester, by construction, is disclosed to the helper (so the helper
+  knows who to reply to) with no way to opt out of that disclosure themselves.
+  The owner reviewed and approved the tradeoff as specified; nothing here
+  reopens that call, it documents what was approved. Bounded four ways: (1)
+  `willing_to_help` is a deliberate, per-member, instantly-reversible opt-in
+  riding the caller's own `member_interests` row — nothing happens to anyone
+  who hasn't explicitly enabled it, and it requires an existing
+  `set_my_interests` row (matching needs the published embedding to mean
+  anything). (2) At most **one** DM is ever sent per `find_helper` call, to
+  the single best-matching eligible candidate — never a broadcast — pinned by
+  a dedicated SECURITY test independent of the general matching test. (3) Two
+  independent, DB-backed rolling-window caps in a new `helper_notifications`
+  log (never in-memory, so both survive a restart): `FIND_HELPER_WEEKLY_LIMIT_PER_HELPER`
+  (default 3/7 days) skips an over-quota helper in favour of the next
+  candidate, or refuses with "no one available" if every candidate is at cap;
+  `FIND_HELPER_REQUESTER_DAILY_LIMIT` (default 3/24h) refuses the requester
+  before any matching runs. (4) The requester's own tool result never
+  contains the matched helper's identity, handle, or interest text — only a
+  bare "reached out to someone"/"no one available" confirmation, so a
+  requester cannot use repeated calls to enumerate or target a specific
+  helper. **SECURITY-pinned**: self-matching is impossible even when the
+  requester's own row is `willing_to_help = true`; the weekly cap is DB-backed
+  (seeded directly, not only via prior tool calls, to prove it survives a
+  restart); the requester-result non-leak above; and hostile/injection-shaped
+  `topic` text is quarantined via the same `untrusted()` wrapper
+  `list_answer_feedback`'s comment field already uses, verified with that
+  test's own fixtures, before it reaches the helper's DM (a *different*
+  member's inbox — the first time member-supplied free text re-enters another
+  member's DM in this bot, rather than an admin-only or self-scoped surface).
+  The DM send itself reuses the exact best-effort `sendDirectMessage` /
+  `WindowClosedError` → `queueForWindowReopen` recovery pattern
+  `notifySuggestionResolved`/`notifyKnowledgeTipResolved` already establish —
+  a queued-for-reopen send still counts as "the one DM this call sends", since
+  the `helper_notifications` row (and thus the weekly-cap accounting) is
+  already committed by that point. Both tools sit behind `FIND_HELPER_ENABLED`
+  (off by default) — dropped from `allowedTools` entirely when off (issue
+  #535's convention), each handler's own refusal kept as defense in depth.
+  Purge: `willing_to_help` rides the existing `member_interests` row, so
+  `purgeSingleIdentity`/`markRosterLeave`'s existing delete already covers it
+  with zero new code (pinned by extending those tests to assert the column
+  doesn't survive); `helper_notifications` is genuinely new code, so both
+  purge paths gained one new statement each, deleting a departed identity's
+  rows in **either** role — as the notified helper, or as the requester whose
+  call triggered the notification (pinned by a new purge test for each path).
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
   boolean, comment?: string)`. Since issue #355, `comment` carries an

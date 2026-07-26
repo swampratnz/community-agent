@@ -41,12 +41,18 @@ test('issue #535 acceptance criterion 2 — DEV_TEAM_ENABLED=true (others defaul
     assert.ok(opts.allowedTools.includes(t), `${t} must be present when DEV_TEAM_ENABLED=true`);
   }
   const expected = [...toolsForRole('super_admin', 'discord'), 'WebSearch'].filter(
-    (t) => !['mcp__community__generate_image', 'mcp__community__suggest_issue'].includes(t),
+    (t) =>
+      ![
+        'mcp__community__generate_image',
+        'mcp__community__suggest_issue',
+        'mcp__community__set_helper_availability',
+        'mcp__community__find_helper',
+      ].includes(t),
   );
   assert.deepEqual(
     [...opts.allowedTools].sort(),
     [...expected].sort(),
     'super_admin allowedTools with DEV_TEAM_ENABLED=true must equal the pre-#535 toolsForRole list, ' +
-      'minus the still-disabled image-gen/github-issue tools',
+      'minus the still-disabled image-gen/github-issue/find-helper tools',
   );
 });

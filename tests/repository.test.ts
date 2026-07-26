@@ -172,6 +172,12 @@ const {
   WHO_IS_INTO_LIMIT,
   getActiveProjectNamesForOwners,
   getPublishedInterestsForOwners,
+  setHelperAvailability,
+  findHelperCandidates,
+  recordHelperNotificationIfUnderCap,
+  isFindHelperRequesterAtDailyCap,
+  FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
+  FIND_HELPER_REQUESTER_DAILY_LIMIT,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -6305,6 +6311,275 @@ test(
       [userId],
     );
     assert.equal(after.rows.length, 0, "a departed member's published interests are removed on roster leave");
+  },
+);
+
+// Helper handoff (set_helper_availability / find_helper, issue #729): the
+// active-side consumer of member_interests above. setHelperAvailability rides
+// the same row set_my_interests publishes; findHelperCandidates/
+// recordHelperNotificationIfUnderCap/isFindHelperRequesterAtDailyCap back the
+// matching + two independent DB-backed rate caps.
+test(
+  'repository: setHelperAvailability requires an existing member_interests row, flips willing_to_help in place, and is instantly reversible (issue #729 AC #1, #2)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-helper-availability-lifecycle`;
+
+    const noRow = await setHelperAvailability('discord', userId, true);
+    assert.deepEqual(
+      noRow,
+      { ok: false, reason: 'no_interests_row' },
+      'a caller with no published interests cannot opt in',
+    );
+
+    await setMemberInterests('discord', userId, 'building RAG systems');
+    const opted = await setHelperAvailability('discord', userId, true);
+    assert.deepEqual(opted, { ok: true });
+    const afterOptIn = await pool.query(
+      `SELECT willing_to_help FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(afterOptIn.rows[0].willing_to_help, true);
+
+    const optedOut = await setHelperAvailability('discord', userId, false);
+    assert.deepEqual(optedOut, { ok: true });
+    const afterOptOut = await pool.query(
+      `SELECT willing_to_help FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [userId],
+    );
+    assert.equal(afterOptOut.rows[0].willing_to_help, false, 'opting out is instantly reversible');
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "SECURITY: repository: findHelperCandidates matches only willing_to_help = true rows, ranks by similarity, and excludes the requester's own row even when it is willing_to_help = true (issue #729 AC #3, #11)",
+  { skip },
+  async () => {
+    const requester = `${RUN}-find-helper-requester`;
+    const willingMatch = `${RUN}-find-helper-willing`;
+    const unwillingMatch = `${RUN}-find-helper-unwilling`;
+
+    await setMemberInterests('discord', requester, 'retrieval-augmented generation with Claude');
+    await setHelperAvailability('discord', requester, true);
+    await setMemberInterests(
+      'discord',
+      willingMatch,
+      'retrieval-augmented generation with Claude and pgvector',
+    );
+    await setHelperAvailability('discord', willingMatch, true);
+    await setMemberInterests('discord', unwillingMatch, 'retrieval-augmented generation, but not opted in');
+
+    const candidates = await findHelperCandidates('retrieval-augmented generation', 'discord', requester);
+    assert.ok(
+      candidates.some((c) => c.userId === willingMatch),
+      'a willing, opted-in matching helper is found',
+    );
+    assert.ok(
+      candidates.every((c) => c.userId !== unwillingMatch),
+      'a matching member who never opted in via setHelperAvailability is never a candidate',
+    );
+    assert.ok(
+      candidates.every((c) => c.userId !== requester),
+      "SECURITY: the requester's own row is excluded even though it is willing_to_help = true",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [requester, willingMatch, unwillingMatch],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: recordHelperNotificationIfUnderCap enforces FIND_HELPER_WEEKLY_LIMIT_PER_HELPER as a DB-backed count, seeded directly rather than via prior calls, surviving a simulated restart (issue #729 AC #5, #9)',
+  { skip },
+  async () => {
+    const helper = `${RUN}-helper-weekly-cap`;
+    const requester = `${RUN}-helper-weekly-cap-requester`;
+
+    // Seed cap-many notifications via direct SQL — as if written by a
+    // previous process instance — so an in-memory counter would wrongly
+    // admit the next one, but the DB-backed COUNT(*) refuses it (same
+    // pattern as shareProject's own restart-proof rate-cap test).
+    for (let i = 0; i < FIND_HELPER_WEEKLY_LIMIT_PER_HELPER; i++) {
+      await pool.query(
+        `INSERT INTO helper_notifications
+           (helper_platform, helper_user_id, requester_platform, requester_user_id, topic)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [helper, requester, `prior-process topic ${i}`],
+      );
+    }
+
+    const claimed = await recordHelperNotificationIfUnderCap(
+      'discord',
+      helper,
+      'discord',
+      requester,
+      'one more',
+    );
+    assert.equal(claimed, false, 'a helper already at the weekly cap is not claimed, even after a restart');
+    const count = await pool.query(
+      `SELECT count(*) AS n FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    assert.equal(Number(count.rows[0].n), FIND_HELPER_WEEKLY_LIMIT_PER_HELPER, 'no extra row was inserted');
+
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
+  },
+);
+
+test(
+  'repository: recordHelperNotificationIfUnderCap claims a slot and inserts exactly one row when under cap (issue #729 AC #4)',
+  { skip },
+  async () => {
+    const helper = `${RUN}-helper-claim`;
+    const requester = `${RUN}-helper-claim-requester`;
+
+    const claimed = await recordHelperNotificationIfUnderCap(
+      'discord',
+      helper,
+      'discord',
+      requester,
+      'a topic',
+    );
+    assert.equal(claimed, true);
+    const rows = await pool.query(
+      `SELECT topic FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    assert.equal(rows.rows.length, 1);
+    assert.equal(rows.rows[0].topic, 'a topic');
+
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [helper]);
+  },
+);
+
+test(
+  'SECURITY: repository: isFindHelperRequesterAtDailyCap enforces FIND_HELPER_REQUESTER_DAILY_LIMIT as a DB-backed rolling-24h count, seeded directly rather than via prior calls (issue #729 AC #6)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-requester-daily-cap`;
+
+    assert.equal(
+      await isFindHelperRequesterAtDailyCap('discord', requester),
+      false,
+      'a requester with no prior notifications is under cap',
+    );
+
+    for (let i = 0; i < FIND_HELPER_REQUESTER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO helper_notifications
+           (helper_platform, helper_user_id, requester_platform, requester_user_id, topic)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [`${RUN}-requester-daily-cap-helper-${i}`, requester, `topic ${i}`],
+      );
+    }
+    assert.equal(
+      await isFindHelperRequesterAtDailyCap('discord', requester),
+      true,
+      'a requester at FIND_HELPER_REQUESTER_DAILY_LIMIT successful handoffs in the trailing 24h is at cap',
+    );
+
+    await pool.query(`DELETE FROM helper_notifications WHERE requester_user_id = $1`, [requester]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's helper_notifications rows in EITHER role (helper or requester), plus their willing_to_help flag (issue #729 AC #13)",
+  { skip },
+  async () => {
+    const helper = `${RUN}-purge-helper-role`;
+    const requester = `${RUN}-purge-requester-role`;
+
+    await setMemberInterests('discord', helper, 'gone after forget_me');
+    await setHelperAvailability('discord', helper, true);
+    await recordHelperNotificationIfUnderCap(
+      'discord',
+      helper,
+      'discord',
+      `${RUN}-purge-other-requester`,
+      't1',
+    );
+    await recordHelperNotificationIfUnderCap('discord', `${RUN}-purge-other-helper`, 'discord', helper, 't2');
+
+    const purged = await purgeUserData('discord', helper);
+    assert.ok(purged >= 1, 'purge count includes the helper_notifications rows and the member_interests row');
+
+    const asHelper = await pool.query(
+      `SELECT 1 FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    assert.equal(asHelper.rows.length, 0, "the purged identity's rows as helper are gone");
+    const asRequester = await pool.query(
+      `SELECT 1 FROM helper_notifications WHERE requester_platform = 'discord' AND requester_user_id = $1`,
+      [helper],
+    );
+    assert.equal(
+      asRequester.rows.length,
+      0,
+      "the purged identity's rows as requester (a different call) are gone",
+    );
+    const interestsRow = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [helper],
+    );
+    assert.equal(
+      interestsRow.rows.length,
+      0,
+      'the willing_to_help flag does not survive purge (rides the row)',
+    );
+
+    await pool.query(`DELETE FROM helper_notifications WHERE requester_user_id = $1`, [
+      `${RUN}-purge-other-requester`,
+    ]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [
+      `${RUN}-purge-other-helper`,
+    ]);
+  },
+);
+
+test(
+  "SECURITY: markRosterLeave removes the departed member's helper_notifications rows in EITHER role, plus their willing_to_help flag (issue #729 AC #13)",
+  { skip },
+  async () => {
+    const helper = `${RUN}-leave-helper-role`;
+    await upsertRosterMember({ platform: 'discord', userId: helper, displayName: 'Leaver' });
+    await setMemberInterests('discord', helper, 'should not survive roster leave');
+    await setHelperAvailability('discord', helper, true);
+    await recordHelperNotificationIfUnderCap(
+      'discord',
+      helper,
+      'discord',
+      `${RUN}-leave-other-requester`,
+      't1',
+    );
+    await recordHelperNotificationIfUnderCap('discord', `${RUN}-leave-other-helper`, 'discord', helper, 't2');
+
+    assert.equal(await markRosterLeave('discord', helper), true);
+
+    const asHelper = await pool.query(
+      `SELECT 1 FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    assert.equal(asHelper.rows.length, 0);
+    const asRequester = await pool.query(
+      `SELECT 1 FROM helper_notifications WHERE requester_platform = 'discord' AND requester_user_id = $1`,
+      [helper],
+    );
+    assert.equal(asRequester.rows.length, 0);
+    const interestsRow = await pool.query(
+      `SELECT 1 FROM member_interests WHERE platform = 'discord' AND user_id = $1`,
+      [helper],
+    );
+    assert.equal(interestsRow.rows.length, 0);
+
+    await pool.query(`DELETE FROM helper_notifications WHERE requester_user_id = $1`, [
+      `${RUN}-leave-other-requester`,
+    ]);
+    await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [
+      `${RUN}-leave-other-helper`,
+    ]);
   },
 );
 
