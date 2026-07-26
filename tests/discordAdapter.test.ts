@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -30,6 +30,7 @@ const { config } = await import('../src/config.js');
 const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { logger } = await import('../src/logger.js');
+const { VOICE_LANGUAGE_CAVEAT_TEXT_MI } = await import('../src/voiceLanguageCaveatNotice.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -3514,4 +3515,317 @@ test('isConnected() recovers after a re-identify: ShardReady restores connected,
     true,
     'ShardReady (re-identify) must restore connected — otherwise it would stick false and false-alarm /healthz',
   );
+});
+
+// --------------------------------------------------------------------------
+// Discord voice-message transcription (issue #732). Mirrors the WhatsApp
+// voice-note tests in tests/baileysAdapter.test.ts: the security-critical
+// invariant is that a below-tier sender, a disabled feature, an over-length
+// message, or a rate-capped sender is dropped BEFORE any attachment is
+// fetched or transcribed. The download+Whisper step is isolated behind the
+// private `transcribeAttachment` seam, overridden here so the gate runs for
+// real without a network fetch or a model download. Fixtures are always DMs
+// (`ChannelType.DM`) so the moderation-scan branch (`!isDM`), which would
+// otherwise hit the unreachable dummy DATABASE_URL, is never reached.
+// --------------------------------------------------------------------------
+
+type DiscordVoiceAdapter = Adapter & {
+  onDiscordMessage: (m: unknown) => Promise<void>;
+  transcribeAttachment: (url: string, seconds: number) => Promise<string>;
+};
+
+/** Reaches the private onDiscordMessage handler directly. */
+function fireDiscordMessage(adapter: Adapter, message: unknown): Promise<void> {
+  return (adapter as unknown as { onDiscordMessage: (m: unknown) => Promise<void> }).onDiscordMessage(message);
+}
+
+/**
+ * A DM voice message from `authorId`. With `attachments` given exactly one
+ * entry, a `duration` of `null` (the default) mirrors a regular file upload
+ * (no `duration_secs` in Discord's payload); a numeric `duration` mirrors a
+ * native voice-message bubble.
+ */
+function discordVoiceMessage(opts: {
+  authorId: string;
+  content?: string;
+  attachments?: Array<{ url?: string; duration?: number | null }>;
+}): unknown {
+  const attachmentsArr = (opts.attachments ?? []).map((a, i) => ({
+    id: `att-${i}`,
+    url: a.url ?? 'https://cdn.discordapp.com/attachments/1/2/voice-message.ogg',
+    duration: a.duration ?? null,
+  }));
+  return {
+    author: { id: opts.authorId, bot: false, username: 'Tester' },
+    member: null,
+    content: opts.content ?? '',
+    channelId: `dm-${opts.authorId}`,
+    channel: { type: ChannelType.DM, isThread: () => false },
+    guildId: null,
+    webhookId: null,
+    mentions: { users: { has: () => false } },
+    reference: null,
+    attachments: {
+      size: attachmentsArr.length,
+      first: () => attachmentsArr[0],
+    },
+    id: `msg-${opts.authorId}`,
+    createdTimestamp: 1_700_000_000_000,
+  };
+}
+
+type DiscordVoiceConfig = {
+  enabled: boolean;
+  model: string;
+  maxSeconds: number;
+  minRole: 'super_admin' | 'admin' | 'member' | 'guest';
+  rateLimitPerHour: number;
+};
+
+/** Overrides config.discord.voice + the super-admin allowlist for `fn`, then restores. */
+async function withDiscordVoice(
+  opts: {
+    enabled?: boolean;
+    maxSeconds?: number;
+    superAdmins?: string[];
+    minRole?: DiscordVoiceConfig['minRole'];
+    rateLimitPerHour?: number;
+  },
+  fn: () => Promise<void>,
+): Promise<void> {
+  const voice = config.discord.voice as DiscordVoiceConfig;
+  const rbac = config.rbac as { superAdminDiscordIds: readonly string[] };
+  const prevVoice = { ...voice };
+  const prevAdmins = rbac.superAdminDiscordIds;
+  if (opts.enabled !== undefined) voice.enabled = opts.enabled;
+  if (opts.maxSeconds !== undefined) voice.maxSeconds = opts.maxSeconds;
+  if (opts.minRole !== undefined) voice.minRole = opts.minRole;
+  if (opts.rateLimitPerHour !== undefined) voice.rateLimitPerHour = opts.rateLimitPerHour;
+  if (opts.superAdmins) rbac.superAdminDiscordIds = opts.superAdmins;
+  try {
+    await fn();
+  } finally {
+    Object.assign(voice, prevVoice);
+    rbac.superAdminDiscordIds = prevAdmins;
+  }
+}
+
+/** Mocks pool.query so resolveRole('discord', userId) resolves `role` (null => 'guest'). */
+function mockDiscordMemberRole(t: TestContext, userId: string, role: 'admin' | 'member' | null) {
+  return t.mock.method(pool, 'query', async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('FROM community_users') && role && params[1] === userId) {
+      return { rows: [{ role }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+}
+
+/** Mocks pool.query so getLanguagePreference('discord', userId) resolves `language` (undefined => 'auto'). */
+function mockDiscordLanguagePref(t: TestContext, userId: string, language: 'en' | 'mi' | undefined) {
+  return t.mock.method(pool, 'query', async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('language_prefs') && params[1] === userId) {
+      return language ? { rows: [{ language }], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+}
+
+test('Discord voice: an enabled super-admin voice message is transcribed and actioned as if typed (issue #732)', async () => {
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  let seen: IncomingMessage | null = null;
+  adapter.onMessage(async (m) => {
+    seen = m;
+  });
+  adapter.transcribeAttachment = async () => 'hello from discord voice';
+  await withDiscordVoice({ enabled: true, superAdmins: ['user-732-1'] }, () =>
+    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-1', attachments: [{ duration: 8 }] })),
+  );
+  assert.ok(seen, 'the transcript must reach the handler as a normal IncomingMessage');
+  assert.equal((seen as unknown as IncomingMessage).text, 'hello from discord voice');
+});
+
+test('SECURITY: a regular file attachment (no duration_secs) is never fetched or transcribed, flag on or off (issue #732)', async () => {
+  for (const enabled of [true, false]) {
+    const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+    let handlerCalls = 0;
+    let seamCalls = 0;
+    adapter.onMessage(async () => {
+      handlerCalls += 1;
+    });
+    adapter.transcribeAttachment = async () => {
+      seamCalls += 1;
+      return 'should never run';
+    };
+    await withDiscordVoice({ enabled, superAdmins: ['user-732-2'] }, () =>
+      fireDiscordMessage(
+        adapter,
+        discordVoiceMessage({ authorId: 'user-732-2', attachments: [{ duration: null }] }),
+      ),
+    );
+    assert.equal(seamCalls, 0, `a non-voice attachment must never be fetched/transcribed (enabled=${enabled})`);
+    assert.equal(handlerCalls, 1, 'the message still reaches the handler, with empty text, unchanged from today');
+  }
+});
+
+test('SECURITY: with the default DISCORD_VOICE_MIN_ROLE (super_admin), a non-super-admin voice message is dropped with zero DB calls and no fetch (issue #732)', async (t) => {
+  const dbCalls: string[] = [];
+  t.mock.method(pool, 'query', async (sql: string) => {
+    dbCalls.push(sql);
+    return { rows: [], rowCount: 0 };
+  });
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  let seamCalls = 0;
+  adapter.onMessage(async () => {});
+  adapter.transcribeAttachment = async () => {
+    seamCalls += 1;
+    return 'must never run';
+  };
+  await withDiscordVoice({ enabled: true, superAdmins: ['some-other-admin'] }, () =>
+    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-3', attachments: [{ duration: 5 }] })),
+  );
+  assert.equal(seamCalls, 0, 'a non-super-admin must never be fetched/transcribed at the default minRole');
+  assert.equal(
+    dbCalls.length,
+    0,
+    'the default super_admin minRole must stay a pure env check with no DB call, mirroring WhatsApp',
+  );
+});
+
+test("SECURITY: a below-DISCORD_VOICE_MIN_ROLE sender (role resolved via platform identity -> DB, never message content) has their voice message left as empty text, with zero fetch/model call (issue #732)", async (t) => {
+  mockDiscordMemberRole(t, 'user-732-4', null); // no stored row => resolves to 'guest'
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  let seen: IncomingMessage | null = null;
+  let seamCalls = 0;
+  adapter.onMessage(async (m) => {
+    seen = m;
+  });
+  adapter.transcribeAttachment = async () => {
+    seamCalls += 1;
+    return 'must never run';
+  };
+  await withDiscordVoice({ enabled: true, minRole: 'member' }, () =>
+    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-4', attachments: [{ duration: 5 }] })),
+  );
+  assert.equal(seamCalls, 0, 'a below-tier sender must never be fetched/transcribed');
+  assert.equal(
+    (seen as unknown as IncomingMessage).text,
+    '',
+    "today's behaviour: a below-tier sender's voice message stays empty text",
+  );
+});
+
+test('SECURITY: a voice message longer than DISCORD_VOICE_MAX_SECONDS is refused with zero fetch calls (issue #732)', async () => {
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  let seamCalls = 0;
+  adapter.onMessage(async () => {});
+  adapter.transcribeAttachment = async () => {
+    seamCalls += 1;
+    return 'must never run';
+  };
+  await withDiscordVoice({ enabled: true, maxSeconds: 60, superAdmins: ['user-732-5'] }, () =>
+    fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-5', attachments: [{ duration: 120 }] }),
+    ),
+  );
+  assert.equal(seamCalls, 0, 'an over-cap voice message must be refused before any fetch');
+});
+
+test('SECURITY: DISCORD_VOICE_RATE_LIMIT_PER_HOUR bounds a single sender — the (N+1)th voice message within the rolling hour is refused before any fetch (issue #732)', async (t) => {
+  mockDiscordMemberRole(t, 'user-732-6', 'member');
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  const seen: IncomingMessage[] = [];
+  let seamCalls = 0;
+  adapter.onMessage(async (m) => {
+    seen.push(m);
+  });
+  adapter.transcribeAttachment = async () => {
+    seamCalls += 1;
+    return `message ${seamCalls}`;
+  };
+  const limit = 2;
+  await withDiscordVoice({ enabled: true, minRole: 'member', rateLimitPerHour: limit }, async () => {
+    for (let i = 0; i < limit; i++) {
+      await fireDiscordMessage(
+        adapter,
+        discordVoiceMessage({ authorId: 'user-732-6', attachments: [{ duration: 5 }] }),
+      );
+    }
+    assert.equal(seamCalls, limit, 'every message within the cap must be transcribed');
+
+    await fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-6', attachments: [{ duration: 5 }] }),
+    );
+    assert.equal(seamCalls, limit, 'the (N+1)th message must be refused BEFORE any fetch/transcribe');
+    assert.equal(
+      seen[seen.length - 1]?.text,
+      '',
+      'a rate-capped voice message is left as empty text, exactly like a below-tier one',
+    );
+  });
+});
+
+test('SECURITY: DISCORD_VOICE_ENABLED unset/false leaves every voice-message case byte-identical to today — empty text, no fetch, no model call (issue #732)', async () => {
+  assert.equal(config.discord.voice.enabled, false, 'precondition: default env has Discord voice off');
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  let seen: IncomingMessage | null = null;
+  let seamCalls = 0;
+  adapter.onMessage(async (m) => {
+    seen = m;
+  });
+  adapter.transcribeAttachment = async () => {
+    seamCalls += 1;
+    return 'must never run';
+  };
+  // Sender IS a super admin and well under every cap — proving it's the
+  // flag, not the tier or the caps, that blocks.
+  await withDiscordVoice({ superAdmins: ['user-732-7'] }, () =>
+    fireDiscordMessage(adapter, discordVoiceMessage({ authorId: 'user-732-7', attachments: [{ duration: 5 }] })),
+  );
+  assert.equal(seamCalls, 0);
+  assert.equal((seen as unknown as IncomingMessage).text, '');
+});
+
+test("Discord voice: a sender with a stored 'mi' language preference gets exactly one voice-language caveat DM after a successful transcription, and none on a second voice message within the debounce window (issue #732)", async (t) => {
+  mockDiscordLanguagePref(t, 'user-732-8', 'mi');
+  const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+  adapter.onMessage(async () => {});
+  const sent = stubClient(adapter);
+  adapter.transcribeAttachment = async () => 'kei te pehea koe';
+  await withDiscordVoice({ enabled: true, superAdmins: ['user-732-8'] }, async () => {
+    await fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-8', attachments: [{ duration: 5 }] }),
+    );
+    assert.equal(sent.length, 1, 'exactly one caveat DM after the first voice message');
+    assert.equal(sent[0], VOICE_LANGUAGE_CAVEAT_TEXT_MI);
+
+    await fireDiscordMessage(
+      adapter,
+      discordVoiceMessage({ authorId: 'user-732-8', attachments: [{ duration: 5 }] }),
+    );
+    assert.equal(
+      sent.length,
+      1,
+      'no additional caveat DM for a second voice message within the debounce window',
+    );
+  });
+});
+
+test("Discord voice: senders with an 'en', 'auto', or unset language preference receive ZERO voice-language caveat DMs (issue #732)", async (t) => {
+  for (const [userId, language] of [
+    ['user-732-9a', 'en'],
+    ['user-732-9b', undefined],
+  ] as const) {
+    mockDiscordLanguagePref(t, userId, language);
+    const adapter = new DiscordAdapter() as unknown as DiscordVoiceAdapter;
+    adapter.onMessage(async () => {});
+    const sent = stubClient(adapter);
+    adapter.transcribeAttachment = async () => 'hello there';
+    await withDiscordVoice({ enabled: true, superAdmins: [userId] }, () =>
+      fireDiscordMessage(adapter, discordVoiceMessage({ authorId: userId, attachments: [{ duration: 5 }] })),
+    );
+    assert.equal(sent.length, 0, `a '${language ?? 'unset'}' preference must never receive the caveat DM`);
+  }
 });

@@ -1088,6 +1088,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Discord welcome message',
     category: 'Onboarding',
   },
+  {
+    envVar: 'DISCORD_VOICE_ENABLED',
+    configPath: 'discord.voice.enabled',
+    label: 'Discord voice message transcription',
+    category: 'Onboarding',
+  },
   // WhatsApp
   {
     envVar: 'WHATSAPP_WELCOME_ENABLED',
