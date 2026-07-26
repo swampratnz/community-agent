@@ -114,6 +114,20 @@ ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_unreachable BOOLEAN;
 ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS source_checked_at TIMESTAMPTZ;
 
+-- Real-time stale-knowledge admin nudge (issue #701): stamped the moment a
+-- served entry (isKnowledgeStale returning true on a knowledge_search hit or
+-- either knowledge shortcut) has an admin DM queued for it, so the same
+-- staleness episode can't re-trigger a second alert. NULL (including every
+-- pre-existing row) means never alerted. Re-armed automatically the next
+-- time this row's updated_at moves past this stamp — i.e. any later
+-- update_knowledge/accept_knowledge_candidate edit — via the plain
+-- `stale_alerted_at IS NULL OR stale_alerted_at < updated_at` gate in
+-- repository.ts's reserveStaleKnowledgeAlert, no separate reset code needed.
+-- Deliberately excluded from the knowledge_set_updated_at trigger's column
+-- list below, same exclusion as retrieval_count/source_url/
+-- source_unreachable above — stamping this is not a content edit.
+ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS stale_alerted_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS knowledge_embedding_idx
   ON knowledge USING hnsw (embedding vector_cosine_ops);
 

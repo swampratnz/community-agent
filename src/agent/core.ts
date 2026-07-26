@@ -31,6 +31,7 @@ import {
   isDuplicateWebSearchQuery,
   recordWebSearchQuery,
   reserveWebSearchSlot,
+  type StaleKnowledgeAlertCandidate,
   type ToolServerTurnState,
 } from './tools.js';
 import {
@@ -140,6 +141,16 @@ export interface AgentReply {
    * inside, any model-callable tool.
    */
   knowledgeGapCluster?: CrossedKnowledgeGapCluster;
+  /**
+   * Every knowledge entry `claimStaleKnowledgeAlert` claimed this turn
+   * (issue #701), threaded from `TurnOutcome.staleKnowledgeAlerts` via the
+   * same turn-scoped-ref pattern as `knowledgeGapCluster` above. `undefined`
+   * whenever the flag is off, no entry was claimed this turn, or the turn
+   * didn't end in genuine success (`ok !== true`). Consumed by the router's
+   * post-turn deterministic alert branch — never read by, or acted on
+   * inside, any model-callable tool.
+   */
+  staleKnowledgeAlerts?: StaleKnowledgeAlertCandidate[];
 }
 
 /**
@@ -235,6 +246,7 @@ interface TurnOutcome {
   knowledgeEntryId?: number;
   unhelpfulAnswerRated?: boolean;
   knowledgeGapCluster?: CrossedKnowledgeGapCluster;
+  staleKnowledgeAlerts?: StaleKnowledgeAlertCandidate[];
 }
 
 /**
@@ -613,6 +625,7 @@ export async function runAgentTurn(
     knowledgeEntryId: outcome.knowledgeEntryId,
     unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
     knowledgeGapCluster: outcome.knowledgeGapCluster,
+    staleKnowledgeAlerts: outcome.staleKnowledgeAlerts,
   };
 }
 
@@ -835,5 +848,8 @@ async function execTurn(
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
     ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
     ...(turnState.knowledgeGapCluster ? { knowledgeGapCluster: turnState.knowledgeGapCluster } : {}),
+    ...(turnState.staleKnowledgeAlerts && turnState.staleKnowledgeAlerts.length > 0
+      ? { staleKnowledgeAlerts: turnState.staleKnowledgeAlerts }
+      : {}),
   };
 }

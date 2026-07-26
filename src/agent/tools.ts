@@ -93,6 +93,7 @@ import {
   recordAdminAction,
   recordKnowledgeGap,
   recordKnowledgeRetrieval,
+  reserveStaleKnowledgeAlert,
   removeMember,
   removeMemberProject,
   REPORT_RATE_LIMIT_PER_DAY,
@@ -680,6 +681,54 @@ export async function notifyAdmins(
       ),
     );
   }
+}
+
+/** Data a caller needs to build the admin DM for a just-claimed stale-knowledge alert (issue #701) — returned by `claimStaleKnowledgeAlert` below. */
+export interface StaleKnowledgeAlertCandidate {
+  id: number;
+  title: string | null;
+  content: string;
+  updatedAt: Date;
+}
+
+/**
+ * Claims the real-time stale-knowledge alert slot for one served entry
+ * (issue #701) if it qualifies — the per-entry counterpart to #650's
+ * knowledge-gap-cluster alert, same single-shot/re-arm-on-edit shape.
+ * Returns `null` (nothing to alert on) when the feature is off, the entry
+ * isn't stale per `isKnowledgeStale`, or the entry's single-shot re-arm gate
+ * was already claimed since its last edit (`reserveStaleKnowledgeAlert`,
+ * repository.ts: `stale_alerted_at IS NULL OR stale_alerted_at <
+ * updated_at`, atomically stamped in the same query). Otherwise returns the
+ * data needed to build the DM.
+ *
+ * Deliberately never calls `notifyAdmins` itself — see that function's own
+ * doc comment ("never called from this file") and `unhelpfulAnswerRated`'s /
+ * `knowledgeGapCluster`'s identical split. The claim (this call) always
+ * happens regardless of the guild-wide rate limit; the caller (router.ts)
+ * reserves that limit and fires the DM — so a rate-limited-away entry still
+ * doesn't retry-storm on every later serve (acceptance criterion 5c).
+ *
+ * Called directly by `knowledge_search`'s handler below (its claim is
+ * threaded through `ToolServerTurnState`/`TurnOutcome`/`AgentReply` for
+ * router.ts to act on post-turn) and by router.ts's own
+ * `sendKnowledgeShortcut`/`sendGuestKnowledgeShortcut`, which never go
+ * through a turn at all.
+ */
+export async function claimStaleKnowledgeAlert(
+  entry: { id: number; title: string | null; content: string; updatedAt: Date; lastRetrievedAt: Date | null },
+  staleDays = config.adminDigest.knowledgeStaleDays,
+  maxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays,
+): Promise<StaleKnowledgeAlertCandidate | null> {
+  if (!config.knowledgeStaleAlert.enabled) return null;
+  if (
+    !isKnowledgeStale({ updatedAt: entry.updatedAt, lastRetrievedAt: entry.lastRetrievedAt }, staleDays, maxAgeDays)
+  ) {
+    return null;
+  }
+  const claimed = await reserveStaleKnowledgeAlert(entry.id);
+  if (!claimed) return null;
+  return { id: entry.id, title: entry.title, content: entry.content, updatedAt: entry.updatedAt };
 }
 
 /**
@@ -2508,6 +2557,16 @@ export interface ToolServerTurnState {
    * is never called from this file, see its own doc comment.
    */
   knowledgeGapCluster?: CrossedKnowledgeGapCluster | null;
+  /**
+   * Every entry `claimStaleKnowledgeAlert` claimed this turn (issue #701) —
+   * appended to, never overwritten, since a single turn can serve more than
+   * one stale entry (multiple `knowledge_search` hits, or multiple calls).
+   * Read back by `execTurn` into `TurnOutcome`/`AgentReply` so `router.ts`
+   * can reserve a rate-limit slot per entry and direct-fire `notifyAdmins`
+   * post-turn — `notifyAdmins` itself is never called from this file, see
+   * its own doc comment and `knowledgeGapCluster` above.
+   */
+  staleKnowledgeAlerts?: StaleKnowledgeAlertCandidate[];
 }
 
 export function buildToolServer(
@@ -2831,6 +2890,26 @@ export function buildToolServer(
           recordKnowledgeGap(caller.platform, caller.conversationId, caller.userId, args.query).catch((err) =>
             logger.warn({ err }, 'Knowledge gap recording failed'),
           );
+        }
+      }
+      // Real-time stale-knowledge admin nudge (issue #701): claim an alert
+      // slot for every entry actually served this call — the relevant
+      // semantic hits, or the lexical-fallback hits when those are what's
+      // shown instead (same "served" set `formatKnowledgeSearchResults`
+      // itself renders below). Gated on `turnState` (nothing to thread the
+      // claim through otherwise) and awaited only when the claim can
+      // succeed, mirroring the gap-cluster branch above — with the feature
+      // off (the default) `claimStaleKnowledgeAlert` returns null with no
+      // query, so this loop is a no-op cost, and `turnState.
+      // staleKnowledgeAlerts` never gets set (acceptance criterion 4).
+      if (turnState) {
+        const servedHits = lexicalHits.length > 0 ? lexicalHits : hits.filter((h) => relevantIds.includes(h.id));
+        for (const hit of servedHits) {
+          const claim = await claimStaleKnowledgeAlert(hit).catch((err) => {
+            logger.warn({ err }, 'Stale knowledge alert claim failed');
+            return null;
+          });
+          if (claim) (turnState.staleKnowledgeAlerts ??= []).push(claim);
         }
       }
       return text(

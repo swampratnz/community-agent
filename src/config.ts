@@ -466,6 +466,26 @@ const EnvSchema = z.object({
   // still recorded (and still counted by the weekly digest) but does not
   // notify; the row is left unalerted so it can retry once the window frees.
   KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
+  // Real-time admin nudge (issue #701) fired the moment a stale knowledge
+  // entry (isKnowledgeStale, KNOWLEDGE_STALE_DAYS/KNOWLEDGE_STALE_MAX_AGE_DAYS
+  // above) is actually served to a member — via a knowledge_search hit or
+  // either knowledge shortcut — rather than just contributing to the weekly
+  // digest's bare staleKnowledgeCount. Mirrors KNOWLEDGE_GAP_ALERT_ENABLED's
+  // mechanism exactly (single-shot per entry, re-armed on edit, guild-wide
+  // rate-limited notifyAdmins DM). Off by default, same convention as every
+  // other proactive DM in this file.
+  KNOWLEDGE_STALE_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Guild-wide rolling-hour cap on stale-knowledge alerts, identical
+  // sliding-window shape as KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR. Once
+  // exhausted within the trailing hour, a served entry is still stamped
+  // stale_alerted_at (see repository.ts's reserveStaleKnowledgeAlert) so it
+  // does not retry-storm every subsequent serve until the window frees —
+  // unlike the gap-cluster alert above, which leaves a rate-limited-away
+  // crossing unstamped so it can retry.
+  KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(5),
   // Weekly member-facing digest post (issue #645): widens the audience of
   // already-admin-visible k-floored `context_digests` topics + curated
   // "new in the knowledge base" titles to a Discord channel, so a member who
@@ -1075,6 +1095,10 @@ export const config = {
     enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,
     threshold: env.KNOWLEDGE_GAP_ALERT_THRESHOLD,
     rateLimitPerHour: env.KNOWLEDGE_GAP_ALERT_RATE_LIMIT_PER_HOUR,
+  },
+  knowledgeStaleAlert: {
+    enabled: env.KNOWLEDGE_STALE_ALERT_ENABLED ?? false,
+    rateLimitPerHour: env.KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR,
   },
   accessRequestAlert: {
     enabled: env.ACCESS_REQUEST_ALERT_ENABLED ?? false,

@@ -1008,6 +1008,36 @@ export function isKnowledgeStale(
 }
 
 /**
+ * Atomically claims the single-shot real-time stale-knowledge alert slot for
+ * one served entry (issue #701): stamps `stale_alerted_at = now()` and
+ * returns `true` only when the re-arm gate holds — `stale_alerted_at IS NULL
+ * OR stale_alerted_at < updated_at`, i.e. this entry has never been alerted,
+ * or was alerted before its most recent content edit
+ * (`update_knowledge`/`accept_knowledge_candidate` re-arms purely by bumping
+ * `updated_at` via the `knowledge_set_updated_at` trigger — no separate reset
+ * code). The gate check and the stamp happen in the same `UPDATE`, so two
+ * concurrent serves of the same newly-stale entry can't both claim the slot.
+ *
+ * Callers must claim this slot BEFORE checking the guild-wide hourly rate
+ * limit and must stamp regardless of whether the rate limit allows the DM to
+ * actually send — the opposite order from `findCrossedKnowledgeGapCluster`'s
+ * cluster (left unalerted on a rate-limit miss so it can retry): a per-entry
+ * stale alert must not retry-storm on every subsequent serve until the
+ * trailing hour frees up.
+ */
+export async function reserveStaleKnowledgeAlert(id: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `UPDATE knowledge
+        SET stale_alerted_at = now()
+      WHERE id = $1
+        AND (stale_alerted_at IS NULL OR stale_alerted_at < updated_at)
+      RETURNING id`,
+    [id],
+  );
+  return rows.length > 0;
+}
+
+/**
  * Record that `ids` were surfaced as relevant `knowledge_search` hits.
  * Fire-and-forget from the tool handler (issue #134) — callers must swallow
  * failures themselves, same as `notifySuggestionResolved`, so a counter-write
