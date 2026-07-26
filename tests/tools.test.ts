@@ -240,6 +240,9 @@ after(async () => {
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id LIKE $1`, [
       `${MY_SUBMISSIONS_HANDLER_USER}%`,
     ]);
+    await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [
+      `${MY_SUBMISSIONS_HANDLER_USER}%`,
+    ]);
     await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${MY_WARNINGS_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM interactions WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM interactions WHERE meta->>'replyToUserId' LIKE $1`, [
@@ -14798,7 +14801,7 @@ test(
 );
 
 test(
-  "my_submissions lists the caller's own suggestion and report with status and content preview (issue #160)",
+  "my_submissions lists the caller's own suggestion, report, and appeal with status and content preview (issue #160, #709)",
   { skip },
   async () => {
     const userId = `${MY_SUBMISSIONS_HANDLER_USER}-basic`;
@@ -14813,7 +14816,15 @@ test(
       conversationId: 'convo-1',
       reason: 'someone was spamming',
     });
-    assert.ok(suggestion && report, 'fixtures recorded');
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'the warning was a false positive',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(suggestion && report && appeal, 'fixtures recorded');
 
     const result = await mySubmissionsHandler(userId).handler();
     const output = result.content[0]?.text ?? '';
@@ -14821,11 +14832,45 @@ test(
     assert.equal(result.isError, false);
     assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add a dark mode`));
     assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*someone was spamming`));
+    assert.match(output, new RegExp(`#${appeal.id}.*\\[open\\].*the warning was a false positive`));
+    assert.match(
+      output,
+      /Your suggestions:[\s\S]*\n\nYour reports:[\s\S]*\n\nYour appeals:/,
+      'the appeals block is rendered alongside the suggestions/reports blocks, separated by a blank line',
+    );
   },
 );
 
 test(
-  "SECURITY: my_submissions never leaks another member's content or the reviewing admin's identity (issue #160)",
+  'my_submissions omits the "Your appeals:" block when the caller has none, leaving suggestions/reports rendering unchanged (issue #709)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-no-appeals`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add dark mode too',
+    });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'more spam',
+    });
+    assert.ok(suggestion && report, 'fixtures recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add dark mode too`));
+    assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*more spam`));
+    assert.doesNotMatch(output, /Your appeals:/, 'no appeals filed, so no appeals header at all');
+  },
+);
+
+test(
+  "SECURITY: my_submissions never leaks another member's content, appeal, or the reviewing admin's identity (issue #160, #709)",
   { skip },
   async () => {
     const userId = `${MY_SUBMISSIONS_HANDLER_USER}-security`;
@@ -14851,8 +14896,17 @@ test(
       conversationId: 'convo-1',
       reason: "someone else's private report",
     });
-    assert.ok(theirs && theirReport);
+    const theirAppeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId: otherUser,
+      userName: 'Other Member',
+      reason: "someone else's private appeal reason",
+      activeWarnings: 2,
+      strikeLimit: 3,
+    });
+    assert.ok(theirs && theirReport && theirAppeal);
     await resolveContentReport(theirReport.id, 'resolved', resolverAdminId);
+    await resolveModerationAppeal(theirAppeal.id, 'resolved', resolverAdminId);
 
     const result = await mySubmissionsHandler(userId).handler();
     const output = result.content[0]?.text ?? '';
@@ -14872,6 +14926,52 @@ test(
       output,
       /someone else's private report/,
       "SECURITY: another member's report content must never leak",
+    );
+    assert.doesNotMatch(
+      output,
+      /someone else's private appeal reason/,
+      "SECURITY: another member's appeal reason must never leak",
+    );
+    assert.doesNotMatch(output, /Your appeals:/, 'the caller filed no appeals of their own');
+  },
+);
+
+test(
+  "SECURITY: my_submissions never renders an appeal's admin-only activeWarnings/strikeLimit/resolvedBy fields (issue #709)",
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-appeal-admin-fields`;
+    const resolverAdminId = `${MY_SUBMISSIONS_HANDLER_USER}-appeal-admin-fields-resolver`;
+
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'please review my mute',
+      activeWarnings: 987,
+      strikeLimit: 654,
+    });
+    assert.ok(appeal);
+    await resolveModerationAppeal(appeal.id, 'resolved', resolverAdminId);
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, new RegExp(`#${appeal.id}.*please review my mute`), 'the caller sees their own appeal');
+    assert.doesNotMatch(
+      output,
+      /987/,
+      "SECURITY: activeWarnings value must never appear in the caller's own view",
+    );
+    assert.doesNotMatch(
+      output,
+      /654/,
+      "SECURITY: strikeLimit value must never appear in the caller's own view",
+    );
+    assert.doesNotMatch(
+      output,
+      new RegExp(resolverAdminId),
+      "SECURITY: resolvedBy (the reviewing admin's identity) must never appear in the caller's own view",
     );
   },
 );

@@ -5872,6 +5872,31 @@ export async function createModerationAppeal(input: {
 }
 
 /**
+ * Self-scoped read of a member's OWN filed appeals (issue #709) — mirrors
+ * `listOwnReports`'s exact narrowing of `listReports`'s shape, appending
+ * `platform = $1 AND user_id = $2` (resolved from caller context, never a
+ * tool-argument-supplied id) to `listAppeals`'s query, so a member can only
+ * ever see appeals they themselves filed.
+ */
+export async function listOwnAppeals(
+  platform: Platform,
+  userId: string,
+  limit = 10,
+): Promise<ModerationAppeal[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, user_name, reason, active_warnings, strike_limit,
+            status, created_at, resolved_by, resolved_at
+       FROM moderation_appeals
+      WHERE platform = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
+  );
+  return rows.map(mapModerationAppeal);
+}
+
+/**
  * Admin-tier, guild-wide read of filed appeals (issue #554) — deliberately
  * NOT conversation-scoped, matching `list_member_warnings`/`clear_warnings`:
  * warnings/mutes are guild-wide state, so an appeal about one carries no
