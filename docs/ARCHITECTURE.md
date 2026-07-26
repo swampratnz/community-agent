@@ -2372,6 +2372,19 @@ overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
   notified" when this flag is actually on.
 - No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
   decides.
+- `buildQueryOptions` (`agent/core.ts`) narrows how often this classifier is
+  reached at all: an operator can set `AGENT_MODEL_FALLBACK` (issue #738,
+  same `z.string().optional()` shape as `AGENT_MODEL_MEMBER`/
+  `AGENT_MODEL_CLASSIFIER` above) to a model, or comma-separated list, that
+  the SDK's own `fallbackModel` option falls back to when the primary is
+  overloaded or unavailable — retrying the primary fresh at the start of
+  every turn, so a temporary outage doesn't permanently demote the session.
+  Applied uniformly to every role's turn (not tiered by role, since the
+  overload condition is a property of the shared pool, not the caller);
+  unset (default), `buildQueryOptions` carries no `fallbackModel` key,
+  byte-identical to before. This only changes which model can answer a turn
+  that would otherwise land in the classifier above — it doesn't touch
+  `isUsageLimitFailure`, the reply text, or the debounce latch themselves.
 
 `src/usageCostDigest.ts` (off unless `USAGE_COST_DIGEST_ENABLED`, issue #578)
 adds a third, complementary signal: a **weekly $ trend**, rather than a
