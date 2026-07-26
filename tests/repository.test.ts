@@ -3985,7 +3985,11 @@ test(
         );
         const discordAfterByRole = new Map(afterDiscord.costByRole.map((r) => [r.role, r.costUsd]));
         const discordBeforeByRole = new Map(beforeDiscord.costByRole.map((r) => [r.role, r.costUsd]));
-        assert.equal((discordAfterByRole.get('member') ?? 0) - (discordBeforeByRole.get('member') ?? 0), 1.2);
+        assert.ok(
+          Math.abs((discordAfterByRole.get('member') ?? 0) - (discordBeforeByRole.get('member') ?? 0) - 1.2) <
+            1e-9,
+          'discord-scoped costByRole member delta reflects the seeded 1.2 (tolerance-based — issue #719)',
+        );
         assert.equal(
           (discordAfterByRole.get('admin') ?? 0) - (discordBeforeByRole.get('admin') ?? 0),
           0,
