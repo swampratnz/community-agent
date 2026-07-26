@@ -71,7 +71,11 @@ test('SECURITY: issue #706 AC3 — a verbatim (post-normalization) repeat is den
   const first = await fn(preToolUseInput('s-1', 'exact repeat short circuit query'), 's-1', hookOptions);
   assert.equal(first.hookSpecificOutput, undefined, 'the first occurrence must never be denied');
   const embedCallsAfterFirst = embedCalls;
-  assert.equal(embedCallsAfterFirst, 1, 'a genuinely new query with an empty history embeds once, to seed history');
+  assert.equal(
+    embedCallsAfterFirst,
+    1,
+    'a genuinely new query with an empty history embeds once, to seed history',
+  );
 
   // Same query, differing only in whitespace/casing — the normalized
   // exact-match fast path must catch this without ever reaching embed()
