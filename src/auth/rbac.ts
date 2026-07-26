@@ -240,6 +240,12 @@ export const ADMIN_TOOLS = [
   'mcp__community__resolve_report',
   'mcp__community__list_answer_feedback',
   'mcp__community__list_low_rated_knowledge',
+  // Clusters unhelpful-rating comments across BOTH grounded and ungrounded
+  // answers by embedding similarity (issue #724) — the cross-cutting
+  // complement list_low_rated_knowledge (per-entry, grounded-only) doesn't
+  // provide, instrumenting the second half of VISION's answer-quality
+  // north star.
+  'mcp__community__list_unhelpful_themes',
   'mcp__community__list_suggestions',
   'mcp__community__resolve_suggestion',
 ] as const;
