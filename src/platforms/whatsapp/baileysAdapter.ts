@@ -457,7 +457,7 @@ export class BaileysAdapter implements PlatformAdapter {
       return '';
     }
     const rateLimit = config.whatsapp.voice.rateLimitPerHour;
-    if (rateLimit > 0 && !reserveVoiceTranscriptionSlot(senderId, rateLimit)) {
+    if (rateLimit > 0 && !reserveVoiceTranscriptionSlot(`whatsapp:${senderId}`, rateLimit)) {
       logger.info(
         { sender: hashId(senderId), limit: rateLimit },
         'Voice note refused — sender hit the hourly transcription cap',
