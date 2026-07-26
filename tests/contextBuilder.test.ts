@@ -2,10 +2,19 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 // Offline context builder (issue #51). DB-backed (skip without DATABASE_URL);
-// the summariser is injected so no real model call ever happens in tests.
+// the summariser is injected so no real model call ever happens in tests, and
+// the corpus is injected (see `ownCorpus`) so a run only ever clusters THIS
+// file's own rows.
+//
 // Vectors are hand-crafted one-hot axes (same technique as the
-// recentQuestionClusters tests) so clustering is deterministic and immune to
-// whatever real-embedding rows other test files insert.
+// recentQuestionClusters tests) so clustering here is deterministic. That
+// alone is NOT isolation, which the previous version of this comment claimed:
+// `runContextBuilder` reads the whole `interactions` table, test files run in
+// parallel against one Postgres, and a one-hot axis is a *shared* coordinate
+// — tests/knowledgeCandidateDedupEmbedCount.test.ts seeds axis 31 too, so its
+// rows landed in the same cluster as this file's axis-31 rows at cosine 1.0
+// and could win the `maxSummaries = 1` slot outright. `ownCorpus` is the
+// actual fix: pick the winner from our own rows or don't assert a winner.
 const hasDb = Boolean(process.env.DATABASE_URL);
 
 process.env.CLAUDE_CODE_OAUTH_TOKEN ??= 'test-token';
@@ -38,10 +47,20 @@ const {
   listContextDigests,
   listKnowledgeCandidates,
   purgeUserData,
+  recentInboundForClustering,
   saveKnowledge,
 } = await import('../src/storage/repository.js');
 
 const RUN = `ctx${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+/**
+ * The REAL corpus read, narrowed to the rows `seed()` inserted for this run.
+ * Every seeded user id is `${RUN}-…`, so the filter is exact — and because
+ * this still calls `recentInboundForClustering`, its window/direction/
+ * embedding-not-null SQL stays covered rather than being stubbed away.
+ */
+const ownCorpus = async (days: number) =>
+  (await recentInboundForClustering(days)).filter((r) => r.userId.startsWith(RUN));
 
 after(async () => {
   if (hasDb) {
@@ -99,7 +118,7 @@ test(
     const result = await runContextBuilder(async (samples) => {
       calls.push(samples);
       return { topic: `${RUN}-topic-${calls.length}`, summary: 'aggregate summary of the theme' };
-    });
+    }, ownCorpus);
 
     assert.equal(calls.length, 1, 'HARD cap: exactly maxSummaries (1) model calls, no overrun');
     assert.equal(result.digests, 1);
@@ -127,6 +146,37 @@ test(
 );
 
 test(
+  'runContextBuilder defaults its corpus to the real recentInboundForClustering read — the seam the tests above inject is opt-in, not a stub production also gets',
+  { skip },
+  async () => {
+    // Deliberately called with NO corpus argument, so the default binding is
+    // what reads the DB. Every assertion here is monotone in foreign rows —
+    // other test files can add clusters but can never take ours away — so
+    // this covers the default path without reintroducing the winner race.
+    await seed(40, `${RUN}-m1`, 'which model should I start with');
+    await seed(40, `${RUN}-m2`, 'what model to pick first?');
+    await seed(40, `${RUN}-m3`, 'recommended starting model?');
+
+    const result = await runContextBuilder(async () => ({
+      topic: `${RUN}-default-corpus-topic`,
+      summary: 'aggregate summary',
+    }));
+
+    assert.equal(
+      result.attempted,
+      1,
+      'the cap admits exactly one cluster, and the default corpus found at least ours to fill it — ' +
+        'a default that read nothing would report skippedReason "no-data" and attempt 0',
+    );
+    assert.ok(result.clustersConsidered >= 1, 'the default read returned real rows to cluster');
+    assert.notEqual(result.skippedReason, 'no-data');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [`${RUN}-chan`]);
+    await pool.query(`DELETE FROM context_digests WHERE topic = $1`, [`${RUN}-default-corpus-topic`]);
+  },
+);
+
+test(
   'runContextBuilder: `failed` counts only clusters whose summarize() threw, and `attempted` (not `clustersConsidered`) is the right total-failure denominator when the run is cap-truncated (issue #335)',
   { skip },
   async () => {
@@ -142,7 +192,7 @@ test(
 
     const result = await runContextBuilder(async () => {
       throw new Error('summarizer unavailable');
-    });
+    }, ownCorpus);
 
     assert.equal(result.attempted, 1, 'the cap limits this run to attempting exactly one cluster');
     assert.ok(
@@ -181,7 +231,7 @@ test(
         calls += 1;
         if (calls === 1) throw new Error('summarizer unavailable');
         return { topic: `${RUN}-partial-topic`, summary: 'aggregate summary' };
-      });
+      }, ownCorpus);
 
       assert.equal(result.attempted, 2);
       assert.equal(result.failed, 1, 'exactly one of the two attempted clusters failed');
@@ -208,10 +258,13 @@ test(
     await seed(13, `${RUN}-d3`, 'discord for events works');
     await seed(13, `${RUN}-d3`, '+1 discord events');
 
-    const result = await runContextBuilder(async () => ({
-      topic: `${RUN}-purge-topic`,
-      summary: 'a summary that was partly built over the purged user content',
-    }));
+    const result = await runContextBuilder(
+      async () => ({
+        topic: `${RUN}-purge-topic`,
+        summary: 'a summary that was partly built over the purged user content',
+      }),
+      ownCorpus,
+    );
     assert.ok(result.digests >= 1, 'a digest was built over the cluster');
 
     const before = await pool.query(`SELECT id FROM context_digests WHERE topic = $1`, [
@@ -250,7 +303,7 @@ test(
         summary: 'members keep asking about the code of conduct',
         candidate: { title: `${RUN} Code of conduct`, content: 'See the pinned #rules channel.' },
       };
-    });
+    }, ownCorpus);
     assert.equal(
       calls.length,
       1,
@@ -292,11 +345,14 @@ test(
     flag.enabled = false;
     let result;
     try {
-      result = await runContextBuilder(async () => ({
-        topic: `${RUN}-cd-topic`,
-        summary: 'summary',
-        candidate: { title: 'Code of conduct', content: 'See the pinned doc.' },
-      }));
+      result = await runContextBuilder(
+        async () => ({
+          topic: `${RUN}-cd-topic`,
+          summary: 'summary',
+          candidate: { title: 'Code of conduct', content: 'See the pinned doc.' },
+        }),
+        ownCorpus,
+      );
     } finally {
       flag.enabled = true;
     }
@@ -337,11 +393,14 @@ test(
     });
     await declineKnowledgeCandidate(priorCandidateId, 'admin-1');
 
-    const resultQueued = await runContextBuilder(async () => ({
-      topic: `${RUN}-dedup-queued-topic`,
-      summary: 'summary',
-      candidate: { title: 'new title', content: 'new content' },
-    }));
+    const resultQueued = await runContextBuilder(
+      async () => ({
+        topic: `${RUN}-dedup-queued-topic`,
+        summary: 'summary',
+        candidate: { title: 'new title', content: 'new content' },
+      }),
+      ownCorpus,
+    );
     assert.equal(resultQueued.digests, 1, 'the digest itself is still written');
     assert.equal(
       resultQueued.candidates,
@@ -362,11 +421,14 @@ test(
       scope: 'global',
     });
 
-    const resultAnswered = await runContextBuilder(async () => ({
-      topic: `${RUN} zylotrix onboarding steps`,
-      summary: 'summary',
-      candidate: { title: 'new title', content: 'new content' },
-    }));
+    const resultAnswered = await runContextBuilder(
+      async () => ({
+        topic: `${RUN} zylotrix onboarding steps`,
+        summary: 'summary',
+        candidate: { title: 'new title', content: 'new content' },
+      }),
+      ownCorpus,
+    );
     assert.equal(resultAnswered.digests, 1);
     assert.equal(
       resultAnswered.candidates,

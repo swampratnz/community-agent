@@ -52,6 +52,7 @@ test(
     embeddingDim = config.db.embeddingDim;
     const pgvector = (await import('pgvector/pg')).default;
     const { runContextBuilder } = await import('../src/context/builder.js');
+    const { recentInboundForClustering } = await import('../src/storage/repository.js');
 
     // config is `as const` (deep-readonly at the type level only) — same
     // narrow-cast-and-mutate convention as tests/contextBuilder.test.ts,
@@ -82,12 +83,24 @@ test(
     await seed(31, `${RUN}-a2`, 'meetup date please?');
     await seed(31, `${RUN}-a3`, 'any update on the meetup?');
 
+    // The real corpus read, narrowed to this run's own rows. Without it the
+    // one `maxSummaries` slot is contested by every row any concurrently
+    // running test file has inserted — and axis 31 is not even unique to this
+    // file (tests/contextBuilder.test.ts seeds it too, at cosine 1.0), so the
+    // attempted cluster could be someone else's and carry a different embed()
+    // count than the one asserted here.
+    const ownCorpus = async (days: number) =>
+      (await recentInboundForClustering(days)).filter((r) => r.userId.startsWith(RUN));
+
     try {
-      const result = await runContextBuilder(async () => ({
-        topic: `${RUN}-embed-count-topic`,
-        summary: 'summary',
-        candidate: { title: 'title', content: 'content' },
-      }));
+      const result = await runContextBuilder(
+        async () => ({
+          topic: `${RUN}-embed-count-topic`,
+          summary: 'summary',
+          candidate: { title: 'title', content: 'content' },
+        }),
+        ownCorpus,
+      );
 
       assert.equal(result.digests, 1, 'the digest itself is still produced');
       assert.equal(embedCalls, 1, 'embed() is called at most once for this one attempted cluster');

@@ -47,6 +47,18 @@ const CLUSTER_SIMILARITY_THRESHOLD = 0.85;
 /** How many (truncated) samples each summarisation call sees. */
 const MAX_SAMPLES_PER_SUMMARY = 12;
 
+/**
+ * The corpus one run clusters over. Injectable for the same reason
+ * `summarize` is: the real implementation reads the WHOLE `interactions`
+ * table in the window, so a test asserting "this cluster won the
+ * `maxSummaries` slot" is really asserting something about every row any
+ * concurrently-running test file happens to have inserted. Production always
+ * uses the default.
+ */
+export type ClusterCorpus = (
+  windowDays: number,
+) => Promise<Array<{ id: number; userId: string; content: string; embedding: number[] }>>;
+
 export type ClusterSummarizer = (samples: string[]) => Promise<{
   topic: string;
   summary: string;
@@ -195,10 +207,13 @@ export async function summarizeCluster(
  * One builder run. The scheduler (src/index.ts) gates this behind
  * CONTEXT_BUILDER_ENABLED and shouldRunContextBuilder; the run itself
  * enforces the usage guard, the k-floor, and the hard summary cap.
- * `summarize` is injectable so tests never spawn a real model call.
+ * `summarize` is injectable so tests never spawn a real model call;
+ * `fetchCorpus` is injectable so they can bound the run to their own rows
+ * rather than the whole shared table (see {@link ClusterCorpus}).
  */
 export async function runContextBuilder(
   summarize: ClusterSummarizer = summarizeCluster,
+  fetchCorpus: ClusterCorpus = recentInboundForClustering,
 ): Promise<BuilderResult> {
   const { windowDays, maxSummaries, minDistinctUsers } = config.contextBuilder;
 
@@ -225,7 +240,7 @@ export async function runContextBuilder(
     }
   }
 
-  const rows = await recentInboundForClustering(windowDays);
+  const rows = await fetchCorpus(windowDays);
   if (rows.length === 0) {
     return {
       digests: 0,
