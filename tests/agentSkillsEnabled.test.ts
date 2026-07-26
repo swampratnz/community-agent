@@ -52,7 +52,7 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
   }
 });
 
-test('SECURITY: AC6 — skills is always the literal array [\'prompt-review\'] — never \'all\', never derived from any input', () => {
+test("SECURITY: AC6 — skills is always the literal array ['prompt-review'] — never 'all', never derived from any input", () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.deepEqual(opts.skills, ['prompt-review']);
@@ -136,11 +136,21 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   const skillsDir = join(dirname(fileURLToPath(import.meta.url)), '../src/agent/skills');
   const files = listFilesRecursive(skillsDir);
   for (const f of files) {
-    assert.doesNotMatch(f, /[/\\](hooks|agents|commands)[/\\]/, `${f}: must not sit under a hooks/agents/commands directory`);
+    assert.doesNotMatch(
+      f,
+      /[/\\](hooks|agents|commands)[/\\]/,
+      `${f}: must not sit under a hooks/agents/commands directory`,
+    );
     assert.doesNotMatch(f, /\.mcp\.json$/, `${f}: must not be an .mcp.json file`);
   }
   // Sanity: the walk actually found the two files this proposal ships, so an
   // empty/misconfigured directory can't pass this test vacuously.
-  assert.ok(files.some((f) => f.endsWith('plugin.json')), 'expected the plugin manifest to be present');
-  assert.ok(files.some((f) => f.endsWith('SKILL.md')), 'expected prompt-review/SKILL.md to be present');
+  assert.ok(
+    files.some((f) => f.endsWith('plugin.json')),
+    'expected the plugin manifest to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith('SKILL.md')),
+    'expected prompt-review/SKILL.md to be present',
+  );
 });
