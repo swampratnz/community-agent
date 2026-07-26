@@ -14957,7 +14957,11 @@ test(
     const result = await mySubmissionsHandler(userId).handler();
     const output = result.content[0]?.text ?? '';
 
-    assert.match(output, new RegExp(`#${appeal.id}.*please review my mute`), 'the caller sees their own appeal');
+    assert.match(
+      output,
+      new RegExp(`#${appeal.id}.*please review my mute`),
+      'the caller sees their own appeal',
+    );
     assert.doesNotMatch(
       output,
       /987/,
