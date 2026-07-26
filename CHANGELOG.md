@@ -13,6 +13,17 @@ for anything after ~noon NZST/NZDT). Get today's date with
 ## 2026-07-26
 
 ### Added
+- **Real-time admin nudge for a stale knowledge entry actively served to a
+  member** (#701, `KNOWLEDGE_STALE_ALERT_ENABLED`, off by default): previously
+  the only signal that a *specific* knowledge-base entry had gone stale and
+  was still being handed to members was the once-weekly digest's bare
+  count — no pointer to which entry, and up to 7 days late. Now, the moment
+  a stale entry is actually served (via `knowledge_search` or either
+  knowledge shortcut), admins get an instant DM naming the entry and how
+  long it's been stale, rate-limited and single-shot per staleness episode
+  (an admin edit re-arms it automatically). This is the stale-knowledge half
+  of #650's real-time nudge that issue explicitly deferred as a smaller
+  follow-up.
 - **Accepting or declining a member-submitted knowledge tip now DMs the
   submitter** (#703), closing the one gap `suggest_knowledge` (#633) shipped
   with — the one member-initiated flow whose resolution was previously

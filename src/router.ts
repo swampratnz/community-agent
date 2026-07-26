@@ -12,7 +12,12 @@ import {
   runAgentTurn,
   type AgentReply,
 } from './agent/core.js';
-import { formatKnowledgeCitationNote, notifyAdmins, truncateForEcho } from './agent/tools.js';
+import {
+  formatKnowledgeCitationNote,
+  formatRelativeAge,
+  notifyAdmins,
+  truncateForEcho,
+} from './agent/tools.js';
 import {
   cancelPendingAction,
   classifyConfirmReply,
@@ -29,9 +34,11 @@ import {
   getLanguagePreference,
   getResponseStyle,
   isKnowledgeLowRated,
+  isKnowledgeStale,
   isUserBlocked,
   listAdmins,
   markKnowledgeGapsAlerted,
+  markStaleKnowledgeAlerted,
   recordAccessRequest,
   recordEscalatedKnowledgeGap,
   recordInteraction,
@@ -448,6 +455,9 @@ export class Router {
    * `recordEscalatedGapFn` defaults to the real DB-backed escalated-gap
    * recorder (issue #514), fired alongside `notifyAdminsFn` from the same
    * intercept; overridable so tests can assert on it without a live DB.
+   * `markStaleKnowledgeAlertedFn` defaults to the real DB-backed atomic
+   * gate+stamp (issue #701), consulted from `maybeAlertStaleKnowledge` below;
+   * overridable so tests can assert on it without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -466,6 +476,7 @@ export class Router {
     private readonly notifyAdminsFn: typeof notifyAdmins = notifyAdmins,
     private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
     private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted = markKnowledgeGapsAlerted,
+    private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted = markStaleKnowledgeAlerted,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -512,6 +523,60 @@ export class Router {
     if (recent.length >= limit) return false;
     this.knowledgeGapAlertTimestamps.push(now);
     return true;
+  }
+
+  /** Rolling-hour timestamps for `KNOWLEDGE_STALE_ALERT_RATE_LIMIT_PER_HOUR` (issue #701) — guild-wide, same reasoning as `knowledgeGapAlertTimestamps` above (the `listAdmins()` audience is guild-wide too). */
+  private readonly staleKnowledgeAlertTimestamps: number[] = [];
+
+  /**
+   * Reserve one stale-knowledge-alert slot against a rolling hourly cap,
+   * identical sliding-window shape as `reserveKnowledgeGapAlertSlot`. Unlike
+   * that sibling, a miss here does NOT leave the underlying row unstamped —
+   * `maybeAlertStaleKnowledge` below always stamps `stale_alerted_at` via
+   * `markStaleKnowledgeAlertedFn` before even checking this slot, so a
+   * rate-limited entry doesn't retry-storm (acceptance criterion 5c). This
+   * only gates whether the `notifyAdmins` DM itself goes out.
+   */
+  private reserveStaleKnowledgeAlertSlot(limit: number): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 60 * 1000;
+    const recent = this.staleKnowledgeAlertTimestamps.filter((t) => now - t < windowMs);
+    this.staleKnowledgeAlertTimestamps.length = 0;
+    this.staleKnowledgeAlertTimestamps.push(...recent);
+    if (recent.length >= limit) return false;
+    this.staleKnowledgeAlertTimestamps.push(now);
+    return true;
+  }
+
+  /**
+   * Real-time admin nudge for a served, stale knowledge entry (issue #701) —
+   * shared by all three call sites (`knowledge_search`'s post-turn
+   * `reply.staleKnowledgeAlertIds`, `sendKnowledgeShortcut`,
+   * `sendGuestKnowledgeShortcut`). Always stamps via `markStaleKnowledgeAlertedFn`
+   * first — that call is the re-arm gate itself (`stale_alerted_at IS NULL OR
+   * stale_alerted_at < updated_at`), atomic against concurrent callers for the
+   * same id — and only then checks the rate limit for whether to actually
+   * send the DM; a miss here still leaves the stamp in place (see
+   * `reserveStaleKnowledgeAlertSlot`'s doc comment). The DM body is a strict
+   * subset of what `list_knowledge` already returns: the entry's title (or a
+   * length-bounded excerpt via `truncateForEcho` for an untitled entry) plus
+   * a relative-age string — never a member/user identity, query text, or
+   * conversation id.
+   */
+  private async maybeAlertStaleKnowledge(id: number, excludeUserId: string): Promise<void> {
+    const info = await this.markStaleKnowledgeAlertedFn(id).catch((err) => {
+      logger.warn({ err, id }, 'Stale-knowledge alert stamp failed');
+      return null;
+    });
+    if (!info) return;
+    if (!this.reserveStaleKnowledgeAlertSlot(config.knowledgeStaleAlert.rateLimitPerHour)) return;
+    const name = info.title ?? truncateForEcho(info.content);
+    await this.notifyAdminsFn(
+      (platform) => this.adapters.get(platform),
+      `A knowledge entry has been stale for ${formatRelativeAge(info.updatedAt)} and was just shown to a ` +
+        `member: "${name}"`,
+      excludeUserId,
+    ).catch((err) => logger.warn({ err, id }, 'Stale-knowledge admin notification failed'));
   }
 
   private sweep(): void {
@@ -1456,6 +1521,22 @@ export class Router {
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Knowledge shortcut retrieval count update failed'),
     );
+    // Real-time stale-knowledge admin nudge (issue #701) — fire-and-forget,
+    // never delays or blocks the member-facing reply already sent above.
+    // Gated on the flag FIRST so this is a no-op (no isKnowledgeStale call,
+    // no DB write) when off, matching acceptance criterion 4.
+    if (
+      config.knowledgeStaleAlert.enabled &&
+      isKnowledgeStale(
+        { updatedAt: hit.updatedAt, lastRetrievedAt: hit.lastRetrievedAt ?? null },
+        config.adminDigest.knowledgeStaleDays,
+        config.adminDigest.knowledgeStaleMaxAgeDays,
+      )
+    ) {
+      this.maybeAlertStaleKnowledge(hit.id, msg.userId).catch((err) =>
+        logger.warn({ err }, 'Stale-knowledge alert failed'),
+      );
+    }
     await recordInteraction({
       platform: msg.platform,
       conversationId: target,
@@ -1507,6 +1588,23 @@ export class Router {
     this.recordShortcutRetrieval([hit.id]).catch((err) =>
       logger.warn({ err }, 'Guest knowledge shortcut retrieval count update failed'),
     );
+    // Real-time stale-knowledge admin nudge (issue #701) — same fire-and-forget
+    // shape as `sendKnowledgeShortcut`'s identical block; the alerted entry is
+    // admin-authored knowledge, not guest data, so this path is in scope too
+    // despite the guest path's stricter never-store-guest-content invariant
+    // elsewhere in this function.
+    if (
+      config.knowledgeStaleAlert.enabled &&
+      isKnowledgeStale(
+        { updatedAt: hit.updatedAt, lastRetrievedAt: hit.lastRetrievedAt ?? null },
+        config.adminDigest.knowledgeStaleDays,
+        config.adminDigest.knowledgeStaleMaxAgeDays,
+      )
+    ) {
+      this.maybeAlertStaleKnowledge(hit.id, msg.userId).catch((err) =>
+        logger.warn({ err }, 'Stale-knowledge alert failed'),
+      );
+    }
   }
 
   /**
@@ -1710,6 +1808,22 @@ export class Router {
               `into a FAQ: "${truncateForEcho(cluster.representative)}"`,
             msg.userId,
           ).catch((err) => logger.warn({ err }, 'Knowledge gap cluster admin notification failed'));
+        }
+      }
+
+      // Real-time admin nudge for a served, stale knowledge entry (issue
+      // #701) — the `knowledge_search` call site's half of the mechanism;
+      // the two shortcut call sites (`sendKnowledgeShortcut`/
+      // `sendGuestKnowledgeShortcut`) call the identical
+      // `maybeAlertStaleKnowledge` directly, since they never go through the
+      // model/turn-state plumbing `knowledge_search` does.
+      // `reply.staleKnowledgeAlertIds` is only ever set (by the
+      // `knowledge_search` tool handler) when
+      // `config.knowledgeStaleAlert.enabled` is true and the turn ended in
+      // genuine success, so no separate flag check is needed here.
+      if (reply.staleKnowledgeAlertIds) {
+        for (const id of reply.staleKnowledgeAlertIds) {
+          await this.maybeAlertStaleKnowledge(id, msg.userId);
         }
       }
 

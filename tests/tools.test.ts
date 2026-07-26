@@ -160,6 +160,7 @@ const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A = `${RUN}-knowledge-entry-id-scope-l
 const KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_B = `${RUN}-knowledge-entry-id-scope-leak-b`;
 const KNOWLEDGE_LEXICAL_NOT_INVOKED_SCOPE = `${RUN}-knowledge-lexical-not-invoked`;
 const KNOWLEDGE_LEXICAL_FALLBACK_SCOPE = `${RUN}-knowledge-lexical-fallback`;
+const KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE = `${RUN}-knowledge-stale-alert-handler`;
 const RESOLVE_SUGGESTION_HANDLER_USER = `${RUN}-resolve-suggestion-handler`;
 const RESOLVE_REPORT_HANDLER_USER = `${RUN}-resolve-report-handler`;
 const RESOLVE_APPEAL_HANDLER_USER = `${RUN}-resolve-appeal-handler`;
@@ -8147,8 +8148,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    34,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650)",
+    35,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -9112,6 +9113,104 @@ test(
       3,
       'recordKnowledgeGap must still record every miss — only the alert path is gated',
     );
+  },
+);
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_STALE_ALERT_ENABLED=true): a served, stale, unalerted hit pushes its id onto turnState.staleKnowledgeAlertIds (issue #701 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const originalEnabled = config.knowledgeStaleAlert.enabled;
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    (config.knowledgeStaleAlert as { enabled: boolean }).enabled = true;
+    config.adminDigest.knowledgeStaleDays = 30;
+    try {
+      const uniqueTitle = `Quazzledorf renewal steps ${RUN}`;
+      const { id: staleId } = await saveKnowledge({
+        title: uniqueTitle,
+        content: 'To renew your Quazzledorf membership, email the treasurer with your member number.',
+        scope: KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE,
+      });
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+        staleId,
+      ]);
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-stale-alert-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE,
+      };
+      const turnState: { lastKnowledgeHitId: number | null; staleKnowledgeAlertIds?: number[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const server = buildToolServer(caller, adapter, undefined, turnState);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+
+      await registeredTool.handler({ query: 'how do I renew my Quazzledorf membership' });
+      assert.deepEqual(
+        turnState.staleKnowledgeAlertIds,
+        [staleId],
+        'a served hit that is stale and unalerted must have its id pushed onto turnState.staleKnowledgeAlertIds',
+      );
+    } finally {
+      (config.knowledgeStaleAlert as { enabled: boolean }).enabled = originalEnabled;
+      config.adminDigest.knowledgeStaleDays = originalStaleDays;
+    }
+  },
+);
+
+test(
+  'knowledge_search tool handler (KNOWLEDGE_STALE_ALERT_ENABLED unset/false, the default): a served, stale hit never sets turnState.staleKnowledgeAlertIds — byte-identical to before issue #701 (acceptance criterion 4)',
+  { skip },
+  async () => {
+    assert.equal(config.knowledgeStaleAlert.enabled, false, 'this test requires the flag at its off default');
+    const originalStaleDays = config.adminDigest.knowledgeStaleDays;
+    config.adminDigest.knowledgeStaleDays = 30;
+    try {
+      const uniqueTitle = `Quazzledorf renewal steps (no-alert) ${RUN}`;
+      const { id: staleId } = await saveKnowledge({
+        title: uniqueTitle,
+        content: 'To renew your Quazzledorf membership, email the treasurer with your member number.',
+        scope: `${KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE}-off`,
+      });
+      await pool.query(`UPDATE knowledge SET updated_at = now() - interval '400 days' WHERE id = $1`, [
+        staleId,
+      ]);
+
+      const adapter = stubAdapter(async () => {});
+      const caller = {
+        platform: 'discord' as const,
+        userId: `${RUN}-stale-alert-off-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${KNOWLEDGE_STALE_ALERT_HANDLER_SCOPE}-off`,
+      };
+      const turnState: { lastKnowledgeHitId: number | null; staleKnowledgeAlertIds?: number[] } = {
+        lastKnowledgeHitId: null,
+      };
+      const server = buildToolServer(caller, adapter, undefined, turnState);
+      const registeredTool = (
+        server.instance as unknown as {
+          _registeredTools: Record<string, { handler: (args: { query: string }) => Promise<unknown> }>;
+        }
+      )._registeredTools['knowledge_search'];
+
+      await registeredTool.handler({ query: 'how do I renew my Quazzledorf membership' });
+      assert.equal(
+        turnState.staleKnowledgeAlertIds,
+        undefined,
+        'the flag being off must never set turnState.staleKnowledgeAlertIds, even for a stale served hit',
+      );
+    } finally {
+      config.adminDigest.knowledgeStaleDays = originalStaleDays;
+    }
   },
 );
 

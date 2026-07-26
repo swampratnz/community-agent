@@ -121,6 +121,7 @@ import {
   PROJECT_RATE_LIMIT_PER_DAY,
   searchKnowledge,
   searchKnowledgeLexical,
+  type KnowledgeSearchHit,
   searchMemory,
   searchProjects,
   unlinkMember,
@@ -1173,6 +1174,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'KNOWLEDGE_GAP_ALERT_ENABLED',
     configPath: 'knowledgeGapAlert.enabled',
     label: 'Real-time knowledge-gap-cluster alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
+    envVar: 'KNOWLEDGE_STALE_ALERT_ENABLED',
+    configPath: 'knowledgeStaleAlert.enabled',
+    label: 'Real-time stale-knowledge alert',
     category: 'Admin Alerts & Digest',
   },
   {
@@ -2561,6 +2568,18 @@ export interface ToolServerTurnState {
    * is never called from this file, see its own doc comment.
    */
   knowledgeGapCluster?: CrossedKnowledgeGapCluster | null;
+  /**
+   * Ids of `knowledge_search` hits served this turn that were newly stale
+   * (`isKnowledgeStale` true) at serve time, gated by
+   * `KNOWLEDGE_STALE_ALERT_ENABLED` (issue #701) — read back by `execTurn`
+   * into `TurnOutcome`/`AgentReply` so `router.ts` can atomically gate+stamp
+   * (`markStaleKnowledgeAlerted`) and rate-limit+notify post-turn, mirroring
+   * `knowledgeGapCluster`'s shape. Appended to, never overwritten, so
+   * multiple qualifying `knowledge_search` calls in one turn each get their
+   * own alert. `notifyAdmins` itself is never called from this file — see its
+   * own doc comment.
+   */
+  staleKnowledgeAlertIds?: number[];
 }
 
 export function buildToolServer(
@@ -2886,9 +2905,33 @@ export function buildToolServer(
           );
         }
       }
+      const finalHits: Array<KnowledgeSearchHit & { viaLexical?: boolean }> =
+        lexicalHits.length > 0 ? [...hits, ...lexicalHits.map((h) => ({ ...h, viaLexical: true }))] : hits;
+      // Real-time stale-knowledge admin nudge (issue #701): computed over
+      // exactly the hits `formatKnowledgeSearchResults` below will actually
+      // render (its own identical `viaLexical || similarity >= floor`
+      // filter) — never a hit that exists but isn't shown. Gated on the flag
+      // FIRST so this is a no-op (no isKnowledgeStale call, no turnState
+      // write) when off, matching acceptance criterion 4's byte-identical
+      // default. `notifyAdmins` itself is never called from this file — see
+      // its own doc comment; router.ts does the gate+stamp+notify post-turn.
+      if (config.knowledgeStaleAlert.enabled && turnState) {
+        for (const h of finalHits) {
+          if (!h.viaLexical && h.similarity < KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD) continue;
+          if (
+            isKnowledgeStale(
+              { updatedAt: h.updatedAt, lastRetrievedAt: h.lastRetrievedAt ?? null },
+              config.adminDigest.knowledgeStaleDays,
+              config.adminDigest.knowledgeStaleMaxAgeDays,
+            )
+          ) {
+            (turnState.staleKnowledgeAlertIds ??= []).push(h.id);
+          }
+        }
+      }
       return text(
         formatKnowledgeSearchResults(
-          lexicalHits.length > 0 ? [...hits, ...lexicalHits.map((h) => ({ ...h, viaLexical: true }))] : hits,
+          finalHits,
           config.adminDigest.knowledgeStaleDays,
           config.adminDigest.knowledgeStaleMaxAgeDays,
           hasConflict,
