@@ -22,10 +22,11 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
 **Controls**
 - **Built-in tools disabled outright**: the `tools` option passed to every
   `query()` removes ALL built-in Claude Code tools (Bash/Read/Write/Glob/…)
-  from the model's surface, with one deliberate exception: **admin and
-  super-admin turns get exactly `WebSearch`** (search-and-summarise). Note
-  `allowedTools` alone does NOT restrict — it only pre-approves; the
-  restriction comes from the `tools` list.
+  from the model's surface, with two deliberate exceptions: **admin and
+  super-admin turns get exactly `WebSearch`** (search-and-summarise), and
+  **every tier gets exactly `Skill`** when `AGENT_SKILLS_ENABLED` is on
+  (off by default — see §19). Note `allowedTools` alone does NOT restrict —
+  it only pre-approves; the restriction comes from the `tools` list.
 - **WebFetch stays disallowed for every tier**: the model constructs fetch
   URLs, so an injection could exfiltrate conversation content via a query
   string to an attacker's server, and fetched pages are a rich injection
@@ -2184,6 +2185,57 @@ serving that sender again. Security posture:
   DB writes in both WhatsApp adapters (no Baileys socket dependency, no Cloud
   endpoint), so they add no ToS-risk surface and work while WhatsApp is
   disconnected.
+
+### 19. Agent Skills (`AGENT_SKILLS_ENABLED`, off by default, issue #741)
+
+Wires the SDK's Agent Skills mechanism to host the #635 prompt-review
+checklist (`docs/ARCHITECTURE.md`'s "Prompt-review guidance" section has the
+full off/on behaviour). Off by default; when on:
+
+- **Grants the built-in `Skill` tool to every tier, uniformly** —
+  `buildQueryOptions` (`src/agent/core.ts`) adds it to the base `tools` array
+  regardless of role, the same ungated treatment the inline checklist it
+  replaces already had for every tier (no new RBAC surface: `Skill` was never
+  tier-gated because the capability itself never was). This is a genuine
+  addition to the built-in-tools exception carved out in §1 (`Skill`
+  alongside admin+'s `WebSearch`), which is why that bullet was updated
+  alongside this section.
+- **`Skill` is deliberately absent from `allowedTools`.** Every *other*
+  built-in tool this repo grants (`WebSearch`) is added to both `tools` and
+  `allowedTools`, because `allowedTools` is what auto-approves a call without
+  reaching a permission decision — and this codebase registers no
+  `canUseTool` callback and runs `permissionMode: 'default'`, so an
+  unapproved tool call would have nothing to grant it. `Skill` is the one
+  documented exception: the installed SDK's own type declarations
+  (`@anthropic-ai/claude-agent-sdk@0.3.220`, the version this repo pins) state
+  under the `skills` option, "you do not need to add `'Skill'` to
+  `allowedTools` yourself when using this option," and separately mark
+  passing `'Skill'` into `allowedTools` directly as deprecated. `skills:
+  ['prompt-review']` (below) is what pre-approves it; a
+  `SECURITY:`-prefixed test in `tests/agentSkillsEnabled.test.ts` pins the
+  installed `.d.ts` still documenting this contract, so an SDK upgrade that
+  silently changes it fails CI instead of shipping a silent regression where
+  the tool is granted but never actually fires.
+- **The bundled skills plugin is repo-owned and narrowly scoped.**
+  `plugins: [{ type: 'local', path: SKILLS_DIR }]` points at
+  `src/agent/skills/` — a directory this repo ships and code-reviews, never a
+  path derived from a request or member-supplied value. It contains only a
+  `.claude-plugin/plugin.json` manifest and one `prompt-review/SKILL.md` —
+  no `hooks/`, `agents/`, `commands/`, or `.mcp.json` — so nothing beyond
+  that one static markdown body is ever loadable from it, pinned by a
+  dedicated `SECURITY:` test that walks the directory.
+- **`skills` is always the explicit, hand-written literal
+  `['prompt-review']`, never `'all'`.** A future skill file added to the
+  directory needs a deliberate second edit to activate, matching this repo's
+  existing convention of hand-written, non-reflective tool allowlists
+  elsewhere (`toolsForRole`, `FEATURE_FLAGGED_TOOL_GROUPS`). The SDK's own
+  docs note that an unlisted skill is hidden from the model's listing and
+  rejected by the `Skill` tool, but its file still sits on disk and remains
+  reachable via `Read`/`Bash` if those were ever granted — moot here, since
+  no RBAC tier grants either built-in regardless of this flag.
+- **No new data flow.** The skill body is static, code-reviewed markdown
+  shipped with the repo, not fetched or generated at runtime; enabling the
+  flag adds no new egress, no new table, and no new write path.
 
 ## Platform-specific notes
 

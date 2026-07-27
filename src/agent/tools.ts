@@ -1244,6 +1244,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Peer help handoff (find_helper)',
     category: 'Community',
   },
+  {
+    envVar: 'AGENT_SKILLS_ENABLED',
+    configPath: 'agentSkills.enabled',
+    label: 'Agent Skills (prompt-review)',
+    category: 'Integrations',
+  },
 ] as const;
 
 /**
