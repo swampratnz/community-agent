@@ -64,7 +64,7 @@ reviews, and builds its own features.
 **Member feedback loops**
 - **Rate answers** (helpful/unhelpful), file **content reports** and
   **suggestions** — each lands in a triageable queue instead of dying in
-  chat — and (admin-gated) **image generation** via the Grok CLI.
+  chat — and (admin-gated) **image generation** via the Grok Build CLI.
 
 **Platform-agnostic core** — Discord and WhatsApp are pluggable adapters; every
 privileged action is RBAC-gated, CONFIRM-guarded where destructive, and audited.
@@ -90,7 +90,7 @@ src/
   auth/rbac.ts            admin/user roles + per-role tool gating
   platforms/              PlatformAdapter interface + Discord/WhatsApp adapters
   storage/                Postgres pool, schema, migrations, embeddings, repo
-  media/                  image generation (Grok CLI) + voice-note transcription
+  media/                  image generation (Grok Build CLI) + voice-note transcription
   status/                 Anthropic status-page checker
   github/                 GitHub issue filing (suggest_issue)
   devTeam/                remote dev-team build-service client
