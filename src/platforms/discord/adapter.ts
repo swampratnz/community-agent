@@ -60,6 +60,7 @@ import {
 import { shouldNotifyMutedRoleOverwriteFailed } from '../../mutedRoleAlertNotice.js';
 import { takeReplyMapping } from '../../replyRetraction.js';
 import { chunkText } from '../textChunk.js';
+import { handleInteraction, registerSlashCommands } from './slashCommands.js';
 import {
   paramString,
   type AdminAction,
@@ -202,6 +203,19 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       this.onDiscordMessage(message).catch((err) => logger.error({ err }, 'Discord message handling failed'));
     });
 
+    // Guild-scoped read-only slash commands (issue #744): /kb, /projects,
+    // /whois, /guidelines. Off by default — with the flag unset, no listener
+    // is attached at all (acceptance criterion 1), not merely a no-op inside
+    // one, and registerSlashCommands (called from ClientReady below) is
+    // never invoked either.
+    if (config.discord.slashCommandsEnabled) {
+      this.client.on(Events.InteractionCreate, (interaction) => {
+        handleInteraction(interaction, { filtered: (text) => this.filtered(text) }).catch((err) =>
+          logger.error({ err }, 'Discord interaction handling failed'),
+        );
+      });
+    }
+
     // Delete/edit honouring for stored messages (issue #48): only wired when
     // ambient archiving is on, so the default-off posture is byte-identical
     // to before. A user deleting or editing their Discord message deletes or
@@ -327,6 +341,12 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       // event. Fire-and-forget; no-op if moderation is off or no muted role
       // exists yet.
       void this.reconcileMutedRole();
+      // Guild-scoped slash command registration (issue #744) — fire-and-
+      // forget like the two calls above; a registration failure must never
+      // block message handling. Off by default.
+      if (config.discord.slashCommandsEnabled) {
+        void registerSlashCommands(this.client);
+      }
     });
     // Steady-state signal for /healthz + disconnect alerting — discord.js
     // handles gateway resume internally, but a shard going down means we're
