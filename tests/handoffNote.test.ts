@@ -62,6 +62,21 @@ test('extract returns the newest note, one quoted line at a time', () => {
   assert.equal(out, '| newer note');
 });
 
+test('extract accepts the login VALUE gh pr view actually emits, not just its shape', () => {
+  // Regression, found by the first live run (PR #769): the shape test below got
+  // the shape right and the VALUE wrong. `gh pr view --json comments` reports
+  // the bot WITHOUT the `[bot]` suffix, so strict equality rejected every real
+  // note — the producer worked, the consumer saw nothing, and the symptom was
+  // indistinguishable from the build agent simply not writing one.
+  //
+  //   gh api repos/…/issues/<n>/comments  →  .user.login   = "github-actions[bot]"
+  //   gh pr view <n> --json comments      →  .author.login = "github-actions"
+  const asPrViewEmitsIt = JSON.stringify([
+    { author: { login: 'github-actions' }, body: posted('real note') },
+  ]);
+  assert.equal(run('extract', asPrViewEmitsIt), '| real note');
+});
+
 test('extract accepts both the issues-API and gh-pr-view comment shapes', () => {
   const viaApi = run(
     'extract',

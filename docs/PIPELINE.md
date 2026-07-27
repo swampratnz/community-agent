@@ -224,6 +224,29 @@ defend, what it rejected, what it is unsure about — to a git-ignored
 marker-guarded PR comment; the review workflow resolves it deterministically
 and interpolates it into the review prompt.
 
+**The draft handshake.** The build agent opens its PR as a **draft**; the build
+workflow posts the handoff note and *then* marks the PR ready for review, which
+fires `ready_for_review` with the note already attached. The review job skips
+drafts, so it cannot start early.
+
+This is not ceremony — it is the fix for a race the first live run exposed. On
+PR #769 the PR was created at 14:10:51, the review job started at 14:10:55, and
+the handoff comment landed at 14:11:16: the reviewer ran **21 seconds before the
+note existed** and logged "reviewing from the diff alone". Posting the note
+earlier is impossible (the PR number only exists once the agent has created the
+PR), so the PR waits for the note instead.
+
+Two deliberate consequences: a human's draft PR is reviewed when they mark it
+ready rather than while they are still writing it, and a **recovery PR** (opened
+as a draft by the verify step when an agent stranded its work) is reviewed when a
+human opens it for review — which is what its own body already promises, and it
+can never auto-merge in any case. The ready-marking step runs even when the
+handoff step failed or wrote nothing, because a missing note must never strand a
+finished PR in draft where neither the reviewer nor auto-merge will touch it. If
+the agent opens a non-draft PR anyway, the review simply starts without the note,
+exactly as it did before this existed — a graceful degradation, not a new failure
+mode.
+
 **The note is untrusted data, and the containment is structural.** The build
 agent processes untrusted issue content, so an injected build agent could aim a
 note at the reviewer. Nothing here tries to *detect* that — detection is
@@ -234,7 +257,12 @@ case and hide an attack from the one reader positioned to report it. Instead
 - **Authorship.** Only `github-actions[bot]`-authored comments are read back.
   The build agent's own `gh` posts as `claude[bot]`, so it cannot write directly
   into the channel it feeds — the same identity distinction the recovery-PR path
-  relies on.
+  relies on. Matched with the `[bot]` suffix normalised away, because GitHub
+  reports that one identity two ways: `.user.login` is `github-actions[bot]` on
+  the REST issues-comments API, `.author.login` is `github-actions` from
+  `gh pr view --json comments`. Comparing strictly against the REST spelling
+  rejected every genuine note on PR #769 — the producer worked and the consumer
+  silently saw nothing. Case remains strict.
 - **Position.** The marker must be line 1, so a comment that merely *quotes* the
   marker (a review of this machinery does) is not mistaken for the channel.
 - **Quoting.** Every line is emitted prefixed `| `. That makes the block

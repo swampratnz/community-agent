@@ -2322,7 +2322,11 @@ in `scripts/handoff-note.mjs` (pinned by `tests/handoffNote.test.ts`):
 - **Authorship.** Only `github-actions[bot]` comments are read back. The build
   agent's `gh` posts as `claude[bot]`, so it cannot post into the channel it
   feeds — the same identity distinction the build workflow's recovery-PR path
-  relies on. Member and fork comments are likewise invisible.
+  relies on. Member and fork comments are likewise invisible. The comparison
+  normalises away a trailing `[bot]` (GitHub reports this identity as
+  `github-actions[bot]` on the REST API and `github-actions` via
+  `gh pr view --json comments`) but stays **case-sensitive** — the widening is
+  exactly the one spelling GitHub actually emits and nothing more.
 - **Position.** The marker must be line 1, so prose that merely quotes the
   marker is never mistaken for the channel.
 - **Quoting.** Every line is emitted `| `-prefixed, so it embeds as an

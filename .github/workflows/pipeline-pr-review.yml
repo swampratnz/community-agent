@@ -35,6 +35,23 @@ permissions:
 
 jobs:
   review:
+    # Skip DRAFT pull requests. This is the receiving half of the build
+    # worker's draft handshake (docs/PIPELINE.md, "Context sharing between cold
+    # sessions"): the build agent opens its PR as a draft, the build workflow
+    # attaches the handoff note, and only then marks it ready — which fires the
+    # `ready_for_review` event below with the note already in place.
+    #
+    # Without this the review simply outruns the note. PR #769: created
+    # 14:10:51, review started 14:10:55, handoff posted 14:11:16 — the reviewer
+    # ran 21 seconds early and reviewed from the diff alone.
+    #
+    # Two consequences, both intended. A HUMAN's draft PR is now reviewed when
+    # they mark it ready rather than while they are still writing it. And a
+    # RECOVERY PR (opened as a draft by the verify step in pipeline-build.yml
+    # when an agent stranded its work) is reviewed when a human opens it for
+    # review — which is what its own body already tells the reader will happen,
+    # and it can never auto-merge regardless.
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
