@@ -50,17 +50,43 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
     );
     assert.deepEqual(
       opts.skills,
-      ['prompt-review', 'project-showcase'],
-      `${role}: skills must be exactly ['prompt-review', 'project-showcase']`,
+      ['prompt-review', 'project-showcase', 'claude-code-setup'],
+      `${role}: skills must be exactly ['prompt-review', 'project-showcase', 'claude-code-setup']`,
     );
   }
 });
 
-test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'project-showcase'] — never 'all', never derived from any input", () => {
+test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'project-showcase', 'claude-code-setup'] — never 'all', never derived from any input", () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
-    assert.deepEqual(opts.skills, ['prompt-review', 'project-showcase']);
+    assert.deepEqual(opts.skills, ['prompt-review', 'project-showcase', 'claude-code-setup']);
     assert.notEqual(opts.skills, 'all');
+  }
+});
+
+test("SECURITY: issue #757 — claude-code-setup resolves to the bundled SKILL.md and changes no role's disallowedTools", () => {
+  const skillPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/agent/skills/claude-code-setup/SKILL.md',
+  );
+  const body = readFileSync(skillPath, 'utf8');
+  assert.match(
+    body,
+    /^---\nname: claude-code-setup\n/,
+    'SKILL.md must carry valid claude-code-setup front-matter',
+  );
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
+    assert.ok(
+      opts.skills?.includes('claude-code-setup'),
+      `${role}: skills must include claude-code-setup when the flag is on`,
+    );
+    const webSearch = role === 'admin' || role === 'super_admin';
+    assert.deepEqual(
+      opts.disallowedTools,
+      ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+      `${role}: disallowedTools must be unaffected by adding claude-code-setup to ENABLED_SKILLS`,
+    );
   }
 });
 
@@ -186,5 +212,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('project-showcase', 'SKILL.md'))),
     'expected project-showcase/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('claude-code-setup', 'SKILL.md'))),
+    'expected claude-code-setup/SKILL.md to be present',
   );
 });
