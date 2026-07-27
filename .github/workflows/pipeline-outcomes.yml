@@ -1,0 +1,130 @@
+name: Pipeline outcomes
+
+# Weekly self-measurement for the agent loops (see scripts/pipeline-outcomes.mjs).
+#
+# The pipeline has seven loops that fix, revise, resolve and merge PRs, and
+# nothing measured any of them: a loop could escalate on a one-command fix, die
+# mid-turn without pushing, or thrash for weeks, and the only trace was a marker
+# comment on one PR that nobody aggregates. "Is this loop earning its tokens?"
+# had no answer, so every change to a loop was argued from anecdote.
+#
+# This reconstructs the record from evidence that ALREADY exists — the marker
+# comments the loops post when they engage, checkpoint-recover, or escalate. No
+# new state, no writes to any PR, no LLM, no Max pool: the same read-only
+# deterministic shape as changelog-coverage.yml, and like it, the tracking issue
+# auto-closes when there is nothing to act on.
+#
+# Reads PR titles/bodies/comments as jq data only and runs no PR-controlled
+# code — `scripts/pipeline-outcomes.mjs` comes from the checked-out default
+# branch, never from a PR head.
+
+on:
+  schedule:
+    - cron: '23 20 * * 1' # 20:23 UTC Monday (~08:23 NZ Tuesday)
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Days of history to report on (default 14).'
+        type: string
+        required: false
+
+permissions:
+  contents: read # checkout + run the report script
+  issues: write # open/update/close the single tracking issue
+  pull-requests: read # gh pr list / gh pr view
+
+concurrency:
+  group: pipeline-outcomes
+  cancel-in-progress: true
+
+env:
+  ISSUE_TITLE: '📊 Pipeline loop outcomes: loops that did not finish on their own'
+  WINDOW_DAYS: ${{ inputs.window_days || '14' }}
+  # Bounds the API calls: PRs updated longer ago than the window can hold no
+  # in-window markers, so there is nothing to gain by fetching them.
+  SCAN_LIMIT: '80'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no git credential needed after checkout
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Collect PR comment history
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d "-${WINDOW_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"
+          gh pr list --repo "$GITHUB_REPOSITORY" --state all --limit "$SCAN_LIMIT" \
+            --json number,updatedAt \
+            --jq "[.[] | select(.updatedAt >= \"$cutoff\") | .number] | .[]" > numbers.txt
+          echo "Scanning $(wc -l < numbers.txt) PR(s) updated since $cutoff."
+          : > prs.ndjson
+          while read -r n; do
+            [ -n "$n" ] || continue
+            gh pr view "$n" --repo "$GITHUB_REPOSITORY" \
+              --json number,title,url,createdAt,comments >> prs.ndjson
+          done < numbers.txt
+          jq -s '.' prs.ndjson > prs.json
+
+      - name: Build the report
+        id: report
+        run: |
+          set -euo pipefail
+          node scripts/pipeline-outcomes.mjs --window-days "$WINDOW_DAYS" < prs.json > report.md
+          cat report.md
+          # Always publish to the run summary — free, and no notification noise.
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          # Only nag when a loop actually failed to finish on its own; a clean
+          # window closes the issue instead (same self-clearing contract as
+          # changelog-coverage.yml).
+          if grep -q '^### PRs where a loop did not finish' report.md; then
+            echo "actionable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "actionable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the tracking issue
+        if: steps.report.outputs.actionable == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            cat report.md
+            printf '\n_Refreshed %s by the pipeline-outcomes workflow; auto-closes when every loop in the window finished on its own._\n' \
+              "$(date -u +%Y-%m-%dT%H:%MZ)"
+          } > issue-body.md
+          num="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'Pipeline loop outcomes in:title' \
+            --json number,title --jq "[.[] | select(.title==\"$ISSUE_TITLE\")][0].number // empty")"
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+            echo "Updated tracking issue #$num."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file issue-body.md
+            echo "Opened tracking issue."
+          fi
+
+      - name: Close the tracking issue when every loop finished cleanly
+        if: steps.report.outputs.actionable == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          num="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'Pipeline loop outcomes in:title' \
+            --json number,title --jq "[.[] | select(.title==\"$ISSUE_TITLE\")][0].number // empty")"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --repo "$GITHUB_REPOSITORY" \
+              --body "✅ Every pipeline loop that engaged in the last ${WINDOW_DAYS} days finished on its own — no escalations, no checkpoint recoveries. Closing; the workflow reopens a fresh issue if that changes."
+            gh issue close "$num" --repo "$GITHUB_REPOSITORY"
+            echo "Closed tracking issue #$num."
+          else
+            echo "Clean window and no open tracking issue — nothing to do."
+          fi
