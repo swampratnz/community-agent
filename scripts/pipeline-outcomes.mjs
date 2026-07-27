@@ -34,6 +34,8 @@
 //   * Clean        — engaged, neither recovered nor escalated.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs';
+
 /**
  * Loops that stamp markers, in report order. `attempt` is what counts as
  * "engaged"; auto-merge has no attempt marker (it merges silently on success
@@ -67,8 +69,6 @@ const LOOPS = [
   },
 ];
 
-import { readFileSync } from 'node:fs';
-
 const DEFAULT_WINDOW_DAYS = 14;
 const windowArg = process.argv.find((a) => a.startsWith('--window-days'));
 const requestedWindow = windowArg
@@ -93,7 +93,7 @@ if (!Array.isArray(prs)) prs = [prs];
 const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
 const inWindow = (iso) => iso && Date.parse(iso) >= cutoff;
 
-const tally = new Map(LOOPS.map((loop) => [loop.name, { engaged: 0, recovered: 0, escalated: 0 }]));
+const tally = new Map(LOOPS.map((loop) => [loop.name, { engaged: 0, recovered: 0, escalated: 0, clean: 0 }]));
 /** PRs worth a human glance: escalations and silent-death recoveries. */
 const notable = [];
 
@@ -120,9 +120,19 @@ for (const pr of prs) {
     // engagements with this outcome", not slices of a pie, and can legitimately
     // sum past 100%. Splitting them into exclusive buckets would hide the
     // double-failure case, which is the one most worth seeing.
-    row.engaged += Math.max(engaged, recovered, escalated);
+    const engagements = Math.max(engaged, recovered, escalated);
+    row.engaged += engagements;
     row.recovered += recovered;
     row.escalated += escalated;
+    // Clean is accumulated PER PR, never derived by subtracting loop totals
+    // (issue #750 review). Because the two failure kinds overlap, aggregate
+    // subtraction double-counts a double-failure PR and cancels out genuinely
+    // clean engagements from OTHER PRs: one clean conflict-resolver PR plus one
+    // #609-style attempt+checkpoint+escalation PR gave engaged=2, recovered=1,
+    // escalated=1 → "0 clean", hiding a real clean run. A single engagement
+    // that both recovered and escalated is ONE failed engagement, hence
+    // max() rather than a sum.
+    row.clean += Math.max(0, engagements - Math.max(recovered, escalated));
 
     if (recovered || escalated) {
       notable.push({
@@ -152,10 +162,9 @@ console.log(`## Pipeline loop outcomes — last ${windowDays} days\n`);
 console.log('| Loop | Engaged | Recovered (agent stopped early) | Escalated to human | Clean |');
 console.log('| --- | --- | --- | --- | --- |');
 for (const row of rows) {
-  const clean = Math.max(0, row.engaged - row.escalated - row.recovered);
   console.log(
     `| ${row.name} | ${row.engaged} | ${row.recovered} (${pct(row.recovered, row.engaged)}) | ` +
-      `${row.escalated} (${pct(row.escalated, row.engaged)}) | ${clean} (${pct(clean, row.engaged)}) |`,
+      `${row.escalated} (${pct(row.escalated, row.engaged)}) | ${row.clean} (${pct(row.clean, row.engaged)}) |`,
   );
 }
 

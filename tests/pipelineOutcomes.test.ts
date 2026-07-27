@@ -93,6 +93,39 @@ test('pipeline-outcomes treats an auto-merge blocked notice as friction worth re
   assert.match(out, /\| auto-merge \| 1 \|/);
 });
 
+test('Clean counts a genuinely clean PR even when a SIBLING PR of the same loop both recovered and escalated (issue #750 review)', () => {
+  // Regression: Clean used to be derived by subtracting loop totals
+  // (engaged - recovered - escalated). Because the two failure kinds overlap
+  // on a single engagement, a #609-style attempt+checkpoint+escalation PR
+  // subtracted TWICE and cancelled out the clean engagement on an unrelated
+  // PR of the same loop — reporting "0 clean" when one genuinely clean run
+  // existed, which is precisely the signal this report exists to give.
+  const out = run([
+    pr(1, ['<!-- pipeline-pr-conflict-attempt -->']),
+    pr(2, [
+      '<!-- pipeline-pr-conflict-attempt -->',
+      '<!-- pipeline-pr-conflict-checkpoint -->',
+      '<!-- pipeline-pr-conflict-escalation -->',
+    ]),
+  ]);
+  assert.match(
+    out,
+    /\| conflict-resolver \| 2 \| 1 \(50%\) \| 1 \(50%\) \| 1 \(50%\) \|/,
+    'the clean engagement on PR #1 must survive the double failure on PR #2',
+  );
+});
+
+test('a single engagement that both recovered and escalated counts as ONE failed engagement, not two', () => {
+  const out = run([
+    pr(3, [
+      '<!-- pipeline-autofix-attempt -->',
+      '<!-- pipeline-autofix-checkpoint -->',
+      '<!-- pipeline-autofix-escalation -->',
+    ]),
+  ]);
+  assert.match(out, /\| autofix \| 1 \| 1 \(100%\) \| 1 \(100%\) \| 0 \(0%\) \|/);
+});
+
 test('pipeline-outcomes falls back to the default window when --window-days is non-numeric, instead of reporting "NaN days" and matching nothing (issue #750 review)', () => {
   const out = run([pr(90, ['<!-- pipeline-autofix-attempt -->'])], ['--window-days', 'not-a-number']);
   assert.doesNotMatch(out, /NaN/, 'a bad window must never render as "last NaN days"');
