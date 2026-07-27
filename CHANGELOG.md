@@ -35,6 +35,15 @@ Skipped as internal: #707 #725 #731 #751
   prices, rate limits, or plan-inclusion tables — those stay in
   `knowledge_search` retrieval, referencing (not duplicating) the existing
   always-on fast-moving-facts freshness rule.
+- **`project-showcase` agent skill** (#759, part of the Agent Skills cohort
+  wired in #741/#742, off unless `AGENT_SKILLS_ENABLED`): gives the bot a
+  procedure for the existing `share_project`/`list_projects`/`who_is_into`
+  member tools (#680, #634) — recording a member's own build with a
+  description, link, and how Claude was used; browsing community shares
+  first when someone asks for examples; and a hard rule to never fabricate
+  a project, screenshot, or URL when no real example is on hand. Added to
+  the explicit `ENABLED_SKILLS` allowlist alongside `prompt-review`; no new
+  tool, and no tier's `allowedTools`/`disallowedTools` change.
 - **Read-only Discord slash commands: `/kb`, `/whois`, `/projects`, `/guidelines`** (#744,
   `DISCORD_SLASH_COMMANDS_ENABLED`, off by default): guild-scoped, zero-model-call,
   ephemeral answers to four common lookups, the discoverable generalisation of the

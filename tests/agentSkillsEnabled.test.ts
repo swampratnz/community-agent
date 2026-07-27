@@ -50,16 +50,16 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
     );
     assert.deepEqual(
       opts.skills,
-      ['prompt-review', 'model-and-plan-selection'],
-      `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection']`,
+      ['prompt-review', 'model-and-plan-selection', 'project-showcase'],
+      `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', 'project-showcase']`,
     );
   }
 });
 
-test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'model-and-plan-selection'] — never 'all', never derived from any input", () => {
+test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'model-and-plan-selection', 'project-showcase'] — never 'all', never derived from any input", () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
-    assert.deepEqual(opts.skills, ['prompt-review', 'model-and-plan-selection']);
+    assert.deepEqual(opts.skills, ['prompt-review', 'model-and-plan-selection', 'project-showcase']);
     assert.notEqual(opts.skills, 'all');
   }
 });
@@ -173,7 +173,7 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
     );
     assert.doesNotMatch(f, /\.mcp\.json$/, `${f}: must not be an .mcp.json file`);
   }
-  // Sanity: the walk actually found the two files this proposal ships, so an
+  // Sanity: the walk actually found the files these proposals ship, so an
   // empty/misconfigured directory can't pass this test vacuously.
   assert.ok(
     files.some((f) => f.endsWith('plugin.json')),
@@ -186,5 +186,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('model-and-plan-selection', 'SKILL.md'))),
     'expected model-and-plan-selection/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('project-showcase', 'SKILL.md'))),
+    'expected project-showcase/SKILL.md to be present',
   );
 });
