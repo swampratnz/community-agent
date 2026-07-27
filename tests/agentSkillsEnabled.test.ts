@@ -64,10 +64,17 @@ test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'cl
   }
 });
 
-test('SECURITY: issue #757 — claude-code-setup resolves to the bundled SKILL.md and changes no role\'s disallowedTools', () => {
-  const skillPath = join(dirname(fileURLToPath(import.meta.url)), '../src/agent/skills/claude-code-setup/SKILL.md');
+test("SECURITY: issue #757 — claude-code-setup resolves to the bundled SKILL.md and changes no role's disallowedTools", () => {
+  const skillPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../src/agent/skills/claude-code-setup/SKILL.md',
+  );
   const body = readFileSync(skillPath, 'utf8');
-  assert.match(body, /^---\nname: claude-code-setup\n/, 'SKILL.md must carry valid claude-code-setup front-matter');
+  assert.match(
+    body,
+    /^---\nname: claude-code-setup\n/,
+    'SKILL.md must carry valid claude-code-setup front-matter',
+  );
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.ok(
