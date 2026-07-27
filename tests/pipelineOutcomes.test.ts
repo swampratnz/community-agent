@@ -93,6 +93,13 @@ test('pipeline-outcomes treats an auto-merge blocked notice as friction worth re
   assert.match(out, /\| auto-merge \| 1 \|/);
 });
 
+test('pipeline-outcomes falls back to the default window when --window-days is non-numeric, instead of reporting "NaN days" and matching nothing (issue #750 review)', () => {
+  const out = run([pr(90, ['<!-- pipeline-autofix-attempt -->'])], ['--window-days', 'not-a-number']);
+  assert.doesNotMatch(out, /NaN/, 'a bad window must never render as "last NaN days"');
+  assert.match(out, /last 14 days/, 'it falls back to the documented default');
+  assert.match(out, /\| autofix \| 1 \|/, 'and still counts in-window markers');
+});
+
 test('pipeline-outcomes survives malformed input rather than failing the workflow', () => {
   const result = spawnSync('node', [SCRIPT], { input: 'not json at all', encoding: 'utf8' });
   assert.equal(result.status, 0, 'a bad pipe must never fail the caller');

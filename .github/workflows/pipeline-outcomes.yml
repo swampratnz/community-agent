@@ -56,6 +56,30 @@ jobs:
         with:
           node-version: 24
 
+      # Reject a non-numeric window before anything uses it. NOT because the
+      # dispatch input is a shell-injection vector — it isn't: it reaches the
+      # steps as an ENVIRONMENT VARIABLE, and bash never re-scans the result of
+      # a parameter expansion for command substitution, so `$(...)` in the
+      # value stays inert text (verified; `date` simply rejects it as an
+      # invalid date). GitHub's documented script-injection hazard is
+      # `${{ }}` interpolated directly into a `run:` body, which splices
+      # attacker text into the script SOURCE before bash parses it — this
+      # workflow never does that, and must not start.
+      # The real problems a bad value causes are mundane: `date` fails with an
+      # opaque message mid-job, and the report renders "last NaN days". Fail
+      # fast with a clear reason instead, and keep the guard here so a future
+      # refactor toward a `run:`-body interpolation is already covered.
+      - name: Validate the window
+        run: |
+          set -euo pipefail
+          case "$WINDOW_DAYS" in
+            ''|*[!0-9]*)
+              echo "::error::window_days must be a positive integer (got '$WINDOW_DAYS')"; exit 1 ;;
+          esac
+          if [ "$WINDOW_DAYS" -lt 1 ] || [ "$WINDOW_DAYS" -gt 365 ]; then
+            echo "::error::window_days must be between 1 and 365 (got '$WINDOW_DAYS')"; exit 1
+          fi
+
       - name: Collect PR comment history
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

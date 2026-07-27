@@ -69,10 +69,17 @@ const LOOPS = [
 
 import { readFileSync } from 'node:fs';
 
+const DEFAULT_WINDOW_DAYS = 14;
 const windowArg = process.argv.find((a) => a.startsWith('--window-days'));
-const windowDays = windowArg
+const requestedWindow = windowArg
   ? Number(windowArg.split('=')[1] ?? process.argv[process.argv.indexOf(windowArg) + 1])
-  : 14;
+  : DEFAULT_WINDOW_DAYS;
+// A missing or non-numeric value used to render as "last NaN days" and match
+// nothing — a confusing empty report rather than an obvious error. Fall back
+// to the default instead; the workflow validates the input separately, so this
+// only catches a hand-run invocation.
+const windowDays =
+  Number.isFinite(requestedWindow) && requestedWindow > 0 ? requestedWindow : DEFAULT_WINDOW_DAYS;
 
 let prs;
 try {
@@ -106,6 +113,13 @@ for (const pr of prs) {
     // A checkpoint or escalation without an attempt marker still means the loop
     // ran (the conflict resolver's older runs predate its attempt marker), so
     // count the engagement rather than losing it.
+    //
+    // Recovered and Escalated are deliberately NOT mutually exclusive: one
+    // engagement can be checkpoint-recovered AND then escalated (that is
+    // exactly what happened on #609), so their percentages are each "share of
+    // engagements with this outcome", not slices of a pie, and can legitimately
+    // sum past 100%. Splitting them into exclusive buckets would hide the
+    // double-failure case, which is the one most worth seeing.
     row.engaged += Math.max(engaged, recovered, escalated);
     row.recovered += recovered;
     row.escalated += escalated;
@@ -161,5 +175,7 @@ if (notable.length > 0) {
 console.log(
   '\n> A **Recovered** row is an agent that committed work then ended its turn without pushing — ' +
     'a prompt/harness defect in that loop, not a code defect in the PR. **Escalated** is the loop ' +
-    'correctly giving up. Both are cheaper to fix than to keep paying for.',
+    'correctly giving up. Both are cheaper to fix than to keep paying for. The two are not ' +
+    'mutually exclusive (one engagement can be recovered *and* then escalated), so those ' +
+    'percentages are shares of engagements rather than slices of a pie and may sum past 100%.',
 );
