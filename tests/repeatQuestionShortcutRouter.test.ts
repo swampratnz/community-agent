@@ -492,6 +492,30 @@ test('ordering: a repeat-question shortcut reply is enqueued behind an in-flight
   // ...then, without waiting, resend the FIRST (now-cached) text.
   const repeatDone = trigger(makeMessage({ text: cachedText, conversationId }));
 
+  // Investigated for #781 rather than converted like the signal above: this
+  // is a NEGATIVE assertion ("nothing landed yet"), and there is no event to
+  // await for something that must NOT have happened — the same-shaped fix
+  // (await a promise the stub resolves) has no analogue here.
+  //
+  // The property itself is NOT actually timing-dependent: `enqueue()` chains
+  // strictly on a Promise per conversation key (`prev.then(task)`, see
+  // router.ts), so the repeat's queued task structurally cannot settle
+  // before `secondTurn` — still unresolved at this point — does, no matter
+  // how much (or little) wall-clock time passes before we check. So this
+  // `sleep` is not what makes the assertion true, and raising or lowering it
+  // cannot introduce or fix a false failure the way the router.test.ts sleep
+  // above could.
+  //
+  // What the sleep DOES do is give the repeat message's own pre-enqueue work
+  // — a real `isUserBlocked` Postgres round-trip in `handle()`, since this
+  // file runs against a live DB — a realistic window to run before we assert,
+  // so the check exercises the actual bypass-guard path rather than firing
+  // before that path has even started. Residual risk is therefore not a
+  // flaky failure but the opposite: under extreme DB latency the repeat's
+  // pre-enqueue work might still be in flight at the 30ms mark, so the
+  // assertion would pass without having exercised the guard it's meant to
+  // exercise that run — a weaker check, not a wrong one, and not the failure
+  // class this issue is about.
   await sleep(30);
   assert.equal(sent.length, 1, 'the repeat reply must not land while the earlier real turn is still pending');
 
