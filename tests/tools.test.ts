@@ -18980,9 +18980,9 @@ test(
 // list_reports/list_appeals), composing the same count*/oldest*AgeDays
 // repository functions buildAdminDigestForAdmin already calls. No arguments,
 // read-only, no CONFIRM.
-function reviewQueueToolFrom(
-  server: unknown,
-): { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> } {
+function reviewQueueToolFrom(server: unknown): {
+  handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }>;
+} {
   return (
     server as {
       _registeredTools: Record<
@@ -18993,53 +18993,47 @@ function reviewQueueToolFrom(
   )._registeredTools['review_queue'];
 }
 
-test(
-  'SECURITY: review_queue refuses a member-tier caller before any repository query runs (issue #743 acceptance criteria 6, 8)',
-  async (t) => {
-    const querySpy = t.mock.method(pool, 'query');
-    const server = buildToolServer(
-      {
-        platform: 'discord' as const,
-        userId: `${RUN}-review-queue-member`,
-        userName: 'Member',
-        role: 'member' as const,
-        conversationId: `${RUN}-review-queue-member-convo`,
-      },
-      stubAdapter(async () => {}),
-    );
+test('SECURITY: review_queue refuses a member-tier caller before any repository query runs (issue #743 acceptance criteria 6, 8)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query');
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-review-queue-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-review-queue-member-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
 
-    await assert.rejects(() => reviewQueueToolFrom(server.instance).handler({}), /Permission denied/);
-    assert.equal(
-      querySpy.mock.calls.length,
-      0,
-      'SECURITY: a member-tier caller must trigger zero repository queries before the assertAtLeast rejection',
-    );
-  },
-);
+  await assert.rejects(() => reviewQueueToolFrom(server.instance).handler({}), /Permission denied/);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'SECURITY: a member-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+  );
+});
 
-test(
-  'SECURITY: review_queue refuses a guest-tier caller before any repository query runs (issue #743 acceptance criteria 6, 8)',
-  async (t) => {
-    const querySpy = t.mock.method(pool, 'query');
-    const server = buildToolServer(
-      {
-        platform: 'discord' as const,
-        userId: `${RUN}-review-queue-guest`,
-        userName: 'Guest',
-        role: 'guest' as const,
-        conversationId: `${RUN}-review-queue-guest-convo`,
-      },
-      stubAdapter(async () => {}),
-    );
+test('SECURITY: review_queue refuses a guest-tier caller before any repository query runs (issue #743 acceptance criteria 6, 8)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query');
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-review-queue-guest`,
+      userName: 'Guest',
+      role: 'guest' as const,
+      conversationId: `${RUN}-review-queue-guest-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
 
-    await assert.rejects(() => reviewQueueToolFrom(server.instance).handler({}), /Permission denied/);
-    assert.equal(
-      querySpy.mock.calls.length,
-      0,
-      'SECURITY: a guest-tier caller must trigger zero repository queries before the assertAtLeast rejection',
-    );
-  },
-);
+  await assert.rejects(() => reviewQueueToolFrom(server.instance).handler({}), /Permission denied/);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'SECURITY: a guest-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+  );
+});
 
 test(
   "SECURITY: review_queue's reports count matches list_reports's own row count for the same admin — a report outside the caller's conversations and a DM report filed against the caller are both excluded from both (issue #743 acceptance criteria 3, 7)",
@@ -19109,7 +19103,11 @@ test(
 
       const listReportsOut = (await tools['list_reports'].handler({})).content[0]?.text ?? '';
       const listReportsRowCount = (listReportsOut.match(/^#\d+ /gm) ?? []).length;
-      assert.equal(listReportsRowCount, 1, 'sanity check: only the in-scope report is visible to list_reports');
+      assert.equal(
+        listReportsRowCount,
+        1,
+        'sanity check: only the in-scope report is visible to list_reports',
+      );
       assert.match(listReportsOut, new RegExp(`#${inScope.id}\\b`));
       assert.ok(
         !listReportsOut.includes(`#${outOfScope.id}`) && !listReportsOut.includes(`#${dmAgainstAdmin.id}`),
@@ -19243,7 +19241,11 @@ test(
       assert.ok(Number(accessCount) >= 1, 'the fixture access request must be reflected');
       assert.ok(Number(suggestionCount) >= 1, 'the fixture suggestion must be reflected');
       assert.ok(Number(candidateCount) >= 1, 'the fixture knowledge candidate must be reflected');
-      assert.equal(Number(reportCount), 1, "only this test's own report is in the caller's fresh conversation");
+      assert.equal(
+        Number(reportCount),
+        1,
+        "only this test's own report is in the caller's fresh conversation",
+      );
       assert.equal(Number(appealCount), 1, "only this test's own appeal is open on this platform");
     } finally {
       await pool.query(`DELETE FROM access_requests WHERE user_id = $1`, [
