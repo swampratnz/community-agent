@@ -10,6 +10,18 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+<!--
+changelog-coverage skip ledger — merged PRs judged INTERNAL (CI / deps /
+tests / pipeline / tooling), so they deliberately get no member-facing entry.
+Listing a PR number here satisfies scripts/check-changelog-coverage.mjs (any
+`#NNN` occurrence in this file counts as documented), which is what lets the
+daily tracking issue converge and auto-close. This comment sits in the H1
+preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
+to members. Append numbers; never remove them.
+Skipped as internal: #707 #725 #731
+-->
+
+
 ## 2026-07-27
 
 ### Added
