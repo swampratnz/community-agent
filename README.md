@@ -26,6 +26,23 @@ reviews, and builds its own features.
   (`save_knowledge`, candidate review queue).
 - **`check_status`**: reports Anthropic's live service status (its official
   status page) so "is it me or an incident?" gets an authoritative answer.
+- **`whats_new` / `catch_up`**: what changed in the bot lately (from the
+  changelog) and what the community discussed while you were away.
+- **Voice notes**: opt-in local transcription of WhatsApp and Discord voice
+  messages so spoken questions get answered too.
+- **Auto-answer mode** (Discord, opt-in): recognises repeat questions in
+  allowed channels and offers the KB answer without being addressed.
+
+**Community & members**
+- **Discord slash commands** (opt-in): `/kb`, `/whois`, `/projects`,
+  `/guidelines` — zero-model-call, ephemeral lookups.
+- **Peer help & discovery**: members share projects and interests
+  (`share_project`, `who_is_into`), and opt into a helper pool the bot can
+  match askers to (`find_helper`).
+- **Onboarding & welcomes**: opt-in welcome flows on both platforms;
+  gated-mode access requests land in a triageable queue.
+- **Privacy self-service**: `my_data` shows what's stored about you;
+  `forget_me` deletes it. Cross-platform identity linking is member-initiated.
 
 **Community tools (admins)**
 - **Moderation**: timeout / kick / warn / delete, plus opt-in **auto-moderation**
@@ -33,12 +50,21 @@ reviews, and builds its own features.
   a **Muted** role until an admin clears them.
 - **Engagement**: post announcements, native Discord **polls**, scheduled
   **events**, **threads**, emoji **reactions**, and assignable **cosmetic roles**.
-- **Community guidelines** members can read on demand; **admin digests** and
-  question digests surface what the community is asking about.
+- **Community guidelines** members can read on demand; **admin digests**,
+  question digests, and an opt-in **member-facing weekly digest** surface what
+  the community is asking about.
+- **Moderation appeals**: members can appeal a strike/action; admins resolve
+  from a queue. Member notes, roster views, and engagement stats give admins
+  context without raw data access.
+- **Super-admin ops**: pause/resume the bot, redeploy, usage stats, audit
+  view, policy toggles, plus confirmation-gated `suggest_issue` (files a
+  GitHub issue from chat) and `dev_team_dispatch` (sends an assess/deliver
+  job to a remote build service).
 
 **Member feedback loops**
 - **Rate answers** (helpful/unhelpful), file **content reports** and
-  **suggestions**, and (admin-gated) **image generation** via the Grok Build CLI.
+  **suggestions** — each lands in a triageable queue instead of dying in
+  chat — and (admin-gated) **image generation** via the Grok Build CLI.
 
 **Platform-agnostic core** — Discord and WhatsApp are pluggable adapters; every
 privileged action is RBAC-gated, CONFIRM-guarded where destructive, and audited.
@@ -58,12 +84,18 @@ privileged action is RBAC-gated, CONFIRM-guarded where destructive, and audited.
 src/
   config.ts               env loading + validation
   router.ts               inbound → agent → outbound orchestration
-  agent/                  auth, core turn loop, system prompt, personas, MCP tools
+  agent/                  auth, core turn loop, system prompt, personas, MCP tools, skills
   context/                offline context builder, docs ingest, export, knowledge refresh
   moderation/             bad-word/abuse scan, strikes, muted-role enforcement
   auth/rbac.ts            admin/user roles + per-role tool gating
   platforms/              PlatformAdapter interface + Discord/WhatsApp adapters
   storage/                Postgres pool, schema, migrations, embeddings, repo
+  media/                  image generation (Grok Build CLI) + voice-note transcription
+  status/                 Anthropic status-page checker
+  github/                 GitHub issue filing (suggest_issue)
+  devTeam/                remote dev-team build-service client
+scripts/                  CI gate helpers (security-test floor, changelog coverage, labels)
+tests/                    Node test-runner suites (SECURITY: invariants, knowledge eval, …)
 deploy/                   Ubuntu provisioning script + systemd unit
 docs/                     ARCHITECTURE, SECURITY, DEPLOYMENT, VISION, PIPELINE, PERSONAS, …
 ```
@@ -98,8 +130,14 @@ basic questions. See **[docs/SECURITY.md](docs/SECURITY.md)** and
 A multi-loop development pipeline proposes, hardens, and builds the bot's own
 features, coordinated entirely through GitHub issues + labels: a **research**
 loop files proposals, an **adversarial** loop reviews them against
-[VISION.md](docs/VISION.md), and a **build** loop (GitHub Actions) implements
-approved ones on a branch and opens a PR — **a human always merges**. See
+[VISION.md](docs/VISION.md), a **build** loop (GitHub Actions) implements
+approved ones on a branch and opens a PR, and an automated **review** loop
+vets it. Bounded support loops keep PRs moving without a human in the loop
+(one free CI rerun, CI-failure autofix, merge-conflict resolution,
+review-response revisions, zombie-state cleanup), and a deterministic,
+tightly gated **auto-merge** loop lands fully-vetted bot PRs — anything
+touching governance, CI, or the loops' own guardrails still **requires a
+human merge**, and branch protection on `main` is the backstop. See
 **[docs/PIPELINE.md](docs/PIPELINE.md)**.
 
 ## Important caveats
@@ -121,4 +159,8 @@ approved ones on a branch and opens a PR — **a human always merges**. See
   directions (not commitments)
 - [Pipeline](docs/PIPELINE.md) — the self-improving research/review/build loops
 - [Personas](docs/PERSONAS.md) — the bot's voice ("Dave")
+- [Community context](docs/COMMUNITY-CONTEXT.md) — auto-generated, anonymised
+  export of what the community discusses (aggregate-only, opt-in)
 - [Standards](docs/STANDARDS.md) · [Red-team](docs/RED-TEAM.md)
+- [Slide deck](docs/SLIDE-DECK.md) — presentable 11-slide overview of the repo,
+  the pipeline, and how the design maps to agentic best practice

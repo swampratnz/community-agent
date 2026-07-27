@@ -1,7 +1,8 @@
 # Slide deck — `community-agent` repo overview
 
-A 10-slide walkthrough of the repo: what the bot does, how it's built, and the
-self-improving pipeline that develops it. Each slide has headline bullets plus
+An 11-slide walkthrough of the repo: what the bot does, how it's built, the
+self-improving pipeline that develops it, and how the design lines up with
+published agentic-engineering practice. Each slide has headline bullets plus
 a short talk track for the presenter. Sources: `README.md`,
 `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/PIPELINE.md`,
 `docs/VISION.md`, `CLAUDE.md`.
@@ -18,7 +19,8 @@ a short talk track for the presenter. Sources: `README.md`,
   pipeline** that proposes, reviews, and builds its own features.
 
 > **Talk track:** frame the deck around the two halves — slides 2–5 cover the
-> product, slides 6–9 cover the pipeline that builds it, slide 10 wraps up.
+> product, slides 6–9 cover the pipeline that builds it, slide 10 wraps up,
+> and slide 11 maps the design onto published agentic best practice.
 
 ---
 
@@ -205,4 +207,41 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   backstops.
 
 > **Talk track:** end on the takeaway — the bot is useful, but the
-> reproducible asset is the pipeline pattern.
+> reproducible asset is the pipeline pattern. Slide 11 backs this up by
+> mapping the design onto published agentic-engineering practice.
+
+---
+
+## Slide 11 — How the design maps to agentic best practice
+
+Benchmarked against the published pattern vocabulary — Andrew Ng's four
+agentic design patterns and Anthropic's five workflow patterns (e.g. the
+"Graph Engineering for Multi-Agentic Systems" synthesis of both):
+
+- **Multi-agent with artifact contracts** — pipeline roles (research /
+  adversarial / build / review / revise) each catch a different error class,
+  and coordinate only through typed GitHub issues, labels, and PRs ("the repo
+  is the bus") — artifacts and shared state, never conversation transcripts.
+- **Evaluator-Optimizer with stopping rules** — build → review → revise is
+  the classic generate/evaluate loop; every loop has an attempt cap (2/2/1/3)
+  and escalates `needs-human` — the prescribed "escalate rather than retry a
+  third time." Deterministic checks (CI, 991 security tests) always run
+  before subjective LLM review.
+- **Explicit, immutable rubric** — `VISION.md` is the shared scoring rubric;
+  quality is tuned by editing it, not the loop prompts.
+- **Control matched to risk** — the highest-stakes actions (auto-merge,
+  groundskeeper, ci-retry) are deterministic no-LLM chains with hard gates;
+  bounded agents handle only the lower-risk fix/resolve/revise work; cheapest
+  mechanism always tries first (free machine rerun before any agent).
+- **Traceability test passed** — "every important output traces to a task, a
+  plan, an artifact, a source, an evaluator decision, and a bounded execution
+  record" maps 1:1 onto issue → proposal → PR → citations → review verdict →
+  CI run + attempt counters.
+- **Deliberate divergence** — no typed knowledge graph: memory is pgvector
+  RAG + relational state, the playbook's own "graph earns itself" waypoint;
+  graduate only when a measured failure demands it.
+
+> **Talk track:** the repo independently converged on (or consciously
+> implements) the published patterns — including the parts most teams skip:
+> stopping rules, artifact contracts, deterministic gates around LLM
+> judgement, and adding complexity only after a specific observed failure.
