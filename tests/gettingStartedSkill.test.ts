@@ -16,7 +16,10 @@ process.env.AGENT_SKILLS_ENABLED = 'true';
 
 const { buildQueryOptions } = await import('../src/agent/core.js');
 
-const SKILL_PATH = join(dirname(fileURLToPath(import.meta.url)), '../src/agent/skills/getting-started/SKILL.md');
+const SKILL_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '../src/agent/skills/getting-started/SKILL.md',
+);
 const SKILL_BODY = readFileSync(SKILL_PATH, 'utf8');
 
 test('AC1 — getting-started front-matter has the expected name and a "where do I start"/sequencing description', () => {
@@ -47,14 +50,22 @@ test('AC3 — SKILL.md contains no hardcoded command syntax, version numbers, do
   assert.doesNotMatch(SKILL_BODY, /\bRPM\b|\bTPM\b/, 'must not contain a rate-limit abbreviation');
 });
 
-test('AC3 — SKILL.md defers every step\'s facts to knowledge_search rather than asserting them directly', () => {
-  assert.match(SKILL_BODY, /knowledge_search/, 'body must reference knowledge_search as the source of factual content');
+test("AC3 — SKILL.md defers every step's facts to knowledge_search rather than asserting them directly", () => {
+  assert.match(
+    SKILL_BODY,
+    /knowledge_search/,
+    'body must reference knowledge_search as the source of factual content',
+  );
 });
 
 test('AC4 — SKILL.md states the hand-off boundary to the more specific sibling skills', () => {
   assert.match(SKILL_BODY, /claude-code-setup/, 'must name claude-code-setup as a hand-off target');
   assert.match(SKILL_BODY, /prompt-review/, 'must name prompt-review as a hand-off target');
-  assert.match(SKILL_BODY, /agent-architecture-review/, 'must name agent-architecture-review as a hand-off target');
+  assert.match(
+    SKILL_BODY,
+    /agent-architecture-review/,
+    'must name agent-architecture-review as a hand-off target',
+  );
 });
 
 test("SECURITY: AC6 — adding getting-started to ENABLED_SKILLS grants no role a new tool ('Skill' stays out of allowedTools/disallowedTools, disallowedTools unaffected)", () => {

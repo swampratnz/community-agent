@@ -22,6 +22,27 @@ Skipped as internal: #707 #725 #731 #751 #767 #770
 -->
 
 
+## 2026-07-28
+
+### Added
+- **New `getting-started` Agent Skill: sequenced "where do I start with X"
+  learning-path guidance** (#776, part of the Agent Skills cohort behind
+  `AGENT_SKILLS_ENABLED`, off by default): fills the "member growth &
+  connection" gap named in VISION.md and `CAPABILITY-IDEAS.md` §D3 — a member
+  asking a sequencing question ("where do I start with the API", "how do I
+  begin building an agent", "what's the on-ramp for MCP") previously got
+  whatever loosely-related `knowledge_search` entries happened to retrieve,
+  with no sense of order. The skill asks one clarifying question to pin down
+  the member's actual starting point and goal, then lays out an ordered
+  sequence, with every step's factual content still deferred to
+  `knowledge_search` under the existing provenance rule — never hardcoded.
+  Explicitly hands off to the more specific sibling skills
+  (`claude-code-setup`, `prompt-review`, `agent-architecture-review`,
+  `project-showcase`) once an ask narrows into their turf, so it owns only
+  the sequencing layer. Added to the explicit `ENABLED_SKILLS` allowlist
+  alongside its five siblings (never `'all'`); no new tool, and no tier's
+  `allowedTools`/`disallowedTools` change.
+
 ## 2026-07-27
 
 ### Added
