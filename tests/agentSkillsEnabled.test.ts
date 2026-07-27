@@ -37,7 +37,7 @@ test('precondition: AGENT_SKILLS_ENABLED is on in this test process', () => {
   assert.equal(config.agentSkills.enabled, true);
 });
 
-test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads exactly the prompt-review skill, for every role (no tier gating)', () => {
+test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads exactly the code-reviewed skill allowlist, for every role (no tier gating)', () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.ok(opts.tools.includes('Skill'), `${role}: tools must include Skill when the flag is on`);
@@ -48,14 +48,18 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
       /[/\\]agent[/\\]skills$/,
       `${role}: plugin path must point at the bundled agent/skills directory`,
     );
-    assert.deepEqual(opts.skills, ['prompt-review'], `${role}: skills must be exactly ['prompt-review']`);
+    assert.deepEqual(
+      opts.skills,
+      ['prompt-review', 'agent-architecture-review'],
+      `${role}: skills must be exactly ['prompt-review', 'agent-architecture-review']`,
+    );
   }
 });
 
-test("SECURITY: AC6 — skills is always the literal array ['prompt-review'] — never 'all', never derived from any input", () => {
+test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS array — never 'all', never derived from any input", () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
-    assert.deepEqual(opts.skills, ['prompt-review']);
+    assert.deepEqual(opts.skills, ['prompt-review', 'agent-architecture-review']);
     assert.notEqual(opts.skills, 'all');
   }
 });
@@ -100,7 +104,7 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__find_helper',
 ] as const;
 
-test('SECURITY: enabling the flag does not alter allowedTools beyond the base tools array — no new MCP tool surface', async () => {
+test('SECURITY: AC7 (#755) — enabling the flag (with agent-architecture-review in ENABLED_SKILLS) does not alter allowedTools/disallowedTools beyond the base tools array — no new MCP tool surface', async () => {
   const { toolsForRole } = await import('../src/auth/rbac.js');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
@@ -112,6 +116,11 @@ test('SECURITY: enabling the flag does not alter allowedTools beyond the base to
       [...opts.allowedTools].sort(),
       [...expected].sort(),
       `${role}: allowedTools must be unaffected by AGENT_SKILLS_ENABLED — 'Skill' is not added there`,
+    );
+    assert.deepEqual(
+      [...opts.disallowedTools],
+      ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+      `${role}: disallowedTools must be unaffected by AGENT_SKILLS_ENABLED/ENABLED_SKILLS`,
     );
   }
 });
@@ -169,14 +178,18 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
     );
     assert.doesNotMatch(f, /\.mcp\.json$/, `${f}: must not be an .mcp.json file`);
   }
-  // Sanity: the walk actually found the two files this proposal ships, so an
+  // Sanity: the walk actually found the files this and #755 ship, so an
   // empty/misconfigured directory can't pass this test vacuously.
   assert.ok(
     files.some((f) => f.endsWith('plugin.json')),
     'expected the plugin manifest to be present',
   );
   assert.ok(
-    files.some((f) => f.endsWith('SKILL.md')),
+    files.some((f) => f.replace(/\\/g, '/').endsWith('prompt-review/SKILL.md')),
     'expected prompt-review/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.replace(/\\/g, '/').endsWith('agent-architecture-review/SKILL.md')),
+    'expected agent-architecture-review/SKILL.md to be present',
   );
 });

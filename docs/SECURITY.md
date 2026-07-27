@@ -2243,7 +2243,10 @@ platform regardless of this flag. See docs/ARCHITECTURE.md for the mechanism.
 
 Wires the SDK's Agent Skills mechanism to host the #635 prompt-review
 checklist (`docs/ARCHITECTURE.md`'s "Prompt-review guidance" section has the
-full off/on behaviour). Off by default; when on:
+full off/on behaviour) and, as of #755, a second on-demand skill,
+`agent-architecture-review`, covering a distinct member ask (critiquing a
+multi-step agent/pipeline design rather than a single pasted prompt) under
+the same flag and allowlist mechanism. Off by default; when on:
 
 - **Grants the built-in `Skill` tool to every tier, uniformly** —
   `buildQueryOptions` (`src/agent/core.ts`) adds it to the base `tools` array
@@ -2264,28 +2267,30 @@ full off/on behaviour). Off by default; when on:
   under the `skills` option, "you do not need to add `'Skill'` to
   `allowedTools` yourself when using this option," and separately mark
   passing `'Skill'` into `allowedTools` directly as deprecated. `skills:
-  ['prompt-review']` (below) is what pre-approves it; a
-  `SECURITY:`-prefixed test in `tests/agentSkillsEnabled.test.ts` pins the
-  installed `.d.ts` still documenting this contract, so an SDK upgrade that
-  silently changes it fails CI instead of shipping a silent regression where
-  the tool is granted but never actually fires.
+  ['prompt-review', 'agent-architecture-review']` (below) is what pre-approves
+  it; a `SECURITY:`-prefixed test in `tests/agentSkillsEnabled.test.ts` pins
+  the installed `.d.ts` still documenting this contract, so an SDK upgrade
+  that silently changes it fails CI instead of shipping a silent regression
+  where the tool is granted but never actually fires.
 - **The bundled skills plugin is repo-owned and narrowly scoped.**
   `plugins: [{ type: 'local', path: SKILLS_DIR }]` points at
   `src/agent/skills/` — a directory this repo ships and code-reviews, never a
   path derived from a request or member-supplied value. It contains only a
-  `.claude-plugin/plugin.json` manifest and one `prompt-review/SKILL.md` —
-  no `hooks/`, `agents/`, `commands/`, or `.mcp.json` — so nothing beyond
-  that one static markdown body is ever loadable from it, pinned by a
-  dedicated `SECURITY:` test that walks the directory.
+  `.claude-plugin/plugin.json` manifest and two static skill bodies
+  (`prompt-review/SKILL.md`, `agent-architecture-review/SKILL.md`) — no
+  `hooks/`, `agents/`, `commands/`, or `.mcp.json` — so nothing beyond those
+  static markdown bodies is ever loadable from it, pinned by a dedicated
+  `SECURITY:` test that walks the directory.
 - **`skills` is always the explicit, hand-written literal
-  `['prompt-review']`, never `'all'`.** A future skill file added to the
-  directory needs a deliberate second edit to activate, matching this repo's
-  existing convention of hand-written, non-reflective tool allowlists
-  elsewhere (`toolsForRole`, `FEATURE_FLAGGED_TOOL_GROUPS`). The SDK's own
-  docs note that an unlisted skill is hidden from the model's listing and
-  rejected by the `Skill` tool, but its file still sits on disk and remains
-  reachable via `Read`/`Bash` if those were ever granted — moot here, since
-  no RBAC tier grants either built-in regardless of this flag.
+  `['prompt-review', 'agent-architecture-review']`, never `'all'`.** A future
+  skill file added to the directory needs a deliberate second edit to
+  activate, matching this repo's existing convention of hand-written,
+  non-reflective tool allowlists elsewhere (`toolsForRole`,
+  `FEATURE_FLAGGED_TOOL_GROUPS`). The SDK's own docs note that an unlisted
+  skill is hidden from the model's listing and rejected by the `Skill` tool,
+  but its file still sits on disk and remains reachable via `Read`/`Bash` if
+  those were ever granted — moot here, since no RBAC tier grants either
+  built-in regardless of this flag.
 - **No new data flow.** The skill body is static, code-reviewed markdown
   shipped with the repo, not fetched or generated at runtime; enabling the
   flag adds no new egress, no new table, and no new write path.
