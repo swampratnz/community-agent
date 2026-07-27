@@ -12,6 +12,14 @@ turned into a `proposal` issue against the [VISION.md](VISION.md) rubric — or
 discarded — without further archaeology. Effort is "roughly one PR with tests"
 unless stated.
 
+**This file mixes shipped and unbuilt ideas.** Ideas get written up here
+before they're built, and the file is not pruned when one ships — so an entry
+below may describe something that already exists on `main`. The **`Status:`**
+line directly under each heading is authoritative; the surrounding prose is
+the original write-up and is not kept in sync with what actually shipped.
+Check `Status:` before treating an idea as an open opportunity — this
+includes the research worker, which reads this file to generate proposals.
+
 Grouped by axis, roughly highest-value first within each group.
 
 ---
@@ -24,6 +32,13 @@ carries `text: string` and nothing else; the Discord adapter builds it from
 floor. An image-only message arrives as empty text.
 
 ### A1. Screenshot / image input *(high impact, medium effort)*
+
+**Status:** Not started. No `IMAGE_INPUT_ENABLED` flag exists in `src/config.ts`,
+and no adapter passes an image content block to `query()` — the Discord
+adapter reads only a single voice attachment per message
+(`message.attachments` in `src/platforms/discord/adapter.ts`), never an image
+one. `src/media/grokImage.ts` is unrelated: it generates images as tool
+*output*, not image input/perception.
 
 **Why:** in a builders' community the most common support artifact is a
 screenshot — a stack trace, a console error, a Workbench screenshot, a billing
@@ -52,6 +67,13 @@ reported image content.
 
 ### A2. Discord voice-message transcription *(medium impact, low effort)*
 
+**Status:** Shipped (#735). `DISCORD_VOICE_ENABLED` (`src/config.ts`, off by
+default), wired into `src/platforms/discord/adapter.ts` via
+`transcribeVoiceNote`, matches the smallest-version spec: Discord-prefixed
+caps (`DISCORD_VOICE_MAX_SECONDS`, `DISCORD_VOICE_MIN_ROLE`,
+`DISCORD_VOICE_RATE_LIMIT_PER_HOUR`) shaped like the WhatsApp knobs, and it
+reuses `voiceLanguageCaveatNotice.ts` unchanged.
+
 **Why:** the machinery already exists and is used on exactly one platform.
 `src/media/voiceTranscribe.ts` + the `WHATSAPP_VOICE_*` knobs transcribe
 WhatsApp voice notes locally via transformers.js. A Discord voice message is
@@ -78,6 +100,14 @@ it also means several SDK features are simply switched off. Three of them are
 worth switching on deliberately.
 
 ### B1. Agent Skills — procedural playbooks, separate from the KB *(high impact, medium effort)*
+
+**Status:** Shipped (#741/#742). `AGENT_SKILLS_ENABLED` (off by default),
+`src/agent/skills/` holds repo-bundled skill directories
+(`prompt-review`, `agent-architecture-review`, `claude-code-setup`,
+`project-showcase`, `model-and-plan-selection`), and `src/agent/core.ts`
+wires `plugins`/`skills` exactly as designed (repo path only, no
+`settingSources` change). `prompt-review` is the `#635` checklist migration
+this idea specifically proposed.
 
 **Why:** the knowledge base answers *"what is true"* (retrieved facts with
 citations and freshness). Nothing in the system answers *"how do I carry out
@@ -116,6 +146,14 @@ skill-invocation counts vs. `rate_answer` helpful-rate on those threads.
 
 ### B2. Structured output for the classifiers *(medium impact, low effort, security-relevant)*
 
+**Status:** Shipped (#720), for the abuse classifier specifically, as
+proposed. `classifyAbuseWithLlm` in `src/moderation/moderator.ts` now sets
+`outputFormat: { type: 'json_schema', schema: ABUSE_CLASSIFIER_OUTPUT_SCHEMA }`,
+covered by `tests/abuseClassifierStructuredOutput.test.ts`; the
+`Detection | null` boundary shape is unchanged. The "grows into" targets
+(context builder cluster summariser, knowledge refresh researcher) are
+untouched — still free-text parsing.
+
 **Why:** `classifyAbuseWithLlm` (`src/moderation/moderator.ts:402`) asks for
 `"CLEAN"` or `"ABUSE: <reason>"` as free text and then regex-parses it
 (`/^\s*ABUSE:\s*(.+)$/im`). Anything the model emits that doesn't match — a
@@ -135,6 +173,11 @@ refresh researcher, both of which parse prose today.
 
 ### B3. `fallbackModel` for graceful degradation *(low effort)*
 
+**Status:** Shipped (#738). `AGENT_MODEL_FALLBACK` (`src/config.ts`) is wired
+into `buildQueryOptions`'s `fallbackModel` option in `src/agent/core.ts`,
+applied uniformly across roles as proposed; unset is byte-identical to
+before. The config comment cites this section by name.
+
 **Why:** the repo already has an upstream-failure path (`upstreamFailure.ts`,
 `pauseNotice.ts`, `UPSTREAM_LIMIT_ALERT_ENABLED`) whose best outcome is a
 polite failure. `fallbackModel` turns a class of those into a degraded answer
@@ -146,6 +189,12 @@ instead of no answer. Slots naturally beside the existing per-tier `model` /
 ## C. Cost and latency — a deterministic surface beside the model
 
 ### C1. Discord slash commands *(high impact, medium effort)*
+
+**Status:** Shipped (#744). `DISCORD_SLASH_COMMANDS_ENABLED` (off by default),
+`src/platforms/discord/slashCommands.ts` implements the exact four
+read-only commands proposed — `/kb`, `/whois`, `/projects`, `/guidelines` —
+resolving role the same way chat messages do and calling the same
+repository/render functions the chat-path tools use.
 
 **Why:** every interaction today is a message that costs a model turn. The repo
 already recognises this — `ACK_SHORTCUT_ENABLED`, `KNOWLEDGE_SHORTCUT_ENABLED`,
@@ -174,6 +223,12 @@ read-only shortcuts rather than privileged actions.
 
 ### C2. A "what needs me today" admin roll-up *(medium impact, low effort)*
 
+**Status:** Shipped (#745). `review_queue` (`src/agent/tools.ts`, admin-only
+via `src/auth/rbac.ts`) composes all five queues into one read-only,
+argument-less call, with oldest-item age for access requests, suggestions,
+and reports; knowledge candidates and appeals show count only, a named gap
+the tool's own description states rather than hides.
+
 **Why:** there are now five separate admin review queues —
 `list_knowledge_candidates`, `list_suggestions`, `list_reports`,
 `list_appeals`, `list_access_requests` — each pulled one at a time in chat, and
@@ -198,6 +253,11 @@ next rungs.
 
 ### D1. Opt-in "can someone help with X" handoff *(high impact, medium effort)*
 
+**Status:** Shipped (#729). `set_helper_availability` and `find_helper`
+(`src/agent/tools.ts`, `src/storage/repository.ts`, RBAC entries in
+`src/auth/rbac.ts`) implement the opt-in flag, per-helper rate cap, and
+matching restricted to self-declared interests, as proposed.
+
 **Why:** `who_is_into` returns a *list* — the member still has to cold-DM a
 stranger, which most people won't. The gap between "here are five people
 interested in MCP" and an actual conversation is where the flywheel currently
@@ -216,6 +276,13 @@ polish, they are the feature.
 
 ### D2. Close the answered-question → knowledge-base loop *(medium impact, low effort)*
 
+**Status:** Shipped (#726). `KNOWLEDGE_ANSWER_CANDIDATE_ENABLED` (off by
+default, `src/config.ts`) drafts a candidate from the `rate_answer` handler
+in `src/agent/tools.ts` when a rating is `helpful: true` on an ungrounded
+answer, reusing `suggest_knowledge`'s (#633) dedup+write path exactly as
+proposed. Excludes 1:1 DMs from the guild-wide candidate queue (a #730
+review addition beyond the original write-up).
+
 **Why:** the flywheel is built at both ends and open in the middle.
 `knowledge_gaps` captures what the KB *couldn't* answer, and
 `knowledge_candidates` accepts drafts from the offline builder and (since #633)
@@ -231,6 +298,10 @@ path. Rate-capped, off by default.
 
 ### D3. Learning paths / "start here" routes *(medium impact, low effort as content)*
 
+**Status:** Not started. No skill or KB-entry-kind implements sequenced
+"where do I start with X" routes; no reference to a learning-path concept
+exists anywhere in `src/`.
+
 **Why:** a named VISION theme ("where do I start with X") with nothing built
 against it. The KB answers narrow questions well and sequenced ones not at all.
 
@@ -244,6 +315,11 @@ to a retrieval system that is currently uniform.
 ## E. Freshness — the community's actual daily question
 
 ### E1. Anthropic release / deprecation watcher *(high impact, medium effort)*
+
+**Status:** Shipped (#739). `RELEASE_WATCH_ENABLED` (`src/config.ts`, off by
+default) diffs a fixed official source and lands new items as KB entries
+with `auto` provenance, rolling up into `MEMBER_DIGEST_ENABLED` rather than
+a new posting path, as proposed.
 
 **Why:** `docsIngest.ts` ingests reference docs from `llms.txt` weekly, and
 `check_status` reports live incidents. Neither covers **announcements**: new
@@ -270,6 +346,9 @@ which also sidesteps the unresolved auto-post policy question that closed #636.
 
 ### F1. Extend the golden eval from retrieval to answers *(medium impact, medium effort)*
 
+**Status:** Not started. No `eval:answers` script exists in `package.json`,
+and no maintainer-run, off-CI answer-grading harness exists in `scripts/`.
+
 **Why:** `tests/knowledgeEval.test.ts` measures precision@K of *retrieval*
 against a curated query set, which is genuinely good and stops well short of
 the thing members actually experience — the answer. There is currently no way
@@ -289,20 +368,20 @@ prompt change ships, is the right shape.
 
 ## Quick triage
 
-| Idea | Impact | Effort | Notes |
-|---|---|---|---|
-| A1 Image input | High | Medium | Biggest capability gap; injection + cost design required |
-| B1 Agent Skills | High | Medium | Also reduces per-turn cached prefix; repo-bundled only |
-| C1 Slash commands | High | Medium | Cost + discoverability; Discord-only, keep read-only |
-| D1 Helper handoff | High | Medium | The one idea that pings people — opt-in is the feature |
-| E1 Release watcher | High | Medium | Public data, no privacy cost; ride the member digest |
-| A2 Discord voice | Medium | Low | Pure symmetry fix, machinery already exists |
-| B2 Structured classifier output | Medium | Low | Fails-open regex on the safety path today |
-| C2 Admin queue roll-up | Medium | Low | Pure aggregation over existing scoped reads |
-| D2 Answered→candidate loop | Medium | Low | Closes the open middle of the flywheel |
-| D3 Learning paths | Medium | Low | Probably a skill, not a new KB entry kind |
-| F1 Answer eval | Medium | Medium | Must stay off CI, per RED-TEAM.md |
-| B3 `fallbackModel` | Low | Low | Degrade instead of fail |
+| Idea | Impact | Effort | Status | Notes |
+|---|---|---|---|---|
+| A1 Image input | High | Medium | Not started | Biggest capability gap; injection + cost design required |
+| B1 Agent Skills | High | Medium | Shipped (#741/#742) | Also reduces per-turn cached prefix; repo-bundled only |
+| C1 Slash commands | High | Medium | Shipped (#744) | Cost + discoverability; Discord-only, keep read-only |
+| D1 Helper handoff | High | Medium | Shipped (#729) | The one idea that pings people — opt-in is the feature |
+| E1 Release watcher | High | Medium | Shipped (#739) | Public data, no privacy cost; ride the member digest |
+| A2 Discord voice | Medium | Low | Shipped (#735) | Pure symmetry fix, machinery already exists |
+| B2 Structured classifier output | Medium | Low | Shipped (#720) | Fails-open regex on the safety path today |
+| C2 Admin queue roll-up | Medium | Low | Shipped (#745) | Pure aggregation over existing scoped reads |
+| D2 Answered→candidate loop | Medium | Low | Shipped (#726) | Closes the open middle of the flywheel |
+| D3 Learning paths | Medium | Low | Not started | Probably a skill, not a new KB entry kind |
+| F1 Answer eval | Medium | Medium | Not started | Must stay off CI, per RED-TEAM.md |
+| B3 `fallbackModel` | Low | Low | Shipped (#738) | Degrade instead of fail |
 
 ## Deliberately not proposed
 
