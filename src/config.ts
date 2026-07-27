@@ -148,6 +148,14 @@ const EnvSchema = z.object({
   // own: a role's permission bitfield is re-checked live at assign time
   // (src/platforms/discord/adapter.ts), since it can change after curation.
   DISCORD_ASSIGNABLE_ROLES: z.string().optional(),
+  // Guild-scoped Discord slash commands (issue #744): /kb, /projects, /whois,
+  // /guidelines — zero-model-call, ephemeral reads over existing tool-handler
+  // repository functions, registered on ClientReady. Off by default, same
+  // convention as the other shortcut flags above; see docs/ARCHITECTURE.md.
+  DISCORD_SLASH_COMMANDS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Auto-answer mode (issue #477): operator-curated allowlist of Discord
   // channel ids where a top-level human post that does NOT address the bot
   // still gets an answer, contained in a thread on that post — the router's
@@ -1066,6 +1074,7 @@ export const config = {
     autoEnrollMembers: env.DISCORD_AUTO_ENROLL_MEMBERS ?? false,
     archiveAllMessages: env.DISCORD_ARCHIVE_ALL_MESSAGES ?? false,
     assignableRoleIds: csv(env.DISCORD_ASSIGNABLE_ROLES),
+    slashCommandsEnabled: env.DISCORD_SLASH_COMMANDS_ENABLED ?? false,
     autoAnswerChannelIds: csv(env.AUTO_ANSWER_CHANNEL_IDS),
     autoAnswerRateLimitPerHour: env.AUTO_ANSWER_RATE_LIMIT_PER_HOUR,
     voice: {

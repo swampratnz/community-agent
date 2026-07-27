@@ -25,6 +25,18 @@ Skipped as internal: #707 #725 #731
 ## 2026-07-27
 
 ### Added
+- **Read-only Discord slash commands: `/kb`, `/whois`, `/projects`, `/guidelines`** (#744,
+  `DISCORD_SLASH_COMMANDS_ENABLED`, off by default): guild-scoped, zero-model-call,
+  ephemeral answers to four common lookups, the discoverable generalisation of the
+  existing knowledge shortcut — a member no longer has to guess a phrasing close
+  enough to trigger it, or address the bot at all. Each command resolves the
+  caller's role the same way every chat message does and reuses the exact
+  repository function and render helper its chat-path tool calls, so the answer
+  is never a second, drifting implementation of the same read; every reply is
+  still passed through the adapter's outbound filter (secret redaction + code
+  policy) and `/kb` never direct-serves unreviewed auto-researched knowledge.
+  `/whois` and `/projects` replies are ephemeral where their chat equivalents
+  post in-channel today — a privacy improvement, not just parity.
 - **Admins can now see all five review queues in one glance** (#745): a new
   `review_queue` tool composes the same queue-count and oldest-item-age
   lookups the weekly `admin_digest` already uses — access requests,
