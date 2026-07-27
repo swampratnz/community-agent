@@ -2786,6 +2786,23 @@ number could reach an unrelated person).
       prompt-injected" guarantee, leave `AUTOMERGE_MODE` unset (or require a human
       approving *review* in branch protection, which the automated verdict is
       not) — then a human merges everything, as before.
+- [ ] **The pipeline's outcome ledger trusts one comment author, deliberately**
+      (`pipeline-outcomes.yml` + `scripts/pipeline-outcomes.mjs`). The weekly
+      report reconstructs each loop's record from the marker comments the loops
+      post, and those markers are plain text in a public thread, so *who posted
+      them* is the whole trust boundary — it decides both the numbers and
+      whether the tracking issue auto-closes on an apparently "clean" window.
+      Markers count only from `github-actions`/`github-actions[bot]` (both `gh`
+      renderings — GraphQL and REST differ, and matching one makes the gate
+      silently match nothing). `claude[bot]` is excluded **on purpose**: every
+      real marker is written by a deterministic `GITHUB_TOKEN` step, while the
+      revise agent uniquely holds `Bash(gh pr comment:*)`, runs under that
+      identity, and reads prompt-injectable PR content — so admitting it would
+      let an injected agent fabricate rows, which is worse than no gate because
+      the gate implies the rows are trustworthy. Pinned by `SECURITY:` tests
+      (issue #750). The workflow itself is read-only (`contents: read`,
+      `issues: write`, `pull-requests: read`), never checks out a PR head, and
+      runs no PR-controlled code.
 - [ ] **If enabling `redeploy_bot`**: the exact-match sudoers line in
       docs/DEPLOYMENT.md is added (opt-in — omit it and the tool simply fails
       clean with no new host surface granted).
