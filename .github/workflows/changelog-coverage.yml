@@ -6,8 +6,10 @@ name: Changelog coverage
 # list recently-merged PRs that aren't reflected in the changelog and keep a
 # single tracking issue in sync — opened/updated when there's a gap, closed when
 # there isn't. Heuristic (see scripts/check-changelog-coverage.mjs): it errs
-# toward flagging, so a genuinely-internal PR is ticked/ignored, not silently
-# dropped. Read-only except for that one issue; never touches code.
+# toward flagging, so a genuinely-internal PR is recorded in the skip ledger
+# (an HTML comment in CHANGELOG.md's preamble — the autofill agent appends to
+# it, and any `#NNN` in the file counts as documented), not silently dropped.
+# Read-only except for that one issue; never touches code.
 
 on:
   schedule:
@@ -60,7 +62,7 @@ jobs:
           set -euo pipefail
           {
             printf '%s merged PR(s) from the last %s days are not reflected in `CHANGELOG.md` (the file the `whats_new` tool reads).\n\n' "$(wc -l < gaps.md)" "$WINDOW_DAYS"
-            printf 'Add a user-legible entry for each — or tick the box if it is genuinely internal (CI / deps / tests / pipeline). This is a heuristic (see `scripts/check-changelog-coverage.mjs`), so an occasional prose-documented PR may appear until it ages out of the window.\n\n'
+            printf 'Add a user-legible entry for each — or, if one is genuinely internal (CI / deps / tests / pipeline), add its number to the skip-ledger HTML comment in `CHANGELOG.md`'"'"'s preamble (the autofill workflow does this automatically when it judges a PR internal). Ticking a box here does nothing durable: this body is regenerated on every refresh, and only `CHANGELOG.md` content feeds the check. This is a heuristic (see `scripts/check-changelog-coverage.mjs`), so an occasional prose-documented PR may appear until it ages out of the window.\n\n'
             printf '💡 The companion **changelog-autofill** workflow drafts these entries automatically — look for an open `%s` PR to review-and-merge instead of writing them by hand.\n\n' "$AUTOFILL_BRANCH"
             cat gaps.md
             printf '\n_Refreshed %s by the changelog-coverage workflow; auto-closes when the list is empty._\n' "$(date -u +%Y-%m-%dT%H:%MZ)"

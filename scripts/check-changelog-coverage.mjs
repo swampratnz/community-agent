@@ -17,7 +17,11 @@
 //     --json number,title,mergedAt,body | node scripts/check-changelog-coverage.mjs [--window-days N]
 //
 // Coverage is judged by three signals, ANY of which counts as "documented":
-//   1. the PR's own number appears in CHANGELOG.md (`#123`), OR
+//   1. the PR's own number appears in CHANGELOG.md (`#123`) — including in the
+//      skip-ledger HTML comment in the preamble, which is exactly how a PR
+//      judged internal-but-not-matching-INTERNAL-below is recorded so the
+//      tracking issue can converge (the autofill agent appends to it; see
+//      changelog-autofill.yml), OR
 //   2. a `Closes #NNN` issue number from the PR body appears there, OR
 //   3. a distinctive identifier from the PR title (a snake_case tool name or an
 //      UPPER_SNAKE env var) appears there — the changelog often describes a
@@ -80,6 +84,10 @@ const gaps = prs
   .filter((pr) => !isDocumented(pr))
   .sort((a, b) => b.number - a.number);
 
+// Plain bullets, not `- [ ]` checkboxes: the tracking issue's body is
+// regenerated on every refresh and nothing reads ticks, so a checkbox is a
+// misleading affordance — the durable "internal, skip it" record is the
+// CHANGELOG.md skip ledger.
 for (const pr of gaps) {
-  console.log(`- [ ] #${pr.number} (${pr.mergedAt.slice(0, 10)}) — ${pr.title}`);
+  console.log(`- #${pr.number} (${pr.mergedAt.slice(0, 10)}) — ${pr.title}`);
 }

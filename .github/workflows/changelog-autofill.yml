@@ -215,16 +215,23 @@ jobs:
             voice EXACTLY before writing.
 
             The daily coverage check flagged the merged PRs missing an entry
-            (format `- [ ] #NNN (YYYY-MM-DD) — title`) into the file `gaps.md` at
+            (format `- #NNN (YYYY-MM-DD) — title`) into the file `gaps.md` at
             the repo root — run `cat gaps.md` to read the list.
 
             For EACH flagged PR:
             1. Decide if it is genuinely user- or operator-facing. The coverage
                check errs toward flagging, so some entries may be INTERNAL (CI,
                dependency bumps, tests, pipeline/tooling, pure refactors with no
-               observable behaviour change). SKIP those — do not invent an entry
-               for a change no user would notice. If you skip all of them, make
-               NO commit and stop (say so in your final line).
+               observable behaviour change). Do not invent an entry for a change
+               no user would notice — instead RECORD the skip: append the PR's
+               number to the "Skipped as internal" line of the skip-ledger HTML
+               comment in CHANGELOG.md's preamble (above the first `##` section;
+               create the comment in that spot if it's ever absent, copying its
+               existing explanatory text). The ledger is what lets the coverage
+               check converge — an unrecorded skip gets re-flagged, and re-judged
+               by this workflow, every single day. The preamble placement
+               matters: `whats_new` skips everything before the first `##`, so
+               members never see it.
             2. For a real one, read it: `gh pr view <N>` and `gh pr diff <N>` so
                the entry is accurate. Never guess from the title alone.
             3. Add ONE bullet under the correct dated section `## YYYY-MM-DD`
@@ -266,9 +273,9 @@ jobs:
             run. There is no wakeup, resume, or background continuation — when
             your turn ends, the job ends. Run every command synchronously to
             completion in THIS turn and act on its result; never end your turn to
-            "wait" for a command. Either push + open the PR in THIS turn, or (if
-            nothing is genuinely user-facing) make no commit and stop with one
-            line saying so.
+            "wait" for a command. Always push + open the PR in THIS turn: even
+            when every flagged PR is internal, the ledger appends are themselves
+            a CHANGELOG.md edit that must land for the tracker to converge.
           # Least-privilege tools:
           #   * Edit/Write/Read/Grep/Glob for the changelog (Write can't be scoped
           #     to one path — the ONLY-CHANGELOG.md rule is prompt-stated and then
@@ -321,7 +328,7 @@ jobs:
           num="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$AUTOFILL_BRANCH" \
             --json number --jq '.[0].number // empty')"
           if [ -z "$num" ]; then
-            echo "No autofill PR was opened — the agent judged nothing user-facing (or stopped before pushing). Nothing to do."
+            echo "No autofill PR was opened — the agent stopped before pushing. (Since the skip ledger landed, even an all-internal gap list should produce a ledger-append PR — check the agent log above.)"
             exit 0
           fi
           echo "Autofill PR #$num opened. Checking it changed only CHANGELOG.md…"
