@@ -35,23 +35,6 @@ permissions:
 
 jobs:
   review:
-    # Skip DRAFT pull requests. This is the receiving half of the build
-    # worker's draft handshake (docs/PIPELINE.md, "Context sharing between cold
-    # sessions"): the build agent opens its PR as a draft, the build workflow
-    # attaches the handoff note, and only then marks it ready — which fires the
-    # `ready_for_review` event below with the note already in place.
-    #
-    # Without this the review simply outruns the note. PR #769: created
-    # 14:10:51, review started 14:10:55, handoff posted 14:11:16 — the reviewer
-    # ran 21 seconds early and reviewed from the diff alone.
-    #
-    # Two consequences, both intended. A HUMAN's draft PR is now reviewed when
-    # they mark it ready rather than while they are still writing it. And a
-    # RECOVERY PR (opened as a draft by the verify step in pipeline-build.yml
-    # when an agent stranded its work) is reviewed when a human opens it for
-    # review — which is what its own body already tells the reader will happen,
-    # and it can never auto-merge regardless.
-    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -91,18 +74,61 @@ jobs:
       # continue-on-error + a bare `|| true`: a missing, malformed or
       # unreadable note must leave the review completely unaffected. This is an
       # orientation nicety, never a precondition.
+      #
+      # WHY THIS POLLS, and why it is not a draft handshake. The note cannot
+      # exist when this job starts: the build workflow can only post it once the
+      # agent has created the PR, and creating the PR is what triggers this
+      # workflow. Measured on PR #769 — PR created 14:10:51, review started
+      # 14:10:55, note posted 14:11:16 — so the reviewer runs ~20s early.
+      #
+      # The first attempt at fixing this had the build agent open a DRAFT, post
+      # the note, then `gh pr ready` to release it, with this job skipping
+      # drafts. That is inert: `gh pr ready` runs with the job's GITHUB_TOKEN,
+      # and GitHub never starts workflows from GITHUB_TOKEN-created events — the
+      # same rule that forces the revise and conflict loops to use
+      # `workflow_dispatch`. The `opened` run skipped on the draft, no
+      # `ready_for_review` ever fired, and build PRs got NO review at all
+      # (#778). Polling here needs no new trigger, no new dispatch surface on
+      # this workflow, and no change to the build worker's PR contract.
+      #
+      # The wait is bounded and only paid where a note is actually expected: a
+      # BOT-authored PR that has no note yet. A human PR resolves immediately
+      # and waits zero seconds.
       - name: Resolve build handoff note (deterministic)
         id: handoff
         if: env.HAS_TOKEN == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          # 6 x 10s. The observed gap is ~20s; this tolerates a 3x slower
+          # build-workflow tail without making a note-less PR wait long.
+          HANDOFF_WAIT_TRIES: '6'
+          HANDOFF_WAIT_SECONDS: '10'
         run: |
           set -uo pipefail
           # `gh pr view --json comments` (not the issues-comments API) so this
           # needs only the pull-requests scope the job already holds.
-          note="$(gh pr view "$PR" --json comments --jq '.comments' 2>/dev/null \
-            | node scripts/handoff-note.mjs extract 2>/dev/null || true)"
+          read_note() {
+            gh pr view "$PR" --json comments --jq '.comments' 2>/dev/null \
+              | node scripts/handoff-note.mjs extract 2>/dev/null || true
+          }
+          # Only a bot PR can have a handoff note — the build worker is the only
+          # producer. Waiting on a human's PR would add latency for something
+          # that is never coming.
+          is_bot="$(gh pr view "$PR" --json author --jq '.author.is_bot' 2>/dev/null || echo false)"
+
+          note="$(read_note)"
+          if [ -z "${note}" ] && [ "${is_bot}" = "true" ]; then
+            i=1
+            while [ "${i}" -le "${HANDOFF_WAIT_TRIES}" ]; do
+              echo "No handoff note yet on bot PR #${PR}; the build workflow posts it just after opening the PR — waiting ${HANDOFF_WAIT_SECONDS}s (${i}/${HANDOFF_WAIT_TRIES})."
+              sleep "${HANDOFF_WAIT_SECONDS}"
+              note="$(read_note)"
+              [ -n "${note}" ] && break
+              i=$((i + 1))
+            done
+          fi
+
           if [ -z "${note}" ]; then
             echo "No build handoff note on PR #${PR} — reviewing from the diff alone."
           else
