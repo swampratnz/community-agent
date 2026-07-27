@@ -294,8 +294,9 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  * only a `.claude-plugin/plugin.json` manifest and static per-skill
  * `skills/<name>/SKILL.md` files (currently `prompt-review`,
  * `model-and-plan-selection` per issue #758, `agent-architecture-review` per
- * issue #755, `project-showcase` per issue #759, and `claude-code-setup` per
- * issue #757) — no hooks/agents/commands/.mcp.json — so nothing beyond those
+ * issue #755, `project-showcase` per issue #759, `claude-code-setup` per
+ * issue #757, and `getting-started` per issue #776) — no
+ * hooks/agents/commands/.mcp.json — so nothing beyond those
  * static markdown skill bodies is ever loadable from
  * it (pinned by a dedicated test).
  */
@@ -314,6 +315,7 @@ const ENABLED_SKILLS = [
   'agent-architecture-review',
   'project-showcase',
   'claude-code-setup',
+  'getting-started',
 ] as const;
 
 /**

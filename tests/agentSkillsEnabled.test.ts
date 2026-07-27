@@ -56,9 +56,10 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
         'agent-architecture-review',
         'project-showcase',
         'claude-code-setup',
+        'getting-started',
       ],
       `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
-        `'agent-architecture-review', 'project-showcase', 'claude-code-setup']`,
+        `'agent-architecture-review', 'project-showcase', 'claude-code-setup', 'getting-started']`,
     );
   }
 });
@@ -72,6 +73,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
       'agent-architecture-review',
       'project-showcase',
       'claude-code-setup',
+      'getting-started',
     ]);
     assert.notEqual(opts.skills, 'all');
   }
@@ -242,5 +244,9 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('claude-code-setup', 'SKILL.md'))),
     'expected claude-code-setup/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('getting-started', 'SKILL.md'))),
+    'expected getting-started/SKILL.md to be present',
   );
 });

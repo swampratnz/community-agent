@@ -66,6 +66,7 @@
   "findHelperTools.test.ts": 5,
   "gatedNotice.router.test.ts": 6,
   "gatedNotice.test.ts": 7,
+  "gettingStartedSkill.test.ts": 1,
   "grokImage.test.ts": 3,
   "guestKnowledgeShortcut.test.ts": 3,
   "guestKnowledgeShortcutRouter.test.ts": 3,
