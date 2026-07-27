@@ -37,7 +37,7 @@ test('precondition: AGENT_SKILLS_ENABLED is on in this test process', () => {
   assert.equal(config.agentSkills.enabled, true);
 });
 
-test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads exactly the allowlisted skills, for every role (no tier gating)', () => {
+test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads exactly the code-reviewed skill allowlist, for every role (no tier gating)', () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.ok(opts.tools.includes('Skill'), `${role}: tools must include Skill when the flag is on`);
@@ -50,18 +50,26 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
     );
     assert.deepEqual(
       opts.skills,
-      ['prompt-review', 'model-and-plan-selection', 'project-showcase', 'claude-code-setup'],
-      `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', 'project-showcase', 'claude-code-setup']`,
+      [
+        'prompt-review',
+        'model-and-plan-selection',
+        'agent-architecture-review',
+        'project-showcase',
+        'claude-code-setup',
+      ],
+      `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
+        `'agent-architecture-review', 'project-showcase', 'claude-code-setup']`,
     );
   }
 });
 
-test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'model-and-plan-selection', 'project-showcase', 'claude-code-setup'] — never 'all', never derived from any input", () => {
+test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS array — never 'all', never derived from any input", () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.deepEqual(opts.skills, [
       'prompt-review',
       'model-and-plan-selection',
+      'agent-architecture-review',
       'project-showcase',
       'claude-code-setup',
     ]);
@@ -135,7 +143,7 @@ const FEATURE_FLAGGED_TOOLS = [
   'mcp__community__find_helper',
 ] as const;
 
-test('SECURITY: enabling the flag does not alter allowedTools beyond the base tools array — no new MCP tool surface', async () => {
+test('SECURITY: AC7 (#755) — enabling the flag (with agent-architecture-review in ENABLED_SKILLS) does not alter allowedTools/disallowedTools beyond the base tools array — no new MCP tool surface', async () => {
   const { toolsForRole } = await import('../src/auth/rbac.js');
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1', 'discord');
@@ -147,6 +155,11 @@ test('SECURITY: enabling the flag does not alter allowedTools beyond the base to
       [...opts.allowedTools].sort(),
       [...expected].sort(),
       `${role}: allowedTools must be unaffected by AGENT_SKILLS_ENABLED — 'Skill' is not added there`,
+    );
+    assert.deepEqual(
+      [...opts.disallowedTools],
+      ['Task', 'WebFetch', ...(webSearch ? [] : ['WebSearch'])],
+      `${role}: disallowedTools must be unaffected by AGENT_SKILLS_ENABLED/ENABLED_SKILLS`,
     );
   }
 });
@@ -217,6 +230,10 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('model-and-plan-selection', 'SKILL.md'))),
     'expected model-and-plan-selection/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('agent-architecture-review', 'SKILL.md'))),
+    'expected agent-architecture-review/SKILL.md to be present',
   );
   assert.ok(
     files.some((f) => f.endsWith(join('project-showcase', 'SKILL.md'))),

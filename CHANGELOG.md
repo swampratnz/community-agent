@@ -77,6 +77,17 @@ Skipped as internal: #707 #725 #731 #751
   on every turn — the tool surface addition (`Skill`, granted uniformly to
   every tier, no new RBAC gating) and the bundled skill directory are both
   narrowly scoped and code-reviewed, never runtime- or member-derived.
+- **New `agent-architecture-review` Agent Skill** (#755, same
+  `AGENT_SKILLS_ENABLED` flag as #741, off by default): a second on-demand
+  skill covering a distinct member ask from `prompt-review` — a critique of a
+  member's *multi-step agent or pipeline design* (stage/model fit, tool
+  surface & least-privilege, evaluation/verification, cost & latency, failure
+  handling) rather than a single pasted prompt. Added to the same
+  hand-written, code-reviewed `ENABLED_SKILLS` allowlist as `prompt-review`
+  (never `'all'`); grounds recommendations in `knowledge_search` with the
+  existing provenance rule and stays within the code policy. The member's
+  pasted design is treated as untrusted data to analyse, never execute, same
+  as `prompt-review`. Adds no new tool or data access.
 - **New `claude-code-setup` Agent Skill: a step-by-step setup & troubleshooting
   walkthrough** (#757, part of the #741 Agent Skills mechanism): when
   `AGENT_SKILLS_ENABLED` is on, a second repo-bundled skill walks a member
@@ -88,8 +99,8 @@ Skipped as internal: #707 #725 #731 #751
   numbers — those drift, so every factual claim defers to `knowledge_search`
   with the existing provenance attribution. Adds no new tool, tier, or data
   flow; the skill allowlist stays an explicit, hand-written literal array
-  (`['prompt-review', 'project-showcase', 'claude-code-setup']`), never
-  `'all'`.
+  (`['prompt-review', 'agent-architecture-review', 'project-showcase',
+  'claude-code-setup']`), never `'all'`.
 - **`AGENT_MODEL_FALLBACK`: an optional SDK-native fallback model for the main agent turn** (#738), a sibling of `AGENT_MODEL_MEMBER` (#382) and `AGENT_MODEL_CLASSIFIER` (#395): an operator can set it to a model, or comma-separated list per the SDK's own accepted shape, that the SDK's `fallbackModel` option retries against when the primary model is overloaded or unavailable, retrying the primary fresh at the start of every turn so a transient outage never permanently demotes the session. Applied uniformly across every role (not tiered — an overload on the shared model pool isn't role-specific), and it only changes which model answers a turn: `tools`/`allowedTools`/`disallowedTools`/`permissionMode`/`maxTurns` are unaffected. Unset (the default) is byte-identical to today — `buildQueryOptions` carries no `fallbackModel` key at all.
 - **Opt-in "can someone help with X" member-to-member handoff** (#729,
   `FIND_HELPER_ENABLED`, off by default), the active-side consumer of #634's
