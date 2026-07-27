@@ -96,6 +96,11 @@ jobs:
             review itself: no preamble, no narration (e.g. never "Now I'll
             write the review"). Structure it as:
             - First line: "PR review (automated):"
+            - Second line: a machine-readable verdict token, EXACTLY one of
+              "<!-- verdict:LGTM -->", "<!-- verdict:CHANGES_REQUESTED -->", or
+              "<!-- verdict:NEEDS_HUMAN -->", alone on its line. It renders
+              invisibly on GitHub; the pipeline ROUTES on it, so it must agree
+              with the human-readable verdict you write on the next line.
             - A one-line verdict: "LGTM, looks good and ready for a human to merge",
               or "Changes requested", or "Needs a human decision".
             - Then the findings as short bullets, or "No issues found." if clean.
@@ -165,8 +170,61 @@ jobs:
             review="$(printf '%s\n' "$review" | tail -n +"$marker_line")"
           fi
 
+          # --- canonical verdict contract v1 --------------------------------
+          # Three workflows consume a review verdict (this one routes on it,
+          # auto-merge gates on it, revise re-verifies it). They used to parse
+          # the same free prose with three separate regexes, and they DRIFTED:
+          # the #731 "a bolded **verdict** is not a bullet" fix landed here and
+          # in revise but not in auto-merge, so a bolded **LGTM** was invisible
+          # to the merge gate and a fully-approved PR would sit forever.
+          # The fix is an artifact contract, not a better regex: this step —
+          # the one place the comment is composed — decides the verdict ONCE
+          # and stamps it as a canonical token, and every consumer reads that.
+          # Keep both helpers identical across the three workflows;
+          # tests/reviewVerdict.test.ts fails if any copy drifts.
+          canonical_verdict() {
+            grep -oiE '<!--[[:space:]]*verdict:(LGTM|CHANGES_REQUESTED|NEEDS_HUMAN)[[:space:]]*-->' |
+              head -1 | grep -oiE 'LGTM|CHANGES_REQUESTED|NEEDS_HUMAN' | tr '[:lower:]' '[:upper:]'
+          }
+          legacy_verdict() {
+            head -n 4 | grep -vE '^[[:space:]]*[-*][[:space:]]'
+          }
+
+          # Prefer the model's own token; fall back to the pre-contract prose
+          # heuristic when it omitted one. An unrecognisable verdict stays
+          # EMPTY on purpose — that is today's fail-safe behaviour (no label,
+          # no revise dispatch, and no LGTM for auto-merge to gate on), so a
+          # malformed review stalls visibly instead of routing by accident.
+          VERDICT_TOKEN="$(printf '%s' "$review" | canonical_verdict)"
+          if [ -z "$VERDICT_TOKEN" ]; then
+            prose="$(printf '%s' "$review" | legacy_verdict || true)"
+            if printf '%s' "$prose" | grep -qiE 'needs a human decision'; then
+              VERDICT_TOKEN=NEEDS_HUMAN
+            elif printf '%s' "$prose" | grep -qiE 'changes requested'; then
+              VERDICT_TOKEN=CHANGES_REQUESTED
+            elif printf '%s' "$prose" | grep -qiE 'lgtm|ready for a human to merge'; then
+              VERDICT_TOKEN=LGTM
+            fi
+            echo "::warning::Review omitted the verdict token; fell back to prose parsing (verdict='${VERDICT_TOKEN:-none}'). If this recurs, the review prompt has drifted."
+          fi
+
+          # Drop any token the model put on a line of its own, then inject
+          # exactly ONE authoritative token right after the marker line. The
+          # authoritative token is therefore always the FIRST one in the body,
+          # so a review that legitimately quotes a token mid-sentence (reviews
+          # of this very machinery do) can neither be mangled nor mistaken for
+          # the verdict.
+          printf '%s' "$review" |
+            grep -vE '^[[:space:]]*<!--[[:space:]]*verdict:[A-Za-z_]+[[:space:]]*-->[[:space:]]*$' \
+            > review-body.txt || true
+          {
+            head -n 1 review-body.txt
+            if [ -n "$VERDICT_TOKEN" ]; then printf '<!-- verdict:%s -->\n' "$VERDICT_TOKEN"; fi
+            tail -n +2 review-body.txt
+          } > review-stamped.txt
+
           # GitHub comment bodies cap ~65535 chars; keep well under.
-          printf '%s' "$review" | head -c 60000 > review.txt
+          head -c 60000 review-stamped.txt > review.txt
           gh pr comment "$PR" --body-file review.txt
 
           # Route on the verdict (the state machine's missing edge — see
@@ -178,29 +236,27 @@ jobs:
           # pipeline loop skips the PR. Failures are warnings, never a red
           # check — the review itself was posted successfully.
           #
-          # Verdict extraction (issue #222): the mandated format is a header
-          # line then a one-line verdict, with findings as `-`/`*` bullets
-          # after. Look only at the first few lines AND drop bullet lines, so a
-          # phrase like "previous changes requested were addressed" inside a
-          # finding can't misroute an LGTM into the revise loop (which then
-          # finds nothing, pushes no commit, and mislabels the PR needs-human —
-          # the exact stall the loop exists to prevent). Evaluate "needs a
-          # human decision" BEFORE "changes requested" so a needs-human verdict
-          # that happens to mention changes isn't sent to revise instead.
-          # The bullet filter requires whitespace AFTER the marker: a real
-          # markdown bullet is `- text`/`* text`, but a verdict the review
-          # model renders in BOLD starts `**Changes requested**` — marker
-          # then another asterisk, no space. The original `^[[:space:]]*[-*]`
-          # ate the bolded verdict line itself, so PR #730's Changes-requested
-          # verdict matched nothing and the revise dispatch silently never
-          # fired (and revise's own precheck, sharing the pattern, would have
-          # no-op'd on a manual dispatch too).
-          verdict="$(head -n 4 review.txt | grep -vE '^[[:space:]]*[-*][[:space:]]')"
-          if printf '%s' "$verdict" | grep -qiE 'needs a human decision'; then
-            gh pr edit "$PR" --add-label needs-human ||
-              echo "::warning::Could not add needs-human label"
-          elif printf '%s' "$verdict" | grep -qiE 'changes requested'; then
-            echo "Verdict requests changes — dispatching the revise worker."
-            gh workflow run pipeline-pr-revise.yml -R "${{ github.repository }}" -f pr_number="$PR" ||
-              echo "::warning::Could not dispatch pipeline-pr-revise.yml (missing on the default branch yet?)"
-          fi
+          # Route on the verdict decided above — no second parse of the posted
+          # text. Ordering ("needs a human" before "changes requested") used to
+          # matter because both were substring-matched against the same prose;
+          # the token is a single exact value, so that ambiguity is gone. The
+          # decoy risk the old parse guarded against (issue #222 — a finding
+          # bullet reading "previous changes requested were addressed") is
+          # likewise structural now: findings are never consulted.
+          case "$VERDICT_TOKEN" in
+            NEEDS_HUMAN)
+              gh pr edit "$PR" --add-label needs-human ||
+                echo "::warning::Could not add needs-human label"
+              ;;
+            CHANGES_REQUESTED)
+              echo "Verdict requests changes — dispatching the revise worker."
+              gh workflow run pipeline-pr-revise.yml -R "${{ github.repository }}" -f pr_number="$PR" ||
+                echo "::warning::Could not dispatch pipeline-pr-revise.yml (missing on the default branch yet?)"
+              ;;
+            LGTM)
+              echo "Verdict is LGTM — auto-merge will pick it up if it qualifies."
+              ;;
+            *)
+              echo "::warning::No usable verdict on PR #$PR — not routing. The review comment was still posted."
+              ;;
+          esac
