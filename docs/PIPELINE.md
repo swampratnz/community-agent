@@ -216,6 +216,28 @@ Launch each in its own session with the `/loop` skill. Each is written to
 **exit cleanly doing nothing when there is no work** — that keeps idle wake-ups
 cheap.
 
+### Measuring the loops
+
+`pipeline-outcomes.yml` (weekly, read-only, no LLM) answers the question the
+pipeline previously could not: **is each loop earning its tokens?** It
+reconstructs a per-loop record from the marker comments the loops already post
+— engaged, checkpoint-recovered, escalated — so there is no new state to keep
+in sync and nothing new written to any PR. `scripts/pipeline-outcomes.mjs` does
+the counting and is unit-tested against synthetic payloads.
+
+The column that matters most is **Recovered**: an agent that committed work and
+then ended its turn without pushing, rescued by the loop's deterministic
+checkpoint step. Every one of those is a prompt/harness defect in that loop —
+not a code defect in the PR — and it is the failure mode that has cost the most
+here (PRs #606 and #609 both escalated `needs-human` with completed work
+stranded on the runner). **Escalated** is the loop correctly giving up; a loop
+sitting at a high escalation rate is either mis-scoped or being handed work it
+cannot do.
+
+The tracking issue only opens when a loop failed to finish on its own, and
+auto-closes on a clean window — the same self-clearing contract as
+`changelog-coverage.yml`, so a quiet pipeline stays quiet.
+
 ### The review-verdict contract
 
 Three workflows consume a PR-review verdict: `pipeline-pr-review.yml` routes on

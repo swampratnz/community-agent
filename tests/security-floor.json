@@ -93,6 +93,7 @@
   "pendingActions.test.ts": 3,
   "pendingAlertQueue.test.ts": 3,
   "personas.test.ts": 1,
+  "pipelineOutcomes.test.ts": 2,
   "rateLimitNotice.router.test.ts": 2,
   "rbac.test.ts": 46,
   "redeploy.test.ts": 2,
