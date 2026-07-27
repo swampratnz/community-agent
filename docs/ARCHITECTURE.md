@@ -2022,6 +2022,16 @@ hardcoded tier" means per command, not a uniform floor across all three.
 tool. A caller who fails a gate gets an ephemeral rejection and the
 underlying repository function is never called.
 
+Every handler's first call, before role resolution or any other async work,
+is `interaction.deferReply({ flags: MessageFlags.Ephemeral })`. Discord
+expires an interaction token 3 seconds after receipt if it isn't acknowledged
+(`DiscordAPIError[10062]: Unknown interaction`); `/kb`, `/whois`, and
+`/projects` call `embed()` (`storage/embeddings.ts`), which lazily loads a
+local transformers.js pipeline on first use and can take seconds on a cold
+start, so deferring first — then answering via `editReply`/`followUp` instead
+of `reply` — keeps every command correct regardless of embedding/DB latency
+(PR #748 review).
+
 Each command reuses the exact repository function and rendering helper its
 chat-path tool calls — `searchKnowledge`/`formatKnowledgeSearchResults`,
 `searchMemberInterests`/`formatInterestResults`,

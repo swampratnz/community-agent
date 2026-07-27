@@ -102,20 +102,35 @@ export async function registerSlashCommands(client: Client): Promise<void> {
   }
 }
 
-/** Ephemeral reply, chunked at Discord's 2000-char limit via reply + follow-ups. */
+/**
+ * Discord requires an interaction to be acknowledged within 3 seconds of
+ * receipt or its token expires (`DiscordAPIError[10062]: Unknown
+ * interaction`). Every handler below does at least one DB round trip before
+ * it has an answer, and `/kb`/`/whois`/`/projects` additionally call
+ * `embed()` (`storage/embeddings.ts`), which lazily loads a local
+ * transformers.js pipeline on first use and can take seconds on a cold
+ * start — so every handler defers FIRST, before any other async work,
+ * and answers via `editReply`/`followUp` instead of `reply` (PR #748 review).
+ */
+async function deferEphemeral(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+}
+
+/** Ephemeral answer to an already-deferred interaction, chunked at Discord's 2000-char limit. */
 async function replyEphemeral(
   interaction: ChatInputCommandInteraction,
   text: string,
   deps: SlashCommandDeps,
 ): Promise<void> {
   const chunks = chunkText(await deps.filtered(text), DISCORD_REPLY_MAX_LEN);
-  await interaction.reply({ content: chunks[0], flags: MessageFlags.Ephemeral });
+  await interaction.editReply({ content: chunks[0] });
   for (const chunk of chunks.slice(1)) {
     await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
   }
 }
 
 async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
   // knowledge_search's own handler adds no extra runtime floor beyond
   // toolsForRole's structural list (unlike who_is_into/list_projects below),
@@ -141,6 +156,7 @@ async function handleProjects(
   interaction: ChatInputCommandInteraction,
   deps: SlashCommandDeps,
 ): Promise<void> {
+  await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
   // list_projects is structurally in MEMBER_TOOLS (reachable by guests in
   // open mode too, same as knowledge_search), but its own handler adds a
@@ -166,6 +182,7 @@ async function handleProjects(
 }
 
 async function handleWhois(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
   const role = await resolveRole('discord', interaction.user.id);
   // who_is_into is structurally in MEMBER_TOOLS (same open-mode-guest
   // reachability as knowledge_search), but its own handler adds a stricter
@@ -203,6 +220,7 @@ async function handleGuidelines(
   interaction: ChatInputCommandInteraction,
   deps: SlashCommandDeps,
 ): Promise<void> {
+  await deferEphemeral(interaction);
   const languagePreference = await getLanguagePreference('discord', interaction.user.id);
   const guidelines =
     languagePreference === 'mi'

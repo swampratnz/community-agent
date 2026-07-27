@@ -91,10 +91,16 @@ interface FakeReply {
  * Minimal `ChatInputCommandInteraction` stand-in — just enough surface for
  * `handleInteraction`: `commandName`, `user.id` (identity, per criterion 3
  * ALWAYS resolved via `resolveRole`, never anything else on this object),
- * `channelId`, `options.getString`, and `reply`/`followUp` collectors.
- * Carries an extra `member.permissions` field on some tests standing in for
- * Discord's own (unrelated) guild-permission data, to prove the handler never
- * reads it as an authorization signal.
+ * `channelId`, `options.getString`, and `deferReply`/`editReply`/`followUp`
+ * collectors. Mirrors the real defer-then-edit pattern (PR #748 review):
+ * `deferReply` is where the ephemeral flag is actually set in Discord's API
+ * (`editReply` carries no flags param), so `replies` is populated from
+ * `editReply`, marked ephemeral iff a prior `deferReply` requested it — same
+ * as `reply()` used to, but only reachable after an ack. `order` records call
+ * names in sequence so tests can assert `deferReply` happened first, before
+ * any DB/embedding round trip. Carries an extra `member.permissions` field on
+ * some tests standing in for Discord's own (unrelated) guild-permission data,
+ * to prove the handler never reads it as an authorization signal.
  */
 function fakeInteraction(opts: {
   commandName: string;
@@ -102,9 +108,11 @@ function fakeInteraction(opts: {
   channelId?: string;
   options?: Record<string, string | null>;
   spoofedAdminClaim?: boolean;
-}): { interaction: unknown; replies: FakeReply[]; followUps: FakeReply[] } {
+}): { interaction: unknown; replies: FakeReply[]; followUps: FakeReply[]; order: string[] } {
   const replies: FakeReply[] = [];
   const followUps: FakeReply[] = [];
+  const order: string[] = [];
+  let deferredEphemeral = false;
   const interaction = {
     isChatInputCommand: () => true,
     commandName: opts.commandName,
@@ -119,14 +127,20 @@ function fakeInteraction(opts: {
     options: {
       getString: (name: string) => opts.options?.[name] ?? null,
     },
-    reply: async (payload: { content: string; flags?: number }) => {
-      replies.push({ content: payload.content, ephemeral: payload.flags === MessageFlags.Ephemeral });
+    deferReply: async (payload: { flags?: number }) => {
+      order.push('deferReply');
+      deferredEphemeral = payload.flags === MessageFlags.Ephemeral;
+    },
+    editReply: async (payload: { content: string }) => {
+      order.push('editReply');
+      replies.push({ content: payload.content, ephemeral: deferredEphemeral });
     },
     followUp: async (payload: { content: string; flags?: number }) => {
+      order.push('followUp');
       followUps.push({ content: payload.content, ephemeral: payload.flags === MessageFlags.Ephemeral });
     },
   };
-  return { interaction, replies, followUps };
+  return { interaction, replies, followUps, order };
 }
 
 /** Reaches the real, private `filtered()` outbound-filter method (secret redaction + code policy). */
@@ -383,6 +397,56 @@ test('acceptance criterion 5: a rejection reply is ephemeral too, not just a suc
   const { interaction, replies } = fakeInteraction({ commandName: 'whois', userId: 'guest-2' });
   await handleInteraction(interaction as never, adapterDeps(adapter));
   assert.equal(replies[0].ephemeral, true);
+});
+
+// --- PR #748 review: deferReply before any async work (3s ack window) --------
+
+test('PR #748 review: every command calls deferReply before its first reply/DB round trip — Discord expires an unacknowledged interaction token after 3s', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [],
+    interestRows: [],
+    projectRows: [],
+    guidelines: 'Be kind.',
+  });
+  const adapter = new DiscordAdapter();
+
+  for (const commandName of ['kb', 'whois', 'projects', 'guidelines']) {
+    const { interaction, order } = fakeInteraction({
+      commandName,
+      userId: 'member-1',
+      options: { query: 'anything' },
+    });
+    await handleInteraction(interaction as never, adapterDeps(adapter));
+    assert.equal(order[0], 'deferReply', `${commandName} must call deferReply before anything else`);
+  }
+});
+
+test('PR #748 review: deferReply happens before the (potentially slow) embedding/DB lookup, not after — rejection and success paths both defer first', async (t) => {
+  const queryOrder: string[] = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    queryOrder.push(sql);
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const adapter = new DiscordAdapter();
+  const { interaction, order } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.ok(queryOrder.length > 0, 'a DB round trip must have happened');
+  assert.equal(
+    order[0],
+    'deferReply',
+    'deferReply must be the very first call, before role resolution or search',
+  );
+  assert.ok(order.indexOf('deferReply') < order.indexOf('editReply'), 'defer must precede the final answer');
 });
 
 // --- Criterion 6 / SECURITY criterion 13: outbound filter ---------------------
