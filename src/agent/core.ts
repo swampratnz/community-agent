@@ -306,11 +306,7 @@ const SKILLS_DIR = join(__dirname, 'skills');
  * to activate, matching this repo's existing convention of hand-written,
  * non-reflective tool/skill allowlists elsewhere.
  */
-const ENABLED_SKILLS = [
-  'prompt-review',
-  'model-and-plan-selection',
-  'project-showcase',
-] as const;
+const ENABLED_SKILLS = ['prompt-review', 'model-and-plan-selection', 'project-showcase'] as const;
 
 /**
  * Build the SDK query options for one turn. Extracted (and exported) so the
