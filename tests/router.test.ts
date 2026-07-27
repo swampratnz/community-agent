@@ -242,19 +242,35 @@ test('respond(): a Cloud-style adapter whose 2nd+ indicator call rejects still d
   const turnPromise = new Promise<AgentReply>((resolve) => {
     resolveTurn = resolve;
   });
+  // Resolved (or rejected) the instant the re-fire is ATTEMPTED and rejects —
+  // a deterministic "a re-fire was attempted and rejected" signal emitted by
+  // the stub itself, so the assertion below no longer depends on how busy
+  // the machine is. Previously this gated on `calls >= 2` after a fixed
+  // `sleep(70)`, which raced on loaded CI runners (issue #781).
+  let refireRejected!: () => void;
+  const refireRejectedP = new Promise<void>((resolve) => {
+    refireRejected = resolve;
+  });
   const router = new Router(async () => turnPromise, 20);
   const { adapter, sent, trigger } = makeAdapter({
     sendTypingIndicator: async () => {
       calls += 1;
       // Meta's mark-as-read/typing_indicator is bound to a single wamid and
       // cannot be meaningfully re-fired — simulate the 2nd+ re-fire failing.
-      if (calls > 1) throw new Error('cannot re-fire a mark-as-read for an already-read wamid');
+      if (calls > 1) {
+        refireRejected();
+        throw new Error('cannot re-fire a mark-as-read for an already-read wamid');
+      }
     },
   });
   router.register(adapter);
 
   const done = trigger(makeMessage());
-  await sleep(70); // several refire windows — at least one re-fire attempt (and rejection)
+  const signal = await Promise.race([
+    refireRejectedP.then(() => 'refired' as const),
+    sleep(2000).then(() => 'timeout' as const),
+  ]);
+  assert.equal(signal, 'refired', 'expected a re-fire to have been attempted and rejected within 2s');
   assert.ok(calls >= 2, 'expected a re-fire to have been attempted and rejected');
 
   resolveTurn(makeReply('cloud reply'));
