@@ -25,6 +25,15 @@ Skipped as internal: #707 #725 #731 #751
 ## 2026-07-27
 
 ### Added
+- **`project-showcase` agent skill** (#759, part of the Agent Skills cohort
+  wired in #741/#742, off unless `AGENT_SKILLS_ENABLED`): gives the bot a
+  procedure for the existing `share_project`/`list_projects`/`who_is_into`
+  member tools (#680, #634) — recording a member's own build with a
+  description, link, and how Claude was used; browsing community shares
+  first when someone asks for examples; and a hard rule to never fabricate
+  a project, screenshot, or URL when no real example is on hand. Added to
+  the explicit `ENABLED_SKILLS` allowlist alongside `prompt-review`; no new
+  tool, and no tier's `allowedTools`/`disallowedTools` change.
 - **Read-only Discord slash commands: `/kb`, `/whois`, `/projects`, `/guidelines`** (#744,
   `DISCORD_SLASH_COMMANDS_ENABLED`, off by default): guild-scoped, zero-model-call,
   ephemeral answers to four common lookups, the discoverable generalisation of the
@@ -69,6 +78,19 @@ Skipped as internal: #707 #725 #731 #751
   existing provenance rule and stays within the code policy. The member's
   pasted design is treated as untrusted data to analyse, never execute, same
   as `prompt-review`. Adds no new tool or data access.
+- **New `claude-code-setup` Agent Skill: a step-by-step setup & troubleshooting
+  walkthrough** (#757, part of the #741 Agent Skills mechanism): when
+  `AGENT_SKILLS_ENABLED` is on, a second repo-bundled skill walks a member
+  through installing, authenticating, and troubleshooting Claude Code as a
+  diagnostic (establish the path, confirm the active credential source,
+  explain the MCP/permission model, map symptoms to fix categories, and know
+  when to escalate to a human or the official docs) rather than dumping every
+  possible fix at once. It hardcodes no command syntax, flags, or version
+  numbers — those drift, so every factual claim defers to `knowledge_search`
+  with the existing provenance attribution. Adds no new tool, tier, or data
+  flow; the skill allowlist stays an explicit, hand-written literal array
+  (`['prompt-review', 'agent-architecture-review', 'project-showcase',
+  'claude-code-setup']`), never `'all'`.
 - **`AGENT_MODEL_FALLBACK`: an optional SDK-native fallback model for the main agent turn** (#738), a sibling of `AGENT_MODEL_MEMBER` (#382) and `AGENT_MODEL_CLASSIFIER` (#395): an operator can set it to a model, or comma-separated list per the SDK's own accepted shape, that the SDK's `fallbackModel` option retries against when the primary model is overloaded or unavailable, retrying the primary fresh at the start of every turn so a transient outage never permanently demotes the session. Applied uniformly across every role (not tiered — an overload on the shared model pool isn't role-specific), and it only changes which model answers a turn: `tools`/`allowedTools`/`disallowedTools`/`permissionMode`/`maxTurns` are unaffected. Unset (the default) is byte-identical to today — `buildQueryOptions` carries no `fallbackModel` key at all.
 - **Opt-in "can someone help with X" member-to-member handoff** (#729,
   `FIND_HELPER_ENABLED`, off by default), the active-side consumer of #634's

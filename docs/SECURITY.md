@@ -2239,14 +2239,15 @@ No new tool, no new write path, no `shortcut_hits` tracking, no WhatsApp
 equivalent — all four underlying reads stay reachable via chat on every
 platform regardless of this flag. See docs/ARCHITECTURE.md for the mechanism.
 
-### 19. Agent Skills (`AGENT_SKILLS_ENABLED`, off by default, issue #741)
+### 19. Agent Skills (`AGENT_SKILLS_ENABLED`, off by default, issues #741, #755, #757, #759)
 
 Wires the SDK's Agent Skills mechanism to host the #635 prompt-review
 checklist (`docs/ARCHITECTURE.md`'s "Prompt-review guidance" section has the
-full off/on behaviour) and, as of #755, a second on-demand skill,
-`agent-architecture-review`, covering a distinct member ask (critiquing a
-multi-step agent/pipeline design rather than a single pasted prompt) under
-the same flag and allowlist mechanism. Off by default; when on:
+full off/on behaviour), the #755 `agent-architecture-review` critique skill
+(a distinct member ask — reviewing a multi-step agent/pipeline design rather
+than a single pasted prompt), the #759 `project-showcase` skill, and the
+#757 `claude-code-setup` diagnostic walkthrough, all under the same flag and
+allowlist mechanism. Off by default; when on:
 
 - **Grants the built-in `Skill` tool to every tier, uniformly** —
   `buildQueryOptions` (`src/agent/core.ts`) adds it to the base `tools` array
@@ -2267,33 +2268,39 @@ the same flag and allowlist mechanism. Off by default; when on:
   under the `skills` option, "you do not need to add `'Skill'` to
   `allowedTools` yourself when using this option," and separately mark
   passing `'Skill'` into `allowedTools` directly as deprecated. `skills:
-  ['prompt-review', 'agent-architecture-review']` (below) is what pre-approves
-  it; a `SECURITY:`-prefixed test in `tests/agentSkillsEnabled.test.ts` pins
-  the installed `.d.ts` still documenting this contract, so an SDK upgrade
-  that silently changes it fails CI instead of shipping a silent regression
-  where the tool is granted but never actually fires.
+  ['prompt-review', 'agent-architecture-review', 'project-showcase',
+  'claude-code-setup']` (below) is what pre-approves them; a
+  `SECURITY:`-prefixed test in `tests/agentSkillsEnabled.test.ts` pins the
+  installed `.d.ts` still documenting this contract, so an SDK upgrade that
+  silently changes it fails CI instead of shipping a silent regression where
+  the tool is granted but never actually fires.
 - **The bundled skills plugin is repo-owned and narrowly scoped.**
   `plugins: [{ type: 'local', path: SKILLS_DIR }]` points at
   `src/agent/skills/` — a directory this repo ships and code-reviews, never a
   path derived from a request or member-supplied value. It contains only a
-  `.claude-plugin/plugin.json` manifest and two static skill bodies
-  (`prompt-review/SKILL.md`, `agent-architecture-review/SKILL.md`) — no
-  `hooks/`, `agents/`, `commands/`, or `.mcp.json` — so nothing beyond those
-  static markdown bodies is ever loadable from it, pinned by a dedicated
-  `SECURITY:` test that walks the directory.
+  `.claude-plugin/plugin.json` manifest and one `SKILL.md` per bundled skill
+  (`prompt-review/SKILL.md`, `agent-architecture-review/SKILL.md`,
+  `project-showcase/SKILL.md`, `claude-code-setup/SKILL.md`) — no `hooks/`,
+  `agents/`, `commands/`, or `.mcp.json` — so nothing beyond those static
+  markdown bodies is ever loadable from it, pinned by a dedicated
+  `SECURITY:` test that walks the directory. `claude-code-setup` hardcodes no
+  command syntax, flags, or version numbers — every factual claim it makes is
+  deferred to `knowledge_search` with the existing provenance attribution
+  rule, since those specifics drift; it stays within the same `code_answers`
+  policy as `prompt-review`.
 - **`skills` is always the explicit, hand-written literal
-  `['prompt-review', 'agent-architecture-review']`, never `'all'`.** A future
-  skill file added to the directory needs a deliberate second edit to
-  activate, matching this repo's existing convention of hand-written,
-  non-reflective tool allowlists elsewhere (`toolsForRole`,
-  `FEATURE_FLAGGED_TOOL_GROUPS`). The SDK's own docs note that an unlisted
-  skill is hidden from the model's listing and rejected by the `Skill` tool,
-  but its file still sits on disk and remains reachable via `Read`/`Bash` if
-  those were ever granted — moot here, since no RBAC tier grants either
-  built-in regardless of this flag.
-- **No new data flow.** The skill body is static, code-reviewed markdown
-  shipped with the repo, not fetched or generated at runtime; enabling the
-  flag adds no new egress, no new table, and no new write path.
+  `['prompt-review', 'agent-architecture-review', 'project-showcase',
+  'claude-code-setup']`, never `'all'`.** A future skill file added to the
+  directory needs a deliberate second edit to activate, matching this repo's
+  existing convention of hand-written, non-reflective tool allowlists
+  elsewhere (`toolsForRole`, `FEATURE_FLAGGED_TOOL_GROUPS`). The SDK's own
+  docs note that an unlisted skill is hidden from the model's listing and
+  rejected by the `Skill` tool, but its file still sits on disk and remains
+  reachable via `Read`/`Bash` if those were ever granted — moot here, since
+  no RBAC tier grants either built-in regardless of this flag.
+- **No new data flow.** All four skill bodies are static, code-reviewed
+  markdown shipped with the repo, not fetched or generated at runtime;
+  enabling the flag adds no new egress, no new table, and no new write path.
 
 ## Platform-specific notes
 
