@@ -25,6 +25,16 @@ Skipped as internal: #707 #725 #731 #751
 ## 2026-07-27
 
 ### Added
+- **New Agent Skill: `model-and-plan-selection`** (#758, part of the
+  `[Agent Skill]` cohort behind `AGENT_SKILLS_ENABLED`, off by default): a
+  decision procedure for "which model should I use" and "what does plan X
+  include" questions, which members routinely conflate — plan/product
+  (Free/Pro/Team/Max, Console/API) versus model (Haiku/Sonnet/Opus/Fable).
+  Disambiguates subscription-vs-API first, gives rough task→model routing as
+  a starting point to test rather than a fixed rule, and never hardcodes
+  prices, rate limits, or plan-inclusion tables — those stay in
+  `knowledge_search` retrieval, referencing (not duplicating) the existing
+  always-on fast-moving-facts freshness rule.
 - **`project-showcase` agent skill** (#759, part of the Agent Skills cohort
   wired in #741/#742, off unless `AGENT_SKILLS_ENABLED`): gives the bot a
   procedure for the existing `share_project`/`list_projects`/`who_is_into`

@@ -50,8 +50,15 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
     );
     assert.deepEqual(
       opts.skills,
-      ['prompt-review', 'agent-architecture-review', 'project-showcase', 'claude-code-setup'],
-      `${role}: skills must be exactly ['prompt-review', 'agent-architecture-review', 'project-showcase', 'claude-code-setup']`,
+      [
+        'prompt-review',
+        'model-and-plan-selection',
+        'agent-architecture-review',
+        'project-showcase',
+        'claude-code-setup',
+      ],
+      `${role}: skills must be exactly ['prompt-review', 'model-and-plan-selection', ` +
+        `'agent-architecture-review', 'project-showcase', 'claude-code-setup']`,
     );
   }
 });
@@ -61,6 +68,7 @@ test("SECURITY: AC6/AC7 (#755) — skills is always the literal ENABLED_SKILLS a
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.deepEqual(opts.skills, [
       'prompt-review',
+      'model-and-plan-selection',
       'agent-architecture-review',
       'project-showcase',
       'claude-code-setup',
@@ -218,6 +226,10 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
   assert.ok(
     files.some((f) => f.endsWith(join('prompt-review', 'SKILL.md'))),
     'expected prompt-review/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('model-and-plan-selection', 'SKILL.md'))),
+    'expected model-and-plan-selection/SKILL.md to be present',
   );
   assert.ok(
     files.some((f) => f.endsWith(join('agent-architecture-review', 'SKILL.md'))),
