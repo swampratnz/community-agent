@@ -523,19 +523,20 @@ default):
   (`src/agent/core.ts`) adds `'Skill'` to the base `tools` array (uniformly
   for every role, matching the checklist's pre-#741 ungated behaviour) and
   loads `plugins: [{ type: 'local', path: <bundled skills dir> }]` with
-  `skills: ['prompt-review', 'claude-code-setup']` — an explicit,
-  hand-written literal array, never `'all'`, so a future skill added to the
-  directory needs a deliberate second edit to activate. The bundled plugin
-  directory (`src/agent/skills/`) contains only a `.claude-plugin/plugin.json`
-  manifest and one `SKILL.md` per bundled skill — no `hooks/`, `agents/`,
-  `commands/`, or `.mcp.json` — so nothing beyond those static, code-reviewed
-  markdown bodies is ever loadable from it (CI-pinned by a dedicated test).
-  This is a net cost reduction: each skill's frontmatter is the only part
-  resident on every turn, and its full body loads into context only on turns
-  that actually invoke it (progressive disclosure). The documented SDK
-  residual risk — unlisted skill files reachable via `Read`/`Bash` — does
-  not apply here, since no RBAC tier ever grants those built-ins
-  (`toolsForRole`/`allowedTools` are unaffected by this flag).
+  `skills: ['prompt-review', 'agent-architecture-review', 'project-showcase',
+  'claude-code-setup']` — an explicit, hand-written literal array, never
+  `'all'`, so a future skill added to the directory needs a deliberate second
+  edit to activate. The bundled plugin directory (`src/agent/skills/`)
+  contains only a `.claude-plugin/plugin.json` manifest and one `SKILL.md`
+  per bundled skill — no `hooks/`, `agents/`, `commands/`, or `.mcp.json` —
+  so nothing beyond those static, code-reviewed markdown bodies is ever
+  loadable from it (CI-pinned by a dedicated test). This is a net cost
+  reduction: each skill's frontmatter is the only part resident on every
+  turn, and its full body loads into context only on turns that actually
+  invoke it (progressive disclosure). The documented SDK residual risk —
+  unlisted skill files reachable via `Read`/`Bash` — does not apply here,
+  since no RBAC tier ever grants those built-ins (`toolsForRole`/
+  `allowedTools` are unaffected by this flag).
 
 There is no configuration in which the prompt-review capability is absent —
 the checklist is either inline in `GUIDELINES` or loaded as the skill, never
@@ -546,6 +547,18 @@ syntax, flags, or version numbers — every factual claim it makes is grounded
 in `knowledge_search` (with the same provenance attribution rule) since those
 specifics drift, and it defers to the same `code_answers` policy as
 `prompt-review`.
+
+A second skill, `agent-architecture-review` (issue #755), lives at
+`src/agent/skills/agent-architecture-review/SKILL.md` and shares this exact
+mechanism — same flag, same allowlist, same bundled/plugin directory. It has
+no `GUIDELINES`-inline fallback: it is purely on-demand, covering a member
+asking for a critique of a multi-step agent/pipeline design (stage/model
+fit, tool surface & least-privilege, evaluation/verification, cost &
+latency, failure handling) rather than a single pasted prompt — a task-type
+`prompt-review` doesn't cover. It grounds recommendations in
+`knowledge_search` under the same provenance rule and code policy, and
+treats the member's pasted design as untrusted data to analyse, never
+execute, mirroring `prompt-review`'s quarantine of embedded directives.
 
 ## RBAC (three tiers + gated access)
 

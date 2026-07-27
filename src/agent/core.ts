@@ -292,8 +292,9 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  * dist/agent/skills in the built artifact (package.json's build script
  * copies it there, mirroring the existing schema.sql copy step). Contains
  * only a `.claude-plugin/plugin.json` manifest and static per-skill
- * `skills/<name>/SKILL.md` files (currently `prompt-review`, `project-showcase`
- * per issue #759, and `claude-code-setup` per issue #757) — no
+ * `skills/<name>/SKILL.md` files (currently `prompt-review`,
+ * `agent-architecture-review` per issue #755, `project-showcase` per issue
+ * #759, and `claude-code-setup` per issue #757) — no
  * hooks/agents/commands/.mcp.json — so nothing beyond those static markdown
  * skill bodies is ever loadable from
  * it (pinned by a dedicated test).
@@ -307,7 +308,12 @@ const SKILLS_DIR = join(__dirname, 'skills');
  * to activate, matching this repo's existing convention of hand-written,
  * non-reflective tool/skill allowlists elsewhere.
  */
-const ENABLED_SKILLS = ['prompt-review', 'project-showcase', 'claude-code-setup'] as const;
+const ENABLED_SKILLS = [
+  'prompt-review',
+  'agent-architecture-review',
+  'project-showcase',
+  'claude-code-setup',
+] as const;
 
 /**
  * Build the SDK query options for one turn. Extracted (and exported) so the
