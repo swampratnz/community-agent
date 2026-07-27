@@ -24,11 +24,11 @@ function run(prs: unknown, args: string[] = []): string {
   return result.stdout;
 }
 
-const pr = (number: number, bodies: string[], createdAt = recent()) => ({
+const pr = (number: number, bodies: string[], createdAt = recent(), login = 'github-actions[bot]') => ({
   number,
   title: `PR ${number}`,
   url: `https://example.invalid/${number}`,
-  comments: bodies.map((body) => ({ body, createdAt })),
+  comments: bodies.map((body) => ({ body, createdAt, author: { login } })),
 });
 
 test('pipeline-outcomes reports nothing when no loop engaged', () => {
@@ -137,6 +137,22 @@ test('pipeline-outcomes survives malformed input rather than failing the workflo
   const result = spawnSync('node', [SCRIPT], { input: 'not json at all', encoding: 'utf8' });
   assert.equal(result.status, 0, 'a bad pipe must never fail the caller');
   assert.match(result.stderr, /expected an array/);
+});
+
+test('SECURITY: a marker posted by anyone other than the pipeline bots is ignored, so a commenter cannot skew the ledger or manufacture a clean window (issue #750 review)', () => {
+  const spoofed = run([pr(100, ['<!-- pipeline-autofix-escalation -->'], recent(), 'random-user')]);
+  assert.match(
+    spoofed,
+    /No pipeline loop engaged/,
+    'a hand-written marker from an arbitrary commenter must contribute nothing',
+  );
+});
+
+test('both gh renderings of the bot identity are accepted, so the identity gate never silently matches nothing', () => {
+  for (const login of ['github-actions', 'github-actions[bot]', 'claude', 'claude[bot]']) {
+    const out = run([pr(101, ['<!-- pipeline-autofix-attempt -->'], recent(), login)]);
+    assert.match(out, /\| autofix \| 1 \|/, `${login} must be recognised as a pipeline author`);
+  }
 });
 
 test('pipeline-outcomes tolerates PRs with no comments field at all', () => {

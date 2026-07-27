@@ -86,7 +86,13 @@ jobs:
         run: |
           set -euo pipefail
           cutoff="$(date -u -d "-${WINDOW_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"
+          # sort:updated-desc matters (issue #750 review): `gh pr list` orders by
+          # CREATION date by default, so the newest-$SCAN_LIMIT slice would drop
+          # an older PR that a loop touched recently — exactly the PR whose
+          # markers this report needs — and the undercount would be silent. At
+          # this repo's throughput that is a live risk, not a theoretical one.
           gh pr list --repo "$GITHUB_REPOSITORY" --state all --limit "$SCAN_LIMIT" \
+            --search "sort:updated-desc" \
             --json number,updatedAt \
             --jq "[.[] | select(.updatedAt >= \"$cutoff\") | .number] | .[]" > numbers.txt
           echo "Scanning $(wc -l < numbers.txt) PR(s) updated since $cutoff."

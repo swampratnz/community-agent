@@ -93,6 +93,19 @@ if (!Array.isArray(prs)) prs = [prs];
 const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
 const inWindow = (iso) => iso && Date.parse(iso) >= cutoff;
 
+/**
+ * Only the pipeline's own bot identities can contribute a marker (issue #750
+ * review). Markers are plain text in a public comment thread, so without this
+ * any commenter could inflate "escalated" or manufacture a clean window — and
+ * this report now drives an auto-closing tracking issue, so a spoofed row is
+ * not merely cosmetic. Both renderings are accepted for the same reason
+ * pipeline-pr-automerge.yml accepts both: gh's GraphQL comment authors render
+ * as "github-actions" while REST renders "github-actions[bot]", and matching
+ * only one made an identity gate silently match nothing.
+ */
+const MARKER_AUTHORS = new Set(['github-actions', 'github-actions[bot]', 'claude', 'claude[bot]']);
+const fromPipeline = (comment) => MARKER_AUTHORS.has(comment?.author?.login ?? '');
+
 const tally = new Map(LOOPS.map((loop) => [loop.name, { engaged: 0, recovered: 0, escalated: 0, clean: 0 }]));
 /** PRs worth a human glance: escalations and silent-death recoveries. */
 const notable = [];
@@ -102,7 +115,9 @@ for (const pr of prs) {
   for (const loop of LOOPS) {
     const has = (marker) =>
       marker &&
-      comments.filter((c) => inWindow(c?.createdAt) && String(c?.body ?? '').includes(marker)).length;
+      comments.filter(
+        (c) => fromPipeline(c) && inWindow(c?.createdAt) && String(c?.body ?? '').includes(marker),
+      ).length;
 
     const engaged = has(loop.attempt) || 0;
     const recovered = has(loop.checkpoint) || 0;
