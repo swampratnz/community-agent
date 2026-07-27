@@ -18,7 +18,7 @@ Listing a PR number here satisfies scripts/check-changelog-coverage.mjs (any
 daily tracking issue converge and auto-close. This comment sits in the H1
 preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
-Skipped as internal: #707 #725 #731 #751
+Skipped as internal: #707 #725 #731 #751 #767
 -->
 
 

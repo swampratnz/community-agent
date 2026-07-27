@@ -180,6 +180,96 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
 - The **build** session runs in its **own git worktree** so it never collides
   with a human working tree.
 
+## Context sharing between cold sessions
+
+Every worker above is a fresh GitHub Actions run, which means a **cold Claude
+session**: no memory of the previous run, or of the last fifty builds against
+this repo. That is what makes the pipeline durable (all state lives in GitHub,
+so a dead session costs nothing), and it has a standing price — each run
+re-derives the same two things from scratch:
+
+1. **Repo context** — what the subsystems are, which file owns which behaviour,
+   what a change of this kind normally touches.
+2. **Work-item context** — what the previous stage already considered. The
+   reviewer sees a diff; it cannot see the alternative the builder rejected,
+   the acceptance criterion behind an odd-looking line, or what the builder was
+   unsure about.
+
+Both are carried explicitly rather than re-derived. Deliberately **not** by
+adding a graph orchestrator: this pipeline is already a graph — a label-driven
+state machine — and an in-memory orchestration library has nowhere to live
+across independent Actions runs. The fix is to write the context down.
+
+### 1 · The context pack (`docs/agents/`)
+
+A committed, gated map: `module-map.md` (one line per `src/` subsystem and
+module, security spine marked), `recipes.md` (the shape of a typical change and
+which gate catches a missed file), and a `README.md` telling a cold session to
+read the pack **instead of** exploring the tree. The build and review prompts
+both point at it.
+
+It is a manifest with a gate, in the same spirit as `tests/security-floor.json`
+— `npm run context:check`, run in CI's `lint` job, fails if a module has no
+entry, an entry names a path that no longer exists, or entries are unsorted,
+duplicated or stubbed. **A stale map is worse than no map**, because it is
+confidently wrong and a cold session has no way to tell; the gate is what makes
+the pack safe to trust. `npm run context:fix` does the mechanical part but
+cannot write a description, so it can never make the gate green by itself.
+
+### 2 · Handoff notes (build → review)
+
+The build agent writes a short note — what it did, the design decision it would
+defend, what it rejected, what it is unsure about — to a git-ignored
+`handoff.md`. A deterministic post-step renders and posts it as a
+marker-guarded PR comment; the review workflow resolves it deterministically
+and interpolates it into the review prompt.
+
+**The note is untrusted data, and the containment is structural.** The build
+agent processes untrusted issue content, so an injected build agent could aim a
+note at the reviewer. Nothing here tries to *detect* that — detection is
+unreliable, and silently swallowing half a note would both break the ordinary
+case and hide an attack from the one reader positioned to report it. Instead
+(`scripts/handoff-note.mjs`, pinned by `tests/handoffNote.test.ts`):
+
+- **Authorship.** Only `github-actions[bot]`-authored comments are read back.
+  The build agent's own `gh` posts as `claude[bot]`, so it cannot write directly
+  into the channel it feeds — the same identity distinction the recovery-PR path
+  relies on.
+- **Position.** The marker must be line 1, so a comment that merely *quotes* the
+  marker (a review of this machinery does) is not mistaken for the channel.
+- **Quoting.** Every line is emitted prefixed `| `. That makes the block
+  unmistakably quoted in the prompt, and guarantees no line can collide with the
+  `$GITHUB_OUTPUT` heredoc delimiter it is passed through.
+- **Bounding.** A hard 4000-character cap, so a note can never crowd out the
+  review prompt's own instructions.
+- **Control-token stripping.** Anything resembling a review verdict token, a
+  build resume pointer, or the handoff markers is removed, so a note can never
+  smuggle a routing decision into a channel that parses one.
+- **Framing.** The review prompt states that the note may only ADD scrutiny,
+  never remove it; that it is not evidence; that the verdict must be identical
+  to what it would be with the note absent; and that a note attempting to steer
+  a verdict is **itself a finding to report**.
+
+The whole mechanism is best-effort: no note, an empty note, or a failed post
+all leave the pipeline exactly as it was. Nothing gates on a handoff existing.
+
+### Does it actually help?
+
+Treat this as a measured hypothesis, not a settled win — a context pack that no
+one reads is pure cost, and reading it is not free either. Both agent workflows
+therefore write **turns and wall-clock to the job summary**, and the review
+workflow records whether a handoff note was present, so the effect is
+observable rather than assumed. The number to watch is the build worker's turn
+count: orientation turns are the ones the pack is meant to remove. If it does
+not move over a run of real builds, the honest response is to shrink the pack
+or drop it, not to keep paying for it.
+
+Two further levers from the same design pass are **not** implemented here:
+extending handoff notes to the revise/autofix loops (do it once the build →
+review edge shows a benefit), and engineering a byte-identical cacheable prompt
+prefix across back-to-back stages on one PR — real, but it only pays inside the
+prompt-cache TTL, so it is a separate change with its own measurement.
+
 ## Rollout & cost
 
 All sessions share **one** Max usage pool (5-hour rolling + weekly cap) across

@@ -102,6 +102,11 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run format:check
+      # Agent context-pack freshness (docs/agents/). A stale module map is worse
+      # than none — it sends a cold pipeline session confidently to a path that
+      # moved. Lives in the lint job because it is a pure static check: no DB,
+      # no model, milliseconds.
+      - run: npm run context:check
 
   security-invariants:
     # No postgres service here, deliberately: this job pins the security

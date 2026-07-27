@@ -9,6 +9,15 @@ Discord server and a WhatsApp number to a Claude Agent SDK agent with
 persistent Postgres + pgvector memory and a gated three-tier RBAC model. Start
 with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
 
+**To find your way around the code, read `docs/agents/`** — a committed context
+pack aimed at exactly this situation: `module-map.md` says which module owns
+which behaviour (security spine marked), `recipes.md` says what a given kind of
+change normally touches and which gate catches a missed file. It exists because
+every pipeline worker is a fresh Actions run, i.e. a cold session that would
+otherwise re-derive this repo's layout on every single run. Use it instead of a
+broad exploration sweep — then read the actual code, because the pack is
+orientation and never authority. If it is wrong, fix it in your PR.
+
 ## Build / test / verify
 
 - `npm run typecheck` — must be clean.
@@ -37,6 +46,16 @@ with `README.md`, then `docs/ARCHITECTURE.md` and `docs/SECURITY.md`.
   discoverable by a new phrasing, add a matching golden query there —
   queries must be paraphrases of the target entry, never near-verbatim
   quotes, or the eval proves nothing.
+- `npm run context:check` — freshness gate on the agent context pack
+  (`docs/agents/`). Fails if a `src/` subsystem or top-level module has no
+  entry in `docs/agents/module-map.md`, if an entry names a path that no longer
+  exists, or if entries are unsorted, duplicated, or left as stubs. When you
+  add, remove or rename a module, describe it in the SAME diff.
+  `npm run context:fix` does the mechanical part (add/drop/sort) but
+  deliberately CANNOT make the gate green — it inserts a `TODO` stub and the
+  check keeps failing until someone writes the one-line description. A fixer
+  that auto-satisfied this gate would let modules enter the tree undescribed,
+  which is the exact rot it exists to prevent. Runs in CI's `lint` job.
 - `npm run build` — tsc + copies `schema.sql` into `dist/`.
 - DB-touching changes: CI runs `tests/repository.test.ts` against a real
   `pgvector/pgvector:pg16` service container (see `.github/workflows/ci.yml`),

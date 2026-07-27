@@ -69,6 +69,7 @@
   "grokImage.test.ts": 3,
   "guestKnowledgeShortcut.test.ts": 3,
   "guestKnowledgeShortcutRouter.test.ts": 3,
+  "handoffNote.test.ts": 8,
   "health.test.ts": 2,
   "healthState.test.ts": 1,
   "injectionCorpus.test.ts": 7,
