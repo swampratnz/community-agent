@@ -102,6 +102,7 @@
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,
   "repository.test.ts": 96,
+  "reviewVerdict.test.ts": 5,
   "router.test.ts": 8,
   "secrets.test.ts": 5,
   "securityGateCanary.test.ts": 1,
