@@ -2396,6 +2396,23 @@ CONFIRM gate, redaction, or scoped-access boundary. `researchTopic`
 multi-turn, uses `WebSearch`, and writes free-text content to the knowledge
 base, unlike the other two's fixed-format extraction.
 
+An operator can also set `AGENT_MODEL_FALLBACK` (issue #738) to a model (or
+comma-separated list, per the SDK's own accepted shape) that the SDK falls
+back to automatically when the primary model is overloaded or unavailable —
+retrying the primary fresh at the start of every turn, so a transient outage
+never permanently demotes the session. It applies uniformly to every role's
+turn (not tiered like `AGENT_MODEL_MEMBER`/`AGENT_MODEL_CLASSIFIER` above,
+since an overload on the shared pool isn't role-specific), is an
+operator-only deploy-time env value never supplied by message content, and
+does not alter the role-derived tool surface (`tools`/`allowedTools`/
+`disallowedTools`/`permissionMode`/`maxTurns`) — it only changes which model
+answers. Unset (default): `buildQueryOptions` carries no `fallbackModel` key,
+byte-identical to before. It narrows how often a turn falls through to
+`src/agent/core.ts`'s existing usage-limit/overload catch path (the
+`isUsageLimitFailure`-classified canned apology) without changing that path
+itself — same failure text, same admin-notify debounce, just reached less
+often.
+
 ## Residual risks (accepted, documented)
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped

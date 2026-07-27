@@ -255,7 +255,13 @@ test('SECURITY: rate_answer tool handler never calls notifyAdmins directly — t
   // The handler body runs from its `async (args) => {` opener through to the
   // closing `},\n  );` that ends the `tool(...)` call — mirrors the
   // feature_flags handler-body extraction in tests/tools.test.ts.
-  const region = source.slice(defStart, defStart + 3000);
+  // Bound the region at the NEXT tool definition rather than a fixed byte
+  // window: a fixed window silently went stale each time the handler grew
+  // (issue #726, then the #730 review fixes), turning handler growth into a
+  // spurious gate failure.
+  const nextToolDef = source.slice(defStart + 1).search(/tool\(\s*'[a-z_]+'/);
+  const regionEnd = nextToolDef === -1 ? source.length : defStart + 1 + nextToolDef;
+  const region = source.slice(defStart, regionEnd);
   const handlerMatch = region.match(/async \(args\) => \{([\s\S]*?)\n {4}\},\n {2}\);/);
   assert.ok(handlerMatch, 'rate_answer handler body not found');
   const body = handlerMatch[1];

@@ -23,6 +23,7 @@ for anything after ~noon NZST/NZDT). Get today's date with
   on every turn — the tool surface addition (`Skill`, granted uniformly to
   every tier, no new RBAC gating) and the bundled skill directory are both
   narrowly scoped and code-reviewed, never runtime- or member-derived.
+- **`AGENT_MODEL_FALLBACK`: an optional SDK-native fallback model for the main agent turn** (#738), a sibling of `AGENT_MODEL_MEMBER` (#382) and `AGENT_MODEL_CLASSIFIER` (#395): an operator can set it to a model, or comma-separated list per the SDK's own accepted shape, that the SDK's `fallbackModel` option retries against when the primary model is overloaded or unavailable, retrying the primary fresh at the start of every turn so a transient outage never permanently demotes the session. Applied uniformly across every role (not tiered — an overload on the shared model pool isn't role-specific), and it only changes which model answers a turn: `tools`/`allowedTools`/`disallowedTools`/`permissionMode`/`maxTurns` are unaffected. Unset (the default) is byte-identical to today — `buildQueryOptions` carries no `fallbackModel` key at all.
 - **Opt-in "can someone help with X" member-to-member handoff** (#729,
   `FIND_HELPER_ENABLED`, off by default), the active-side consumer of #634's
   `who_is_into`: `set_helper_availability(available)` lets a member (who has

@@ -49,6 +49,17 @@ const EnvSchema = z.object({
   // NOT covered: it's multi-turn, uses WebSearch, and produces free-text
   // knowledge-base content where model strength plausibly matters.
   AGENT_MODEL_CLASSIFIER: z.string().optional(),
+  // Optional fallback model(s) for the main agent turn (issue #738,
+  // docs/CAPABILITY-IDEAS.md §B3): passed straight through to the SDK's own
+  // Options.fallbackModel, which the SDK retries the primary model against
+  // fresh at the start of every turn (a temporary overload never permanently
+  // demotes the session). Accepts a comma-separated list per the SDK's own
+  // accepted shape — this repo does no parsing of it, just forwards the
+  // string. Same unconstrained-string, unset-means-opt-out shape as
+  // AGENT_MODEL_MEMBER/AGENT_MODEL_CLASSIFIER — no artificial model
+  // allow-list to maintain. Unset (default): buildQueryOptions omits
+  // fallbackModel entirely, byte-identical to today.
+  AGENT_MODEL_FALLBACK: z.string().optional(),
   AGENT_MAX_TURNS: z.coerce.number().int().positive().default(12),
   // Lower agentic-loop ceiling for member/guest turns (issue #347):
   // MEMBER_TOOLS is a much narrower surface than admin+'s (no WebSearch, no
@@ -595,6 +606,18 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Close the answered-question -> knowledge-base loop (issue #726,
+  // CAPABILITY-IDEAS.md §D2): when a member rates a helpful:true, UNGROUNDED
+  // reply (no meta->>'knowledgeEntryId'), rate_answer drafts a
+  // knowledge_candidates row from the preceding question/answer via the SAME
+  // createKnowledgeTip/candidateTopicAlreadyReviewed/findKnowledgeCoveringTopic
+  // path suggest_knowledge (#633) uses — no new table, rate-limit constant, or
+  // model call. Off by default, same convention as every other opt-in
+  // behavioural flag above; disabled, rate_answer is byte-identical to today.
+  KNOWLEDGE_ANSWER_CANDIDATE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Daily knowledge refresh: a scheduled job web-researches a small fixed set
   // of fast-moving Claude/Anthropic topics and writes the briefings straight
   // into the knowledge base (one upserted entry per topic, clearly marked
@@ -1021,6 +1044,7 @@ export const config = {
     model: env.AGENT_MODEL,
     memberModel: env.AGENT_MODEL_MEMBER,
     classifierModel: env.AGENT_MODEL_CLASSIFIER,
+    fallbackModel: env.AGENT_MODEL_FALLBACK,
     maxTurns: env.AGENT_MAX_TURNS,
     memberMaxTurns: env.AGENT_MAX_TURNS_MEMBER,
     webSearchRateLimitPerHour: env.AGENT_WEB_SEARCH_RATE_LIMIT_PER_HOUR,
@@ -1154,6 +1178,9 @@ export const config = {
   },
   contextCandidates: {
     enabled: env.CONTEXT_CANDIDATES_ENABLED ?? false,
+  },
+  knowledgeAnswerCandidate: {
+    enabled: env.KNOWLEDGE_ANSWER_CANDIDATE_ENABLED ?? false,
   },
   contextExport: {
     enabled: env.CONTEXT_EXPORT_ENABLED ?? false,

@@ -274,6 +274,21 @@ test('SECURITY: AGENT_MODEL_MEMBER unset ⇒ tools/allowedTools/disallowedTools 
   }
 });
 
+test('SECURITY: AGENT_MODEL_FALLBACK unset ⇒ buildQueryOptions has no fallbackModel property, for every role (issue #738)', () => {
+  assert.equal(
+    config.llm.fallbackModel,
+    undefined,
+    'precondition: this test process leaves AGENT_MODEL_FALLBACK unset',
+  );
+  for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
+    const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
+    assert.ok(
+      !('fallbackModel' in opts),
+      `${role} must have no fallbackModel key when AGENT_MODEL_FALLBACK is unset`,
+    );
+  }
+});
+
 test('SECURITY: under default config, member/guest maxTurns is strictly lower than admin/super_admin — tiering can never silently collapse to uniform (or invert) for the lower-trust tier', () => {
   const lowTrust = ['guest', 'member'] as const;
   const highTrust = ['admin', 'super_admin'] as const;

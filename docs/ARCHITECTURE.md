@@ -1169,6 +1169,84 @@ and review flow above, rather than a separate table or a privileged surface:
   same as `resolve_appeal`'s `dismissed` case — `decline_knowledge_candidate`
   takes no reason argument, so nothing is fabricated.
 
+#### Implicit drafting from a helpful answer (`rate_answer`, issue #726)
+
+A third path into the same `knowledge_candidates` queue, behind
+`KNOWLEDGE_ANSWER_CANDIDATE_ENABLED` (off by default): closing the loop
+CAPABILITY-IDEAS.md §D2 names, where a `rate_answer(helpful: true)` on an
+**ungrounded** reply (no `meta->>'knowledgeEntryId'` — answered from the
+model's own general knowledge, not an existing `knowledge` entry) is the
+cheapest possible source of a new knowledge-base entry and otherwise
+evaporates.
+
+- **One new read, `answerFeedbackGrounding`**: given the `interactions.id`
+  `rate_answer` just bound the rating to, it reads that outbound row's own
+  `content`/`meta->>'knowledgeEntryId'`/`meta->>'replyToUserId'`, then (only
+  when a `replyToUserId` exists) the most recent INBOUND row from that SAME
+  addressed member in the SAME conversation at or before the reply, to
+  recover the member's original question. `createAnswerFeedback`'s success
+  return additively gained `interactionId` (already resolved internally) so
+  the tool handler can chain straight into this read.
+- **Same write path, verbatim**: when the reply is ungrounded and a
+  preceding question was recovered, `rate_answer` runs the identical
+  `candidateTopicAlreadyReviewed` + `findKnowledgeCoveringTopic` dedup guard
+  `suggest_knowledge` runs, then calls the SAME `createKnowledgeTip` — no new
+  table, no model call. The shared `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY` cap and
+  the `[member-suggested by <name>]` rendering/purge machinery above apply
+  automatically. `createKnowledgeTip` truncates `topic` to
+  `KNOWLEDGE_TIP_TITLE_MAX_CHARS` the same as `title`, since this path's topic
+  is the raw recovered question rather than `suggest_knowledge`'s already
+  zod-capped `args.title`.
+- **Attribution tracks the question, not the rater**: the drafted row's
+  `source_platform`/`source_user_id` are the ADDRESSED member's identity
+  (`replyToUserId`) — not necessarily the `rate_answer` caller, since
+  `resolveAnswerFeedbackTarget` can bind a rating to a reply addressed to
+  someone else. A grounded reply, a `helpful: false` rating, or a reply with
+  no recoverable preceding question all fail closed — no draft.
+- **Rater-scoped cap on the mismatched case (SECURITY, issue #726
+  follow-up)**: `createKnowledgeTip`'s cap alone bounds how much of a single
+  victim's quota this absorbs, not how many DIFFERENT victims one rater can
+  draft against — `rate_answer`'s own daily cap (`RATE_ANSWER_DAILY_LIMIT`,
+  20/day) is far looser than any one victim's 3/day quota, so without this a
+  rater who has never personally been answered could silently drain several
+  other members' entire daily `suggest_knowledge` quota in one busy channel.
+  `countMismatchedHelpfulRatings` counts this rater's own `helpful: true`
+  `answer_feedback` rows in the last 24h whose bound interaction was
+  addressed to someone else (reusing `answer_feedback_user_rate_idx`, no new
+  table or column); once that exceeds `KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY`, this
+  rater's further mismatched drafts fail closed for the rest of the day,
+  regardless of the addressed member's own untouched quota. A matched
+  self-rating (rater is the addressed member) is exempt — that case is
+  already bounded by `createKnowledgeTip`'s own per-source-user cap, same as
+  a member's own `suggest_knowledge` calls.
+- **DM exclusion (issue #730 review)**: no draft is ever attempted from a
+  1:1 DM (`caller.isDirect`). In a channel the Q&A was already visible to
+  the room; in a DM the member may reasonably assume privacy, and a
+  "helpful" rating is not consent to republish into the guild-wide,
+  admin-visible candidate queue — a DM Q&A only enters that queue via the
+  EXPLICIT `suggest_knowledge` act.
+- **Tier gate (issue #730 review, round 2)**: no draft is ever attempted
+  for a caller below member. Open-mode guests hold `rate_answer` (it's on
+  the shared `MEMBER_TOOLS` surface), but writing into
+  `knowledge_candidates` is a member+ capability — `suggest_knowledge`
+  asserts exactly that on the same `createKnowledgeTip` path. The gate is a
+  silent `atLeast(caller.role, 'member')` condition rather than a throwing
+  `assertAtLeast`, because the guest's RATING itself stays allowed — only
+  the drafting side effect is suppressed, same shape as the DM exclusion.
+  Without it, a guest in a shared channel could rate-`helpful` a
+  member-addressed reply and draft a candidate attributed to that member
+  without ever holding member tier.
+- **Silent side effect, failure-isolated**: `rate_answer`'s own reply text
+  (`'Thanks, glad that helped!'`) is unchanged either way; drafting is never
+  announced to the member, unlike the deliberate `suggest_knowledge` flow.
+  The whole drafting block is try/caught (issue #730 review): a transient
+  failure in any of its reads/writes degrades to "no draft" and a warn log —
+  it can never surface as a tool error on a rating that was already
+  recorded. The rater-scoped mismatch cap stays deliberately check-then-act
+  rather than atomic: its count runs after the rating's own row is inserted,
+  so the only overshoot window is truly-concurrent calls, and the atomic
+  per-victim cap inside `createKnowledgeTip` remains the hard bound.
+
 ### Knowledge gaps (issue #208)
 
 `question_digest`, `countStaleKnowledge`, and `knowledge_candidates` each
@@ -2444,6 +2522,19 @@ overloaded. `src/agent/upstreamFailure.ts` covers that distinct signal:
   notified" when this flag is actually on.
 - No auto-`pause_bot` — same posture as `usageAlert.ts`: a super admin
   decides.
+- `buildQueryOptions` (`agent/core.ts`) narrows how often this classifier is
+  reached at all: an operator can set `AGENT_MODEL_FALLBACK` (issue #738,
+  same `z.string().optional()` shape as `AGENT_MODEL_MEMBER`/
+  `AGENT_MODEL_CLASSIFIER` above) to a model, or comma-separated list, that
+  the SDK's own `fallbackModel` option falls back to when the primary is
+  overloaded or unavailable — retrying the primary fresh at the start of
+  every turn, so a temporary outage doesn't permanently demote the session.
+  Applied uniformly to every role's turn (not tiered by role, since the
+  overload condition is a property of the shared pool, not the caller);
+  unset (default), `buildQueryOptions` carries no `fallbackModel` key,
+  byte-identical to before. This only changes which model can answer a turn
+  that would otherwise land in the classifier above — it doesn't touch
+  `isUsageLimitFailure`, the reply text, or the debounce latch themselves.
 
 `src/usageCostDigest.ts` (off unless `USAGE_COST_DIGEST_ENABLED`, issue #578)
 adds a third, complementary signal: a **weekly $ trend**, rather than a
