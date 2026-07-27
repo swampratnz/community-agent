@@ -11,6 +11,18 @@ Style is enforced by `eslint.config.js` and Prettier — run `npm run lint` and
 `npm run format:check` before opening a PR; don't hand-debate style in review
 that the config already settles.
 
+## Line endings
+
+`.gitattributes` normalises tracked text files to LF (`* text=auto eol=lf`).
+This only takes effect on a fresh `git clone`. If you cloned before this was
+added — most noticeably on Windows with `core.autocrlf=true`, where git
+otherwise materialises CRLF and breaks tests that match source files against
+a literal `\n` — pick it up in an existing clone with:
+
+```
+git rm --cached -r . && git reset --hard
+```
+
 ## Tests
 
 - `npm run typecheck`, `npm test`, and `npm run build` must all be green

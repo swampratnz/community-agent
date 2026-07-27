@@ -1,0 +1,11 @@
+# Normalise all text files to LF in the working tree. The repo already
+# stores LF; this makes that consistent on a Windows clone with
+# core.autocrlf=true, where git would otherwise materialise CRLF and break
+# tests that match source files against a literal `\n` (see #771).
+* text=auto eol=lf
+
+# No tracked file in this repo is binary today (verified against the full
+# `git ls-files` list — no images, fonts, or certs; WhatsApp auth state and
+# `*.pem`/`*.key` files are .gitignore'd, never tracked). If a binary asset
+# is added later, give it its own `-text` (or `binary`) line here rather than
+# letting `text=auto` guess.
