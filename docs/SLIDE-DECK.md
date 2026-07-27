@@ -5,7 +5,10 @@ self-improving pipeline that develops it, and how the design lines up with
 published agentic-engineering practice. Each slide has headline bullets plus
 a short talk track for the presenter. Sources: `README.md`,
 `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/PIPELINE.md`,
-`docs/VISION.md`, `CLAUDE.md`.
+`docs/VISION.md`, `docs/agents/`, `CLAUDE.md`.
+
+Figures (module/test/security-test counts) are approximate and drift as the
+pipeline ships — re-check them against the repo before presenting.
 
 ---
 
@@ -93,6 +96,11 @@ Discord ─► DiscordAdapter ─┐                 ┌─ BaileysAdapter ◄�
   refreshed weekly by content diff; opt-in daily refresh for fast-moving
   topics.
 - Admins curate the KB (`save_knowledge`, candidate review queue).
+- **Agent Skills** (opt-in, off by default): procedural playbooks — walking a
+  member through Claude Code setup, picking a model/plan, reviewing an agent
+  architecture — deliberately kept **separate from the knowledge base, which
+  holds facts**. The enabled set is a hand-written allowlist in code, never
+  `'all'`, so a new skill folder needs a second deliberate edit to go live.
 - **Retrieval quality is regression-tested**: a golden-query eval
   (`tests/knowledgeEval.test.ts`) measures precision@K against paraphrased
   queries with distractors — new knowledge entries must ship with matching
@@ -141,6 +149,9 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   `status:building` issues.
 - **auto-merge** — deterministic, no-LLM loop that merges only fully-vetted
   build-worker PRs; governance/CI/config paths **always require a human**.
+- **outcomes** — weekly, read-only, no-LLM: reconstructs each loop's record
+  (engaged / checkpoint-recovered / escalated) from marker comments the loops
+  already post, to answer *"is each loop earning its tokens?"*
 
 > **Talk track:** every fixing loop is bounded (attempt caps), re-verifies
 > eligibility from the API before touching anything, and can escalate but
@@ -152,13 +163,13 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
 
 - **CI parity**: the build worker runs the full CI gate (typecheck, lint,
   format, migrate, tests against a real pgvector Postgres container, build,
-  security suite) *before* opening a PR — "green locally" is defined as
-  matching CI.
-- **Security floor**: ~990 `SECURITY:`-prefixed tests across ~120 files,
+  security suite, context-pack freshness) *before* opening a PR — "green
+  locally" is defined as matching CI.
+- **Security floor**: ~1,000 `SECURITY:`-prefixed tests across ~125 files,
   enforced by a per-file manifest (`tests/security-floor.json`) — exact
   counts, so a deleted security test can't slip through silently; per-file
   entries so concurrent PRs don't conflict.
-- 164 test files overall; DB-touching tests skip cleanly without a local
+- ~167 test files overall; DB-touching tests skip cleanly without a local
   Postgres so contributors aren't blocked.
 - **Branch protection on `main`** is the enforceable backstop for every loop.
 
@@ -182,6 +193,18 @@ auto-merge ──merges fully-vetted bot PRs──► main   (humans merge the r
   auto-merge won't touch.
 - **Escalations carry diagnosis** → a loop that gives up posts the agent's own
   final summary, so a human isn't reverse-engineering run logs.
+- **Every worker is a cold session** → each run is a fresh Actions job with no
+  memory, so it re-derives the same repo layout every time. Repo context is
+  now committed once (`docs/agents/`, gated — a stale map is worse than none,
+  because it is confidently wrong and a cold session can't tell), and
+  work-item context is handed forward build → review as a bounded note that
+  the reviewer is told is **untrusted data which may only add scrutiny, never
+  remove it** (#767).
+- **A test can assert the right thing about the wrong value** → the first live
+  handoff run broke twice: the consumer matched an API field using a value
+  that field never emits (so the test passed and production failed), and the
+  reviewer started 21 seconds before the note existed. Fixed with a real
+  captured value and a draft → post → ready handshake (#770).
 
 > **Talk track:** the pipeline docs read like a post-incident log — each
 > guardrail cites the PR/issue number that motivated it. That's the most
@@ -225,7 +248,7 @@ agentic design patterns and Anthropic's five workflow patterns (e.g. the
 - **Evaluator-Optimizer with stopping rules** — build → review → revise is
   the classic generate/evaluate loop; every loop has an attempt cap (2/2/1/3)
   and escalates `needs-human` — the prescribed "escalate rather than retry a
-  third time." Deterministic checks (CI, 991 security tests) always run
+  third time." Deterministic checks (CI, ~1,000 security tests) always run
   before subjective LLM review.
 - **Explicit, immutable rubric** — `VISION.md` is the shared scoring rubric;
   quality is tuned by editing it, not the loop prompts.
@@ -239,7 +262,12 @@ agentic design patterns and Anthropic's five workflow patterns (e.g. the
   CI run + attempt counters.
 - **Deliberate divergence** — no typed knowledge graph: memory is pgvector
   RAG + relational state, the playbook's own "graph earns itself" waypoint;
-  graduate only when a measured failure demands it.
+  graduate only when a measured failure demands it. The same call was made
+  again for cross-session context: the pipeline is *already* a graph (a
+  label-driven state machine) and stateless Actions runs are the wrong host
+  for an in-memory orchestrator, so the fix was to **write the context down**
+  — a committed context pack plus stage-to-stage handoff notes — not to adopt
+  a graph library.
 
 > **Talk track:** the repo independently converged on (or consciously
 > implements) the published patterns — including the parts most teams skip:
