@@ -25,6 +25,17 @@ Skipped as internal: #707 #725 #731
 ## 2026-07-27
 
 ### Added
+- **Admins can now see all five review queues in one glance** (#745): a new
+  `review_queue` tool composes the same queue-count and oldest-item-age
+  lookups the weekly `admin_digest` already uses — access requests,
+  suggestions, knowledge candidates, reports, and appeals — into one
+  read-only, argument-less call, so an admin no longer has to run five
+  separate tools (or wait for the weekly digest) to see what's pending.
+  Access requests, suggestions, and reports show an oldest-item age once
+  that queue is non-empty; knowledge candidates and appeals show a count
+  only, since neither has an "oldest" lookup yet — a named growth path, not
+  a silent gap. Reports stay scoped to the admin's own conversations,
+  matching `list_reports`.
 - **Opt-in Agent Skills support for the prompt-review checklist** (#741,
   `AGENT_SKILLS_ENABLED`, off by default): wires the Claude Agent SDK's
   Agent Skills mechanism to host the #635 prompt-review guidance. Off
@@ -95,6 +106,29 @@ Skipped as internal: #707 #725 #731
 ## 2026-07-26
 
 ### Added
+- **The weekly member digest can now mention new Anthropic platform updates**
+  (#739, `RELEASE_WATCH_ENABLED`, off by default): docs-ingest already
+  fetches and diffs Anthropic's release-notes and model-deprecation pages
+  every week, but until now that "what changed" signal was discarded after
+  each run. With the flag on (and `DOCS_INGEST_ENABLED` also on), the
+  digest gains a "🆕 Anthropic platform updates this week" section naming
+  any configured doc page — release notes, what's-new, and model
+  deprecations by default — that changed since the last digest, shown only
+  when at least one did. No new fetch, source, or trust boundary: it
+  surfaces only already-trusted `'docs'`-provenance pages docs-ingest
+  fetched from Anthropic's own site.
+- **Discord voice messages can now be transcribed, matching WhatsApp**
+  (#735, `DISCORD_VOICE_ENABLED`, off by default, `super_admin` floor by
+  default): reuses the exact same local, offline Whisper pipeline WhatsApp
+  voice notes already use, so audio never leaves the host. A native
+  Discord voice-message bubble is transcribed subject to the same gate
+  order as WhatsApp — feature flag, caller tier, a length cap, and an
+  hourly rate cap, all checked before the attachment is even fetched — and
+  a regular file upload is left untouched regardless of flag or role. A
+  successful transcription sends the same language-caveat DM when the
+  sender has a stored te reo Māori preference. `DISCORD_VOICE_*` config is
+  independent of `WHATSAPP_VOICE_*`, and the two platforms' hourly quotas
+  no longer collide now that the rate-limit key is platform-qualified.
 - **Admins can now see recurring themes behind thumbs-down feedback, not just
   the count** (#728), instrumenting the second, previously-missing half of
   the answer-quality signal #653 shipped (overall helpful-rate) alongside
