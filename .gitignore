@@ -35,6 +35,15 @@ models/
 /prs.json
 /gaps.md
 
+# The build worker's stage-to-stage handoff note (.github/workflows/
+# pipeline-build.yml). The build AGENT writes it into the repo root — a path it
+# can definitely write to, unlike somewhere outside the workspace — and a later
+# deterministic step posts it as a PR comment. Untracked for the same two
+# reasons as the files above: a stray `git add -A` must not commit it, and the
+# note is a transient artefact of one run, not repo content. (Prettier already
+# skips it via .prettierignore's `*.md`.)
+/handoff.md
+
 # OS / editor
 .DS_Store
 *.swp

@@ -25,6 +25,19 @@ that the config already settles.
 - DB-touching changes should pass against a real Postgres + pgvector locally
   (`npm run migrate` then `npm test`) in addition to CI's service container.
 
+## Finding your way around
+
+`docs/agents/` is a committed context pack: `module-map.md` (one line per `src/`
+subsystem and module, security spine marked) and `recipes.md` (what a given kind
+of change touches, and which gate catches a missed file). It is aimed at the
+pipeline's cold sessions, but it is the fastest orientation for a human too.
+
+If you **add, remove or rename a module**, describe it in `module-map.md` in the
+same diff — `npm run context:check` (CI's lint job) fails otherwise, and
+`npm run context:fix` handles the mechanical part. The pack is orientation, not
+authority: read the code before trusting a one-liner, and fix the line if it is
+wrong.
+
 ## Commits and PRs
 
 - No model identifiers in commit messages, PR titles/bodies, or code.

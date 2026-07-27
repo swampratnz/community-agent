@@ -22,6 +22,8 @@
     "test": "tsx --experimental-test-module-mocks --test tests/*.test.ts",
     "test:security": "LOG_LEVEL=${LOG_LEVEL:-silent} node scripts/check-security-test-count.mjs",
     "test:security:fix": "node scripts/check-security-test-count.mjs --write",
+    "context:check": "node scripts/check-context-pack.mjs",
+    "context:fix": "node scripts/check-context-pack.mjs --write",
     "changelog:check": "gh pr list --state merged --limit 150 --json number,title,mergedAt,body | node scripts/check-changelog-coverage.mjs",
     "migrate": "tsx src/storage/migrate.ts",
     "migrate:ci": "CLAUDE_CODE_OAUTH_TOKEN=ci-dummy-token npm run migrate",
