@@ -115,6 +115,24 @@ Skipped as internal: #707 #725 #731 #751
   previously skipped it — no new tool, table, or query; it reuses the
   already-computed `firstRequestedAt` lookup.
 
+### Fixed
+- **A verified super admin / admin no longer gets a fabricated role-based
+  refusal** (#753). A super-admin's authorized `add_member` request was
+  refused with an invented "I don't have anything on file marking you as an
+  admin" — RBAC resolution was correct and the tool's own gate would have
+  allowed the call, but the model's defensive posture from an unrelated,
+  immediately-preceding injection probe (from a different user) bled into
+  the next, genuinely authorized request. `ROLE_NOTES` for `super_admin` and
+  `admin` now frame the resolved tier as a VERIFIED, platform-resolved fact,
+  not a claim to weigh, and new guidance instructs the model not to narrate a
+  role-based refusal when a tool's gate is already satisfied, never to
+  fabricate a refusal reason, and to evaluate each request only against the
+  current requester's own verified role, independent of any authority claim
+  or injection attempt made earlier in the conversation by anyone. Prompt-only
+  change: the `add_member` gate and RBAC resolution are unchanged, and a new
+  `SECURITY:` test pins that a message-text authority claim still does not
+  elevate a member/guest caller.
+
 ## 2026-07-26
 
 ### Added
