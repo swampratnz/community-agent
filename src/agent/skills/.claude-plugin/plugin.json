@@ -1,0 +1,5 @@
+{
+  "name": "community-agent-skills",
+  "version": "1.0.0",
+  "description": "Repo-bundled skills for the NZ Claude Community agent. Static, code-reviewed markdown only — no hooks, agents, commands, or MCP servers."
+}

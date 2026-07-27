@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { query, type HookJSONOutput, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -284,6 +286,28 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
 }
 
 /**
+ * Repo-bundled Agent Skills plugin directory (issue #741), resolved the same
+ * way migrate.ts locates schema.sql: relative to this file's own compiled
+ * location, so it resolves to src/agent/skills in dev (tsx) and
+ * dist/agent/skills in the built artifact (package.json's build script
+ * copies it there, mirroring the existing schema.sql copy step). Contains
+ * only a `.claude-plugin/plugin.json` manifest and one
+ * `skills/prompt-review/SKILL.md` — no hooks/agents/commands/.mcp.json — so
+ * nothing beyond that one static markdown skill body is ever loadable from
+ * it (pinned by a dedicated test).
+ */
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SKILLS_DIR = join(__dirname, 'skills');
+
+/**
+ * The explicit, hand-written skill allowlist (issue #741) — never 'all', so a
+ * future skill file added to SKILLS_DIR needs a deliberate second edit here
+ * to activate, matching this repo's existing convention of hand-written,
+ * non-reflective tool/skill allowlists elsewhere.
+ */
+const ENABLED_SKILLS = ['prompt-review'] as const;
+
+/**
  * Build the SDK query options for one turn. Extracted (and exported) so the
  * security invariants are regression-testable:
  *  - built-in Claude Code tools are disabled via `tools` (empty for members;
@@ -294,6 +318,16 @@ function filterFeatureFlaggedTools(tools: string[]): string[] {
  *    platform (Discord-only tools dropped on WhatsApp) and by feature flags
  *    (tools behind a disabled `config.*.enabled` dropped entirely, issue
  *    #535) — never from message content, and only ever a subtractive filter;
+ *  - Agent Skills (issue #741, `config.agentSkills.enabled`, off by default):
+ *    when off, the returned options object carries no `plugins`/`skills`
+ *    keys and `tools` is byte-identical to today, for every role — the
+ *    #635 prompt-review checklist stays inline in `GUIDELINES`
+ *    (systemPrompt.ts) instead. When on, `'Skill'` is added to the base
+ *    `tools` array (uniformly for every role, same as the checklist it
+ *    replaces applied to every role) and `plugins`/`skills` load exactly
+ *    the repo-bundled, code-reviewed `SKILLS_DIR` — `skills` is always the
+ *    literal `ENABLED_SKILLS` array, never `'all'` and never derived from
+ *    any request- or member-supplied value;
  *  - `maxTurns` is tiered by role: member/guest get the lower
  *    `AGENT_MAX_TURNS_MEMBER` ceiling, admin+ keep `AGENT_MAX_TURNS`.
  *  - `model` is tiered by role the same way (issue #382): member/guest get
@@ -369,9 +403,21 @@ export function buildQueryOptions(
     systemPrompt,
     mcpServers,
     // The base built-in tool set. Empty = no built-ins at all; admin+ get
-    // exactly one: WebSearch. `allowedTools` alone only auto-approves; this
-    // list is what actually restricts the surface.
-    tools: webSearch ? ['WebSearch'] : [],
+    // WebSearch, and every role gets 'Skill' too when AGENT_SKILLS_ENABLED
+    // (issue #741) — uniformly, no tier gating, matching the ungated
+    // prompt-review checklist this replaces. `allowedTools` alone only
+    // auto-approves; this list is what actually restricts the surface.
+    tools: [...(webSearch ? ['WebSearch'] : []), ...(config.agentSkills.enabled ? ['Skill'] : [])],
+    // Deliberately NOT adding 'Skill' here, unlike WebSearch above: the
+    // installed SDK's own type declarations (sdk.d.ts, pinned at
+    // @anthropic-ai/claude-agent-sdk@0.3.220) document that passing 'Skill'
+    // into allowedTools is deprecated and that the `skills` option below
+    // ("you do not need to add 'Skill' to allowedTools yourself when using
+    // this option") is the intended, self-sufficient pre-approval path —
+    // confirmed by tests/agentSkillsEnabled.test.ts, which pins that exact
+    // wording still present in the vendored .d.ts so an SDK upgrade that
+    // silently drops the guarantee fails CI instead of shipping a Skill
+    // tool that's granted in `tools` but never actually approved to fire.
     allowedTools: [
       ...filterFeatureFlaggedTools(toolsForRole(role, platform)),
       ...(webSearch ? ['WebSearch'] : []),
@@ -386,6 +432,13 @@ export function buildQueryOptions(
     ...(resumeSession ? { resume: resumeSession } : {}),
     // Don't load the host machine's ~/.claude config into the agent.
     settingSources: [] as [],
+    // Agent Skills (issue #741): loads exactly the repo-bundled skills
+    // plugin — never a runtime-derived path or allowlist. Unset/disabled,
+    // this object carries neither key at all (not empty-valued), so the
+    // returned options are byte-identical to pre-#741 behaviour.
+    ...(config.agentSkills.enabled
+      ? { plugins: [{ type: 'local' as const, path: SKILLS_DIR }], skills: [...ENABLED_SKILLS] }
+      : {}),
     ...(webSearch
       ? {
           hooks: {

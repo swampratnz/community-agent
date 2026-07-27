@@ -10,6 +10,18 @@ is a NZ community, and the CI that opens most PRs runs in UTC (a day behind NZ
 for anything after ~noon NZST/NZDT). Get today's date with
 `TZ='Pacific/Auckland' date +%F` rather than a bare `date`.
 
+<!--
+changelog-coverage skip ledger — merged PRs judged INTERNAL (CI / deps /
+tests / pipeline / tooling), so they deliberately get no member-facing entry.
+Listing a PR number here satisfies scripts/check-changelog-coverage.mjs (any
+`#NNN` occurrence in this file counts as documented), which is what lets the
+daily tracking issue converge and auto-close. This comment sits in the H1
+preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
+to members. Append numbers; never remove them.
+Skipped as internal: #707 #725 #731
+-->
+
+
 ## 2026-07-27
 
 ### Added
@@ -25,6 +37,16 @@ for anything after ~noon NZST/NZDT). Get today's date with
   policy) and `/kb` never direct-serves unreviewed auto-researched knowledge.
   `/whois` and `/projects` replies are ephemeral where their chat equivalents
   post in-channel today — a privacy improvement, not just parity.
+- **Opt-in Agent Skills support for the prompt-review checklist** (#741,
+  `AGENT_SKILLS_ENABLED`, off by default): wires the Claude Agent SDK's
+  Agent Skills mechanism to host the #635 prompt-review guidance. Off
+  (default), nothing changes — the checklist stays inline in the system
+  prompt exactly as #635 shipped it. On, the same checklist text moves,
+  byte-for-byte, into a repo-bundled skill (`prompt-review`) that loads into
+  context only on turns that actually invoke it, instead of being paid for
+  on every turn — the tool surface addition (`Skill`, granted uniformly to
+  every tier, no new RBAC gating) and the bundled skill directory are both
+  narrowly scoped and code-reviewed, never runtime- or member-derived.
 - **`AGENT_MODEL_FALLBACK`: an optional SDK-native fallback model for the main agent turn** (#738), a sibling of `AGENT_MODEL_MEMBER` (#382) and `AGENT_MODEL_CLASSIFIER` (#395): an operator can set it to a model, or comma-separated list per the SDK's own accepted shape, that the SDK's `fallbackModel` option retries against when the primary model is overloaded or unavailable, retrying the primary fresh at the start of every turn so a transient outage never permanently demotes the session. Applied uniformly across every role (not tiered — an overload on the shared model pool isn't role-specific), and it only changes which model answers a turn: `tools`/`allowedTools`/`disallowedTools`/`permissionMode`/`maxTurns` are unaffected. Unset (the default) is byte-identical to today — `buildQueryOptions` carries no `fallbackModel` key at all.
 - **Opt-in "can someone help with X" member-to-member handoff** (#729,
   `FIND_HELPER_ENABLED`, off by default), the active-side consumer of #634's

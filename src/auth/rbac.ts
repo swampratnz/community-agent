@@ -241,6 +241,12 @@ export const ADMIN_TOOLS = [
   // #499) — same signals/scoping the ADMIN_DIGEST_ENABLED push already
   // computes, just available on request instead of waiting up to a week.
   'mcp__community__admin_digest',
+  // Argument-less roll-up of the five review-queue tools' own counts (issue
+  // #743) — access requests/suggestions/knowledge candidates are guild-wide
+  // like their list_* tools; reports uses callerScope()+linked-identity
+  // exclusion like list_reports; appeals uses caller.platform like
+  // list_appeals. No new scoping decision, no new data exposure.
+  'mcp__community__review_queue',
   'mcp__community__list_knowledge_gaps',
   'mcp__community__moderation_history',
   'mcp__community__add_member',

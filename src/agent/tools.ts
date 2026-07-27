@@ -21,8 +21,13 @@ import {
   candidateTopicAlreadyReviewed,
   clearAccessRequest,
   clearWarnings,
+  countAccessRequests,
   countActiveWarnings,
   countMismatchedHelpfulRatings,
+  countOpenAppeals,
+  countOpenReports,
+  countPendingKnowledgeCandidates,
+  countPendingSuggestions,
   countRecentDmReportsByReporterAndTarget,
   countRepliesToUser,
   createAnswerFeedback,
@@ -81,6 +86,9 @@ import {
   listRoster,
   listSuggestions,
   MEMBER_PROJECT_CAP,
+  oldestAccessRequestAgeDays,
+  oldestOpenReportAgeDays,
+  oldestPendingSuggestionAgeDays,
   type MemberProject,
   type MemberProjectSearchHit,
   MEMBER_INTERESTS_MAX_CHARS,
@@ -1342,6 +1350,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Read-only Discord slash commands (/kb, /projects, /whois, /guidelines)',
     category: 'Community',
   },
+  {
+    envVar: 'AGENT_SKILLS_ENABLED',
+    configPath: 'agentSkills.enabled',
+    label: 'Agent Skills (prompt-review)',
+    category: 'Integrations',
+  },
 ] as const;
 
 /**
@@ -1598,7 +1612,7 @@ const ADMIN_CAPABILITIES_TEXT =
   '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
   '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
   '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
-  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
+  "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, or get a review-queue roll-up of all five review queues at once\n" +
   '- See who is waiting for access, or who has joined or left the server\n' +
   "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
   '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -5923,6 +5937,58 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const reviewQueueTool = tool(
+    'review_queue',
+    'Single roll-up of all five admin review queues — access requests, suggestions, knowledge candidates, ' +
+      'reports, and appeals — each with its current pending/open count, so triage starts with one glance ' +
+      'instead of polling five separate list_* tools in turn. The access-requests, suggestions, and reports ' +
+      "lines also show the oldest item's age in whole days once that queue is non-empty. Reports reflect only " +
+      'your own conversation scope, same as list_reports (never a guild-wide total); appeals reflect only your ' +
+      'own platform, same as list_appeals. Knowledge candidates and appeals show count only (no age) for now. ' +
+      'Read-only, takes no arguments. Admin only.',
+    {},
+    async () => {
+      assertAtLeast(caller.role, 'admin', 'review_queue');
+      const allowed = await callerScope();
+      // Same linked-identity-aware accused-admin exclusion list_reports uses
+      // (issue #197 + link_member), so the reports line here can never show a
+      // count larger than what list_reports would actually let this admin open.
+      const viewerIds = (await resolveLinkedIdentities(caller.platform, caller.userId)).map((i) => i.userId);
+      const [
+        accessRequestCount,
+        accessRequestAgeDays,
+        suggestionCount,
+        suggestionAgeDays,
+        candidateCount,
+        reportCount,
+        reportAgeDays,
+        appealCount,
+      ] = await Promise.all([
+        countAccessRequests(),
+        oldestAccessRequestAgeDays(),
+        countPendingSuggestions(),
+        oldestPendingSuggestionAgeDays(),
+        countPendingKnowledgeCandidates(),
+        countOpenReports(allowed, viewerIds),
+        oldestOpenReportAgeDays(allowed, viewerIds),
+        countOpenAppeals(caller.platform),
+      ]);
+      // Each oldest*AgeDays resolves to null over an empty (or fully-scoped-
+      // out) row set, never 0 — so gating the suffix on non-null is exactly
+      // "only when this queue is non-empty" (acceptance criterion 2).
+      const ageSuffix = (ageDays: number | null) => (ageDays !== null ? ` (oldest ${ageDays}d)` : '');
+      const lines = [
+        `- Access requests: ${accessRequestCount} pending${ageSuffix(accessRequestAgeDays)}`,
+        `- Suggestions: ${suggestionCount} pending${ageSuffix(suggestionAgeDays)}`,
+        `- Knowledge candidates: ${candidateCount} pending`,
+        `- Reports (your conversations): ${reportCount} open${ageSuffix(reportAgeDays)}`,
+        `- Appeals: ${appealCount} open`,
+      ];
+      return text(`📋 Review queue\n${lines.join('\n')}`);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const listKnowledgeGaps = tool(
     'list_knowledge_gaps',
     'Show searches (asked >= 2 times) in your conversations over recent days that found no confident answer — ' +
@@ -7282,6 +7348,7 @@ export function buildToolServer(
       declineKnowledgeCandidateTool,
       questionDigest,
       adminDigestTool,
+      reviewQueueTool,
       listKnowledgeGaps,
       moderationHistory,
       listReportsTool,
