@@ -37,7 +37,7 @@ test('precondition: AGENT_SKILLS_ENABLED is on in this test process', () => {
   assert.equal(config.agentSkills.enabled, true);
 });
 
-test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads exactly the prompt-review skill, for every role (no tier gating)', () => {
+test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads exactly the bundled skills, for every role (no tier gating)', () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
     assert.ok(opts.tools.includes('Skill'), `${role}: tools must include Skill when the flag is on`);
@@ -48,14 +48,18 @@ test('SECURITY: AC2 — AGENT_SKILLS_ENABLED=true adds Skill to tools and loads 
       /[/\\]agent[/\\]skills$/,
       `${role}: plugin path must point at the bundled agent/skills directory`,
     );
-    assert.deepEqual(opts.skills, ['prompt-review'], `${role}: skills must be exactly ['prompt-review']`);
+    assert.deepEqual(
+      opts.skills,
+      ['prompt-review', 'project-showcase'],
+      `${role}: skills must be exactly ['prompt-review', 'project-showcase']`,
+    );
   }
 });
 
-test("SECURITY: AC6 — skills is always the literal array ['prompt-review'] — never 'all', never derived from any input", () => {
+test("SECURITY: AC6 — skills is always the literal array ['prompt-review', 'project-showcase'] — never 'all', never derived from any input", () => {
   for (const role of ['guest', 'member', 'admin', 'super_admin'] as const) {
     const opts = buildQueryOptions(role, 'prompt', {}, null, 'conv-1');
-    assert.deepEqual(opts.skills, ['prompt-review']);
+    assert.deepEqual(opts.skills, ['prompt-review', 'project-showcase']);
     assert.notEqual(opts.skills, 'all');
   }
 });
@@ -169,14 +173,18 @@ test('SECURITY: AC5 — the bundled skill plugin directory contains no hooks/, a
     );
     assert.doesNotMatch(f, /\.mcp\.json$/, `${f}: must not be an .mcp.json file`);
   }
-  // Sanity: the walk actually found the two files this proposal ships, so an
+  // Sanity: the walk actually found the files these proposals ship, so an
   // empty/misconfigured directory can't pass this test vacuously.
   assert.ok(
     files.some((f) => f.endsWith('plugin.json')),
     'expected the plugin manifest to be present',
   );
   assert.ok(
-    files.some((f) => f.endsWith('SKILL.md')),
+    files.some((f) => f.endsWith(join('prompt-review', 'SKILL.md'))),
     'expected prompt-review/SKILL.md to be present',
+  );
+  assert.ok(
+    files.some((f) => f.endsWith(join('project-showcase', 'SKILL.md'))),
+    'expected project-showcase/SKILL.md to be present',
   );
 });
