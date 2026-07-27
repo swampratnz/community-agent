@@ -122,3 +122,5 @@ approved ones on a branch and opens a PR — **a human always merges**. See
 - [Pipeline](docs/PIPELINE.md) — the self-improving research/review/build loops
 - [Personas](docs/PERSONAS.md) — the bot's voice ("Dave")
 - [Standards](docs/STANDARDS.md) · [Red-team](docs/RED-TEAM.md)
+- [Slide deck](docs/SLIDE-DECK.md) — presentable 11-slide overview of the repo,
+  the pipeline, and how the design maps to agentic best practice
