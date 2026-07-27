@@ -224,28 +224,31 @@ defend, what it rejected, what it is unsure about — to a git-ignored
 marker-guarded PR comment; the review workflow resolves it deterministically
 and interpolates it into the review prompt.
 
-**The draft handshake.** The build agent opens its PR as a **draft**; the build
-workflow posts the handoff note and *then* marks the PR ready for review, which
-fires `ready_for_review` with the note already attached. The review job skips
-drafts, so it cannot start early.
+**The reviewer waits for the note.** The note cannot exist when the review job
+starts: the build workflow can only post it once the agent has created the PR,
+and creating the PR is what triggers the review. Measured on PR #769 — created
+14:10:51, review started 14:10:55, note posted 14:11:16 — the reviewer runs
+about 20 seconds early. So the review's resolve step **polls for up to 60s
+(6 × 10s), and only on a bot-authored PR that has no note yet**. A human PR
+resolves on the first read and waits zero seconds.
 
-This is not ceremony — it is the fix for a race the first live run exposed. On
-PR #769 the PR was created at 14:10:51, the review job started at 14:10:55, and
-the handoff comment landed at 14:11:16: the reviewer ran **21 seconds before the
-note existed** and logged "reviewing from the diff alone". Posting the note
-earlier is impossible (the PR number only exists once the agent has created the
-PR), so the PR waits for the note instead.
+**A draft handshake was tried first and does not work — do not re-add it.** The
+build agent opened a draft, the workflow posted the note and then ran
+`gh pr ready` to release it, with the review job skipping drafts. `gh pr ready`
+runs with the job's `GITHUB_TOKEN`, and **GitHub never starts workflows from
+GITHUB_TOKEN-created events** — the same rule that forces the revise and
+conflict loops through `workflow_dispatch`. The `opened` run skipped on the
+draft, no `ready_for_review` ever fired, and build PRs got **no review at all**
+(#778, and #775 before it). Polling needs no new trigger, adds no
+`workflow_dispatch` surface to the review workflow, and leaves the build
+worker's PR contract alone.
 
-Two deliberate consequences: a human's draft PR is reviewed when they mark it
-ready rather than while they are still writing it, and a **recovery PR** (opened
-as a draft by the verify step when an agent stranded its work) is reviewed when a
-human opens it for review — which is what its own body already promises, and it
-can never auto-merge in any case. The ready-marking step runs even when the
-handoff step failed or wrote nothing, because a missing note must never strand a
-finished PR in draft where neither the reviewer nor auto-merge will touch it. If
-the agent opens a non-draft PR anyway, the review simply starts without the note,
-exactly as it did before this existed — a graceful degradation, not a new failure
-mode.
+The remaining alternative, if the poll ever proves too slow, is to give this
+workflow a `workflow_dispatch` + `pr_number` input and have the build workflow
+dispatch it after posting — the established two-hop pattern here. That costs a
+second review run per build PR and needs checkout-ref handling (a dispatch run
+checks out the default branch, not the PR head), which is why the poll came
+first.
 
 **The note is untrusted data, and the containment is structural.** The build
 agent processes untrusted issue content, so an injected build agent could aim a

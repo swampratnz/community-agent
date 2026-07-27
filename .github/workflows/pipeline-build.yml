@@ -321,13 +321,7 @@ jobs:
                before proceeding.
             4. Open a pull request whose body starts with "Closes #${{ github.event.issue.number }}",
                summarising the change, its security/privacy impact, and how you verified
-               it. Open it as a DRAFT — use `gh pr create --draft` — and leave it
-               a draft; a later workflow step marks it ready for review once it
-               has attached your handoff note. This is a HANDSHAKE, not a
-               formality: the review worker skips drafts, so opening a
-               non-draft PR starts the review before your note exists and the
-               reviewer loses it (that is exactly what happened on PR #769).
-               Then relabel the issue `status:built`.
+               it. Then relabel the issue `status:built`.
             5. Do NOT merge — a human merges. If the proposal turns out infeasible or
                unsafe as specified, add the `needs-human` label and explain instead of
                forcing it.
@@ -747,46 +741,6 @@ jobs:
           fi
           gh pr comment "${PR}" --body-file "${out}" \
             || echo "::warning::Could not post the handoff note to PR #${PR}; continuing (best-effort)."
-
-      # Second half of the draft handshake — see the step above and
-      # docs/PIPELINE.md. The agent opens its PR as a DRAFT so the review worker
-      # (which skips drafts) cannot start before the handoff note is attached;
-      # marking it ready here is what actually releases it for review.
-      #
-      # This exists because the first live run proved the ordering: PR #769 was
-      # created at 14:10:51, the review job started at 14:10:55, and the handoff
-      # comment landed at 14:11:16 — the reviewer ran 21 seconds before the note
-      # existed and logged "reviewing from the diff alone". Posting earlier is
-      # not possible (the PR number only exists once the agent has created it),
-      # so the PR has to wait for the note instead.
-      #
-      # Runs even when the handoff step failed or wrote nothing: a missing note
-      # must never strand a finished PR in draft, where the review worker skips
-      # it AND the auto-merge loop cannot merge it. `!cancelled()` rather than
-      # `success()` for exactly that reason.
-      #
-      # A PR the agent opened non-draft anyway (prompt compliance is not a
-      # guarantee — this repo has the scars) is already being reviewed without
-      # the note; `gh pr ready` on it is a harmless no-op and we say so rather
-      # than failing. That is a graceful degradation to the previous behaviour,
-      # not a new failure mode.
-      - name: Mark the PR ready for review (release the draft handshake)
-        if: ${{ !cancelled() && env.HAS_TOKEN == 'true' && steps.verify.outputs.pr != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ steps.verify.outputs.pr }}
-        run: |
-          set -uo pipefail
-          is_draft="$(gh pr view "${PR}" --json isDraft --jq '.isDraft' 2>/dev/null || echo unknown)"
-          if [ "${is_draft}" = "false" ]; then
-            echo "PR #${PR} was opened non-draft, so its review already started without the handoff note. Nothing to release."
-            exit 0
-          fi
-          if gh pr ready "${PR}"; then
-            echo "PR #${PR} marked ready for review — the review worker now fires with the handoff note in place."
-          else
-            echo "::error::Could not mark PR #${PR} ready for review. It is still a DRAFT, which means the review worker will skip it and the auto-merge loop cannot merge it. A maintainer must press 'Ready for review'."
-          fi
 
       # The action streams only init/result frames to the job log ("full
       # output hidden for security"); the turn-by-turn transcript lives in
