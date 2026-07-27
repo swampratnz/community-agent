@@ -144,6 +144,31 @@ export function render(raw) {
 }
 
 /**
+ * Compare two GitHub logins for the SAME identity, tolerating the `[bot]`
+ * suffix being present on one side and absent on the other.
+ *
+ * This is not cosmetic — it was a live bug. GitHub reports one bot identity two
+ * different ways depending on which API you ask:
+ *
+ *   gh api repos/…/issues/<n>/comments  →  .user.login   = "github-actions[bot]"
+ *   gh pr view <n> --json comments      →  .author.login = "github-actions"
+ *
+ * The review workflow uses the second form (it needs only the pull-requests
+ * scope), so a strict equality check against "github-actions[bot]" silently
+ * rejected every genuine note — the producer worked, the consumer saw nothing,
+ * and the failure looked exactly like "the build agent didn't write one".
+ *
+ * Suffix-stripping only; the comparison stays CASE-SENSITIVE. Case is left
+ * strict deliberately: nothing here needs it relaxed, and keeping it narrow
+ * means this fix widens the accepted set by exactly the one shape GitHub
+ * actually emits and nothing else.
+ */
+function sameIdentity(a, b) {
+  const strip = (s) => s.trim().replace(/\[bot\]$/, '');
+  return strip(a) === strip(b);
+}
+
+/**
  * Pull the newest handoff note out of a PR's comments.
  *
  * `comments` is the JSON array from either `gh api .../issues/<n>/comments`
@@ -159,7 +184,7 @@ export function extract(comments, { author = 'github-actions[bot]' } = {}) {
   if (!Array.isArray(comments)) return '';
   const authored = comments.filter((c) => {
     const login = c?.user?.login ?? c?.author?.login;
-    return typeof login === 'string' && login === author;
+    return typeof login === 'string' && sameIdentity(login, author);
   });
   // Newest wins: a revise-loop push can supersede an earlier note.
   for (let i = authored.length - 1; i >= 0; i -= 1) {
