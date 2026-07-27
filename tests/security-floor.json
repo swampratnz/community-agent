@@ -63,6 +63,7 @@
   "embeddingHealthCheck.test.ts": 2,
   "engagementAlert.test.ts": 2,
   "escalationRouter.test.ts": 9,
+  "evalAnswersOffCi.test.ts": 2,
   "findHelperTools.test.ts": 5,
   "gatedNotice.router.test.ts": 6,
   "gatedNotice.test.ts": 7,

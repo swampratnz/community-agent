@@ -346,8 +346,10 @@ which also sidesteps the unresolved auto-post policy question that closed #636.
 
 ### F1. Extend the golden eval from retrieval to answers *(medium impact, medium effort)*
 
-**Status:** Not started. No `eval:answers` script exists in `package.json`,
-and no maintainer-run, off-CI answer-grading harness exists in `scripts/`.
+**Status:** Shipped (#779). `npm run eval:answers` (`scripts/eval-answers.ts`)
+runs a curated fixture (`tests/fixtures/answersEval.json`) against the real
+`runAgentTurn` pipeline and grades each reply deterministically via
+`mustContain`/`mustNotContain` fact fragments.
 
 **Why:** `tests/knowledgeEval.test.ts` measures precision@K of *retrieval*
 against a curated query set, which is genuinely good and stops well short of
@@ -380,7 +382,7 @@ prompt change ships, is the right shape.
 | C2 Admin queue roll-up | Medium | Low | Shipped (#745) | Pure aggregation over existing scoped reads |
 | D2 Answered→candidate loop | Medium | Low | Shipped (#726) | Closes the open middle of the flywheel |
 | D3 Learning paths | Medium | Low | Not started | Probably a skill, not a new KB entry kind |
-| F1 Answer eval | Medium | Medium | Not started | Must stay off CI, per RED-TEAM.md |
+| F1 Answer eval | Medium | Medium | Shipped (#779) | Off CI, per RED-TEAM.md |
 | B3 `fallbackModel` | Low | Low | Shipped (#738) | Degrade instead of fail |
 
 ## Deliberately not proposed
