@@ -490,7 +490,7 @@ Conversation continuity uses the Agent SDK's session resume: the Claude
 `session_id` for each `(platform, conversation)` is stored in `sessions` and
 passed back as `resume` on the next turn.
 
-## Prompt-review guidance (issue #635) and Agent Skills (issues #741, #757)
+## Prompt-review guidance (issue #635) and Agent Skills (issue #741)
 
 A member pasting their own prompt/system prompt/tool schema and asking for
 feedback is one of the highest-leverage asks in a builders' community, and
@@ -523,29 +523,23 @@ default):
   (`src/agent/core.ts`) adds `'Skill'` to the base `tools` array (uniformly
   for every role, matching the checklist's pre-#741 ungated behaviour) and
   loads `plugins: [{ type: 'local', path: <bundled skills dir> }]` with
-  `skills: ['prompt-review', 'claude-code-setup']` — an explicit,
-  hand-written literal array, never `'all'`, so a future skill added to the
-  directory needs a deliberate second edit to activate. The bundled plugin
-  directory (`src/agent/skills/`) contains only a `.claude-plugin/plugin.json`
-  manifest and one `SKILL.md` per bundled skill — no `hooks/`, `agents/`,
-  `commands/`, or `.mcp.json` — so nothing beyond those static, code-reviewed
-  markdown bodies is ever loadable from it (CI-pinned by a dedicated test).
-  This is a net cost reduction: each skill's frontmatter is the only part
-  resident on every turn, and its full body loads into context only on turns
-  that actually invoke it (progressive disclosure). The documented SDK
-  residual risk — unlisted skill files reachable via `Read`/`Bash` — does
-  not apply here, since no RBAC tier ever grants those built-ins
+  `skills: ['prompt-review']` — an explicit, hand-written literal array,
+  never `'all'`, so a future skill added to the directory needs a deliberate
+  second edit to activate. The bundled plugin directory
+  (`src/agent/skills/`) contains only a `.claude-plugin/plugin.json`
+  manifest and the one `SKILL.md` — no `hooks/`, `agents/`, `commands/`, or
+  `.mcp.json` — so nothing beyond that one static, code-reviewed markdown
+  body is ever loadable from it (CI-pinned by a dedicated test). This is a
+  net cost reduction: the skill's frontmatter is the only part resident on
+  every turn, and the full body loads into context only on turns that
+  actually invoke it (progressive disclosure). The documented SDK residual
+  risk — unlisted skill files reachable via `Read`/`Bash` — does not apply
+  here, since no RBAC tier ever grants those built-ins
   (`toolsForRole`/`allowedTools` are unaffected by this flag).
 
 There is no configuration in which the prompt-review capability is absent —
 the checklist is either inline in `GUIDELINES` or loaded as the skill, never
-neither. `claude-code-setup` (issue #757) has no `GUIDELINES` counterpart: it
-is a diagnostic walkthrough for installing/authenticating/troubleshooting
-Claude Code, loadable only once the flag is on. It hardcodes no command
-syntax, flags, or version numbers — every factual claim it makes is grounded
-in `knowledge_search` (with the same provenance attribution rule) since those
-specifics drift, and it defers to the same `code_answers` policy as
-`prompt-review`.
+neither.
 
 ## RBAC (three tiers + gated access)
 

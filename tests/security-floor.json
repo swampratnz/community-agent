@@ -16,7 +16,7 @@
   "agentModelFallback.test.ts": 1,
   "agentModelTiering.test.ts": 1,
   "agentOptions.test.ts": 13,
-  "agentSkillsEnabled.test.ts": 7,
+  "agentSkillsEnabled.test.ts": 6,
   "agentWebSearchDedup.test.ts": 3,
   "agentWebSearchDedupEmbedFailClosed.test.ts": 1,
   "agentWebSearchDedupEmbedShortCircuit.test.ts": 1,

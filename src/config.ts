@@ -100,17 +100,13 @@ const EnvSchema = z.object({
   // Wires the SDK's Agent Skills mechanism (issue #741): when on,
   // buildQueryOptions (agent/core.ts) adds 'Skill' to the base tools array
   // and loads the repo-bundled agent/skills/ plugin directory (skills:
-  // ['prompt-review', 'claude-code-setup'], never 'all'), and the #635
-  // prompt-review checklist moves out of the always-on GUIDELINES
-  // system-prompt block into skills/prompt-review/SKILL.md — a lower
-  // per-turn cached-prefix token count for the overwhelming majority of
-  // turns that never invoke it. `claude-code-setup` (issue #757) is a new
-  // on-demand skill with no GUIDELINES counterpart to move, so this flag
-  // gates only its availability, not any always-on token cost. Off by
-  // default, same convention as every other opt-in flag here; while off,
-  // the prompt-review checklist stays inline in GUIDELINES exactly as
-  // before, so there is no configuration in which that capability is
-  // absent — claude-code-setup simply isn't loadable until the flag is on.
+  // ['prompt-review'], never 'all'), and the #635 prompt-review checklist
+  // moves out of the always-on GUIDELINES system-prompt block into
+  // skills/prompt-review/SKILL.md — a lower per-turn cached-prefix token
+  // count for the overwhelming majority of turns that never invoke it. Off
+  // by default, same convention as every other opt-in flag here; while off,
+  // the checklist stays inline in GUIDELINES exactly as before, so there is
+  // no configuration in which the prompt-review capability is absent.
   AGENT_SKILLS_ENABLED: z
     .string()
     .optional()

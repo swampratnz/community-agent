@@ -1353,7 +1353,7 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
   {
     envVar: 'AGENT_SKILLS_ENABLED',
     configPath: 'agentSkills.enabled',
-    label: 'Agent Skills (prompt-review, claude-code-setup)',
+    label: 'Agent Skills (prompt-review)',
     category: 'Integrations',
   },
 ] as const;
