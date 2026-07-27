@@ -148,10 +148,34 @@ test('SECURITY: a marker posted by anyone other than the pipeline bots is ignore
   );
 });
 
-test('both gh renderings of the bot identity are accepted, so the identity gate never silently matches nothing', () => {
-  for (const login of ['github-actions', 'github-actions[bot]', 'claude', 'claude[bot]']) {
+test('both gh renderings of the marker-posting identity are accepted, so the identity gate never silently matches nothing', () => {
+  // GraphQL renders "github-actions", REST renders "github-actions[bot]";
+  // matching only one is how an identity gate ends up matching nothing at all.
+  for (const login of ['github-actions', 'github-actions[bot]']) {
     const out = run([pr(101, ['<!-- pipeline-autofix-attempt -->'], recent(), login)]);
     assert.match(out, /\| autofix \| 1 \|/, `${login} must be recognised as a pipeline author`);
+  }
+});
+
+test('SECURITY: a marker posted as claude[bot] is ignored — the revise agent uniquely holds `gh pr comment`, runs under that identity, and reads prompt-injectable PR content, so a marker from it is never authentic (issue #750 review)', () => {
+  // Every real marker is written by a DETERMINISTIC step using GITHUB_TOKEN,
+  // so it always lands as github-actions. Counting claude[bot] would let a
+  // prompt-injected revise agent fabricate ledger rows — worse than no gate,
+  // because the gate implies the rows can be trusted.
+  for (const login of ['claude', 'claude[bot]']) {
+    const out = run([
+      pr(
+        102,
+        ['<!-- pipeline-pr-revise-escalation -->', '<!-- pipeline-pr-revise-checkpoint -->'],
+        recent(),
+        login,
+      ),
+    ]);
+    assert.match(
+      out,
+      /No pipeline loop engaged/,
+      `a marker attributed to ${login} must contribute nothing to the ledger`,
+    );
   }
 });
 

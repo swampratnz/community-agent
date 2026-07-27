@@ -94,16 +94,29 @@ const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
 const inWindow = (iso) => iso && Date.parse(iso) >= cutoff;
 
 /**
- * Only the pipeline's own bot identities can contribute a marker (issue #750
- * review). Markers are plain text in a public comment thread, so without this
- * any commenter could inflate "escalated" or manufacture a clean window — and
- * this report now drives an auto-closing tracking issue, so a spoofed row is
- * not merely cosmetic. Both renderings are accepted for the same reason
+ * Only the identity that actually POSTS markers can contribute one (issue #750
+ * review, second pass). Markers are plain text in a public comment thread, so
+ * without this any commenter could inflate "escalated" or manufacture a clean
+ * window — and this report drives an auto-closing tracking issue, so a spoofed
+ * row is not merely cosmetic.
+ *
+ * `claude[bot]` is deliberately NOT here, and that exclusion is the whole
+ * point. Every marker across autofix/revise/conflict/auto-merge is written by
+ * a DETERMINISTIC step using GITHUB_TOKEN, so it always lands as
+ * github-actions; no loop ever posts a marker as claude. Meanwhile the revise
+ * agent — uniquely among the loops — holds `Bash(gh pr comment:*)` (so it can
+ * explain a principled refusal), runs under the claude[bot] identity, and
+ * reads untrusted, prompt-injectable PR content. Allowing claude[bot] would
+ * therefore hand the one injectable identity in the pipeline the ability to
+ * fabricate ledger rows, which is worse than having no gate at all because the
+ * gate implies the rows are trustworthy.
+ *
+ * Both github-actions renderings are accepted for the same reason
  * pipeline-pr-automerge.yml accepts both: gh's GraphQL comment authors render
  * as "github-actions" while REST renders "github-actions[bot]", and matching
  * only one made an identity gate silently match nothing.
  */
-const MARKER_AUTHORS = new Set(['github-actions', 'github-actions[bot]', 'claude', 'claude[bot]']);
+const MARKER_AUTHORS = new Set(['github-actions', 'github-actions[bot]']);
 const fromPipeline = (comment) => MARKER_AUTHORS.has(comment?.author?.login ?? '');
 
 const tally = new Map(LOOPS.map((loop) => [loop.name, { engaged: 0, recovered: 0, escalated: 0, clean: 0 }]));
