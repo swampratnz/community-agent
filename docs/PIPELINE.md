@@ -216,6 +216,39 @@ Launch each in its own session with the `/loop` skill. Each is written to
 **exit cleanly doing nothing when there is no work** — that keeps idle wake-ups
 cheap.
 
+### The review-verdict contract
+
+Three workflows consume a PR-review verdict: `pipeline-pr-review.yml` routes on
+it, `pipeline-pr-automerge.yml` gates merges on it, and `pipeline-pr-revise.yml`
+re-verifies it is still pending. They each used to parse the same free prose
+with their own regex, and they drifted — the #731 fix ("a bolded
+`**Changes requested**` is not a markdown bullet") landed in two of the three,
+leaving auto-merge unable to see a bolded `**LGTM**`, so a fully-approved PR
+would sit unmerged forever with no error anywhere.
+
+The verdict is now a typed artifact rather than prose to re-parse:
+
+- The review model is asked to emit `<!-- verdict:LGTM -->`,
+  `<!-- verdict:CHANGES_REQUESTED -->` or `<!-- verdict:NEEDS_HUMAN -->` on
+  line 2. It renders invisibly on GitHub, so the comment still reads naturally.
+- `pipeline-pr-review.yml` — the only place a review comment is composed —
+  decides the verdict ONCE (token if present, else the prose fallback), strips
+  any model-emitted token that occupies a whole line, and stamps exactly one
+  authoritative token immediately after the `PR review (automated):` marker.
+  The stamp is written by the workflow, never by the model.
+- Consumers read that token. Because the authoritative one is always first, a
+  review that legitimately quotes a token mid-sentence — reviews of this very
+  machinery do — can neither be mangled nor mistaken for the verdict.
+- The prose fallback remains for comments posted before the contract existed,
+  and is now shared rather than reimplemented per workflow.
+
+Both shell helpers (`canonical_verdict`, `legacy_verdict`) must stay identical
+across the three workflows; `tests/reviewVerdict.test.ts` compares the copies
+and fails on drift, which is the specific regression that motivated the change.
+An unrecognisable verdict deliberately routes nowhere: no label, no revise
+dispatch, and nothing for auto-merge to approve, so a malformed review stalls
+visibly instead of guessing.
+
 ### 1 · PR review
 
 ```

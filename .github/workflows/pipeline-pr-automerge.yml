@@ -269,20 +269,41 @@ jobs:
             review_body="$(jq -r '.body' <<<"$latest_review")"
             review_at="$(jq -r '.createdAt' <<<"$latest_review")"
 
-            # Verdict = first 4 lines minus bullet lines, so a phrase inside a
-            # finding can't be misread as the verdict. The comment is GUARANTEED
-            # marker-first: the review workflow deterministically trims any
-            # agent preamble at post time (see pipeline-pr-review.yml), so the
-            # strict ^-anchored match above and this top-of-comment parse are
-            # unambiguous even when review commentary QUOTES the marker string
-            # further down (PR #656 review found substring-based extraction
-            # here was decoy-prone in both directions; anchoring the SHAPE at
-            # the source removes the ambiguity class entirely).
-            verdict="$(printf '%s' "$review_body" | head -n 4 | grep -vE '^[[:space:]]*[-*]' || true)"
-            if printf '%s' "$verdict" | grep -qiE 'changes requested|needs a human decision' \
-               || ! printf '%s' "$verdict" | grep -qiE 'lgtm|ready for a human to merge'; then
-              echo "PR #$n: latest review verdict is not an LGTM approval — skip."
-              echo "::endgroup::"; continue
+            # Verdict via the canonical token the review workflow stamps on
+            # line 2 (see pipeline-pr-review.yml's "canonical verdict contract").
+            # This replaced a local prose regex that had DRIFTED from the other
+            # two consumers: it lacked #731's fix, so a review whose verdict the
+            # model rendered in bold (`**LGTM, ...**`) matched the bullet filter,
+            # left `verdict` empty, and this gate skipped a fully-approved PR
+            # forever. Reading one exact token removes that class — the token is
+            # written deterministically by the workflow, never by the model, and
+            # a review that QUOTES a token further down can't win because the
+            # authoritative one is always first.
+            # Keep both helpers identical across the three verdict consumers;
+            # tests/reviewVerdict.test.ts fails if any copy drifts.
+            canonical_verdict() {
+              grep -oiE '<!--[[:space:]]*verdict:(LGTM|CHANGES_REQUESTED|NEEDS_HUMAN)[[:space:]]*-->' |
+                head -1 | grep -oiE 'LGTM|CHANGES_REQUESTED|NEEDS_HUMAN' | tr '[:lower:]' '[:upper:]'
+            }
+            legacy_verdict() {
+              head -n 4 | grep -vE '^[[:space:]]*[-*][[:space:]]'
+            }
+            token="$(printf '%s' "$review_body" | canonical_verdict)"
+            if [ -n "$token" ]; then
+              if [ "$token" != "LGTM" ]; then
+                echo "PR #$n: latest review verdict is $token, not an LGTM approval — skip."
+                echo "::endgroup::"; continue
+              fi
+            else
+              # Pre-contract comment (posted before the token existed): fall
+              # back to the SHARED prose helper — which, unlike the local regex
+              # it replaces, carries the #731 bolded-verdict fix.
+              verdict="$(printf '%s' "$review_body" | legacy_verdict || true)"
+              if printf '%s' "$verdict" | grep -qiE 'changes requested|needs a human decision' \
+                 || ! printf '%s' "$verdict" | grep -qiE 'lgtm|ready for a human to merge'; then
+                echo "PR #$n: latest review verdict is not an LGTM approval — skip."
+                echo "::endgroup::"; continue
+              fi
             fi
 
             # Freshness: the approval must be NEWER than the head commit, else a
