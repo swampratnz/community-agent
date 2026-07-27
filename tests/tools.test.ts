@@ -110,6 +110,7 @@ const {
   clearAccessRequest,
   listAccessRequests,
   countAccessRequests,
+  countOpenAppeals,
   countActiveWarnings,
   clearWarnings,
   createModerationAppeal,
@@ -2552,7 +2553,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
     '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
-    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, and pull your own admin-digest snapshot on demand\n" +
+    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, or get a review-queue roll-up of all five review queues at once\n" +
     '- See who is waiting for access, or who has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -2734,6 +2735,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__decline_knowledge_candidate', /decline a candidate/i],
   ['mcp__community__question_digest', /recurring question clusters/i],
   ['mcp__community__admin_digest', /admin-digest snapshot on demand/i],
+  ['mcp__community__review_queue', /review-queue roll-up of all five review queues/i],
   ['mcp__community__list_knowledge_gaps', /knowledge gaps/i],
   ['mcp__community__moderation_history', /moderation history log/i],
   ['mcp__community__add_member', /add a new member/i],
@@ -18969,6 +18971,354 @@ test(
       await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
         adminId,
       ]);
+    }
+  },
+);
+
+// review_queue (issue #743) — single roll-up of the five admin review
+// queues (list_access_requests/list_suggestions/list_knowledge_candidates/
+// list_reports/list_appeals), composing the same count*/oldest*AgeDays
+// repository functions buildAdminDigestForAdmin already calls. No arguments,
+// read-only, no CONFIRM.
+function reviewQueueToolFrom(
+  server: unknown,
+): { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> } {
+  return (
+    server as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['review_queue'];
+}
+
+test(
+  'SECURITY: review_queue refuses a member-tier caller before any repository query runs (issue #743 acceptance criteria 6, 8)',
+  async (t) => {
+    const querySpy = t.mock.method(pool, 'query');
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: `${RUN}-review-queue-member`,
+        userName: 'Member',
+        role: 'member' as const,
+        conversationId: `${RUN}-review-queue-member-convo`,
+      },
+      stubAdapter(async () => {}),
+    );
+
+    await assert.rejects(() => reviewQueueToolFrom(server.instance).handler({}), /Permission denied/);
+    assert.equal(
+      querySpy.mock.calls.length,
+      0,
+      'SECURITY: a member-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+    );
+  },
+);
+
+test(
+  'SECURITY: review_queue refuses a guest-tier caller before any repository query runs (issue #743 acceptance criteria 6, 8)',
+  async (t) => {
+    const querySpy = t.mock.method(pool, 'query');
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: `${RUN}-review-queue-guest`,
+        userName: 'Guest',
+        role: 'guest' as const,
+        conversationId: `${RUN}-review-queue-guest-convo`,
+      },
+      stubAdapter(async () => {}),
+    );
+
+    await assert.rejects(() => reviewQueueToolFrom(server.instance).handler({}), /Permission denied/);
+    assert.equal(
+      querySpy.mock.calls.length,
+      0,
+      'SECURITY: a guest-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+    );
+  },
+);
+
+test(
+  "SECURITY: review_queue's reports count matches list_reports's own row count for the same admin — a report outside the caller's conversations and a DM report filed against the caller are both excluded from both (issue #743 acceptance criteria 3, 7)",
+  { skip },
+  async () => {
+    const admin = `${RUN}-review-queue-reports-admin`;
+    const reporter = `${RUN}-review-queue-reports-reporter`;
+    const convoIn = `${RUN}-review-queue-reports-convo-in`;
+    const convoOut = `${RUN}-review-queue-reports-convo-out`;
+    const reportIds: number[] = [];
+    try {
+      const inScope = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId: convoIn,
+        reason: "in the admin's own conversation",
+      });
+      const outOfScope = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId: convoOut,
+        reason: "outside the admin's conversations",
+      });
+      const dmAgainstAdmin = await createContentReport({
+        platform: 'discord',
+        reporterUserId: reporter,
+        conversationId: `${RUN}-review-queue-reports-dm`,
+        targetUserId: admin,
+        reason: 'a DM report filed against the admin themselves',
+        isDirect: true,
+      });
+      assert.ok(inScope && outOfScope && dmAgainstAdmin);
+      reportIds.push(inScope.id, outOfScope.id, dmAgainstAdmin.id);
+
+      const adapter: PlatformAdapter = {
+        platform: 'discord',
+        adminCapabilities: new Set(),
+        async start() {},
+        async stop() {},
+        isConnected: () => true,
+        onMessage() {},
+        async sendMessage() {},
+        async sendDirectMessage() {},
+        async conversationsForUser() {
+          return [convoIn];
+        },
+        async performAdminAction() {
+          return '';
+        },
+      };
+      const caller = {
+        platform: 'discord' as const,
+        userId: admin,
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId: convoIn,
+      };
+      const server = buildToolServer(caller, adapter);
+      const tools = (
+        server.instance as unknown as {
+          _registeredTools: Record<
+            string,
+            { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+          >;
+        }
+      )._registeredTools;
+
+      const listReportsOut = (await tools['list_reports'].handler({})).content[0]?.text ?? '';
+      const listReportsRowCount = (listReportsOut.match(/^#\d+ /gm) ?? []).length;
+      assert.equal(listReportsRowCount, 1, 'sanity check: only the in-scope report is visible to list_reports');
+      assert.match(listReportsOut, new RegExp(`#${inScope.id}\\b`));
+      assert.ok(
+        !listReportsOut.includes(`#${outOfScope.id}`) && !listReportsOut.includes(`#${dmAgainstAdmin.id}`),
+        'sanity check: the out-of-scope report and the DM report against the admin are excluded from list_reports',
+      );
+
+      const reviewQueueOut = (await tools['review_queue'].handler({})).content[0]?.text ?? '';
+      const reportsMatch = reviewQueueOut.match(/Reports \(your conversations\): (\d+) open/);
+      assert.ok(reportsMatch, 'review_queue must render a reports line matching this shape');
+      assert.equal(
+        Number(reportsMatch[1]),
+        listReportsRowCount,
+        'SECURITY: review_queue reports count must equal list_reports own row count — a mismatch means ' +
+          'review_queue used an unscoped countOpenReports(null) instead of callerScope()+viewerUserIds',
+      );
+    } finally {
+      await pool.query(`DELETE FROM content_reports WHERE id = ANY($1)`, [reportIds]);
+    }
+  },
+);
+
+test(
+  'review_queue renders one line per queue in fixed order (access requests, suggestions, knowledge candidates, reports, appeals), with oldest-age suffixes only on access requests/suggestions/reports and never on knowledge candidates/appeals (issue #743 acceptance criteria 1, 2, 4)',
+  { skip },
+  async () => {
+    const admin = `${RUN}-review-queue-render-admin`;
+    const conversationId = `${RUN}-review-queue-render-convo`;
+    let reportId: number | undefined;
+    let appealId: number | undefined;
+    let suggestionId: number | undefined;
+    let candidateId: number | undefined;
+    try {
+      await recordAccessRequest({ platform: 'discord', userId: `${RUN}-review-queue-render-guest` });
+
+      const suggestion = await createSuggestion({
+        platform: 'discord',
+        userId: `${RUN}-review-queue-render-suggester`,
+        content: 'review_queue render-test suggestion',
+      });
+      assert.ok(suggestion);
+      suggestionId = suggestion.id;
+
+      const digestId = await insertContextDigest({
+        periodStart: new Date(Date.now() - 86_400_000),
+        periodEnd: new Date(),
+        topic: `${RUN}-review-queue-render-topic`,
+        summary: 'summary',
+        exampleRefs: [],
+        distinctUsers: 1,
+        questionCount: 1,
+      });
+      candidateId = await insertKnowledgeCandidate({
+        digestId,
+        topic: `${RUN}-review-queue-render-topic`,
+        title: 'review_queue render-test candidate',
+        content: 'review_queue render-test candidate content',
+      });
+
+      const report = await createContentReport({
+        platform: 'discord',
+        reporterUserId: `${RUN}-review-queue-render-reporter`,
+        conversationId,
+        reason: 'review_queue render-test report',
+      });
+      assert.ok(report);
+      reportId = report.id;
+
+      const appeal = await createModerationAppeal({
+        platform: 'discord',
+        userId: `${RUN}-review-queue-render-appellant`,
+        userName: 'Appellant',
+        reason: 'review_queue render-test appeal',
+        activeWarnings: 3,
+        strikeLimit: 3,
+      });
+      appealId = appeal.id;
+
+      const adapter: PlatformAdapter = {
+        platform: 'discord',
+        adminCapabilities: new Set(),
+        async start() {},
+        async stop() {},
+        isConnected: () => true,
+        onMessage() {},
+        async sendMessage() {},
+        async sendDirectMessage() {},
+        async conversationsForUser() {
+          return [conversationId];
+        },
+        async performAdminAction() {
+          return '';
+        },
+      };
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: admin,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId,
+        },
+        adapter,
+      );
+
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      const lines = out.split('\n');
+      assert.equal(lines[0], '📋 Review queue');
+      assert.equal(lines.length, 6, 'exactly one line per queue plus the heading');
+
+      assert.match(lines[1], /^- Access requests: \d+ pending \(oldest \d+d\)$/);
+      assert.match(lines[2], /^- Suggestions: \d+ pending \(oldest \d+d\)$/);
+      assert.match(lines[3], /^- Knowledge candidates: \d+ pending$/);
+      assert.doesNotMatch(
+        lines[3],
+        /oldest/,
+        'acceptance criterion 2: the knowledge-candidates line never carries an age suffix, even non-empty',
+      );
+      assert.match(lines[4], /^- Reports \(your conversations\): \d+ open \(oldest \d+d\)$/);
+      assert.match(lines[5], /^- Appeals: \d+ open$/);
+      assert.doesNotMatch(
+        lines[5],
+        /oldest/,
+        'acceptance criterion 2: the appeals line never carries an age suffix, even non-empty (v1 known limitation)',
+      );
+
+      const [, accessCount] = lines[1].match(/(\d+) pending/) ?? [];
+      const [, suggestionCount] = lines[2].match(/(\d+) pending/) ?? [];
+      const [, candidateCount] = lines[3].match(/(\d+) pending/) ?? [];
+      const [, reportCount] = lines[4].match(/(\d+) open/) ?? [];
+      const [, appealCount] = lines[5].match(/(\d+) open/) ?? [];
+      assert.ok(Number(accessCount) >= 1, 'the fixture access request must be reflected');
+      assert.ok(Number(suggestionCount) >= 1, 'the fixture suggestion must be reflected');
+      assert.ok(Number(candidateCount) >= 1, 'the fixture knowledge candidate must be reflected');
+      assert.equal(Number(reportCount), 1, "only this test's own report is in the caller's fresh conversation");
+      assert.equal(Number(appealCount), 1, "only this test's own appeal is open on this platform");
+    } finally {
+      await pool.query(`DELETE FROM access_requests WHERE user_id = $1`, [
+        `${RUN}-review-queue-render-guest`,
+      ]);
+      if (suggestionId !== undefined) {
+        await pool.query(`DELETE FROM suggestions WHERE id = $1`, [suggestionId]);
+      }
+      if (candidateId !== undefined) {
+        await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+      }
+      if (reportId !== undefined) {
+        await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportId]);
+      }
+      if (appealId !== undefined) {
+        await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appealId]);
+      }
+    }
+  },
+);
+
+test(
+  "review_queue's appeals count is scoped to the caller's own platform, matching countOpenAppeals/list_appeals (issue #743 acceptance criteria 4)",
+  { skip },
+  async () => {
+    const discordAppellant = `${RUN}-review-queue-appeals-discord`;
+    const whatsappAppellant = `${RUN}-review-queue-appeals-whatsapp`;
+    let discordAppealId: number | undefined;
+    let whatsappAppealId: number | undefined;
+    try {
+      const discordAppeal = await createModerationAppeal({
+        platform: 'discord',
+        userId: discordAppellant,
+        userName: 'Discord Appellant',
+        reason: 'discord-platform appeal',
+        activeWarnings: 3,
+        strikeLimit: 3,
+      });
+      discordAppealId = discordAppeal.id;
+      const whatsappAppeal = await createModerationAppeal({
+        platform: 'whatsapp',
+        userId: whatsappAppellant,
+        userName: 'WhatsApp Appellant',
+        reason: 'whatsapp-platform appeal',
+        activeWarnings: 3,
+        strikeLimit: 3,
+      });
+      whatsappAppealId = whatsappAppeal.id;
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: `${RUN}-review-queue-appeals-admin`,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId: `${RUN}-review-queue-appeals-convo`,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      const appealsLine = out.split('\n').find((l) => l.startsWith('- Appeals:'));
+      assert.ok(appealsLine);
+      const expectedDiscordCount = await countOpenAppeals('discord');
+      assert.match(
+        appealsLine,
+        new RegExp(`^- Appeals: ${expectedDiscordCount} open$`),
+        "the discord caller's appeals count must equal countOpenAppeals('discord'), never including the whatsapp fixture",
+      );
+    } finally {
+      if (discordAppealId !== undefined) {
+        await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [discordAppealId]);
+      }
+      if (whatsappAppealId !== undefined) {
+        await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [whatsappAppealId]);
+      }
     }
   },
 );
