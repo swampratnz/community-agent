@@ -8,7 +8,7 @@ import {
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { resolveRole } from '../../auth/roles.js';
-import { toolsForRole } from '../../auth/rbac.js';
+import { atLeast, toolsForRole } from '../../auth/rbac.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
 import {
   getLanguagePreference,
@@ -117,6 +117,11 @@ async function replyEphemeral(
 
 async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
   const role = await resolveRole('discord', interaction.user.id);
+  // knowledge_search's own handler adds no extra runtime floor beyond
+  // toolsForRole's structural list (unlike who_is_into/list_projects below),
+  // so this gate is toolsForRole alone — a guest can reach /kb exactly like
+  // knowledge_search itself, tracking that tool's real reachability rather
+  // than a hardcoded role check.
   if (!toolsForRole(role, 'discord').includes('mcp__community__knowledge_search')) {
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
@@ -137,7 +142,13 @@ async function handleProjects(
   deps: SlashCommandDeps,
 ): Promise<void> {
   const role = await resolveRole('discord', interaction.user.id);
-  if (!toolsForRole(role, 'discord').includes('mcp__community__list_projects')) {
+  // list_projects is structurally in MEMBER_TOOLS (reachable by guests in
+  // open mode too, same as knowledge_search), but its own handler adds a
+  // stricter runtime floor (`assertAtLeast(caller.role, 'member',
+  // 'list_projects')`, tools.ts) to exclude guests specifically — mirrored
+  // here since that's where this tool's REAL minimum tier actually lives,
+  // not in toolsForRole's structural (platform, not tier) filtering.
+  if (!toolsForRole(role, 'discord').includes('mcp__community__list_projects') || !atLeast(role, 'member')) {
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
@@ -156,7 +167,11 @@ async function handleProjects(
 
 async function handleWhois(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
   const role = await resolveRole('discord', interaction.user.id);
-  if (!toolsForRole(role, 'discord').includes('mcp__community__who_is_into')) {
+  // who_is_into is structurally in MEMBER_TOOLS (same open-mode-guest
+  // reachability as knowledge_search), but its own handler adds a stricter
+  // runtime floor (`assertAtLeast(caller.role, 'member', 'who_is_into')`,
+  // tools.ts) — mirrored here for the same reason as /projects above.
+  if (!toolsForRole(role, 'discord').includes('mcp__community__who_is_into') || !atLeast(role, 'member')) {
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }

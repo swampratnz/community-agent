@@ -2185,6 +2185,59 @@ serving that sender again. Security posture:
   endpoint), so they add no ToS-risk surface and work while WhatsApp is
   disconnected.
 
+### 19. Discord slash commands (`/kb`, `/whois`, `/projects`, `/guidelines`, `DISCORD_SLASH_COMMANDS_ENABLED`, off by default, issue #744)
+
+Four read-only, zero-model-call Discord application commands, registered
+guild-scoped on `ClientReady`. A second entry point onto existing reads
+(`knowledge_search`, `who_is_into`, `list_projects`, and the
+`community_guidelines` policy text), not a new capability or tool — but a
+second entry point still has to preserve every control the chat path applies
+between the repository read and the reply:
+
+- **Identity is resolved via `resolveRole(platform, userId)` only**, exactly
+  like every chat message — never from anything on the interaction payload.
+- **Authorization tracks each tool's real gate, not a copy-pasted tier.**
+  `/kb` gates on `toolsForRole(role, 'discord').includes('knowledge_search')`
+  alone, matching that tool's own unrestricted (including open-mode guest)
+  reachability. `/whois` and `/projects` additionally require `atLeast(role,
+  'member')`, mirroring `who_is_into`/`list_projects`'s own handler-level
+  `assertAtLeast(caller.role, 'member', ...)` — their structural
+  `MEMBER_TOOLS` listing exists only so open-mode guests can be *offered*
+  the tool, not so they can successfully call it. `/guidelines` has no gate,
+  matching `community_guidelines`. A failed gate returns an ephemeral
+  rejection and never calls the underlying repository function.
+- **Every reply is outbound-filtered.** `interaction.reply()`/`followUp()`
+  would otherwise be a brand-new, unfiltered send path; instead every reply
+  is passed through the adapter's existing `filtered()` (secret redaction +
+  code-answers policy) via a narrow `SlashCommandDeps` interface, so a slash
+  command can carry a secret or fenced code no more than any other send can.
+- **`/kb` never direct-serves `auto`-provenance knowledge.** Unlike
+  `knowledge_search`'s model-mediated quarantine-and-label treatment, this
+  zero-token path has no model turn to apply that framing to, so unreviewed
+  machine-researched entries are excluded entirely — the same treatment the
+  existing knowledge shortcut (`tryKnowledgeShortcut`) already gives them.
+- **`/kb` is scoped to the caller's real `(platform, conversationId)`** via
+  `searchKnowledge`, identical to `knowledge_search` — a slash command cannot
+  widen a caller's read-scope beyond what chat already grants them.
+- **`/whois`/`/projects` keep the chat path's untrusted-content quarantine**
+  (`untrustedEntryContent` bracket/whitespace stripping, sanitized
+  attribution) by calling the exact same render helpers `who_is_into`/
+  `list_projects` call, rather than re-serializing raw repository rows.
+- **All four replies are ephemeral** — visible only to the caller, narrower
+  than `/whois`/`/projects`' chat-path equivalent (posted in-channel today).
+- **Guild-scoped registration only.** `client.application.commands.set(...,
+  config.discord.guildId)` — never a global registration call, which would
+  propagate over up to an hour and expose the commands to any guild the bot
+  token might ever join.
+- **Off by default; a registration failure never blocks message handling**
+  (fire-and-forget from `ClientReady`, same shape as `backfillRoster`/
+  `reconcileMutedRole`), and with the flag unset no `Events.InteractionCreate`
+  listener is attached at all.
+
+No new tool, no new write path, no `shortcut_hits` tracking, no WhatsApp
+equivalent — all four underlying reads stay reachable via chat on every
+platform regardless of this flag. See docs/ARCHITECTURE.md for the mechanism.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

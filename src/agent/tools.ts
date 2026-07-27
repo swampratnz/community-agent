@@ -1336,6 +1336,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Peer help handoff (find_helper)',
     category: 'Community',
   },
+  {
+    envVar: 'DISCORD_SLASH_COMMANDS_ENABLED',
+    configPath: 'discord.slashCommandsEnabled',
+    label: 'Read-only Discord slash commands (/kb, /projects, /whois, /guidelines)',
+    category: 'Community',
+  },
 ] as const;
 
 /**
