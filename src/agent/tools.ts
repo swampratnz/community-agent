@@ -1654,8 +1654,7 @@ const MEMBER_CAPABILITIES_TEXT =
   'who\'s into RAG", "who\'s working on Discord bots?")\n' +
   '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
   'X?"), or opt in/out of being notified for other members\' requests\n' +
-  '- Pull the community digest on demand — this week\'s topics, new knowledge entries, and project ' +
-  'showcase activity ("what\'s been discussed lately?")\n' +
+  '- Pull the community digest on demand\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -4455,7 +4454,7 @@ export function buildToolServer(
 
   const communityDigestTool = tool(
     'community_digest',
-    'On-demand pull of the community digest — the same this-week\'s-topics, new-in-the-knowledge-base, ' +
+    "On-demand pull of the community digest — the same this-week's-topics, new-in-the-knowledge-base, " +
       'project-showcase, and platform-update signals the weekly member digest post would send right now, ' +
       'without waiting for its cadence. Takes no arguments; read-only; does not affect when the next ' +
       'scheduled weekly digest post goes out. Member only.',

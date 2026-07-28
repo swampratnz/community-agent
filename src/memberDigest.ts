@@ -171,15 +171,17 @@ export async function buildMemberDigestContent(
   // off, getReleaseWatchUpdates must never be invoked (issue #733's
   // byte-identical-when-disabled contract), so this is a conditional
   // Promise, not a post-hoc empty-array filter.
-  const [digests, newKnowledgeTitles, newProjectCount, releaseWatchPages, memberTipCount] = await Promise.all([
-    getDigests(FRESHNESS_DAYS, MAX_TOPICS),
-    getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
-    getNewProjectCount(since),
-    config.releaseWatch.enabled
-      ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
-      : Promise.resolve([]),
-    getMemberTipCount(since),
-  ]);
+  const [digests, newKnowledgeTitles, newProjectCount, releaseWatchPages, memberTipCount] = await Promise.all(
+    [
+      getDigests(FRESHNESS_DAYS, MAX_TOPICS),
+      getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
+      getNewProjectCount(since),
+      config.releaseWatch.enabled
+        ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
+        : Promise.resolve([]),
+      getMemberTipCount(since),
+    ],
+  );
   // Two independent floors before a digest topic reaches this public
   // surface (PR #651 review):
   //  - k-anonymity: this surface is more exposed than either existing

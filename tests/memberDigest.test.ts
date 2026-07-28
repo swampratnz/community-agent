@@ -1169,7 +1169,7 @@ test(
 
 // --- buildMemberDigestContent (issue #841) — the shared on-demand-pull builder --
 
-test('buildMemberDigestContent: with injected deps, gathers, applies the two-floor eligible filter, and renders exactly like makeDefaultMemberDigestRun\'s own inlined logic used to', async () => {
+test("buildMemberDigestContent: with injected deps, gathers, applies the two-floor eligible filter, and renders exactly like makeDefaultMemberDigestRun's own inlined logic used to", async () => {
   const message = await buildMemberDigestContent({
     getDigests: async () => [
       makeDigest({ topic: 'below floor', distinctUsers: 2, questionCount: 5 }),

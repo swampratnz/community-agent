@@ -858,7 +858,7 @@ test("SECURITY: a guest caller is rejected on /digest without buildMemberDigestC
   );
 });
 
-test('a member caller passes the /digest gate, defers before any DB read, and replies ephemerally with buildMemberDigestContent()\'s own content (acceptance criteria 3, 5)', async (t) => {
+test("a member caller passes the /digest gate, defers before any DB read, and replies ephemerally with buildMemberDigestContent()'s own content (acceptance criteria 3, 5)", async (t) => {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
     calls.push({ sql, params });
@@ -893,8 +893,14 @@ test('a member caller passes the /digest gate, defers before any DB read, and re
   assert.equal(order[0], 'deferReply', 'must defer before any DB read');
   assert.equal(
     replies[0].content,
-    '🚀 2 new projects added to the showcase this week — ask me to show the project showcase to browse.',
-    "reply is exactly buildMemberDigestContent()'s own render for this mocked signal mix",
+    // Passes through deps.filtered() like every other slash-command reply,
+    // which rewrites em dashes into a comma (stripEmDashes in outbound.ts) —
+    // same rationale this file's own top-of-file comment documents for the
+    // /kb caveat-text assertions above.
+    stripEmDashes(
+      '🚀 2 new projects added to the showcase this week — ask me to show the project showcase to browse.',
+    ),
+    "reply is exactly buildMemberDigestContent()'s own render for this mocked signal mix, post-filter",
   );
 });
 

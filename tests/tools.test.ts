@@ -2690,6 +2690,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
     'X?"), or opt in/out of being notified for other members\' requests\n' +
+    '- Pull the community digest on demand\n' +
     '- Erase all your stored data any time ("forget me")';
 
   assert.equal(
@@ -2699,7 +2700,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'list_events line, issue #437 added the list_knowledge_topics line, issue #496 added the ' +
       'appeal_moderation line, issue #646 added the share_project/list_projects line, issue #634 added the ' +
       'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line, ' +
-      'issue #808 added the request_human_help line; otherwise unchanged since #367)',
+      'issue #808 added the request_human_help line, issue #841 added the community_digest line; ' +
+      'otherwise unchanged since #367)',
   );
 });
 
