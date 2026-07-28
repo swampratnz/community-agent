@@ -24,11 +24,8 @@ process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 
-const {
-  formatAdminLeverageAlertMessage,
-  makeDefaultAdminLeverageAlertRun,
-  startAdminLeverageAlert,
-} = await import('../src/adminLeverageAlert.js');
+const { formatAdminLeverageAlertMessage, makeDefaultAdminLeverageAlertRun, startAdminLeverageAlert } =
+  await import('../src/adminLeverageAlert.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const { getLastAdminLeverageAlertRate, recordAdminLeverageAlertSent } =
   await import('../src/storage/repository.js');
@@ -156,7 +153,10 @@ test('makeDefaultAdminLeverageAlertRun: on the first eligible tick (no prior sen
   let recordedRate: number | null = -1;
   const runOnce = makeDefaultAdminLeverageAlertRun(
     [adapter],
-    async () => [activityRow({ actionCount: 9 }), activityRow({ actorUserId: 'admin-actor-2', actionCount: 5 })],
+    async () => [
+      activityRow({ actionCount: 9 }),
+      activityRow({ actorUserId: 'admin-actor-2', actionCount: 5 }),
+    ],
     async () => [
       { platform: 'discord', platformUserId: 'a1' },
       { platform: 'discord', platformUserId: 'a2' },
@@ -271,7 +271,10 @@ test('makeDefaultAdminLeverageAlertRun: reads the prior rate before recording th
   const runOnce = makeDefaultAdminLeverageAlertRun(
     [adapter],
     async () => [activityRow({ actionCount: 20 })],
-    async () => [{ platform: 'discord', platformUserId: 'a1' }, { platform: 'discord', platformUserId: 'a2' }],
+    async () => [
+      { platform: 'discord', platformUserId: 'a1' },
+      { platform: 'discord', platformUserId: 'a2' },
+    ],
     async () => false,
     async (rate) => {
       callOrder.push('record');
@@ -288,7 +291,11 @@ test('makeDefaultAdminLeverageAlertRun: reads the prior rate before recording th
 
   assert.deepEqual(callOrder, ['getLast', 'record'], 'the prior rate is read before this run is recorded');
   assert.equal(recordedRate, 10, "this run's rate is what gets persisted");
-  assert.match(dms[0].text, /▲ 5\.0 since last week\./, 'the delta compares against the prior value, not the new one');
+  assert.match(
+    dms[0].text,
+    /▲ 5\.0 since last week\./,
+    'the delta compares against the prior value, not the new one',
+  );
 });
 
 test('startAdminLeverageAlert: ADMIN_LEVERAGE_ALERT_ENABLED unset (default) creates no timer', () => {
@@ -319,7 +326,11 @@ test('makeDefaultAdminLeverageAlertRun: with zero connected adapters, the weekly
   const runOnce = makeDefaultAdminLeverageAlertRun(
     [disconnected],
     async () => [activityRow({ actionCount: 6 })],
-    async () => [{ platform: 'discord', platformUserId: 'a1' }, { platform: 'discord', platformUserId: 'a2' }, { platform: 'discord', platformUserId: 'a3' }],
+    async () => [
+      { platform: 'discord', platformUserId: 'a1' },
+      { platform: 'discord', platformUserId: 'a2' },
+      { platform: 'discord', platformUserId: 'a3' },
+    ],
     async () => false,
     async () => {},
     async () => null,
@@ -346,11 +357,7 @@ test(
   async () => {
     await pool.query('DELETE FROM admin_leverage_alert_sends');
 
-    assert.equal(
-      await getLastAdminLeverageAlertRate(),
-      null,
-      'a first-ever run has no prior rate at all',
-    );
+    assert.equal(await getLastAdminLeverageAlertRate(), null, 'a first-ever run has no prior rate at all');
 
     await recordAdminLeverageAlertSent(2.8);
     assert.equal(

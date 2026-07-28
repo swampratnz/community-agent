@@ -66,9 +66,8 @@ export function formatAdminLeverageAlertMessage(
  */
 export function makeDefaultAdminLeverageAlertRun(
   adapters: readonly PlatformAdapter[],
-  activitySummary: () => Promise<
-    Awaited<ReturnType<typeof adminActivitySummary>>
-  > = () => adminActivitySummary(7),
+  activitySummary: () => Promise<Awaited<ReturnType<typeof adminActivitySummary>>> = () =>
+    adminActivitySummary(7),
   admins: () => Promise<Awaited<ReturnType<typeof listAdmins>>> = listAdmins,
   wasSentRecently: (days: number) => Promise<boolean> = wasAdminLeverageAlertSentRecently,
   recordSent: (rate: number | null) => Promise<void> = recordAdminLeverageAlertSent,
@@ -80,10 +79,7 @@ export function makeDefaultAdminLeverageAlertRun(
     const totalActions = summary.reduce((sum, row) => sum + row.actionCount, 0);
     const adminCount = roster.length;
     const previousRate = await getLastRate();
-    logger.info(
-      { totalActions, adminCount, previousRate },
-      'Admin leverage alert: sending weekly snapshot',
-    );
+    logger.info({ totalActions, adminCount, previousRate }, 'Admin leverage alert: sending weekly snapshot');
     void alertSuperAdmins(adapters, formatAdminLeverageAlertMessage(totalActions, adminCount, previousRate));
     await recordSent(adminCount === 0 ? null : totalActions / adminCount);
   };
@@ -104,10 +100,5 @@ export function startAdminLeverageAlert(
   adapters: readonly PlatformAdapter[],
   runOnce: () => Promise<void> = makeDefaultAdminLeverageAlertRun(adapters),
 ): ReturnType<typeof setInterval> | null {
-  return startTrackedJob(
-    'admin-leverage-alert',
-    adapters,
-    config.adminLeverageAlert.enabled,
-    runOnce,
-  );
+  return startTrackedJob('admin-leverage-alert', adapters, config.adminLeverageAlert.enabled, runOnce);
 }
