@@ -2663,6 +2663,24 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   exact floor on true auto-answer spend, never a guaranteed total. Appended
   only when the window has at least one tagged reply; byte-identical to
   today's output on a deployment with auto-answer off or unused.
+- `usage_stats` also reports a `Models: model ~$X.XX (N) · ...` line (issue
+  #792) — the per-model cost split behind `costByRole`'s per-*tier* view,
+  verifying that the #382/#394 role-tiered `AGENT_MODEL` and #738's
+  `AGENT_MODEL_FALLBACK` are actually landing spend on the model each
+  configures, not just trusting the config. `core.ts`'s `'result'`-message
+  handler (the same message `total_cost_usd`/cache `usage` are already read
+  from) reduces the SDK's `modelUsage` field to a flat `{ [canonicalModel]:
+  costUsd }` map — only `costUSD` is copied, never token counts or
+  `provider`/`contextWindow` — threaded through `TurnOutcome`/`AgentReply`
+  exactly alongside `cacheReadTokens`/`cacheCreationTokens`, and spread into
+  `recordInteraction`'s `meta.modelUsage` only when non-empty. `usageStats()`
+  aggregates it with a `LATERAL jsonb_each_text(meta->'modelUsage')` over the
+  same outbound, window-filtered rows the cache/auto-answer aggregates above
+  already scan, into `costByModel: Array<{ model, costUsd, replies }>` ordered
+  by cost desc. Unlike the cache/auto-answer lines, the `Models:` line renders
+  even with a single model in the window (confirming tiering is landing where
+  configured is itself the point); still omitted entirely, byte-identical to
+  today's output, when the window recorded no `modelUsage` at all.
 
 - Off unless `USAGE_ALERT_DAILY_REPLIES` is set — no timer is created, zero
   extra queries, when unconfigured.

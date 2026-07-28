@@ -65,6 +65,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   the sequencing layer. Added to the explicit `ENABLED_SKILLS` allowlist
   alongside its five siblings (never `'all'`); no new tool, and no tier's
   `allowedTools`/`disallowedTools` change.
+- **`usage_stats` now breaks spend down by model, not just by role tier**
+  (#792): the role-tiered `AGENT_MODEL` (#382/#394) and the
+  `AGENT_MODEL_FALLBACK` overload fallback (#738) previously couldn't be
+  verified from the one tool built to verify spend — `costByRole` could show
+  member-tier spend was lower, never which model actually served it, and
+  fallback engagement had zero telemetry anywhere. The SDK's `result` message
+  already carries a per-model cost split (`modelUsage`) alongside the
+  `total_cost_usd`/cache figures `usage_stats` already reads; a super admin
+  now sees a `Models: model ~$X.XX (N replies) · ...` line confirming exactly
+  where tiered and fallback spend landed. No new tool, tier, or config flag —
+  purely additive to the existing super-admin-only `usage_stats` gate.
 
 ### Fixed
 - **The knowledge shortcut's low-rated caveat now honours a caller's standing
