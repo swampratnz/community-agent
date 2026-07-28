@@ -1,0 +1,151 @@
+{
+  "_comment": "Answer-quality golden set (issue #779, docs/CAPABILITY-IDEAS.md §F1). Unlike tests/fixtures/knowledgeEval.json (retrieval-only), scripts/eval-answers.ts runs each `question` through the REAL runAgentTurn pipeline and grades the model's REPLY, not just which entry was retrieved. Questions are paraphrases of their target knowledgeEntries' content, never verbatim quotes, per the same convention knowledgeEval.json documents. Each case's mustContain names a specific, hard-to-paraphrase-away fact fragment (a number, a proper noun, a channel name) that only appears in ITS target entry, so a grounded reply passes and a hallucinated or wrong-entry reply fails; mustNotContain names a plausible wrong answer (usually a conflicting number) that would indicate the model answered from a different entry or guessed. This file is never read by `npm test`/CI — only by the off-CI scripts/eval-answers.ts, per tests/evalAnswersOffCi.test.ts.",
+  "knowledgeEntries": [
+    {
+      "title": "Community office hours",
+      "content": "The maintainer holds office hours every second Wednesday at 7pm NZT in the #office-hours channel, open to any question about the bot or the community."
+    },
+    {
+      "title": "Meetup cadence",
+      "content": "The Wellington meetup group gets together on the third Thursday of every month at 6:30pm."
+    },
+    {
+      "title": "Requesting admin role",
+      "content": "Admin roles are granted manually by an existing admin after you have been an active, trusted member of the community for at least six weeks."
+    },
+    {
+      "title": "Per-user message rate limit",
+      "content": "Members are limited to 8 messages within any 60-second window; going over triggers a short, debounced rate-limit notice rather than silence."
+    },
+    {
+      "title": "Daily reply budget",
+      "content": "Each member gets 40 bot replies per rolling 24-hour period; approaching the cap appends a short warning line to the reply itself."
+    },
+    {
+      "title": "Linking WhatsApp and Discord",
+      "content": "Message the bot with the link-whatsapp command and follow the one-time code flow to associate your WhatsApp number with your Discord account."
+    },
+    {
+      "title": "Deleting your stored data",
+      "content": "Members can ask the bot or an admin to permanently purge their stored messages and any knowledge entries sourced from them at any time."
+    },
+    {
+      "title": "Exporting your conversation history",
+      "content": "You can ask the bot to export everything it has stored about you, and an admin will send you a copy of your interaction history within a few days."
+    },
+    {
+      "title": "Community code of conduct",
+      "content": "All members must follow the code of conduct: be kind, no harassment of any kind, and never share someone else's private information without consent."
+    },
+    {
+      "title": "Reporting a bad bot answer",
+      "content": "If the bot gives a wrong or unsafe answer, post the details in the #feedback channel so an admin can review and correct the underlying knowledge entry."
+    },
+    {
+      "title": "API key rotation policy",
+      "content": "Rotate your Anthropic API key roughly every ninety days by generating a replacement in the console and revoking the old one once traffic has moved over."
+    },
+    {
+      "title": "Choosing a Claude model for a new project",
+      "content": "Pick a smaller, faster model for high-volume simple tasks and reserve the largest model for work that genuinely needs deeper reasoning, since cost and latency scale with capability."
+    },
+    {
+      "title": "Knowledge staleness window",
+      "content": "The bot gently flags an answer as possibly outdated once a knowledge entry has gone 90 days without being edited or looked up again."
+    },
+    {
+      "title": "WebSearch tool availability",
+      "content": "The WebSearch tool is only available to admin and super_admin turns; regular members never get it, so a member's question is answered from knowledge_search and memory alone."
+    },
+    {
+      "title": "Setting up local development",
+      "content": "Clone the repository, copy the example environment file, install dependencies, and run the migration script against a local Postgres instance before starting the bot."
+    },
+    {
+      "title": "Reaching a super admin directly",
+      "content": "For anything urgent that can't wait for a normal admin, DM the bot and ask to escalate — it will alert the on-duty super admin directly."
+    }
+  ],
+  "cases": [
+    {
+      "question": "when and where can I show up to ask the maintainer something live",
+      "mustContain": ["Wednesday", "office-hours"],
+      "mustNotContain": ["Tuesday", "Thursday"]
+    },
+    {
+      "question": "what day of the month does the Wellington group usually meet up",
+      "mustContain": ["Thursday"],
+      "mustNotContain": ["Wednesday"]
+    },
+    {
+      "question": "how long do I need to be an active member before I can ask for admin",
+      "mustContain": ["six weeks"],
+      "mustNotContain": ["a month", "one month"]
+    },
+    {
+      "question": "what's the cap on how many messages I can send in a short burst",
+      "mustContain": ["8"],
+      "mustNotContain": ["10", "5"]
+    },
+    {
+      "question": "how many replies am I allowed from the bot in a single day",
+      "mustContain": ["40"],
+      "mustNotContain": ["50", "20"]
+    },
+    {
+      "question": "how do I connect my phone number to my discord account",
+      "mustContain": ["link-whatsapp"],
+      "mustNotContain": []
+    },
+    {
+      "question": "how do I get all my stored messages wiped for good",
+      "mustContain": ["purge"],
+      "mustNotContain": []
+    },
+    {
+      "question": "can I get a copy of everything the bot has recorded about me",
+      "mustContain": ["export"],
+      "mustNotContain": []
+    },
+    {
+      "question": "what's expected of members in terms of treating each other well",
+      "mustContain": ["kind"],
+      "mustNotContain": []
+    },
+    {
+      "question": "the assistant gave me a wrong answer, where do I flag it",
+      "mustContain": ["feedback"],
+      "mustNotContain": []
+    },
+    {
+      "question": "how often should I swap out my Anthropic secret key for a new one",
+      "mustContain": ["ninety days"],
+      "mustNotContain": ["thirty days", "30 days"]
+    },
+    {
+      "question": "which model size makes sense for a simple high-throughput task",
+      "mustContain": ["smaller", "faster"],
+      "mustNotContain": []
+    },
+    {
+      "question": "after how many days without a look-up does a knowledge entry start being flagged as possibly stale",
+      "mustContain": ["90 days"],
+      "mustNotContain": ["30 days", "60 days"]
+    },
+    {
+      "question": "as a regular member can I get the bot to search the live web for me",
+      "mustContain": ["admin"],
+      "mustNotContain": []
+    },
+    {
+      "question": "what are the steps to run this project on my own machine",
+      "mustContain": ["Postgres"],
+      "mustNotContain": []
+    },
+    {
+      "question": "something urgent is happening and I need a super admin right now, what do I do",
+      "mustContain": ["escalate"],
+      "mustNotContain": []
+    }
+  ]
+}
