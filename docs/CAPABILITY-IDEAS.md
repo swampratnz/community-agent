@@ -147,13 +147,19 @@ skill-invocation counts vs. `rate_answer` helpful-rate on those threads.
 
 ### B2. Structured output for the classifiers *(medium impact, low effort, security-relevant)*
 
-**Status:** Shipped (#720), for the abuse classifier specifically, as
-proposed. `classifyAbuseWithLlm` in `src/moderation/moderator.ts` now sets
+**Status:** Shipped (#720) for the abuse classifier, and (#831) for the
+context builder's cluster summariser. `classifyAbuseWithLlm` in
+`src/moderation/moderator.ts` sets
 `outputFormat: { type: 'json_schema', schema: ABUSE_CLASSIFIER_OUTPUT_SCHEMA }`,
 covered by `tests/abuseClassifierStructuredOutput.test.ts`; the
-`Detection | null` boundary shape is unchanged. The "grows into" targets
-(context builder cluster summariser, knowledge refresh researcher) are
-untouched — still free-text parsing.
+`Detection | null` boundary shape is unchanged. `summarizeCluster` in
+`src/context/builder.ts` likewise sets
+`outputFormat: { type: 'json_schema', schema: CLUSTER_SUMMARY_OUTPUT_SCHEMA }`
+and reads `message.structured_output` via a narrow-or-throw
+`parseClusterSummary`, covered by `tests/contextBuilderStructuredOutput.test.ts`;
+the `ClusterSummarizer` return shape is unchanged. The other "grows into"
+target — the knowledge refresh researcher's `NO_UPDATE` marker parsing — is
+still untouched, still free-text.
 
 **Why:** `classifyAbuseWithLlm` (`src/moderation/moderator.ts:402`) asks for
 `"CLEAN"` or `"ABUSE: <reason>"` as free text and then regex-parses it
@@ -169,8 +175,9 @@ existing `Detection | null` return shape at the boundary so nothing downstream
 changes, and keep the throw-on-failure discipline that lets `makeClassifier`'s
 cache distinguish "model said clean" from "call failed".
 
-**Grows into:** the context builder's cluster summariser and the knowledge
-refresh researcher, both of which parse prose today.
+**Grows into:** the knowledge refresh researcher (`src/context/knowledgeRefresh.ts`'s
+`NO_UPDATE` marker), which still parses prose today. (The context builder's
+cluster summariser half shipped in #831.)
 
 ### B3. `fallbackModel` for graceful degradation *(low effort)*
 
@@ -379,7 +386,7 @@ prompt change ships, is the right shape.
 | D1 Helper handoff | High | Medium | Shipped (#729) | The one idea that pings people — opt-in is the feature |
 | E1 Release watcher | High | Medium | Shipped (#739) | Public data, no privacy cost; ride the member digest |
 | A2 Discord voice | Medium | Low | Shipped (#735) | Pure symmetry fix, machinery already exists |
-| B2 Structured classifier output | Medium | Low | Shipped (#720) | Fails-open regex on the safety path today |
+| B2 Structured classifier output | Medium | Low | Shipped (#720, #831) | Fails-open regex on the safety path today |
 | C2 Admin queue roll-up | Medium | Low | Shipped (#745) | Pure aggregation over existing scoped reads |
 | D2 Answered→candidate loop | Medium | Low | Shipped (#726) | Closes the open middle of the flywheel |
 | D3 Learning paths | Medium | Low | Not started | Probably a skill, not a new KB entry kind |

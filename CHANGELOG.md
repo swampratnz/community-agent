@@ -36,6 +36,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   caller with no tips sees byte-identical output to today; a machine-drafted
   candidate (no submitter) can never appear in any member's own view.
 
+### Fixed
+- **The offline context builder's cluster summariser no longer silently
+  defaults on a format slip** (#831), extending #720's fix to the other
+  named "grows into" target. `summarizeCluster` used to ask the model for
+  five free-text lines and parse each with a regex; any reply that didn't
+  match exactly silently defaulted the digest's topic to the literal string
+  "Community discussion", its summary to a raw untrimmed slice of the whole
+  response, and dropped a genuine knowledge-candidate draft entirely — with
+  no error and no distinguishing log line. The five fields are now
+  schema-constrained via the SDK's structured output, so a malformed or
+  missing response throws (counted as a `failed` cluster, same as today)
+  instead of landing a placeholder digest or losing a candidate in front of
+  an admin.
+
 ## 2026-07-28
 
 ### Added
@@ -49,6 +63,10 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   caller's own message. Shares the same guild-wide hourly escalation cap as
   its two siblings, plus a new per-caller daily cap (3/24h) so one member
   can't alone exhaust that shared budget.
+
+## 2026-07-28
+
+### Added
 - **`review_queue` and the weekly admin digest now show the pending-knowledge-
   candidates backlog's age too, not just its count** (#801): a new
   `oldestPendingCandidateAgeDays` repository function — the same

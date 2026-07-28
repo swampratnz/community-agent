@@ -1158,7 +1158,13 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 Each per-cluster summarisation call is tool-less, single-turn, and
 fixed-format, so its model is optionally tiered by the same
 `AGENT_MODEL_CLASSIFIER` knob as the moderation LLM abuse check above (issue
-#394) — unset (default) it uses `AGENT_MODEL` unchanged.
+#394) — unset (default) it uses `AGENT_MODEL` unchanged. Its output is
+schema-constrained via the SDK's `outputFormat: { type: 'json_schema' }`,
+read off `structured_output` (issue #831, mirroring the moderation abuse
+classifier's #720 fix) — not parsed from five free-text lines with regexes
+— so a malformed or missing `structured_output` throws (counted as a
+`failed` cluster) instead of silently defaulting to a placeholder topic,
+an untrimmed raw-text summary, or a dropped candidate.
 
 ### Knowledge candidates (issue #102)
 
@@ -1190,7 +1196,7 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
   (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
   declined topic re-drafted under different wording on a later run (the
-  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  model-written `topic` label has no stability guarantee across runs) still
   gets caught. `candidateTopicAlreadyReviewed` computes the topic's
   embedding at most once per attempted cluster and reuses that same vector
   for the semantic check, `knowledgeCoversTopic`, and the candidate insert

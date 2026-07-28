@@ -119,19 +119,17 @@ test('SECURITY: classifyAbuseWithLlm still returns its normal result when record
 
 // --- summarizeCluster --------------------------------------------------------
 
-const SUMMARIZE_RESULT = [
-  'TOPIC: recurring theme',
-  'SUMMARY: a short aggregate summary.',
-  'CANDIDATE: no',
-  'CANDIDATE_TITLE: n/a',
-  'CANDIDATE_ANSWER: n/a',
-].join('\n');
+const SUMMARIZE_STRUCTURED_OUTPUT = {
+  topic: 'recurring theme',
+  summary: 'a short aggregate summary.',
+  isCandidate: false,
+};
 
 test('summarizeCluster: a positive total_cost_usd records a context_builder background job cost (issue #401)', async (t) => {
   const { summarizeCluster } = await modules(t);
   recordCalls = [];
   recordShouldReject = false;
-  nextResult = { result: SUMMARIZE_RESULT, totalCostUsd: 0.0088 };
+  nextResult = { result: 'ok', totalCostUsd: 0.0088, structuredOutput: SUMMARIZE_STRUCTURED_OUTPUT };
 
   await summarizeCluster(['a recurring sample message']);
 
@@ -144,7 +142,7 @@ test('summarizeCluster: total_cost_usd absent, 0, or non-numeric records no back
   for (const totalCostUsd of [undefined, 0, NaN, 'not-a-number']) {
     recordCalls = [];
     recordShouldReject = false;
-    nextResult = { result: SUMMARIZE_RESULT, totalCostUsd };
+    nextResult = { result: 'ok', totalCostUsd, structuredOutput: SUMMARIZE_STRUCTURED_OUTPUT };
     await summarizeCluster(['a recurring sample message']);
     assert.deepEqual(recordCalls, [], `no row recorded for total_cost_usd = ${String(totalCostUsd)}`);
   }
@@ -154,7 +152,7 @@ test('SECURITY: summarizeCluster still returns its normal result when recordBack
   const { summarizeCluster } = await modules(t);
   recordCalls = [];
   recordShouldReject = true;
-  nextResult = { result: SUMMARIZE_RESULT, totalCostUsd: 0.02 };
+  nextResult = { result: 'ok', totalCostUsd: 0.02, structuredOutput: SUMMARIZE_STRUCTURED_OUTPUT };
 
   const digest = await summarizeCluster(['a recurring sample message']);
 
