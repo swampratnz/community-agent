@@ -50,9 +50,17 @@ export async function embed(text: string): Promise<number[]> {
   const output = await extractor(clean, { pooling: 'mean', normalize: true });
   const vec = Array.from(output.data as ArrayLike<number>);
   if (vec.length !== config.db.embeddingDim) {
-    logger.warn(
-      { got: vec.length, expected: config.db.embeddingDim },
-      'Embedding dimension mismatch — check EMBEDDING_DIM matches EMBEDDING_MODEL',
+    // Throw rather than warn-and-return the wrong-length vector. A warn-only
+    // path let a mismatched EMBEDDING_MODEL/EMBEDDING_DIM pass startup's
+    // column check (that compares config to the DB column, never to the
+    // model's actual output), then silently degrade every recall/search to
+    // `[]` via their SQL catch — while the dedicated embedding-health job
+    // (#376), which just calls embed(), reported GREEN because embed()
+    // succeeded. Throwing trips that health check on exactly this outage and
+    // is caught by recordInteraction's existing insert fallback, so the audit
+    // row is still written vector-less.
+    throw new Error(
+      `Embedding dimension mismatch: model produced ${vec.length} dims, expected ${config.db.embeddingDim} — check EMBEDDING_DIM matches EMBEDDING_MODEL`,
     );
   }
   return vec;

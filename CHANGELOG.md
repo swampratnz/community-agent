@@ -74,6 +74,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   departed-admin visibility and community engagement. Bare aggregate
   numbers only — never a specific admin's identity.
 
+### Security
+- **Trusted CONFIRM notices are now sanitised at a single choke point.** The
+  `⚠️ Pending:` confirmation the bot shows before a destructive action is
+  deterministic and meant to be un-spoofable by the model, but a handful of
+  tools (`moderate`, `create_event`, `cancel_event`, `suggest_issue`,
+  `forget_me`) still passed raw model-composed free text into it — so a
+  planted newline could forge an extra line in that notice. `requireConfirm`
+  now strips the line-/tag-forgery character class from every description, so
+  the real action verb and target always lead the notice and nothing can add a
+  fake second line. Extends the earlier display-name fix (issue #227) to the
+  free-text fields.
+
 ### Fixed
 - **The knowledge shortcut's low-rated caveat now honours a caller's standing
   te reo Māori preference** (#789). A member with `set_language_preference('mi')`

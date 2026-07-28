@@ -127,6 +127,34 @@ test('flag on: the assembled system prompt no longer contains the prompt-review 
   }
 });
 
+// Drift guard: PROMPT_REVIEW_CLAUSE (inlined when the flag is off) and the body
+// of skills/prompt-review/SKILL.md (loaded when the flag is on) MUST stay
+// byte-identical, or the prompt-review behaviour silently forks between flag
+// states. The two are hand-maintained in separate files; nothing else asserted
+// their equality (the "flag on" test above only checks the checklist is
+// ABSENT, not that the replacement matches).
+test('PROMPT_REVIEW_CLAUSE is byte-identical to the prompt-review SKILL.md body (no fork between flag states)', async () => {
+  const { PROMPT_REVIEW_CLAUSE } = await import('../src/agent/systemPrompt.js');
+  const skillPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'src',
+    'agent',
+    'skills',
+    'prompt-review',
+    'SKILL.md',
+  );
+  const raw = readFileSync(skillPath, 'utf8');
+  // Strip the leading YAML frontmatter block (--- … ---) and trim, mirroring
+  // how the SDK presents the skill body and how PROMPT_REVIEW_CLAUSE is .trim()ed.
+  const body = raw.replace(/^---\n[\s\S]*?\n---\n/, '').trim();
+  assert.equal(
+    body,
+    PROMPT_REVIEW_CLAUSE,
+    'SKILL.md body and PROMPT_REVIEW_CLAUSE have diverged — update BOTH in the same diff so the flag-on and flag-off prompt-review behaviour stays identical',
+  );
+});
+
 // Mirrors agentOptions.test.ts's FEATURE_FLAGGED_TOOLS: this test process
 // never sets IMAGE_GEN_ENABLED/GITHUB_ISSUE_ENABLED/DEV_TEAM_ENABLED/
 // FIND_HELPER_ENABLED, so those tools are dropped from allowedTools
