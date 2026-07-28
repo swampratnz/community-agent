@@ -77,6 +77,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   knowledge weeks render byte-identical to today; the digest still receives
   only a bare number, so no platform or member identity ever reaches this
   public channel post.
+- **The weekly admin digest now reports the appeal outcome mix, not just the
+  open backlog** (#844): a new `appealResolutionBreakdown` repository
+  function counts appeals closed this period, split `resolved` vs.
+  `dismissed`, rendered as a new line right alongside the existing open-
+  appeals count/age. Omitted entirely when nothing closed this period; bare
+  integers only, same as the backlog line — never an appellant's name,
+  reason, or the resolving admin's identity.
 
 ### Fixed
 - **The offline context builder's cluster summariser no longer silently
