@@ -335,8 +335,6 @@ export async function recentConversationTail(
   }
 }
 
-/** A pooled connection or a transaction client — both expose `query`. */
-
 /**
  * Invalidate every context digest whose provenance refs include any of
  * `interactionIds`, deleting its still-*pending* knowledge candidates first
