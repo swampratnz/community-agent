@@ -2262,6 +2262,19 @@ and reports a real `Prompt cache: NN% hit rate (X read / Y new tokens)` line
 — so the actual hit rate is a number in the tool an operator already checks,
 not just a debug log line.
 
+**Incoming message length cap** (`MAX_INCOMING_MESSAGE_CHARS`, default `8,000`
+chars, `0` = disabled, issue #811): the member's own message is the one
+model-bound input with no prior ceiling — `runAgentTurn` (`core.ts`) truncates
+its local `userText` copy to this cap (UTF-16-surrogate-pair-safe, appending a
+fixed marker stating the omitted count only when truncation actually occurs)
+before it reaches `searchMemory`, `selectPersona`, or `assemblePrompt`. This
+bounds both the one-off cost of a pasted log/code dump and, because the Agent
+SDK resumes the same session across turns, the size of the cached prefix every
+subsequent turn re-reads for up to `SESSION_MAX_TURNS`/`SESSION_MAX_AGE_HOURS`.
+Only this local copy is affected — `msg.text` itself (read by the router's
+archiving, CONFIRM/escalation classification, dedup-normalize, and the
+admin-notify echo) is never mutated.
+
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other
 exact matches — see `src/ackClassifier.ts`) skips the agent turn entirely and

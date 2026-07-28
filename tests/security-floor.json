@@ -9,6 +9,7 @@
   "agentCoreFailureFallbacksPlain.test.ts": 3,
   "agentCoreHumanHelpRequested.test.ts": 2,
   "agentCoreImageInput.test.ts": 1,
+  "agentCoreIncomingMessageTruncation.test.ts": 3,
   "agentCoreKnowledgeEntryId.test.ts": 2,
   "agentCoreLanguagePreference.test.ts": 1,
   "agentCoreModelUsage.test.ts": 3,
