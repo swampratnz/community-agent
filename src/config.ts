@@ -468,6 +468,17 @@ const EnvSchema = z.object({
   // amnesiac mid-conversation, with only semantic recall (keyed on the
   // CURRENT message text) to reconstruct what was just said. 0 = disabled.
   SESSION_ROLLOVER_TAIL_COUNT: z.coerce.number().int().nonnegative().default(10),
+  // Wall-clock ceiling on a single Agent SDK `query()` turn (issue #826): a
+  // hung iteration (network partition, wedged CLI subprocess) never rejects,
+  // so nothing but a race against this timer unblocks it — and because turns
+  // are serialised per conversation (router.ts's enqueue()), an unbounded
+  // hang here wedges that conversation's entire chain, not just one reply.
+  // Same "a .catch() only fires on rejection" gap #502 closed for the DB pool
+  // (DB_QUERY_TIMEOUT_MS). Default must stay strictly greater than
+  // IMAGE_GEN_TIMEOUT_MS (180_000): image generation is a tool call that runs
+  // *inside* this turn loop, so an outer ceiling at or below the inner tool's
+  // own timeout would kill a legitimately in-flight image-gen turn first.
+  AGENT_TURN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
   // Ceiling on the member's own message text reaching the paid model call
   // (runAgentTurn's local `userText` copy only — never `msg.text` itself, so
   // archiving/classification/echo still see the full original). 0 = disabled
@@ -1054,6 +1065,20 @@ const EnvSchemaChecked = EnvSchema.refine(
       path: ['KNOWLEDGE_CANDIDATE_STALE_DAYS'],
     },
   )
+  .refine((e) => e.AGENT_TURN_TIMEOUT_MS > e.IMAGE_GEN_TIMEOUT_MS, {
+    // The turn ceiling is the OUTER bound around a whole turn; image
+    // generation is an inner tool call with its own timeout. Set the outer
+    // one at or below the inner one and a legitimately in-flight image-gen
+    // turn is killed before its own timeout can fire — the exact bug class
+    // the 300_000 default was chosen to avoid (issue #826 review). Pinning
+    // only the shipped default in a unit test does not stop an operator
+    // tightening AGENT_TURN_TIMEOUT_MS in .env and silently reintroducing
+    // it, so fail fast at startup, same as the KNOWLEDGE_STALE_MAX_AGE_DAYS
+    // vs KNOWLEDGE_STALE_DAYS pairing above.
+    message:
+      'AGENT_TURN_TIMEOUT_MS must be strictly greater than IMAGE_GEN_TIMEOUT_MS, or the outer turn ceiling can kill an in-flight image-generation tool call before its own timeout fires',
+    path: ['AGENT_TURN_TIMEOUT_MS'],
+  })
   .refine(
     (e) =>
       e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL === 0 ||
@@ -1312,6 +1337,7 @@ export const config = {
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
     sessionRolloverTailCount: env.SESSION_ROLLOVER_TAIL_COUNT,
+    agentTurnTimeoutMs: env.AGENT_TURN_TIMEOUT_MS,
     maxIncomingMessageChars: env.MAX_INCOMING_MESSAGE_CHARS,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
     rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
