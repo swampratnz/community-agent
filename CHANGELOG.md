@@ -25,6 +25,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-29
 
 ### Added
+- **`share_project` can now signal "I'd welcome help on this"** (#834): a new
+  opt-in `seekingCollaborators` boolean, mirroring `willing_to_help`'s exact
+  shape (self-declared, default `false`, never inferred). `list_projects`
+  (and its `/projects` slash-command mirror, which shares the same renderer)
+  prepends a `🤝 looking for collaborators` marker to a project's line only
+  when the flag is true — unmarked, byte-identical output for the (default)
+  false case. No new tool, table, or model call; the flag lives on the
+  existing `member_projects` row, so purge/roster-leave cleanup removes it
+  along with everything else automatically.
 - **`my_submissions` now covers `suggest_knowledge` tips, not just
   suggestions/reports/appeals** (#830): a new self-scoped
   `listOwnKnowledgeCandidates` repository function — mirroring

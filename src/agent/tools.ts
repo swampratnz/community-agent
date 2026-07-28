@@ -618,6 +618,10 @@ export const LIST_PROJECTS_DEFAULT_LIMIT = 8;
  * Exported (issue #744) so the `/projects` slash command can render the
  * exact same output as `list_projects`' chat-path handler, which calls this
  * too.
+ *
+ * Issue #834: prepends a `🤝 looking for collaborators` marker for a project
+ * whose self-declared `seekingCollaborators` flag is true — nothing renders
+ * for the (default) false case, byte-identical to pre-#834 output.
  */
 export async function formatProjectResults(
   projects: ReadonlyArray<MemberProject | MemberProjectSearchHit>,
@@ -632,9 +636,10 @@ export async function formatProjectResults(
       const description = untrustedEntryContent(p.description);
       const link = p.link ? ` (link: ${untrustedEntryContent(p.link)})` : '';
       const match = 'similarity' in p ? ` — ${Math.round(p.similarity * 100)}% match` : '';
+      const collaboratorsMarker = p.seekingCollaborators ? ' 🤝 looking for collaborators' : '';
       const interests = interestsByOwner.get(`${p.platform}:${p.userId}`);
       const interestsSuffix = interests ? `\n   Interests: ${untrustedEntryContent(interests)}` : '';
-      return `${i + 1}. "${name}" by ${owner}${match}: ${description}${link}${interestsSuffix}`;
+      return `${i + 1}. "${name}" by ${owner}${match}${collaboratorsMarker}: ${description}${link}${interestsSuffix}`;
     }),
   );
   return [
@@ -4364,6 +4369,14 @@ export function buildToolServer(
           "Set true to remove an existing project by name instead of adding/editing it — 'description' " +
             "and 'link' are ignored when true.",
         ),
+      seekingCollaborators: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set true if the caller wants help/collaborators on this project — shown to other members via ' +
+            "list_projects. Defaults to false (showcase only). Only set this on the caller's own explicit " +
+            'statement, e.g. "I\'m looking for help with this" — never inferred.',
+        ),
     },
     async (args) => {
       // Guests can reach every other MEMBER_TOOLS write in open mode, but
@@ -4387,6 +4400,7 @@ export function buildToolServer(
         name: args.name,
         description: args.description,
         link: args.link,
+        seekingCollaborators: args.seekingCollaborators,
       });
       if (!result.ok) {
         return text(
