@@ -79,3 +79,13 @@ export async function invalidateDigestsForInteractions(
   await db.query(`DELETE FROM context_digests WHERE id = ANY($1::bigint[])`, [digestIds]);
   return deletedCandidates ?? 0;
 }
+
+export const QUESTION_CLUSTER_SIMILARITY_THRESHOLD = 0.85;
+
+/** Dot product of two embed()-produced (L2-normalized) vectors equals cosine similarity. */
+export function cosineSim(a: number[], b: number[]): number {
+  let dot = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) dot += a[i] * b[i];
+  return dot;
+}
