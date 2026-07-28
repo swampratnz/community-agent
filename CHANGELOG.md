@@ -34,6 +34,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   false case. No new tool, table, or model call; the flag lives on the
   existing `member_projects` row, so purge/roster-leave cleanup removes it
   along with everything else automatically.
+- **The weekly admin digest's flywheel-throughput line now counts successful
+  `find_helper` connections, not just knowledge candidates and shared
+  projects** (#820): a new `countHelperMatchesSince` repository function
+  (gated behind the existing `FIND_HELPER_ENABLED`, so a deployment without
+  `find_helper` on issues no extra query) counts `helper_notifications` rows —
+  one per DM `find_helper` actually sent — since the same window the line's
+  other two sub-signals already use. `find_helper` is the one flywheel action
+  that actively connects two members rather than contributing content, and it
+  had zero visibility in either digest until now. The line's gate is now a
+  three-way `||` (any of the three sub-signals renders it), each with its own
+  independent week-over-week trend; still a bare integer only — never a
+  helper/requester identifier or the `find_helper` topic.
 - **`my_submissions` now covers `suggest_knowledge` tips, not just
   suggestions/reports/appeals** (#830): a new self-scoped
   `listOwnKnowledgeCandidates` repository function — mirroring
