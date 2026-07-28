@@ -54,6 +54,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   model, so an injection can *request* an action but can never *complete*
   one. The actor's tier is **re-resolved at confirm time**: a role revoked
   inside the TTL invalidates the queued action.
+  The router deterministically re-emits the pending action's `description` as
+  the trusted `⚠️ Pending:` notice a human reads before confirming, so
+  `requireConfirm` strips newline/angle-bracket forgery characters
+  (`[<>\r\n…]`) from that description at a **single choke point**
+  (`src/agent/tools.ts`) — generalising the issue #227 display-name fix to
+  every model-composed free-text field it now covers (a `moderate` reason, a
+  `create_event` name/location, a `cancel_event` reason, a `suggest_issue`
+  title, `forget_me`'s caller name; audit 2026-07-28 N2/N6). The real action
+  verb and target always lead the notice, so an injected privileged turn can
+  *append* misleading text but can never forge a second notice line or a fake
+  tag.
 - **Defence in depth**: every privileged tool calls `assertAtLeast()` before
   any side effect.
 - **Identity is platform-derived**: super admins come from env config; admins
@@ -1679,8 +1690,10 @@ so it is:
 - **Admin-tier + CONFIRM-gated + audited**, same treatment as
   `assign_community_role`/`grant_admin`. The CONFIRM text quotes every
   salient mutated field — the **resolved** name, ISO start time, location,
-  and a truncated (80-char) description preview — verbatim, so the human
-  confirms the actual artifact rather than model-composed prose — mitigating
+  and a truncated (80-char) description preview — each passed through
+  `requireConfirm`'s shared sanitiser (newline/angle-bracket forgery chars
+  stripped; audit 2026-07-28 N2) but otherwise the actual values, so the human
+  confirms the real artifact rather than model-composed prose — mitigating
   the main injection risk (a bogus/spam event, or a spoofed
   location/description, from a manipulated admin turn).
 - **Strict input parsing**: `startTime`/`endTime` must be a concrete,

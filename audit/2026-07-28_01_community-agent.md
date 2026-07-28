@@ -7,6 +7,13 @@
 
 ---
 
+> **Resolution status (updated 2026-07-28):** all eight actionable findings
+> have shipped. **N1, N2, N3, N5, N6, N7, N8 → ✅ Resolved in #794**; **N4 →
+> ✅ Resolved in #796**. The LOW items in the "Persistent deferred items" and
+> "Additional new LOW items" tables below remain deferred except where a
+> per-item Status says otherwise. Per-finding Status lines are inline in §3;
+> §6's recommended sequence is therefore complete.
+
 ## 1. Executive summary
 
 **Verdict:** Still production-viable and unusually well-hardened. The 2026-07-20 findings that were marked resolved *are* genuinely resolved (spot-verified H1, M2, M4, M5, M6, M7, M8, L8). No CRITICAL and no exploitable-now data-loss defect was found in the application. The most significant new items are in the **CI/agent pipeline**, not the bot: two loops that turn public GitHub comments into agent behaviour were hardened in one place (auto-merge) but the same author-check was **not** carried across to the sibling loops that write code.
@@ -17,7 +24,7 @@
 2. **MEDIUM — Model-composed free-text reaches the trusted CONFIRM notice unsanitized.** The prior audit's M3 fixed nicknames in the two role tools, but `moderate` (`reason`), `create_event` (`name`/`location`), `cancel_event` (`reason`) and `suggest_issue` (`title`) still concatenate raw model-supplied strings — with newlines intact — into `pending.description`, which the router re-emits as the authoritative `⚠️ Pending:` notice. Same forgery class, same file's own `delete_message` already strips it.
 3. **MEDIUM — Unauthenticated marker counting across autofix / revise / auto-merge.** Attempt caps and one-shot-notice guards count comments containing a public marker string with no author gate. Two hostile comments can force `needs-human` (pulling any bot PR out of every automated lane) or suppress the `human-merge-ready` escalation. The repo already solved this class in `scripts/pipeline-outcomes.mjs` — the fix is to copy that author gate.
 
-**Findings:** 0 CRITICAL · 1 HIGH · 4 MEDIUM · ~14 LOW (plus doc-drift and process items).
+**Findings:** 0 CRITICAL · 1 HIGH · 4 MEDIUM · ~14 LOW (plus doc-drift and process items). *(The 1 HIGH + 4 MEDIUM, plus LOW N6–N8, are all now resolved — see the resolution banner above and the per-finding Status lines below.)*
 
 **Verification:** `npm ci` clean; `npm run typecheck`, `format:check`, `lint`, `context:check` all green; `npm test` = **2054 pass / 0 fail / 705 skipped** (skips are DB-gated with no local Postgres; CI runs them against a real `pgvector/pgvector:pg16`). `npm audit --omit=dev` = **2 moderate** (transitive `@hono/node-server` path-traversal via `@modelcontextprotocol/sdk`; Windows-only, `npm audit fix` available — see M4 below). `tests/reviewVerdict.test.ts` run directly: passes (verdict-contract copies are identical). The test suite has grown from ~1,580 passing to 2,054 in 8 days — discipline is keeping pace with pipeline velocity.
 
@@ -36,6 +43,8 @@ The verdict contract is intact: the three `canonical_verdict`/`legacy_verdict` c
 ## 3. New findings
 
 ### N1 — Revise loop resolves "the review" from an author-unchecked, unanchored comment (HIGH)
+
+**Status:** ✅ Resolved in #794. The revise precheck's review-comment selection and attempt-count jq now author-gate on `github-actions[bot]` and `^`-anchor the marker (matching the auto-merge loop), and the agent prompt is told a same-marker comment from any other author is untrusted data, not the review.
 
 **File:** `.github/workflows/pipeline-pr-revise.yml:144-145` (precheck), compounded at `:245-247` (agent prompt)
 **Category:** Injection surface / verdict-contract integrity · OBSERVED
@@ -64,6 +73,8 @@ The agent prompt then tells the revise agent to re-find it itself — *"the LATE
 
 ### N2 — Model-supplied free-text fields reach the trusted CONFIRM notice unsanitized (MEDIUM)
 
+**Status:** ✅ Resolved in #794. `requireConfirm` now strips the line/tag-forgery character class (`[<>\r\n…]`) from every pending-action description at a single choke point, covering all listed tools (and `forget_me`, N6). Pinned by a new `SECURITY:` test in `tools.test.ts`; documented in `docs/SECURITY.md`.
+
 **File:** `src/agent/tools.ts:4510` (`moderate` `reason`), `:5082` (`create_event` `name`/`location`), `:5138` (`cancel_event` `reason`), `:6904` (`suggest_issue` `title`)
 **Category:** Prompt-injection / CONFIRM-notice UI forgery · OBSERVED
 
@@ -88,6 +99,8 @@ return requireConfirm(
 
 ### N3 — Unauthenticated marker counting across autofix / revise / auto-merge (MEDIUM)
 
+**Status:** ✅ Resolved in #794. Every marker count and dedup (autofix + revise attempt caps, auto-merge READY/BLOCKED) now filters to `github-actions[bot]`, matching the gate `scripts/pipeline-outcomes.mjs` already applied.
+
 **File:** `pipeline-pr-autofix.yml:131`; `pipeline-pr-revise.yml:154-155`; `pipeline-pr-automerge.yml:345-346` (READY_MARKER), `:439-440` (BLOCKED_MARKER)
 **Category:** Deterministic-loop robustness / griefing denial-of-automation · OBSERVED
 
@@ -106,6 +119,8 @@ The marker text is visible in the workflow file. Two comments from any account f
 
 ### N4 — Build agent's `gh issue edit:*` grant is unscoped — bypasses the adversarial-review gate under injection (MEDIUM)
 
+**Status:** ✅ Resolved in #796. `Bash(gh issue edit:*)` is removed from the build agent's `--allowedTools` entirely; the workflow now owns every lane transition deterministically with its `GITHUB_TOKEN` (Claim step → `status:building`, verify step → `status:built`, a git-ignored `needs-human.md` file-signal → `needs-human`). Scoped to the Action lane (the attended fallback Build Routine is documented as a separate model in `docs/PIPELINE.md`).
+
 **File:** `.github/workflows/pipeline-build.yml:420` (allowedTools), trigger `:79`
 **Category:** Token/permission scope / injection surface · OBSERVED
 
@@ -117,6 +132,8 @@ The marker text is visible in the workflow file. Two comments from any account f
 ---
 
 ### N5 — Wrong-dimension embedding model passes the health check while silently disabling all vector retrieval (MEDIUM)
+
+**Status:** ✅ Resolved in #794. `embed()` now throws on a dimension mismatch (so the #376 health job trips on exactly this outage) instead of warn-and-return; `recordInteraction`'s existing catch keeps the audit row. Pinned by a new standalone test.
 
 **File:** `src/storage/embeddings.ts:52-57`; `src/storage/repository.ts:79-92`; `src/backgroundJobs.ts:297-299`
 **Category:** Correctness / monitoring blind spot · OBSERVED
@@ -145,9 +162,9 @@ The marker text is visible in the workflow file. Two comments from any account f
 
 ### Additional new LOW items
 
-- **N6 — `forget_me` interpolates the caller's raw display name into the CONFIRM notice** (`tools.ts:3300-3311`). Lower than N2 because self-scoped (the notice is keyed to the caller's own confirm), but inconsistent with the file's own M3 discipline. Fix: `resolveSanitizedLabel(caller.platform, caller.userId)`.
-- **N7 — `startTrackedJob` / `startStatusCheck` pollers lack the M6 re-entrancy latch** (`backgroundJobs.ts:82-104`, `:390-425`). A docs-ingest run can plausibly exceed the 6h tick (up to `DOCS_INGEST_MAX_PAGES=2500`), letting a second concurrent ingest start before the first writes its freshness stamp. Fix: hoist the dev-team poller's `inFlight` latch into `startTrackedJob`.
-- **N8 — Baileys `group-participants.update` handler missing the M5 stale-socket guard** (`baileysAdapter.ts:316-320`). Bounded (roster upsert idempotent, welcome cooldown-latched). Fix: add `if (this.sock !== sock) return;`.
+- **N6 — `forget_me` interpolates the caller's raw display name into the CONFIRM notice** (`tools.ts:3300-3311`). **✅ Resolved in #794** — covered by N2's `requireConfirm` choke-point sanitiser. Lower than N2 because self-scoped (the notice is keyed to the caller's own confirm), but inconsistent with the file's own M3 discipline.
+- **N7 — `startTrackedJob` / `startStatusCheck` pollers lack the M6 re-entrancy latch** (`backgroundJobs.ts:82-104`, `:390-425`). **✅ Resolved in #794** — the `inFlight` latch was hoisted into `startTrackedJob`, covering every tracked job. A docs-ingest run can plausibly exceed the 6h tick (up to `DOCS_INGEST_MAX_PAGES=2500`), letting a second concurrent ingest start before the first writes its freshness stamp.
+- **N8 — Baileys `group-participants.update` handler missing the M5 stale-socket guard** (`baileysAdapter.ts:316-320`). **✅ Resolved in #794** — the `if (this.sock !== sock) return;` guard was added. Bounded anyway (roster upsert idempotent, welcome cooldown-latched).
 - **N9 — LID-routed WhatsApp DMs invisible to `conversationsForUser` scoping for phone-resolved users** (`baileysAdapter.ts:331` vs `:945-949`). Under-scopes only (rows invisible, never over-exposed — the safe direction). Fix: include the `<lid>@lid` DM key via the existing `lidToPhone` reverse lookup.
 - **N10 — SSRF v6 denylist misses hex-form v4-mapped literals (`::ffff:7f00:1`) and `64:ff9b:1::/48` NAT64** (`linkCheck.ts:113-129`). No demonstrated bypass (DNS renders v4-mapped answers dotted; v4 denylist verified complete); belt-and-braces on the exported guard.
 - **N11 — Cloud webhook doesn't check `phone_number_id` against config** (`cloudWire.ts:119-147`). HMAC proves "from Meta for this app"; a multi-number app would route all numbers' traffic in as first-party. Single-number deploys unaffected; no spoofing path (identity is Meta-attested `msg.from`). Fix: filter on `value.metadata.phone_number_id`.
@@ -189,8 +206,12 @@ The prior audit's "what's good" list still holds. Additionally verified this pas
 
 ## 6. Recommended sequence
 
-1. **Close the pipeline author-check asymmetry (N1 HIGH + N3 MEDIUM) together** — one reviewable diff that copies the `pipeline-outcomes.mjs` / auto-merge author gate to the revise precheck and every marker count. This is the highest-severity item and the cheapest structural fix. Governance-path change → human merge.
-2. **Sanitize CONFIRM-notice free-text once inside `requireConfirm` (N2 + N6 MEDIUM/LOW)** — a single choke-point fix covering every current and future call site, with a `SECURITY:` regression test and a `security-floor.json` bump.
-3. **Drop the build agent's `gh issue edit:*` grant (N4 MEDIUM)** — the deterministic steps already own the safe transitions; removing it closes the adversarial-gate bypass at zero functional cost. Also governance-path.
-4. **`embed()` throws on dimension mismatch (N5)** and **hoist the `inFlight` latch into `startTrackedJob` (N7)** — two small robustness fixes for the operator-error and long-run classes.
-5. **Agent-ergonomics batch (§4 items 1–4)** — context-pack entries, the two missing recipes, the `PROMPT_REVIEW_CLAUSE` equality test, and the CLAUDE.md/PIPELINE.md de-duplication. These lower the standing token cost and drift risk of the pipeline itself.
+*All five items below shipped across #794 (items 1, 2, 4, and the ergonomics batch minus the CLAUDE.md/PIPELINE.md de-duplication) and #796 (item 3). Retained as the record of the intended order.*
+
+1. **✅ (#794) Close the pipeline author-check asymmetry (N1 HIGH + N3 MEDIUM) together** — one reviewable diff that copies the `pipeline-outcomes.mjs` / auto-merge author gate to the revise precheck and every marker count. This is the highest-severity item and the cheapest structural fix. Governance-path change → human merge.
+2. **✅ (#794) Sanitize CONFIRM-notice free-text once inside `requireConfirm` (N2 + N6 MEDIUM/LOW)** — a single choke-point fix covering every current and future call site, with a `SECURITY:` regression test and a `security-floor.json` bump.
+3. **✅ (#796) Drop the build agent's `gh issue edit:*` grant (N4 MEDIUM)** — the deterministic steps already own the safe transitions; removing it closes the adversarial-gate bypass at zero functional cost. Also governance-path.
+4. **✅ (#794) `embed()` throws on dimension mismatch (N5)** and **hoist the `inFlight` latch into `startTrackedJob` (N7)** — two small robustness fixes for the operator-error and long-run classes.
+5. **◐ (#794, partial) Agent-ergonomics batch (§4 items 1–4)** — context-pack entries, the two missing recipes, and the `PROMPT_REVIEW_CLAUSE` equality test shipped; the CLAUDE.md/PIPELINE.md de-duplication was **deferred** (left as a standalone doc change). These lower the standing token cost and drift risk of the pipeline itself.
+
+**Still open** (deferred by design): the remaining LOW items (L1–L7, L13–L15, N9–N14) and the deferred ergonomics/de-duplication work — each its own focused change.
