@@ -448,10 +448,7 @@ test('sendDirectMessage: a send that fails on every attempt re-throws after DISC
     calls += 1;
     throw new Error('persistent Discord API error');
   });
-  await assert.rejects(
-    () => adapter.sendDirectMessage('user-1', 'hello'),
-    /persistent Discord API error/,
-  );
+  await assert.rejects(() => adapter.sendDirectMessage('user-1', 'hello'), /persistent Discord API error/);
   assert.equal(calls, 3, 'initial attempt plus 2 retries, then give up');
 });
 
@@ -497,7 +494,11 @@ test('SECURITY: a retried Discord send still runs outbound filtering exactly onc
     text: 'secret is sk-ant-' + 'y'.repeat(30) + ' end',
   });
   assert.equal(attempts, 2, 'first attempt fails, the retry succeeds');
-  assert.equal(filteredCalls, 1, 'outbound filtering must run once per logical send, not once per retry attempt');
+  assert.equal(
+    filteredCalls,
+    1,
+    'outbound filtering must run once per logical send, not once per retry attempt',
+  );
   assert.equal(
     seenPayloads[0],
     seenPayloads[1],
