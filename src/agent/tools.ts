@@ -1215,6 +1215,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Discord voice message transcription',
     category: 'Onboarding',
   },
+  {
+    envVar: 'IMAGE_INPUT_ENABLED',
+    configPath: 'discord.image.enabled',
+    label: 'Discord image-attachment input',
+    category: 'Onboarding',
+  },
   // WhatsApp
   {
     envVar: 'WHATSAPP_WELCOME_ENABLED',
@@ -2217,6 +2223,31 @@ export function reserveDevTeamDispatchDaily(key: string, limit: number): boolean
   const entry = devTeamDispatchDaily.get(key);
   if (!entry || entry.day !== today) {
     devTeamDispatchDaily.set(key, { day: today, count: 1 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
+/**
+ * Discord image-attachment fetches per platform-qualified sender, for the
+ * rolling calendar-day cap (IMAGE_INPUT_DAILY_LIMIT_PER_USER, issue #783) —
+ * same calendar-day shape as reserveImageGenDaily/reserveDevTeamDispatchDaily,
+ * bounding the real per-image multimodal token cost a single caller could run
+ * up. Checked in the adapter BEFORE the MIME/byte check and any fetch, per
+ * the acceptance criteria, so an at-cap sender never has their attachment
+ * inspected further. `key` MUST be platform-qualified (`` `discord:${senderId}` ``)
+ * even though only Discord implements image input today, matching the
+ * defensive convention `reserveVoiceTranscriptionSlot` already established.
+ */
+const imageInputDaily = new Map<string, { day: string; count: number }>();
+export function reserveImageInputDaily(key: string, limit: number): boolean {
+  if (limit <= 0) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = imageInputDaily.get(key);
+  if (!entry || entry.day !== today) {
+    imageInputDaily.set(key, { day: today, count: 1 });
     return true;
   }
   if (entry.count >= limit) return false;

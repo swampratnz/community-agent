@@ -26,6 +26,20 @@ export interface IncomingMessage {
   userName: string;
   /** Plain-text content of the message. */
   text: string;
+  /**
+   * A single image attachment, base64-encoded, present only when
+   * `IMAGE_INPUT_ENABLED` is on, the sender meets `IMAGE_INPUT_MIN_ROLE`, and
+   * the attachment passed the MIME allowlist / byte cap / daily cap — all
+   * enforced in the adapter BEFORE fetch (issue #783). `runAgentTurn` passes
+   * this to `query()` as an image content block alongside `text`; it is never
+   * persisted (the `interactions` row keeps `text` only) and never reaches
+   * `moderator.scan`, which still only ever sees `text` (a named residual
+   * risk — see docs/SECURITY.md).
+   */
+  image?: {
+    data: string;
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  };
   /** True if this is a 1:1 / direct conversation rather than a group/channel. */
   isDirect: boolean;
   /** Whether the bot was explicitly addressed (mention / DM / reply). */

@@ -1,11 +1,16 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { query, type HookJSONOutput, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type HookJSONOutput,
+  type McpServerConfig,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { atLeast, toolsForRole, type CallerContext } from '../auth/rbac.js';
 import { superAdminIds } from '../auth/roles.js';
-import type { AdapterLookup, Platform, PlatformAdapter } from '../platforms/types.js';
+import type { AdapterLookup, IncomingMessage, Platform, PlatformAdapter } from '../platforms/types.js';
 import {
   clearClaudeSessionId,
   getClaudeSession,
@@ -571,6 +576,7 @@ export async function runAgentTurn(
   userText: string,
   adapter: PlatformAdapter,
   getAdapter?: AdapterLookup,
+  image?: IncomingMessage['image'],
 ): Promise<AgentReply> {
   // Memory recall is scoped to THIS conversation only. Cross-conversation
   // recall is available solely through the admin-gated tools, so a public
@@ -674,7 +680,7 @@ export async function runAgentTurn(
       .join('\n\n');
   const prompt = assemblePrompt(priorSession ? [] : await fetchTail());
 
-  const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession, getAdapter);
+  const first = await execTurn(caller, prompt, systemPrompt, adapter, priorSession, getAdapter, image);
   let outcome = first;
 
   // If resuming a stale/foreign session failed (session files are CLI-local
@@ -694,6 +700,7 @@ export async function runAgentTurn(
       adapter,
       null,
       getAdapter,
+      image,
     );
   }
 
@@ -803,6 +810,35 @@ function noteUsageLimitOutcome(
   }
 }
 
+/**
+ * Wraps a plain-string prompt plus an image attachment into the single
+ * `AsyncIterable<SDKUserMessage>` the SDK's `query()` requires for a
+ * multimodal turn (issue #783) — `query()`'s `prompt` param is typed
+ * `string | AsyncIterable<SDKUserMessage>` (sdk.d.ts), and `SDKUserMessage.message`
+ * is the base Anthropic `MessageParam`, whose `content` accepts an array of
+ * blocks including an image block. Yields exactly one message so this is a
+ * single turn, not a stream of turns. `text` first, image second — reads
+ * naturally if the model ever needs to quote the accompanying caption
+ * verbatim, and matches this repo's caption-then-image logging convention
+ * elsewhere (adminDigest.ts image summaries).
+ */
+async function* imagePromptStream(
+  text: string,
+  image: NonNullable<IncomingMessage['image']>,
+): AsyncIterable<SDKUserMessage> {
+  yield {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text },
+        { type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.data } },
+      ],
+    },
+    parent_tool_use_id: null,
+  };
+}
+
 async function execTurn(
   caller: CallerContext,
   prompt: string,
@@ -810,6 +846,7 @@ async function execTurn(
   adapter: PlatformAdapter,
   resumeSession: string | null,
   getAdapter?: AdapterLookup,
+  image?: IncomingMessage['image'],
 ): Promise<TurnOutcome> {
   // Turn-scoped ref (issue #411): the knowledge_search handler writes the
   // top-scoring id of its most recent qualifying hit here; read back below
@@ -836,7 +873,12 @@ async function execTurn(
 
   try {
     for await (const message of query({
-      prompt,
+      // Byte-identical to today when no image is attached (the overwhelming
+      // majority of turns): `prompt` stays the plain string. An image
+      // attachment (issue #783, gated well upstream of here — see
+      // config.discord.image / DiscordAdapter.maybeFetchImageAttachment)
+      // switches this to the single-message async-iterable form instead.
+      prompt: image ? imagePromptStream(prompt, image) : prompt,
       options: buildQueryOptions(
         caller.role,
         systemPrompt,

@@ -215,6 +215,44 @@ message would be — a scan fired against the message's native (always empty,
 for a voice bubble) `content` would never see what was actually said. See
 SECURITY.md §13 for the full posture.
 
+## Discord image-attachment input (issue #783)
+
+`IMAGE_INPUT_ENABLED` (**off by default**, `CAPABILITY-IDEAS.md` §A1) lets an
+eligible caller attach a single image (a screenshot, stack trace, or billing
+page) alongside their message; the model answers grounded in what the image
+actually shows rather than whatever caption (or nothing) was typed. Discord
+only, one attachment per message, no OCR, no moderation-scan extension — see
+the "smallest viable version" in the issue for what is deliberately deferred.
+
+The gate (`maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`)
+mirrors the voice gate's shape above — flag → `IMAGE_INPUT_MIN_ROLE` (default
+`'super_admin'`) → `IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day
+cap, `reserveImageInputDaily` in `src/agent/tools.ts`) → MIME allowlist
+(`image/png`, `image/jpeg`, `image/webp`) + `IMAGE_INPUT_MAX_BYTES`, both read
+from the attachment's own pre-fetch metadata — before ever downloading it.
+The fetched bytes are base64-encoded and carried on
+`IncomingMessage.image`, unset for every other message.
+
+`runAgentTurn`/`execTurn` (`src/agent/core.ts`) thread that optional image
+through to the SDK: absent an image, `query()`'s `prompt` stays the plain
+string it always has been; with one, `execTurn` instead passes a
+single-message `AsyncIterable<SDKUserMessage>` whose `content` is
+`[{ type: 'text', text: prompt }, { type: 'image', source: { type: 'base64',
+media_type, data } }]` — the base Anthropic Messages API's own multimodal
+content-block shape, reached through the SDK's `SDKUserMessage.message:
+MessageParam` type. No image bytes are ever passed to `recordInteraction` —
+the stored `interactions` row for an image-bearing turn holds `text` only,
+identical in shape to any other turn.
+
+Unlike voice transcription (which only ever yields ordinary `text` flowing
+through the same moderation/injection handling), an image is a genuinely new
+untrusted-input class: text rendered inside it is interpreted model-side and
+is invisible to every inbound filter, including `moderator.scan`. The only
+defence is an explicit `systemPrompt.ts` clause (present only when the flag
+could apply) stating that image-borne text is untrusted data to answer from,
+never an instruction. See SECURITY.md §22 for the full threat model and why
+the default is `super_admin` rather than a wider tier.
+
 ## Memory & "learning"
 
 Because the agent authenticates with a Claude **subscription** (not the API),
