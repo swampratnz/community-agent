@@ -70,6 +70,26 @@ const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
   'notMembersCount',
   'autoAnswerHelpfulPct',
   'helperMatchesCount',
+  // Signals that `currentCounts` has been writing all along but this list
+  // silently stripped, so `trendSuffix` could never find them in `previous`
+  // and their week-over-week arrow never rendered in production, no matter
+  // how much history accumulated (issue #820 review). The same #629 class
+  // fixed once for `autoAnswerHelpfulPct` and again for `helperMatchesCount`
+  // above — the in-memory trend tests pass `previousCounts` directly and so
+  // never exercise the storage round-trip where the stripping happens.
+  // Every one is a bare integer count defined in adminDigest.ts's own
+  // `currentCounts`; `sanitizeDigestCounts`'s `Number.isInteger` guard still
+  // applies, so this widens the allowlist only to values this file's own
+  // docstring already describes as in-scope.
+  'acceptedKnowledgeCandidatesCount',
+  'projectsSharedCount',
+  'escalatedKnowledgeGapsCount',
+  'generalUnhelpfulCount',
+  'openAppealsCount',
+  'unreachableSourceKnowledgeCount',
+  'unhelpfulThemeCount',
+  'overallAnswerHelpful',
+  'overallAnswerTotal',
 ]);
 
 /** Strips any key outside `ADMIN_DIGEST_SIGNAL_KEYS` and any non-integer value. */

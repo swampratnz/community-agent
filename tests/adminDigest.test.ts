@@ -3665,6 +3665,51 @@ test(
   },
 );
 
+test(
+  'buildAdminDigestForAdmin: EVERY integer signal it writes to currentCounts survives the sanitizeDigestCounts whitelist — a stripped signal can never render a trend arrow, however much history accumulates (issue #820 review)',
+  { skip },
+  async () => {
+    // The per-signal round-trip test above pins one key. This pins the CLASS:
+    // nine signals (acceptedKnowledgeCandidatesCount, projectsSharedCount,
+    // escalatedKnowledgeGapsCount, …) were written by currentCounts but absent
+    // from ADMIN_DIGEST_SIGNAL_KEYS, so sanitizeDigestCounts dropped them at
+    // the write boundary and trendSuffix's `key in previous` check was false
+    // forever. Existing trend tests miss this because they pass previousCounts
+    // directly in memory, never exercising the storage round-trip. Asserting
+    // the whole set means a NEW signal added without a whitelist entry fails
+    // here instead of silently never trending in production.
+    const adminId = `${RUN}-allsignals-admin`;
+    const conversationId = `${RUN}-c-allsignals`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    try {
+      const built = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      await recordAdminDigestSnapshot('discord', adminId, built.currentCounts);
+      const readBack = (await getLastDigestCounts('discord', adminId)) ?? {};
+
+      const written = Object.entries(built.currentCounts)
+        .filter(([, value]) => Number.isInteger(value))
+        .map(([key]) => key);
+      const stripped = written.filter((key) => !(key in readBack)).sort();
+      assert.deepEqual(
+        stripped,
+        [],
+        `these signals are written to currentCounts but stripped by ADMIN_DIGEST_SIGNAL_KEYS, so their week-over-week arrow can never render: ${stripped.join(', ')}`,
+      );
+      assert.ok(written.length > 0, 'sanity: the digest wrote at least one integer signal');
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
+  },
+);
+
 test('buildAdminDigestMessage: unreachable-source-knowledge line appears only when unreachableSourceKnowledgeCount > 0, and all TWENTY-ONE signals zero -> null (issue #624 acceptance criteria 2, 3)', () => {
   assert.equal(
     buildAdminDigestMessage(
