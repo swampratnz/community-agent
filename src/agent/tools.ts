@@ -5129,12 +5129,16 @@ export function buildToolServer(
         location: args.location,
       };
       // CONFIRM text quotes every salient mutated field — name, start time,
-      // location, and a truncated description — verbatim (binding acceptance
-      // criterion from the adversarial verdict on #230, sharpened by review
-      // on the PR: location/description are just as outward-facing as
-      // name/startTime, so the human must see them too before confirming),
-      // so the human confirms the actual artifact rather than model-composed
-      // prose. Same truncation pattern as delete_member_note's note preview.
+      // location, and a truncated description (binding acceptance criterion
+      // from the adversarial verdict on #230, sharpened by review on the PR:
+      // location/description are just as outward-facing as name/startTime, so
+      // the human must see them too before confirming). requireConfirm strips
+      // the newline/angle-bracket forgery class from the whole description at
+      // its choke point (the 2026-07-28 audit N2 generalisation of #227), so
+      // these fields reach the human as the actual values minus those chars —
+      // NOT byte-for-byte verbatim — and the human still confirms the real
+      // artifact rather than model-composed prose. Same truncation pattern as
+      // delete_member_note's note preview.
       const descPreview = args.description
         ? ` ("${args.description.slice(0, 80)}${args.description.length > 80 ? '…' : ''}")`
         : '';
