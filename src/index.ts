@@ -24,6 +24,7 @@ import { startAdminDigest } from './adminDigest.js';
 import { startMemberDigest } from './memberDigest.js';
 import { startDepartedAdminAlert } from './departedAdminAlert.js';
 import { startEngagementAlert } from './engagementAlert.js';
+import { startAdminLeverageAlert } from './adminLeverageAlert.js';
 import type { PlatformAdapter } from './platforms/types.js';
 import { DiscordAdapter } from './platforms/discord/adapter.js';
 import { BaileysAdapter } from './platforms/whatsapp/baileysAdapter.js';
@@ -121,6 +122,9 @@ async function main(): Promise<void> {
   // 4f-ter. Optional weekly engagement-percentage alert (disabled unless configured).
   const engagementAlertTimer = startEngagementAlert(adapters);
 
+  // 4f-ter-bis. Optional weekly admin-leverage alert (disabled unless configured).
+  const adminLeverageAlertTimer = startAdminLeverageAlert(adapters);
+
   // 4f-quater. Optional weekly member-facing digest channel post (disabled unless configured).
   const memberDigestTimer = startMemberDigest(adapters);
 
@@ -147,6 +151,7 @@ async function main(): Promise<void> {
     if (memberDigestTimer) clearInterval(memberDigestTimer);
     if (departedAdminAlertTimer) clearInterval(departedAdminAlertTimer);
     if (engagementAlertTimer) clearInterval(engagementAlertTimer);
+    if (adminLeverageAlertTimer) clearInterval(adminLeverageAlertTimer);
     if (devTeamWatchTimer) clearInterval(devTeamWatchTimer);
     // Drain in-flight per-conversation turns BEFORE stopping any adapter, so
     // a reply generated during the drain window can still be sent on a live

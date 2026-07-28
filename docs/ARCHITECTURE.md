@@ -2907,6 +2907,54 @@ super admin only sees it if they think to run the tool again.
   percentage, never a user id, so `forget_me`/`purge_user_data` have nothing
   to reach here.
 
+## Admin leverage alert
+
+`src/adminLeverageAlert.ts` (off unless `ADMIN_LEVERAGE_ALERT_ENABLED`, issue
+#785) closes the same pull-only gap #472/#568 closed for other
+super-admin-only signals, this time for VISION's own named "Admin leverage"
+north star: `adminActivitySummary()` (issue #488) already computes a
+per-actor rollup of `admin_audit` over a trailing window, but only on pull
+via the `admin_activity` tool — a super admin only sees it if they think to
+run the tool again.
+
+- Routed through the shared `startTrackedJob` (the same 6h cadence as every
+  other opt-in job), so a throwing `runOnce` (e.g. a DB error from
+  `adminActivitySummary`/`listAdmins`) gets the existing consecutive-failure
+  alerting for free — no bespoke tracker.
+- Like the engagement alert, `actionsPerAdmin` is a continuous value that's
+  always meaningful, so this follows the same **freshness-guard cadence**
+  rather than the departed-admin alert's zero→nonzero latch: a new,
+  single-row/guild-wide `admin_leverage_alert_sends` table (`id = 1`
+  enforced by a CHECK constraint) persists `sent_at`, and each tick is
+  eligible only when there is no prior row or that row is older than 7
+  days — restart-safe, mirroring `engagement_alert_sends`' own guard
+  exactly.
+- On an eligible tick, calls `adminActivitySummary(7)` and sums
+  `actionCount` across every row for the total weekly action count, calls
+  `listAdmins()` for the `community_users` admin headcount, and derives
+  `actionsPerAdmin = totalActions / adminCount` (a defined "no current
+  admins" message when `adminCount === 0`, never a divide-by-zero or
+  `NaN`/`Infinity` artifact). DMs every super admin via `alertSuperAdmins`,
+  imported from `departedAdminAlert.ts` rather than re-implemented, so
+  "super admins only, connected adapters only" has one implementation
+  shared by every alert job.
+- No new tool and no new RBAC tier — `admin_audit` is already fully
+  super-admin-queryable via the existing `admin_activity` tool; this only
+  changes the data's cadence. Week-over-week trend:
+  `admin_leverage_alert_sends.last_rate` is read back via
+  `getLastAdminLeverageAlertRate()` before each send and rendered as a
+  `▲`/`▼`/"No change" suffix on the rate, the same convention
+  `formatEngagementAlertMessage` (#597) uses for percentage points. A
+  first-ever run (no prior row) renders no suffix at all.
+- The DM carries a bare total action count, a bare admin count, and the
+  derived rate only — never any admin's `actorUserId`/`platformUserId` or
+  display name, matching every other digest/alert signal's "bare
+  aggregate, no identity" convention. A super admin who wants the
+  per-admin breakdown still has to pull it via `admin_activity`.
+- Nothing user-scoped: the table stores only a timestamp and an aggregate
+  rate, never a user id, so `forget_me`/`purge_user_data` have nothing to
+  reach here.
+
 ## Switching WhatsApp providers
 
 The Baileys adapter is the default (immediate, free, dedicated number, but

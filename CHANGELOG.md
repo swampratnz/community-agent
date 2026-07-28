@@ -18,7 +18,7 @@ Listing a PR number here satisfies scripts/check-changelog-coverage.mjs (any
 daily tracking issue converge and auto-close. This comment sits in the H1
 preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
-Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
+Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
@@ -65,6 +65,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   the sequencing layer. Added to the explicit `ENABLED_SKILLS` allowlist
   alongside its five siblings (never `'all'`); no new tool, and no tier's
   `allowedTools`/`disallowedTools` change.
+- **Weekly admin-leverage alert** (#785, `ADMIN_LEVERAGE_ALERT_ENABLED`, off
+  by default): a proactive weekly DM to super admins summarising
+  moderation/curation workload — total actions across all admins, the
+  current admin headcount, and the derived actions-per-admin rate, with a
+  week-over-week trend. Closes the pull-only gap left by the existing
+  `admin_activity` tool, the same "pull → push" move already made for
+  departed-admin visibility and community engagement. Bare aggregate
+  numbers only — never a specific admin's identity.
 - **`usage_stats` now breaks spend down by model, not just by role tier**
   (#792): the role-tiered `AGENT_MODEL` (#382/#394) and the
   `AGENT_MODEL_FALLBACK` overload fallback (#738) previously couldn't be

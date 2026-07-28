@@ -1349,6 +1349,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Admin Alerts & Digest',
   },
   {
+    envVar: 'ADMIN_LEVERAGE_ALERT_ENABLED',
+    configPath: 'adminLeverageAlert.enabled',
+    label: 'Weekly admin-leverage alert',
+    category: 'Admin Alerts & Digest',
+  },
+  {
     envVar: 'KNOWLEDGE_GAP_ALERT_ENABLED',
     configPath: 'knowledgeGapAlert.enabled',
     label: 'Real-time knowledge-gap-cluster alert',
