@@ -682,6 +682,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   Only the *audience* of already admin-visible, aggregate-by-construction
   data is widened — never raw message content, user ids, display names, or
   conversation ids, none of which this surface ever reads.
+  - The knowledge-base line's member-contribution note (issue #837,
+    `countAcceptedMemberKnowledgeTipsSince`) reuses `source_user_id`/
+    `source_platform` provenance `suggest_knowledge` (#633) already writes and
+    the private resolution DM (#703) already reads, but exposes only a bare
+    `number` count to `formatMemberDigestMessage` — never a candidate row,
+    platform, or user id — the same structural guarantee `newProjectCount`
+    already has on this surface. Clamped to the number of knowledge titles
+    actually shown, so it can never read as claiming more member
+    contributions than the post displays.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no
