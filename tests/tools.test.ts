@@ -8169,8 +8169,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    42,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783)",
+    43,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(

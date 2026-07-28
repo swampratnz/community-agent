@@ -1015,3 +1015,26 @@ CREATE TABLE IF NOT EXISTS docs_ingest_url_failures (
   -- operator is told once rather than every run.
   reported_at          TIMESTAMPTZ
 );
+
+-- ---------------------------------------------------------------------------
+-- Restart-safe freshness guard for the proactive weekly admin-leverage alert
+-- (issue #785): a push companion to the pull-only, super-admin-only
+-- `admin_activity` tool (issue #488), moving VISION's "Admin leverage"
+-- north star ("moderation/curation actions per admin") from pull to push,
+-- mirroring the identical #472/#568 pull-to-push moves already made for
+-- `departed_admin_alert`/`engagement_alert_sends`. Deliberately SINGLE-ROW/
+-- guild-wide, not per-identity — the actions-per-admin rate is a guild-wide,
+-- unscoped aggregate, not something computed per recipient, so there is
+-- nothing to key per admin. The `id = 1` CHECK plus a fixed-value upsert
+-- enforce the single row. `last_rate` is the read-back trend baseline
+-- `formatAdminLeverageAlertMessage`'s week-over-week suffix compares
+-- against, mirroring `engagement_alert_sends.last_percentage`'s shape. No
+-- user/admin identifier column: forget_me/purge_user_data have nothing to
+-- touch here, same as `engagement_alert_sends`/`member_digest_sends`.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_leverage_alert_sends (
+  id        SMALLINT    PRIMARY KEY DEFAULT 1,
+  sent_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_rate NUMERIC,
+  CONSTRAINT admin_leverage_alert_sends_singleton CHECK (id = 1)
+);
