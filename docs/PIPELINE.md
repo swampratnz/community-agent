@@ -161,7 +161,28 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   structurally, not just by prompt: its `--allowedTools` in `pipeline-build.yml`
   grants no blanket `git:*`/`gh:*`/`npx:*`/`node:*` and no form of
   `gh pr merge` or `gh api` (matching the autofix worker's least-privilege
-  standard, #107). Only the deterministic auto-merge loop merges, and only its
+  standard, #107). It also grants **no `gh issue edit`** (audit 2026-07-28 N4):
+  the matcher can't pin the issue number, so an injected agent could have
+  labelled an *arbitrary* issue `status:approved` and spawned a build of
+  never-adversarially-reviewed work (an App-token label add does re-trigger the
+  build workflow). The workflow now owns every lane transition
+  deterministically with its `GITHUB_TOKEN` — a Claim step marks
+  `status:building` before the agent runs, the verify step marks `status:built`
+  once it confirms the PR, and a deliberate infeasible/unsafe refusal is
+  signalled by the agent writing a git-ignored `needs-human.md` file (the same
+  file-signal shape as the handoff note) which the verify step turns into the
+  `needs-human` label. **Scope:** this deterministic lane ownership is the
+  **Action lane** (`pipeline-build.yml`), which is where N4's exploit shape
+  lives — an *unattended*, injection-exposed agent whose App-token label edit
+  re-triggers a build. The optional **fallback Build *Routine*** (the live
+  `/loop` session in "The five loop prompts" and the mapping table's "Routine
+  hourly as fallback") is a different execution model: it is not bounded by
+  `pipeline-build.yml`'s `--allowedTools`, and it *must* self-manage labels
+  because it dynamically picks which `status:approved` issue to claim, so it
+  cannot be given a per-run-pinned grant. Treat that fallback as the
+  higher-trust, human-operated lane — run it only when you are watching, since
+  it retains the un-pinned relabel capability the audit N4 scoped to the Action
+  lane. Only the deterministic auto-merge loop merges, and only its
   own gated build-worker PRs.
 - **WIP caps:** ≤5 open `status:draft` (raised from 3 on the Max 20x pool — the
   cap protects review quality, not compute). Builds run **per-issue** (each issue its
@@ -505,6 +526,13 @@ and exits. Consequences to respect:
 | pr-review | **GitHub Action** on `pull_request` events (Routine hourly as fallback) | event | Sonnet 5 |
 | auto-merge | **GitHub Action** on a 15-min schedule + CI/review completion | event | — (deterministic, no model) |
 
+The **build "Routine hourly as fallback"** is a live `/loop` session, NOT the
+`pipeline-build.yml` Action — so it is not bound by that workflow's
+deterministic lane ownership (audit N4; see the "No loop OPENS PRs" bullet
+above) and still self-manages its own `status:*` labels. That is inherent (it
+must pick which approved issue to claim), so it is the higher-trust,
+human-operated lane — run it attended.
+
 Event-driven Actions cost nothing when idle and need no live session — the
 right fit for the two code loops. Routines suit the time-driven discovery loops.
 The auto-merge loop is deterministic shell (no model), so it costs nothing but
@@ -594,8 +622,11 @@ Build and pr-review run as **GitHub Actions** (label/PR triggered), not live
 sessions:
 
 - `.github/workflows/pipeline-build.yml` — fires on `issues.labeled ==
-  status:approved`, implements on a branch, opens a PR "Closes #N", relabels
-  `status:built`. Builds run **per-issue** (each issue its own `concurrency`
+  status:approved`, implements on a branch, opens a PR "Closes #N". The
+  **workflow** (not the agent) owns the lane labels deterministically now
+  (audit 2026-07-28 N4 — see the least-privilege bullet above): a Claim step
+  marks `status:building` before the agent runs and the verify step marks
+  `status:built` once it confirms the PR. Builds run **per-issue** (each issue its own `concurrency`
   group — distinct issues in parallel, no cross-eviction); `--max-turns 300` +
   a 180-min job timeout bound a run, sized generously so a pool-contended
   build finishes slowly instead of being killed mid-gate (see the WIP-caps
