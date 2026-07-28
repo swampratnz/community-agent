@@ -19,6 +19,7 @@ daily tracking issue converge and auto-close. This comment sits in the H1
 preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
+#775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 -->
 
 
@@ -171,8 +172,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   CONFIRM/escalation, and echoed back everywhere else.
 
 ### Security
-- **Trusted CONFIRM notices are now sanitised at a single choke point.** The
-  `⚠️ Pending:` confirmation the bot shows before a destructive action is
+- **Trusted CONFIRM notices are now sanitised at a single choke point** (#794).
+  The `⚠️ Pending:` confirmation the bot shows before a destructive action is
   deterministic and meant to be un-spoofable by the model, but a handful of
   tools (`moderate`, `create_event`, `cancel_event`, `suggest_issue`,
   `forget_me`) still passed raw model-composed free text into it — so a
@@ -202,6 +203,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Also fixes the scan listener itself only being wired up when full-message
   archiving or reply-retraction was also on — a moderation-only deployment
   (the common case) previously never saw edits at all.
+- **`/kb` now shows the same conflict and low-rated caveats a chat-path
+  `knowledge_search` answer would** (#806, issue #802). `handleKb` was calling
+  the shared renderer with only its trusted-entries argument, so the
+  conflicting-answer and "other members found this unhelpful" caveats
+  silently defaulted to off — a member using the slash command could get a
+  cleaner-looking answer than the one they'd get by just asking the bot the
+  same question. `/kb` now derives the same relevance-filtered id set and
+  runs the same conflict/low-rated lookups the chat path already does before
+  rendering, failing safe (no caveat, not a dropped reply) if either lookup
+  errors. No new tool, tier, or config flag, and byte-identical output when
+  the low-rated knob is at its default.
 
 ## 2026-07-27
 
