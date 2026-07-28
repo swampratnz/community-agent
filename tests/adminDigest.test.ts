@@ -58,6 +58,7 @@ const {
   getLastDigestCounts,
   recordAdminDigestSnapshot,
   createModerationAppeal,
+  resolveModerationAppeal,
   recordHelperNotificationIfUnderCap,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
@@ -3707,6 +3708,147 @@ test(
       ]);
       await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
     }
+  },
+);
+
+// --- issue #844: appealResolutionBreakdown + its digest line ---------------
+
+// Full 40-element positional prefix for buildAdminDigestMessage at its
+// quiet-week default — every signal through helperMatchesCount (position 40)
+// zero/null. The two new trailing params under test
+// (resolvedAppealsCount/dismissedAppealsCount) are appended by each test
+// below, matching the FLYWHEEL_ZERO_PREFIX + four-trailing-args convention
+// used for acceptedKnowledgeCandidatesCount/projectsSharedCount/
+// oldestPendingCandidateAgeDays/helperMatchesCount above.
+const APPEAL_BREAKDOWN_ZERO_PREFIX = [...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 0] as const;
+
+test('buildAdminDigestMessage: the appeal-breakdown line renders only when resolvedAppealsCount + dismissedAppealsCount > 0, with independent wording for resolved-only, dismissed-only, and both (issue #844 acceptance criterion 2)', () => {
+  assert.equal(
+    buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX, 0, 0),
+    null,
+    'both counts zero, with every other signal already zero, is a quiet week',
+  );
+
+  const resolvedOnly = buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX, 3, 0);
+  assert.ok(resolvedOnly, 'resolved appeals alone still produce a DM');
+  const resolvedLine = resolvedOnly.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    resolvedLine,
+    '📈 3 appeal(s) closed this period: 3 resolved, 0 dismissed.',
+    'resolved-only still renders both sub-counts in the fixed template',
+  );
+
+  const dismissedOnly = buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX, 0, 2);
+  assert.ok(dismissedOnly, 'dismissed appeals alone still produce a DM');
+  const dismissedLine = dismissedOnly.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    dismissedLine,
+    '📈 2 appeal(s) closed this period: 0 resolved, 2 dismissed.',
+    'dismissed-only still renders both sub-counts in the fixed template',
+  );
+
+  const both = buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX, 8, 4);
+  assert.ok(both);
+  const bothLine = both.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    bothLine,
+    '📈 12 appeal(s) closed this period: 8 resolved, 4 dismissed.',
+    'the total is the sum of both sub-counts',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: omitting resolvedAppealsCount/dismissedAppealsCount is byte-identical to passing explicit zeros — the pre-#844 quiet case is unaffected (issue #844 acceptance criterion 4)', () => {
+  const withoutNewParams = buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX);
+  const withExplicitZeros = buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX, 0, 0);
+  assert.equal(
+    withoutNewParams,
+    withExplicitZeros,
+    'a caller that has not wired the new trailing params through renders byte-identical output',
+  );
+  assert.equal(withExplicitZeros, null, 'still a quiet week');
+});
+
+test('buildAdminDigestMessage: the appeal-breakdown line trends resolvedAppealsCount and dismissedAppealsCount independently via trendSuffix (issue #844)', () => {
+  const prefixWithTrend = [
+    ...APPEAL_BREAKDOWN_ZERO_PREFIX.slice(0, 21),
+    { resolvedAppealsCount: 1, dismissedAppealsCount: 5 },
+    ...APPEAL_BREAKDOWN_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    line,
+    '📈 5 appeal(s) closed this period: 3 resolved, 2 dismissed. (▲+2 since last week) (▼-3 since last week)',
+    'each sub-count carries its own independent trendSuffix, same one-call-per-signal convention as the flywheel line',
+  );
+
+  const noTrend = buildAdminDigestMessage(...APPEAL_BREAKDOWN_ZERO_PREFIX, 3, 2);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('📈'));
+  assert.equal(
+    noTrendLine,
+    '📈 5 appeal(s) closed this period: 3 resolved, 2 dismissed.',
+    'no previousCounts -> no suffix on either sub-count',
+  );
+});
+
+test(
+  'buildAdminDigestForAdmin: appealResolutionBreakdown is wired over the same FRESHNESS_DAYS window and rendered on the digest, and no appellant reason/user_name/resolved_by ever reaches the message (issue #844 acceptance criteria 1, 2, 3)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-appealbreakdown-admin`;
+    const conversationId = `${RUN}-c-appealbreakdown`;
+    const appellant = `${RUN}-appealbreakdown-appellant`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const secretReason = 'a very identifiable appeal reason that must never leak';
+    const secretUserName = 'VerySecretAppellantName';
+    const secretResolver = `${RUN}-appealbreakdown-resolver-secret`;
+
+    const resolved = await createModerationAppeal({
+      platform: 'discord',
+      userId: appellant,
+      userName: secretUserName,
+      reason: secretReason,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissed = await createModerationAppeal({
+      platform: 'discord',
+      userId: appellant,
+      userName: secretUserName,
+      reason: secretReason,
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(resolved.id, 'resolved', secretResolver);
+    await resolveModerationAppeal(dismissed.id, 'dismissed', secretResolver);
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.ok(
+      result.currentCounts.resolvedAppealsCount >= 1,
+      'resolvedAppealsCount reflects the seeded resolved appeal',
+    );
+    assert.ok(
+      result.currentCounts.dismissedAppealsCount >= 1,
+      'dismissedAppealsCount reflects the seeded dismissed appeal',
+    );
+    assert.ok(result.message, 'a nonzero appeal-breakdown count alone still produces a DM');
+    assert.match(result.message, /appeal\(s\) closed this period/, 'the breakdown line renders');
+    for (const secret of [secretReason, secretUserName, secretResolver]) {
+      assert.ok(
+        !result.message.includes(secret),
+        `SECURITY: "${secret}" must never reach the rendered digest — only the two integer counts do (issue #844 acceptance criterion 3)`,
+      );
+    }
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[resolved.id, dismissed.id]]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
   },
 );
 

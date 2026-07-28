@@ -497,3 +497,37 @@ export async function oldestOpenAppealAgeDays(platform: string): Promise<number 
   const ageDays = rows[0]?.age_days;
   return ageDays === null || ageDays === undefined ? null : Number(ageDays);
 }
+
+/**
+ * Guild-wide-by-platform outcome mix of appeals closed in the last
+ * `sinceDays` days (issue #844) — the still-missing complement to
+ * `countOpenAppeals`/`oldestOpenAppealAgeDays`'s backlog-size/-age signals:
+ * whether appeals, once triaged, mostly get acted on (`resolved`) or mostly
+ * turned down (`dismissed`). Excludes still-`open` rows and other platforms'
+ * rows, same boundary `countOpenAppeals` draws; the rolling window is a
+ * bound parameter via `make_interval`, never a string-concatenated interval
+ * (the adversarial review's tightening on this issue). Both keys are always
+ * present, zero-filled when a status has no rows in the window — same
+ * "always both keys" convention `mapModerationAppeal`'s callers use.
+ */
+export async function appealResolutionBreakdown(
+  platform: string,
+  sinceDays: number,
+): Promise<{ resolved: number; dismissed: number }> {
+  const { rows } = await pool.query(
+    `SELECT status, COUNT(*)::int AS n
+       FROM moderation_appeals
+      WHERE platform = $1
+        AND status IN ('resolved', 'dismissed')
+        AND resolved_at >= now() - make_interval(days => $2::int)
+      GROUP BY status`,
+    [platform, sinceDays],
+  );
+  const breakdown = { resolved: 0, dismissed: 0 };
+  for (const row of rows) {
+    if (row.status === 'resolved' || row.status === 'dismissed') {
+      breakdown[row.status as 'resolved' | 'dismissed'] = Number(row.n);
+    }
+  }
+  return breakdown;
+}
