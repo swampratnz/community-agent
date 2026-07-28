@@ -3468,6 +3468,26 @@ export async function countPendingKnowledgeCandidates(): Promise<number> {
 }
 
 /**
+ * Whole-day age of the oldest still-pending knowledge candidate — the same
+ * `MIN(created_at)` oldest-age mechanic `oldestOpenAppealAgeDays` (#787)
+ * applies to appeals, over exactly the `status = 'pending'` row set
+ * `countPendingKnowledgeCandidates` counts (issues #743/#787 both named this
+ * as the deferred growth path, built here in #801). Guild-wide, unscoped —
+ * `knowledge_candidates` has no conversation/channel column, matching
+ * `countPendingKnowledgeCandidates`'s own unscoped behaviour. `MIN` over an
+ * empty (all-reviewed) set is `null`, never `0`, and is returned as-is so a
+ * digest/tool reader can never mistake "no pending candidates" for "one that
+ * just arrived".
+ */
+export async function oldestPendingCandidateAgeDays(): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(DAY FROM now() - MIN(created_at))::int AS age_days FROM knowledge_candidates WHERE status = 'pending'`,
+  );
+  const ageDays = rows[0]?.age_days;
+  return ageDays === null || ageDays === undefined ? null : Number(ageDays);
+}
+
+/**
  * Exact count of `pending` candidates older than `days` (issue #398) — the
  * review-queue analogue of `countStaleKnowledge`, but for
  * `knowledge_candidates`'s own age-of-review concern rather than

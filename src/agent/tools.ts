@@ -89,6 +89,7 @@ import {
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
+  oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
   type MemberProject,
   type MemberProjectSearchHit,
@@ -6032,11 +6033,10 @@ export function buildToolServer(
     'review_queue',
     'Single roll-up of all five admin review queues — access requests, suggestions, knowledge candidates, ' +
       'reports, and appeals — each with its current pending/open count, so triage starts with one glance ' +
-      'instead of polling five separate list_* tools in turn. The access-requests, suggestions, reports, and ' +
-      "appeals lines also show the oldest item's age in whole days once that queue is non-empty. Reports " +
-      'reflect only your own conversation scope, same as list_reports (never a guild-wide total); appeals ' +
-      'reflect only your own platform, same as list_appeals. Knowledge candidates show count only (no age) ' +
-      'for now. Read-only, takes no arguments. Admin only.',
+      "instead of polling five separate list_* tools in turn. Every line also shows the oldest item's age in " +
+      'whole days once that queue is non-empty. Reports reflect only your own conversation scope, same as ' +
+      'list_reports (never a guild-wide total); appeals reflect only your own platform, same as list_appeals. ' +
+      'Read-only, takes no arguments. Admin only.',
     {},
     async () => {
       assertAtLeast(caller.role, 'admin', 'review_queue');
@@ -6051,6 +6051,7 @@ export function buildToolServer(
         suggestionCount,
         suggestionAgeDays,
         candidateCount,
+        candidateAgeDays,
         reportCount,
         reportAgeDays,
         appealCount,
@@ -6061,6 +6062,7 @@ export function buildToolServer(
         countPendingSuggestions(),
         oldestPendingSuggestionAgeDays(),
         countPendingKnowledgeCandidates(),
+        oldestPendingCandidateAgeDays(),
         countOpenReports(allowed, viewerIds),
         oldestOpenReportAgeDays(allowed, viewerIds),
         countOpenAppeals(caller.platform),
@@ -6073,7 +6075,7 @@ export function buildToolServer(
       const lines = [
         `- Access requests: ${accessRequestCount} pending${ageSuffix(accessRequestAgeDays)}`,
         `- Suggestions: ${suggestionCount} pending${ageSuffix(suggestionAgeDays)}`,
-        `- Knowledge candidates: ${candidateCount} pending`,
+        `- Knowledge candidates: ${candidateCount} pending${ageSuffix(candidateAgeDays)}`,
         `- Reports (your conversations): ${reportCount} open${ageSuffix(reportAgeDays)}`,
         `- Appeals: ${appealCount} open${ageSuffix(appealAgeDays)}`,
       ];

@@ -25,6 +25,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-28
 
 ### Added
+- **`review_queue` and the weekly admin digest now show the pending-knowledge-
+  candidates backlog's age too, not just its count** (#801): a new
+  `oldestPendingCandidateAgeDays` repository function — the same
+  `MIN(created_at)`-over-`status='pending'` pattern the other four queue lines
+  already use — closes the last count-only line in `review_queue`, a gap
+  `review_queue` (#743) and the open-appeals age (#787) each explicitly named
+  and deferred. Both surfaces render an `, oldest Nd`/`(oldest Nd)` fragment
+  once at least one candidate is pending, omitted when the queue is empty, and
+  independent of the existing (knob-gated) stale-days sub-count on the digest
+  line. Still a bare day-count only — never a candidate's `title`, `content`,
+  or `topic`.
 - **`review_queue` and the weekly admin digest now show the open-appeals
   backlog's age, not just its count** (#787): a new `oldestOpenAppealAgeDays`
   repository function — the same `MIN(created_at)`-over-`status='open'`
