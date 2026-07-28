@@ -25,7 +25,7 @@ process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.SUPER_ADMIN_DISCORD_IDS = 'super-1';
 process.env.MEMBER_DIGEST_CHANNEL_ID = 'configured-channel-1';
 
-const { formatMemberDigestMessage, makeDefaultMemberDigestRun, startMemberDigest } =
+const { formatMemberDigestMessage, makeDefaultMemberDigestRun, startMemberDigest, buildMemberDigestContent } =
   await import('../src/memberDigest.js');
 const { pool, closeDb } = await import('../src/storage/db.js');
 const {
@@ -1164,5 +1164,75 @@ test(
     );
 
     await pool.query('DELETE FROM member_projects WHERE user_id = ANY($1)', [[activeUser, removedUser]]);
+  },
+);
+
+// --- buildMemberDigestContent (issue #841) — the shared on-demand-pull builder --
+
+test('buildMemberDigestContent: with injected deps, gathers, applies the two-floor eligible filter, and renders exactly like makeDefaultMemberDigestRun\'s own inlined logic used to', async () => {
+  const message = await buildMemberDigestContent({
+    getDigests: async () => [
+      makeDigest({ topic: 'below floor', distinctUsers: 2, questionCount: 5 }),
+      makeDigest({ topic: 'at floor', distinctUsers: 3, questionCount: 1 }),
+    ],
+    getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+    getNewProjectCount: async () => 1,
+    getMemberTipCount: async () => 0,
+  });
+  assert.equal(
+    message,
+    "📅 This week's topics:\n• at floor (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.",
+  );
+});
+
+test('buildMemberDigestContent: every input empty renders null, same as formatMemberDigestMessage directly', async () => {
+  const message = await buildMemberDigestContent({
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
+  });
+  assert.equal(message, null);
+});
+
+test(
+  "SECURITY: buildMemberDigestContent (the shared gather both community_digest and /digest call) never touches member_digest_sends — repeated on-demand pulls leave wasMemberDigestSentRecently's answer unchanged, and a subsequent makeDefaultMemberDigestRun tick still posts on its normal freshness-guarded cadence (issue #841 acceptance criterion 6)",
+  { skip },
+  async () => {
+    await pool.query('DELETE FROM member_digest_sends');
+    try {
+      assert.equal(await wasMemberDigestSentRecently(7), false, 'no send recorded yet — not fresh');
+
+      // Repeated on-demand pulls (standing in for several community_digest/
+      // /digest calls) — the pull path takes no arguments in production, so
+      // this exercises the exact same real-repository call the tools make.
+      await buildMemberDigestContent();
+      await buildMemberDigestContent();
+      await buildMemberDigestContent();
+
+      assert.equal(
+        await wasMemberDigestSentRecently(7),
+        false,
+        'repeated on-demand pulls must never advance or suppress the freshness guard',
+      );
+
+      const { adapter, sent } = makeAdapter();
+      let recordCalled = false;
+      const runOnce = makeDefaultMemberDigestRun([adapter], {
+        wasSentRecently: async () => false,
+        getDigests: async () => [makeDigest({ topic: 'post-pull topic', questionCount: 2 })],
+        getNewKnowledgeTitles: async () => [],
+        getNewProjectCount: async () => 0,
+        getMemberTipCount: async () => 0,
+        recordSent: async () => {
+          recordCalled = true;
+        },
+      });
+      await runOnce();
+      assert.equal(sent.length, 1, 'the scheduled push still posts on its normal cadence after prior pulls');
+      assert.equal(recordCalled, true, 'the scheduled push still records its own send after prior pulls');
+    } finally {
+      await pool.query('DELETE FROM member_digest_sends');
+    }
   },
 );

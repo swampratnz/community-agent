@@ -25,6 +25,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-29
 
 ### Added
+- **Community digest is now available on demand, not just as a weekly post**
+  (#841): a new member-tier `community_digest` chat tool and a matching
+  `/digest` Discord slash command both pull this week's topics, new
+  knowledge-base entries, project-showcase activity, and platform updates —
+  exactly what the weekly channel post would send right now — without
+  waiting for its cadence. Pulling it any number of times never affects the
+  scheduled weekly post's own timing. Works whether or not the weekly push
+  is enabled.
 - **`share_project` can now signal "I'd welcome help on this"** (#834): a new
   opt-in `seekingCollaborators` boolean, mirroring `willing_to_help`'s exact
   shape (self-declared, default `false`, never inferred). `list_projects`

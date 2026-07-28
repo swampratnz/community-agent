@@ -1612,6 +1612,52 @@ upgrade).
   leaves the freshness row untouched, so a week that starts quiet but gains
   content partway through can still post on a later tick.
 
+### On-demand pull (issue #841)
+
+The weekly push above was, until issue #841, the *only* way to see this
+content — a member who joined mid-week or missed the one post had no way to
+pull it themselves, the same push-only asymmetry issue #499 already closed
+for the admin digest. `buildMemberDigestContent(): Promise<string | null>`
+is the gather-and-render half of `makeDefaultMemberDigestRun` extracted into
+its own export — the `Promise.all` read of all five signals above, the
+two-floor `eligible` filter, and the `formatMemberDigestMessage` call — so
+the scheduled push and an on-demand pull share one implementation instead of
+a second, driftable copy (the exact `buildAdminDigestForAdmin` precedent).
+`makeDefaultMemberDigestRun`'s closure now calls it and, on a non-null
+result, still does its own send + `recordMemberDigestSent()` exactly as
+before — zero behaviour change to the weekly push.
+
+Two on-demand surfaces call it directly, mirroring `admin_digest`'s
+(tool, no arguments, no CONFIRM, read-only) shape and the `/kb`/`/projects`/
+`/whois`/`/guidelines` (tool, slash-command) pairing convention (issue #744):
+
+- **`community_digest`** (member-tier chat tool, `src/agent/tools.ts`):
+  returns `text(untrusted('Community digest', message))` on the non-null
+  case — quarantined because, unlike the weekly channel post, this result
+  re-enters the model's context and carries the same model-cluster-
+  summarized topic labels `admin_digest`/`question_digest` already
+  quarantine — or the fixed `'Nothing to report right now.'` text when
+  `buildMemberDigestContent()` resolves `null`. Re-checks
+  `atLeast(caller.role, 'member')` explicitly in the handler (excluding
+  open-mode guests), the same discipline `who_is_into`/`share_project` use,
+  since the content includes the same project/topic counts those tools gate.
+- **`/digest`** (Discord slash command, `src/platforms/discord/
+  slashCommands.ts`): defers ephemerally first, re-checks the same
+  `atLeast(role, 'member')` floor, then calls `buildMemberDigestContent()`
+  directly (never through the tool/model) and replies ephemeral with the
+  message or the same fallback — plain text through `deps.filtered()` only,
+  no `untrusted()` wrapper, since (like the other four slash commands) this
+  reply never re-enters model context.
+
+Neither surface touches `wasMemberDigestSentRecently`/
+`recordMemberDigestSent` — those stay exclusive to the scheduled push's
+freshness bookkeeping, so a pull can never advance or suppress the next
+weekly post — and neither depends on `MEMBER_DIGEST_ENABLED`, which gates
+only the proactive weekly timer, not a member's standing authorization to
+read data they can already see individually via `/kb`/`/projects`/`/whois`
+(identical reasoning to `admin_digest`'s independence from
+`ADMIN_DIGEST_ENABLED`).
+
 ## Anthropic status check
 
 `src/status/anthropicStatus.ts` (issue #206, off unless
