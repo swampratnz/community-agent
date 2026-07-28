@@ -79,6 +79,7 @@ import {
   listKnowledge,
   listKnowledgeFeedbackSummary,
   listOwnAppeals,
+  listOwnKnowledgeCandidates,
   listOwnReports,
   listOwnSuggestions,
   listRecentProjects,
@@ -617,6 +618,10 @@ export const LIST_PROJECTS_DEFAULT_LIMIT = 8;
  * Exported (issue #744) so the `/projects` slash command can render the
  * exact same output as `list_projects`' chat-path handler, which calls this
  * too.
+ *
+ * Issue #834: prepends a `🤝 looking for collaborators` marker for a project
+ * whose self-declared `seekingCollaborators` flag is true — nothing renders
+ * for the (default) false case, byte-identical to pre-#834 output.
  */
 export async function formatProjectResults(
   projects: ReadonlyArray<MemberProject | MemberProjectSearchHit>,
@@ -631,9 +636,10 @@ export async function formatProjectResults(
       const description = untrustedEntryContent(p.description);
       const link = p.link ? ` (link: ${untrustedEntryContent(p.link)})` : '';
       const match = 'similarity' in p ? ` — ${Math.round(p.similarity * 100)}% match` : '';
+      const collaboratorsMarker = p.seekingCollaborators ? ' 🤝 looking for collaborators' : '';
       const interests = interestsByOwner.get(`${p.platform}:${p.userId}`);
       const interestsSuffix = interests ? `\n   Interests: ${untrustedEntryContent(interests)}` : '';
-      return `${i + 1}. "${name}" by ${owner}${match}: ${description}${link}${interestsSuffix}`;
+      return `${i + 1}. "${name}" by ${owner}${match}${collaboratorsMarker}: ${description}${link}${interestsSuffix}`;
     }),
   );
   return [
@@ -3509,20 +3515,27 @@ export function buildToolServer(
 
   const mySubmissions = tool(
     'my_submissions',
-    "List the caller's OWN previously-filed suggestions, content reports, and moderation appeals — id, a " +
-      'short content preview, current status, and when each was filed. Use this when a member asks what ' +
-      'happened to something they submitted earlier (e.g. "what happened to my report?"). Never returns ' +
-      "another member's content or the reviewing admin's identity — only the shared admin queue " +
-      '(list_suggestions/list_reports/list_appeals) exposes that, and this tool never reaches it.',
+    "List the caller's OWN previously-filed suggestions, content reports, moderation appeals, and " +
+      'knowledge tips — id, a short content preview, current status, and when each was filed. Use this ' +
+      'when a member asks what happened to something they submitted earlier (e.g. "what happened to my ' +
+      "report?\"). Never returns another member's content or the reviewing admin's identity — only the " +
+      'shared admin queue (list_suggestions/list_reports/list_appeals/list_knowledge_candidates) exposes ' +
+      'that, and this tool never reaches it.',
     {},
     async () => {
-      const [suggestions, reports, appeals] = await Promise.all([
+      const [suggestions, reports, appeals, knowledgeTips] = await Promise.all([
         listOwnSuggestions(caller.platform, caller.userId, 10),
         listOwnReports(caller.platform, caller.userId, 10),
         listOwnAppeals(caller.platform, caller.userId, 10),
+        listOwnKnowledgeCandidates(caller.platform, caller.userId, 10),
       ]);
 
-      if (suggestions.length === 0 && reports.length === 0 && appeals.length === 0) {
+      if (
+        suggestions.length === 0 &&
+        reports.length === 0 &&
+        appeals.length === 0 &&
+        knowledgeTips.length === 0
+      ) {
         return text("You haven't filed any suggestions or reports yet.", true);
       }
 
@@ -3550,6 +3563,15 @@ export function buildToolServer(
         for (const a of appeals) {
           const reason = a.reason ? truncateForEcho(a.reason) : 'no reason given';
           lines.push(`- #${a.id} [${a.status}] ${reason} — filed ${formatRelativeAge(a.createdAt)}`);
+        }
+      }
+      if (knowledgeTips.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('Your knowledge tips:');
+        for (const k of knowledgeTips) {
+          lines.push(
+            `- #${k.id} [${k.status}] ${truncateForEcho(k.title)} — filed ${formatRelativeAge(k.createdAt)}`,
+          );
         }
       }
       return text(lines.join('\n'));
@@ -4347,6 +4369,14 @@ export function buildToolServer(
           "Set true to remove an existing project by name instead of adding/editing it — 'description' " +
             "and 'link' are ignored when true.",
         ),
+      seekingCollaborators: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set true if the caller wants help/collaborators on this project — shown to other members via ' +
+            "list_projects. Defaults to false (showcase only). Only set this on the caller's own explicit " +
+            'statement, e.g. "I\'m looking for help with this" — never inferred.',
+        ),
     },
     async (args) => {
       // Guests can reach every other MEMBER_TOOLS write in open mode, but
@@ -4370,6 +4400,7 @@ export function buildToolServer(
         name: args.name,
         description: args.description,
         link: args.link,
+        seekingCollaborators: args.seekingCollaborators,
       });
       if (!result.ok) {
         return text(

@@ -8,6 +8,7 @@
  */
 
 import type { PoolClient } from 'pg';
+import { pool } from '../db.js';
 
 /**
  * A pool or a checked-out transaction client — anything that can run a query.
@@ -50,3 +51,41 @@ export type Queryable = Pick<PoolClient, 'query'>;
  * agent/tools.ts and storage/repository.ts importing each other.
  */
 export const KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD = 0.35;
+
+/**
+ * Invalidate every context digest whose provenance refs include any of
+ * `interactionIds`, deleting its still-*pending* knowledge candidates first
+ * (the same deletion-coherence logic `purgeSingleIdentity` applies, issues
+ * #51/#102). Shared so the delete/edit-honouring path (issue #48) invalidates
+ * digests built over a message the same way a privacy purge does — otherwise a
+ * deleted/edited message's content lives on inside a digest summary. Returns
+ * the number of pending candidates removed. No-op on an empty id list.
+ */
+export async function invalidateDigestsForInteractions(
+  interactionIds: number[],
+  db: Queryable = pool,
+): Promise<number> {
+  if (interactionIds.length === 0) return 0;
+  const { rows: invalidatedDigests } = await db.query(
+    `SELECT id FROM context_digests WHERE example_refs && $1::bigint[]`,
+    [interactionIds],
+  );
+  const digestIds = invalidatedDigests.map((r) => Number(r.id));
+  if (digestIds.length === 0) return 0;
+  const { rowCount: deletedCandidates } = await db.query(
+    `DELETE FROM knowledge_candidates WHERE digest_id = ANY($1::bigint[]) AND status = 'pending'`,
+    [digestIds],
+  );
+  await db.query(`DELETE FROM context_digests WHERE id = ANY($1::bigint[])`, [digestIds]);
+  return deletedCandidates ?? 0;
+}
+
+export const QUESTION_CLUSTER_SIMILARITY_THRESHOLD = 0.85;
+
+/** Dot product of two embed()-produced (L2-normalized) vectors equals cosine similarity. */
+export function cosineSim(a: number[], b: number[]): number {
+  let dot = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) dot += a[i] * b[i];
+  return dot;
+}

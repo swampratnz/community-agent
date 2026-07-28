@@ -22,6 +22,50 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-07-29
+
+### Added
+- **`share_project` can now signal "I'd welcome help on this"** (#834): a new
+  opt-in `seekingCollaborators` boolean, mirroring `willing_to_help`'s exact
+  shape (self-declared, default `false`, never inferred). `list_projects`
+  (and its `/projects` slash-command mirror, which shares the same renderer)
+  prepends a `🤝 looking for collaborators` marker to a project's line only
+  when the flag is true — unmarked, byte-identical output for the (default)
+  false case. No new tool, table, or model call; the flag lives on the
+  existing `member_projects` row, so purge/roster-leave cleanup removes it
+  along with everything else automatically.
+- **`my_submissions` now covers `suggest_knowledge` tips, not just
+  suggestions/reports/appeals** (#830): a new self-scoped
+  `listOwnKnowledgeCandidates` repository function — mirroring
+  `listOwnSuggestions`'s exact shape and clamp — feeds a fourth `Your
+  knowledge tips:` section, so a member who filed a knowledge tip can pull-
+  check its status the same way the other three queues already support,
+  closing the pull-based fallback gap the resolution DM (#703) left for a
+  missed/muted notification (named as a deferred growth path in #633). A
+  caller with no tips sees byte-identical output to today; a machine-drafted
+  candidate (no submitter) can never appear in any member's own view.
+- **Daily knowledge refresh no longer free-text-parses its research output**
+  (#835): `researchTopic` (`src/context/knowledgeRefresh.ts`) now sets
+  `outputFormat: { type: 'json_schema', ... }` and reads a schema-constrained
+  `{ hasUpdate, briefing }` result instead of matching a literal `NO_UPDATE`
+  marker in prose — mirroring #720's identical fix for the moderation abuse
+  classifier. A malformed or ambiguous model response (a preamble, a refusal,
+  a reformatted answer) now throws and is counted as a failed topic instead
+  of silently being upserted into the knowledge base as if it were a real
+  briefing. No behaviour change for a well-formed response or a genuine
+  "nothing new" result.
+- **The weekly member digest now credits member-suggested knowledge tips**
+  (#837): a new `countAcceptedMemberKnowledgeTipsSince` repository function —
+  the same `COUNT(*)` shape as the existing project-showcase count — counts
+  this week's accepted `knowledge_candidates` rows that came from a member's
+  own `suggest_knowledge` submission (#633) rather than admin/machine
+  drafting. When nonzero, the digest's "📚 New in the knowledge base" line
+  gains a trailing "— N suggested by members like you 💡" clause, clamped to
+  never exceed the number of titles actually shown. Zero-count and no-new-
+  knowledge weeks render byte-identical to today; the digest still receives
+  only a bare number, so no platform or member identity ever reaches this
+  public channel post.
+
 ## 2026-07-28
 
 ### Added
@@ -127,6 +171,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   digest), rendered only when at least one is non-zero, each with its own
   week-over-week trend. Bare integers only — never a candidate title/content
   or a project name/description/link/owner.
+- **Incoming messages now have a length cap before they reach the paid model
+  call** (#811): a pasted stack trace, log dump, or chunk of source code —
+  an ordinary way to ask for debugging help — had no ceiling on how much of
+  it became billed input, every turn, for as long as the session stayed
+  resumed. `MAX_INCOMING_MESSAGE_CHARS` (default 8,000 characters, `0` =
+  disabled) now truncates the model-bound copy of the message, appending a
+  fixed marker stating how many characters were omitted. Only that copy
+  shrinks — the original message is still what gets archived, classified for
+  CONFIRM/escalation, and echoed back everywhere else.
 
 ### Security
 - **Trusted CONFIRM notices are now sanitised at a single choke point.** The

@@ -53,11 +53,13 @@ const {
   countStalePendingKnowledgeCandidates,
   oldestPendingCandidateAgeDays,
   countAcceptedKnowledgeCandidatesSince,
+  countAcceptedMemberKnowledgeTipsSince,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
   findKnowledgeCoveringTopic,
   candidateTopicAlreadyReviewed,
   createKnowledgeTip,
+  listOwnKnowledgeCandidates,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   KNOWLEDGE_TIP_TITLE_MAX_CHARS,
   KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
@@ -1773,6 +1775,125 @@ test(
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
     assert.equal(
       await countAcceptedKnowledgeCandidatesSince(since),
+      before,
+      'deleting every inserted row restores the prior count',
+    );
+  },
+);
+
+test(
+  'repository: countAcceptedMemberKnowledgeTipsSince counts only accepted, source_user_id-non-null rows reviewed after the window — machine-drafted accepts, pending/declined member tips, and out-of-window accepts are all excluded (issue #837)',
+  { skip },
+  async () => {
+    const platform = 'discord';
+    // Distinct member ids per tip — createKnowledgeTip enforces a
+    // KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY (3) rolling-24h cap per
+    // (platform, user), and this test needs 4 member-sourced tips.
+    const pendingMemberId = `${RUN}-tipssince-pending-member`;
+    const declinedMemberId = `${RUN}-tipssince-declined-member`;
+    const acceptedMemberId = `${RUN}-tipssince-accepted-member`;
+    const staleMemberId = `${RUN}-tipssince-stale-member`;
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-tipssince-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countAcceptedMemberKnowledgeTipsSince(since);
+
+    // A machine-drafted (context-builder) candidate — source_user_id NULL —
+    // accepted inside the window must never count here, even though it
+    // WOULD count towards countAcceptedKnowledgeCandidatesSince (#797).
+    const machineDraftedId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-tipssince-machine`,
+      title: 'machine drafted title',
+      content: 'machine drafted content',
+    });
+    const machineAccepted = await acceptKnowledgeCandidate({
+      id: machineDraftedId,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(machineAccepted);
+
+    // A member's own suggest_knowledge tip, still pending — excluded.
+    const pendingTip = await createKnowledgeTip({
+      platform,
+      userId: pendingMemberId,
+      topic: `${RUN}-tipssince-pending`,
+      title: 'still pending tip',
+      content: 'pending tip content',
+    });
+    assert.ok(pendingTip);
+
+    // A member's own tip, declined — excluded.
+    const declinedTip = await createKnowledgeTip({
+      platform,
+      userId: declinedMemberId,
+      topic: `${RUN}-tipssince-declined`,
+      title: 'will be declined tip',
+      content: 'declined tip content',
+    });
+    assert.ok(declinedTip);
+    const declined = await declineKnowledgeCandidate(declinedTip.id, 'admin-1');
+    assert.ok(declined);
+
+    // A member's own tip, accepted inside the window — the only row that
+    // must count.
+    const acceptedTip = await createKnowledgeTip({
+      platform,
+      userId: acceptedMemberId,
+      topic: `${RUN}-tipssince-accepted`,
+      title: 'accepted tip in window',
+      content: 'accepted tip content',
+    });
+    assert.ok(acceptedTip);
+    const memberAccepted = await acceptKnowledgeCandidate({
+      id: acceptedTip.id,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(memberAccepted);
+
+    // A member's own tip, accepted but reviewed BEFORE the window — excluded.
+    const staleAcceptedTip = await createKnowledgeTip({
+      platform,
+      userId: staleMemberId,
+      topic: `${RUN}-tipssince-stale`,
+      title: 'accepted tip before window',
+      content: 'stale accepted tip content',
+    });
+    assert.ok(staleAcceptedTip);
+    const staleAccepted = await acceptKnowledgeCandidate({
+      id: staleAcceptedTip.id,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(staleAccepted);
+    await pool.query(
+      `UPDATE knowledge_candidates SET reviewed_at = now() - interval '30 days' WHERE id = $1`,
+      [staleAcceptedTip.id],
+    );
+
+    assert.equal(
+      await countAcceptedMemberKnowledgeTipsSince(since),
+      before + 1,
+      'only the member-sourced candidate accepted inside the window counts — machine-drafted, pending, declined, and stale-review rows are all excluded',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [machineAccepted.knowledgeId, memberAccepted.knowledgeId, staleAccepted.knowledgeId],
+    ]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [machineDraftedId, pendingTip.id, declinedTip.id, acceptedTip.id, staleAcceptedTip.id],
+    ]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      await countAcceptedMemberKnowledgeTipsSince(since),
       before,
       'deleting every inserted row restores the prior count',
     );
@@ -7014,17 +7135,23 @@ test(
       name: 'prior-process project 0',
       description: 'an edited description',
       link: 'https://example.com/project-0',
+      seekingCollaborators: true,
     });
     assert.ok(
       edited.ok && !edited.created,
       'editing an existing project by name succeeds and is not "created"',
     );
     const editedRow = await pool.query(
-      `SELECT description, link FROM member_projects WHERE user_id = $1 AND name = $2`,
+      `SELECT description, link, seeking_collaborators FROM member_projects WHERE user_id = $1 AND name = $2`,
       [userId, 'prior-process project 0'],
     );
     assert.equal(editedRow.rows[0].description, 'an edited description');
     assert.equal(editedRow.rows[0].link, 'https://example.com/project-0');
+    assert.equal(
+      editedRow.rows[0].seeking_collaborators,
+      true,
+      'editing an existing project updates seeking_collaborators along with description/link (issue #834 AC #5)',
+    );
     assert.equal(
       Number(
         (await pool.query(`SELECT count(*) AS n FROM member_projects WHERE user_id = $1`, [userId])).rows[0]
@@ -7277,6 +7404,50 @@ test(
     assert.equal(await markRosterLeave('discord', userId), true);
     const after = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
     assert.equal(after.rows.length, 0, "a departed member's shared projects are removed on roster leave");
+  },
+);
+
+test(
+  'SECURITY: repository: shareProject seeking_collaborators defaults to false when omitted, and purge/roster-leave removal leaves no orphaned flag (issue #834 AC #6)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-seeking-collab-purge`;
+    const created = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'default flag project',
+      description: 'omits seekingCollaborators',
+    });
+    assert.ok(created.ok);
+    const row = await pool.query(
+      `SELECT seeking_collaborators FROM member_projects WHERE user_id = $1 AND name = $2`,
+      [userId, 'default flag project'],
+    );
+    assert.equal(row.rows[0].seeking_collaborators, false, 'omitting the flag never opts a project in');
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the shared project');
+    const afterPurge = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
+    assert.equal(afterPurge.rows.length, 0, 'purge removes the row — and its flag — wholesale');
+
+    const leaveUserId = `${RUN}-seeking-collab-leave`;
+    await upsertRosterMember({ platform: 'discord', userId: leaveUserId, displayName: 'Leaver Two' });
+    const createdTrue = await shareProject({
+      platform: 'discord',
+      userId: leaveUserId,
+      name: 'seeking flag project',
+      description: 'opted in explicitly',
+      seekingCollaborators: true,
+    });
+    assert.ok(createdTrue.ok);
+
+    assert.equal(await markRosterLeave('discord', leaveUserId), true);
+    const afterLeave = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [leaveUserId]);
+    assert.equal(
+      afterLeave.rows.length,
+      0,
+      "roster leave removes the departed member's row — and its flag — wholesale",
+    );
   },
 );
 
@@ -7643,6 +7814,116 @@ test(
     );
 
     await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
+  },
+);
+
+test(
+  "repository: listOwnKnowledgeCandidates returns the caller's own knowledge tips newest-first, honouring the 1–50 limit clamp (issue #830)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-my-knowledge-tip-user`;
+
+    const t1 = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} own tip topic 1`,
+      title: 'own tip 1',
+      content: 'first tip content',
+    });
+    const t2 = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} own tip topic 2`,
+      title: 'own tip 2',
+      content: 'second tip content',
+    });
+    assert.ok(t1 && t2, 'fixtures recorded');
+
+    const own = await listOwnKnowledgeCandidates('discord', userId);
+    assert.deepEqual(
+      own.map((c) => c.id),
+      [t2.id, t1.id],
+      'own tips are returned newest-first',
+    );
+
+    assert.deepEqual(
+      await listOwnKnowledgeCandidates('whatsapp', userId),
+      [],
+      'platform is part of the scope — this user has no whatsapp tips',
+    );
+
+    assert.equal(
+      (await listOwnKnowledgeCandidates('discord', userId, -5)).length,
+      1,
+      'a non-positive limit is clamped to a floor of 1, mirroring listOwnSuggestions',
+    );
+    assert.equal(
+      (await listOwnKnowledgeCandidates('discord', userId, 999)).length,
+      2,
+      'an over-large limit is clamped to a ceiling of 50, not passed straight through — still returns only the 2 real rows here',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[t1.id, t2.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnKnowledgeCandidates only returns the caller's OWN knowledge tips — never another identity's, never cross-platform, and never a machine-drafted (NULL source) candidate (issue #830)",
+  { skip },
+  async () => {
+    const userA = `${RUN}-my-knowledge-tip-A`;
+    const userB = `${RUN}-my-knowledge-tip-B`;
+
+    const mine = await createKnowledgeTip({
+      platform: 'discord',
+      userId: userA,
+      topic: `${RUN} security tip topic A`,
+      title: "A's tip",
+      content: "A's own tip content",
+    });
+    const theirs = await createKnowledgeTip({
+      platform: 'discord',
+      userId: userB,
+      topic: `${RUN} security tip topic B`,
+      title: "B's tip",
+      content: "B's own tip content",
+    });
+    assert.ok(mine && theirs, 'fixtures recorded');
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN} security machine-drafted topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const machineDraftedId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN} security machine-drafted topic`,
+      title: 'machine-drafted candidate',
+      content: 'drafted by the context builder, no submitter',
+    });
+
+    const ownA = await listOwnKnowledgeCandidates('discord', userA);
+    assert.deepEqual(
+      ownA.map((c) => c.id),
+      [mine.id],
+      "only A's own tip is returned",
+    );
+    assert.ok(
+      !ownA.some((c) => c.id === theirs.id),
+      "SECURITY: B's tip must never appear in A's own-knowledge-tips list",
+    );
+    assert.ok(
+      !ownA.some((c) => c.id === machineDraftedId),
+      "SECURITY: a machine-drafted (NULL source) candidate must never appear in any real caller's own-knowledge-tips list",
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [mine.id, theirs.id, machineDraftedId],
+    ]);
   },
 );
 
