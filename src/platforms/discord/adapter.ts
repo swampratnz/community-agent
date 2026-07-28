@@ -225,9 +225,18 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // a stored row. MessageBulkDelete (issue #595) mirrors MessageDelete's
     // two-independent-branches shape per message in the batch, so a
     // moderator's bulk channel-clear retracts the bot's replies exactly like
-    // a single delete does. MessageUpdate stays archiving-only:
-    // `onMessageUpdate` re-checks archive scope itself.
-    if (config.discord.archiveAllMessages || config.behaviour.autoRetractReplyEnabled) {
+    // a single delete does. MessageUpdate is no longer archiving-only (issue
+    // #798): `onMessageUpdate` also re-scans an edited message for abuse, so
+    // this gate now ALSO fires on `config.moderation.enabled` — otherwise a
+    // deployment that wants edit-detection but never turned on full-message
+    // archiving or reply-retraction would never register the listener at all,
+    // silently reopening the exact bypass #798 closes. `onMessageUpdate`
+    // re-checks archive scope itself either way.
+    if (
+      config.discord.archiveAllMessages ||
+      config.behaviour.autoRetractReplyEnabled ||
+      config.moderation.enabled
+    ) {
       this.client.on(Events.MessageDelete, (message) => {
         if (
           config.discord.archiveAllMessages &&
@@ -262,8 +271,10 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       });
       // `onMessageUpdate` re-checks archive scope itself, so registering it
       // here is a harmless no-op when only autoRetractReplyEnabled is on.
-      this.client.on(Events.MessageUpdate, (_old, newMessage) => {
-        this.onMessageUpdate(newMessage).catch((err) =>
+      // `oldMessage` is passed through so `onMessageUpdate` can diff pre/post
+      // content for the moderation re-scan (issue #798).
+      this.client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+        this.onMessageUpdate(oldMessage, newMessage).catch((err) =>
           logger.warn({ err, messageId: newMessage.id }, 'Stored-message update failed'),
         );
       });
@@ -710,13 +721,39 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     return channel?.isThread() ? (channel.parentId ?? channelId) : channelId;
   }
 
-  private async onMessageUpdate(newMessage: Message | PartialMessage): Promise<void> {
+  private async onMessageUpdate(
+    oldMessage: Message | PartialMessage,
+    newMessage: Message | PartialMessage,
+  ): Promise<void> {
     if (
       !this.inArchiveScope(newMessage.guildId, this.scopeChannelId(newMessage.channel, newMessage.channelId))
     )
       return;
     const full = newMessage.partial ? await newMessage.fetch() : newMessage;
     if (full.author.bot || !full.content) return;
+
+    // Auto-moderation re-scan on edit (issue #798): closes the detection-time
+    // bypass where a member posts clean text, then edits in abuse, that the
+    // create-path scan (`onDiscordMessage`) never sees — reuses
+    // `Moderator.scan()` verbatim, same call shape as the create path.
+    // Skipped only when the pre-edit content is KNOWN unchanged — Discord
+    // fires MessageUpdate for several non-content changes too (embed unfurl,
+    // pin state), and re-running the (opt-in, paid) Stage 2 classifier on
+    // unchanged text would be pure waste. `oldMessage.partial` means
+    // discord.js can't guarantee the pre-edit content was cached, so an
+    // unresolvable diff fails TOWARD scanning rather than silence.
+    if (config.moderation.enabled && (oldMessage.partial || oldMessage.content !== full.content)) {
+      void this.moderator
+        .scan({
+          platform: 'discord',
+          userId: full.author.id,
+          userName: full.member?.displayName ?? full.author.username,
+          text: this.cleanContent(full.content),
+          channelId: full.channelId,
+        })
+        .catch((err) => logger.warn({ err }, 'Moderation scan failed'));
+    }
+
     await updateInteractionByMessageId('discord', full.channelId, full.id, this.cleanContent(full.content));
   }
 
