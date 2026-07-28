@@ -180,6 +180,7 @@ import {
 import { triggerRedeploy } from './redeploy.js';
 import { formatNzEventTime } from '../util/nzTime.js';
 import { buildAdminDigestForAdmin } from '../adminDigest.js';
+import { buildMemberDigestContent } from '../memberDigest.js';
 import { formatStatusMessage, getStatusCache } from '../status/anthropicStatus.js';
 
 /** Helper: wrap a string into the MCP tool result shape. */
@@ -1653,6 +1654,8 @@ const MEMBER_CAPABILITIES_TEXT =
   'who\'s into RAG", "who\'s working on Discord bots?")\n' +
   '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
   'X?"), or opt in/out of being notified for other members\' requests\n' +
+  '- Pull the community digest on demand — this week\'s topics, new knowledge entries, and project ' +
+  'showcase activity ("what\'s been discussed lately?")\n' +
   '- Erase all your stored data any time ("forget me")';
 
 /**
@@ -4446,6 +4449,31 @@ export function buildToolServer(
         return text(args.query ? 'No shared projects match that.' : 'No projects have been shared yet.');
       }
       return text(await formatProjectResults(projects));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const communityDigestTool = tool(
+    'community_digest',
+    'On-demand pull of the community digest — the same this-week\'s-topics, new-in-the-knowledge-base, ' +
+      'project-showcase, and platform-update signals the weekly member digest post would send right now, ' +
+      'without waiting for its cadence. Takes no arguments; read-only; does not affect when the next ' +
+      'scheduled weekly digest post goes out. Member only.',
+    {},
+    async () => {
+      // Same MEMBER_TOOLS floor re-check discipline as who_is_into/
+      // share_project — publishes aggregate community-wide content, so this
+      // excludes open-mode guests even though the tool is structurally
+      // reachable at MEMBER_TOOLS tier.
+      assertAtLeast(caller.role, 'member', 'community_digest');
+      const message = await buildMemberDigestContent();
+      if (message == null) return text('Nothing to report right now.');
+      // This tool result re-enters the model's context (unlike the weekly
+      // channel post, sent straight to Discord) — quarantine it the same way
+      // admin_digest quarantines buildAdminDigestForAdmin's own return
+      // (issue #499 review), since this text embeds model-cluster-summarized
+      // topic labels, not a direct human DM.
+      return text(untrusted('Community digest', message));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -7534,6 +7562,7 @@ export function buildToolServer(
       findHelperTool,
       shareProjectTool,
       listProjectsTool,
+      communityDigestTool,
       whatsNew,
       userHistory,
       moderate,
