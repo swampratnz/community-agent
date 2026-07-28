@@ -31,7 +31,17 @@
 //                    a prompt/harness defect, not a code defect. A rising
 //                    Recovered count is the signal to fix the loop itself.
 //   * Escalated    — the loop gave up and labelled `needs-human`.
-//   * Clean        — engaged, neither recovered nor escalated.
+//   * Routed       — the loop deliberately handed the PR to a human because
+//                    POLICY says so, having done everything asked of it. Today
+//                    that is auto-merge meeting a governance-path PR. This is a
+//                    SUCCESS and is counted separately from Escalated on
+//                    purpose: lumping the two together made auto-merge read as
+//                    "80% escalated" when it was in fact routing correctly
+//                    almost every time, which both buried the real signal and
+//                    kept the tracking issue permanently open (it auto-closes
+//                    only on a window with no genuine failures).
+//   * Clean        — engaged and finished by itself; not recovered, escalated
+//                    or routed.
 // ---------------------------------------------------------------------------
 
 import { readFileSync } from 'node:fs';
@@ -63,9 +73,19 @@ const LOOPS = [
   },
   {
     name: 'auto-merge',
-    attempt: '<!-- pipeline-automerge-blocked -->',
+    // No attempt marker: it merges silently on success and only ever comments
+    // when it CANNOT, so both markers below are themselves the engagement.
+    attempt: null,
     checkpoint: null,
-    escalation: '<!-- pipeline-automerge-human-ready -->',
+    // A merge the branch protection REFUSED (e.g. it requires a human approving
+    // review, which the automated verdict comment is not). Genuine friction:
+    // the loop wanted to merge and could not.
+    escalation: '<!-- pipeline-automerge-blocked -->',
+    // A governance-path PR (.github/**, scripts/**, CLAUDE.md, docs/PIPELINE.md,
+    // docs/SECURITY.md, …) that passed every other gate and was deliberately
+    // handed to a human with a `human-merge-ready` label. This is the loop
+    // working exactly as designed, NOT a failure — see `routed` below.
+    routed: '<!-- pipeline-automerge-human-ready -->',
   },
 ];
 
@@ -119,7 +139,9 @@ const inWindow = (iso) => iso && Date.parse(iso) >= cutoff;
 const MARKER_AUTHORS = new Set(['github-actions', 'github-actions[bot]']);
 const fromPipeline = (comment) => MARKER_AUTHORS.has(comment?.author?.login ?? '');
 
-const tally = new Map(LOOPS.map((loop) => [loop.name, { engaged: 0, recovered: 0, escalated: 0, clean: 0 }]));
+const tally = new Map(
+  LOOPS.map((loop) => [loop.name, { engaged: 0, recovered: 0, escalated: 0, routed: 0, clean: 0 }]),
+);
 /** PRs worth a human glance: escalations and silent-death recoveries. */
 const notable = [];
 
@@ -135,7 +157,8 @@ for (const pr of prs) {
     const engaged = has(loop.attempt) || 0;
     const recovered = has(loop.checkpoint) || 0;
     const escalated = has(loop.escalation) || 0;
-    if (!engaged && !recovered && !escalated) continue;
+    const routed = has(loop.routed) || 0;
+    if (!engaged && !recovered && !escalated && !routed) continue;
 
     const row = tally.get(loop.name);
     // A checkpoint or escalation without an attempt marker still means the loop
@@ -148,10 +171,11 @@ for (const pr of prs) {
     // engagements with this outcome", not slices of a pie, and can legitimately
     // sum past 100%. Splitting them into exclusive buckets would hide the
     // double-failure case, which is the one most worth seeing.
-    const engagements = Math.max(engaged, recovered, escalated);
+    const engagements = Math.max(engaged, recovered, escalated, routed);
     row.engaged += engagements;
     row.recovered += recovered;
     row.escalated += escalated;
+    row.routed += routed;
     // Clean is accumulated PER PR, never derived by subtracting loop totals
     // (issue #750 review). Because the two failure kinds overlap, aggregate
     // subtraction double-counts a double-failure PR and cancels out genuinely
@@ -160,8 +184,18 @@ for (const pr of prs) {
     // escalated=1 → "0 clean", hiding a real clean run. A single engagement
     // that both recovered and escalated is ONE failed engagement, hence
     // max() rather than a sum.
-    row.clean += Math.max(0, engagements - Math.max(recovered, escalated));
+    // Routed is subtracted alongside the two failure kinds because a routed
+    // engagement did not finish by itself either — a human still has to press
+    // merge. It is simply not a FAULT. `max(0, …)` guards the (unlikely, but
+    // possible) case where one engagement is both routed and blocked, so the
+    // two subtractions can never drive Clean negative.
+    row.clean += Math.max(0, engagements - Math.max(recovered, escalated) - routed);
 
+    // Deliberately NOT gated on `routed`. This list drives the tracking issue:
+    // pipeline-outcomes.yml opens/refreshes it only when the report contains
+    // the "did not finish on its own" heading, and closes it otherwise. Listing
+    // a by-design governance routing here therefore pinned the issue open
+    // forever and buried the genuine recoveries/escalations underneath it.
     if (recovered || escalated) {
       notable.push({
         number: pr.number,
@@ -187,12 +221,15 @@ if (rows.length === 0) {
 const pct = (n, d) => (d === 0 ? '—' : `${Math.round((n / d) * 100)}%`);
 
 console.log(`## Pipeline loop outcomes — last ${windowDays} days\n`);
-console.log('| Loop | Engaged | Recovered (agent stopped early) | Escalated to human | Clean |');
-console.log('| --- | --- | --- | --- | --- |');
+console.log(
+  '| Loop | Engaged | Recovered (agent stopped early) | Escalated to human | Routed to human (by design) | Clean |',
+);
+console.log('| --- | --- | --- | --- | --- | --- |');
 for (const row of rows) {
   console.log(
     `| ${row.name} | ${row.engaged} | ${row.recovered} (${pct(row.recovered, row.engaged)}) | ` +
-      `${row.escalated} (${pct(row.escalated, row.engaged)}) | ${row.clean} (${pct(row.clean, row.engaged)}) |`,
+      `${row.escalated} (${pct(row.escalated, row.engaged)}) | ` +
+      `${row.routed} (${pct(row.routed, row.engaged)}) | ${row.clean} (${pct(row.clean, row.engaged)}) |`,
   );
 }
 
@@ -214,5 +251,13 @@ console.log(
     'a prompt/harness defect in that loop, not a code defect in the PR. **Escalated** is the loop ' +
     'correctly giving up. Both are cheaper to fix than to keep paying for. The two are not ' +
     'mutually exclusive (one engagement can be recovered *and* then escalated), so those ' +
-    'percentages are shares of engagements rather than slices of a pie and may sum past 100%.',
+    'percentages are shares of engagements rather than slices of a pie and may sum past 100%.' +
+    '\n>\n' +
+    '> **Routed to human (by design)** is NOT a failure, and is deliberately left out of the ' +
+    '"did not finish on its own" list: it is ' +
+    'auto-merge meeting a governance-path PR (`.github/**`, `scripts/**`, `CLAUDE.md`, ' +
+    '`docs/PIPELINE.md`, `docs/SECURITY.md`) and handing it to a person exactly as policy requires. ' +
+    'Because the pipeline asks most feature PRs to document themselves in `docs/SECURITY.md`, this ' +
+    'is the common case rather than the exception — a high Routed number means the guardrail is ' +
+    'working, not that the loop is struggling.',
 );
