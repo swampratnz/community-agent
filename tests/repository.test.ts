@@ -1752,9 +1752,10 @@ test(
     });
     assert.ok(acceptedOutOfWindow);
     // Push this one's reviewed_at outside the window so it must not count.
-    await pool.query(`UPDATE knowledge_candidates SET reviewed_at = now() - interval '30 days' WHERE id = $1`, [
-      acceptedOutOfWindowId,
-    ]);
+    await pool.query(
+      `UPDATE knowledge_candidates SET reviewed_at = now() - interval '30 days' WHERE id = $1`,
+      [acceptedOutOfWindowId],
+    );
 
     assert.equal(
       await countAcceptedKnowledgeCandidatesSince(since),

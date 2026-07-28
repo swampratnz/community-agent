@@ -84,6 +84,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   now sees a `Models: model ~$X.XX (N replies) · ...` line confirming exactly
   where tiered and fallback spend landed. No new tool, tier, or config flag —
   purely additive to the existing super-admin-only `usage_stats` gate.
+- **The weekly admin digest now shows whether the community contribution
+  flywheel is actually turning** (#797): VISION names "accepted candidate
+  entries, showcased projects becoming a routine occurrence" as its
+  Participation north star, but the digest only ever nagged the pending
+  knowledge-candidate backlog — never the throughput of candidates actually
+  cleared into the knowledge base, and never project shares at all. A new
+  🌱 line combines a fresh `countAcceptedKnowledgeCandidatesSince` count with
+  the existing `countProjectsSharedSince` (already used by the member-facing
+  digest), rendered only when at least one is non-zero, each with its own
+  week-over-week trend. Bare integers only — never a candidate title/content
+  or a project name/description/link/owner.
 
 ### Security
 - **Trusted CONFIRM notices are now sanitised at a single choke point.** The
