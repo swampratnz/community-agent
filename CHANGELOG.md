@@ -25,6 +25,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
 ## 2026-07-28
 
 ### Added
+- **Discord image-attachment input** (#783, `IMAGE_INPUT_ENABLED`, off by
+  default): a caller can now attach a single image — a screenshot, a stack
+  trace, a billing page — alongside their message, and the bot answers
+  grounded in what it actually shows rather than whatever caption (or
+  nothing) was typed. Discord only, one image per message, MIME-allowlisted
+  (`image/png`/`image/jpeg`/`image/webp`) and byte-capped
+  (`IMAGE_INPUT_MAX_BYTES`), with a per-user daily cap
+  (`IMAGE_INPUT_DAILY_LIMIT_PER_USER`) checked before any download. Minimum
+  eligible tier (`IMAGE_INPUT_MIN_ROLE`) defaults to `super_admin` — more
+  conservative than the sibling voice-transcription features — because an
+  image is a genuinely new untrusted-input class: text rendered inside one
+  is invisible to moderation and every other inbound filter, defended only by
+  an explicit systemPrompt clause. No image bytes are ever stored. See
+  `docs/SECURITY.md` §22 for the full posture.
 - **New `getting-started` Agent Skill: sequenced "where do I start with X"
   learning-path guidance** (#776, part of the Agent Skills cohort behind
   `AGENT_SKILLS_ENABLED`, off by default): fills the "member growth &

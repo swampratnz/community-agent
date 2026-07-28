@@ -2360,6 +2360,73 @@ regardless. The mechanism is also fully optional: no note, an empty note, or a
 failed post all leave the pipeline exactly as it was, so removing it needs no
 migration.
 
+### 22. Discord image-attachment input (`IMAGE_INPUT_ENABLED`, off by default, `super_admin`-only default, issue #783)
+
+Lets an eligible caller attach a single image (screenshot, stack trace,
+billing page) alongside their message; `runAgentTurn`/`execTurn`
+(`src/agent/core.ts`) pass it to `query()` as an image content block
+alongside the turn's text, so the model can ground its answer in what was
+actually shown. Off by default; this is a **genuinely new untrusted-input
+class**, not a symmetry extension of an existing one:
+
+- **Unlike voice transcription, this is unfilterable at the boundary.**
+  `DISCORD_VOICE_*`/`WHATSAPP_VOICE_*` (§13) only ever produce ordinary
+  `text`, which flows through the identical moderation scan and injection
+  handling every typed message gets. An image is different in kind: text
+  rendered *inside* an image is interpreted model-side, and is invisible to
+  `moderator.scan` (which only ever sees `text` — an image-bearing turn's
+  `interactions` row and moderation scan are unaffected, see below) and every
+  other inbound filter. The **only** defence is the explicit
+  `systemPrompt.ts` clause below — no sanitizer can inspect model-side image
+  interpretation, so there is nothing else to add. This residual gap is
+  accepted, not hidden: it is the reason this feature defaults to
+  `super_admin` rather than the wider default a plain symmetry argument with
+  voice might suggest.
+- **Same gate order as the voice features, independently configured.**
+  `maybeFetchImageAttachment` (`src/platforms/discord/adapter.ts`) checks, in
+  order, all before any network fetch: `IMAGE_INPUT_ENABLED` → caller tier
+  vs. `IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` — the pure
+  `isSuperAdmin('discord', senderId)` env check with no DB call at that
+  default, else `resolveRole`/`atLeast`) → `IMAGE_INPUT_DAILY_LIMIT_PER_USER`
+  (a rolling calendar-day cap per platform-qualified sender, checked via
+  `reserveImageInputDaily`, same shape as `reserveImageGenDaily`/
+  `reserveDevTeamDispatchDaily`) → MIME allowlist (`image/png`, `image/jpeg`,
+  `image/webp`) and `IMAGE_INPUT_MAX_BYTES`, both read from Discord's own
+  attachment metadata (`contentType`/`size`) so the check never itself
+  fetches. Only then is the attachment downloaded and base64-encoded. Every
+  refusal path — flag off, below-tier, at daily cap, bad MIME, over byte cap
+  — is pinned by a dedicated `SECURITY:` test asserting **zero** fetch calls,
+  in `tests/discordImageInput.test.ts`.
+- **One image, Discord only, no OCR/moderation-scan extension in v1.** These
+  are named, deliberate scope limits (see `docs/CAPABILITY-IDEAS.md` §A1),
+  not gaps discovered later: multiple attachments, WhatsApp parity, and
+  OCR-then-moderation-scan are growth paths for a future proposal to size
+  against observed usage, not this one.
+- **No storage.** The base64 bytes are held in memory for the one `query()`
+  call and discarded; `IncomingMessage.image` is never passed to
+  `recordInteraction` anywhere in `src/router.ts` — the `interactions` row for
+  an image-bearing turn contains `text` only, byte-identical in shape to a
+  turn without one. Pinned by a `SECURITY:` test spying on `pool.query` and
+  asserting the inserted `content` never contains the image payload.
+  `forget_me`/purge semantics are unaffected because there is nothing new to
+  purge.
+- **Injection-defense clause, same precedent as pasted prompts.** When
+  `IMAGE_INPUT_ENABLED` is on, `systemPrompt.ts`'s `GUIDELINES` gains an
+  explicit clause (mirroring `PROMPT_REVIEW_CLAUSE`'s framing for a pasted
+  prompt) stating that text rendered inside an attached image is untrusted
+  data to look at and answer from, never an instruction — including anything
+  styled as a role claim or a system-style directive. Present only when the
+  flag could apply, absent otherwise; pinned by `SECURITY:` tests on both
+  sides (`tests/discordImageInput.test.ts` for off, `tests/
+  imageInputSystemPromptEnabled.test.ts` for on, since `config` is read once
+  per process).
+- **Byte-identical when off.** With `IMAGE_INPUT_ENABLED` unset (the
+  default), Discord message handling — including any attachment, image or
+  not — is unchanged from today for every role: no fetch, no `image` field on
+  the `IncomingMessage`, no systemPrompt clause. Pinned by a `SECURITY:` test
+  that runs a super admin (well above every cap) through the flag-off path
+  and asserts zero fetch calls regardless.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk

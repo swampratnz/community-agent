@@ -33,12 +33,13 @@ floor. An image-only message arrives as empty text.
 
 ### A1. Screenshot / image input *(high impact, medium effort)*
 
-**Status:** Not started. No `IMAGE_INPUT_ENABLED` flag exists in `src/config.ts`,
-and no adapter passes an image content block to `query()` — the Discord
-adapter reads only a single voice attachment per message
-(`message.attachments` in `src/platforms/discord/adapter.ts`), never an image
-one. `src/media/grokImage.ts` is unrelated: it generates images as tool
-*output*, not image input/perception.
+**Status:** Shipped (issue #783). `IMAGE_INPUT_ENABLED` (off by default,
+`IMAGE_INPUT_MIN_ROLE` default `'super_admin'` — a deliberate correction of
+this entry's own `member+` draft text, see SECURITY.md §22) gates a single
+Discord image attachment per message, MIME-allowlisted and byte-capped, passed
+to `query()` as an image content block alongside the turn's text. No image
+bytes are stored. `src/media/grokImage.ts` remains unrelated: it generates
+images as tool *output*, not image input/perception.
 
 **Why:** in a builders' community the most common support artifact is a
 screenshot — a stack trace, a console error, a Workbench screenshot, a billing
