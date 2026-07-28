@@ -86,6 +86,17 @@ const EVENTS_CACHE_TTL_MS = 60_000;
 // convention for this class of constant (e.g. THREAD_CREATE_RATE_LIMIT_PER_HOUR).
 const MUTED_ROLE_OVERWRITE_MAX_ATTEMPTS = 3;
 const MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS = 500;
+// Bounded retry for a transient failure sending a reply/DM (issue #846):
+// initial attempt + 2 retries, short fixed delay — same shape as
+// MUTED_ROLE_OVERWRITE_* above (#276). Small hardcoded constants, not
+// operator-tunable, matching this repo's existing convention for this class
+// of constant. Unlike a permission-overwrite edit, a message send is NOT
+// idempotent: if Discord processes the call but the response/ack is lost to
+// the same transient blip, a retry can duplicate that chunk. This is an
+// accepted at-least-once tradeoff — a rare duplicated chunk is materially
+// less harmful than today's silent loss of the entire reply.
+const DISCORD_SEND_MAX_ATTEMPTS = 3;
+const DISCORD_SEND_RETRY_DELAY_MS = 500;
 // 15 minutes — mirrors #203's BUDGET_CHECK_FAILURE_ALERT_WINDOW_MS shape; a
 // permission-overwrite failure is a systemic condition, not a per-channel one.
 const MUTED_ROLE_ALERT_WINDOW_MS = 900_000;
@@ -177,7 +188,10 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   // checked via `shouldNotifyVoiceLanguageCaveat` (mirrors baileysAdapter.ts).
   private readonly voiceLanguageCaveatNotified = new Map<string, number>();
 
-  constructor(private readonly mutedRoleOverwriteRetryDelayMs = MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS) {
+  constructor(
+    private readonly mutedRoleOverwriteRetryDelayMs = MUTED_ROLE_OVERWRITE_RETRY_DELAY_MS,
+    private readonly sendRetryDelayMs = DISCORD_SEND_RETRY_DELAY_MS,
+  ) {
     this.moderator = createModerator(this);
     this.client = new Client({
       intents: [
@@ -1074,11 +1088,13 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     // delete ALL of them, not just the last chunk.
     const messageIds: string[] = [];
     for (const chunk of chunkText(await this.filtered(out.text, out.language, out.style), MAX_DISCORD_LEN)) {
-      const sent = await channel.send({
-        content: chunk,
-        allowedMentions: { parse: [] },
-        flags: MessageFlags.SuppressEmbeds,
-      });
+      const sent = await this.sendDiscordMessageWithRetry<Message<boolean>>(() =>
+        channel.send({
+          content: chunk,
+          allowedMentions: { parse: [] },
+          flags: MessageFlags.SuppressEmbeds,
+        }),
+      );
       if (sent?.id) messageIds.push(sent.id);
     }
     return messageIds.length > 0 ? messageIds : undefined;
@@ -1131,12 +1147,38 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
   async sendDirectMessage(userId: string, text: string): Promise<void> {
     const user = await this.client.users.fetch(userId);
     for (const chunk of chunkText(await this.filtered(text), MAX_DISCORD_LEN)) {
-      await user.send({
-        content: chunk,
-        allowedMentions: { parse: [] },
-        flags: MessageFlags.SuppressEmbeds,
-      });
+      await this.sendDiscordMessageWithRetry(() =>
+        user.send({
+          content: chunk,
+          allowedMentions: { parse: [] },
+          flags: MessageFlags.SuppressEmbeds,
+        }),
+      );
     }
+  }
+
+  /**
+   * Retries a single Discord `send()` call (a reply chunk or a DM chunk) up
+   * to `DISCORD_SEND_MAX_ATTEMPTS` times total (issue #846) — mirrors
+   * `applyMutedRoleOverwrite`'s bounded-retry shape (#276), scoped to just
+   * the one already-built API call so a multi-chunk reply only ever re-sends
+   * the chunk that actually failed, never chunks already delivered. Re-throws
+   * once attempts are exhausted so the existing `router.ts` "respond failed"
+   * log path still fires as the final backstop for a persistent failure.
+   */
+  private async sendDiscordMessageWithRetry<T>(send: () => Promise<T>): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= DISCORD_SEND_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await send();
+      } catch (err) {
+        lastErr = err;
+        if (attempt === DISCORD_SEND_MAX_ATTEMPTS) break;
+        logger.warn({ err, attempt }, 'Discord send attempt failed, retrying');
+        await new Promise((resolve) => setTimeout(resolve, this.sendRetryDelayMs));
+      }
+    }
+    throw lastErr;
   }
 
   /**

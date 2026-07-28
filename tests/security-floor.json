@@ -63,7 +63,7 @@
   "devTeamTools.test.ts": 10,
   "devTeamWatch.test.ts": 7,
   "devTeamWatchAlert.test.ts": 1,
-  "discordAdapter.test.ts": 61,
+  "discordAdapter.test.ts": 62,
   "discordEditModerationScan.test.ts": 3,
   "discordImageInput.test.ts": 7,
   "discordSlashCommands.test.ts": 14,

@@ -373,6 +373,139 @@ test('SECURITY: sendDirectMessage routes through filterOutbound — a secret can
   assert.ok(sent[0].includes('[redacted]'), 'the secret must have been redacted, not silently dropped');
 });
 
+// --- sendMessage / sendDirectMessage: bounded retry on a transient send failure (issue #846) ------
+
+interface FakeSendableWithCustomImpl {
+  isTextBased: () => boolean;
+  send: (opts: { content: string }) => Promise<{ id: string } | undefined>;
+}
+
+/**
+ * Like stubClient, but lets the test supply a custom `send` implementation
+ * (e.g. failing N times then succeeding) instead of the default
+ * always-succeeds recorder — for exercising sendMessage/sendDirectMessage's
+ * retry behaviour (issue #846).
+ */
+function stubClientForSend(
+  adapter: InstanceType<typeof DiscordAdapter>,
+  sendImpl: (opts: { content: string }) => Promise<{ id: string } | undefined>,
+) {
+  const client = (
+    adapter as unknown as {
+      client: {
+        channels: { fetch: (id: string) => Promise<FakeSendableWithCustomImpl> };
+        users: { fetch: (id: string) => Promise<FakeSendableWithCustomImpl> };
+      };
+    }
+  ).client;
+  client.channels.fetch = async () => ({ isTextBased: () => true, send: sendImpl });
+  client.users.fetch = async () => ({ isTextBased: () => true, send: sendImpl });
+}
+
+test('sendMessage: a transient send failure is retried and the reply is still delivered (issue #846)', async () => {
+  const adapter = new DiscordAdapter(undefined, 0); // no send retry delay — asserting retry behaviour, not timing
+  let calls = 0;
+  stubClientForSend(adapter, async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('transient Discord API error');
+    return { id: 'msg-1' };
+  });
+  const messageIds = await adapter.sendMessage({ conversationId: 'chan-1', text: 'hello' });
+  assert.equal(calls, 2, 'first attempt fails, the retry succeeds');
+  assert.deepEqual(messageIds, ['msg-1']);
+});
+
+test('sendDirectMessage: a transient send failure is retried and the DM is still delivered (issue #846)', async () => {
+  const adapter = new DiscordAdapter(undefined, 0);
+  let calls = 0;
+  stubClientForSend(adapter, async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('transient Discord API error');
+    return { id: 'msg-1' };
+  });
+  await adapter.sendDirectMessage('user-1', 'hello');
+  assert.equal(calls, 2, 'first attempt fails, the retry succeeds');
+});
+
+test('sendMessage: a send that fails on every attempt re-throws after DISCORD_SEND_MAX_ATTEMPTS, unchanged persistent-failure behaviour (issue #846)', async () => {
+  const adapter = new DiscordAdapter(undefined, 0);
+  let calls = 0;
+  stubClientForSend(adapter, async () => {
+    calls += 1;
+    throw new Error('persistent Discord API error');
+  });
+  await assert.rejects(
+    () => adapter.sendMessage({ conversationId: 'chan-1', text: 'hello' }),
+    /persistent Discord API error/,
+  );
+  assert.equal(calls, 3, 'initial attempt plus 2 retries, then give up — router.ts still sees the rejection');
+});
+
+test('sendDirectMessage: a send that fails on every attempt re-throws after DISCORD_SEND_MAX_ATTEMPTS (issue #846)', async () => {
+  const adapter = new DiscordAdapter(undefined, 0);
+  let calls = 0;
+  stubClientForSend(adapter, async () => {
+    calls += 1;
+    throw new Error('persistent Discord API error');
+  });
+  await assert.rejects(
+    () => adapter.sendDirectMessage('user-1', 'hello'),
+    /persistent Discord API error/,
+  );
+  assert.equal(calls, 3, 'initial attempt plus 2 retries, then give up');
+});
+
+test('sendMessage: per-chunk retry re-sends only the failing chunk, never replays an already-sent chunk (issue #846)', async () => {
+  const adapter = new DiscordAdapter(undefined, 0);
+  const chunk1Calls = { count: 0 };
+  const chunk2Calls = { count: 0 };
+  stubClientForSend(adapter, async (opts) => {
+    if (opts.content.startsWith('A')) {
+      chunk1Calls.count += 1;
+      return { id: 'msg-a' };
+    }
+    chunk2Calls.count += 1;
+    if (chunk2Calls.count === 1) throw new Error('transient Discord API error');
+    return { id: 'msg-b' };
+  });
+  const text = 'A'.repeat(2000) + 'B'.repeat(500);
+  const messageIds = await adapter.sendMessage({ conversationId: 'chan-1', text });
+  assert.equal(chunk1Calls.count, 1, "chunk 2's retry must never replay chunk 1");
+  assert.equal(chunk2Calls.count, 2, 'chunk 2: first attempt fails, retry succeeds');
+  assert.deepEqual(messageIds, ['msg-a', 'msg-b']);
+});
+
+test('SECURITY: a retried Discord send still runs outbound filtering exactly once — the retried payload is byte-identical to the first attempt, not re-filtered per attempt (issue #846)', async () => {
+  const adapter = new DiscordAdapter(undefined, 0);
+  let filteredCalls = 0;
+  const adapterInternals = adapter as unknown as { filtered: (...args: unknown[]) => Promise<string> };
+  const originalFiltered = adapterInternals.filtered.bind(adapter);
+  adapterInternals.filtered = async (...args: unknown[]) => {
+    filteredCalls += 1;
+    return originalFiltered(...args);
+  };
+  const seenPayloads: string[] = [];
+  let attempts = 0;
+  stubClientForSend(adapter, async (opts) => {
+    attempts += 1;
+    seenPayloads.push(opts.content);
+    if (attempts === 1) throw new Error('transient Discord API error');
+    return { id: 'msg-1' };
+  });
+  await adapter.sendMessage({
+    conversationId: 'chan-1',
+    text: 'secret is sk-ant-' + 'y'.repeat(30) + ' end',
+  });
+  assert.equal(attempts, 2, 'first attempt fails, the retry succeeds');
+  assert.equal(filteredCalls, 1, 'outbound filtering must run once per logical send, not once per retry attempt');
+  assert.equal(
+    seenPayloads[0],
+    seenPayloads[1],
+    'the retried payload must be byte-identical to the first attempt — a retry cannot re-trigger or bypass filtering',
+  );
+  assert.ok(seenPayloads[0].includes('[redacted]'), 'the shared payload must already be redacted');
+});
+
 interface PollPayload {
   question: { text: string };
   answers: Array<{ text: string }>;
