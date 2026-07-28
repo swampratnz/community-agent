@@ -171,7 +171,11 @@ test('researchTopic: a positive total_cost_usd records a knowledge_refresh backg
   const { researchTopic } = await modules(t);
   recordCalls = [];
   recordShouldReject = false;
-  nextResult = { result: '- a sourced briefing bullet', totalCostUsd: 0.15 };
+  nextResult = {
+    result: '- a sourced briefing bullet',
+    totalCostUsd: 0.15,
+    structuredOutput: { hasUpdate: true, briefing: '- a sourced briefing bullet' },
+  };
 
   await researchTopic('some fixed topic query');
 
@@ -184,7 +188,11 @@ test('researchTopic: total_cost_usd absent, 0, or non-numeric records no backgro
   for (const totalCostUsd of [undefined, 0, NaN, 'not-a-number']) {
     recordCalls = [];
     recordShouldReject = false;
-    nextResult = { result: '- a sourced briefing bullet', totalCostUsd };
+    nextResult = {
+      result: '- a sourced briefing bullet',
+      totalCostUsd,
+      structuredOutput: { hasUpdate: true, briefing: '- a sourced briefing bullet' },
+    };
     await researchTopic('some fixed topic query');
     assert.deepEqual(recordCalls, [], `no row recorded for total_cost_usd = ${String(totalCostUsd)}`);
   }
@@ -194,7 +202,11 @@ test('SECURITY: researchTopic still returns its normal result when recordBackgro
   const { researchTopic } = await modules(t);
   recordCalls = [];
   recordShouldReject = true;
-  nextResult = { result: '- a sourced briefing bullet', totalCostUsd: 0.2 };
+  nextResult = {
+    result: '- a sourced briefing bullet',
+    totalCostUsd: 0.2,
+    structuredOutput: { hasUpdate: true, briefing: '- a sourced briefing bullet' },
+  };
 
   const briefing = await researchTopic('some fixed topic query');
 
