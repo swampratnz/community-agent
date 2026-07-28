@@ -25,6 +25,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
 ## 2026-07-28
 
 ### Added
+- **`review_queue` and the weekly admin digest now show the open-appeals
+  backlog's age, not just its count** (#787): a new `oldestOpenAppealAgeDays`
+  repository function — the same `MIN(created_at)`-over-`status='open'`
+  pattern the access-request/report/suggestion lines already use — closes the
+  one gap `review_queue` (#745) and `countOpenAppeals` (#631) each explicitly
+  named and deferred. Both surfaces render an `, oldest Nd` fragment once at
+  least one appeal is open, omitted when the queue is empty; appeals stay
+  scoped to the caller's own platform, same as `list_appeals`. Still a bare
+  day-count only — never an appellant's `user_name`, `reason`, or `user_id`.
 - **Discord image-attachment input** (#783, `IMAGE_INPUT_ENABLED`, off by
   default): a caller can now attach a single image — a screenshot, a stack
   trace, a billing page — alongside their message, and the bot answers
@@ -68,6 +77,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   the real action verb and target always lead the notice and nothing can add a
   fake second line. Extends the earlier display-name fix (issue #227) to the
   free-text fields.
+
+### Fixed
+- **The knowledge shortcut's low-rated caveat now honours a caller's standing
+  te reo Māori preference** (#789). A member with `set_language_preference('mi')`
+  who hit a low-rated knowledge entry via the zero-model-call shortcut used to
+  get a reply where the trailing attribution line was already in te reo
+  (issue #435) but the "other members found this unhelpful" caveat one line
+  above it was stuck in English — a single reply, mixed language. The caveat
+  now renders in te reo alongside the suffix, and English-preference replies
+  are unchanged.
 
 ## 2026-07-27
 

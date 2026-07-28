@@ -156,6 +156,7 @@ const {
   listOwnAppeals,
   resolveModerationAppeal,
   countOpenAppeals,
+  oldestOpenAppealAgeDays,
   blockUser,
   unblockUser,
   isUserBlocked,
@@ -11698,6 +11699,87 @@ test(
     await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
       [open.id, resolved.id, dismissed.id, otherPlatformOpen.id],
     ]);
+  },
+);
+
+test(
+  "repository: oldestOpenAppealAgeDays returns the whole-day age of the oldest OPEN row (MIN(created_at)), excludes resolved/dismissed rows and other platforms' rows (issue #787 acceptance criterion 1)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-appealage`;
+
+    const newerOpen = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Newer',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const olderOpen = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'Older',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const resolvedOldest = await createModerationAppeal({
+      platform: 'discord',
+      userId,
+      userName: 'ResolvedOldest',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const otherPlatformOpen = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'OtherPlatform',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    // Backdate so MIN(created_at) over the scoped open set is deterministic
+    // regardless of what else concurrently exists in the table: the resolved
+    // row is the OLDEST of all four but must never influence the result
+    // since it's no longer 'open'; the other-platform row is older than the
+    // in-scope open rows but must never leak into the discord scope either.
+    await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '10 days' WHERE id = $1`, [
+      newerOpen.id,
+    ]);
+    await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '200 days' WHERE id = $1`, [
+      olderOpen.id,
+    ]);
+    await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '900 days' WHERE id = $1`, [
+      resolvedOldest.id,
+    ]);
+    await pool.query(`UPDATE moderation_appeals SET created_at = now() - interval '500 days' WHERE id = $1`, [
+      otherPlatformOpen.id,
+    ]);
+    await resolveModerationAppeal(resolvedOldest.id, 'resolved', `${RUN}-appealage-resolver`);
+
+    assert.equal(
+      await oldestOpenAppealAgeDays('discord'),
+      200,
+      'the oldest OPEN discord row determines the age — the older resolved row and the older-still ' +
+        'other-platform row must never leak in',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
+      [newerOpen.id, olderOpen.id, resolvedOldest.id, otherPlatformOpen.id],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: oldestOpenAppealAgeDays returns null (never 0 or NaN) for a platform with zero open appeals (issue #787 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-appealage-empty-platform`;
+    const age = await oldestOpenAppealAgeDays(platform);
+    assert.equal(
+      age,
+      null,
+      'a platform value with zero matching open appeals must return null, never 0 or a throw',
+    );
   },
 );
 

@@ -6396,6 +6396,24 @@ export async function countOpenAppeals(platform: string): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
+/**
+ * Whole-day age of the oldest open appeal for this platform — the same
+ * `MIN(created_at)` oldest-age mechanic `oldestOpenReportAgeDays` (#450)
+ * applies to reports, over the identical `platform`/`status = 'open'`
+ * predicate `countOpenAppeals` counts (issues #631/#743 both named this as
+ * the deferred growth path, built here in #787). `MIN` over an empty scoped
+ * set is `null`, never `0`, and is returned as-is so a digest/tool reader can
+ * never mistake "no open appeals" for "one that just arrived".
+ */
+export async function oldestOpenAppealAgeDays(platform: string): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(DAY FROM now() - MIN(created_at))::int AS age_days FROM moderation_appeals WHERE platform = $1 AND status = 'open'`,
+    [platform],
+  );
+  const ageDays = rows[0]?.age_days;
+  return ageDays === null || ageDays === undefined ? null : Number(ageDays);
+}
+
 // --- Answer feedback (member rating of the bot's own answers, issue #118) ---
 
 /** Per-rater cap on new ratings within a rolling 24h window (DB-backed, same pattern as reports/suggestions). */

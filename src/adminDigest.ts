@@ -24,6 +24,7 @@ import {
   getLastDigestCounts,
   listAdmins,
   oldestAccessRequestAgeDays,
+  oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
   oldestPendingSuggestionAgeDays,
   recentQuestionClusters,
@@ -372,6 +373,16 @@ export function buildAdminDigestMessage(
   // above (#653's quantitative half). Append-only trailing param, default 0,
   // so every existing call site is unaffected.
   unhelpfulThemeCount: number = 0,
+  // Whole-day age of the oldest open moderation appeal
+  // (`oldestOpenAppealAgeDays`, issue #787) — the same append-only
+  // trailing-param, non-null-only, refine-an-existing-line shape as
+  // `oldestOpenReportAgeDays`/`oldestPendingSuggestionAgeDays` (#450) above.
+  // Only ever decorates the already-nonzero `openAppealsCount > 0` line
+  // (issue #631) and only when non-null (an empty scoped set has no
+  // meaningful age), so the quiet case and every caller that hasn't wired
+  // this through are byte-identical to the pre-#787 form. Bare integer
+  // only, same privacy convention as every signal above.
+  oldestOpenAppealAgeDays: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -618,8 +629,12 @@ export function buildAdminDigestMessage(
   }
   if (openAppealsCount > 0) {
     // Bare integer only — no appellant user_name/reason/user_id ever reaches the DM (#631).
+    // Oldest-age fragment only when the scoped aggregate resolved to a real
+    // day count — an empty scoped set (or a caller that hasn't wired the new
+    // param through) renders the line exactly as before #787 (issue #787).
+    const ageFragment = oldestOpenAppealAgeDays !== null ? `, oldest ${oldestOpenAppealAgeDays}d` : '';
     sections.push(
-      `📋 ${openAppealsCount} open moderation appeal(s) awaiting review — run \`list_appeals\` to review.` +
+      `📋 ${openAppealsCount} open moderation appeal(s)${ageFragment} awaiting review — run \`list_appeals\` to review.` +
         trendSuffix('openAppealsCount', openAppealsCount, previousCounts),
     );
   }
@@ -690,6 +705,7 @@ export async function buildAdminDigestForAdmin(
     generalUnhelpfulCount,
     answerOriginSummary,
     openAppealsCount,
+    oldestOpenAppealAge,
     unreachableSourceKnowledgeCount,
     overallAnswerSummary,
     unhelpfulThemeClusters,
@@ -768,6 +784,10 @@ export async function buildAdminDigestForAdmin(
     // (moderation_appeals has no conversation_id) — the digest backlog line
     // #554 and #622 both named and deferred (issue #631).
     countOpenAppeals(platform),
+    // Oldest-age companion to openAppealsCount just above, over the same
+    // platform/status='open' scoped row set — the age half of the #631/#743
+    // deferred gap, built here (issue #787).
+    oldestOpenAppealAgeDays(platform),
     // Guild-wide, unscoped like countStaleKnowledge — only runs the extra
     // COUNT(*) when the underlying weekly link-rot checker is enabled,
     // matching countStaleKnowledge's own opt-in gating above. With the flag
@@ -871,6 +891,7 @@ export async function buildAdminDigestForAdmin(
     overallAnswerSummary.helpful,
     overallAnswerSummary.total,
     unhelpfulThemeClusters.length,
+    oldestOpenAppealAge,
   );
   return { message, currentCounts };
 }
