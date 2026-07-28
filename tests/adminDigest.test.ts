@@ -3588,6 +3588,83 @@ test(
   },
 );
 
+test(
+  "buildAdminDigestForAdmin: helperMatchesCount round-trips through currentCounts/recordAdminDigestSnapshot, and the second week's pull renders the exact delta against the first (issue #820, closing the same sanitizeDigestCounts-whitelist gap #629 closed for autoAnswerHelpfulPct)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-helpermatchestrend-admin`;
+    const conversationId = `${RUN}-c-helpermatchestrend`;
+    const helper = `${RUN}-helpermatchestrend-helper`;
+    const requester = `${RUN}-helpermatchestrend-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    const wasFindHelperEnabled = config.findHelper.enabled;
+    config.adminDigest.trendsEnabled = true;
+    config.findHelper.enabled = true;
+    try {
+      const claimed = await recordHelperNotificationIfUnderCap(
+        'discord',
+        helper,
+        'discord',
+        requester,
+        `${RUN}-helpermatchestrend-topic`,
+      );
+      assert.ok(claimed, 'seed notification claims a slot');
+
+      const week1 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(week1.message);
+      assert.match(
+        week1.message.split('\n').find((l) => l.includes('🌱')) ?? '',
+        /1 member-to-member connection\(s\) made this week/,
+        'no prior snapshot yet -> no trend suffix, week 1 renders bare',
+      );
+
+      // Persist week 1's snapshot exactly as runAdminDigestOnce would on a
+      // real send, so week 2's read sees it as "last week".
+      await recordAdminDigestSnapshot('discord', adminId, week1.currentCounts);
+      assert.equal(
+        (await getLastDigestCounts('discord', adminId))?.helperMatchesCount,
+        1,
+        'helperMatchesCount round-trips through the sanitize whitelist (issue #820), unlike an unlisted key would',
+      );
+
+      // Week 2: one more connection.
+      const helper2 = `${RUN}-helpermatchestrend-helper2`;
+      await recordHelperNotificationIfUnderCap(
+        'discord',
+        helper2,
+        'discord',
+        requester,
+        `${RUN}-helpermatchestrend-topic2`,
+      );
+
+      const week2 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(week2.message);
+      assert.match(
+        week2.message.split('\n').find((l) => l.includes('🌱')) ?? '',
+        /2 member-to-member connection\(s\) made \(▲\+1 since last week\)/,
+        "week 2 sees last week's persisted count and renders the exact ▲+1 delta",
+      );
+
+      await pool.query(
+        `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = ANY($1)`,
+        [[helper, helper2]],
+      );
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+      config.findHelper.enabled = wasFindHelperEnabled;
+    }
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
 test('buildAdminDigestMessage: unreachable-source-knowledge line appears only when unreachableSourceKnowledgeCount > 0, and all TWENTY-ONE signals zero -> null (issue #624 acceptance criteria 2, 3)', () => {
   assert.equal(
     buildAdminDigestMessage(

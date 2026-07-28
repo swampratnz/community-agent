@@ -245,16 +245,6 @@ export async function findHelperCandidates(
 }
 
 /**
- * Atomically claims one notification slot for a candidate helper if they're
- * under FIND_HELPER_WEEKLY_LIMIT_PER_HELPER in the trailing 7 days — same
- * `WITH recent AS (...)` restart-proof pattern as createKnowledgeTip, never
- * an in-memory counter (issue #729 SECURITY criterion: pinned by a test that
- * seeds helper_notifications rows directly). Returns false (no row inserted,
- * no DM should be sent) when the helper is already at cap, so the caller can
- * move on to the next candidate; true means this row IS the one-and-only
- * notification for this find_helper call and the caller should now send the DM.
- */
-/**
  * Count of successful find_helper connections (`helper_notifications` rows —
  * one per DM actually sent) since `since` — issue #820's admin-digest
  * flywheel-throughput signal, the third dimension #797 established with
@@ -270,6 +260,16 @@ export async function countHelperMatchesSince(since: Date): Promise<number> {
   return Number(rows[0].n);
 }
 
+/**
+ * Atomically claims one notification slot for a candidate helper if they're
+ * under FIND_HELPER_WEEKLY_LIMIT_PER_HELPER in the trailing 7 days — same
+ * `WITH recent AS (...)` restart-proof pattern as createKnowledgeTip, never
+ * an in-memory counter (issue #729 SECURITY criterion: pinned by a test that
+ * seeds helper_notifications rows directly). Returns false (no row inserted,
+ * no DM should be sent) when the helper is already at cap, so the caller can
+ * move on to the next candidate; true means this row IS the one-and-only
+ * notification for this find_helper call and the caller should now send the DM.
+ */
 export async function recordHelperNotificationIfUnderCap(
   helperPlatform: Platform,
   helperUserId: string,

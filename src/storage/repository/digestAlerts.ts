@@ -69,6 +69,7 @@ const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
   'staleMutedMembersCount',
   'notMembersCount',
   'autoAnswerHelpfulPct',
+  'helperMatchesCount',
 ]);
 
 /** Strips any key outside `ADMIN_DIGEST_SIGNAL_KEYS` and any non-integer value. */
