@@ -87,6 +87,7 @@ import {
   listSuggestions,
   MEMBER_PROJECT_CAP,
   oldestAccessRequestAgeDays,
+  oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
   oldestPendingSuggestionAgeDays,
   type MemberProject,
@@ -5941,11 +5942,11 @@ export function buildToolServer(
     'review_queue',
     'Single roll-up of all five admin review queues — access requests, suggestions, knowledge candidates, ' +
       'reports, and appeals — each with its current pending/open count, so triage starts with one glance ' +
-      'instead of polling five separate list_* tools in turn. The access-requests, suggestions, and reports ' +
-      "lines also show the oldest item's age in whole days once that queue is non-empty. Reports reflect only " +
-      'your own conversation scope, same as list_reports (never a guild-wide total); appeals reflect only your ' +
-      'own platform, same as list_appeals. Knowledge candidates and appeals show count only (no age) for now. ' +
-      'Read-only, takes no arguments. Admin only.',
+      'instead of polling five separate list_* tools in turn. The access-requests, suggestions, reports, and ' +
+      "appeals lines also show the oldest item's age in whole days once that queue is non-empty. Reports " +
+      'reflect only your own conversation scope, same as list_reports (never a guild-wide total); appeals ' +
+      'reflect only your own platform, same as list_appeals. Knowledge candidates show count only (no age) ' +
+      'for now. Read-only, takes no arguments. Admin only.',
     {},
     async () => {
       assertAtLeast(caller.role, 'admin', 'review_queue');
@@ -5963,6 +5964,7 @@ export function buildToolServer(
         reportCount,
         reportAgeDays,
         appealCount,
+        appealAgeDays,
       ] = await Promise.all([
         countAccessRequests(),
         oldestAccessRequestAgeDays(),
@@ -5972,6 +5974,7 @@ export function buildToolServer(
         countOpenReports(allowed, viewerIds),
         oldestOpenReportAgeDays(allowed, viewerIds),
         countOpenAppeals(caller.platform),
+        oldestOpenAppealAgeDays(caller.platform),
       ]);
       // Each oldest*AgeDays resolves to null over an empty (or fully-scoped-
       // out) row set, never 0 — so gating the suffix on non-null is exactly
@@ -5982,7 +5985,7 @@ export function buildToolServer(
         `- Suggestions: ${suggestionCount} pending${ageSuffix(suggestionAgeDays)}`,
         `- Knowledge candidates: ${candidateCount} pending`,
         `- Reports (your conversations): ${reportCount} open${ageSuffix(reportAgeDays)}`,
-        `- Appeals: ${appealCount} open`,
+        `- Appeals: ${appealCount} open${ageSuffix(appealAgeDays)}`,
       ];
       return text(`📋 Review queue\n${lines.join('\n')}`);
     },

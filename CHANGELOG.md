@@ -25,6 +25,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
 ## 2026-07-28
 
 ### Added
+- **`review_queue` and the weekly admin digest now show the open-appeals
+  backlog's age, not just its count** (#787): a new `oldestOpenAppealAgeDays`
+  repository function — the same `MIN(created_at)`-over-`status='open'`
+  pattern the access-request/report/suggestion lines already use — closes the
+  one gap `review_queue` (#745) and `countOpenAppeals` (#631) each explicitly
+  named and deferred. Both surfaces render an `, oldest Nd` fragment once at
+  least one appeal is open, omitted when the queue is empty; appeals stay
+  scoped to the caller's own platform, same as `list_appeals`. Still a bare
+  day-count only — never an appellant's `user_name`, `reason`, or `user_id`.
 - **New `getting-started` Agent Skill: sequenced "where do I start with X"
   learning-path guidance** (#776, part of the Agent Skills cohort behind
   `AGENT_SKILLS_ENABLED`, off by default): fills the "member growth &

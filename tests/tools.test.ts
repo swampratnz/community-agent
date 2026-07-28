@@ -19130,7 +19130,7 @@ test(
 );
 
 test(
-  'review_queue renders one line per queue in fixed order (access requests, suggestions, knowledge candidates, reports, appeals), with oldest-age suffixes only on access requests/suggestions/reports and never on knowledge candidates/appeals (issue #743 acceptance criteria 1, 2, 4)',
+  'review_queue renders one line per queue in fixed order (access requests, suggestions, knowledge candidates, reports, appeals), with oldest-age suffixes on access requests/suggestions/reports/appeals and never on knowledge candidates (issue #743 acceptance criteria 1, 2, 4; issue #787 acceptance criterion 2)',
   { skip },
   async () => {
     const admin = `${RUN}-review-queue-render-admin`;
@@ -19226,12 +19226,7 @@ test(
         'acceptance criterion 2: the knowledge-candidates line never carries an age suffix, even non-empty',
       );
       assert.match(lines[4], /^- Reports \(your conversations\): \d+ open \(oldest \d+d\)$/);
-      assert.match(lines[5], /^- Appeals: \d+ open$/);
-      assert.doesNotMatch(
-        lines[5],
-        /oldest/,
-        'acceptance criterion 2: the appeals line never carries an age suffix, even non-empty (v1 known limitation)',
-      );
+      assert.match(lines[5], /^- Appeals: \d+ open \(oldest \d+d\)$/);
 
       const [, accessCount] = lines[1].match(/(\d+) pending/) ?? [];
       const [, suggestionCount] = lines[2].match(/(\d+) pending/) ?? [];
@@ -19246,7 +19241,10 @@ test(
         1,
         "only this test's own report is in the caller's fresh conversation",
       );
-      assert.equal(Number(appealCount), 1, "only this test's own appeal is open on this platform");
+      assert.ok(
+        Number(appealCount) >= 1,
+        'the fixture appeal must be reflected (appeals are guild-wide by platform, not test-scoped)',
+      );
     } finally {
       await pool.query(`DELETE FROM access_requests WHERE user_id = $1`, [
         `${RUN}-review-queue-render-guest`,
@@ -19260,6 +19258,55 @@ test(
       if (reportId !== undefined) {
         await pool.query(`DELETE FROM content_reports WHERE id = $1`, [reportId]);
       }
+      if (appealId !== undefined) {
+        await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appealId]);
+      }
+    }
+  },
+);
+
+test(
+  "SECURITY: review_queue's appeals line never contains an appellant's user_name, reason, or user_id — bare day-count only, over a fixture with populated appeal rows (issue #787 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const appellantUserId = `${RUN}-review-queue-privacy-appellant`;
+    const appellantUserName = 'REVIEW-QUEUE-PRIVACY-SENTINEL-NAME';
+    const appellantReason = 'REVIEW-QUEUE-PRIVACY-SENTINEL-REASON';
+    let appealId: number | undefined;
+    try {
+      const appeal = await createModerationAppeal({
+        platform: 'discord',
+        userId: appellantUserId,
+        userName: appellantUserName,
+        reason: appellantReason,
+        activeWarnings: 3,
+        strikeLimit: 3,
+      });
+      appealId = appeal.id;
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: `${RUN}-review-queue-privacy-admin`,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId: `${RUN}-review-queue-privacy-convo`,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      const appealsLine = out.split('\n').find((l) => l.startsWith('- Appeals:'));
+      assert.ok(appealsLine);
+      assert.match(
+        appealsLine,
+        /^- Appeals: \d+ open( \(oldest \d+d\))?$/,
+        'the appeals line must be a bare open-count plus an optional day-count age suffix only',
+      );
+      assert.ok(
+        !out.includes(appellantUserId) && !out.includes(appellantUserName) && !out.includes(appellantReason),
+        "SECURITY: review_queue's output must never contain an appellant's user_id, user_name, or reason",
+      );
+    } finally {
       if (appealId !== undefined) {
         await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appealId]);
       }
@@ -19311,7 +19358,7 @@ test(
       const expectedDiscordCount = await countOpenAppeals('discord');
       assert.match(
         appealsLine,
-        new RegExp(`^- Appeals: ${expectedDiscordCount} open$`),
+        new RegExp(`^- Appeals: ${expectedDiscordCount} open( \\(oldest \\d+d\\))?$`),
         "the discord caller's appeals count must equal countOpenAppeals('discord'), never including the whatsapp fixture",
       );
     } finally {
