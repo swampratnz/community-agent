@@ -810,6 +810,56 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   purge paths gained one new statement each, deleting a departed identity's
   rows in **either** role — as the notified helper, or as the requester whose
   call triggered the notification (pinned by a new purge test for each path).
+- **Project connection requests** (`request_project_connection`,
+  `project_connection_requests`, issue #840): the action counterpart to
+  `member_projects.seeking_collaborators` (#834) — a member who sees the 🤝
+  marker in `list_projects`/`who_is_into` can request an introduction by id
+  instead of independently DMing whatever name `list_projects` rendered.
+  `formatProjectResults` was extended to prefix each row with the project's DB
+  `id` (e.g. `[#42]`) so a caller can reference a SPECIFIC project — the same
+  rendering-only change class as #834's own marker addition; `list_projects`,
+  `who_is_into`'s cross-reference, and the `/projects` slash command all
+  inherit it via the shared renderer, with no behaviour change for a caller
+  who never uses `request_project_connection`. Matching is by explicit
+  integer id, not embedding similarity, so this tool makes **no** `embed()`
+  call — cheaper than every other member-discovery tool. **No new disclosure
+  class**: the owner learns the requester's sanitized label (identical to
+  what a matched `find_helper` helper already learns about a requester); the
+  requester's own tool result is a bare "reached out" confirmation, never the
+  owner's identity/handle, the project's `link`, or the requester's raw
+  platform/user id — mirroring `find_helper`'s non-leak discipline. **Self-match
+  structurally impossible**: the owner-id equality check runs BEFORE any DB
+  write, same precedent as `find_helper`'s self-exclusion, pinned by a
+  dedicated `SECURITY:` test. Two independent, DB-backed rolling-window caps
+  in a new `project_connection_requests` log (never in-memory, so both
+  survive a restart), byte-for-byte mirroring `helper_notifications`' shape: a
+  per-requester `PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT` (default 3/24h,
+  checked FIRST, before the project lookup — same order-of-operations as
+  `find_helper`'s requester cap) and a per-owner
+  `PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT` (default 3/7 days, claimed
+  atomically via the same `WITH recent AS (...) INSERT ... WHERE (SELECT n) <
+  cap` pattern `recordHelperNotificationIfUnderCap` uses) — an at-cap owner
+  gets a generic "can't receive new connection requests right now" refusal
+  that discloses no cap number, mirroring `find_helper`'s "no one available"
+  message. The member-supplied project name is wrapped in the same
+  `untrusted()` quarantine `find_helper` applies to `topic` before it reaches
+  a *different* member's DM, and the DM send itself reuses the exact
+  best-effort `sendDirectMessage` / `WindowClosedError` →
+  `queueForWindowReopen` recovery pattern `find_helper` establishes. The tool
+  explicitly re-asserts `member` tier in the handler (excluding open-mode
+  guests, same reasoning as `share_project`/`find_helper`) and — unlike
+  `find_helper` — sits behind **no feature flag**: the adversarial review
+  noted the consent basis here is *stronger* than `find_helper`'s topic-match,
+  since the owner explicitly opted this specific, already-published project in
+  via `seekingCollaborators` rather than the DM being triggered by an
+  incidental embedding match. Purge: `project_connection_requests` is
+  genuinely new code, so both `purgeSingleIdentity` and `markRosterLeave`
+  gained one new statement each (mirroring `helper_notifications`' existing
+  shape), deleting a departed identity's rows in **either** role — as the
+  project owner who received a request, or as the requester whose call
+  triggered it (pinned by a new purge test for each path). **SECURITY-pinned**:
+  no self-request; the DM never leaks the project's `link` or the requester's
+  raw platform/user id; two-sided purge coverage.
 - **Answer feedback** (`answer_feedback`, issue #118): a member/admin/super
   admin rates the bot's most recent answer to them with `rate_answer(helpful:
   boolean, comment?: string)`. Since issue #355, `comment` carries an

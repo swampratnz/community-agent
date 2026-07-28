@@ -456,6 +456,36 @@ CREATE INDEX IF NOT EXISTS helper_notifications_requester_idx
   ON helper_notifications (requester_platform, requester_user_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- Connection-request log for request_project_connection (issue #840) — the
+-- signal-to-action handoff for member_projects.seeking_collaborators (#834),
+-- byte-for-byte mirroring helper_notifications' shape above: an append-only
+-- log (never edited in place) backing two independent DB-backed
+-- rolling-window caps (repository.ts recordProjectConnectionIfUnderCap /
+-- isProjectConnectionRequesterAtDailyCap), never in-memory counters that
+-- reset on restart. Also gives purgeSingleIdentity/markRosterLeave rows to
+-- delete in EITHER role (owner or requester).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_connection_requests (
+  id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  owner_platform     TEXT        NOT NULL,
+  owner_user_id      TEXT        NOT NULL,
+  requester_platform TEXT        NOT NULL,
+  requester_user_id  TEXT        NOT NULL,
+  project_id         BIGINT      NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Backs the per-owner rolling-7-day cap check inside
+-- recordProjectConnectionIfUnderCap's own INSERT ... WHERE (SELECT ...).
+CREATE INDEX IF NOT EXISTS project_connection_requests_owner_idx
+  ON project_connection_requests (owner_platform, owner_user_id, created_at DESC);
+
+-- Backs the per-requester rolling-24h cap check in
+-- isProjectConnectionRequesterAtDailyCap.
+CREATE INDEX IF NOT EXISTS project_connection_requests_requester_idx
+  ON project_connection_requests (requester_platform, requester_user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
 -- Admin-curated context notes about known community members (issue #45).
 -- Person-scoped facts ("runs the Chch meetup") that do NOT belong in the
 -- global knowledge FAQ. Human-entered only, admin-read only, deleted by the

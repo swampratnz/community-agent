@@ -183,6 +183,11 @@ const {
   isFindHelperRequesterAtDailyCap,
   FIND_HELPER_WEEKLY_LIMIT_PER_HELPER,
   FIND_HELPER_REQUESTER_DAILY_LIMIT,
+  getActiveProjectById,
+  recordProjectConnectionIfUnderCap,
+  isProjectConnectionRequesterAtDailyCap,
+  PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT,
+  PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -6974,6 +6979,196 @@ test(
     ]);
     await pool.query(`DELETE FROM helper_notifications WHERE helper_user_id = $1`, [
       `${RUN}-leave-other-helper`,
+    ]);
+  },
+);
+
+// project_connection_requests (request_project_connection, issue #840) backs
+// two independent DB-backed rolling-window caps — same restart-proof
+// discipline as helper_notifications' pair above, tested the same way (seed
+// rows directly via SQL, never by looping the actual tool call).
+test(
+  'repository: getActiveProjectById returns an ACTIVE project by id, and null for a removed row or an unknown id (issue #840 AC #1, #2)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-get-active-project-by-id`;
+    const { rows } = await pool.query(
+      `INSERT INTO member_projects (platform, user_id, name, description, seeking_collaborators)
+       VALUES ('discord', $1, 'Findable Project', 'a project', true) RETURNING id`,
+      [userId],
+    );
+    const id = Number(rows[0].id);
+
+    const found = await getActiveProjectById(id);
+    assert.ok(found);
+    assert.equal(found?.name, 'Findable Project');
+    assert.equal(found?.seekingCollaborators, true);
+
+    assert.equal(await getActiveProjectById(id + 1_000_000), null, 'an unknown id resolves to null');
+
+    await pool.query(`UPDATE member_projects SET removed_at = now() WHERE id = $1`, [id]);
+    assert.equal(await getActiveProjectById(id), null, 'a soft-removed project is never returned');
+
+    await pool.query(`DELETE FROM member_projects WHERE id = $1`, [id]);
+  },
+);
+
+test(
+  'SECURITY: repository: recordProjectConnectionIfUnderCap enforces PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT as a DB-backed count, seeded directly rather than via prior calls, surviving a simulated restart (issue #840 AC #3)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-project-connection-weekly-cap-owner`;
+    const requester = `${RUN}-project-connection-weekly-cap-requester`;
+
+    // Seed cap-many requests via direct SQL — as if written by a previous
+    // process instance — so an in-memory counter would wrongly admit the
+    // next one, but the DB-backed COUNT(*) refuses it.
+    for (let i = 0; i < PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO project_connection_requests
+           (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [owner, requester, i + 1],
+      );
+    }
+
+    const claimed = await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 999);
+    assert.equal(claimed, false, 'an owner already at the weekly cap is not claimed, even after a restart');
+    const count = await pool.query(
+      `SELECT count(*) AS n FROM project_connection_requests WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(Number(count.rows[0].n), PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT, 'no extra row was inserted');
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'repository: recordProjectConnectionIfUnderCap claims a slot and inserts exactly one row when under cap (issue #840 AC #3)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-project-connection-claim-owner`;
+    const requester = `${RUN}-project-connection-claim-requester`;
+    const claimed = await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 42);
+    assert.equal(claimed, true);
+    const rows = await pool.query(
+      `SELECT project_id FROM project_connection_requests WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(rows.rows.length, 1);
+    assert.equal(Number(rows.rows[0].project_id), 42);
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'SECURITY: repository: isProjectConnectionRequesterAtDailyCap enforces PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT as a DB-backed rolling-24h count, seeded directly rather than via prior calls (issue #840 AC #3)',
+  { skip },
+  async () => {
+    const requester = `${RUN}-project-connection-requester-daily-cap`;
+    assert.equal(
+      await isProjectConnectionRequesterAtDailyCap('discord', requester),
+      false,
+      'a requester with no prior requests is under cap',
+    );
+
+    for (let i = 0; i < PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO project_connection_requests
+           (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [`${RUN}-project-connection-requester-daily-cap-owner-${i}`, requester, i + 1],
+      );
+    }
+    assert.equal(
+      await isProjectConnectionRequesterAtDailyCap('discord', requester),
+      true,
+      'a requester at PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT requests in the trailing 24h is at cap',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [requester]);
+  },
+);
+
+test(
+  "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's project_connection_requests rows in EITHER role (owner or requester, issue #840 AC #7)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-purge-project-connection-owner-role`;
+    const requester = `${RUN}-purge-project-connection-requester-role`;
+
+    await recordProjectConnectionIfUnderCap(
+      'discord',
+      owner,
+      'discord',
+      `${RUN}-purge-pc-other-requester`,
+      1,
+    );
+    await recordProjectConnectionIfUnderCap('discord', `${RUN}-purge-pc-other-owner`, 'discord', owner, 2);
+
+    const purged = await purgeUserData('discord', owner);
+    assert.ok(purged >= 1, 'purge count includes the project_connection_requests rows');
+
+    const asOwner = await pool.query(
+      `SELECT 1 FROM project_connection_requests WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(asOwner.rows.length, 0, "the purged identity's rows as owner are gone");
+    const asRequester = await pool.query(
+      `SELECT 1 FROM project_connection_requests WHERE requester_platform = 'discord' AND requester_user_id = $1`,
+      [owner],
+    );
+    assert.equal(
+      asRequester.rows.length,
+      0,
+      "the purged identity's rows as requester (a different call) are gone",
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [
+      `${RUN}-purge-pc-other-requester`,
+    ]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [
+      `${RUN}-purge-pc-other-owner`,
+    ]);
+  },
+);
+
+test(
+  "SECURITY: markRosterLeave removes the departed member's project_connection_requests rows in EITHER role (issue #840 AC #7)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-leave-project-connection-owner-role`;
+    await upsertRosterMember({ platform: 'discord', userId: owner, displayName: 'Leaver' });
+
+    await recordProjectConnectionIfUnderCap(
+      'discord',
+      owner,
+      'discord',
+      `${RUN}-leave-pc-other-requester`,
+      1,
+    );
+    await recordProjectConnectionIfUnderCap('discord', `${RUN}-leave-pc-other-owner`, 'discord', owner, 2);
+
+    assert.equal(await markRosterLeave('discord', owner), true);
+
+    const asOwner = await pool.query(
+      `SELECT 1 FROM project_connection_requests WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(asOwner.rows.length, 0);
+    const asRequester = await pool.query(
+      `SELECT 1 FROM project_connection_requests WHERE requester_platform = 'discord' AND requester_user_id = $1`,
+      [owner],
+    );
+    assert.equal(asRequester.rows.length, 0);
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [
+      `${RUN}-leave-pc-other-requester`,
+    ]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [
+      `${RUN}-leave-pc-other-owner`,
     ]);
   },
 );

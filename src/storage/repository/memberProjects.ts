@@ -6,7 +6,8 @@ import { embed } from '../embeddings.js';
 
 /**
  * Member projects — the self-declared project showcase behind share_project /
- * list_projects (#646) and its interests cross-reference (#718).
+ * list_projects (#646), its interests cross-reference (#718), and the
+ * connection-request handoff behind request_project_connection (#840).
  *
  * SECURITY: a stored project link is DATA. Nothing in this module may fetch,
  * preview, or resolve it — links are rendered verbatim as text by the tool
@@ -272,6 +273,88 @@ export async function countAcceptedKnowledgeCandidatesSince(since: Date): Promis
     [since],
   );
   return Number(rows[0].n);
+}
+
+// --- Connection-request handoff (request_project_connection, issue #840) ----
+//
+// The active-side consumer of member_projects.seeking_collaborators (#834):
+// request_project_connection embeds no query and calls no model — matching is
+// by explicit id, not similarity — and DMs the project's owner, modelled
+// directly on find_helper's DM-handoff shape (memberDiscovery.ts). The log
+// table is an append-only mirror of helper_notifications, backing two
+// independent DB-backed rolling-window caps (never in-memory counters).
+
+/** Per-requester cap on request_project_connection calls in a rolling 24h — mirrors FIND_HELPER_REQUESTER_DAILY_LIMIT. */
+export const PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT = 3;
+/** Per-owner cap on connection requests received in a rolling 7 days — mirrors FIND_HELPER_WEEKLY_LIMIT_PER_HELPER. */
+export const PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT = 3;
+
+/** Single ACTIVE (`removed_at IS NULL`) project lookup by id, for request_project_connection's ownership/eligibility checks. Null if not found or removed. */
+export async function getActiveProjectById(id: number): Promise<MemberProject | null> {
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, name, description, link, seeking_collaborators, created_at
+       FROM member_projects
+      WHERE id = $1 AND removed_at IS NULL`,
+    [id],
+  );
+  return rows[0] ? mapMemberProjectRow(rows[0]) : null;
+}
+
+/**
+ * True if `platform`/`userId` has hit PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT
+ * connection requests (rows where they're the requester) in the trailing
+ * 24h — checked BEFORE the owner-cap write, same order-of-operations as
+ * isFindHelperRequesterAtDailyCap.
+ */
+export async function isProjectConnectionRequesterAtDailyCap(
+  platform: Platform,
+  userId: string,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT count(*) AS n FROM project_connection_requests
+      WHERE requester_platform = $1 AND requester_user_id = $2
+        AND created_at > now() - interval '24 hours'`,
+    [platform, userId],
+  );
+  return Number(rows[0]?.n ?? 0) >= PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT;
+}
+
+/**
+ * Atomically claims one connection-request slot for a project owner if
+ * they're under PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT in the trailing 7
+ * days — same restart-proof `WITH recent AS (...)` pattern as
+ * recordHelperNotificationIfUnderCap. Returns false (no row inserted, no DM
+ * should be sent) when the owner is already at cap; true means this row IS
+ * the claimed request and the caller should now DM the owner.
+ */
+export async function recordProjectConnectionIfUnderCap(
+  ownerPlatform: Platform,
+  ownerUserId: string,
+  requesterPlatform: Platform,
+  requesterUserId: string,
+  projectId: number,
+): Promise<boolean> {
+  const { rows } = await pool.query(
+    `WITH recent AS (
+       SELECT count(*) AS n FROM project_connection_requests
+        WHERE owner_platform = $1 AND owner_user_id = $2
+          AND created_at > now() - interval '7 days'
+     )
+     INSERT INTO project_connection_requests
+       (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+     SELECT $1, $2, $3, $4, $5
+      WHERE (SELECT n FROM recent) < $6
+     RETURNING id`,
+    [
+      ownerPlatform,
+      ownerUserId,
+      requesterPlatform,
+      requesterUserId,
+      projectId,
+      PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT,
+    ],
+  );
+  return rows.length > 0;
 }
 
 function mapMemberProjectRow(r: {

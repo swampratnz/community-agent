@@ -681,8 +681,9 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718) | ❌ | ✅ | ✅ | ✅ |
-| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718) | ❌ | ✅ | ✅ | ✅ |
+| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840) | ❌ | ✅ | ✅ | ✅ |
 | `set_helper_availability` (opt in/out of being notified for `find_helper` requests matching the caller's own published interests; requires an existing `set_my_interests` row; instantly reversible, no CONFIRM) / `find_helper` (ask for member-to-member help; embedding-matches `topic` against opted-in helpers and sends AT MOST ONE DM, to the single best eligible candidate — never a broadcast, never a name/handle disclosed back to the requester; both rate-capped, both behind `FIND_HELPER_ENABLED`, off by default — issue #729) | ❌ | ✅ | ✅ | ✅ |
+| `request_project_connection` (ask to connect with a project owner who marked `seekingCollaborators` true; looks up the project by id and sends its owner AT MOST ONE DM naming the requester and project — never a broadcast, never discloses the owner's identity back to the requester beyond what `list_projects` already showed; requester rate-capped 3/24h, owner rate-capped 3 received/7d, both DB-backed; no feature flag — explicitly floors at `member`, excluding open-mode guests — issue #840) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `set_language_preference` (standing reply-language preference: auto/en/mi; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
 | `react_to_message` (emoji ack instead of a text reply; closed ✅/👍/👀/🎉 allowlist, target must be a message the bot has seen in the caller's own conversation, rate-capped 20/24h; Discord only) | ❌ | ✅ | ✅ | ✅ |
@@ -756,6 +757,50 @@ delete already covers it with zero new code. `helper_notifications` is new,
 so both purge paths gained one new statement each, deleting a departed
 identity's rows in EITHER role (as the notified helper, or as the requester
 who triggered the notification).
+
+### Project connection requests (`request_project_connection`, issue #840)
+
+The action counterpart to `share_project`'s `seekingCollaborators` signal
+(#834): a member who sees the 🤝 marker in `list_projects`/`who_is_into` can
+call `request_project_connection({ projectId })` — the id shown by
+`formatProjectResults`' `[#id]` prefix — instead of independently DMing
+whatever name `resolveSanitizedLabel` rendered. Modelled directly on
+`find_helper`'s DM-handoff shape (`memberDiscovery.ts`), but matching is by
+explicit id rather than embedding similarity, so the path makes **no**
+`embed()` call and costs less than every other member-discovery tool. Refuses
+cleanly, with no DM sent, when the project id doesn't resolve to an ACTIVE
+project, when `seekingCollaborators` is false, or when the caller is the
+project's own owner (checked before any DB write, structurally impossible to
+self-match).
+
+Two independent, DB-backed rolling-window caps in a new
+`project_connection_requests` log (append-only, never in-memory): a
+per-requester `PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT` (default 3/24h,
+checked first, before the project lookup) and a per-owner
+`PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT` (default 3/7 days, claimed atomically
+alongside the DM decision) — an at-cap owner gets the same generic "can't
+receive new connection requests right now" refusal `find_helper` uses for "no
+one available", disclosing no cap number. The DM
+(`${requesterLabel} is interested in collaborating on ${untrusted('project',
+project.name)} — reach out if you're able to.`) reuses the exact
+`sendDirectMessage` / `WindowClosedError` → `queueForWindowReopen` best-effort
+pattern `find_helper` establishes, and wraps the member-supplied project name
+in the same `untrusted()` quarantine `find_helper` applies to `topic` before
+it reaches a different member's DM. The requester's own tool result is a bare
+"reached out" confirmation — never the owner's identity/handle, the project's
+`link`, or the requester's raw platform/user id.
+
+Unlike `find_helper`, this tool sits behind **no feature flag** — the
+adversarial review that approved it noted the consent basis is *stronger*
+than `find_helper`'s topic-match: the owner explicitly opted this specific
+project in via `seekingCollaborators`, rather than the DM being triggered by
+an incidental embedding match against a general-purpose interests row.
+
+Purge coverage: `project_connection_requests` is genuinely new, so both
+`purgeSingleIdentity` and `markRosterLeave` gained one new statement each
+(mirroring `helper_notifications`' existing two-sided shape), deleting a
+departed identity's rows in EITHER role — as the project owner who received a
+request, or as the requester who sent one.
 
 Behaviour guardrails on top: per-user daily reply budget
 (`DAILY_REPLY_LIMIT_PER_USER`), session caps (`SESSION_MAX_TURNS`/`_AGE_HOURS`),

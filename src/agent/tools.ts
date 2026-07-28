@@ -39,6 +39,7 @@ import {
   declineKnowledgeCandidate,
   deleteKnowledge,
   findKnowledgeCoveringTopic,
+  getActiveProjectById,
   getActiveProjectNamesForOwners,
   getInteractionContentByMessageId,
   getKnowledgeContentById,
@@ -140,10 +141,13 @@ import {
   withdrawOwnReports,
   SUGGESTION_MAX_CHARS,
   SUGGESTION_RATE_LIMIT_PER_DAY,
+  PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
   PROJECT_DESCRIPTION_MAX_CHARS,
   PROJECT_LINK_MAX_CHARS,
   PROJECT_NAME_MAX_CHARS,
   PROJECT_RATE_LIMIT_PER_DAY,
+  recordProjectConnectionIfUnderCap,
+  isProjectConnectionRequesterAtDailyCap,
   searchKnowledge,
   searchKnowledgeLexical,
   type KnowledgeSearchHit,
@@ -622,6 +626,13 @@ export const LIST_PROJECTS_DEFAULT_LIMIT = 8;
  * Issue #834: prepends a `🤝 looking for collaborators` marker for a project
  * whose self-declared `seekingCollaborators` flag is true — nothing renders
  * for the (default) false case, byte-identical to pre-#834 output.
+ *
+ * Issue #840: each line is additionally prefixed with the project's DB `id`
+ * (e.g. `1. [#42] "…"`), so a caller can reference a SPECIFIC project via
+ * request_project_connection({ projectId }) — name alone is only unique
+ * per-owner, not globally. Same rendering-only change class as #834's own
+ * marker addition; who_is_into's cross-reference and the `/projects` slash
+ * command inherit it for free via this shared renderer.
  */
 export async function formatProjectResults(
   projects: ReadonlyArray<MemberProject | MemberProjectSearchHit>,
@@ -639,7 +650,7 @@ export async function formatProjectResults(
       const collaboratorsMarker = p.seekingCollaborators ? ' 🤝 looking for collaborators' : '';
       const interests = interestsByOwner.get(`${p.platform}:${p.userId}`);
       const interestsSuffix = interests ? `\n   Interests: ${untrustedEntryContent(interests)}` : '';
-      return `${i + 1}. "${name}" by ${owner}${match}${collaboratorsMarker}: ${description}${link}${interestsSuffix}`;
+      return `${i + 1}. [#${p.id}] "${name}" by ${owner}${match}${collaboratorsMarker}: ${description}${link}${interestsSuffix}`;
     }),
   );
   return [
@@ -1649,6 +1660,8 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Ask what meetups/events are coming up ("what\'s on?")\n' +
   '- Share a project you\'ve built with the community, or browse what others have shared ("share my ' +
   'project", "what has everyone built?")\n' +
+  "- Ask to connect with a project owner who's looking for collaborators (\"I'd like to help with that " +
+  'project")\n' +
   '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
   'who\'s into RAG", "who\'s working on Discord bots?")\n' +
   '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
@@ -4448,6 +4461,93 @@ export function buildToolServer(
       return text(await formatProjectResults(projects));
     },
     { annotations: { readOnlyHint: true } },
+  );
+
+  const requestProjectConnectionTool = tool(
+    'request_project_connection',
+    'Ask to connect with a project owner who marked their project 🤝 looking for collaborators (via ' +
+      "share_project's seekingCollaborators) — the action counterpart to that signal. Looks up the project " +
+      'by the id shown in list_projects/who_is_into (e.g. 42 from "[#42]") and sends the owner AT MOST ONE ' +
+      "direct message naming the caller and the project — never a broadcast, and never discloses the owner's " +
+      `identity/handle back to the caller beyond what list_projects already showed. Capped to ` +
+      `${PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT} calls per rolling 24 hours. Refuses cleanly if the project ` +
+      "isn't found, isn't seeking collaborators, or belongs to the caller.",
+    {
+      projectId: z
+        .number()
+        .int()
+        .positive()
+        .describe(
+          'The id of the project to request a connection for, as shown by list_projects (e.g. 42 from "[#42]").',
+        ),
+    },
+    async (args) => {
+      // Publishing to a member-facing showcase (share_project/list_projects)
+      // floors at 'member', excluding open-mode guests — this reaches a
+      // DIFFERENT member's DM, so it inherits the same floor.
+      assertAtLeast(caller.role, 'member', 'request_project_connection');
+      // Requester daily-cap check FIRST, before any project lookup — same
+      // order-of-operations as find_helper's isFindHelperRequesterAtDailyCap
+      // check (issue #729 AC #6 precedent).
+      if (await isProjectConnectionRequesterAtDailyCap(caller.platform, caller.userId)) {
+        return text(
+          `You've hit today's connection-request limit (${PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT}). ` +
+            'Try again tomorrow.',
+          true,
+        );
+      }
+      const project = await getActiveProjectById(args.projectId);
+      if (!project) {
+        return text('No active project with that id.', true);
+      }
+      if (!project.seekingCollaborators) {
+        return text('That project is not currently looking for collaborators.', true);
+      }
+      // Self-match structurally impossible: this check runs BEFORE any DB
+      // write (issue #729's find_helper precedent for self-exclusion).
+      if (project.platform === caller.platform && project.userId === caller.userId) {
+        return text("You can't request to connect with your own project.", true);
+      }
+      const target = adapterFor(project.platform);
+      if (!target) {
+        return text("That project's owner can't be reached on this deployment right now.", true);
+      }
+      const claimed = await recordProjectConnectionIfUnderCap(
+        project.platform,
+        project.userId,
+        caller.platform,
+        caller.userId,
+        project.id,
+      );
+      if (!claimed) {
+        // Generic refusal — never discloses the owner's cap state, same
+        // discipline as find_helper's "no one available" message.
+        return text("That project's owner can't receive new connection requests right now.", true);
+      }
+      const requesterLabel = await resolveSanitizedLabel(caller.platform, caller.userId);
+      // untrusted() quarantines the member-supplied project name before it
+      // reaches a DIFFERENT member's DM (issue #840 SECURITY criterion) —
+      // same discipline find_helper's topic field already uses.
+      const message =
+        `${requesterLabel} is interested in collaborating on ` +
+        `${untrusted('project', project.name)} — reach out if you're able to.`;
+      // Best-effort send, same fire-and-forget/WindowClosedError-queue shape
+      // as find_helper/notifySuggestionResolved — a failed or queued send
+      // still counts as "the one DM this call sends" (the connection-request
+      // row above is already committed).
+      await target.sendDirectMessage(project.userId, message).catch((err) => {
+        if (err instanceof WindowClosedError && target.queueForWindowReopen) {
+          target.queueForWindowReopen(project.userId, message, 'low');
+          logger.warn(
+            { userId: hashId(project.userId), platform: project.platform },
+            "request_project_connection DM: recipient's window is closed, queued for reopen",
+          );
+          return;
+        }
+        logger.warn({ err, userId: hashId(project.userId) }, 'request_project_connection DM failed');
+      });
+      return text('Reached out to the project owner — hang tight.');
+    },
   );
 
   // --- Admin tools (scoped to the admin's own conversations) ------------------
@@ -7534,6 +7634,7 @@ export function buildToolServer(
       findHelperTool,
       shareProjectTool,
       listProjectsTool,
+      requestProjectConnectionTool,
       whatsNew,
       userHistory,
       moderate,
