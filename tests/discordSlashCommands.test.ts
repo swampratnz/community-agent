@@ -17,6 +17,15 @@ const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
   await import('../src/platforms/discord/slashCommands.js');
 const { logger } = await import('../src/logger.js');
+const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT } =
+  await import('../src/agent/tools.js');
+// Both caveat constants contain an em dash, and every /kb reply passes through
+// deps.filtered() (the same outbound pipeline as every other send path, per
+// this file's own criterion 6/13 test) — which rewrites em dashes into a
+// comma (stripEmDashes in outbound.ts) before the text ever reaches Discord.
+// So the caveat as actually delivered is this rewritten form, not the raw
+// exported constant.
+const { stripEmDashes } = await import('../src/agent/outbound.js');
 
 type Adapter = InstanceType<typeof DiscordAdapter>;
 
@@ -47,6 +56,10 @@ function mockPool(
     guidelines?: string | null;
     guidelinesMi?: string | null;
     languagePref?: 'en' | 'mi';
+    /** `hasConflictAmongIds`'s verdict — `undefined` means the query is never expected to run. */
+    conflictExists?: boolean;
+    /** `areKnowledgeEntriesLowRated`'s returned id set, as raw rows. */
+    lowRatedIds?: number[];
   } = {},
 ): Array<{ sql: string; params: unknown[] }> {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -54,6 +67,17 @@ function mockPool(
     calls.push({ sql, params });
     if (sql.includes('SELECT role FROM community_users')) {
       return { rows: opts.memberRole ? [{ role: opts.memberRole }] : [], rowCount: 0 };
+    }
+    // hasConflictAmongIds's self-join ("...FROM knowledge a JOIN knowledge b...")
+    // and areKnowledgeEntriesLowRated's join ("FROM answer_feedback JOIN ...
+    // JOIN knowledge ...") both contain the generic 'FROM knowledge' substring
+    // the plain searchKnowledge branch below matches on, so both are matched
+    // on a more specific substring FIRST.
+    if (sql.includes('JOIN knowledge b')) {
+      return { rows: opts.conflictExists ? [{ '?column?': 1 }] : [], rowCount: 0 };
+    }
+    if (sql.includes('FROM answer_feedback')) {
+      return { rows: (opts.lowRatedIds ?? []).map((id) => ({ id })), rowCount: 0 };
     }
     if (sql.includes('FROM knowledge')) {
       return { rows: opts.knowledgeRows ?? [], rowCount: 0 };
@@ -557,6 +581,175 @@ test('/kb replies with the no-match text when every hit is auto-provenance (all 
   await handleInteraction(interaction as never, adapterDeps(adapter));
 
   assert.equal(replies[0].content, 'No matching knowledge entries.');
+});
+
+// --- Criteria 1/2 (conflict/low-rated caveats), issue #802 --------------------
+
+test('SECURITY: /kb reply includes KNOWLEDGE_CONFLICT_CAVEAT_TEXT when hasConflictAmongIds resolves true for >=2 relevant hits, and omits it when false', async (t) => {
+  const knowledgeRows: PoolRow[] = [
+    {
+      id: 1,
+      title: 'A',
+      content: 'ENTRY_A_TEXT',
+      created_by_role: 'admin',
+      similarity: 0.9,
+      updated_at: new Date(),
+    },
+    {
+      id: 2,
+      title: 'B',
+      content: 'ENTRY_B_TEXT',
+      created_by_role: 'admin',
+      similarity: 0.85,
+      updated_at: new Date(),
+    },
+  ];
+
+  mockPool(t, { memberRole: 'member', knowledgeRows, conflictExists: true });
+  const adapterConflict = new DiscordAdapter();
+  const { interaction: iConflict, replies: repliesConflict } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+  await handleInteraction(iConflict as never, adapterDeps(adapterConflict));
+  assert.ok(
+    repliesConflict[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT)),
+    'the caveat must render when hasConflictAmongIds resolves true for >=2 relevant hits',
+  );
+
+  mockPool(t, { memberRole: 'member', knowledgeRows, conflictExists: false });
+  const adapterNoConflict = new DiscordAdapter();
+  const { interaction: iNoConflict, replies: repliesNoConflict } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+  await handleInteraction(iNoConflict as never, adapterDeps(adapterNoConflict));
+  assert.ok(
+    !repliesNoConflict[0].content.includes(stripEmDashes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT)),
+    'the caveat must be omitted when hasConflictAmongIds resolves false',
+  );
+});
+
+test('SECURITY: /kb reply includes KNOWLEDGE_LOW_RATED_CAVEAT_TEXT on exactly the hit line whose id is in the low-rated set, never on a sibling hit outside it', async (t) => {
+  const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+  config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+  t.after(() => {
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+  });
+
+  mockPool(t, {
+    memberRole: 'member',
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'Low-rated entry',
+        content: 'LOW_RATED_ENTRY_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+      {
+        id: 2,
+        title: 'Fine entry',
+        content: 'FINE_ENTRY_TEXT',
+        created_by_role: 'admin',
+        similarity: 0.85,
+        updated_at: new Date(),
+      },
+    ],
+    lowRatedIds: [1],
+  });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const [lowRatedLine, fineLine] = replies[0].content
+    .split('\n')
+    .filter((line) => line.includes('LOW_RATED_ENTRY_TEXT') || line.includes('FINE_ENTRY_TEXT'));
+  assert.ok(
+    lowRatedLine?.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+    "the low-rated entry's own line must carry the caveat",
+  );
+  assert.ok(
+    !fineLine?.includes(stripEmDashes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT)),
+    'a sibling hit outside the low-rated set must never carry the caveat',
+  );
+});
+
+test('SECURITY: /kb still replies successfully with the hits and no caveat when hasConflictAmongIds and areKnowledgeEntriesLowRated both reject (fail-safe)', async (t) => {
+  const was = config.behaviour.knowledgeLowRatedCaveatMinUnhelpful;
+  config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = 2;
+  t.after(() => {
+    config.behaviour.knowledgeLowRatedCaveatMinUnhelpful = was;
+  });
+  const warnLog = t.mock.method(logger, 'warn', () => {});
+
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes('JOIN knowledge b')) {
+      throw new Error('conflict lookup unavailable');
+    }
+    if (sql.includes('FROM answer_feedback')) {
+      throw new Error('low-rated lookup unavailable');
+    }
+    if (sql.includes('FROM knowledge')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            title: 'A',
+            content: 'STILL_SERVED_TEXT',
+            created_by_role: 'admin',
+            similarity: 0.9,
+            updated_at: new Date(),
+          },
+          {
+            id: 2,
+            title: 'B',
+            content: 'ALSO_SERVED_TEXT',
+            created_by_role: 'admin',
+            similarity: 0.85,
+            updated_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'member-1',
+    options: { query: 'anything' },
+  });
+
+  await assert.doesNotReject(() => handleInteraction(interaction as never, adapterDeps(adapter)));
+
+  assert.equal(replies.length, 1);
+  assert.ok(replies[0].content.includes('STILL_SERVED_TEXT'), 'the hits must still be served');
+  assert.ok(replies[0].content.includes('ALSO_SERVED_TEXT'), 'the hits must still be served');
+  assert.ok(
+    !replies[0].content.includes(KNOWLEDGE_CONFLICT_CAVEAT_TEXT),
+    'a lookup failure must degrade to no conflict caveat, never an error',
+  );
+  assert.ok(
+    !replies[0].content.includes(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT),
+    'a lookup failure must degrade to no low-rated caveat, never an error',
+  );
+  assert.ok(warnLog.mock.calls.length >= 2, 'both lookup failures must be logged, not silently swallowed');
 });
 
 // --- Criterion 8: /whois, /projects preserve untrusted-content sanitization ---

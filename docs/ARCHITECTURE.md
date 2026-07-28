@@ -2140,6 +2140,15 @@ gaps an adversarial review pass flagged in the underlying proposal:
   path — the one thing every other send in `adapter.ts` is explicit about
   never allowing.
 
+`/kb`'s call to `formatKnowledgeSearchResults` also threads the same
+`hasConflict`/`lowRatedIds` arguments the chat-path `knowledge_search` tool
+computes (issue #802) — `handleKb` derives the relevance-cleared ids from
+`trusted` and calls `hasConflictAmongIds`/`areKnowledgeEntriesLowRated` itself
+(both fail safe to "no caveat" on a lookup error), so a knowledge entry served
+via `/kb` carries the same conflict/low-rated caveat an identical chat-path
+answer would, rather than always rendering with both arguments at their
+`false`/empty defaults.
+
 `/whois`/`/projects` replies keep their handlers' existing untrusted-content
 quarantine (`untrustedEntryContent` bracket/whitespace stripping,
 `sanitizeName`'d attribution) since they call the same render helpers as the
