@@ -892,6 +892,34 @@ async function* imagePromptStream(
   };
 }
 
+/**
+ * Internal marker for a turn that never settled within
+ * `config.behaviour.agentTurnTimeoutMs` (issue #826). Never constructed from
+ * or exposed to model/user-supplied text, and its message is never surfaced
+ * in a reply — the catch block below returns the existing, unmodified
+ * `INTERNAL_ERROR_REPLY` for it, exactly like any other generic turn failure.
+ *
+ * RESIDUAL, deliberately accepted (issue #826 review): this bounds the
+ * CALLER's wait, not the underlying work. `Promise.race` abandons the
+ * `for await` loop but does not abort it — the SDK's CLI subprocess keeps
+ * running and the loop still holds this caller's `toolServer`. So once the
+ * ceiling fires, `router.ts`'s per-conversation queue unblocks and a NEW turn
+ * can start while the orphaned generator is still alive; if the wedge later
+ * clears, that generator can still drive real tool calls.
+ *
+ * Why that is tolerable as shipped: the orphan runs with the SAME caller's
+ * already-resolved tier and tool surface, so it is not a privilege-escalation
+ * path — the worst case is duplicated side effects from a turn the member was
+ * already told had failed, which is strictly better than the pre-#826
+ * behaviour where the wedge blocked that conversation's queue forever with no
+ * recovery short of a process restart. Killing the subprocess needs
+ * `AbortController` wiring, which the approved issue explicitly scoped out as
+ * the growth path. `tests/agentCoreTurnTimeout.test.ts` pins the part a member
+ * can observe: the reply they received is final and a late completion never
+ * races a second reply into the conversation.
+ */
+class AgentTurnTimeoutError extends Error {}
+
 async function execTurn(
   caller: CallerContext,
   prompt: string,
@@ -926,100 +954,125 @@ async function execTurn(
   let modelUsage: Record<string, number> | undefined;
   let sessionId: string | undefined;
 
+  // Wall-clock ceiling on the loop below (issue #826): an iteration that
+  // never yields and never settles is invisible to the `catch` — only a race
+  // against a timer unblocks it. Cleared in `finally` on every settle path
+  // (success, thrown error, or timeout) so no leaked timer outlives the call.
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
-    for await (const message of query({
-      // Byte-identical to today when no image is attached (the overwhelming
-      // majority of turns): `prompt` stays the plain string. An image
-      // attachment (issue #783, gated well upstream of here — see
-      // config.discord.image / DiscordAdapter.maybeFetchImageAttachment)
-      // switches this to the single-message async-iterable form instead.
-      prompt: image ? imagePromptStream(prompt, image) : prompt,
-      options: buildQueryOptions(
-        caller.role,
-        systemPrompt,
-        { community: toolServer },
-        resumeSession,
-        caller.conversationId,
-        caller.platform,
-      ),
-    })) {
-      switch (message.type) {
-        case 'system':
-          if (message.subtype === 'init') sessionId = message.session_id;
-          break;
-        case 'assistant': {
-          const content = (message as { message?: { content?: Array<{ type: string; text?: string }> } })
-            .message?.content;
-          if (Array.isArray(content)) {
-            const textBlocks = content
-              .filter((b) => b.type === 'text' && b.text)
-              .map((b) => b.text as string);
-            if (textBlocks.length > 0) lastAssistantText = textBlocks.join('\n');
-          }
-          break;
-        }
-        case 'result':
-          if ('session_id' in message && typeof message.session_id === 'string') {
-            sessionId = message.session_id;
-          }
-          if ('total_cost_usd' in message && typeof message.total_cost_usd === 'number') {
-            costUsd = message.total_cost_usd;
-          }
-          if ('result' in message && typeof message.result === 'string') {
-            resultText = message.result;
-          }
-          // Cache-usage telemetry (issue #508): the SDK result message's
-          // `usage` exposes real cache-hit/-write counts, so an operator can
-          // empirically confirm (and quantify) the prompt-cache benefit the
-          // system-prompt relocation above is meant to recover, instead of
-          // taking a code-level proxy on faith.
-          if ('usage' in message && message.usage && typeof message.usage === 'object') {
-            const usage = message.usage as {
-              cache_read_input_tokens?: number;
-              cache_creation_input_tokens?: number;
-            };
-            cacheReadTokens = usage.cache_read_input_tokens;
-            cacheCreationTokens = usage.cache_creation_input_tokens;
-            logger.debug(
-              {
-                conversationId: caller.conversationId,
-                cacheReadTokens: usage.cache_read_input_tokens,
-                cacheCreationTokens: usage.cache_creation_input_tokens,
-              },
-              'agent turn cache usage',
-            );
-          }
-          // Per-model cost telemetry (issue #792): the same `result` message
-          // already carries `modelUsage`, keyed by the model that actually
-          // served each portion of the turn — the only way to confirm the
-          // #382/#394 role tiering and #738's fallback model are landing spend
-          // where configured, rather than trusting the config on faith. Only
-          // `costUSD` is copied (never token counts or `provider`/
-          // `contextWindow`); keyed by `canonicalModel` when the SDK provides
-          // one so a provider-specific alias doesn't fragment the same model
-          // into multiple rows. Left `undefined` (not `{}`) when `modelUsage`
-          // is absent or every entry's cost is zero, mirroring cache
-          // telemetry's "absent, not zero" discipline.
-          if ('modelUsage' in message && message.modelUsage && typeof message.modelUsage === 'object') {
-            const entries = message.modelUsage as Record<
-              string,
-              { costUSD?: number; canonicalModel?: string }
-            >;
-            const reduced: Record<string, number> = {};
-            for (const [rawModel, entry] of Object.entries(entries)) {
-              if (typeof entry?.costUSD !== 'number') continue;
-              const model = entry.canonicalModel ?? rawModel;
-              reduced[model] = (reduced[model] ?? 0) + entry.costUSD;
+    await Promise.race([
+      (async () => {
+        for await (const message of query({
+          // Byte-identical to today when no image is attached (the overwhelming
+          // majority of turns): `prompt` stays the plain string. An image
+          // attachment (issue #783, gated well upstream of here — see
+          // config.discord.image / DiscordAdapter.maybeFetchImageAttachment)
+          // switches this to the single-message async-iterable form instead.
+          prompt: image ? imagePromptStream(prompt, image) : prompt,
+          options: buildQueryOptions(
+            caller.role,
+            systemPrompt,
+            { community: toolServer },
+            resumeSession,
+            caller.conversationId,
+            caller.platform,
+          ),
+        })) {
+          switch (message.type) {
+            case 'system':
+              if (message.subtype === 'init') sessionId = message.session_id;
+              break;
+            case 'assistant': {
+              const content = (message as { message?: { content?: Array<{ type: string; text?: string }> } })
+                .message?.content;
+              if (Array.isArray(content)) {
+                const textBlocks = content
+                  .filter((b) => b.type === 'text' && b.text)
+                  .map((b) => b.text as string);
+                if (textBlocks.length > 0) lastAssistantText = textBlocks.join('\n');
+              }
+              break;
             }
-            if (Object.keys(reduced).length > 0) modelUsage = reduced;
+            case 'result':
+              if ('session_id' in message && typeof message.session_id === 'string') {
+                sessionId = message.session_id;
+              }
+              if ('total_cost_usd' in message && typeof message.total_cost_usd === 'number') {
+                costUsd = message.total_cost_usd;
+              }
+              if ('result' in message && typeof message.result === 'string') {
+                resultText = message.result;
+              }
+              // Cache-usage telemetry (issue #508): the SDK result message's
+              // `usage` exposes real cache-hit/-write counts, so an operator can
+              // empirically confirm (and quantify) the prompt-cache benefit the
+              // system-prompt relocation above is meant to recover, instead of
+              // taking a code-level proxy on faith.
+              if ('usage' in message && message.usage && typeof message.usage === 'object') {
+                const usage = message.usage as {
+                  cache_read_input_tokens?: number;
+                  cache_creation_input_tokens?: number;
+                };
+                cacheReadTokens = usage.cache_read_input_tokens;
+                cacheCreationTokens = usage.cache_creation_input_tokens;
+                logger.debug(
+                  {
+                    conversationId: caller.conversationId,
+                    cacheReadTokens: usage.cache_read_input_tokens,
+                    cacheCreationTokens: usage.cache_creation_input_tokens,
+                  },
+                  'agent turn cache usage',
+                );
+              }
+              // Per-model cost telemetry (issue #792): the same `result` message
+              // already carries `modelUsage`, keyed by the model that actually
+              // served each portion of the turn — the only way to confirm the
+              // #382/#394 role tiering and #738's fallback model are landing spend
+              // where configured, rather than trusting the config on faith. Only
+              // `costUSD` is copied (never token counts or `provider`/
+              // `contextWindow`); keyed by `canonicalModel` when the SDK provides
+              // one so a provider-specific alias doesn't fragment the same model
+              // into multiple rows. Left `undefined` (not `{}`) when `modelUsage`
+              // is absent or every entry's cost is zero, mirroring cache
+              // telemetry's "absent, not zero" discipline.
+              if ('modelUsage' in message && message.modelUsage && typeof message.modelUsage === 'object') {
+                const entries = message.modelUsage as Record<
+                  string,
+                  { costUSD?: number; canonicalModel?: string }
+                >;
+                const reduced: Record<string, number> = {};
+                for (const [rawModel, entry] of Object.entries(entries)) {
+                  if (typeof entry?.costUSD !== 'number') continue;
+                  const model = entry.canonicalModel ?? rawModel;
+                  reduced[model] = (reduced[model] ?? 0) + entry.costUSD;
+                }
+                if (Object.keys(reduced).length > 0) modelUsage = reduced;
+              }
+              resultSubtype = message.subtype;
+              break;
+            default:
+              break;
           }
-          resultSubtype = message.subtype;
-          break;
-        default:
-          break;
-      }
-    }
+        }
+      })(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new AgentTurnTimeoutError('agent turn timed out'));
+        }, config.behaviour.agentTurnTimeoutMs);
+      }),
+    ]);
   } catch (err) {
+    if (err instanceof AgentTurnTimeoutError) {
+      logger.error(
+        { conversationId: caller.conversationId, timeoutMs: config.behaviour.agentTurnTimeoutMs },
+        'Agent turn timed out',
+      );
+      // Never a resume failure and never a usage-limit classification — this
+      // is an internal ceiling on wall-clock duration, not something the SDK
+      // or CLI reported, so neither heuristic below applies to it.
+      noteUsageLimitOutcome(false, adapter, caller.conversationId, getAdapter);
+      return { ok: false, resumeFailed: false, text: INTERNAL_ERROR_REPLY };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ err, conversationId: caller.conversationId }, 'Agent query failed');
     // Distinguish an upstream Claude usage-limit/overload condition (issue
@@ -1039,6 +1092,8 @@ async function execTurn(
           : USAGE_LIMIT_REPLY
         : INTERNAL_ERROR_REPLY,
     };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 
   if (resultSubtype && resultSubtype !== 'success') {

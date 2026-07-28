@@ -682,6 +682,15 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   Only the *audience* of already admin-visible, aggregate-by-construction
   data is widened — never raw message content, user ids, display names, or
   conversation ids, none of which this surface ever reads.
+  - The knowledge-base line's member-contribution note (issue #837,
+    `countAcceptedMemberKnowledgeTipsSince`) reuses `source_user_id`/
+    `source_platform` provenance `suggest_knowledge` (#633) already writes and
+    the private resolution DM (#703) already reads, but exposes only a bare
+    `number` count to `formatMemberDigestMessage` — never a candidate row,
+    platform, or user id — the same structural guarantee `newProjectCount`
+    already has on this surface. Clamped to the number of knowledge titles
+    actually shown, so it can never read as claiming more member
+    contributions than the post displays.
 - **Suggestions** (`suggestions`, issue #46): member-authored improvement
   ideas for the bot. No new data class (members' messages are already
   stored; guests, whose content is never stored in gated mode, have no
@@ -2705,6 +2714,20 @@ itself — same failure text, same admin-notify debounce, just reached less
 often.
 
 ## Residual risks (accepted, documented)
+- **A timed-out agent turn is abandoned, not aborted** (`AGENT_TURN_TIMEOUT_MS`,
+  issue #826). The wall-clock ceiling bounds how long the *caller* waits; it
+  does not kill the SDK's CLI subprocess. Once it fires, `router.ts`'s
+  per-conversation queue unblocks and a new turn may start while the orphaned
+  `for await` loop is still alive holding the same caller's `toolServer`, so a
+  wedge that clears later can still drive real tool calls. Bounded by: the
+  orphan carries the SAME caller's already-resolved tier and tool surface (no
+  privilege-escalation path — every tier check and CONFIRM gate still applies
+  to it), and the member-visible reply is final, pinned by a test that releases
+  a wedge *after* the timeout and asserts no second reply is produced. Accepted
+  because the alternative shipped behaviour was strictly worse: before #826 a
+  wedged iteration blocked that conversation's queue forever with no recovery
+  short of a process restart. Killing the subprocess requires `AbortController`
+  wiring, the named growth path the approved issue scoped out.
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and

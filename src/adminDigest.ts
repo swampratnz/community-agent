@@ -9,6 +9,7 @@ import {
   countDuplicateKnowledge,
   countEscalatedKnowledgeGaps,
   countGeneralUnhelpfulAnswers,
+  countHelperMatchesSince,
   countKnowledgeConflictCandidates,
   countKnowledgeGaps,
   countLowRatedKnowledge,
@@ -281,6 +282,17 @@ function pctTrendSuffix(key: string, current: number, previous: Record<string, n
  * identifier, same privacy convention as every signal above. Two append-only
  * trailing params, default 0, so every existing call site is unaffected and
  * the quiet case (both 0) is byte-identical to the pre-#797 form.
+ * `helperMatchesCount` (issue #820) is the flywheel line's third dimension:
+ * successful `find_helper` connections (`helper_notifications` rows, one per
+ * DM actually sent) since the same `since` window, from
+ * `countHelperMatchesSince` — the one flywheel action that actively connects
+ * two members, unlike the two passive-contribution signals above. Extends the
+ * line's gate to a three-way `||` (renders when ANY of the three is `> 0`)
+ * and gets its own independent `trendSuffix`, same one-call-per-signal
+ * convention. Bare integer only — no helper/requester identifier and no
+ * `topic` content ever reaches the DM. Append-only trailing param, default 0,
+ * so every existing call site is unaffected and the quiet case (all three 0)
+ * is byte-identical to the pre-#820 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -423,6 +435,13 @@ export function buildAdminDigestMessage(
   // pre-#801 form. Bare integer only, same privacy convention as every
   // signal above.
   oldestPendingCandidateAgeDays: number | null = null,
+  // Successful find_helper connections since the same `since` window (issue
+  // #820) — the flywheel line's third dimension, alongside
+  // acceptedKnowledgeCandidatesCount/projectsSharedCount above. Append-only
+  // trailing param, default 0, so every existing call site is unaffected and
+  // the quiet case (all three flywheel sub-signals 0) is byte-identical to
+  // the pre-#820 form.
+  helperMatchesCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -449,7 +468,8 @@ export function buildAdminDigestMessage(
     overallAnswerTotal === 0 &&
     unhelpfulThemeCount === 0 &&
     acceptedKnowledgeCandidatesCount === 0 &&
-    projectsSharedCount === 0
+    projectsSharedCount === 0 &&
+    helperMatchesCount === 0
   )
     return null;
 
@@ -694,16 +714,19 @@ export function buildAdminDigestMessage(
         trendSuffix('unreachableSourceKnowledgeCount', unreachableSourceKnowledgeCount, previousCounts),
     );
   }
-  if (acceptedKnowledgeCandidatesCount > 0 || projectsSharedCount > 0) {
+  if (acceptedKnowledgeCandidatesCount > 0 || projectsSharedCount > 0 || helperMatchesCount > 0) {
     // Bare integers only — no candidate title/content/topic, no project
-    // name/description/link/owner, no user/admin identifier ever reaches the
-    // DM (#797). Two independent trendSuffix calls, one per sub-signal, same
-    // convention as the joined/left roster line above.
+    // name/description/link/owner, no helper/requester identifier or
+    // find_helper topic content, no user/admin identifier ever reaches the
+    // DM (#797, extended by #820). Three independent trendSuffix calls, one
+    // per sub-signal, same convention as the joined/left roster line above.
     sections.push(
       `🌱 ${acceptedKnowledgeCandidatesCount} knowledge candidate(s) accepted` +
         trendSuffix('acceptedKnowledgeCandidatesCount', acceptedKnowledgeCandidatesCount, previousCounts) +
         `, ${projectsSharedCount} project(s) shared` +
         trendSuffix('projectsSharedCount', projectsSharedCount, previousCounts) +
+        `, ${helperMatchesCount} member-to-member connection(s) made` +
+        trendSuffix('helperMatchesCount', helperMatchesCount, previousCounts) +
         ' this week — the community is contributing back.',
     );
   }
@@ -776,6 +799,7 @@ export async function buildAdminDigestForAdmin(
     acceptedKnowledgeCandidatesCount,
     projectsSharedCount,
     oldestPendingCandidateAge,
+    helperMatchesCount,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -887,6 +911,13 @@ export async function buildAdminDigestForAdmin(
     // status='pending' scoped row set — the age half of the #743/#787
     // deferred gap, built here (issue #801).
     oldestPendingCandidateAgeDays(),
+    // The flywheel line's third dimension (issue #820) — successful
+    // find_helper connections since the same `since` window. Gated behind
+    // config.findHelper.enabled, the same opt-in-feature gating convention
+    // knowledgeLinkCheck.enabled/knowledgeCandidateStaleDays > 0 already use
+    // above: a deployment with find_helper off never issues the extra query
+    // and this always resolves to 0.
+    config.findHelper.enabled ? countHelperMatchesSince(since) : Promise.resolve(0),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -924,6 +955,7 @@ export async function buildAdminDigestForAdmin(
     unhelpfulThemeCount: unhelpfulThemeClusters.length,
     acceptedKnowledgeCandidatesCount,
     projectsSharedCount,
+    helperMatchesCount,
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -979,6 +1011,7 @@ export async function buildAdminDigestForAdmin(
     acceptedKnowledgeCandidatesCount,
     projectsSharedCount,
     oldestPendingCandidateAge,
+    helperMatchesCount,
   );
   return { message, currentCounts };
 }

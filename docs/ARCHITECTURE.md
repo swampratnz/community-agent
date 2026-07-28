@@ -422,13 +422,22 @@ memory**:
    `since` window `memberDigest.ts` uses. Rendered only when at least one is
    non-zero, each with its own independent trend suffix; bare integers only —
    never a candidate title/content/topic or a project name/description/link/owner.
+   Plus (issue #820) the flywheel line's third dimension — successful
+   `find_helper` connections since the same `since` window, from
+   `countHelperMatchesSince(since)` (gated behind `config.findHelper.enabled`,
+   so a deployment with `find_helper` off issues no extra query and always
+   renders `0`) — the one flywheel action that actively connects two members
+   rather than contributing content, extending the line's gate to a three-way
+   `||`. Bare integer plus its own trend suffix only — never a helper/requester
+   identifier or the `find_helper` topic.
    All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
    `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
-   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`)
+   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`/
+   `countHelperMatchesSince`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Five of these queue lines also
@@ -1203,7 +1212,13 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 Each per-cluster summarisation call is tool-less, single-turn, and
 fixed-format, so its model is optionally tiered by the same
 `AGENT_MODEL_CLASSIFIER` knob as the moderation LLM abuse check above (issue
-#394) — unset (default) it uses `AGENT_MODEL` unchanged.
+#394) — unset (default) it uses `AGENT_MODEL` unchanged. Its output is
+schema-constrained via the SDK's `outputFormat: { type: 'json_schema' }`,
+read off `structured_output` (issue #831, mirroring the moderation abuse
+classifier's #720 fix) — not parsed from five free-text lines with regexes
+— so a malformed or missing `structured_output` throws (counted as a
+`failed` cluster) instead of silently defaulting to a placeholder topic,
+an untrimmed raw-text summary, or a dropped candidate.
 
 ### Knowledge candidates (issue #102)
 
@@ -1235,7 +1250,7 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
   (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
   declined topic re-drafted under different wording on a later run (the
-  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  model-written `topic` label has no stability guarantee across runs) still
   gets caught. `candidateTopicAlreadyReviewed` computes the topic's
   embedding at most once per attempted cluster and reuses that same vector
   for the semantic check, `knowledgeCoversTopic`, and the candidate insert
@@ -1611,6 +1626,35 @@ upgrade).
   degrades to a permanently-empty section, never an error. No member data
   anywhere in this path (config-fixed doc titles/URLs only), so unlike the
   topics section it needs no `scrubPII` call.
+- **Member-contribution credit on the knowledge-base line (issue #837)**: when
+  at least one of this week's curated titles was accepted from a member's own
+  `suggest_knowledge` submission (#633), the "new in the knowledge base" line
+  gains a trailing "— N suggested by members like you 💡" clause. `N` comes
+  from `countAcceptedMemberKnowledgeTipsSince`, the same
+  `status = 'accepted' AND reviewed_at > since` shape as the admin digest's
+  `countAcceptedKnowledgeCandidatesSince` (#797), plus `source_user_id IS NOT
+  NULL` (non-null only for a member-sourced row, never a context-builder
+  draft). `formatMemberDigestMessage` clamps the rendered count to the number
+  of titles actually displayed — `newKnowledgeTitles` is capped at
+  `MAX_NEW_KNOWLEDGE_TITLES` while this count is an independent, uncapped
+  `COUNT(*)`, so an uncapped busy week can never render a clause claiming
+  more member contributions than titles shown. Takes only a bare `number`,
+  same structural no-leak guarantee as `newProjectCount`.
+- **Member-interests awareness, count-only (issue #815)**: a fifth section,
+  `🔍 N member(s) published or updated their interests this week`, appears
+  when `countInterestsPublishedSince` (`member_interests` rows with
+  `updated_at` in the same freshness window) is `> 0` — the direct sibling
+  of the project-showcase count above, for `set_my_interests`/`who_is_into`'s
+  table instead of `member_projects`. Same reasoning, same structural
+  guarantee: `formatMemberDigestMessage` takes only `newInterestCount:
+  number`, never interest text or a member identifier, because
+  `set_my_interests`'s publication consent is scoped to "other members via
+  `who_is_into`" (member-tier, on-demand), not this ungated public post.
+  `member_interests` has no `created_at` column (a single-row-per-identity
+  upsert), so the count is honestly "published *or updated*" rather than
+  implying novelty the schema can't distinguish; `set_helper_availability`
+  never touches `updated_at`, so toggling helper availability alone does not
+  bump this count.
 - **Two independent floors, widened-audience-aware (PR #651 review)**: this
   surface is more exposed than either existing `context_digests` consumer
   (admin-only `list_context_digests`, and the export's own
@@ -2252,6 +2296,21 @@ a few seconds of overhead per answered message, growing with session length.
 If this becomes a problem: cap session length (start fresh after N turns), or
 move to the SDK's streaming-input mode with a persistent process per busy
 conversation.
+
+**Turn wall-clock ceiling** (`AGENT_TURN_TIMEOUT_MS`, default `300_000`, issue
+#826): turns for one conversation are serialised (`router.ts`'s `enqueue()`),
+so a `query()` iteration that never yields and never settles — a network
+partition, a wedged CLI subprocess — used to wedge that conversation's entire
+chain forever, since a `catch` only fires on rejection. `execTurn` now races
+the `for await` loop against a timer via `Promise.race`; on expiry it returns
+the existing `INTERNAL_ERROR_REPLY`, the same as any other generic turn
+failure. The default (`300_000`ms) is deliberately **greater** than
+`IMAGE_GEN_TIMEOUT_MS` (`180_000`ms, above) — image generation is a tool call
+that runs *inside* this same turn loop, so an outer ceiling at or below the
+inner tool's own timeout would kill a legitimately in-flight image-gen turn
+before that tool's own timeout ever got a chance to fire. v1 does not wire an
+`AbortController` into `query()`, so the underlying CLI subprocess is not
+itself killed on a timeout — only the caller's wait for it is bounded.
 
 **Memory recall relevance floor** (`MEMORY_RELEVANCE_THRESHOLD`, default `0` =
 off, issue #474): automatic per-turn memory recall (the "Memory & 'learning'"

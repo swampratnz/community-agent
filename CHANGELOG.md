@@ -19,6 +19,7 @@ daily tracking issue converge and auto-close. This comment sits in the H1
 preamble, which src/agent/changelog.ts skips, so `whats_new` never shows it
 to members. Append numbers; never remove them.
 Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
+#775 #784 #804 #807 #809 #810 #812 #814 #816 #817 #818 #819 #821 #824 #825
 -->
 
 
@@ -34,6 +35,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   false case. No new tool, table, or model call; the flag lives on the
   existing `member_projects` row, so purge/roster-leave cleanup removes it
   along with everything else automatically.
+- **The weekly admin digest's flywheel-throughput line now counts successful
+  `find_helper` connections, not just knowledge candidates and shared
+  projects** (#820): a new `countHelperMatchesSince` repository function
+  (gated behind the existing `FIND_HELPER_ENABLED`, so a deployment without
+  `find_helper` on issues no extra query) counts `helper_notifications` rows —
+  one per DM `find_helper` actually sent — since the same window the line's
+  other two sub-signals already use. `find_helper` is the one flywheel action
+  that actively connects two members rather than contributing content, and it
+  had zero visibility in either digest until now. The line's gate is now a
+  three-way `||` (any of the three sub-signals renders it), each with its own
+  independent week-over-week trend; still a bare integer only — never a
+  helper/requester identifier or the `find_helper` topic.
 - **`my_submissions` now covers `suggest_knowledge` tips, not just
   suggestions/reports/appeals** (#830): a new self-scoped
   `listOwnKnowledgeCandidates` repository function — mirroring
@@ -70,10 +83,56 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   project. Unlike `find_helper` this sits behind no feature flag — the owner
   explicitly opted this specific project in via `share_project`'s
   `seekingCollaborators` flag, a stronger consent basis than a topic-match.
+- **The weekly member digest now credits member-suggested knowledge tips**
+  (#837): a new `countAcceptedMemberKnowledgeTipsSince` repository function —
+  the same `COUNT(*)` shape as the existing project-showcase count — counts
+  this week's accepted `knowledge_candidates` rows that came from a member's
+  own `suggest_knowledge` submission (#633) rather than admin/machine
+  drafting. When nonzero, the digest's "📚 New in the knowledge base" line
+  gains a trailing "— N suggested by members like you 💡" clause, clamped to
+  never exceed the number of titles actually shown. Zero-count and no-new-
+  knowledge weeks render byte-identical to today; the digest still receives
+  only a bare number, so no platform or member identity ever reaches this
+  public channel post.
+- **The agent's per-turn Claude call now has a wall-clock ceiling**
+  (#826, `AGENT_TURN_TIMEOUT_MS`, default `300_000`ms, on by default): a
+  `query()` call that never yields and never settles — a network partition, a
+  wedged CLI subprocess — used to wedge that conversation's entire serialised
+  turn queue forever, since a `catch` only fires on rejection, not a hang.
+  `execTurn` now races the turn against a timer and returns the existing,
+  unmodified generic-failure reply on expiry — never a new user-facing string,
+  never misclassified as a usage-limit/overload failure. The default is kept
+  comfortably above `IMAGE_GEN_TIMEOUT_MS` so a legitimate image-generation
+  turn is never pre-empted by the new outer ceiling.
+
+### Fixed
+- **The offline context builder's cluster summariser no longer silently
+  defaults on a format slip** (#831), extending #720's fix to the other
+  named "grows into" target. `summarizeCluster` used to ask the model for
+  five free-text lines and parse each with a regex; any reply that didn't
+  match exactly silently defaulted the digest's topic to the literal string
+  "Community discussion", its summary to a raw untrimmed slice of the whole
+  response, and dropped a genuine knowledge-candidate draft entirely — with
+  no error and no distinguishing log line. The five fields are now
+  schema-constrained via the SDK's structured output, so a malformed or
+  missing response throws (counted as a `failed` cluster, same as today)
+  instead of landing a placeholder digest or losing a candidate in front of
+  an admin.
 
 ## 2026-07-28
 
 ### Added
+- **The weekly member digest now nudges the community about new published
+  interests, not just new showcase projects** (#815): a new
+  `countInterestsPublishedSince` repository function — the exact
+  `countProjectsSharedSince` (#714) pattern applied to `member_interests`
+  instead of `member_projects` — adds a fifth digest section, `🔍 N
+  member(s) published or updated their interests this week — ask me "who's
+  into X?" to find them`, rendered only when the count is non-zero. Bare
+  integer only, same as the project-showcase line: never interest text, a
+  member name, or a handle, since `set_my_interests`'s own publication
+  consent is scoped to other members via `who_is_into`, not this ungated
+  public channel post.
 - **A member can now explicitly ask to talk to a human** (#808,
   `request_human_help`, gated by the existing `ESCALATION_TO_ADMIN_ENABLED`):
   the last gap neither the max-turns "reply yes" offer (#479) nor the
@@ -84,6 +143,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   caller's own message. Shares the same guild-wide hourly escalation cap as
   its two siblings, plus a new per-caller daily cap (3/24h) so one member
   can't alone exhaust that shared budget.
+
 - **`review_queue` and the weekly admin digest now show the pending-knowledge-
   candidates backlog's age too, not just its count** (#801): a new
   `oldestPendingCandidateAgeDays` repository function — the same
@@ -176,8 +236,8 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   CONFIRM/escalation, and echoed back everywhere else.
 
 ### Security
-- **Trusted CONFIRM notices are now sanitised at a single choke point.** The
-  `⚠️ Pending:` confirmation the bot shows before a destructive action is
+- **Trusted CONFIRM notices are now sanitised at a single choke point** (#794).
+  The `⚠️ Pending:` confirmation the bot shows before a destructive action is
   deterministic and meant to be un-spoofable by the model, but a handful of
   tools (`moderate`, `create_event`, `cancel_event`, `suggest_issue`,
   `forget_me`) still passed raw model-composed free text into it — so a
@@ -207,6 +267,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   Also fixes the scan listener itself only being wired up when full-message
   archiving or reply-retraction was also on — a moderation-only deployment
   (the common case) previously never saw edits at all.
+- **`/kb` now shows the same conflict and low-rated caveats a chat-path
+  `knowledge_search` answer would** (#806, issue #802). `handleKb` was calling
+  the shared renderer with only its trusted-entries argument, so the
+  conflicting-answer and "other members found this unhelpful" caveats
+  silently defaulted to off — a member using the slash command could get a
+  cleaner-looking answer than the one they'd get by just asking the bot the
+  same question. `/kb` now derives the same relevance-filtered id set and
+  runs the same conflict/low-rated lookups the chat path already does before
+  rendering, failing safe (no caveat, not a dropped reply) if either lookup
+  errors. No new tool, tier, or config flag, and byte-identical output when
+  the low-rated knob is at its default.
 
 ## 2026-07-27
 

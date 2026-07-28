@@ -53,6 +53,7 @@ const {
   countStalePendingKnowledgeCandidates,
   oldestPendingCandidateAgeDays,
   countAcceptedKnowledgeCandidatesSince,
+  countAcceptedMemberKnowledgeTipsSince,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
   findKnowledgeCoveringTopic,
@@ -1779,6 +1780,125 @@ test(
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
     assert.equal(
       await countAcceptedKnowledgeCandidatesSince(since),
+      before,
+      'deleting every inserted row restores the prior count',
+    );
+  },
+);
+
+test(
+  'repository: countAcceptedMemberKnowledgeTipsSince counts only accepted, source_user_id-non-null rows reviewed after the window — machine-drafted accepts, pending/declined member tips, and out-of-window accepts are all excluded (issue #837)',
+  { skip },
+  async () => {
+    const platform = 'discord';
+    // Distinct member ids per tip — createKnowledgeTip enforces a
+    // KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY (3) rolling-24h cap per
+    // (platform, user), and this test needs 4 member-sourced tips.
+    const pendingMemberId = `${RUN}-tipssince-pending-member`;
+    const declinedMemberId = `${RUN}-tipssince-declined-member`;
+    const acceptedMemberId = `${RUN}-tipssince-accepted-member`;
+    const staleMemberId = `${RUN}-tipssince-stale-member`;
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-tipssince-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countAcceptedMemberKnowledgeTipsSince(since);
+
+    // A machine-drafted (context-builder) candidate — source_user_id NULL —
+    // accepted inside the window must never count here, even though it
+    // WOULD count towards countAcceptedKnowledgeCandidatesSince (#797).
+    const machineDraftedId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-tipssince-machine`,
+      title: 'machine drafted title',
+      content: 'machine drafted content',
+    });
+    const machineAccepted = await acceptKnowledgeCandidate({
+      id: machineDraftedId,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(machineAccepted);
+
+    // A member's own suggest_knowledge tip, still pending — excluded.
+    const pendingTip = await createKnowledgeTip({
+      platform,
+      userId: pendingMemberId,
+      topic: `${RUN}-tipssince-pending`,
+      title: 'still pending tip',
+      content: 'pending tip content',
+    });
+    assert.ok(pendingTip);
+
+    // A member's own tip, declined — excluded.
+    const declinedTip = await createKnowledgeTip({
+      platform,
+      userId: declinedMemberId,
+      topic: `${RUN}-tipssince-declined`,
+      title: 'will be declined tip',
+      content: 'declined tip content',
+    });
+    assert.ok(declinedTip);
+    const declined = await declineKnowledgeCandidate(declinedTip.id, 'admin-1');
+    assert.ok(declined);
+
+    // A member's own tip, accepted inside the window — the only row that
+    // must count.
+    const acceptedTip = await createKnowledgeTip({
+      platform,
+      userId: acceptedMemberId,
+      topic: `${RUN}-tipssince-accepted`,
+      title: 'accepted tip in window',
+      content: 'accepted tip content',
+    });
+    assert.ok(acceptedTip);
+    const memberAccepted = await acceptKnowledgeCandidate({
+      id: acceptedTip.id,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(memberAccepted);
+
+    // A member's own tip, accepted but reviewed BEFORE the window — excluded.
+    const staleAcceptedTip = await createKnowledgeTip({
+      platform,
+      userId: staleMemberId,
+      topic: `${RUN}-tipssince-stale`,
+      title: 'accepted tip before window',
+      content: 'stale accepted tip content',
+    });
+    assert.ok(staleAcceptedTip);
+    const staleAccepted = await acceptKnowledgeCandidate({
+      id: staleAcceptedTip.id,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(staleAccepted);
+    await pool.query(
+      `UPDATE knowledge_candidates SET reviewed_at = now() - interval '30 days' WHERE id = $1`,
+      [staleAcceptedTip.id],
+    );
+
+    assert.equal(
+      await countAcceptedMemberKnowledgeTipsSince(since),
+      before + 1,
+      'only the member-sourced candidate accepted inside the window counts — machine-drafted, pending, declined, and stale-review rows are all excluded',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [machineAccepted.knowledgeId, memberAccepted.knowledgeId, staleAccepted.knowledgeId],
+    ]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [machineDraftedId, pendingTip.id, declinedTip.id, acceptedTip.id, staleAcceptedTip.id],
+    ]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      await countAcceptedMemberKnowledgeTipsSince(since),
       before,
       'deleting every inserted row restores the prior count',
     );

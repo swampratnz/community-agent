@@ -32,6 +32,7 @@ const {
   answerFeedbackWeeklySummary,
   countAccessRequests,
   countGeneralUnhelpfulAnswers,
+  countHelperMatchesSince,
   countKnowledgeGaps,
   countLowRatedKnowledge,
   countMaxTurnsFailures,
@@ -57,6 +58,7 @@ const {
   getLastDigestCounts,
   recordAdminDigestSnapshot,
   createModerationAppeal,
+  recordHelperNotificationIfUnderCap,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -3193,8 +3195,8 @@ test('buildAdminDigestMessage: the flywheel line renders only when at least one 
   assert.equal(acceptedLines.length, 1, 'exactly one flywheel line');
   assert.equal(
     acceptedLines[0],
-    '🌱 3 knowledge candidate(s) accepted, 0 project(s) shared this week — the community is contributing back.',
-    'a nonzero accepted count with zero shared projects still renders both sub-counts (issue #797 acceptance criterion 3)',
+    '🌱 3 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    'a nonzero accepted count with zero shared projects still renders all three sub-counts (issue #797 acceptance criterion 3)',
   );
 
   const sharedOnly = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 2);
@@ -3203,8 +3205,8 @@ test('buildAdminDigestMessage: the flywheel line renders only when at least one 
   assert.equal(sharedLines.length, 1, 'exactly one flywheel line');
   assert.equal(
     sharedLines[0],
-    '🌱 0 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
-    'a nonzero shared count with zero accepted candidates still renders both sub-counts',
+    '🌱 0 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    'a nonzero shared count with zero accepted candidates still renders all three sub-counts',
   );
 
   const both = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 3, 2);
@@ -3213,7 +3215,7 @@ test('buildAdminDigestMessage: the flywheel line renders only when at least one 
   assert.equal(bothLines.length, 1, 'exactly one flywheel line even when both sub-counts are nonzero');
   assert.equal(
     bothLines[0],
-    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
   );
 });
 
@@ -3228,7 +3230,7 @@ test('buildAdminDigestMessage: the flywheel line trends acceptedKnowledgeCandida
   const line = message.split('\n').find((l) => l.includes('🌱'));
   assert.equal(
     line,
-    '🌱 3 knowledge candidate(s) accepted (▲+2 since last week), 2 project(s) shared (▼-3 since last week) this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted (▲+2 since last week), 2 project(s) shared (▼-3 since last week), 0 member-to-member connection(s) made this week — the community is contributing back.',
     'each sub-signal carries its own independent trendSuffix, same one-call-per-signal convention as joinedThisWeek/leftThisWeek',
   );
 
@@ -3237,7 +3239,7 @@ test('buildAdminDigestMessage: the flywheel line trends acceptedKnowledgeCandida
   const noTrendLine = noTrend.split('\n').find((l) => l.includes('🌱'));
   assert.equal(
     noTrendLine,
-    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
     'no previousCounts -> no suffix on either sub-signal',
   );
 });
@@ -3323,10 +3325,390 @@ test('SECURITY: the flywheel line is a deterministic function of (acceptedKnowle
   }
   assert.equal(
     line,
-    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
-    'the line is a pure function of the two integer counts — bare numbers and fixed template text only',
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    'the line is a pure function of the three integer counts — bare numbers and fixed template text only',
   );
 });
+
+// --- issue #820: the flywheel line's third dimension, helperMatchesCount ---
+
+test('buildAdminDigestMessage: the flywheel line renders when ONLY helperMatchesCount > 0, with the first two clauses reading 0 (issue #820 acceptance criteria 3, 4)', () => {
+  // Fourth trailing arg is oldestPendingCandidateAgeDays (position 39, kept
+  // at its default `null`); helperMatchesCount is the fifth (position 40).
+  assert.equal(
+    buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 0),
+    null,
+    'every flywheel sub-signal at zero, including helperMatchesCount, is still a quiet week',
+  );
+
+  const helperOnly = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 4);
+  assert.ok(helperOnly, 'helper connections alone still produce a DM (issue #820 acceptance criterion 4)');
+  const helperLines = helperOnly.split('\n').filter((l) => l.includes('🌱'));
+  assert.equal(helperLines.length, 1, 'exactly one flywheel line');
+  assert.equal(
+    helperLines[0],
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made this week — the community is contributing back.',
+    'a nonzero helperMatchesCount with the other two sub-signals at zero still renders the line, with the first two clauses reading 0 (issue #820 acceptance criterion 4, three-way || gate, not &&)',
+  );
+});
+
+test('buildAdminDigestMessage: the flywheel line trends helperMatchesCount independently via trendSuffix (issue #820 acceptance criterion 7)', () => {
+  const prefixWithTrend = [
+    ...FLYWHEEL_ZERO_PREFIX.slice(0, 21),
+    { helperMatchesCount: 1 },
+    ...FLYWHEEL_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 0, 0, null, 4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    line,
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made (▲+3 since last week) this week — the community is contributing back.',
+    'helperMatchesCount carries its own independent trendSuffix, same one-call-per-signal convention as acceptedKnowledgeCandidatesCount/projectsSharedCount',
+  );
+
+  const noTrend = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 4);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    noTrendLine,
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made this week — the community is contributing back.',
+    'no previousCounts -> no suffix on helperMatchesCount either',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: all three flywheel sub-signals at zero renders no flywheel line, byte-identical to a caller that has not wired helperMatchesCount through at all (issue #820 acceptance criterion 3)', () => {
+  const withoutHelperParam = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0);
+  const withZeroHelper = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 0);
+  assert.equal(
+    withoutHelperParam,
+    withZeroHelper,
+    'omitting the new trailing param is byte-identical to passing an explicit zero (issue #820 acceptance criterion 3)',
+  );
+  assert.equal(withZeroHelper, null, 'still a quiet week');
+});
+
+test('SECURITY: the flywheel line never carries a helper/requester identifier or find_helper topic content — only the three integer counts and fixed template text (issue #820 acceptance criterion 5)', () => {
+  const secretTopic = 'a very identifiable find_helper topic that must never leak';
+  const secretHelperId = 'helper-user-id-135792468';
+  const secretRequesterId = 'requester-user-id-246813579';
+
+  const message = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 4);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.ok(line);
+  for (const secret of [secretTopic, secretHelperId, secretRequesterId]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the flywheel line must never carry "${secret}" — it takes no such input, only the bare count`,
+    );
+  }
+  assert.equal(
+    line,
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made this week — the community is contributing back.',
+    'the line is a pure function of the three integer counts — bare numbers and fixed template text only',
+  );
+});
+
+// --- issue #820: countHelperMatchesSince + buildAdminDigestForAdmin gating --
+
+test(
+  'repository: countHelperMatchesSince counts helper_notifications rows created after the window only, excluding rows created before it (issue #820 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const helper = `${RUN}-helpermatches-helper`;
+    const requester = `${RUN}-helpermatches-requester`;
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countHelperMatchesSince(since);
+
+    const claimed = await recordHelperNotificationIfUnderCap(
+      'discord',
+      helper,
+      'discord',
+      requester,
+      `${RUN}-helpermatches-topic`,
+    );
+    assert.ok(claimed, 'seed notification claims a slot');
+
+    assert.equal(await countHelperMatchesSince(since), before + 1, 'a row created inside the window counts');
+
+    await pool.query(
+      `UPDATE helper_notifications SET created_at = now() - interval '30 days'
+        WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    assert.equal(
+      await countHelperMatchesSince(since),
+      before,
+      'a row created before the window is excluded once its created_at is pushed outside it (issue #820 acceptance criterion 1)',
+    );
+
+    await pool.query(
+      `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+  },
+);
+
+test(
+  "SECURITY: repository: countHelperMatchesSince returns a bare number carrying no identifying data — mirrors countProjectsSharedSince/countAcceptedKnowledgeCandidatesSince's existing count-only coverage (issue #820 acceptance criterion 6)",
+  { skip },
+  async () => {
+    const helper = `${RUN}-helpermatches-typecheck-helper`;
+    const requester = `${RUN}-helpermatches-typecheck-requester`;
+    const secretTopic = `${RUN}-helpermatches-typecheck-topic-must-never-leak`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    await recordHelperNotificationIfUnderCap('discord', helper, 'discord', requester, secretTopic);
+
+    const count = await countHelperMatchesSince(since);
+    assert.equal(typeof count, 'number', 'SECURITY: the return value is a bare number, not an object/row');
+    assert.ok(count >= 1, 'the seeded notification is counted');
+    assert.doesNotMatch(
+      String(count),
+      new RegExp(secretTopic),
+      'SECURITY: the count carries no trace of the topic, helper id, or requester id it was derived from',
+    );
+
+    await pool.query(
+      `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+  },
+);
+
+test(
+  'buildAdminDigestForAdmin: only issues the countHelperMatchesSince query when config.findHelper.enabled is true; with the flag off, helperMatchesCount is always 0 and no extra query is issued (issue #820 acceptance criterion 2)',
+  { skip },
+  async (t) => {
+    const adminId = `${RUN}-findhelperoff-admin`;
+    const conversationId = `${RUN}-c-findhelperoff`;
+    const requesterId = `${RUN}-findhelperoff-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    // A pending access request (guild-wide) guarantees a non-null message so
+    // "no flywheel line" is a meaningful assertion, not just "no message".
+    await recordAccessRequest({ platform: 'discord', userId: requesterId, userName: 'tester' });
+
+    const wasEnabled = config.findHelper.enabled;
+    config.findHelper.enabled = false;
+    const querySpy = t.mock.method(pool, 'query');
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+    let result: { message: string | null; currentCounts: Record<string, number> };
+    try {
+      result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+    } finally {
+      config.findHelper.enabled = wasEnabled;
+    }
+
+    assert.equal(
+      result.currentCounts.helperMatchesCount,
+      0,
+      'helperMatchesCount is always 0 while the flag is off',
+    );
+    assert.ok(
+      !(result.message ?? '').includes('member-to-member connection'),
+      'no flywheel-connections clause renders while the flag is off',
+    );
+
+    const issuedHelperNotificationsQuery = querySpy.mock.calls.some((call) =>
+      String(call.arguments[0]).includes('helper_notifications'),
+    );
+    assert.ok(
+      !issuedHelperNotificationsQuery,
+      'SECURITY: the helper_notifications COUNT(*) is never issued while the flag is off — fail-safe by construction (config.findHelper.enabled resolves straight to Promise.resolve(0)), not merely a zero result (issue #820 acceptance criterion 2)',
+    );
+
+    await clearAccessRequest('discord', requesterId);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+test(
+  'buildAdminDigestForAdmin: with config.findHelper.enabled true, helperMatchesCount reflects countHelperMatchesSince and renders on the flywheel line (issue #820 acceptance criterion 2)',
+  { skip },
+  async () => {
+    const adminId = `${RUN}-findhelperon-admin`;
+    const conversationId = `${RUN}-c-findhelperon`;
+    const helper = `${RUN}-findhelperon-helper`;
+    const requester = `${RUN}-findhelperon-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countHelperMatchesSince(since);
+    const claimed = await recordHelperNotificationIfUnderCap(
+      'discord',
+      helper,
+      'discord',
+      requester,
+      `${RUN}-findhelperon-topic`,
+    );
+    assert.ok(claimed, 'seed notification claims a slot');
+
+    const wasEnabled = config.findHelper.enabled;
+    config.findHelper.enabled = true;
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+    let result: { message: string | null; currentCounts: Record<string, number> };
+    try {
+      result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+    } finally {
+      config.findHelper.enabled = wasEnabled;
+    }
+
+    assert.equal(
+      result.currentCounts.helperMatchesCount,
+      before + 1,
+      'helperMatchesCount reflects the seeded connection',
+    );
+    assert.ok(result.message, 'a nonzero helperMatchesCount alone still produces a DM');
+    assert.match(
+      result.message,
+      new RegExp(`${before + 1} member-to-member connection\\(s\\) made`),
+      'the flywheel line reports the current exact count, including this newly-seeded connection',
+    );
+    assert.ok(
+      !result.message.includes(`${RUN}-findhelperon-topic`),
+      'SECURITY: the topic passed to recordHelperNotificationIfUnderCap never reaches the rendered digest (issue #820 acceptance criterion 5)',
+    );
+    assert.ok(
+      !result.message.includes(helper) && !result.message.includes(requester),
+      'SECURITY: neither the helper nor the requester identity ever reaches the rendered digest (issue #820 acceptance criterion 5)',
+    );
+
+    await pool.query(
+      `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+test(
+  "buildAdminDigestForAdmin: helperMatchesCount round-trips through currentCounts/recordAdminDigestSnapshot, and the second week's pull renders the exact delta against the first (issue #820, closing the same sanitizeDigestCounts-whitelist gap #629 closed for autoAnswerHelpfulPct)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-helpermatchestrend-admin`;
+    const conversationId = `${RUN}-c-helpermatchestrend`;
+    const helper = `${RUN}-helpermatchestrend-helper`;
+    const requester = `${RUN}-helpermatchestrend-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    const wasFindHelperEnabled = config.findHelper.enabled;
+    config.adminDigest.trendsEnabled = true;
+    config.findHelper.enabled = true;
+    try {
+      const claimed = await recordHelperNotificationIfUnderCap(
+        'discord',
+        helper,
+        'discord',
+        requester,
+        `${RUN}-helpermatchestrend-topic`,
+      );
+      assert.ok(claimed, 'seed notification claims a slot');
+
+      const week1 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(week1.message);
+      assert.match(
+        week1.message.split('\n').find((l) => l.includes('🌱')) ?? '',
+        /1 member-to-member connection\(s\) made this week/,
+        'no prior snapshot yet -> no trend suffix, week 1 renders bare',
+      );
+
+      // Persist week 1's snapshot exactly as runAdminDigestOnce would on a
+      // real send, so week 2's read sees it as "last week".
+      await recordAdminDigestSnapshot('discord', adminId, week1.currentCounts);
+      assert.equal(
+        (await getLastDigestCounts('discord', adminId))?.helperMatchesCount,
+        1,
+        'helperMatchesCount round-trips through the sanitize whitelist (issue #820), unlike an unlisted key would',
+      );
+
+      // Week 2: one more connection.
+      const helper2 = `${RUN}-helpermatchestrend-helper2`;
+      await recordHelperNotificationIfUnderCap(
+        'discord',
+        helper2,
+        'discord',
+        requester,
+        `${RUN}-helpermatchestrend-topic2`,
+      );
+
+      const week2 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(week2.message);
+      assert.match(
+        week2.message.split('\n').find((l) => l.includes('🌱')) ?? '',
+        /2 member-to-member connection\(s\) made \(▲\+1 since last week\)/,
+        "week 2 sees last week's persisted count and renders the exact ▲+1 delta",
+      );
+
+      await pool.query(
+        `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = ANY($1)`,
+        [[helper, helper2]],
+      );
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+      config.findHelper.enabled = wasFindHelperEnabled;
+    }
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
+
+test(
+  'buildAdminDigestForAdmin: EVERY integer signal it writes to currentCounts survives the sanitizeDigestCounts whitelist — a stripped signal can never render a trend arrow, however much history accumulates (issue #820 review)',
+  { skip },
+  async () => {
+    // The per-signal round-trip test above pins one key. This pins the CLASS:
+    // nine signals (acceptedKnowledgeCandidatesCount, projectsSharedCount,
+    // escalatedKnowledgeGapsCount, …) were written by currentCounts but absent
+    // from ADMIN_DIGEST_SIGNAL_KEYS, so sanitizeDigestCounts dropped them at
+    // the write boundary and trendSuffix's `key in previous` check was false
+    // forever. Existing trend tests miss this because they pass previousCounts
+    // directly in memory, never exercising the storage round-trip. Asserting
+    // the whole set means a NEW signal added without a whitelist entry fails
+    // here instead of silently never trending in production.
+    const adminId = `${RUN}-allsignals-admin`;
+    const conversationId = `${RUN}-c-allsignals`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    try {
+      const built = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      await recordAdminDigestSnapshot('discord', adminId, built.currentCounts);
+      const readBack = (await getLastDigestCounts('discord', adminId)) ?? {};
+
+      const written = Object.entries(built.currentCounts)
+        .filter(([, value]) => Number.isInteger(value))
+        .map(([key]) => key);
+      const stripped = written.filter((key) => !(key in readBack)).sort();
+      assert.deepEqual(
+        stripped,
+        [],
+        `these signals are written to currentCounts but stripped by ADMIN_DIGEST_SIGNAL_KEYS, so their week-over-week arrow can never render: ${stripped.join(', ')}`,
+      );
+      assert.ok(written.length > 0, 'sanity: the digest wrote at least one integer signal');
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+      await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+        adminId,
+      ]);
+      await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+    }
+  },
+);
 
 test('buildAdminDigestMessage: unreachable-source-knowledge line appears only when unreachableSourceKnowledgeCount > 0, and all TWENTY-ONE signals zero -> null (issue #624 acceptance criteria 2, 3)', () => {
   assert.equal(
