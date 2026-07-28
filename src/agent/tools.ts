@@ -3513,7 +3513,7 @@ export function buildToolServer(
     "List the caller's OWN previously-filed suggestions, content reports, moderation appeals, and " +
       'knowledge tips — id, a short content preview, current status, and when each was filed. Use this ' +
       'when a member asks what happened to something they submitted earlier (e.g. "what happened to my ' +
-      'report?"). Never returns another member\'s content or the reviewing admin\'s identity — only the ' +
+      "report?\"). Never returns another member's content or the reviewing admin's identity — only the " +
       'shared admin queue (list_suggestions/list_reports/list_appeals/list_knowledge_candidates) exposes ' +
       'that, and this tool never reaches it.',
     {},

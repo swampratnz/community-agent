@@ -58,6 +58,7 @@ const {
   findKnowledgeCoveringTopic,
   candidateTopicAlreadyReviewed,
   createKnowledgeTip,
+  listOwnKnowledgeCandidates,
   KNOWLEDGE_TIP_RATE_LIMIT_PER_DAY,
   KNOWLEDGE_TIP_TITLE_MAX_CHARS,
   KNOWLEDGE_TIP_CONTENT_MAX_CHARS,
@@ -7643,6 +7644,116 @@ test(
     );
 
     await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [[a1.id, a2.id, b1.id]]);
+  },
+);
+
+test(
+  "repository: listOwnKnowledgeCandidates returns the caller's own knowledge tips newest-first, honouring the 1–50 limit clamp (issue #830)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-my-knowledge-tip-user`;
+
+    const t1 = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} own tip topic 1`,
+      title: 'own tip 1',
+      content: 'first tip content',
+    });
+    const t2 = await createKnowledgeTip({
+      platform: 'discord',
+      userId,
+      topic: `${RUN} own tip topic 2`,
+      title: 'own tip 2',
+      content: 'second tip content',
+    });
+    assert.ok(t1 && t2, 'fixtures recorded');
+
+    const own = await listOwnKnowledgeCandidates('discord', userId);
+    assert.deepEqual(
+      own.map((c) => c.id),
+      [t2.id, t1.id],
+      'own tips are returned newest-first',
+    );
+
+    assert.deepEqual(
+      await listOwnKnowledgeCandidates('whatsapp', userId),
+      [],
+      'platform is part of the scope — this user has no whatsapp tips',
+    );
+
+    assert.equal(
+      (await listOwnKnowledgeCandidates('discord', userId, -5)).length,
+      1,
+      'a non-positive limit is clamped to a floor of 1, mirroring listOwnSuggestions',
+    );
+    assert.equal(
+      (await listOwnKnowledgeCandidates('discord', userId, 999)).length,
+      2,
+      'an over-large limit is clamped to a ceiling of 50, not passed straight through — still returns only the 2 real rows here',
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[t1.id, t2.id]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnKnowledgeCandidates only returns the caller's OWN knowledge tips — never another identity's, never cross-platform, and never a machine-drafted (NULL source) candidate (issue #830)",
+  { skip },
+  async () => {
+    const userA = `${RUN}-my-knowledge-tip-A`;
+    const userB = `${RUN}-my-knowledge-tip-B`;
+
+    const mine = await createKnowledgeTip({
+      platform: 'discord',
+      userId: userA,
+      topic: `${RUN} security tip topic A`,
+      title: "A's tip",
+      content: "A's own tip content",
+    });
+    const theirs = await createKnowledgeTip({
+      platform: 'discord',
+      userId: userB,
+      topic: `${RUN} security tip topic B`,
+      title: "B's tip",
+      content: "B's own tip content",
+    });
+    assert.ok(mine && theirs, 'fixtures recorded');
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN} security machine-drafted topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    const machineDraftedId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN} security machine-drafted topic`,
+      title: 'machine-drafted candidate',
+      content: 'drafted by the context builder, no submitter',
+    });
+
+    const ownA = await listOwnKnowledgeCandidates('discord', userA);
+    assert.deepEqual(
+      ownA.map((c) => c.id),
+      [mine.id],
+      "only A's own tip is returned",
+    );
+    assert.ok(
+      !ownA.some((c) => c.id === theirs.id),
+      "SECURITY: B's tip must never appear in A's own-knowledge-tips list",
+    );
+    assert.ok(
+      !ownA.some((c) => c.id === machineDraftedId),
+      "SECURITY: a machine-drafted (NULL source) candidate must never appear in any real caller's own-knowledge-tips list",
+    );
+
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [mine.id, theirs.id, machineDraftedId],
+    ]);
   },
 );
 
