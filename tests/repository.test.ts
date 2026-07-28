@@ -51,6 +51,7 @@ const {
   hasConflictAmongIds,
   countPendingKnowledgeCandidates,
   countStalePendingKnowledgeCandidates,
+  countAcceptedKnowledgeCandidatesSince,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
   findKnowledgeCoveringTopic,
@@ -1690,6 +1691,87 @@ test(
     await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
     assert.equal(
       await countPendingKnowledgeCandidates(),
+      before,
+      'deleting every inserted row restores the prior count',
+    );
+  },
+);
+
+test(
+  'repository: countAcceptedKnowledgeCandidatesSince counts only accepted rows reviewed after the window, ignoring pending/declined and out-of-window accepts (issue #797)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-acceptedsince-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countAcceptedKnowledgeCandidatesSince(since);
+
+    const pendingId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-acceptedsince-pending`,
+      title: 'still pending',
+      content: 'content pending',
+    });
+    const declinedId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-acceptedsince-declined`,
+      title: 'will be declined',
+      content: 'content declined',
+    });
+    const acceptedInWindowId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-acceptedsince-in-window`,
+      title: 'accepted in window',
+      content: 'content in window',
+    });
+    const acceptedOutOfWindowId = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-acceptedsince-out-of-window`,
+      title: 'accepted before window',
+      content: 'content out of window',
+    });
+
+    const declined = await declineKnowledgeCandidate(declinedId, 'admin-1');
+    assert.ok(declined);
+    const acceptedInWindow = await acceptKnowledgeCandidate({
+      id: acceptedInWindowId,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(acceptedInWindow);
+    const acceptedOutOfWindow = await acceptKnowledgeCandidate({
+      id: acceptedOutOfWindowId,
+      reviewedBy: 'admin-1',
+    });
+    assert.ok(acceptedOutOfWindow);
+    // Push this one's reviewed_at outside the window so it must not count.
+    await pool.query(
+      `UPDATE knowledge_candidates SET reviewed_at = now() - interval '30 days' WHERE id = $1`,
+      [acceptedOutOfWindowId],
+    );
+
+    assert.equal(
+      await countAcceptedKnowledgeCandidatesSince(since),
+      before + 1,
+      'only the accepted candidate reviewed inside the window counts — pending, declined, and an accepted-but-stale-review row are all excluded',
+    );
+
+    await pool.query(`DELETE FROM knowledge WHERE id = ANY($1)`, [
+      [acceptedInWindow.knowledgeId, acceptedOutOfWindow.knowledgeId],
+    ]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [
+      [pendingId, declinedId, acceptedInWindowId, acceptedOutOfWindowId],
+    ]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+    assert.equal(
+      await countAcceptedKnowledgeCandidatesSince(since),
       before,
       'deleting every inserted row restores the prior count',
     );

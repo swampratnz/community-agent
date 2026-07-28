@@ -4,6 +4,7 @@ import { startTrackedJob } from './backgroundJobs.js';
 import {
   answerFeedbackOriginSummary,
   answerFeedbackWeeklySummary,
+  countAcceptedKnowledgeCandidatesSince,
   countAccessRequests,
   countDuplicateKnowledge,
   countEscalatedKnowledgeGaps,
@@ -17,6 +18,7 @@ import {
   countOpenReports,
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
+  countProjectsSharedSince,
   countStaleKnowledge,
   countStaleMutedMembers,
   countStalePendingKnowledgeCandidates,
@@ -259,6 +261,25 @@ function pctTrendSuffix(key: string, current: number, previous: Record<string, n
  * convention as every other digest line. Append-only trailing param,
  * default 0, so every existing call site is unaffected and the quiet case
  * is byte-identical to the pre-#724 form.
+ * `acceptedKnowledgeCandidatesCount`/`projectsSharedCount` (issue #797) are
+ * VISION's Participation north star made visible: "member contributions
+ * (accepted candidate entries, showcased projects) becoming a routine
+ * occurrence rather than zero." `acceptedKnowledgeCandidatesCount` comes from
+ * `countAcceptedKnowledgeCandidatesSince`, the throughput complement to
+ * `pendingKnowledgeCandidates`'s backlog nag above — candidates actually
+ * cleared into the knowledge base, not just queued. `projectsSharedCount`
+ * reuses `countProjectsSharedSince` verbatim, the same aggregate
+ * `memberDigest.ts` already uses for its "come browse the showcase" nudge,
+ * wired here for the first time as an admin-facing trend. Both are windowed
+ * by the same `FRESHNESS_DAYS`-derived `since` `memberDigest.ts` uses.
+ * Rendered as ONE line only when at least one is `> 0` — each gets its own
+ * independent `trendSuffix`, same one-call-per-signal convention as
+ * `joinedThisWeek`/`leftThisWeek` above, so a week where only one half of the
+ * flywheel moved still renders correctly. Bare integers only — no candidate
+ * title/content/topic, no project name/description/link/owner, no user/admin
+ * identifier, same privacy convention as every signal above. Two append-only
+ * trailing params, default 0, so every existing call site is unaffected and
+ * the quiet case (both 0) is byte-identical to the pre-#797 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -383,6 +404,14 @@ export function buildAdminDigestMessage(
   // this through are byte-identical to the pre-#787 form. Bare integer
   // only, same privacy convention as every signal above.
   oldestOpenAppealAgeDays: number | null = null,
+  // Knowledge candidates accepted, and projects shared, since the same
+  // `FRESHNESS_DAYS`-derived `since` window (issue #797) — VISION's
+  // Participation north star ("accepted candidate entries, showcased
+  // projects becoming a routine occurrence"). Two append-only trailing
+  // params, default 0, so every existing call site is unaffected and the
+  // quiet case (both 0) is byte-identical to the pre-#797 form.
+  acceptedKnowledgeCandidatesCount: number = 0,
+  projectsSharedCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -407,7 +436,9 @@ export function buildAdminDigestMessage(
     openAppealsCount === 0 &&
     unreachableSourceKnowledgeCount === 0 &&
     overallAnswerTotal === 0 &&
-    unhelpfulThemeCount === 0
+    unhelpfulThemeCount === 0 &&
+    acceptedKnowledgeCandidatesCount === 0 &&
+    projectsSharedCount === 0
   )
     return null;
 
@@ -646,6 +677,19 @@ export function buildAdminDigestMessage(
         trendSuffix('unreachableSourceKnowledgeCount', unreachableSourceKnowledgeCount, previousCounts),
     );
   }
+  if (acceptedKnowledgeCandidatesCount > 0 || projectsSharedCount > 0) {
+    // Bare integers only — no candidate title/content/topic, no project
+    // name/description/link/owner, no user/admin identifier ever reaches the
+    // DM (#797). Two independent trendSuffix calls, one per sub-signal, same
+    // convention as the joined/left roster line above.
+    sections.push(
+      `🌱 ${acceptedKnowledgeCandidatesCount} knowledge candidate(s) accepted` +
+        trendSuffix('acceptedKnowledgeCandidatesCount', acceptedKnowledgeCandidatesCount, previousCounts) +
+        `, ${projectsSharedCount} project(s) shared` +
+        trendSuffix('projectsSharedCount', projectsSharedCount, previousCounts) +
+        ' this week — the community is contributing back.',
+    );
+  }
   return sections.join('\n');
 }
 
@@ -682,6 +726,9 @@ export async function buildAdminDigestForAdmin(
   const knowledgeStaleDays = config.adminDigest.knowledgeStaleDays;
   const knowledgeStaleMaxAgeDays = config.adminDigest.knowledgeStaleMaxAgeDays;
   const knowledgeCandidateStaleDays = config.adminDigest.knowledgeCandidateStaleDays;
+  // Same FRESHNESS_DAYS-derived window memberDigest.ts already uses for
+  // countProjectsSharedSince (issue #797).
+  const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
   const [
     clusters,
     pendingAccessRequests,
@@ -709,6 +756,8 @@ export async function buildAdminDigestForAdmin(
     unreachableSourceKnowledgeCount,
     overallAnswerSummary,
     unhelpfulThemeClusters,
+    acceptedKnowledgeCandidatesCount,
+    projectsSharedCount,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -805,6 +854,17 @@ export async function buildAdminDigestForAdmin(
     // complement to overallAnswerSummary above: VISION's own "thumbs-down
     // themes shrinking" half of the answer-quality north star (issue #724).
     recentUnhelpfulFeedbackClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
+    // Guild-wide, unscoped — knowledge_candidates has no conversation/channel
+    // column, matching countPendingKnowledgeCandidates's own unscoped
+    // behaviour. The throughput complement to pendingKnowledgeCandidates
+    // above: candidates actually cleared into the knowledge base this week
+    // (issue #797).
+    countAcceptedKnowledgeCandidatesSince(since),
+    // Guild-wide — member_projects has no conversation/channel column either.
+    // Reuses the exact same aggregate memberDigest.ts already runs weekly for
+    // its own "come browse the showcase" nudge, wired here for the first time
+    // as an admin-facing trend (issue #797).
+    countProjectsSharedSince(since),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -840,6 +900,8 @@ export async function buildAdminDigestForAdmin(
     overallAnswerHelpful: overallAnswerSummary.helpful,
     overallAnswerTotal: overallAnswerSummary.total,
     unhelpfulThemeCount: unhelpfulThemeClusters.length,
+    acceptedKnowledgeCandidatesCount,
+    projectsSharedCount,
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -892,6 +954,8 @@ export async function buildAdminDigestForAdmin(
     overallAnswerSummary.total,
     unhelpfulThemeClusters.length,
     oldestOpenAppealAge,
+    acceptedKnowledgeCandidatesCount,
+    projectsSharedCount,
   );
   return { message, currentCounts };
 }
