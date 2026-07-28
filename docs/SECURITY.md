@@ -1327,7 +1327,12 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   default): when enabled, the Discord adapter scans **every** in-scope guild
   message for bad language / abuse — a privacy-posture change of the same class
   as ambient archiving, so it needs a community notice before you flip it on.
-  Controls and honest limits:
+  This includes a later **edit** to a message, not just its original text
+  (issue #798): posting clean text and then editing in abuse re-scans the new
+  content exactly like a fresh message, skipped only when the edit is known
+  not to have changed the text (e.g. an embed unfurl or pin-state change) —
+  an unresolvable pre-edit diff (Discord.js couldn't cache the prior content)
+  fails **toward** scanning, never toward silence. Controls and honest limits:
   - **Storage is minimal**: a flagged message records a `member_warnings` row
     with the reason and a **capped excerpt** (≤200 chars) — never the whole
     message. Keyed on raw `(platform, user_id)`; purge-coherent
