@@ -10,6 +10,7 @@ import { logger } from '../../logger.js';
 import { resolveRole } from '../../auth/roles.js';
 import { atLeast, toolsForRole } from '../../auth/rbac.js';
 import { getCommunityGuidelines, getCommunityGuidelinesMi } from '../../storage/policies.js';
+import { buildMemberDigestContent } from '../../memberDigest.js';
 import {
   areKnowledgeEntriesLowRated,
   getLanguagePreference,
@@ -50,9 +51,10 @@ export interface SlashCommandDeps {
 }
 
 /**
- * The four read-only guild commands (issue #744, CAPABILITY-IDEAS.md §C1).
- * Option name `query` is shared across /kb, /projects, /whois to match the
- * superseded acceptance criteria's `/whois <query>` wording.
+ * The five read-only guild commands (issue #744, CAPABILITY-IDEAS.md §C1;
+ * /digest added by issue #841). Option name `query` is shared across /kb,
+ * /projects, /whois to match the superseded acceptance criteria's
+ * `/whois <query>` wording.
  */
 export function buildSlashCommands() {
   return [
@@ -81,6 +83,10 @@ export function buildSlashCommands() {
     new SlashCommandBuilder()
       .setName('guidelines')
       .setDescription("Show this community's guidelines/rules.")
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('digest')
+      .setDescription("Pull this week's community digest on demand — topics, new knowledge, projects.")
       .toJSON(),
   ];
 }
@@ -270,6 +276,27 @@ async function handleGuidelines(
   );
 }
 
+async function handleDigest(interaction: ChatInputCommandInteraction, deps: SlashCommandDeps): Promise<void> {
+  await deferEphemeral(interaction);
+  const role = await resolveRole('discord', interaction.user.id);
+  // community_digest is structurally in MEMBER_TOOLS (same open-mode-guest
+  // reachability as knowledge_search), but its own handler adds a stricter
+  // runtime floor (`assertAtLeast(caller.role, 'member', 'community_digest')`,
+  // tools.ts) — mirrored here for the same reason as /projects/whois above.
+  if (
+    !toolsForRole(role, 'discord').includes('mcp__community__community_digest') ||
+    !atLeast(role, 'member')
+  ) {
+    await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
+    return;
+  }
+  // Calls buildMemberDigestContent directly (not through the tool/model, and
+  // never wrapped in untrusted()) — like /kb/whois/projects/guidelines, this
+  // reply never re-enters model context, so there is nothing to quarantine.
+  const message = await buildMemberDigestContent();
+  await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
+}
+
 /** Routes a chat-input interaction to its handler; every other interaction type is ignored. */
 export async function handleInteraction(interaction: Interaction, deps: SlashCommandDeps): Promise<void> {
   if (!interaction.isChatInputCommand()) return;
@@ -282,5 +309,7 @@ export async function handleInteraction(interaction: Interaction, deps: SlashCom
       return handleWhois(interaction, deps);
     case 'guidelines':
       return handleGuidelines(interaction, deps);
+    case 'digest':
+      return handleDigest(interaction, deps);
   }
 }
