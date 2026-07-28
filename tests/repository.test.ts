@@ -51,6 +51,7 @@ const {
   hasConflictAmongIds,
   countPendingKnowledgeCandidates,
   countStalePendingKnowledgeCandidates,
+  oldestPendingCandidateAgeDays,
   countAcceptedKnowledgeCandidatesSince,
   hasQueuedCandidateForTopic,
   knowledgeCoversTopic,
@@ -1934,6 +1935,122 @@ test(
       before,
       'deleting every inserted row restores the prior count',
     );
+  },
+);
+
+test(
+  'repository: oldestPendingCandidateAgeDays returns the whole-day age of the oldest status=pending row (MIN(created_at)), excludes accepted/declined rows (issue #801 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-age-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const oldPending = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-age-topic-1`,
+      title: 'old pending candidate',
+      content: 'content',
+    });
+    const recentPending = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-age-topic-2`,
+      title: 'recent pending candidate',
+      content: 'content',
+    });
+    const oldButAccepted = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-age-topic-3`,
+      title: 'old but accepted candidate',
+      content: 'content',
+    });
+    const oldButDeclined = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-age-topic-4`,
+      title: 'old but declined candidate',
+      content: 'content',
+    });
+
+    // Backdate far enough that no concurrent test file's fresh row could
+    // plausibly be older, so MIN(created_at) over status='pending' is
+    // deterministically oldPending.
+    await pool.query(
+      `UPDATE knowledge_candidates SET created_at = now() - interval '400 days' WHERE id = ANY($1)`,
+      [[oldPending, oldButAccepted, oldButDeclined]],
+    );
+
+    const accepted = await acceptKnowledgeCandidate({ id: oldButAccepted, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const declined = await declineKnowledgeCandidate(oldButDeclined, 'admin-1');
+    assert.ok(declined);
+
+    assert.equal(
+      await oldestPendingCandidateAgeDays(),
+      400,
+      "only the oldest STILL-PENDING row drives the age — accepted/declined rows don't count despite being just as old",
+    );
+
+    const ids = [oldPending, recentPending, oldButAccepted, oldButDeclined];
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [ids]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
+  },
+);
+
+test(
+  'SECURITY: oldestPendingCandidateAgeDays returns null (never 0 or NaN) when zero candidates are pending, including when all rows are accepted/declined (issue #801 acceptance criterion 5)',
+  { skip },
+  async () => {
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${RUN}-kc-age-null-topic`,
+      summary: 'aggregate summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 4,
+    });
+
+    const toAccept = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-age-null-topic-1`,
+      title: 'to accept',
+      content: 'content',
+    });
+    const toDecline = await insertKnowledgeCandidate({
+      digestId,
+      topic: `${RUN}-kc-age-null-topic-2`,
+      title: 'to decline',
+      content: 'content',
+    });
+    const accepted = await acceptKnowledgeCandidate({ id: toAccept, reviewedBy: 'admin-1' });
+    assert.ok(accepted);
+    const declined = await declineKnowledgeCandidate(toDecline, 'admin-1');
+    assert.ok(declined);
+
+    const pendingCount = await countPendingKnowledgeCandidates();
+    const age = await oldestPendingCandidateAgeDays();
+    if (pendingCount === 0) {
+      assert.equal(age, null, 'a set with zero pending rows must return null, never 0 or a throw');
+    } else {
+      // A concurrently-running test file may have inserted a pending
+      // candidate at this instant — still must never be anything other than
+      // null or a well-formed non-negative integer.
+      assert.ok(
+        age === null || (Number.isInteger(age) && age >= 0),
+        'a non-empty pending set must yield null or a non-negative integer day count, never NaN',
+      );
+    }
+
+    await pool.query(`DELETE FROM knowledge WHERE id = $1`, [accepted.knowledgeId]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE id = ANY($1)`, [[toAccept, toDecline]]);
+    await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
   },
 );
 

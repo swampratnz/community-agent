@@ -4512,7 +4512,7 @@ test(
     assert.ok(!sent[0].text.includes('🔔'), 'no cluster line — this admin has zero clusters in scope');
     assert.match(
       sent[0].text,
-      /🧩 \d+ pending knowledge candidate\(s\) — run `list_knowledge_candidates`\./,
+      /🧩 \d+ pending knowledge candidate\(s\)(, oldest \d+d)? — run `list_knowledge_candidates`\./,
       'the pending-knowledge-candidate line is present',
     );
     assert.ok(

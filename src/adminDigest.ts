@@ -28,6 +28,7 @@ import {
   oldestAccessRequestAgeDays,
   oldestOpenAppealAgeDays,
   oldestOpenReportAgeDays,
+  oldestPendingCandidateAgeDays,
   oldestPendingSuggestionAgeDays,
   recentQuestionClusters,
   recentUnhelpfulFeedbackClusters,
@@ -412,6 +413,16 @@ export function buildAdminDigestMessage(
   // quiet case (both 0) is byte-identical to the pre-#797 form.
   acceptedKnowledgeCandidatesCount: number = 0,
   projectsSharedCount: number = 0,
+  // Whole-day age of the oldest still-pending knowledge candidate
+  // (`oldestPendingCandidateAgeDays`, issue #801) — the same append-only
+  // trailing-param, non-null-only, refine-an-existing-line shape as
+  // `oldestOpenAppealAgeDays` (#787) above. Rendered independently of the
+  // knob-gated `staleFragment` already on the `pendingKnowledgeCandidates`
+  // line (not folded into it) and only when non-null, so the quiet case and
+  // every caller that hasn't wired this through are byte-identical to the
+  // pre-#801 form. Bare integer only, same privacy convention as every
+  // signal above.
+  oldestPendingCandidateAgeDays: number | null = null,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -524,8 +535,14 @@ export function buildAdminDigestMessage(
       knowledgeCandidateStaleDays > 0 && pendingKnowledgeCandidatesStaleCount > 0
         ? `, ${pendingKnowledgeCandidatesStaleCount} unreviewed for ${knowledgeCandidateStaleDays}d+`
         : '';
+    // Oldest-item age, rendered independently of the knob-gated staleFragment
+    // above — unconditional (like every sibling oldest*AgeDays fragment)
+    // rather than tied to whether KNOWLEDGE_CANDIDATE_STALE_DAYS is set
+    // (issue #801).
+    const ageFragment =
+      oldestPendingCandidateAgeDays !== null ? `, oldest ${oldestPendingCandidateAgeDays}d` : '';
     sections.push(
-      `🧩 ${pendingKnowledgeCandidates} pending knowledge candidate(s)${staleFragment} — run ` +
+      `🧩 ${pendingKnowledgeCandidates} pending knowledge candidate(s)${ageFragment}${staleFragment} — run ` +
         '`list_knowledge_candidates`.' +
         trendSuffix('pendingKnowledgeCandidates', pendingKnowledgeCandidates, previousCounts),
     );
@@ -758,6 +775,7 @@ export async function buildAdminDigestForAdmin(
     unhelpfulThemeClusters,
     acceptedKnowledgeCandidatesCount,
     projectsSharedCount,
+    oldestPendingCandidateAge,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -865,6 +883,10 @@ export async function buildAdminDigestForAdmin(
     // its own "come browse the showcase" nudge, wired here for the first time
     // as an admin-facing trend (issue #797).
     countProjectsSharedSince(since),
+    // Oldest-age companion to pendingKnowledgeCandidates above, over the same
+    // status='pending' scoped row set — the age half of the #743/#787
+    // deferred gap, built here (issue #801).
+    oldestPendingCandidateAgeDays(),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -956,6 +978,7 @@ export async function buildAdminDigestForAdmin(
     oldestOpenAppealAge,
     acceptedKnowledgeCandidatesCount,
     projectsSharedCount,
+    oldestPendingCandidateAge,
   );
   return { message, currentCounts };
 }
@@ -991,6 +1014,9 @@ export async function buildAdminDigestForAdmin(
  * with the SAME `scope`+`viewerIds` arguments — so a report's age inherits the
  * exact conversation/DM scoping and self-report exclusion its count already
  * has, and an admin can never see the age of a report outside their scope.
+ * `oldestPendingCandidateAgeDays` (issue #801) is likewise fetched alongside
+ * `countPendingKnowledgeCandidates` and guild-wide for the same reason, so
+ * every enrolled admin sees the same oldest-pending-candidate age too.
  * `countStaleKnowledge` only runs when
  * `KNOWLEDGE_STALE_DAYS` is configured (`> 0`) — otherwise the signal stays
  * `0` and the digest is byte-for-byte unchanged from before issue #199.

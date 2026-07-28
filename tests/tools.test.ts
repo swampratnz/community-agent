@@ -19319,7 +19319,7 @@ test(
 );
 
 test(
-  'review_queue renders one line per queue in fixed order (access requests, suggestions, knowledge candidates, reports, appeals), with oldest-age suffixes on access requests/suggestions/reports/appeals and never on knowledge candidates (issue #743 acceptance criteria 1, 2, 4; issue #787 acceptance criterion 2)',
+  'review_queue renders one line per queue in fixed order (access requests, suggestions, knowledge candidates, reports, appeals), with an oldest-age suffix on every line once non-empty (issue #743 acceptance criteria 1, 2, 4; issue #787 acceptance criterion 2; issue #801 acceptance criterion 2)',
   { skip },
   async () => {
     const admin = `${RUN}-review-queue-render-admin`;
@@ -19408,12 +19408,7 @@ test(
 
       assert.match(lines[1], /^- Access requests: \d+ pending \(oldest \d+d\)$/);
       assert.match(lines[2], /^- Suggestions: \d+ pending \(oldest \d+d\)$/);
-      assert.match(lines[3], /^- Knowledge candidates: \d+ pending$/);
-      assert.doesNotMatch(
-        lines[3],
-        /oldest/,
-        'acceptance criterion 2: the knowledge-candidates line never carries an age suffix, even non-empty',
-      );
+      assert.match(lines[3], /^- Knowledge candidates: \d+ pending \(oldest \d+d\)$/);
       assert.match(lines[4], /^- Reports \(your conversations\): \d+ open \(oldest \d+d\)$/);
       assert.match(lines[5], /^- Appeals: \d+ open \(oldest \d+d\)$/);
 
@@ -19498,6 +19493,65 @@ test(
     } finally {
       if (appealId !== undefined) {
         await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appealId]);
+      }
+    }
+  },
+);
+
+test(
+  "SECURITY: review_queue's knowledge-candidates line never contains a candidate's title, content, or topic — bare day-count only, over a fixture with populated candidate rows (issue #801 acceptance criterion 4)",
+  { skip },
+  async () => {
+    const secretTopic = 'REVIEW-QUEUE-PRIVACY-SENTINEL-TOPIC';
+    const secretTitle = 'REVIEW-QUEUE-PRIVACY-SENTINEL-TITLE';
+    const secretContent = 'REVIEW-QUEUE-PRIVACY-SENTINEL-CONTENT';
+    let candidateId: number | undefined;
+    let digestId: number | undefined;
+    try {
+      digestId = await insertContextDigest({
+        periodStart: new Date(Date.now() - 86_400_000),
+        periodEnd: new Date(),
+        topic: secretTopic,
+        summary: 'aggregate summary',
+        exampleRefs: [],
+        distinctUsers: 3,
+        questionCount: 4,
+      });
+      candidateId = await insertKnowledgeCandidate({
+        digestId,
+        topic: secretTopic,
+        title: secretTitle,
+        content: secretContent,
+      });
+
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: `${RUN}-review-queue-candidate-privacy-admin`,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId: `${RUN}-review-queue-candidate-privacy-convo`,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await reviewQueueToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      const candidateLine = out.split('\n').find((l) => l.startsWith('- Knowledge candidates:'));
+      assert.ok(candidateLine);
+      assert.match(
+        candidateLine,
+        /^- Knowledge candidates: \d+ pending( \(oldest \d+d\))?$/,
+        'the knowledge-candidates line must be a bare pending-count plus an optional day-count age suffix only',
+      );
+      assert.ok(
+        !out.includes(secretTopic) && !out.includes(secretTitle) && !out.includes(secretContent),
+        "SECURITY: review_queue's output must never contain a candidate's topic, title, or content",
+      );
+    } finally {
+      if (candidateId !== undefined) {
+        await pool.query(`DELETE FROM knowledge_candidates WHERE id = $1`, [candidateId]);
+      }
+      if (digestId !== undefined) {
+        await pool.query(`DELETE FROM context_digests WHERE id = $1`, [digestId]);
       }
     }
   },
