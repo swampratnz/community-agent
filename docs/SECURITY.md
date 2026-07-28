@@ -1067,6 +1067,39 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   back by this PR. Purge-coherent by construction: the new table stores only
   a timestamp and an aggregate percentage, never a user id, so
   `forget_me`/`purge_user_data` have nothing user-scoped to reach here.
+- **Admin leverage alert** (`src/adminLeverageAlert.ts`, off unless
+  `ADMIN_LEVERAGE_ALERT_ENABLED`, issue #785): closes the same pull-only gap
+  #472/#568 closed for other super-admin-only signals, this time for
+  VISION's own named "Admin leverage" north star — `adminActivitySummary()`
+  (issue #488) already computes a per-actor `admin_audit` rollup, but only
+  on pull via the super-admin-only `admin_activity` tool. This adds the
+  missing push: an opt-in job on the same 6h `startTrackedJob` cadence sums
+  `adminActivitySummary(7)`'s `actionCount` across all actors, divides by
+  `listAdmins().length`, and DMs every super admin via the exact same
+  `alertSuperAdmins` helper `departedAdminAlert.ts` exports (not a second
+  copy), on a **weekly freshness-guard cadence** (a new, single-row/
+  guild-wide `admin_leverage_alert_sends` table, `id = 1` enforced by a
+  CHECK constraint, restart-safe like `engagement_alert_sends`' own
+  `sent_at` guard) — `actionsPerAdmin` is a continuous value with no natural
+  zero/nonzero crossing to latch on, the same reasoning that put
+  `engagement_alert_sends` on this cadence instead of the departed-admin
+  alert's latch. **No new tool surface, no new privileged capability, no
+  new data collection** — `admin_audit` is already fully super-admin-
+  queryable via the existing `admin_activity` tool; only the cadence
+  changes. The DM carries a bare total action count, a bare
+  `community_users` admin headcount, and the derived rate only — **never**
+  any admin's `actorUserId`/`platformUserId` or display name, the same
+  "bare aggregate, no identity" convention every digest/alert line in this
+  codebase follows; a super admin who wants the per-admin breakdown still
+  has to explicitly pull it via `admin_activity` (unchanged, already
+  gated). `adminCount === 0` renders a fixed "no current admins" message,
+  never a divide-by-zero/`NaN`/`Infinity` artifact. A week-over-week
+  `▲`/`▼`/"No change" trend suffix, mirroring `formatEngagementAlertMessage`'s
+  convention, appears only when a prior `admin_leverage_alert_sends.last_rate`
+  exists — a first-ever run renders no suffix. Purge-coherent by
+  construction: the new table stores only a timestamp and an aggregate
+  rate, never a user id, so `forget_me`/`purge_user_data` have nothing
+  user-scoped to reach here.
 - **Real-time access-request alert** (`notifyAccessRequest` in `router.ts`,
   off unless `ACCESS_REQUEST_ALERT_ENABLED`, issue #480): the discrete-event
   push complement to the pull-only `list_access_requests` tool and the

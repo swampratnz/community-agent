@@ -5143,6 +5143,53 @@ export async function getLastEngagementAlertPercentage(): Promise<number | null>
   return rows.length > 0 && rows[0].last_percentage !== null ? Number(rows[0].last_percentage) : null;
 }
 
+// --- Admin-leverage-alert freshness guard (issue #785) ----------------------
+
+/**
+ * True if the single-row, guild-wide `admin_leverage_alert_sends` guard was
+ * stamped within the last `days` — the restart-safe check
+ * `src/adminLeverageAlert.ts` uses so a redeploy mid-week can't double-send,
+ * mirroring `wasEngagementAlertSentRecently`'s shape exactly.
+ */
+export async function wasAdminLeverageAlertSentRecently(days: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM admin_leverage_alert_sends
+      WHERE id = 1 AND sent_at > now() - ($1 || ' days')::interval`,
+    [days],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Record that the admin-leverage alert was just sent, stamping the
+ * freshness guard and this run's rate for next week's delta.
+ * `rate === null` (zero current admins — no meaningful rate to trend
+ * against) persists `NULL`, so a later run's `getLastAdminLeverageAlertRate`
+ * correctly reports "no prior rate" rather than a stale, misleading number.
+ * Always the same `id = 1` row, so this is an upsert, not an insert.
+ */
+export async function recordAdminLeverageAlertSent(rate: number | null): Promise<void> {
+  await pool.query(
+    `INSERT INTO admin_leverage_alert_sends (id, sent_at, last_rate)
+     VALUES (1, now(), $1)
+     ON CONFLICT (id) DO UPDATE SET sent_at = now(), last_rate = EXCLUDED.last_rate`,
+    [rate],
+  );
+}
+
+/**
+ * Last week's persisted admin-leverage rate, or `null` when no row exists
+ * yet (first-ever run) or the last run had zero admins — the read half of
+ * the trend delta `formatAdminLeverageAlertMessage` renders, mirroring
+ * `getLastEngagementAlertPercentage`'s shape.
+ */
+export async function getLastAdminLeverageAlertRate(): Promise<number | null> {
+  const { rows } = await pool.query<{ last_rate: string | null }>(
+    `SELECT last_rate FROM admin_leverage_alert_sends WHERE id = 1`,
+  );
+  return rows.length > 0 && rows[0].last_rate !== null ? Number(rows[0].last_rate) : null;
+}
+
 // --- Member-facing weekly digest freshness guard (issue #645) --------------
 
 /**

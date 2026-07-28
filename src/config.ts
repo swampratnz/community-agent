@@ -516,6 +516,17 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // Proactive super-admin alert (issue #785) pushing adminActivitySummary()'
+  // (issue #488) per-actor admin_audit rollup, aggregated into a weekly
+  // actions-per-admin rate — closes the same pull-only gap #472/#568 closed
+  // for other super-admin-only signals, moving VISION's "Admin leverage"
+  // north star from pull (the on-demand admin_activity tool) to push. Off
+  // by default, consistent with this repo's convention for new proactive
+  // DMs.
+  ADMIN_LEVERAGE_ALERT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Real-time admin nudge (issue #650) fired the moment a knowledge-gap
   // cluster (recordKnowledgeGap + recentKnowledgeGapClusters, issue #208)
   // crosses KNOWLEDGE_GAP_ALERT_THRESHOLD unresolved, not-yet-alerted rows —
@@ -1213,6 +1224,9 @@ export const config = {
   },
   engagementAlert: {
     enabled: env.ENGAGEMENT_ALERT_ENABLED ?? false,
+  },
+  adminLeverageAlert: {
+    enabled: env.ADMIN_LEVERAGE_ALERT_ENABLED ?? false,
   },
   knowledgeGapAlert: {
     enabled: env.KNOWLEDGE_GAP_ALERT_ENABLED ?? false,

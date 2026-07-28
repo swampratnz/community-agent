@@ -42,6 +42,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   the sequencing layer. Added to the explicit `ENABLED_SKILLS` allowlist
   alongside its five siblings (never `'all'`); no new tool, and no tier's
   `allowedTools`/`disallowedTools` change.
+- **Weekly admin-leverage alert** (#785, `ADMIN_LEVERAGE_ALERT_ENABLED`, off
+  by default): a proactive weekly DM to super admins summarising
+  moderation/curation workload — total actions across all admins, the
+  current admin headcount, and the derived actions-per-admin rate, with a
+  week-over-week trend. Closes the pull-only gap left by the existing
+  `admin_activity` tool, the same "pull → push" move already made for
+  departed-admin visibility and community engagement. Bare aggregate
+  numbers only — never a specific admin's identity.
 
 ## 2026-07-27
 
