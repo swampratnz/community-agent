@@ -22,7 +22,9 @@ process.env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = '2';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
-const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT } = await import('../src/agent/tools.js');
+const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI } = await import(
+  '../src/agent/tools.js'
+);
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -112,6 +114,7 @@ function makeRouter(opts: {
   runTurn?: ConstructorParameters<typeof Router>[0];
   searchKnowledgeForShortcut: SearchKnowledgeFn;
   recordShortcutRetrieval?: ConstructorParameters<typeof Router>[4];
+  getLangPref?: ConstructorParameters<typeof Router>[6];
   checkLowRatedKnowledge: CheckLowRatedFn;
 }): InstanceType<typeof Router> {
   return new Router(
@@ -124,7 +127,7 @@ function makeRouter(opts: {
     opts.searchKnowledgeForShortcut,
     opts.recordShortcutRetrieval ?? (async () => {}),
     undefined,
-    undefined,
+    opts.getLangPref,
     opts.checkLowRatedKnowledge,
   );
 }
@@ -243,4 +246,114 @@ test('SECURITY: router (low-rated caveat): the gated-guest shortcut is unaffecte
   assert.match(sent[0].text, /From our knowledge base/i);
   assert.doesNotMatch(sent[0].text, /rate_answer/);
   assert.equal(called, false, 'the guest shortcut path must never consult the low-rated lookup');
+});
+
+// --- Standing 'mi' language preference on the low-rated caveat (issue #789) ---
+
+test("router (low-rated caveat): a caller with a standing 'mi' language preference gets the caveat AND the suffix in te reo Māori — never a mixed-language reply", async () => {
+  const router = makeRouter({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    getLangPref: async () => 'mi',
+    checkLowRatedKnowledge: async () => true,
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.match(
+    sent[0].text,
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
+  assert.doesNotMatch(
+    sent[0].text,
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'the English caveat must not also appear',
+  );
+  assert.match(
+    sent[0].text,
+    /— Nō tā mātou pātengi mōhiotanga/,
+    'the existing #435 suffix must still render in te reo, proving the whole reply is one language',
+  );
+});
+
+test("router (low-rated caveat): caller preference 'auto' (no standing preference) keeps the English caveat and suffix, byte-identical to pre-#789 behaviour", async () => {
+  const router = makeRouter({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    getLangPref: async () => 'auto',
+    checkLowRatedKnowledge: async () => true,
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    `Be kind and follow the code of conduct. (${KNOWLEDGE_LOW_RATED_CAVEAT_TEXT})\n\n— From our knowledge base; ask me to explain if this doesn't quite answer it.`,
+  );
+});
+
+test('router (low-rated caveat): getLangPref is called exactly once per sendKnowledgeShortcut invocation — the note/suffix reorder must not introduce a second DB read', async () => {
+  let calls = 0;
+  const router = makeRouter({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    getLangPref: async () => {
+      calls += 1;
+      return 'mi';
+    },
+    checkLowRatedKnowledge: async () => true,
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage());
+
+  assert.equal(sent.length, 1);
+  assert.equal(calls, 1, 'moving the lookup above the note must not duplicate it');
+});
+
+test('SECURITY: KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI is a fixed, non-interpolated string — byte-identical regardless of the served KB entry or caller', async () => {
+  const router = makeRouter({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+      id: 999,
+      content: 'A completely different knowledge entry.',
+    }),
+    getLangPref: async () => 'mi',
+    checkLowRatedKnowledge: async () => true,
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ userId: 'super-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.match(
+    sent[0].text,
+    new RegExp(`\\(${KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`),
+  );
+});
+
+test('SECURITY: router (low-rated caveat): a getLangPref rejection still renders a complete English reply — caveat, suffix and content all present, never dropped or thrown', async () => {
+  const router = makeRouter({
+    searchKnowledgeForShortcut: fixedHitSearch(0.95),
+    getLangPref: async () => {
+      throw new Error('language_prefs read boom');
+    },
+    checkLowRatedKnowledge: async () => true,
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await assert.doesNotReject(trigger(makeMessage()));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Be kind and follow the code of conduct\./);
+  assert.match(
+    sent[0].text,
+    new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
+  assert.match(sent[0].text, /From our knowledge base/i);
 });

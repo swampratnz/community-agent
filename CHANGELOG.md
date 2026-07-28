@@ -57,6 +57,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   alongside its five siblings (never `'all'`); no new tool, and no tier's
   `allowedTools`/`disallowedTools` change.
 
+### Fixed
+- **The knowledge shortcut's low-rated caveat now honours a caller's standing
+  te reo Māori preference** (#789). A member with `set_language_preference('mi')`
+  who hit a low-rated knowledge entry via the zero-model-call shortcut used to
+  get a reply where the trailing attribution line was already in te reo
+  (issue #435) but the "other members found this unhelpful" caveat one line
+  above it was stuck in English — a single reply, mixed language. The caveat
+  now renders in te reo alongside the suffix, and English-preference replies
+  are unchanged.
+
 ## 2026-07-27
 
 ### Added

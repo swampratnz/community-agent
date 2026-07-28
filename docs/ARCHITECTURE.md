@@ -862,7 +862,15 @@ stored, already-served real answer) is left untranslated, same "translate the
 shell, not the dynamic payload" discipline as #339/#405; the repeat-max-turns
 shortcut instead swaps in the already-existing `MAX_TURNS_REPLY_MI` (issue
 #396) alongside its own notice, since that failure text is itself a fixed
-constant, not caller-derived content. Separately, the eleven deterministic
+constant, not caller-derived content. #435's own sweep was scoped to these
+five `router.ts`-owned strings and explicitly never reached
+`KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`, since that constant and its rendering
+function (`formatKnowledgeCitationNote`) live in `agent/tools.ts` — issue
+#789 closes that one remaining gap, threading a `lang` parameter into
+`formatKnowledgeCitationNote` off the same `getLangPref` read
+`sendKnowledgeShortcut` already resolves for the suffix, so a `'mi'`-
+preference member's low-rated-entry reply is one language throughout rather
+than an English caveat next to a te reo suffix. Separately, the eleven deterministic
 fallback/notice constants across `router.ts`/`core.ts`/`upstreamFailure.ts`
 also gain a
 fixed, human-authored `_PLAIN` counterpart honouring a standing `'plain'`
