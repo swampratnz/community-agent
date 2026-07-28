@@ -340,6 +340,25 @@ export async function countPendingKnowledgeCandidates(): Promise<number> {
 }
 
 /**
+ * Count of accepted candidates that were specifically a member's own
+ * `suggest_knowledge` (or `rate_answer` implicit-draft, issue #726)
+ * contribution, reviewed since `since` — issue #837's public member-digest
+ * flywheel signal, the community-facing counterpart to
+ * `countAcceptedKnowledgeCandidatesSince` (#797, admin-digest throughput).
+ * Same shape, plus `source_user_id IS NOT NULL`, which is non-null only for
+ * a member's own submission (never a machine-drafted context-builder row —
+ * see `KnowledgeCandidate.sourceUserId`'s docstring above).
+ */
+export async function countAcceptedMemberKnowledgeTipsSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM knowledge_candidates
+      WHERE status = 'accepted' AND reviewed_at > $1 AND source_user_id IS NOT NULL`,
+    [since],
+  );
+  return Number(rows[0].n);
+}
+
+/**
  * Whole-day age of the oldest still-pending knowledge candidate — the same
  * `MIN(created_at)` oldest-age mechanic `oldestOpenAppealAgeDays` (#787)
  * applies to appeals, over exactly the `status = 'pending'` row set

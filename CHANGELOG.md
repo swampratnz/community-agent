@@ -54,6 +54,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   of silently being upserted into the knowledge base as if it were a real
   briefing. No behaviour change for a well-formed response or a genuine
   "nothing new" result.
+- **The weekly member digest now credits member-suggested knowledge tips**
+  (#837): a new `countAcceptedMemberKnowledgeTipsSince` repository function —
+  the same `COUNT(*)` shape as the existing project-showcase count — counts
+  this week's accepted `knowledge_candidates` rows that came from a member's
+  own `suggest_knowledge` submission (#633) rather than admin/machine
+  drafting. When nonzero, the digest's "📚 New in the knowledge base" line
+  gains a trailing "— N suggested by members like you 💡" clause, clamped to
+  never exceed the number of titles actually shown. Zero-count and no-new-
+  knowledge weeks render byte-identical to today; the digest still receives
+  only a bare number, so no platform or member identity ever reaches this
+  public channel post.
 
 ## 2026-07-28
 
