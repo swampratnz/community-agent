@@ -69,7 +69,8 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/router.ts` — 🔒 The hot path: every inbound message lands here. Rate limits, budgets, tier resolution, confirm handling, moderation and the agent call are all sequenced in this file.
 - `src/status/` — Anthropic status-page check behind the "is it me or is Anthropic down?" answer, with its own cache so a common question costs nothing.
 - `src/storage/` — 🔒 Postgres + pgvector: the pool, schema/migrations, local embeddings, runtime policies, and the repository that owns every query. Admin-facing reads are conversation-scoped in SQL here.
-- `src/storage/repository.ts` — 🔒 Every SQL query in the product. Conversation scoping for admin reads is enforced in the queries themselves, not by callers.
+- `src/storage/repository.ts` — 🔒 The repository entry point every caller imports: still holds the not-yet-extracted queries, and re-exports the per-domain modules in `repository/`. Conversation scoping for admin reads is enforced in the queries themselves, not by callers.
+- `src/storage/repository/` — 🔒 Per-domain query modules being carved out of `repository.ts` one domain at a time (audit L14). Add a new query to its domain module here, not to `repository.ts`; everything is re-exported so import sites never change.
 - `src/usageAlert.ts` — Usage-threshold alerting to super admins with a debounce tracker shared by several other alert modules.
 - `src/usageCostDigest.ts` — The periodic cost digest (spend, cache hit rate) sent to super admins.
 - `src/util/` — Shared leaf helpers with no dependencies of their own; currently NZ-timezone rendering for member-facing times.

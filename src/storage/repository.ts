@@ -7,6 +7,36 @@ import { embed } from './embeddings.js';
 import { config } from '../config.js';
 import { pageKeyOf } from '../context/docsIngest.js';
 
+/**
+ * THIS FILE IS BEING SPLIT, ONE DOMAIN AT A TIME (audit 2026-07-28 L14).
+ *
+ * It was ~7,100 lines — every SQL query in the product in one module — which
+ * made it both hard to navigate and the repo's worst merge-conflict hotspot,
+ * since nearly every feature PR appends to it. Per-domain modules now live in
+ * `./repository/` and are RE-EXPORTED from here, deliberately, so that all ~42
+ * import sites and `tests/repository.test.ts` keep working unchanged: callers
+ * still `import { … } from '.../repository.js'` and neither know nor care which
+ * file a function lives in. That is what lets the split proceed incrementally
+ * instead of as one unreviewable big-bang diff.
+ *
+ * WHEN YOU ADD A QUERY: put it in the matching `./repository/<domain>.ts` (or
+ * add a new domain module + `export *` line here, plus its
+ * `docs/agents/module-map.md` entry — `npm run context:check` enforces that).
+ * Only add to the body of THIS file if its domain has not been extracted yet.
+ *
+ * The extracted modules are verbatim moves — no behaviour change — and the
+ * security invariant is unchanged wherever it applies: admin-facing reads are
+ * conversation-scoped IN SQL (`AND conversation_id = ANY($n)`, `null` meaning
+ * super-admin/unrestricted), never by the caller. Keep that in the query.
+ */
+export * from './repository/preferences.js';
+export * from './repository/memberNotes.js';
+
+// `export *` re-exports for CALLERS but does not bind the names in this
+// module's own scope, so anything still living here that uses an extracted
+// function (getMyData reads the caller's standing style) imports it explicitly.
+import { getResponseStyle, type ResponseStyle } from './repository/preferences.js';
+
 export interface InteractionInput {
   platform: Platform;
   conversationId: string;
@@ -4297,69 +4327,6 @@ function mapMemberProjectRow(r: {
   };
 }
 
-// --- Member notes (admin-curated person-scoped context, issue #45) -----------
-
-export const MEMBER_NOTE_MAX_CHARS = 1000;
-
-export interface MemberNote {
-  id: number;
-  note: string;
-  createdBy: string;
-  createdAt: Date;
-}
-
-/**
- * Attach an admin-authored note to a member. Content is capped server-side;
- * target validation (the member must exist in community_users) lives in the
- * tool layer so the refusal message can be user-facing. Never in
- * knowledge_search or memory recall — this table has no embedding column by
- * design and is only read through listMemberNotes.
- */
-export async function addMemberNote(input: {
-  platform: Platform;
-  userId: string;
-  note: string;
-  createdBy: string;
-}): Promise<number> {
-  const { rows } = await pool.query(
-    `INSERT INTO member_notes (platform, user_id, note, created_by)
-     VALUES ($1,$2,$3,$4) RETURNING id`,
-    [input.platform, input.userId, input.note.slice(0, MEMBER_NOTE_MAX_CHARS), input.createdBy],
-  );
-  return Number(rows[0].id);
-}
-
-export async function listMemberNotes(platform: Platform, userId: string): Promise<MemberNote[]> {
-  const { rows } = await pool.query(
-    `SELECT id, note, created_by, created_at
-       FROM member_notes
-      WHERE platform = $1 AND user_id = $2
-      ORDER BY created_at DESC`,
-    [platform, userId],
-  );
-  return rows.map((r) => ({
-    id: Number(r.id),
-    note: r.note,
-    createdBy: r.created_by,
-    createdAt: r.created_at,
-  }));
-}
-
-/** Fetch one note by id, so the delete CONFIRM can show whose note it is. */
-export async function getMemberNote(
-  id: number,
-): Promise<{ platform: Platform; userId: string; note: string } | null> {
-  const { rows } = await pool.query(`SELECT platform, user_id, note FROM member_notes WHERE id = $1`, [id]);
-  if (rows.length === 0) return null;
-  return { platform: rows[0].platform as Platform, userId: rows[0].user_id, note: rows[0].note };
-}
-
-/** Delete one note by id. Returns false if no row matched. */
-export async function deleteMemberNote(id: number): Promise<boolean> {
-  const { rowCount } = await pool.query(`DELETE FROM member_notes WHERE id = $1`, [id]);
-  return (rowCount ?? 0) > 0;
-}
-
 // --- Server roster (join/leave persistence) ----------------------------------
 
 /**
@@ -5344,84 +5311,6 @@ export async function listReleaseWatchUpdatesSince(
     if (!byPage.has(page)) byPage.set(page, { pageTitle: page, sourceUrl: row.source_url });
   }
   return [...byPage.values()].slice(0, clampedLimit);
-}
-
-// --- Standing response-style preference (issue #126) ------------------------
-
-export type ResponseStyle = 'standard' | 'plain';
-
-/**
- * The caller's standing response-style preference, or 'standard' (today's
- * default behaviour) when they've never called `set_response_style`. A
- * single primary-key lookup, so this is a negligible per-turn cost.
- */
-export async function getResponseStyle(platform: Platform, userId: string): Promise<ResponseStyle> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT style FROM response_style_prefs WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    return rows[0]?.style === 'plain' ? 'plain' : 'standard';
-  } catch (err) {
-    // Hot-path read on every turn: a DB hiccup must not fail the turn (issue
-    // #52) — degrade to the default reply style, same as getCodeAnswersPolicy.
-    logger.warn({ err, platform, userId }, 'Response-style read failed; using standard');
-    return 'standard';
-  }
-}
-
-/** Upsert the caller's response-style preference. */
-export async function setResponseStyle(
-  platform: Platform,
-  userId: string,
-  style: ResponseStyle,
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO response_style_prefs (platform, user_id, style, updated_at)
-     VALUES ($1, $2, $3, now())
-     ON CONFLICT (platform, user_id) DO UPDATE SET style = $3, updated_at = now()`,
-    [platform, userId, style],
-  );
-}
-
-// --- Standing language preference (issue #189) -------------------------------
-
-export type LanguagePreference = 'auto' | 'en' | 'mi';
-
-/**
- * The caller's standing language preference, or 'auto' (today's per-message
- * mirroring default, issue #68) when they've never called
- * `set_language_preference`. A single primary-key lookup, same cost shape as
- * getResponseStyle.
- */
-export async function getLanguagePreference(platform: Platform, userId: string): Promise<LanguagePreference> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT language FROM language_prefs WHERE platform = $1 AND user_id = $2`,
-      [platform, userId],
-    );
-    const language = rows[0]?.language;
-    return language === 'en' || language === 'mi' ? language : 'auto';
-  } catch (err) {
-    // Hot-path read on every turn: a DB hiccup must not fail the turn (issue
-    // #52) — degrade to 'auto', same as getResponseStyle.
-    logger.warn({ err, platform, userId }, 'Language-preference read failed; using auto');
-    return 'auto';
-  }
-}
-
-/** Upsert the caller's standing language preference. */
-export async function setLanguagePreference(
-  platform: Platform,
-  userId: string,
-  language: LanguagePreference,
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO language_prefs (platform, user_id, language, updated_at)
-     VALUES ($1, $2, $3, now())
-     ON CONFLICT (platform, user_id) DO UPDATE SET language = $3, updated_at = now()`,
-    [platform, userId, language],
-  );
 }
 
 // --- Auto-moderation strikes -------------------------------------------------

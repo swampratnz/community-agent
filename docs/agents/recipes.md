@@ -80,7 +80,8 @@ unset is a silent breaking change for the running deployment.
 | File | Why |
 |---|---|
 | `src/storage/schema.sql` | Schema changes. **Every statement must be `IF NOT EXISTS`** — `migrate` is idempotent and re-runs on every deploy. |
-| `src/storage/repository.ts` | Every query in the product lives here. Admin-facing reads are **conversation-scoped in SQL**, not by the caller. |
+| `src/storage/repository/<domain>.ts` | Put a new query in its **domain module** (`preferences`, `memberNotes`, …). `repository.ts` re-exports them, so callers still import from `repository.js`. Admin-facing reads are **conversation-scoped in SQL**, not by the caller. |
+| `src/storage/repository.ts` | Only for a domain not yet extracted (the split is incremental — audit L14). A brand-new domain module also needs its `docs/agents/module-map.md` entry in the same diff. |
 | `tests/repository.test.ts` | DB tests skip cleanly without `DATABASE_URL` and run in CI against a real `pgvector/pgvector:pg16` service. |
 
 Run `npm run migrate` before `npm test` locally, or the DB tests fail with
