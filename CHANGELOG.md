@@ -106,6 +106,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   digest), rendered only when at least one is non-zero, each with its own
   week-over-week trend. Bare integers only — never a candidate title/content
   or a project name/description/link/owner.
+- **Incoming messages now have a length cap before they reach the paid model
+  call** (#811): a pasted stack trace, log dump, or chunk of source code —
+  an ordinary way to ask for debugging help — had no ceiling on how much of
+  it became billed input, every turn, for as long as the session stayed
+  resumed. `MAX_INCOMING_MESSAGE_CHARS` (default 8,000 characters, `0` =
+  disabled) now truncates the model-bound copy of the message, appending a
+  fixed marker stating how many characters were omitted. Only that copy
+  shrinks — the original message is still what gets archived, classified for
+  CONFIRM/escalation, and echoed back everywhere else.
 
 ### Security
 - **Trusted CONFIRM notices are now sanitised at a single choke point.** The

@@ -575,6 +575,28 @@ export function buildQueryOptions(
 }
 
 /**
+ * Bounds a copy of the member's message before it reaches the paid model call
+ * (MAX_INCOMING_MESSAGE_CHARS; `maxChars <= 0` disables — byte-identical to
+ * unbounded). Below the cap, `text` is returned unchanged (no marker). Above
+ * it, the cut point steps back off a split UTF-16 surrogate pair (rather than
+ * slicing through one) so the result is always well-formed UTF-16, and a
+ * fixed, non-model-composed marker stating the exact omitted-character count
+ * is appended — mirroring `truncateForEcho`'s slice-plus-suffix shape.
+ */
+export function truncateIncomingMessage(text: string, maxChars: number): string {
+  if (maxChars <= 0 || text.length <= maxChars) return text;
+  let cut = maxChars;
+  const before = text.charCodeAt(cut - 1);
+  if (before >= 0xd800 && before <= 0xdbff) {
+    // A high surrogate at the boundary means its low surrogate is at `cut` —
+    // step back one so the pair is never split.
+    cut -= 1;
+  }
+  const omitted = text.length - cut;
+  return `${text.slice(0, cut)}\n\n[message truncated: ${omitted} characters omitted]`;
+}
+
+/**
  * Run one agent turn for an incoming message.
  *
  * Pipeline: recall relevant memory -> build a role-scoped system prompt and
@@ -590,6 +612,12 @@ export async function runAgentTurn(
   getAdapter?: AdapterLookup,
   image?: IncomingMessage['image'],
 ): Promise<AgentReply> {
+  // Bound the model-bound copy only — this reassigns the local `userText`
+  // binding, never the caller's original string (msg.text in router.ts), so
+  // archiving/classification/dedup/echo downstream of the router still see
+  // the full, untruncated message (issue #811).
+  userText = truncateIncomingMessage(userText, config.behaviour.maxIncomingMessageChars);
+
   // Memory recall is scoped to THIS conversation only. Cross-conversation
   // recall is available solely through the admin-gated tools, so a public
   // channel can never surface someone else's DMs.
