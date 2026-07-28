@@ -30,6 +30,9 @@ is marked **🔒**. Changes there need a `SECURITY:` test (see
 - `src/agent/core.ts` — 🔒 Builds the per-turn `query()` options (model, tools, plugins/skills, session tail) and runs the agent turn. Tool surface is derived from the caller's tier here.
 - `src/agent/outbound.ts` — 🔒 The outbound reply filter (secret redaction + behaviour policy) applied to every message the bot sends. Deterministic, and deliberately not something the model can talk its way past.
 - `src/agent/pendingActions.ts` — 🔒 The confirm-before-destructive flow: destructive tools register a pending action for the router to execute after an explicit confirmation, rather than firing directly.
+- `src/agent/personas.ts` — The selectable persona definitions (voice, tone, quirks) the system prompt draws its voice rules from; content only, never authority over the security section.
+- `src/agent/secrets.ts` — 🔒 `runtimeSecrets()`: the exact-value secret list the outbound filter redacts as a backstop against unknown egress paths. Add every new outward credential here.
+- `src/agent/skills/` — 🔒 One `SKILL.md` per Agent Skill, plus the plugin manifest. Loaded only when `AGENT_SKILLS_ENABLED`, and only the hand-written `ENABLED_SKILLS` allowlist in `core.ts` — never derived from request content.
 - `src/agent/systemPrompt.ts` — 🔒 Assembles the system prompt: security guidelines, persona voice rules, and the NZ-date grounding. Voice rules never override the security section above them.
 - `src/agent/tools.ts` — 🔒 Every tool implementation plus its tier requirement. By far the largest file in the repo; find your tool by name before reading anything else.
 - `src/auth/` — 🔒 Identity and role resolution: tiers come from env plus the `community_users` table, never from message content. Three files, all small and worth reading in full.

@@ -121,7 +121,7 @@
   "statusCheckAlert.test.ts": 3,
   "suggestIssue.test.ts": 3,
   "systemPrompt.test.ts": 19,
-  "tools.test.ts": 256,
+  "tools.test.ts": 257,
   "unhelpfulAnswerEscalationRouter.test.ts": 2,
   "usageAlertPendingQueue.test.ts": 2,
   "usageCostDigest.test.ts": 3,

@@ -314,6 +314,7 @@ export class BaileysAdapter implements PlatformAdapter {
     });
 
     sock.ev.on('group-participants.update', (update) => {
+      if (this.sock !== sock) return; // stale socket — see connection.update (audit M5)
       this.onGroupParticipantsUpdate(update).catch((err) =>
         logger.error({ err }, 'WhatsApp group welcome failed'),
       );

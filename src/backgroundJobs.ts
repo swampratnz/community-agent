@@ -78,8 +78,19 @@ export function startTrackedJob(
 
   let tracker: JobFailureTracker = initialJobFailureTracker();
   let lastSuccessAt: number | null = null;
+  // Re-entrancy latch: a run that outlives its tick (a docs-ingest sweep can
+  // approach the 6h interval) must not overlap the next one — overlapping
+  // passes duplicate work and race each other's writes. This is the same
+  // guard the dev-team watch poller carries (audit M6); hoisting it here
+  // covers every tracked job at once.
+  let inFlight = false;
 
   const run = async () => {
+    if (inFlight) {
+      logger.warn({ job: jobName }, 'Background job tick skipped — previous run still in flight');
+      return;
+    }
+    inFlight = true;
     try {
       await runOnce();
       lastSuccessAt = Date.now();
@@ -96,6 +107,8 @@ export function startTrackedJob(
           buildJobFailureAlert(jobName, tracker.consecutiveFailures, lastSuccessAt),
         );
       }
+    } finally {
+      inFlight = false;
     }
   };
   void run();
