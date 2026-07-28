@@ -33,7 +33,7 @@ import { formatNzEventTime } from '../../util/nzTime.js';
 import { logger, hashId } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
+import { reserveVoiceTranscriptionSlot, reserveImageInputDaily } from '../../agent/tools.js';
 import { transcribeVoiceNote } from '../../media/voiceTranscribe.js';
 import {
   VOICE_LANGUAGE_CAVEAT_TEXT_MI,
@@ -432,6 +432,17 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       }
     }
 
+    // Discord image-attachment input (opt-in, IMAGE_INPUT_ENABLED, issue
+    // #783): keyed on the SAME single-attachment slot as the voice path above
+    // — a native voice-message bubble always reports `duration_secs`, so the
+    // two paths are mutually exclusive on any one message. Unlike voice, this
+    // runs independently of `text` being present: a screenshot is routinely
+    // sent alongside a caption, not instead of one.
+    const image =
+      voiceAttachment && voiceAttachment.duration == null
+        ? await this.maybeFetchImageAttachment(voiceAttachment, message.author.id)
+        : undefined;
+
     // Auto-moderation scans EVERY in-scope guild message (not just addressed
     // ones), independently of the agent path below. Fire-and-forget so a scan
     // failure can never block or delay normal handling. DMs aren't scanned —
@@ -460,6 +471,7 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
       userId: message.author.id,
       userName: message.member?.displayName ?? message.author.username,
       text,
+      ...(image ? { image } : {}),
       isDirect: isDM,
       addressedToBot: mentioned || repliedToBot,
       // Belt-and-braces alongside the early `message.author.bot` return above
@@ -553,6 +565,86 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     const transcript = await transcribeVoiceNote(buffer, config.discord.voice.model);
     logger.info({ chars: transcript.length, seconds }, 'Transcribed Discord voice message');
     return transcript;
+  }
+
+  /**
+   * Resolve a single Discord attachment to an `IncomingMessage.image` payload,
+   * or `undefined` to leave it untouched — the SINGLE gate for the feature
+   * (issue #783), mirroring `maybeTranscribeVoiceMessage`'s exact order:
+   *   1. IMAGE_INPUT_ENABLED must be on (off by default);
+   *   2. the sender's resolved tier must meet IMAGE_INPUT_MIN_ROLE (default
+   *      'super_admin'). At the default this stays a pure `isSuperAdmin` env
+   *      check — no DB call — exactly like the voice gate;
+   *   3. IMAGE_INPUT_DAILY_LIMIT_PER_USER is checked next, BEFORE the
+   *      MIME/byte check, per the acceptance criteria — a sender already at
+   *      their daily cap is refused without their attachment's MIME/size
+   *      ever being inspected;
+   *   4. the attachment's `contentType` must be on the allowlist
+   *      (image/png, image/jpeg, image/webp) and its `size` must be under
+   *      IMAGE_INPUT_MAX_BYTES — both read from Discord's own attachment
+   *      metadata, so this never fetches to find out;
+   *   5. only then is the attachment fetched and base64-encoded.
+   * Any fetch failure is logged and swallowed (returns undefined) so a bad
+   * attachment is dropped rather than crashing the loop or leaking internals.
+   * The bytes are held only for the return value — `runAgentTurn` passes them
+   * to `query()` for this one turn and nothing here persists them.
+   */
+  private async maybeFetchImageAttachment(
+    attachment: Attachment,
+    senderId: string,
+  ): Promise<IncomingMessage['image'] | undefined> {
+    if (!config.discord.image.enabled) return undefined;
+    const minRole = config.discord.image.minRole;
+    if (minRole === 'super_admin') {
+      if (!isSuperAdmin('discord', senderId)) return undefined;
+    } else {
+      const role = await resolveRole('discord', senderId);
+      if (!atLeast(role, minRole)) return undefined;
+    }
+    if (!reserveImageInputDaily(`discord:${senderId}`, config.discord.image.dailyLimitPerUser)) {
+      logger.info(
+        { sender: hashId(senderId), limit: config.discord.image.dailyLimitPerUser },
+        'Discord image attachment refused — sender hit the daily image-input cap',
+      );
+      return undefined;
+    }
+    const mimeType = attachment.contentType;
+    if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') {
+      logger.info({ mimeType }, 'Discord image attachment outside the MIME allowlist — ignored without fetching');
+      return undefined;
+    }
+    if (attachment.size > config.discord.image.maxBytes) {
+      logger.info(
+        { size: attachment.size, cap: config.discord.image.maxBytes },
+        'Discord image attachment over the byte cap — ignored without fetching',
+      );
+      return undefined;
+    }
+    try {
+      return await this.fetchImageAttachment(attachment.url, mimeType);
+    } catch (err) {
+      logger.warn({ err }, 'Discord image-attachment fetch failed — dropping the attachment');
+      return undefined;
+    }
+  }
+
+  /**
+   * Download the image attachment's bytes over HTTPS and base64-encode them.
+   * Split out from the gate above as the single seam that touches the
+   * network — overridden in tests so the gate logic can be exercised without
+   * a real fetch. Never called for a below-tier sender, a disabled feature,
+   * an at-cap sender, or a MIME/byte-cap refusal (the gate returns first).
+   */
+  private async fetchImageAttachment(
+    url: string,
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp',
+  ): Promise<IncomingMessage['image']> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Discord image attachment (status ${response.status})`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return { data: buffer.toString('base64'), mimeType };
   }
 
   /**

@@ -371,6 +371,36 @@ const EnvSchema = z.object({
   // less-trusted guild population could otherwise hit.
   DISCORD_VOICE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
 
+  // Discord image-attachment input (issue #783, CAPABILITY-IDEAS.md §A1): a
+  // single image attachment (screenshot, stack trace, billing page) is
+  // base64-encoded and passed to query() as an image content block alongside
+  // the turn's text, so the model can ground its answer in what was actually
+  // shown rather than whatever caption (or nothing) was typed. OFF by
+  // default. Unlike DISCORD_VOICE_* above — which only ever produces ordinary
+  // `text` that flows through the same moderation/injection handling every
+  // typed message gets — an image is a genuinely NEW untrusted-input class:
+  // text rendered inside an image is interpreted model-side and is invisible
+  // to moderator.scan and every other inbound filter, defended only by the
+  // explicit systemPrompt.ts clause (no sanitizer can inspect model-side
+  // image interpretation). So IMAGE_INPUT_MIN_ROLE defaults to 'super_admin'
+  // — a deliberate correction of CAPABILITY-IDEAS.md's own draft text
+  // ('member+'), matching the same conservative-default precedent
+  // DISCORD_VOICE_MIN_ROLE/WHATSAPP_VOICE_MIN_ROLE already established
+  // (see the comment above WHATSAPP_VOICE_MIN_ROLE).
+  IMAGE_INPUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  IMAGE_INPUT_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Comfortably inside the Anthropic API's own per-image limit; refused
+  // WITHOUT fetching, bounding per-turn download/encode cost.
+  IMAGE_INPUT_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
+  // Rolling calendar-day cap per sender (0 = unlimited), checked BEFORE any
+  // attachment fetch — same shape and discipline as IMAGE_GEN_DAILY_LIMIT/
+  // DEV_TEAM_DAILY_LIMIT, bounding the real per-image multimodal token cost a
+  // single caller could otherwise run up.
+  IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
+
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
   SUPER_ADMIN_WHATSAPP_NUMBERS: z.string().optional(),
@@ -1087,6 +1117,12 @@ export const config = {
       maxSeconds: env.DISCORD_VOICE_MAX_SECONDS,
       minRole: env.DISCORD_VOICE_MIN_ROLE,
       rateLimitPerHour: env.DISCORD_VOICE_RATE_LIMIT_PER_HOUR,
+    },
+    image: {
+      enabled: env.IMAGE_INPUT_ENABLED ?? false,
+      minRole: env.IMAGE_INPUT_MIN_ROLE,
+      maxBytes: env.IMAGE_INPUT_MAX_BYTES,
+      dailyLimitPerUser: env.IMAGE_INPUT_DAILY_LIMIT_PER_USER,
     },
   },
   moderation: {
