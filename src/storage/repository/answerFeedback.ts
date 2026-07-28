@@ -3,8 +3,12 @@ import { pool } from '../db.js';
 
 /**
  * Member ratings of the bot's own answers (#118): the rate_answer signal, its
- * daily cap, unhelpful-answer clustering, and the low-rated-knowledge rollups
- * that feed the admin digest.
+ * daily cap, and the low-rated-knowledge rollups that feed the admin digest.
+ *
+ * Note `recentUnhelpfulFeedbackClusters` is NOT here — it sits in
+ * contentReports.ts, because in repository.ts it lived just above the
+ * "Answer feedback" banner and this split preserved section order verbatim
+ * rather than relocating a function to tidy the boundary.
  *
  * 🔒 Carries conversation-scoped admin reads; the `conversationIds` filter and
  * its SQL moved verbatim.

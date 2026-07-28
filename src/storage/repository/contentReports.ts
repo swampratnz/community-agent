@@ -6,7 +6,10 @@ import { QUESTION_CLUSTER_SIMILARITY_THRESHOLD, cosineSim } from './shared.js';
 
 /**
  * Member-facing abuse/spam reports: intake, admin triage views, resolution, and
- * the repeat-target warning.
+ * the repeat-target warning. Also holds `recentUnhelpfulFeedbackClusters` (the
+ * unhelpful-answer clustering behind the admin digest), which sat immediately
+ * above the "Answer feedback" banner in repository.ts — kept here because this
+ * split preserves section order verbatim rather than relocating functions.
  *
  * 🔒 The most scoping-dense domain in the repository — an admin only ever sees
  * reports from conversations they are in, enforced by the `conversationIds`
