@@ -149,6 +149,16 @@ export interface AgentReply {
    */
   unhelpfulAnswerRated?: boolean;
   /**
+   * `true` only when this turn's `request_human_help` call recorded a
+   * genuine ask (issue #808), threaded from `TurnOutcome.humanHelpRequested`
+   * via the same turn-scoped-ref pattern as `unhelpfulAnswerRated` above.
+   * `undefined` on a declined-by-cap call, no `request_human_help` call at
+   * all, or a turn that didn't end in genuine success (`ok !== true`).
+   * Consumed by the router's post-turn deterministic escalation branch —
+   * never read by, or acted on inside, any model-callable tool.
+   */
+  humanHelpRequested?: boolean;
+  /**
    * Set only when this turn's `knowledge_search` below-floor-miss crossed
    * `KNOWLEDGE_GAP_ALERT_THRESHOLD` for the first time (issue #650),
    * threaded from `TurnOutcome.knowledgeGapCluster` via the same
@@ -265,6 +275,7 @@ interface TurnOutcome {
   maxTurnsExceeded?: boolean;
   knowledgeEntryId?: number;
   unhelpfulAnswerRated?: boolean;
+  humanHelpRequested?: boolean;
   knowledgeGapCluster?: CrossedKnowledgeGapCluster;
   staleKnowledgeAlertIds?: number[];
 }
@@ -753,6 +764,7 @@ export async function runAgentTurn(
     responseStyle,
     knowledgeEntryId: outcome.knowledgeEntryId,
     unhelpfulAnswerRated: outcome.unhelpfulAnswerRated,
+    humanHelpRequested: outcome.humanHelpRequested,
     knowledgeGapCluster: outcome.knowledgeGapCluster,
     staleKnowledgeAlertIds: outcome.staleKnowledgeAlertIds,
   };
@@ -868,6 +880,7 @@ async function execTurn(
   const turnState: ToolServerTurnState = {
     lastKnowledgeHitId: null,
     unhelpfulAnswerRated: false,
+    humanHelpRequested: false,
     knowledgeGapCluster: null,
     staleKnowledgeAlertIds: [],
   };
@@ -1039,6 +1052,7 @@ async function execTurn(
     sessionId,
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
     ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),
+    ...(turnState.humanHelpRequested ? { humanHelpRequested: true } : {}),
     ...(turnState.knowledgeGapCluster ? { knowledgeGapCluster: turnState.knowledgeGapCluster } : {}),
     ...(turnState.staleKnowledgeAlertIds && turnState.staleKnowledgeAlertIds.length > 0
       ? { staleKnowledgeAlertIds: turnState.staleKnowledgeAlertIds }

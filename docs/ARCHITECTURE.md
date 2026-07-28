@@ -2394,6 +2394,43 @@ lives in `router.ts`, entirely outside the model/tool layer:
   rate-limited "yes" (no notification sent) writes nothing, matching the
   existing rate-cap's all-or-nothing shape.
 
+**Two direct-fire siblings of the confirmed offer above, sharing the same
+`ESCALATION_RATE_LIMIT_PER_HOUR` cap and `notifyAdmins` call — never a second
+independent budget:**
+
+- **A member's own thumbs-down (issue #598).** `rate_answer(helpful: false)`
+  sets `ToolServerTurnState.unhelpfulAnswerRated` — never on a positive
+  rating, an unrecorded call (`'no_recent_answer'`/`'rate_limited'`), or a
+  turn that didn't end in genuine success — which threads through
+  `TurnOutcome`/`AgentReply` into `router.ts`'s post-turn handling exactly
+  like `knowledgeEntryId` (#411). Unlike the max-turns offer, there is no
+  confirm step: the rating itself already IS the caller's explicit action,
+  so the router reserves an `ESCALATION_RATE_LIMIT_PER_HOUR` slot and calls
+  `notifyAdmins` directly, echoing the caller's own message
+  (`truncateForEcho(msg.text)`) — never anything the model composed.
+  `notifyAdmins` is never called from `tools.ts` itself; only `router.ts`
+  reads the flag back and fires it.
+- **A member's own explicit ask (issue #808).** The zero-argument, member+
+  `request_human_help` tool closes the one gap neither of the above covers:
+  a member pre-emptively asking for a human mid-conversation, on a turn that
+  completes normally (no `maxTurnsExceeded`) and with no rating involved.
+  Its handler takes no free-text argument at all — it only sets
+  `ToolServerTurnState.humanHelpRequested`, gated by its own in-memory,
+  per-caller (`platform:userId`) rolling-24h cap
+  (`HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER`, default 3), which exists so one
+  member spamming the tool can't alone exhaust the shared hourly budget and
+  starve every other member's max-turns/thumbs-down escalations. The flag
+  threads through `TurnOutcome`/`AgentReply` the same way
+  `unhelpfulAnswerRated` does, and `router.ts` direct-fires `notifyAdmins`
+  from `msg.userName`/`msg.platform`/`msg.conversationId`/
+  `truncateForEcho(msg.text)` only — same "the member's own words are the
+  explicit action, nothing to confirm" reasoning as #598, and the same "no
+  model-composed content reaches the admin DM" discipline, made airtight
+  here by the tool having no free-text field for a compromised model to
+  route through in the first place. `outboundText`/`reply.text` are never
+  touched by this branch — the member sees only the model's own reply,
+  informed by the tool's fixed neutral acknowledgement text.
+
 ## Health & monitoring
 
 `Restart=always` (`deploy/community-agent.service`) and the startup

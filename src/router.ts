@@ -1804,6 +1804,30 @@ export class Router {
         }
       }
 
+      // Real-time admin escalation for a member's own explicit ask (issue
+      // #808) — a third direct-fire sibling of the two above: the member's
+      // own words ARE the explicit action, mirroring #598's reasoning
+      // exactly ("the rating itself is the explicit action, so there's
+      // nothing to confirm"), so no `pendingEscalations` entry is
+      // registered. Never touches `outboundText`/`reply.text` — the member
+      // still just sees the model's own reply, informed only by the tool's
+      // fixed neutral acknowledgement text. Shares (never adds to) the same
+      // guild-wide `ESCALATION_RATE_LIMIT_PER_HOUR` cap as both producers
+      // above — the per-caller daily cap that bounds a single member's own
+      // worst-case share of that budget is enforced inside the
+      // `request_human_help` tool handler itself (`tools.ts`), before
+      // `reply.humanHelpRequested` is ever set.
+      if (config.behaviour.escalationToAdminEnabled && reply.humanHelpRequested === true) {
+        if (this.reserveEscalationSlot(ESCALATION_RATE_LIMIT_PER_HOUR)) {
+          await this.notifyAdminsFn(
+            (platform) => this.adapters.get(platform),
+            `${msg.userName} asked to talk to a human on ${msg.platform} ` +
+              `(conversation ${msg.conversationId}): "${truncateForEcho(msg.text)}"`,
+            msg.userId,
+          ).catch((err) => logger.warn({ err }, 'Human-help-request admin notification failed'));
+        }
+      }
+
       // Real-time admin nudge when a knowledge-gap cluster crosses
       // KNOWLEDGE_GAP_ALERT_THRESHOLD (issue #650) — the "asked N times,
       // never confidently answered" signal promoted from the weekly digest's
