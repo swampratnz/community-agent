@@ -22,6 +22,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-07-29
+
+### Added
+- **`my_submissions` now covers `suggest_knowledge` tips, not just
+  suggestions/reports/appeals** (#830): a new self-scoped
+  `listOwnKnowledgeCandidates` repository function — mirroring
+  `listOwnSuggestions`'s exact shape and clamp — feeds a fourth `Your
+  knowledge tips:` section, so a member who filed a knowledge tip can pull-
+  check its status the same way the other three queues already support,
+  closing the pull-based fallback gap the resolution DM (#703) left for a
+  missed/muted notification (named as a deferred growth path in #633). A
+  caller with no tips sees byte-identical output to today; a machine-drafted
+  candidate (no submitter) can never appear in any member's own view.
+
 ## 2026-07-28
 
 ### Added

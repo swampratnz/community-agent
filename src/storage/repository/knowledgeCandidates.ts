@@ -165,6 +165,31 @@ export async function createKnowledgeTip(input: {
 }
 
 /**
+ * Self-scoped read of a member's OWN knowledge tips (issue #830) — the
+ * `my_submissions` pull-based fallback for `suggest_knowledge`'s resolution
+ * DM (issue #703), matching `listOwnSuggestions`'s exact shape and clamp.
+ * `source_platform`/`source_user_id` are NULL together on a machine-drafted
+ * (context-builder) candidate, so `NULL = $1` never matches and such a row
+ * can never appear here for any real caller.
+ */
+export async function listOwnKnowledgeCandidates(
+  platform: Platform,
+  userId: string,
+  limit = 10,
+): Promise<KnowledgeCandidate[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at, source_platform, source_user_id
+       FROM knowledge_candidates
+      WHERE source_platform = $1 AND source_user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
+  );
+  return rows.map(toKnowledgeCandidate);
+}
+
+/**
  * Exact-match half of the builder's dedup guard: true if `topic` already has
  * a `knowledge_candidates` row, in ANY status, matched case-insensitively
  * (the summariser is free-text). Cheap short-circuit — no embedding call —
