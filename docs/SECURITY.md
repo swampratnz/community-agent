@@ -2296,22 +2296,24 @@ serving that sender again. Security posture:
   endpoint), so they add no ToS-risk surface and work while WhatsApp is
   disconnected.
 
-### 20. Discord slash commands (`/kb`, `/whois`, `/projects`, `/guidelines`, `DISCORD_SLASH_COMMANDS_ENABLED`, off by default, issue #744)
+### 20. Discord slash commands (`/kb`, `/whois`, `/projects`, `/guidelines`, `/digest`, `DISCORD_SLASH_COMMANDS_ENABLED`, off by default, issues #744, #841)
 
-Four read-only, zero-model-call Discord application commands, registered
+Five read-only, zero-model-call Discord application commands, registered
 guild-scoped on `ClientReady`. A second entry point onto existing reads
-(`knowledge_search`, `who_is_into`, `list_projects`, and the
-`community_guidelines` policy text), not a new capability or tool — but a
-second entry point still has to preserve every control the chat path applies
-between the repository read and the reply:
+(`knowledge_search`, `who_is_into`, `list_projects`, the
+`community_guidelines` policy text, and — since #841 — `buildMemberDigestContent`),
+not a new capability or tool — but a second entry point still has to
+preserve every control the chat path applies between the repository read
+and the reply:
 
 - **Identity is resolved via `resolveRole(platform, userId)` only**, exactly
   like every chat message — never from anything on the interaction payload.
 - **Authorization tracks each tool's real gate, not a copy-pasted tier.**
   `/kb` gates on `toolsForRole(role, 'discord').includes('knowledge_search')`
   alone, matching that tool's own unrestricted (including open-mode guest)
-  reachability. `/whois` and `/projects` additionally require `atLeast(role,
-  'member')`, mirroring `who_is_into`/`list_projects`'s own handler-level
+  reachability. `/whois`, `/projects`, and — since #841 — `/digest`
+  additionally require `atLeast(role, 'member')`, mirroring
+  `who_is_into`/`list_projects`/`community_digest`'s own handler-level
   `assertAtLeast(caller.role, 'member', ...)` — their structural
   `MEMBER_TOOLS` listing exists only so open-mode guests can be *offered*
   the tool, not so they can successfully call it. `/guidelines` has no gate,
@@ -2334,7 +2336,19 @@ between the repository read and the reply:
   (`untrustedEntryContent` bracket/whitespace stripping, sanitized
   attribution) by calling the exact same render helpers `who_is_into`/
   `list_projects` call, rather than re-serializing raw repository rows.
-- **All four replies are ephemeral** — visible only to the caller, narrower
+- **`/digest` calls `buildMemberDigestContent()` directly, not the
+  `community_digest` tool** — and, unlike that tool, renders the result
+  plain, with no `untrusted()` wrapper. This is deliberate, not an
+  inconsistency: `community_digest`'s result re-enters the model's context
+  (the same reason `admin_digest`/`question_digest` quarantine their own
+  output), while `/digest`'s reply — like every other slash command here —
+  goes straight to the human caller and never passes back through a model
+  turn, so there is nothing for `untrusted()` to protect against. Calling
+  `buildMemberDigestContent()` from either surface never calls
+  `recordMemberDigestSent` or changes `wasMemberDigestSentRecently`'s
+  answer — a pull can never advance or suppress the next scheduled weekly
+  post, the same pull/push independence `admin_digest` already guarantees.
+- **All five replies are ephemeral** — visible only to the caller, narrower
   than `/whois`/`/projects`' chat-path equivalent (posted in-channel today).
 - **Guild-scoped registration only.** `client.application.commands.set(...,
   config.discord.guildId)` — never a global registration call, which would
@@ -2345,9 +2359,12 @@ between the repository read and the reply:
   `reconcileMutedRole`), and with the flag unset no `Events.InteractionCreate`
   listener is attached at all.
 
-No new tool, no new write path, no `shortcut_hits` tracking, no WhatsApp
-equivalent — all four underlying reads stay reachable via chat on every
-platform regardless of this flag. See docs/ARCHITECTURE.md for the mechanism.
+No new write path, no `shortcut_hits` tracking, no WhatsApp equivalent — all
+five underlying reads stay reachable via chat on every platform regardless
+of this flag (`/digest`'s sibling, `community_digest`, is a genuine new
+member-tier chat tool — see docs/ARCHITECTURE.md's "On-demand pull" section
+for its own `untrusted()` quarantine). See docs/ARCHITECTURE.md for the
+mechanism.
 
 ### 19. Agent Skills (`AGENT_SKILLS_ENABLED`, off by default, issues #741, #755, #757, #759)
 

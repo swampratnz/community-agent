@@ -144,11 +144,96 @@ export function formatMemberDigestMessage(
 }
 
 /**
+ * Gathers every member-digest signal (the same 6 reads `makeDefaultMemberDigestRun`
+ * used to run inline) and renders them via {@link formatMemberDigestMessage}, returning
+ * the exact text the weekly push would post right now, or `null` on a quiet
+ * week. Extracted (issue #841) so the scheduled push and an on-demand pull
+ * (the `community_digest` tool / `/digest` slash command) share one gathering
+ * implementation instead of a second, driftable copy — the same
+ * `admin_digest`/`buildAdminDigestForAdmin` precedent (issue #499).
+ *
+ * Deliberately excludes the freshness/cadence bookkeeping
+ * (`wasMemberDigestSentRecently`/`recordMemberDigestSent`) and the actual
+ * `sendMessage` — those stay exclusive to `makeDefaultMemberDigestRun`'s
+ * closure, so a caller of this helper (an on-demand pull) can never suppress
+ * or advance the next scheduled weekly push.
+ *
+ * Every dependency is injectable (tests only, same shape as
+ * `makeDefaultMemberDigestRun`'s own deps) so the content logic can be
+ * exercised without a real DB; production and every on-demand pull call this
+ * with no arguments, using the already-exported repository defaults.
+ */
+export async function buildMemberDigestContent(
+  deps: {
+    getDigests?: (days: number, limit: number) => Promise<ContextDigest[]>;
+    getNewKnowledgeTitles?: (since: Date, limit: number) => Promise<string[]>;
+    getNewProjectCount?: (since: Date) => Promise<number>;
+    getReleaseWatchUpdates?: (
+      since: Date,
+      pathPrefixes: readonly string[],
+      limit: number,
+    ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
+    getMemberTipCount?: (since: Date) => Promise<number>;
+    getNewInterestCount?: (since: Date) => Promise<number>;
+  } = {},
+): Promise<string | null> {
+  const getDigests = deps.getDigests ?? listContextDigests;
+  const getNewKnowledgeTitles = deps.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
+  const getNewProjectCount = deps.getNewProjectCount ?? countProjectsSharedSince;
+  const getReleaseWatchUpdates = deps.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
+  const getMemberTipCount = deps.getMemberTipCount ?? countAcceptedMemberKnowledgeTipsSince;
+  const getNewInterestCount = deps.getNewInterestCount ?? countInterestsPublishedSince;
+
+  const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
+  // RELEASE_WATCH_ENABLED gates the read itself, not just its output — when
+  // off, getReleaseWatchUpdates must never be invoked (issue #733's
+  // byte-identical-when-disabled contract), so this is a conditional
+  // Promise, not a post-hoc empty-array filter.
+  const [digests, newKnowledgeTitles, newProjectCount, releaseWatchPages, memberTipCount, newInterestCount] =
+    await Promise.all([
+      getDigests(FRESHNESS_DAYS, MAX_TOPICS),
+      getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
+      getNewProjectCount(since),
+      config.releaseWatch.enabled
+        ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
+        : Promise.resolve([]),
+      getMemberTipCount(since),
+      getNewInterestCount(since),
+    ]);
+  // Two independent floors before a digest topic reaches this public
+  // surface (PR #651 review):
+  //  - k-anonymity: this surface is more exposed than either existing
+  //    context_digests consumer, so it gets its OWN configurable floor
+  //    (MEMBER_DIGEST_MIN_DISTINCT_USERS) rather than inheriting whichever
+  //    value CONTEXT_BUILDER_MIN_DISTINCT_USERS happens to be set to.
+  //  - platform: a digest's clustering is unscoped by platform (it can be
+  //    built from a mix of Discord and WhatsApp interactions), which was
+  //    fine when every consumer was admin-only. Restrict to `discord`/null
+  //    so a WhatsApp-sourced topic is never surfaced to a Discord
+  //    audience that never had access to that conversation.
+  const eligible = digests.filter(
+    (d) =>
+      d.distinctUsers >= config.memberDigest.minDistinctUsers &&
+      (d.platform === 'discord' || d.platform === null),
+  );
+  return formatMemberDigestMessage(
+    eligible.map((d) => ({ topic: d.topic, questionCount: d.questionCount })),
+    newKnowledgeTitles,
+    newProjectCount,
+    releaseWatchPages.map((p) => ({ title: p.pageTitle, url: p.sourceUrl })),
+    memberTipCount,
+    newInterestCount,
+  );
+}
+
+/**
  * Builds the default weekly `runOnce`, closing the freshness guard +
- * `context_digests`/curated-`knowledge` reads + the channel send over one
- * tick. Every dependency is injectable (tests only) so the cadence/content
- * logic can be exercised without a real DB or adapter — production always
- * uses the already-exported repository defaults.
+ * `buildMemberDigestContent`'s gather/render + the channel send over one
+ * tick. `wasSentRecently`/`recordSent` are injectable (tests only) so the
+ * cadence logic can be exercised without a real DB or adapter; the content
+ * gather itself is injectable via the same deps, threaded into
+ * `buildMemberDigestContent` — production always uses the already-exported
+ * repository defaults.
  */
 export function makeDefaultMemberDigestRun(
   adapters: readonly PlatformAdapter[],
@@ -168,12 +253,6 @@ export function makeDefaultMemberDigestRun(
   } = {},
 ): () => Promise<void> {
   const wasSentRecently = deps.wasSentRecently ?? wasMemberDigestSentRecently;
-  const getDigests = deps.getDigests ?? listContextDigests;
-  const getNewKnowledgeTitles = deps.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
-  const getNewProjectCount = deps.getNewProjectCount ?? countProjectsSharedSince;
-  const getReleaseWatchUpdates = deps.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
-  const getMemberTipCount = deps.getMemberTipCount ?? countAcceptedMemberKnowledgeTipsSince;
-  const getNewInterestCount = deps.getNewInterestCount ?? countInterestsPublishedSince;
   const recordSent = deps.recordSent ?? recordMemberDigestSent;
 
   return async () => {
@@ -195,52 +274,14 @@ export function makeDefaultMemberDigestRun(
       return;
     }
 
-    const since = new Date(Date.now() - FRESHNESS_DAYS * 24 * 3_600_000);
-    // RELEASE_WATCH_ENABLED gates the read itself, not just its output — when
-    // off, getReleaseWatchUpdates must never be invoked (issue #733's
-    // byte-identical-when-disabled contract), so this is a conditional
-    // Promise, not a post-hoc empty-array filter.
-    const [
-      digests,
-      newKnowledgeTitles,
-      newProjectCount,
-      releaseWatchPages,
-      memberTipCount,
-      newInterestCount,
-    ] = await Promise.all([
-      getDigests(FRESHNESS_DAYS, MAX_TOPICS),
-      getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
-      getNewProjectCount(since),
-      config.releaseWatch.enabled
-        ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
-        : Promise.resolve([]),
-      getMemberTipCount(since),
-      getNewInterestCount(since),
-    ]);
-    // Two independent floors before a digest topic reaches this public
-    // surface (PR #651 review):
-    //  - k-anonymity: this surface is more exposed than either existing
-    //    context_digests consumer, so it gets its OWN configurable floor
-    //    (MEMBER_DIGEST_MIN_DISTINCT_USERS) rather than inheriting whichever
-    //    value CONTEXT_BUILDER_MIN_DISTINCT_USERS happens to be set to.
-    //  - platform: a digest's clustering is unscoped by platform (it can be
-    //    built from a mix of Discord and WhatsApp interactions), which was
-    //    fine when every consumer was admin-only. Restrict to `discord`/null
-    //    so a WhatsApp-sourced topic is never surfaced to a Discord
-    //    audience that never had access to that conversation.
-    const eligible = digests.filter(
-      (d) =>
-        d.distinctUsers >= config.memberDigest.minDistinctUsers &&
-        (d.platform === 'discord' || d.platform === null),
-    );
-    const message = formatMemberDigestMessage(
-      eligible.map((d) => ({ topic: d.topic, questionCount: d.questionCount })),
-      newKnowledgeTitles,
-      newProjectCount,
-      releaseWatchPages.map((p) => ({ title: p.pageTitle, url: p.sourceUrl })),
-      memberTipCount,
-      newInterestCount,
-    );
+    const message = await buildMemberDigestContent({
+      getDigests: deps.getDigests,
+      getNewKnowledgeTitles: deps.getNewKnowledgeTitles,
+      getNewProjectCount: deps.getNewProjectCount,
+      getReleaseWatchUpdates: deps.getReleaseWatchUpdates,
+      getMemberTipCount: deps.getMemberTipCount,
+      getNewInterestCount: deps.getNewInterestCount,
+    });
     // Quiet week — nothing to post. Deliberately leaves the freshness row
     // untouched (same convention as adminDigest.ts's quiet-week skip) so a
     // week that starts quiet but gains a digest/knowledge entry partway

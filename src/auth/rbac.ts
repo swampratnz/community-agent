@@ -180,6 +180,13 @@ export const MEMBER_TOOLS = [
   // in via seekingCollaborators), a stronger consent basis than find_helper's
   // topic-match.
   'mcp__community__request_project_connection',
+  // On-demand pull of the community-wide weekly member-digest snapshot
+  // (issue #841) — the member-facing sibling of admin_digest (#499): same
+  // buildMemberDigestContent gathering the scheduled MEMBER_DIGEST_ENABLED
+  // push already computes, just available on request instead of waiting up
+  // to a week. Re-checks 'member' explicitly in the handler to exclude
+  // open-mode guests, same discipline set_my_interests/who_is_into use.
+  'mcp__community__community_digest',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */
