@@ -2298,6 +2298,21 @@ If this becomes a problem: cap session length (start fresh after N turns), or
 move to the SDK's streaming-input mode with a persistent process per busy
 conversation.
 
+**Turn wall-clock ceiling** (`AGENT_TURN_TIMEOUT_MS`, default `300_000`, issue
+#826): turns for one conversation are serialised (`router.ts`'s `enqueue()`),
+so a `query()` iteration that never yields and never settles — a network
+partition, a wedged CLI subprocess — used to wedge that conversation's entire
+chain forever, since a `catch` only fires on rejection. `execTurn` now races
+the `for await` loop against a timer via `Promise.race`; on expiry it returns
+the existing `INTERNAL_ERROR_REPLY`, the same as any other generic turn
+failure. The default (`300_000`ms) is deliberately **greater** than
+`IMAGE_GEN_TIMEOUT_MS` (`180_000`ms, above) — image generation is a tool call
+that runs *inside* this same turn loop, so an outer ceiling at or below the
+inner tool's own timeout would kill a legitimately in-flight image-gen turn
+before that tool's own timeout ever got a chance to fire. v1 does not wire an
+`AbortController` into `query()`, so the underlying CLI subprocess is not
+itself killed on a timeout — only the caller's wait for it is bounded.
+
 **Memory recall relevance floor** (`MEMORY_RELEVANCE_THRESHOLD`, default `0` =
 off, issue #474): automatic per-turn memory recall (the "Memory & 'learning'"
 section above) and `remember_search` both funnel through `searchMemory`, which
