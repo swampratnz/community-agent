@@ -254,6 +254,22 @@ export async function findHelperCandidates(
  * move on to the next candidate; true means this row IS the one-and-only
  * notification for this find_helper call and the caller should now send the DM.
  */
+/**
+ * Count of successful find_helper connections (`helper_notifications` rows —
+ * one per DM actually sent) since `since` — issue #820's admin-digest
+ * flywheel-throughput signal, the third dimension #797 established with
+ * `countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince` but never
+ * covered: the one flywheel action that actively connects two members rather
+ * than contributing content. Mirrors those two functions' exact shape.
+ */
+export async function countHelperMatchesSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM helper_notifications WHERE created_at > $1`,
+    [since],
+  );
+  return Number(rows[0].n);
+}
+
 export async function recordHelperNotificationIfUnderCap(
   helperPlatform: Platform,
   helperUserId: string,
