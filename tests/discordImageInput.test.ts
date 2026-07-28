@@ -143,7 +143,11 @@ test('Discord image input: an enabled super-admin image attachment is fetched, b
     ),
   );
   assert.ok(seen, 'the message must reach the handler');
-  assert.equal((seen as unknown as IncomingMessage).text, "what's this error?", 'text is unaffected by the image');
+  assert.equal(
+    (seen as unknown as IncomingMessage).text,
+    "what's this error?",
+    'text is unaffected by the image',
+  );
   assert.deepEqual((seen as unknown as IncomingMessage).image, {
     data: 'ZmFrZS1wbmctYnl0ZXM=',
     mimeType: 'image/png',
@@ -200,8 +204,16 @@ test('SECURITY: a below-IMAGE_INPUT_MIN_ROLE sender at the default (super_admin)
   await withDiscordImage({ enabled: true, superAdmins: ['some-other-admin'] }, () =>
     fireDiscordMessage(adapter, discordImageMessage({ authorId: 'user-783-3', attachment: {} })),
   );
-  assert.equal(seamCalls, 0, 'a non-super-admin must never have their attachment fetched at the default minRole');
-  assert.equal(dbCalls.length, 0, 'the default super_admin minRole must stay a pure env check with no DB call');
+  assert.equal(
+    seamCalls,
+    0,
+    'a non-super-admin must never have their attachment fetched at the default minRole',
+  );
+  assert.equal(
+    dbCalls.length,
+    0,
+    'the default super_admin minRole must stay a pure env check with no DB call',
+  );
   assert.equal((seen as unknown as IncomingMessage).image, undefined);
 });
 
@@ -233,10 +245,7 @@ test('SECURITY: an attachment over IMAGE_INPUT_MAX_BYTES is refused with zero fe
     return { data: 'must never run', mimeType: 'image/png' };
   };
   await withDiscordImage({ enabled: true, maxBytes: 1_000, superAdmins: ['user-783-5'] }, () =>
-    fireDiscordMessage(
-      adapter,
-      discordImageMessage({ authorId: 'user-783-5', attachment: { size: 5_000 } }),
-    ),
+    fireDiscordMessage(adapter, discordImageMessage({ authorId: 'user-783-5', attachment: { size: 5_000 } })),
   );
   assert.equal(seamCalls, 0, 'an over-cap attachment must be refused before any fetch');
 });
@@ -292,7 +301,14 @@ test('SECURITY: IMAGE_INPUT_DAILY_LIMIT_PER_USER bounds a single sender — the 
 test('SECURITY: the default systemPrompt (IMAGE_INPUT_ENABLED off) never carries the image-untrusted-data clause — it is added only when the flag could apply (acceptance criterion 6; flag-on path in tests/imageInputSystemPromptEnabled.test.ts)', () => {
   assert.equal(config.discord.image.enabled, false, 'precondition: default env has image input off');
   const prompt = buildSystemPrompt(
-    { platform: 'discord', userId: 'u1', userName: 'Chris', role: 'member', conversationId: 'c1', isDirect: false },
+    {
+      platform: 'discord',
+      userId: 'u1',
+      userName: 'Chris',
+      role: 'member',
+      conversationId: 'c1',
+      isDirect: false,
+    },
     { codeAnswers: 'snippets', responseStyle: 'standard', languagePreference: 'auto' },
   );
   assert.doesNotMatch(prompt, /UNTRUSTED DATA to look at and answer from/);

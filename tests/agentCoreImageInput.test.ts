@@ -93,7 +93,11 @@ async function collectSingleUserMessage(prompt: unknown): Promise<{
   );
   const messages: unknown[] = [];
   for await (const m of prompt as AsyncIterable<unknown>) messages.push(m);
-  assert.equal(messages.length, 1, 'exactly one SDKUserMessage must be yielded — a single turn, not a stream');
+  assert.equal(
+    messages.length,
+    1,
+    'exactly one SDKUserMessage must be yielded — a single turn, not a stream',
+  );
   return messages[0] as { type: string; message: { role: string; content: Array<Record<string, unknown>> } };
 }
 

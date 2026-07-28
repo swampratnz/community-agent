@@ -610,7 +610,10 @@ export class DiscordAdapter implements PlatformAdapter, ModerationEnforcer {
     }
     const mimeType = attachment.contentType;
     if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') {
-      logger.info({ mimeType }, 'Discord image attachment outside the MIME allowlist — ignored without fetching');
+      logger.info(
+        { mimeType },
+        'Discord image attachment outside the MIME allowlist — ignored without fetching',
+      );
       return undefined;
     }
     if (attachment.size > config.discord.image.maxBytes) {

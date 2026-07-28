@@ -938,8 +938,15 @@ test('SECURITY: no image bytes are persisted — the recorded interaction for an
 
   assert.ok(insertedContents.length > 0, 'at least one interaction row must have been recorded');
   for (const content of insertedContents) {
-    assert.doesNotMatch(content, /ZmFrZS1ieXRlcw==/, 'the image base64 payload must never reach stored content');
-    assert.ok(!content.includes('image'), 'the stored content must be plain reply/message text, not an image reference');
+    assert.doesNotMatch(
+      content,
+      /ZmFrZS1ieXRlcw==/,
+      'the image base64 payload must never reach stored content',
+    );
+    assert.ok(
+      !content.includes('image'),
+      'the stored content must be plain reply/message text, not an image reference',
+    );
   }
 });
 
