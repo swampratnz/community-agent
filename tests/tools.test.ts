@@ -7446,6 +7446,7 @@ const BASE_USAGE_STATS = {
   backgroundCostByJob: [],
   cacheUsage: { readTokens: 0, creationTokens: 0 },
   autoAnswerUsage: { count: 0, costUsd: 0 },
+  costByModel: [] as Array<{ model: string; costUsd: number; replies: number }>,
 };
 
 test('formatUsageStats: backgroundCostUsd === 0 is byte-identical to the pre-#401 output (no background line)', () => {
@@ -7858,6 +7859,36 @@ test('SECURITY: usage_stats rejects an admin caller even when a platform filter 
   );
 });
 
+test('SECURITY: usage_stats remains refused for admin, member, and guest callers after adding the per-model cost breakdown (issue #792 acceptance criterion 7) — the new field did not widen the super_admin-only gate', async () => {
+  for (const role of ['admin', 'member', 'guest'] as const) {
+    const adapter = stubAdapter(async () => {});
+    const caller = {
+      platform: 'discord' as const,
+      userId: `${role}-1`,
+      userName: role,
+      role,
+      conversationId: 'convo-1',
+    };
+    const server = buildToolServer(caller, adapter);
+    const registeredTool = (
+      server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          {
+            handler: (args: { days?: number }) => Promise<{ content: Array<{ type: string; text: string }> }>;
+          }
+        >;
+      }
+    )._registeredTools['usage_stats'];
+
+    await assert.rejects(
+      () => registeredTool.handler({}),
+      /super_admin/i,
+      `a ${role} caller must be rejected by usage_stats' super_admin gate — costByModel must not land the metric on a lower-tier tool`,
+    );
+  }
+});
+
 test('formatUsageStats: autoAnswerUsage.count === 0 is byte-identical to the pre-#552 output (no Auto-answer line), issue #552 acceptance criterion 4', () => {
   const out = formatUsageStats(BASE_USAGE_STATS, 7);
   assert.equal(
@@ -7893,6 +7924,67 @@ test('formatUsageStats: non-zero autoAnswerUsage with zero total spend omits the
       'Top users:\n- Alice: 2 msgs\n' +
       'Auto-answer: 3 replies (~$0.00).',
   );
+});
+
+test('formatUsageStats: empty costByModel is byte-identical to the pre-#792 output (no Models line)', () => {
+  const out = formatUsageStats(BASE_USAGE_STATS, 7);
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs',
+  );
+  assert.ok(!out.includes('Models:'), 'no Models line when costByModel is empty');
+});
+
+test('formatUsageStats: a single-model costByModel still renders the Models line (issue #792 acceptance criterion 3)', () => {
+  const out = formatUsageStats(
+    { ...BASE_USAGE_STATS, costByModel: [{ model: 'claude-sonnet-5', costUsd: 1.23, replies: 42 }] },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Models: claude-sonnet-5 ~$1.23 (42).',
+  );
+});
+
+test('formatUsageStats: multi-model costByModel renders every entry in the given (cost-desc) order (issue #792 acceptance criterion 2)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      costByModel: [
+        { model: 'claude-sonnet-5', costUsd: 1.23, replies: 42 },
+        { model: 'claude-haiku-4-5', costUsd: 0.04, replies: 18 },
+      ],
+    },
+    7,
+  );
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Models: claude-sonnet-5 ~$1.23 (42) · claude-haiku-4-5 ~$0.04 (18).',
+  );
+});
+
+test('SECURITY: formatUsageStats never renders a user id, display name, or message content in the Models line — cost + model id + reply count only (issue #792 acceptance criterion 5)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      topUsers: [{ userId: 'leaked-user-id', userName: 'Should Not Appear Here', messages: 2 }],
+      costByModel: [{ model: 'claude-sonnet-5', costUsd: 1.23, replies: 42 }],
+    },
+    7,
+  );
+  const modelsLine = out.split('\n').find((l) => l.startsWith('Models:'));
+  assert.ok(modelsLine, 'a Models line is present');
+  assert.equal(modelsLine, 'Models: claude-sonnet-5 ~$1.23 (42).');
+  assert.ok(!modelsLine.includes('leaked-user-id'), 'no user id in the Models line');
+  assert.ok(!modelsLine.includes('Should Not Appear Here'), 'no display name in the Models line');
 });
 
 test('formatAdminActivity renders the exact empty-window message, not an empty list (issue #488)', () => {

@@ -3939,7 +3939,7 @@ test(
 );
 
 test(
-  'repository: usageStats(days, platform) scopes topUsers/costByRole/totals to one platform, leaves byPlatform/backgroundCostByJob/cacheUsage/shortcutHits/autoAnswerUsage unaffected, and per-platform-scoped deltas reconcile to the unscoped delta (issue #647)',
+  'repository: usageStats(days, platform) scopes topUsers/costByRole/totals to one platform, leaves byPlatform/backgroundCostByJob/cacheUsage/shortcutHits/autoAnswerUsage/costByModel unaffected, and per-platform-scoped deltas reconcile to the unscoped delta (issue #647)',
   { skip },
   async () => {
     const conversationId = `${RUN}-c-platform-filter`;
@@ -4059,6 +4059,7 @@ test(
         assert.deepEqual(afterDiscord.cacheUsage, afterAll.cacheUsage);
         assert.deepEqual(afterDiscord.shortcutHits, afterAll.shortcutHits);
         assert.deepEqual(afterDiscord.autoAnswerUsage, afterAll.autoAnswerUsage);
+        assert.deepEqual(afterDiscord.costByModel, afterAll.costByModel);
       } finally {
         await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
       }
@@ -4553,6 +4554,183 @@ test(
       before.autoAnswerUsage,
       'no interactions recorded in between — the window contributes nothing new',
     );
+  },
+);
+
+test(
+  'repository: usageStats().costByModel sums meta.modelUsage per canonical model over outbound rows in the window, across single- and multi-key blobs, other meta shapes, and outside the window, ordered by cost desc (issue #792, acceptance criteria 1-2)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-model-usage`;
+    const days = 1;
+    const before = await usageStats(days);
+
+    // Single-key modelUsage.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 1',
+      meta: { modelUsage: { 'claude-sonnet-5': 1.23 } },
+    });
+    // Multi-key modelUsage (fallback fired mid-turn) — both models must contribute.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 2',
+      meta: { modelUsage: { 'claude-sonnet-5': 0.5, 'claude-haiku-4-5': 0.04 } },
+    });
+    // No modelUsage key at all — a turn with no SDK modelUsage — must contribute 0, not throw.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply 3',
+      meta: { replyToUserId: 'someone' },
+    });
+    // Inbound rows must never contribute — costByModel is direction = 'outbound' only.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'someone',
+      role: 'member',
+      direction: 'inbound',
+      content: 'a member question',
+      meta: { modelUsage: { 'claude-sonnet-5': 999 } },
+    });
+    // Outside the 1-day window — must not appear in the sum.
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord', $1, 'bot', 'member', 'outbound', 'old reply',
+               '{"modelUsage": {"claude-sonnet-5": 500}}'::jsonb, now() - interval '2 days')`,
+      [conversationId],
+    );
+
+    const after = await usageStats(days);
+
+    const beforeByModel = new Map(before.costByModel.map((r) => [r.model, r]));
+    const sonnet = after.costByModel.find((r) => r.model === 'claude-sonnet-5');
+    const haiku = after.costByModel.find((r) => r.model === 'claude-haiku-4-5');
+    assert.ok(sonnet, 'claude-sonnet-5 must appear in costByModel');
+    assert.ok(haiku, 'claude-haiku-4-5 must appear in costByModel');
+    const sonnetBefore = beforeByModel.get('claude-sonnet-5');
+    const haikuBefore = beforeByModel.get('claude-haiku-4-5');
+    assert.ok(
+      Math.abs(sonnet.costUsd - (sonnetBefore?.costUsd ?? 0) - 1.73) < 1e-9,
+      'claude-sonnet-5 sums both in-window outbound rows that carried it (1.23 + 0.5)',
+    );
+    assert.equal(
+      sonnet.replies - (sonnetBefore?.replies ?? 0),
+      2,
+      'claude-sonnet-5 replies count reflects both rows that carried it',
+    );
+    assert.ok(
+      Math.abs(haiku.costUsd - (haikuBefore?.costUsd ?? 0) - 0.04) < 1e-9,
+      'claude-haiku-4-5 sums only the one in-window outbound row that carried it',
+    );
+    assert.equal(
+      haiku.replies - (haikuBefore?.replies ?? 0),
+      1,
+      'claude-haiku-4-5 replies count reflects the one row that carried it',
+    );
+
+    for (let i = 1; i < after.costByModel.length; i++) {
+      assert.ok(
+        after.costByModel[i - 1].costUsd >= after.costByModel[i].costUsd,
+        'costByModel is ordered by costUsd desc',
+      );
+    }
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: usageStats().costByModel reflects zero delta when no interaction is recorded in between two reads (empty-window case, issue #792)',
+  { skip },
+  async () => {
+    const before = await usageStats(1);
+    const after = await usageStats(1);
+    assert.deepEqual(
+      after.costByModel,
+      before.costByModel,
+      'no interactions recorded in between — the window contributes nothing new',
+    );
+  },
+);
+
+test(
+  'SECURITY: repository: usageStats().costByModel omits any model with zero recorded outbound turns rather than fabricating a $0.00 row — absent, not zero (issue #792, acceptance criterion 6)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-model-usage-absent`;
+    const days = 1;
+
+    // A row with no modelUsage key at all must never introduce a fabricated
+    // model entry — the aggregation must simply have nothing to expand.
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'bot',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply',
+      meta: { replyToUserId: 'someone' },
+    });
+
+    const after = await usageStats(days);
+    assert.ok(
+      !after.costByModel.some((r) => r.model === 'nonexistent-model'),
+      'no fabricated zero-cost row for a model that never appeared in any meta.modelUsage blob',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: usageStats().costByModel aggregation never includes user id, display name, or message content — cost + model id + reply count only (issue #792, acceptance criterion 5)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-model-usage-privacy`;
+    const days = 1;
+
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: 'leaked-user-id',
+      userName: 'Should Not Appear In costByModel',
+      role: 'member',
+      direction: 'outbound',
+      content: 'reply mentioning secret content that must never leak',
+      meta: { modelUsage: { 'claude-sonnet-5': 0.11 } },
+    });
+
+    const after = await usageStats(days);
+    const row = after.costByModel.find((r) => r.model === 'claude-sonnet-5');
+    assert.ok(row, 'claude-sonnet-5 row present');
+    assert.deepEqual(
+      Object.keys(row).sort(),
+      ['costUsd', 'model', 'replies'],
+      'a costByModel row exposes only model/costUsd/replies — no user id, display name, or content field',
+    );
+    const serialized = JSON.stringify(after.costByModel);
+    assert.ok(!serialized.includes('leaked-user-id'), 'no user id anywhere in costByModel');
+    assert.ok(
+      !serialized.includes('Should Not Appear In costByModel'),
+      'no display name anywhere in costByModel',
+    );
+    assert.ok(!serialized.includes('secret content'), 'no message content anywhere in costByModel');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
   },
 );
 
