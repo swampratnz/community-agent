@@ -34,6 +34,20 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   least one appeal is open, omitted when the queue is empty; appeals stay
   scoped to the caller's own platform, same as `list_appeals`. Still a bare
   day-count only — never an appellant's `user_name`, `reason`, or `user_id`.
+- **Discord image-attachment input** (#783, `IMAGE_INPUT_ENABLED`, off by
+  default): a caller can now attach a single image — a screenshot, a stack
+  trace, a billing page — alongside their message, and the bot answers
+  grounded in what it actually shows rather than whatever caption (or
+  nothing) was typed. Discord only, one image per message, MIME-allowlisted
+  (`image/png`/`image/jpeg`/`image/webp`) and byte-capped
+  (`IMAGE_INPUT_MAX_BYTES`), with a per-user daily cap
+  (`IMAGE_INPUT_DAILY_LIMIT_PER_USER`) checked before any download. Minimum
+  eligible tier (`IMAGE_INPUT_MIN_ROLE`) defaults to `super_admin` — more
+  conservative than the sibling voice-transcription features — because an
+  image is a genuinely new untrusted-input class: text rendered inside one
+  is invisible to moderation and every other inbound filter, defended only by
+  an explicit systemPrompt clause. No image bytes are ever stored. See
+  `docs/SECURITY.md` §22 for the full posture.
 - **New `getting-started` Agent Skill: sequenced "where do I start with X"
   learning-path guidance** (#776, part of the Agent Skills cohort behind
   `AGENT_SKILLS_ENABLED`, off by default): fills the "member growth &
@@ -51,6 +65,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780
   the sequencing layer. Added to the explicit `ENABLED_SKILLS` allowlist
   alongside its five siblings (never `'all'`); no new tool, and no tier's
   `allowedTools`/`disallowedTools` change.
+
+### Fixed
+- **The knowledge shortcut's low-rated caveat now honours a caller's standing
+  te reo Māori preference** (#789). A member with `set_language_preference('mi')`
+  who hit a low-rated knowledge entry via the zero-model-call shortcut used to
+  get a reply where the trailing attribution line was already in te reo
+  (issue #435) but the "other members found this unhelpful" caveat one line
+  above it was stuck in English — a single reply, mixed language. The caveat
+  now renders in te reo alongside the suffix, and English-preference replies
+  are unchanged.
 
 ## 2026-07-27
 

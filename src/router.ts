@@ -1521,11 +1521,20 @@ export class Router {
             return false;
           })
         : false;
+    // Language preference (issue #789) is resolved BEFORE the citation note
+    // so both the note's low-rated caveat and the trailing suffix below
+    // render from the same single lookup — a reorder, not a second DB read.
+    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
     // Deterministic, send-path-only citation/freshness note (issue #214) — the
     // shortcut never involves the model, so this is formatted from stored
     // fields exactly like knowledge_search's own note.
-    const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays, lowRatedCaveat);
-    const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const note = formatKnowledgeCitationNote(
+      hit,
+      config.adminDigest.knowledgeStaleDays,
+      lowRatedCaveat,
+      undefined,
+      lang,
+    );
     const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
     const replyText = `${hit.content}${note}${suffix}`;
     await this.send(adapter, target, replyText);
@@ -1746,7 +1755,13 @@ export class Router {
         // Backs cross-platform resolution DMs (issue #157): a per-turn tool
         // handler can look up another platform's already-registered adapter
         // through this instead of only ever having its own turn's adapter.
-        reply = await this.runTurn(caller, msg.text, adapter, (platform) => this.adapters.get(platform));
+        reply = await this.runTurn(
+          caller,
+          msg.text,
+          adapter,
+          (platform) => this.adapters.get(platform),
+          msg.image,
+        );
       } catch (err) {
         logger.error(
           { err, conversationId: msg.conversationId },
