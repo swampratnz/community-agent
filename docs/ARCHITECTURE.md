@@ -1580,6 +1580,21 @@ upgrade).
   `COUNT(*)`, so an uncapped busy week can never render a clause claiming
   more member contributions than titles shown. Takes only a bare `number`,
   same structural no-leak guarantee as `newProjectCount`.
+- **Member-interests awareness, count-only (issue #815)**: a fifth section,
+  `🔍 N member(s) published or updated their interests this week`, appears
+  when `countInterestsPublishedSince` (`member_interests` rows with
+  `updated_at` in the same freshness window) is `> 0` — the direct sibling
+  of the project-showcase count above, for `set_my_interests`/`who_is_into`'s
+  table instead of `member_projects`. Same reasoning, same structural
+  guarantee: `formatMemberDigestMessage` takes only `newInterestCount:
+  number`, never interest text or a member identifier, because
+  `set_my_interests`'s publication consent is scoped to "other members via
+  `who_is_into`" (member-tier, on-demand), not this ungated public post.
+  `member_interests` has no `created_at` column (a single-row-per-identity
+  upsert), so the count is honestly "published *or updated*" rather than
+  implying novelty the schema can't distinguish; `set_helper_availability`
+  never touches `updated_at`, so toggling helper availability alone does not
+  bump this count.
 - **Two independent floors, widened-audience-aware (PR #651 review)**: this
   surface is more exposed than either existing `context_digests` consumer
   (admin-only `list_context_digests`, and the export's own
