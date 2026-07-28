@@ -42,6 +42,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   false case. No new tool, table, or model call; the flag lives on the
   existing `member_projects` row, so purge/roster-leave cleanup removes it
   along with everything else automatically.
+- **The weekly admin digest's flywheel-throughput line now counts successful
+  `find_helper` connections, not just knowledge candidates and shared
+  projects** (#820): a new `countHelperMatchesSince` repository function
+  (gated behind the existing `FIND_HELPER_ENABLED`, so a deployment without
+  `find_helper` on issues no extra query) counts `helper_notifications` rows —
+  one per DM `find_helper` actually sent — since the same window the line's
+  other two sub-signals already use. `find_helper` is the one flywheel action
+  that actively connects two members rather than contributing content, and it
+  had zero visibility in either digest until now. The line's gate is now a
+  three-way `||` (any of the three sub-signals renders it), each with its own
+  independent week-over-week trend; still a bare integer only — never a
+  helper/requester identifier or the `find_helper` topic.
 - **`my_submissions` now covers `suggest_knowledge` tips, not just
   suggestions/reports/appeals** (#830): a new self-scoped
   `listOwnKnowledgeCandidates` repository function — mirroring
@@ -74,9 +86,34 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   only a bare number, so no platform or member identity ever reaches this
   public channel post.
 
+### Fixed
+- **The offline context builder's cluster summariser no longer silently
+  defaults on a format slip** (#831), extending #720's fix to the other
+  named "grows into" target. `summarizeCluster` used to ask the model for
+  five free-text lines and parse each with a regex; any reply that didn't
+  match exactly silently defaulted the digest's topic to the literal string
+  "Community discussion", its summary to a raw untrimmed slice of the whole
+  response, and dropped a genuine knowledge-candidate draft entirely — with
+  no error and no distinguishing log line. The five fields are now
+  schema-constrained via the SDK's structured output, so a malformed or
+  missing response throws (counted as a `failed` cluster, same as today)
+  instead of landing a placeholder digest or losing a candidate in front of
+  an admin.
+
 ## 2026-07-28
 
 ### Added
+- **The weekly member digest now nudges the community about new published
+  interests, not just new showcase projects** (#815): a new
+  `countInterestsPublishedSince` repository function — the exact
+  `countProjectsSharedSince` (#714) pattern applied to `member_interests`
+  instead of `member_projects` — adds a fifth digest section, `🔍 N
+  member(s) published or updated their interests this week — ask me "who's
+  into X?" to find them`, rendered only when the count is non-zero. Bare
+  integer only, same as the project-showcase line: never interest text, a
+  member name, or a handle, since `set_my_interests`'s own publication
+  consent is scoped to other members via `who_is_into`, not this ungated
+  public channel post.
 - **A member can now explicitly ask to talk to a human** (#808,
   `request_human_help`, gated by the existing `ESCALATION_TO_ADMIN_ENABLED`):
   the last gap neither the max-turns "reply yes" offer (#479) nor the
@@ -87,6 +124,7 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   caller's own message. Shares the same guild-wide hourly escalation cap as
   its two siblings, plus a new per-caller daily cap (3/24h) so one member
   can't alone exhaust that shared budget.
+
 - **`review_queue` and the weekly admin digest now show the pending-knowledge-
   candidates backlog's age too, not just its count** (#801): a new
   `oldestPendingCandidateAgeDays` repository function — the same

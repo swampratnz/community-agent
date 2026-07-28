@@ -132,6 +132,25 @@ export async function getPublishedInterestsForOwners(
   return result;
 }
 
+/**
+ * Count of `member_interests` rows published or updated since `since` —
+ * issue #815's member-digest awareness nudge, the direct sibling of
+ * `countProjectsSharedSince` (issue #714) for this table. `member_interests`
+ * is a single-row-per-identity upsert with no `created_at` column (only
+ * `updated_at`), so this counts "published or updated in the window," not
+ * "brand new" — the digest copy states that rather than implying novelty
+ * the schema can't distinguish. No `removed_at`/soft-delete column exists on
+ * this table (a clear/purge is a hard `DELETE`), so unlike
+ * `countProjectsSharedSince` there is no soft-removed row to exclude.
+ */
+export async function countInterestsPublishedSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM member_interests WHERE updated_at > $1`,
+    [since],
+  );
+  return Number(rows[0].n);
+}
+
 // --- Helper handoff (set_helper_availability / find_helper, issue #729) -----
 //
 // The active-side consumer of member_interests: willing_to_help rides the
@@ -242,6 +261,22 @@ export async function findHelperCandidates(
     [pgvector.toSql(queryVec), excludePlatform, excludeUserId, limit, FIND_HELPER_RELEVANCE_THRESHOLD],
   );
   return rows.map((r) => ({ platform: r.platform as Platform, userId: r.user_id }));
+}
+
+/**
+ * Count of successful find_helper connections (`helper_notifications` rows —
+ * one per DM actually sent) since `since` — issue #820's admin-digest
+ * flywheel-throughput signal, the third dimension #797 established with
+ * `countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince` but never
+ * covered: the one flywheel action that actively connects two members rather
+ * than contributing content. Mirrors those two functions' exact shape.
+ */
+export async function countHelperMatchesSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM helper_notifications WHERE created_at > $1`,
+    [since],
+  );
+  return Number(rows[0].n);
 }
 
 /**
