@@ -422,13 +422,22 @@ memory**:
    `since` window `memberDigest.ts` uses. Rendered only when at least one is
    non-zero, each with its own independent trend suffix; bare integers only —
    never a candidate title/content/topic or a project name/description/link/owner.
+   Plus (issue #820) the flywheel line's third dimension — successful
+   `find_helper` connections since the same `since` window, from
+   `countHelperMatchesSince(since)` (gated behind `config.findHelper.enabled`,
+   so a deployment with `find_helper` off issues no extra query and always
+   renders `0`) — the one flywheel action that actively connects two members
+   rather than contributing content, extending the line's gate to a three-way
+   `||`. Bare integer plus its own trend suffix only — never a helper/requester
+   identifier or the `find_helper` topic.
    All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
    `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
-   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`)
+   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`/
+   `countHelperMatchesSince`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Five of these queue lines also

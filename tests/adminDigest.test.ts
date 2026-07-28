@@ -3430,11 +3430,7 @@ test(
     );
     assert.ok(claimed, 'seed notification claims a slot');
 
-    assert.equal(
-      await countHelperMatchesSince(since),
-      before + 1,
-      'a row created inside the window counts',
-    );
+    assert.equal(await countHelperMatchesSince(since), before + 1, 'a row created inside the window counts');
 
     await pool.query(
       `UPDATE helper_notifications SET created_at = now() - interval '30 days'
@@ -3447,14 +3443,15 @@ test(
       'a row created before the window is excluded once its created_at is pushed outside it (issue #820 acceptance criterion 1)',
     );
 
-    await pool.query(`DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`, [
-      helper,
-    ]);
+    await pool.query(
+      `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
   },
 );
 
 test(
-  'SECURITY: repository: countHelperMatchesSince returns a bare number carrying no identifying data — mirrors countProjectsSharedSince/countAcceptedKnowledgeCandidatesSince\'s existing count-only coverage (issue #820 acceptance criterion 6)',
+  "SECURITY: repository: countHelperMatchesSince returns a bare number carrying no identifying data — mirrors countProjectsSharedSince/countAcceptedKnowledgeCandidatesSince's existing count-only coverage (issue #820 acceptance criterion 6)",
   { skip },
   async () => {
     const helper = `${RUN}-helpermatches-typecheck-helper`;
@@ -3473,9 +3470,10 @@ test(
       'SECURITY: the count carries no trace of the topic, helper id, or requester id it was derived from',
     );
 
-    await pool.query(`DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`, [
-      helper,
-    ]);
+    await pool.query(
+      `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
   },
 );
 
@@ -3503,8 +3501,15 @@ test(
       config.findHelper.enabled = wasEnabled;
     }
 
-    assert.equal(result.currentCounts.helperMatchesCount, 0, 'helperMatchesCount is always 0 while the flag is off');
-    assert.ok(!(result.message ?? '').includes('member-to-member connection'), 'no flywheel-connections clause renders while the flag is off');
+    assert.equal(
+      result.currentCounts.helperMatchesCount,
+      0,
+      'helperMatchesCount is always 0 while the flag is off',
+    );
+    assert.ok(
+      !(result.message ?? '').includes('member-to-member connection'),
+      'no flywheel-connections clause renders while the flag is off',
+    );
 
     const issuedHelperNotificationsQuery = querySpy.mock.calls.some((call) =>
       String(call.arguments[0]).includes('helper_notifications'),
@@ -3515,7 +3520,9 @@ test(
     );
 
     await clearAccessRequest('discord', requesterId);
-    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [adminId]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
   },
 );
 
@@ -3551,7 +3558,11 @@ test(
       config.findHelper.enabled = wasEnabled;
     }
 
-    assert.equal(result.currentCounts.helperMatchesCount, before + 1, 'helperMatchesCount reflects the seeded connection');
+    assert.equal(
+      result.currentCounts.helperMatchesCount,
+      before + 1,
+      'helperMatchesCount reflects the seeded connection',
+    );
     assert.ok(result.message, 'a nonzero helperMatchesCount alone still produces a DM');
     assert.match(
       result.message,
@@ -3567,10 +3578,13 @@ test(
       'SECURITY: neither the helper nor the requester identity ever reaches the rendered digest (issue #820 acceptance criterion 5)',
     );
 
-    await pool.query(`DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`, [
-      helper,
+    await pool.query(
+      `DELETE FROM helper_notifications WHERE helper_platform = 'discord' AND helper_user_id = $1`,
+      [helper],
+    );
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
     ]);
-    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [adminId]);
   },
 );
 
