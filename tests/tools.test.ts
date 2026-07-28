@@ -2686,7 +2686,7 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Ask what meetups/events are coming up ("what\'s on?")\n' +
     '- Share a project you\'ve built with the community, or browse what others have shared ("share my ' +
     'project", "what has everyone built?")\n' +
-    '- Ask to connect with a project owner who\'s looking for collaborators ("I\'d like to help with that ' +
+    "- Ask to connect with a project owner who's looking for collaborators (\"I'd like to help with that " +
     'project")\n' +
     '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
