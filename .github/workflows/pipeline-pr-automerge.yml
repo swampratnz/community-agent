@@ -342,8 +342,14 @@ jobs:
                 echo "PR #$n: DRY RUN (AUTOMERGE_MODE=$MODE) — fully vetted but governance-path; would label human-merge-ready."
                 echo "::endgroup::"; continue
               fi
+              # Author-gate the dedup: the marker is plain text in a public
+              # thread, so an unauthenticated commenter pre-posting it would
+              # otherwise suppress this human-merge-ready flag+comment — the
+              # loop's only escalation for a governance PR, whose whole point
+              # is to be seen. Match both login renderings (see the
+              # latest_review identity note above).
               already_flagged="$(gh pr view "$n" --repo "$REPO" --json comments \
-                | jq -r --arg m "$READY_MARKER" '[.comments[].body] | any(startswith($m))')"
+                | jq -r --arg m "$READY_MARKER" '[.comments[] | select(.author.login == "github-actions" or .author.login == "github-actions[bot]") | .body] | any(startswith($m))')"
               if [ "$already_flagged" != 'true' ]; then
                 echo "PR #$n: fully vetted (green + mergeable + fresh LGTM) but governance-path — flagging human-merge-ready."
                 # --force makes create idempotent (updates if it exists); the
@@ -436,8 +442,11 @@ jobs:
             # note so it's visible without spamming every tick, and stop (do not
             # fall through to merge a different PR under the same blocked policy).
             echo "::warning::gh pr merge refused for PR #$n with head unchanged — likely branch protection."
+            # Author-gate the dedup (see the human-merge-ready note above): a
+            # public commenter must not be able to suppress this branch-
+            # protection-blocked note by pre-posting the marker.
             already_noted="$(gh pr view "$n" --repo "$REPO" --json comments \
-              | jq -r --arg m "$BLOCKED_MARKER" '[.comments[].body] | any(startswith($m))')"
+              | jq -r --arg m "$BLOCKED_MARKER" '[.comments[] | select(.author.login == "github-actions" or .author.login == "github-actions[bot]") | .body] | any(startswith($m))')"
             if [ "$already_noted" != 'true' ]; then
               gh pr comment "$n" --repo "$REPO" --body "${BLOCKED_MARKER}
           🤖 Auto-merge found this PR fully eligible (green, mergeable, review-approved) but \`gh pr merge\` was refused — most likely branch protection requires a human approving *review* (the automated verdict is a comment, not a review), or the Actions identity isn't allowed to merge. A maintainer can merge it directly, or adjust branch protection. See docs/PIPELINE.md (auto-merge loop)."

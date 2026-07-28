@@ -127,8 +127,13 @@ jobs:
             echo "PR #$number is not an eligible (same-repo, bot-authored, build-worker, not needs-human) PR — skipping."
             exit 0
           fi
-          # Prior autofix attempts = number of ATTEMPT_MARKER comments (only).
-          attempts="$(gh pr view "$number" --json comments --jq "[.comments[] | select(.body | contains(\"$ATTEMPT_MARKER\"))] | length")"
+          # Prior autofix attempts = number of ATTEMPT_MARKER comments (only),
+          # author-gated to github-actions[bot]. The marker is plain text in a
+          # public thread, so without the author filter any commenter could
+          # pre-post two marker comments and force the >=2 escalation
+          # (needs-human), pulling the PR out of every automated lane. Same
+          # gate scripts/pipeline-outcomes.mjs applies to these markers.
+          attempts="$(gh pr view "$number" --json comments --jq "[.comments[] | select((.author.login == \"github-actions\" or .author.login == \"github-actions[bot]\") and (.body | contains(\"$ATTEMPT_MARKER\")))] | length")"
           {
             echo "number=$number"
             echo "attempts=$attempts"
