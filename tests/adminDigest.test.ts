@@ -3047,6 +3047,92 @@ test('buildAdminDigestMessage: open-appeals line carries the standard trendSuffi
   );
 });
 
+// Shared 35-element positional prefix for buildAdminDigestMessage, everything
+// zero/null/undefined except openAppealsCount = 3 (position 31) — every test
+// below appends exactly one more argument: the oldestOpenAppealAgeDays value
+// under test (position 36). Named as a tuple (one element per line, in
+// signature order) rather than counted inline, since a single miscounted
+// positional arg silently shifts every argument after it.
+const APPEALS_ONLY_ARGS = [
+  [], // 1  clusters
+  0, // 2  pendingAccessRequests
+  0, // 3  openReports
+  0, // 4  pendingSuggestions
+  0, // 5  staleKnowledgeCount
+  0, // 6  knowledgeStaleDays
+  0, // 7  knowledgeGapsCount
+  0, // 8  pendingKnowledgeCandidates
+  0, // 9  lowRatedKnowledgeCount
+  0, // 10 joinedThisWeek
+  0, // 11 leftThisWeek
+  0, // 12 mutedMembersCount
+  0, // 13 maxTurnsFailuresCount
+  0, // 14 duplicateKnowledgeCount
+  0, // 15 conflictCandidateCount
+  0, // 16 knowledgeStaleMaxAgeDays
+  0, // 17 pendingKnowledgeCandidatesStaleCount
+  0, // 18 knowledgeCandidateStaleDays
+  0, // 19 staleMutedMembersCount
+  0, // 20 notMembersCount
+  0, // 21 escalatedKnowledgeGapsCount
+  undefined, // 22 previousCounts
+  null, // 23 oldestAccessRequestAgeDays
+  null, // 24 oldestOpenReportAgeDays
+  null, // 25 oldestPendingSuggestionAgeDays
+  0, // 26 generalUnhelpfulCount
+  0, // 27 autoAnswerHelpful
+  0, // 28 autoAnswerUnhelpful
+  0, // 29 addressedHelpful
+  0, // 30 addressedUnhelpful
+  3, // 31 openAppealsCount
+  0, // 32 unreachableSourceKnowledgeCount
+  0, // 33 overallAnswerHelpful
+  0, // 34 overallAnswerTotal
+  0, // 35 unhelpfulThemeCount
+] as const;
+
+test('buildAdminDigestMessage: oldestOpenAppealAgeDays appends an "oldest Nd" fragment to the open-appeals line only when openAppealsCount > 0 AND the age is non-null (issue #787 acceptance criterion 3)', () => {
+  const withAge = buildAdminDigestMessage(...APPEALS_ONLY_ARGS, 45);
+  assert.ok(withAge);
+  const appealLine = withAge.split('\n').find((l) => l.includes('📋'));
+  assert.equal(
+    appealLine,
+    '📋 3 open moderation appeal(s), oldest 45d awaiting review — run `list_appeals` to review.',
+    'a non-null age appends ", oldest Nd" to the already-nonzero open-appeals line',
+  );
+
+  const nullAge = buildAdminDigestMessage(...APPEALS_ONLY_ARGS, null);
+  assert.ok(nullAge);
+  const nullAgeAppealLine = nullAge.split('\n').find((l) => l.includes('📋'));
+  assert.equal(
+    nullAgeAppealLine,
+    '📋 3 open moderation appeal(s) awaiting review — run `list_appeals` to review.',
+    'a null age (or a caller that has not wired the new param through) renders exactly the pre-#787 wording',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: openAppealsCount === 0 renders no open-appeals line and is byte-identical whether or not oldestOpenAppealAgeDays is supplied — a non-null age never surfaces a line on its own (issue #787 acceptance criterion 5)', () => {
+  // Same 35-element prefix, with openAppealsCount (position 31, index 30)
+  // zeroed and every trailing position (32-35) preserved.
+  const zeroAppealsArgs = [
+    ...APPEALS_ONLY_ARGS.slice(0, 30),
+    0, // 31 openAppealsCount
+    ...APPEALS_ONLY_ARGS.slice(31),
+  ] as const;
+  const quiet = buildAdminDigestMessage(...zeroAppealsArgs);
+  const withAgeButZeroCount = buildAdminDigestMessage(...zeroAppealsArgs, 45);
+  assert.equal(
+    quiet,
+    null,
+    'zero open appeals with no other signal is a quiet week, whether or not the age param is supplied',
+  );
+  assert.equal(
+    withAgeButZeroCount,
+    quiet,
+    'SECURITY: a non-null oldestOpenAppealAgeDays must never surface a line when openAppealsCount is 0',
+  );
+});
+
 test('buildAdminDigestMessage: unreachable-source-knowledge line appears only when unreachableSourceKnowledgeCount > 0, and all TWENTY-ONE signals zero -> null (issue #624 acceptance criteria 2, 3)', () => {
   assert.equal(
     buildAdminDigestMessage(
@@ -5830,7 +5916,7 @@ test(
     assert.ok(appealLine, 'the open-appeals line is present');
     assert.match(
       appealLine,
-      /^📋 \d+ open moderation appeal\(s\) awaiting review — run `list_appeals` to review\./,
+      /^📋 \d+ open moderation appeal\(s\)(, oldest \d+d)? awaiting review — run `list_appeals` to review\./,
     );
     assert.ok(
       !sent[0].text.includes(secretUserName),
