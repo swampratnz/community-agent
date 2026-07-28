@@ -48,8 +48,9 @@ test('pipeline-outcomes counts an engagement, a checkpoint recovery and an escal
       '<!-- pipeline-pr-revise-checkpoint -->\nrecovered work',
     ]),
   ]);
-  assert.match(out, /\| autofix \| 2 \| 0 \(0%\) \| 1 \(50%\) \| 1 \(50%\) \|/);
-  assert.match(out, /\| revise \| 1 \| 1 \(100%\) \| 0 \(0%\) \| 0 \(0%\) \|/);
+  // Columns: Engaged | Recovered | Escalated | Routed | Clean.
+  assert.match(out, /\| autofix \| 2 \| 0 \(0%\) \| 1 \(50%\) \| 0 \(0%\) \| 1 \(50%\) \|/);
+  assert.match(out, /\| revise \| 1 \| 1 \(100%\) \| 0 \(0%\) \| 0 \(0%\) \| 0 \(0%\) \|/);
 });
 
 test('pipeline-outcomes lists the PRs where a loop did not finish, newest first', () => {
@@ -85,12 +86,52 @@ test('pipeline-outcomes counts a loop that escalated without an attempt marker a
   // attempt marker, so an escalation-only PR must not report "0 engaged, 1
   // escalated" (which would render a nonsensical rate).
   const out = run([pr(60, ['<!-- pipeline-pr-conflict-escalation -->\nunresolvable'])]);
-  assert.match(out, /\| conflict-resolver \| 1 \| 0 \(0%\) \| 1 \(100%\) \| 0 \(0%\) \|/);
+  assert.match(out, /\| conflict-resolver \| 1 \| 0 \(0%\) \| 1 \(100%\) \| 0 \(0%\) \| 0 \(0%\) \|/);
 });
 
-test('pipeline-outcomes treats an auto-merge blocked notice as friction worth reporting', () => {
+test('pipeline-outcomes treats an auto-merge blocked notice as a genuine escalation', () => {
+  // `pipeline-automerge-blocked` means branch protection REFUSED the merge —
+  // the loop wanted to merge and could not. That is real friction, unlike the
+  // governance routing below.
   const out = run([pr(70, ['<!-- pipeline-automerge-blocked -->\ncould not merge'])]);
-  assert.match(out, /\| auto-merge \| 1 \|/);
+  assert.match(out, /\| auto-merge \| 1 \| 0 \(0%\) \| 1 \(100%\) \| 0 \(0%\) \| 0 \(0%\) \|/);
+  assert.match(out, /### PRs where a loop did not finish/, 'a blocked merge is worth a human glance');
+});
+
+test('a governance routing counts as Routed, never as Escalated', () => {
+  // `pipeline-automerge-human-ready` is auto-merge meeting a governance-path PR
+  // and handing it to a person exactly as policy requires. Counting it as an
+  // escalation made the loop read "80% escalated" when it was succeeding.
+  const out = run([pr(71, ['<!-- pipeline-automerge-human-ready -->\nplease merge'])]);
+  assert.match(out, /\| auto-merge \| 1 \| 0 \(0%\) \| 0 \(0%\) \| 1 \(100%\) \| 0 \(0%\) \|/);
+});
+
+test('a window whose ONLY auto-merge outcome is a governance routing has no "did not finish" section, so the tracking issue can close', () => {
+  // pipeline-outcomes.yml opens/refreshes the tracking issue only when the
+  // report contains that heading, and closes it otherwise. While routings were
+  // listed there, #777 could never close and the genuine recoveries were
+  // buried under by-design rows.
+  const out = run([
+    pr(72, ['<!-- pipeline-automerge-human-ready -->']),
+    pr(73, ['<!-- pipeline-automerge-human-ready -->']),
+  ]);
+  assert.match(out, /\| auto-merge \| 2 \| 0 \(0%\) \| 0 \(0%\) \| 2 \(100%\) \| 0 \(0%\) \|/);
+  assert.doesNotMatch(
+    out,
+    /### PRs where a loop did not finish/,
+    'a by-design routing must not pin the tracking issue open',
+  );
+});
+
+test('a routed engagement still appears in the ledger alongside a real failure on another PR', () => {
+  const out = run([
+    pr(74, ['<!-- pipeline-automerge-human-ready -->']),
+    pr(75, ['<!-- pipeline-automerge-blocked -->']),
+  ]);
+  assert.match(out, /\| auto-merge \| 2 \| 0 \(0%\) \| 1 \(50%\) \| 1 \(50%\) \| 0 \(0%\) \|/);
+  const section = out.slice(out.indexOf('### PRs where a loop did not finish'));
+  assert.match(section, /#75/, 'the genuinely blocked merge is listed');
+  assert.doesNotMatch(section, /#74/, 'the by-design routing is not');
 });
 
 test('Clean counts a genuinely clean PR even when a SIBLING PR of the same loop both recovered and escalated (issue #750 review)', () => {
@@ -110,7 +151,7 @@ test('Clean counts a genuinely clean PR even when a SIBLING PR of the same loop 
   ]);
   assert.match(
     out,
-    /\| conflict-resolver \| 2 \| 1 \(50%\) \| 1 \(50%\) \| 1 \(50%\) \|/,
+    /\| conflict-resolver \| 2 \| 1 \(50%\) \| 1 \(50%\) \| 0 \(0%\) \| 1 \(50%\) \|/,
     'the clean engagement on PR #1 must survive the double failure on PR #2',
   );
 });
@@ -123,7 +164,7 @@ test('a single engagement that both recovered and escalated counts as ONE failed
       '<!-- pipeline-autofix-escalation -->',
     ]),
   ]);
-  assert.match(out, /\| autofix \| 1 \| 1 \(100%\) \| 1 \(100%\) \| 0 \(0%\) \|/);
+  assert.match(out, /\| autofix \| 1 \| 1 \(100%\) \| 1 \(100%\) \| 0 \(0%\) \| 0 \(0%\) \|/);
 });
 
 test('pipeline-outcomes falls back to the default window when --window-days is non-numeric, instead of reporting "NaN days" and matching nothing (issue #750 review)', () => {
