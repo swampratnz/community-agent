@@ -1215,6 +1215,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     label: 'Discord voice message transcription',
     category: 'Onboarding',
   },
+  {
+    envVar: 'IMAGE_INPUT_ENABLED',
+    configPath: 'discord.image.enabled',
+    label: 'Discord image-attachment input',
+    category: 'Onboarding',
+  },
   // WhatsApp
   {
     envVar: 'WHATSAPP_WELCOME_ENABLED',

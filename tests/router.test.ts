@@ -25,6 +25,7 @@ const { INTERNAL_ERROR_REPLY } = await import('../src/agent/core.js');
 const { logger } = await import('../src/logger.js');
 const { embed } = await import('../src/storage/embeddings.js');
 const { registerPendingAction, cancelPendingAction } = await import('../src/agent/pendingActions.js');
+const { pool } = await import('../src/storage/db.js');
 
 // recordInteraction embeds every message it stores; the embedding pipeline is
 // downloaded/loaded lazily on first use and then memoised. Pre-warm it here
@@ -902,6 +903,44 @@ test("SECURITY: router: 'mi' languagePreference still takes precedence when resp
   assert.equal(sent.length, 1);
   assert.equal(sent[0].language, 'mi');
   assert.equal(sent[0].style, 'plain');
+});
+
+test("router: an IncomingMessage's `image` attachment is passed through to runTurn as its fifth argument (issue #783)", async () => {
+  let seenImage: unknown;
+  const router = new Router(async (_caller, _text, _adapter, _getAdapter, image) => {
+    seenImage = image;
+    return makeReply('grounded in the screenshot');
+  }, 20);
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  const image = { data: 'ZmFrZS1ieXRlcw==', mimeType: 'image/png' as const };
+  await trigger(makeMessage({ image }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(seenImage, image, 'runTurn must receive the exact image attached to the IncomingMessage');
+});
+
+test('SECURITY: no image bytes are persisted — the recorded interaction for an image-bearing turn contains `text` only, matching a turn without one (issue #783, acceptance criterion 5)', async (t) => {
+  const insertedContents: string[] = [];
+  t.mock.method(pool, 'query', async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('INSERT INTO interactions')) {
+      insertedContents.push(String(params[6])); // content is the 7th positional param
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  const router = new Router(async () => makeReply('grounded in the screenshot'), 20);
+  const { adapter, trigger } = makeAdapter();
+  router.register(adapter);
+
+  const image = { data: 'ZmFrZS1ieXRlcw==', mimeType: 'image/png' as const };
+  await trigger(makeMessage({ text: "what's this error?", image }));
+
+  assert.ok(insertedContents.length > 0, 'at least one interaction row must have been recorded');
+  for (const content of insertedContents) {
+    assert.doesNotMatch(content, /ZmFrZS1ieXRlcw==/, 'the image base64 payload must never reach stored content');
+    assert.ok(!content.includes('image'), 'the stored content must be plain reply/message text, not an image reference');
+  }
 });
 
 test('router (repeat-max-turns shortcut default off): REPEAT_MAX_TURNS_SHORTCUT_ENABLED unset means zero behaviour change — a resend after a max-turns failure always runs a fresh turn', async () => {
