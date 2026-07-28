@@ -468,6 +468,17 @@ const EnvSchema = z.object({
   // amnesiac mid-conversation, with only semantic recall (keyed on the
   // CURRENT message text) to reconstruct what was just said. 0 = disabled.
   SESSION_ROLLOVER_TAIL_COUNT: z.coerce.number().int().nonnegative().default(10),
+  // Wall-clock ceiling on a single Agent SDK `query()` turn (issue #826): a
+  // hung iteration (network partition, wedged CLI subprocess) never rejects,
+  // so nothing but a race against this timer unblocks it — and because turns
+  // are serialised per conversation (router.ts's enqueue()), an unbounded
+  // hang here wedges that conversation's entire chain, not just one reply.
+  // Same "a .catch() only fires on rejection" gap #502 closed for the DB pool
+  // (DB_QUERY_TIMEOUT_MS). Default must stay strictly greater than
+  // IMAGE_GEN_TIMEOUT_MS (180_000): image generation is a tool call that runs
+  // *inside* this turn loop, so an outer ceiling at or below the inner tool's
+  // own timeout would kill a legitimately in-flight image-gen turn first.
+  AGENT_TURN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
   // Ceiling on the member's own message text reaching the paid model call
   // (runAgentTurn's local `userText` copy only — never `msg.text` itself, so
   // archiving/classification/echo still see the full original). 0 = disabled
@@ -1312,6 +1323,7 @@ export const config = {
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
     sessionRolloverTailCount: env.SESSION_ROLLOVER_TAIL_COUNT,
+    agentTurnTimeoutMs: env.AGENT_TURN_TIMEOUT_MS,
     maxIncomingMessageChars: env.MAX_INCOMING_MESSAGE_CHARS,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
     rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,

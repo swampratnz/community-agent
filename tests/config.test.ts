@@ -48,6 +48,22 @@ test('config: ROSTER_DEPARTED_RETENTION_DAYS unset (default) is disabled — zer
   assert.equal(config.behaviour.rosterDepartedRetentionDays, 0);
 });
 
+test('config: AGENT_TURN_TIMEOUT_MS unset defaults to 300_000 (issue #826)', () => {
+  assert.equal(config.behaviour.agentTurnTimeoutMs, 300_000);
+});
+
+test(
+  'config: AGENT_TURN_TIMEOUT_MS default stays strictly greater than IMAGE_GEN_TIMEOUT_MS (issue #826) — ' +
+    'an outer turn timeout at or below the inner image-gen tool timeout would kill a legitimately ' +
+    'in-flight image-gen turn before its own tool-level ceiling ever fires',
+  () => {
+    assert.ok(
+      config.behaviour.agentTurnTimeoutMs > config.imageGen.timeoutMs,
+      `agentTurnTimeoutMs (${config.behaviour.agentTurnTimeoutMs}) must exceed imageGen.timeoutMs (${config.imageGen.timeoutMs})`,
+    );
+  },
+);
+
 test('config: MODERATION_STRIKE_WINDOW_DAYS unset (default) is undefined — unbounded strike accumulation, unchanged from before this option existed (issue #194)', () => {
   assert.equal(config.moderation.strikeWindowDays, undefined);
 });
