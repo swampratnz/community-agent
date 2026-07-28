@@ -161,7 +161,17 @@ Create them once: **Actions → "Setup pipeline labels" → Run workflow**, or
   structurally, not just by prompt: its `--allowedTools` in `pipeline-build.yml`
   grants no blanket `git:*`/`gh:*`/`npx:*`/`node:*` and no form of
   `gh pr merge` or `gh api` (matching the autofix worker's least-privilege
-  standard, #107). Only the deterministic auto-merge loop merges, and only its
+  standard, #107). It also grants **no `gh issue edit`** (audit 2026-07-28 N4):
+  the matcher can't pin the issue number, so an injected agent could have
+  labelled an *arbitrary* issue `status:approved` and spawned a build of
+  never-adversarially-reviewed work (an App-token label add does re-trigger the
+  build workflow). The workflow now owns every lane transition
+  deterministically with its `GITHUB_TOKEN` — a Claim step marks
+  `status:building` before the agent runs, the verify step marks `status:built`
+  once it confirms the PR, and a deliberate infeasible/unsafe refusal is
+  signalled by the agent writing a git-ignored `needs-human.md` file (the same
+  file-signal shape as the handoff note) which the verify step turns into the
+  `needs-human` label. Only the deterministic auto-merge loop merges, and only its
   own gated build-worker PRs.
 - **WIP caps:** ≤5 open `status:draft` (raised from 3 on the Max 20x pool — the
   cap protects review quality, not compute). Builds run **per-issue** (each issue its
@@ -594,8 +604,11 @@ Build and pr-review run as **GitHub Actions** (label/PR triggered), not live
 sessions:
 
 - `.github/workflows/pipeline-build.yml` — fires on `issues.labeled ==
-  status:approved`, implements on a branch, opens a PR "Closes #N", relabels
-  `status:built`. Builds run **per-issue** (each issue its own `concurrency`
+  status:approved`, implements on a branch, opens a PR "Closes #N". The
+  **workflow** (not the agent) owns the lane labels deterministically now
+  (audit 2026-07-28 N4 — see the least-privilege bullet above): a Claim step
+  marks `status:building` before the agent runs and the verify step marks
+  `status:built` once it confirms the PR. Builds run **per-issue** (each issue its own `concurrency`
   group — distinct issues in parallel, no cross-eviction); `--max-turns 300` +
   a 180-min job timeout bound a run, sized generously so a pool-contended
   build finishes slowly instead of being killed mid-gate (see the WIP-caps

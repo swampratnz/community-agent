@@ -44,6 +44,15 @@ models/
 # skips it via .prettierignore's `*.md`.)
 /handoff.md
 
+# The build worker's deliberate-refusal signal (.github/workflows/
+# pipeline-build.yml). The build AGENT no longer holds `gh issue edit`, so it
+# can no longer label its own issue `needs-human` when it judges a proposal
+# infeasible/unsafe. Instead it writes this file — same reason it writes
+# handoff.md into the workspace — and the verify step reads it, applies the
+# label deterministically, and clears the build lane. Untracked for the same
+# reasons as handoff.md.
+/needs-human.md
+
 # OS / editor
 .DS_Store
 *.swp
