@@ -64,9 +64,6 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   its two siblings, plus a new per-caller daily cap (3/24h) so one member
   can't alone exhaust that shared budget.
 
-## 2026-07-28
-
-### Added
 - **`review_queue` and the weekly admin digest now show the pending-knowledge-
   candidates backlog's age too, not just its count** (#801): a new
   `oldestPendingCandidateAgeDays` repository function — the same
