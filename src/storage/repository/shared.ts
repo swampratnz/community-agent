@@ -7,6 +7,16 @@
  * imports this floor and re-exports it — are unchanged.
  */
 
+import type { PoolClient } from 'pg';
+
+/**
+ * A pool or a checked-out transaction client — anything that can run a query.
+ * Functions take this so a caller inside a `BEGIN`/`COMMIT` can pass its client
+ * and have the write land atomically with the rest of its transaction. Shared
+ * here because both repository.ts and extracted domain modules use it.
+ */
+export type Queryable = Pick<PoolClient, 'query'>;
+
 /**
  * Relevance floor for `knowledge_search` hits, in cosine similarity
  * (`1 - (embedding <=> query)`, same units as `searchKnowledge`'s returned

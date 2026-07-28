@@ -82,6 +82,7 @@ const {
   EVENTS_LIST_LIMIT,
   APPEAL_MODERATION_REASON_MAX_CHARS,
   reserveVoiceTranscriptionSlot,
+  HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER,
 } = await import('../src/agent/tools.js');
 const { filterOutbound } = await import('../src/agent/outbound.js');
 const {
@@ -2495,8 +2496,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // set_my_interests/who_is_into line. Still a hard cap, not a soft
   // heuristic — a future addition that isn't consolidated should fail this
   // rather than silently growing into a wall of text. Bumped again for issue
-  // #729's set_helper_availability/find_helper line.
-  assert.ok(replyText.length < 1800, `reply should stay short; was ${replyText.length} chars`);
+  // #729's set_helper_availability/find_helper line, and again for issue
+  // #808's request_human_help line.
+  assert.ok(replyText.length < 1850, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2596,6 +2598,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__suggest_improvement', /suggest/i],
   ['mcp__community__suggest_knowledge', /knowledge-base tip/i],
   ['mcp__community__rate_answer', /rate my last answer/i],
+  ['mcp__community__request_human_help', /talk to a human/i],
   ['mcp__community__set_response_style', /simply/i],
   ['mcp__community__set_language_preference', /te reo Māori/i],
   ['mcp__community__catch_up', /catch you up|what did I miss/i],
@@ -2670,6 +2673,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
     'to find later\n' +
     '- Rate my last answer helpful or not\n' +
+    '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
+    'human?")\n' +
     '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
     '- React to a message with an emoji instead of replying\n' +
     '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
@@ -2688,8 +2693,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     'a member-tier reply must be byte-identical to the pinned member content (issue #388 added the ' +
       'list_events line, issue #437 added the list_knowledge_topics line, issue #496 added the ' +
       'appeal_moderation line, issue #646 added the share_project/list_projects line, issue #634 added the ' +
-      'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line; ' +
-      'otherwise unchanged since #367)',
+      'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line, ' +
+      'issue #808 added the request_human_help line; otherwise unchanged since #367)',
   );
 });
 
@@ -2815,8 +2820,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // list_unhelpful_themes clause (consolidated into the existing
   // reports/suggestions/feedback bullet, not a new one); bumped again
   // alongside the member cap for issue #729's set_helper_availability/
-  // find_helper line.
-  assert.ok(adminReply.length < 3500, `admin reply should stay short; was ${adminReply.length} chars`);
+  // find_helper line, and again alongside the member cap for issue #808's
+  // request_human_help line.
+  assert.ok(adminReply.length < 3650, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -2944,9 +2950,10 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // list_projects line, and again for issue #634's set_my_interests/
   // who_is_into line; bumped again alongside the admin cap for issue #724's
   // list_unhelpful_themes clause; bumped again alongside the member/admin
-  // caps for issue #729's set_helper_availability/find_helper line.
+  // caps for issue #729's set_helper_availability/find_helper line, and again
+  // alongside the member/admin caps for issue #808's request_human_help line.
   assert.ok(
-    superAdminReply.length < 4200,
+    superAdminReply.length < 4260,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -13624,6 +13631,93 @@ test(
     );
   },
 );
+
+// request_human_help (issue #808): a zero-argument member+ tool that sets a
+// turn-scoped flag only — router.ts reads it back post-turn to direct-fire
+// the same notifyAdmins path rate_answer's thumbs-down uses (see
+// tests/humanHelpRequestRouter.test.ts for that side). Purely in-memory, no
+// DB, so unlike rate_answer's tests above these never need `{ skip }`.
+function requestHumanHelpHandler(
+  userId: string,
+  turnState: { lastKnowledgeHitId: number | null; humanHelpRequested?: boolean } = {
+    lastKnowledgeHitId: null,
+  },
+  role: 'guest' | 'member' = 'member',
+) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId,
+      userName: 'Help-Seeking Member',
+      role,
+      conversationId: `${RUN}-human-help-convo`,
+    },
+    adapter,
+    undefined,
+    turnState,
+  );
+  const registeredTool = (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        { handler: () => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }
+      >;
+    }
+  )._registeredTools['request_human_help'];
+  return { registeredTool, turnState };
+}
+
+test('request_human_help: a member+ caller under the daily cap gets a fixed acknowledgement and sets turnState.humanHelpRequested (issue #808 acceptance criterion 1)', async () => {
+  const { registeredTool, turnState } = requestHumanHelpHandler(`${RUN}-basic`);
+  const result = await registeredTool.handler();
+  assert.notEqual(result.isError, true);
+  assert.match(result.content[0]?.text ?? '', /flagged this for a community admin/i);
+  assert.equal(turnState.humanHelpRequested, true);
+});
+
+test('SECURITY: request_human_help re-asserts the member+ tier inside its own handler — a guest caller is rejected and never sets turnState.humanHelpRequested (issue #808)', async () => {
+  const { registeredTool, turnState } = requestHumanHelpHandler(`${RUN}-guest`, undefined, 'guest');
+  await assert.rejects(() => registeredTool.handler(), /Permission denied/);
+  assert.notEqual(turnState.humanHelpRequested, true);
+});
+
+test('SECURITY: request_human_help enforces its own per-caller daily cap — the (N+1)th request within 24h is politely declined, sets no turnState flag, and no notifyAdmins call is ever attempted from this tool (issue #808 acceptance criteria 6, 8)', async () => {
+  const userId = `${RUN}-cap`;
+  for (let i = 0; i < HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER; i++) {
+    const { registeredTool, turnState } = requestHumanHelpHandler(userId);
+    const result = await registeredTool.handler();
+    assert.notEqual(result.isError, true, `request ${i} within the cap should succeed`);
+    assert.equal(turnState.humanHelpRequested, true);
+  }
+
+  const { registeredTool: overCapTool, turnState: overCapState } = requestHumanHelpHandler(userId);
+  const overCap = await overCapTool.handler();
+  assert.equal(overCap.isError, true);
+  assert.match(overCap.content[0]?.text ?? '', /already asked to talk to a human/i);
+  assert.notEqual(
+    overCapState.humanHelpRequested,
+    true,
+    'a declined-by-cap call must never set the flag router.ts acts on',
+  );
+});
+
+test('request_human_help: the per-caller daily cap is scoped per platform:userId — a different caller is unaffected by another caller exhausting theirs (issue #808)', async () => {
+  const exhaustedUser = `${RUN}-cap-scope-exhausted`;
+  for (let i = 0; i < HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER; i++) {
+    const { registeredTool } = requestHumanHelpHandler(exhaustedUser);
+    await registeredTool.handler();
+  }
+  const { registeredTool: exhaustedTool } = requestHumanHelpHandler(exhaustedUser);
+  assert.equal((await exhaustedTool.handler()).isError, true);
+
+  const { registeredTool: freshTool, turnState: freshState } = requestHumanHelpHandler(
+    `${RUN}-cap-scope-fresh`,
+  );
+  const result = await freshTool.handler();
+  assert.notEqual(result.isError, true, 'a different caller must have its own, unexhausted cap');
+  assert.equal(freshState.humanHelpRequested, true);
+});
 
 // rate_answer -> implicit knowledge-candidate drafting (issue #726,
 // CAPABILITY-IDEAS.md §D2): a genuinely helpful, UNGROUNDED answer silently

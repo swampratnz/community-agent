@@ -1635,6 +1635,8 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Suggest how the bot or community could be better, or suggest a knowledge-base tip for other members ' +
   'to find later\n' +
   '- Rate my last answer helpful or not\n' +
+  '- Ask to talk to a human community admin, if I\'m not getting you anywhere ("can I talk to a ' +
+  'human?")\n' +
   '- Ask me to explain things more simply, or reply in te reo Māori ("keep it simple")\n' +
   '- React to a message with an emoji instead of replying\n' +
   '- Ask if a Claude/API problem is a known Anthropic outage, not your bug\n' +
@@ -2663,6 +2665,40 @@ async function applyManualWarnStrike(opts: {
   });
 }
 
+/**
+ * request_human_help timestamps per caller (`platform:userId`), for its own
+ * rolling-24h daily cap (HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER, issue
+ * #808) — in-memory, same sliding-window shape as `reservePollSlot`/
+ * `reserveAnnounceSlot` above, not a new table. This bounds a single
+ * caller's own worst-case share of the shared guild-wide
+ * ESCALATION_RATE_LIMIT_PER_HOUR budget: without it one member spamming the
+ * tool could alone exhaust that hourly cap and starve every other member's
+ * max-turns/thumbs-down escalations for the rest of the hour.
+ */
+const humanHelpRequestTimestamps = new Map<string, number[]>();
+
+export const HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER = 3;
+
+/**
+ * Reserve one request_human_help slot for `key` against a rolling 24h cap —
+ * same sliding-window shape as `reservePollSlot`, but a day-long window
+ * (this bounds a caller's daily share, not a per-conversation hourly burst).
+ * Returns false without reserving if `key` already hit `limit` within the
+ * last 24h.
+ */
+function reserveHumanHelpRequestSlot(key: string, limit: number): boolean {
+  const now = Date.now();
+  const windowMs = 24 * 60 * 60 * 1000;
+  const recent = (humanHelpRequestTimestamps.get(key) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= limit) {
+    humanHelpRequestTimestamps.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  humanHelpRequestTimestamps.set(key, recent);
+  return true;
+}
+
 /** announce timestamps per conversation, for the rolling-hour cap (ANNOUNCE_RATE_LIMIT_PER_HOUR). */
 const announceTimestampsByConversation = new Map<string, number[]>();
 
@@ -2907,6 +2943,16 @@ export interface ToolServerTurnState {
    * own doc comment.
    */
   staleKnowledgeAlertIds?: number[];
+  /**
+   * Set `true` only when this turn's `request_human_help` call recorded a
+   * genuine ask (the caller was under its own `HUMAN_HELP_REQUEST_DAILY_
+   * LIMIT_PER_USER` cap) — never on a declined-by-cap call. Read back by
+   * `execTurn` into `TurnOutcome`/`AgentReply` so `router.ts` can direct-fire
+   * `notifyAdmins` post-turn (issue #808), mirroring `unhelpfulAnswerRated`'s
+   * shape exactly — `notifyAdmins` itself is never called from this file,
+   * see `request_human_help` below and `notifyAdmins`'s own doc comment.
+   */
+  humanHelpRequested?: boolean;
 }
 
 export function buildToolServer(
@@ -3895,6 +3941,49 @@ export function buildToolServer(
         }
       }
       return text(args.helpful ? 'Thanks, glad that helped!' : 'Thanks for the feedback, noted.');
+    },
+  );
+
+  const requestHumanHelpTool = tool(
+    'request_human_help',
+    'Ask for a human community admin to be looped into this conversation. Call this ONLY on a clear, ' +
+      'explicit member ask for a human/admin (e.g. "can I talk to a human", "is there an admin I can ' +
+      'ask", "I need a person for this") — never on general frustration, ambiguous chatter, or a ' +
+      'question a normal answer can still address.',
+    {},
+    async () => {
+      // SECURITY: tier is re-asserted here, not merely surface-gated by
+      // MEMBER_TOOLS — same defensive-double-check discipline as
+      // suggest_knowledge/every other privileged/self-service tool in this
+      // file.
+      assertAtLeast(caller.role, 'member', 'request_human_help');
+
+      // Per-caller daily cap (issue #808): the ONE genuinely new piece this
+      // tool introduces — see reserveHumanHelpRequestSlot's doc comment for
+      // why. Checked before touching turnState, so a declined-by-cap call
+      // never sets the flag router.ts acts on.
+      const key = `${caller.platform}:${caller.userId}`;
+      if (!reserveHumanHelpRequestSlot(key, HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER)) {
+        return text(
+          `You've already asked to talk to a human ${HUMAN_HELP_REQUEST_DAILY_LIMIT_PER_USER} times in ` +
+            'the last 24 hours. Please wait before asking again.',
+          true,
+        );
+      }
+
+      // Real-time admin escalation (issue #808): mirrors rate_answer's
+      // turn-scoped-flag discipline exactly (issue #598). `notifyAdmins` is
+      // deliberately NEVER called from this file — `router.ts` reads this
+      // flag back post-turn and direct-fires it from `msg.text`/
+      // `msg.userName`/`msg.platform`/`msg.conversationId` only, never from
+      // anything returned or accepted here (see `notifyAdmins`'s own doc
+      // comment). This is a zero-argument tool, so there is no model-composed
+      // free-text field that could reach that notification in the first
+      // place.
+      if (turnState) {
+        turnState.humanHelpRequested = true;
+      }
+      return text("Got it — I've flagged this for a community admin to follow up.");
     },
   );
 
@@ -7403,6 +7492,7 @@ export function buildToolServer(
       suggestImprovement,
       suggestKnowledgeTool,
       rateAnswer,
+      requestHumanHelpTool,
       setResponseStyleTool,
       setLanguagePreferenceTool,
       catchUp,
