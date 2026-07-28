@@ -147,17 +147,19 @@ skill-invocation counts vs. `rate_answer` helpful-rate on those threads.
 
 ### B2. Structured output for the classifiers *(medium impact, low effort, security-relevant)*
 
-**Status:** Shipped for the abuse classifier (#720) and the knowledge refresh
-researcher (#835). `classifyAbuseWithLlm` in `src/moderation/moderator.ts` and
-`researchTopic` in `src/context/knowledgeRefresh.ts` both now set
+**Status:** Shipped for all three targets — the abuse classifier (#720), the
+knowledge refresh researcher (#835), and the context builder's cluster
+summariser (#831). `classifyAbuseWithLlm` in `src/moderation/moderator.ts`,
+`researchTopic` in `src/context/knowledgeRefresh.ts`, and `summarizeCluster`
+in `src/context/builder.ts` all now set
 `outputFormat: { type: 'json_schema', schema: ... }` and read
-`structured_output` instead of parsing free text, covered by
-`tests/abuseClassifierStructuredOutput.test.ts` and
-`tests/knowledgeRefreshStructuredOutput.test.ts` respectively; both call
-sites' boundary shapes (`Detection | null`, `string | null`) are unchanged.
-The remaining "grows into" target, the context builder's cluster summariser,
-is still free-text parsing as of this writing (see #831/PR #833, in
-progress).
+`structured_output` via a narrow-or-throw parser instead of regex-matching
+free text — covered by `tests/abuseClassifierStructuredOutput.test.ts`,
+`tests/knowledgeRefreshStructuredOutput.test.ts` and
+`tests/contextBuilderStructuredOutput.test.ts` respectively. Every call
+site's boundary shape (`Detection | null`, `string | null`, and
+`ClusterSummarizer`'s `{ topic, summary, candidate }`) is unchanged, so no
+caller needed touching.
 
 **Why:** `classifyAbuseWithLlm` (`src/moderation/moderator.ts:402`) asks for
 `"CLEAN"` or `"ABUSE: <reason>"` as free text and then regex-parses it
@@ -173,8 +175,9 @@ existing `Detection | null` return shape at the boundary so nothing downstream
 changes, and keep the throw-on-failure discipline that lets `makeClassifier`'s
 cache distinguish "model said clean" from "call failed".
 
-**Grows into:** the context builder's cluster summariser, the one remaining
-call site that still parses prose today (see #831/PR #833).
+**Grows into:** nothing further in this group — with #831 the last
+free-text-parsed model boundary here is gone. Any NEW model call should adopt
+the same `outputFormat` + narrow-or-throw discipline from the start.
 
 ### B3. `fallbackModel` for graceful degradation *(low effort)*
 
@@ -383,7 +386,7 @@ prompt change ships, is the right shape.
 | D1 Helper handoff | High | Medium | Shipped (#729) | The one idea that pings people — opt-in is the feature |
 | E1 Release watcher | High | Medium | Shipped (#739) | Public data, no privacy cost; ride the member digest |
 | A2 Discord voice | Medium | Low | Shipped (#735) | Pure symmetry fix, machinery already exists |
-| B2 Structured classifier output | Medium | Low | Shipped (#720) | Fails-open regex on the safety path today |
+| B2 Structured classifier output | Medium | Low | Shipped (#720, #831) | Fails-open regex on the safety path today |
 | C2 Admin queue roll-up | Medium | Low | Shipped (#745) | Pure aggregation over existing scoped reads |
 | D2 Answered→candidate loop | Medium | Low | Shipped (#726) | Closes the open middle of the flywheel |
 | D3 Learning paths | Medium | Low | Not started | Probably a skill, not a new KB entry kind |

@@ -422,13 +422,22 @@ memory**:
    `since` window `memberDigest.ts` uses. Rendered only when at least one is
    non-zero, each with its own independent trend suffix; bare integers only —
    never a candidate title/content/topic or a project name/description/link/owner.
+   Plus (issue #820) the flywheel line's third dimension — successful
+   `find_helper` connections since the same `since` window, from
+   `countHelperMatchesSince(since)` (gated behind `config.findHelper.enabled`,
+   so a deployment with `find_helper` off issues no extra query and always
+   renders `0`) — the one flywheel action that actively connects two members
+   rather than contributing content, extending the line's gate to a three-way
+   `||`. Bare integer plus its own trend suffix only — never a helper/requester
+   identifier or the `find_helper` topic.
    All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
    `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
-   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`)
+   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`/
+   `countHelperMatchesSince`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Five of these queue lines also
@@ -1158,7 +1167,13 @@ Guardrails, all enforced in code (binding conditions from the issue review):
 Each per-cluster summarisation call is tool-less, single-turn, and
 fixed-format, so its model is optionally tiered by the same
 `AGENT_MODEL_CLASSIFIER` knob as the moderation LLM abuse check above (issue
-#394) — unset (default) it uses `AGENT_MODEL` unchanged.
+#394) — unset (default) it uses `AGENT_MODEL` unchanged. Its output is
+schema-constrained via the SDK's `outputFormat: { type: 'json_schema' }`,
+read off `structured_output` (issue #831, mirroring the moderation abuse
+classifier's #720 fix) — not parsed from five free-text lines with regexes
+— so a malformed or missing `structured_output` throws (counted as a
+`failed` cluster) instead of silently defaulting to a placeholder topic,
+an untrimmed raw-text summary, or a dropped candidate.
 
 ### Knowledge candidates (issue #102)
 
@@ -1190,7 +1205,7 @@ call**, so the builder's hard per-run cost cap is unchanged with this on.
   stored `topic_embedding` at/above `KNOWLEDGE_DUPLICATE_SIMILARITY_THRESHOLD`
   (0.92, the same bar `saveKnowledge`'s near-duplicate nudge uses), so a
   declined topic re-drafted under different wording on a later run (the
-  free-text `TOPIC:` summary has no stability guarantee across runs) still
+  model-written `topic` label has no stability guarantee across runs) still
   gets caught. `candidateTopicAlreadyReviewed` computes the topic's
   embedding at most once per attempted cluster and reuses that same vector
   for the semantic check, `knowledgeCoversTopic`, and the candidate insert
