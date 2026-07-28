@@ -169,6 +169,13 @@ export const MEMBER_TOOLS = [
   // FIND_HELPER_WEEKLY_LIMIT_PER_HELPER). Same FIND_HELPER_ENABLED gate as
   // set_helper_availability above.
   'mcp__community__find_helper',
+  // On-demand pull of the community-wide weekly member-digest snapshot
+  // (issue #841) — the member-facing sibling of admin_digest (#499): same
+  // buildMemberDigestContent gathering the scheduled MEMBER_DIGEST_ENABLED
+  // push already computes, just available on request instead of waiting up
+  // to a week. Re-checks 'member' explicitly in the handler to exclude
+  // open-mode guests, same discipline set_my_interests/who_is_into use.
+  'mcp__community__community_digest',
 ] as const;
 
 /** Additional tools for admins — data access scoped to their conversations. */

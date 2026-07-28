@@ -16,6 +16,7 @@ const { pool } = await import('../src/storage/db.js');
 const { resetPolicyCacheForTests } = await import('../src/storage/policies.js');
 const { handleInteraction, buildSlashCommands, registerSlashCommands } =
   await import('../src/platforms/discord/slashCommands.js');
+const { buildMemberDigestContent } = await import('../src/memberDigest.js');
 const { logger } = await import('../src/logger.js');
 const { KNOWLEDGE_CONFLICT_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT } =
   await import('../src/agent/tools.js');
@@ -256,7 +257,7 @@ test('with DISCORD_SLASH_COMMANDS_ENABLED=true, the four commands are registered
     'SECURITY: registration must never be global (a call with no guild arg)',
   );
   const names = (commands as Array<{ name: string }>).map((c) => c.name).sort();
-  assert.deepEqual(names, ['guidelines', 'kb', 'projects', 'whois']);
+  assert.deepEqual(names, ['digest', 'guidelines', 'kb', 'projects', 'whois']);
 });
 
 test("a slash-command registration failure is caught and logged, never thrown, matching backfillRoster/reconcileMutedRole's fire-and-forget shape", async (t) => {
@@ -274,10 +275,10 @@ test("a slash-command registration failure is caught and logged, never thrown, m
   assert.ok(warnLog.mock.calls.length >= 1, 'a registration failure must be logged, not swallowed silently');
 });
 
-test('buildSlashCommands defines exactly the four approved read-only commands, each with its expected required-ness', () => {
+test('buildSlashCommands defines exactly the five approved read-only commands, each with its expected required-ness', () => {
   const commands = buildSlashCommands();
   const byName = new Map(commands.map((c) => [c.name, c]));
-  assert.deepEqual([...byName.keys()].sort(), ['guidelines', 'kb', 'projects', 'whois']);
+  assert.deepEqual([...byName.keys()].sort(), ['digest', 'guidelines', 'kb', 'projects', 'whois']);
   const requiredness = (name: string) =>
     (byName.get(name) as { options?: Array<{ name: string; required?: boolean }> }).options?.find(
       (o) => o.name === 'query',
@@ -286,6 +287,11 @@ test('buildSlashCommands defines exactly the four approved read-only commands, e
   assert.equal(requiredness('whois'), true);
   assert.equal(requiredness('projects'), false);
   assert.deepEqual((byName.get('guidelines') as { options?: unknown[] }).options ?? [], []);
+  assert.deepEqual(
+    (byName.get('digest') as { options?: unknown[] }).options ?? [],
+    [],
+    '/digest takes no options — always the current on-demand snapshot, never a windowed query',
+  );
 });
 
 // --- Criterion 3: identity/role resolved only via resolveRole(platform, userId) -
@@ -828,6 +834,139 @@ test("SECURITY: /kb passes the caller's real (platform, conversationId) to searc
     'this-callers-channel',
     "the caller's own channelId must be threaded through as conversationId — not a different/global scope",
   );
+});
+
+// --- /digest (issue #841): on-demand pull of the community digest ------------
+
+test("SECURITY: a guest caller is rejected on /digest without buildMemberDigestContent's repository reads ever being invoked (acceptance criteria 4)", async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'guest-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.ok(
+    !calls.some(
+      (c) =>
+        c.sql.includes('FROM context_digests') ||
+        c.sql.includes('FROM member_projects') ||
+        c.sql.includes('FROM knowledge_candidates') ||
+        c.sql.includes('FROM member_interests'),
+    ),
+    'buildMemberDigestContent must never be invoked for a rejected caller',
+  );
+});
+
+test("a member caller passes the /digest gate, defers before any DB read, and replies ephemerally with buildMemberDigestContent()'s own content (acceptance criteria 3, 5)", async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) {
+      return { rows: [{ role: 'member' }], rowCount: 0 };
+    }
+    if (sql.includes('FROM context_digests')) {
+      return { rows: [], rowCount: 0 };
+    }
+    // countAcceptedMemberKnowledgeTipsSince — checked before the generic
+    // 'FROM knowledge' branch below, since its own SQL text contains that
+    // substring too ('FROM knowledge_candidates').
+    if (sql.includes('FROM knowledge_candidates')) {
+      return { rows: [{ n: '0' }], rowCount: 0 };
+    }
+    if (sql.includes('FROM member_projects')) {
+      return { rows: [{ n: '2' }], rowCount: 0 };
+    }
+    // countInterestsPublishedSince (issue #815) — a 6th read buildMemberDigestContent
+    // now issues alongside the other five.
+    if (sql.includes('FROM member_interests')) {
+      return { rows: [{ n: '0' }], rowCount: 0 };
+    }
+    if (sql.includes('FROM knowledge')) {
+      return { rows: [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+
+  const adapter = new DiscordAdapter();
+  const { interaction, replies, order } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.equal(order[0], 'deferReply', 'must defer before any DB read');
+  assert.equal(
+    replies[0].content,
+    // Passes through deps.filtered() like every other slash-command reply,
+    // which rewrites em dashes into a comma (stripEmDashes in outbound.ts) —
+    // same rationale this file's own top-of-file comment documents for the
+    // /kb caveat-text assertions above.
+    stripEmDashes(
+      '🚀 2 new projects added to the showcase this week — ask me to show the project showcase to browse.',
+    ),
+    "reply is exactly buildMemberDigestContent()'s own render for this mocked signal mix, post-filter",
+  );
+});
+
+test('/digest replies with the fixed "Nothing to report right now." text when buildMemberDigestContent resolves null (acceptance criteria 2 parity)', async (t) => {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
+    // FROM context_digests and the generic FROM knowledge (curated titles)
+    // branches both resolve to an empty row set — every input empty renders
+    // null (formatMemberDigestMessage's own silence-over-noise contract).
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies[0].content, 'Nothing to report right now.');
+});
+
+test('SECURITY: /digest never wraps its reply in untrusted() — unlike community_digest, this reply never re-enters model context', async (t) => {
+  t.mock.method(pool, 'query', (async (sql: string) => {
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM context_digests')) {
+      return {
+        rows: [
+          {
+            id: 1,
+            period_start: new Date(),
+            period_end: new Date(),
+            platform: 'discord',
+            topic: 'MCP server auth',
+            summary: 's',
+            example_refs: [],
+            distinct_users: 3,
+            question_count: 2,
+            created_at: new Date(),
+          },
+        ],
+        rowCount: 0,
+      };
+    }
+    if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.doesNotMatch(
+    replies[0].content,
+    /untrusted past chat content/,
+    '/digest must render buildMemberDigestContent() plain, never quarantined via untrusted()',
+  );
+  assert.match(replies[0].content, /MCP server auth/);
 });
 
 // --- Rejection text and non-command interactions ------------------------------
