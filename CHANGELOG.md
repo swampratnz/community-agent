@@ -44,6 +44,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   missed/muted notification (named as a deferred growth path in #633). A
   caller with no tips sees byte-identical output to today; a machine-drafted
   candidate (no submitter) can never appear in any member's own view.
+- **Daily knowledge refresh no longer free-text-parses its research output**
+  (#835): `researchTopic` (`src/context/knowledgeRefresh.ts`) now sets
+  `outputFormat: { type: 'json_schema', ... }` and reads a schema-constrained
+  `{ hasUpdate, briefing }` result instead of matching a literal `NO_UPDATE`
+  marker in prose — mirroring #720's identical fix for the moderation abuse
+  classifier. A malformed or ambiguous model response (a preamble, a refusal,
+  a reformatted answer) now throws and is counted as a failed topic instead
+  of silently being upserted into the knowledge base as if it were a real
+  briefing. No behaviour change for a well-formed response or a genuine
+  "nothing new" result.
 
 ## 2026-07-28
 
