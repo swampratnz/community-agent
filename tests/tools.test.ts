@@ -12865,11 +12865,20 @@ test(
 
     const repositorySource = readFileSync(new URL('../src/storage/repository.ts', import.meta.url), 'utf8');
     const memberProjectsStart = repositorySource.indexOf('// --- Member projects');
-    const memberNotesStart = repositorySource.indexOf('// --- Member notes');
-    assert.ok(
-      memberProjectsStart !== -1 && memberNotesStart !== -1 && memberProjectsStart < memberNotesStart,
-    );
-    const repoRegion = repositorySource.slice(memberProjectsStart, memberNotesStart);
+    assert.ok(memberProjectsStart !== -1, 'the member-projects section banner must still exist');
+    // End the region at the NEXT section banner, whatever it happens to be —
+    // NOT at a hardcoded following section's name. repository.ts is being split
+    // domain-by-domain (audit L14), so naming the next section couples this
+    // assertion to an unrelated extraction: it used to end at
+    // `// --- Member notes`, and moving member notes to
+    // repository/memberNotes.ts made that indexOf return -1 and failed this
+    // test (plus, because the failure preceded this test's own cleanup, it
+    // orphaned a project row and cascaded into the next three line-count
+    // assertions). Deriving the end keeps the intent — "the member-projects
+    // query region issues no outbound HTTP" — stable across the split.
+    const nextSectionStart = repositorySource.indexOf('\n// --- ', memberProjectsStart + 1);
+    assert.ok(nextSectionStart !== -1, 'a section banner must follow the member-projects section');
+    const repoRegion = repositorySource.slice(memberProjectsStart, nextSectionStart);
     assert.doesNotMatch(repoRegion, /\bfetch\(|axios|http\.get\(|https\.get\(/);
 
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [userId]);
