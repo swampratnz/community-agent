@@ -12787,6 +12787,53 @@ test(
 );
 
 test(
+  'share_project seekingCollaborators renders the collaborators marker via list_projects iff true; unmarked when omitted (issue #834 AC #4)',
+  { skip },
+  async () => {
+    const seekerId = `${RUN}-share-project-seeking`;
+    const showcaseId = `${RUN}-share-project-showcase-only`;
+    const seekerTool = shareProjectHandler({ platform: 'discord', userId: seekerId, userName: 'Seeker' });
+    const showcaseTool = shareProjectHandler({
+      platform: 'discord',
+      userId: showcaseId,
+      userName: 'Showcaser',
+    });
+    const listTool = listProjectsHandler({ platform: 'discord', userId: `${RUN}-share-project-marker-viewer` });
+
+    const seeking = await seekerTool.handler({
+      name: 'Wants Help Project',
+      description: 'a project that wants collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(seeking.isError, false);
+    const showcaseOnly = await showcaseTool.handler({
+      name: 'Just Showing Off',
+      description: 'a project with no collaborators flag',
+    });
+    assert.equal(showcaseOnly.isError, false);
+
+    const listed = await listTool.handler({});
+    const listedText = listed.content[0]?.text ?? '';
+    assert.match(
+      listedText,
+      /Wants Help Project.*🤝 looking for collaborators/,
+      'a project shared with seekingCollaborators: true shows the marker',
+    );
+    const showcaseLine = listedText.split('\n').find((line) => line.includes('Just Showing Off'));
+    assert.ok(showcaseLine, 'the omitted-flag project still renders');
+    assert.doesNotMatch(
+      showcaseLine ?? '',
+      /🤝 looking for collaborators/,
+      'a project shared with the field omitted never shows the marker',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [seekerId, showcaseId],
+    ]);
+  },
+);
+
+test(
   'share_project refuses once the per-member cap is hit, with a distinct message from the rate cap (issue #646)',
   { skip },
   async () => {

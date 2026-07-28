@@ -7015,17 +7015,23 @@ test(
       name: 'prior-process project 0',
       description: 'an edited description',
       link: 'https://example.com/project-0',
+      seekingCollaborators: true,
     });
     assert.ok(
       edited.ok && !edited.created,
       'editing an existing project by name succeeds and is not "created"',
     );
     const editedRow = await pool.query(
-      `SELECT description, link FROM member_projects WHERE user_id = $1 AND name = $2`,
+      `SELECT description, link, seeking_collaborators FROM member_projects WHERE user_id = $1 AND name = $2`,
       [userId, 'prior-process project 0'],
     );
     assert.equal(editedRow.rows[0].description, 'an edited description');
     assert.equal(editedRow.rows[0].link, 'https://example.com/project-0');
+    assert.equal(
+      editedRow.rows[0].seeking_collaborators,
+      true,
+      'editing an existing project updates seeking_collaborators along with description/link (issue #834 AC #5)',
+    );
     assert.equal(
       Number(
         (await pool.query(`SELECT count(*) AS n FROM member_projects WHERE user_id = $1`, [userId])).rows[0]
@@ -7278,6 +7284,50 @@ test(
     assert.equal(await markRosterLeave('discord', userId), true);
     const after = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
     assert.equal(after.rows.length, 0, "a departed member's shared projects are removed on roster leave");
+  },
+);
+
+test(
+  'SECURITY: repository: shareProject seeking_collaborators defaults to false when omitted, and purge/roster-leave removal leaves no orphaned flag (issue #834 AC #6)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-seeking-collab-purge`;
+    const created = await shareProject({
+      platform: 'discord',
+      userId,
+      name: 'default flag project',
+      description: 'omits seekingCollaborators',
+    });
+    assert.ok(created.ok);
+    const row = await pool.query(
+      `SELECT seeking_collaborators FROM member_projects WHERE user_id = $1 AND name = $2`,
+      [userId, 'default flag project'],
+    );
+    assert.equal(row.rows[0].seeking_collaborators, false, 'omitting the flag never opts a project in');
+
+    const purged = await purgeUserData('discord', userId);
+    assert.ok(purged >= 1, 'purge count includes the shared project');
+    const afterPurge = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [userId]);
+    assert.equal(afterPurge.rows.length, 0, 'purge removes the row — and its flag — wholesale');
+
+    const leaveUserId = `${RUN}-seeking-collab-leave`;
+    await upsertRosterMember({ platform: 'discord', userId: leaveUserId, displayName: 'Leaver Two' });
+    const createdTrue = await shareProject({
+      platform: 'discord',
+      userId: leaveUserId,
+      name: 'seeking flag project',
+      description: 'opted in explicitly',
+      seekingCollaborators: true,
+    });
+    assert.ok(createdTrue.ok);
+
+    assert.equal(await markRosterLeave('discord', leaveUserId), true);
+    const afterLeave = await pool.query(`SELECT 1 FROM member_projects WHERE user_id = $1`, [leaveUserId]);
+    assert.equal(
+      afterLeave.rows.length,
+      0,
+      "roster leave removes the departed member's row — and its flag — wholesale",
+    );
   },
 );
 
