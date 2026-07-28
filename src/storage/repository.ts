@@ -35,13 +35,17 @@ export * from './repository/shared.js';
 export * from './repository/devTeamWatches.js';
 // `export *` does not bind names into this module's own scope, and the
 // knowledge queries below use this floor directly — so import it explicitly.
-import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD } from './repository/shared.js';
+import { KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD, type Queryable } from './repository/shared.js';
+import { recordAdminAction } from './repository/adminAudit.js';
+import { sumShortcutHits } from './repository/shortcutHits.js';
 export * from './repository/accessRequests.js';
 export * from './repository/contextDigests.js';
 export * from './repository/memberDiscovery.js';
 export * from './repository/docsIngestFailures.js';
 export * from './repository/policies.js';
 export * from './repository/roster.js';
+export * from './repository/adminAudit.js';
+export * from './repository/shortcutHits.js';
 
 // `export *` re-exports for CALLERS but does not bind the names in this
 // module's own scope, so anything still living here that uses an extracted
@@ -332,7 +336,6 @@ export async function recentConversationTail(
 }
 
 /** A pooled connection or a transaction client — both expose `query`. */
-type Queryable = Pick<PoolClient, 'query'>;
 
 /**
  * Invalidate every context digest whose provenance refs include any of
@@ -2851,72 +2854,6 @@ export async function sumBackgroundJobCosts(
   );
   const byJob = rows.map((r) => ({ job: r.job as string, costUsd: Number(r.cost) }));
   return { total: byJob.reduce((sum, r) => sum + r.costUsd, 0), byJob };
-}
-
-// --- Shortcut hits -----------------------------------------------------------
-
-export type ShortcutKind = 'ack' | 'knowledge' | 'repeat_question' | 'repeat_max_turns';
-
-/**
- * Records a hit of one of the four env-gated turn-skipping shortcuts (issue
- * #440) — each avoids a `query()` call against the shared Max pool but was
- * previously visible only via a single `logger.debug`/`.info` line. Callers
- * are expected to fire this without awaiting and swallow rejections (mirrors
- * `recordBackgroundJobCost`'s convention) — a failed write must never block
- * or delay the shortcut's own reply.
- */
-export async function recordShortcutHit(kind: ShortcutKind): Promise<void> {
-  await pool.query(`INSERT INTO shortcut_hits (kind) VALUES ($1)`, [kind]);
-}
-
-export async function sumShortcutHits(
-  days = 7,
-): Promise<{ total: number; byKind: Array<{ kind: string; count: number }> }> {
-  const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
-  const { rows } = await pool.query(
-    `SELECT kind, count(*) AS n
-       FROM shortcut_hits
-      WHERE created_at > now() - $1::interval
-      GROUP BY kind ORDER BY kind`,
-    [`${clampedDays} days`],
-  );
-  const byKind = rows.map((r) => ({ kind: r.kind as string, count: Number(r.n) }));
-  return { total: byKind.reduce((sum, r) => sum + r.count, 0), byKind };
-}
-
-// --- Admin audit -----------------------------------------------------------
-
-export async function recordAdminAction(
-  input: {
-    platform: Platform;
-    actorUserId: string;
-    actorName?: string;
-    actionKind: string;
-    targetUserId?: string;
-    conversationId?: string;
-    params?: Record<string, unknown>;
-    result?: string;
-    success: boolean;
-  },
-  db: Queryable = pool,
-): Promise<void> {
-  await db.query(
-    `INSERT INTO admin_audit
-       (platform, actor_user_id, actor_name, action_kind, target_user_id,
-        conversation_id, params, result, success)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [
-      input.platform,
-      input.actorUserId,
-      input.actorName ?? null,
-      input.actionKind,
-      input.targetUserId ?? null,
-      input.conversationId ?? null,
-      JSON.stringify(input.params ?? {}),
-      input.result ?? null,
-      input.success,
-    ],
-  );
 }
 
 // --- Knowledge candidates (issue #102, the knowledge_candidates half of #51
