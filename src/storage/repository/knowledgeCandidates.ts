@@ -165,6 +165,31 @@ export async function createKnowledgeTip(input: {
 }
 
 /**
+ * Self-scoped read of a member's OWN knowledge tips (issue #830) — the
+ * `my_submissions` pull-based fallback for `suggest_knowledge`'s resolution
+ * DM (issue #703), matching `listOwnSuggestions`'s exact shape and clamp.
+ * `source_platform`/`source_user_id` are NULL together on a machine-drafted
+ * (context-builder) candidate, so `NULL = $1` never matches and such a row
+ * can never appear here for any real caller.
+ */
+export async function listOwnKnowledgeCandidates(
+  platform: Platform,
+  userId: string,
+  limit = 10,
+): Promise<KnowledgeCandidate[]> {
+  const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
+  const { rows } = await pool.query(
+    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at, source_platform, source_user_id
+       FROM knowledge_candidates
+      WHERE source_platform = $1 AND source_user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [platform, userId, clampedLimit],
+  );
+  return rows.map(toKnowledgeCandidate);
+}
+
+/**
  * Exact-match half of the builder's dedup guard: true if `topic` already has
  * a `knowledge_candidates` row, in ANY status, matched case-insensitively
  * (the summariser is free-text). Cheap short-circuit — no embedding call —
@@ -310,6 +335,25 @@ export async function listKnowledgeCandidates(
 export async function countPendingKnowledgeCandidates(): Promise<number> {
   const { rows } = await pool.query(
     `SELECT count(*) AS n FROM knowledge_candidates WHERE status = 'pending'`,
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Count of accepted candidates that were specifically a member's own
+ * `suggest_knowledge` (or `rate_answer` implicit-draft, issue #726)
+ * contribution, reviewed since `since` — issue #837's public member-digest
+ * flywheel signal, the community-facing counterpart to
+ * `countAcceptedKnowledgeCandidatesSince` (#797, admin-digest throughput).
+ * Same shape, plus `source_user_id IS NOT NULL`, which is non-null only for
+ * a member's own submission (never a machine-drafted context-builder row —
+ * see `KnowledgeCandidate.sourceUserId`'s docstring above).
+ */
+export async function countAcceptedMemberKnowledgeTipsSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM knowledge_candidates
+      WHERE status = 'accepted' AND reviewed_at > $1 AND source_user_id IS NOT NULL`,
+    [since],
   );
   return Number(rows[0].n);
 }

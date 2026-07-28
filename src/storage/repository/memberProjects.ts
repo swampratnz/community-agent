@@ -42,6 +42,7 @@ export interface MemberProject {
   name: string;
   description: string;
   link: string | null;
+  seekingCollaborators: boolean;
   createdAt: Date;
 }
 
@@ -74,10 +75,12 @@ export async function shareProject(input: {
   name: string;
   description: string;
   link?: string | null;
+  seekingCollaborators?: boolean;
 }): Promise<ShareProjectResult> {
   const name = input.name.slice(0, PROJECT_NAME_MAX_CHARS);
   const description = input.description.slice(0, PROJECT_DESCRIPTION_MAX_CHARS);
   const link = input.link ? input.link.slice(0, PROJECT_LINK_MAX_CHARS) : null;
+  const seekingCollaborators = input.seekingCollaborators ?? false;
   let embedding: number[] | null = null;
   try {
     embedding = await embed(`${name}\n${description}`);
@@ -93,12 +96,16 @@ export async function shareProject(input: {
   const existing = existingRows[0];
 
   if (existing) {
-    await pool.query(`UPDATE member_projects SET description = $2, link = $3, embedding = $4 WHERE id = $1`, [
-      Number(existing.id),
-      description,
-      link,
-      embedding ? pgvector.toSql(embedding) : null,
-    ]);
+    await pool.query(
+      `UPDATE member_projects SET description = $2, link = $3, embedding = $4, seeking_collaborators = $5 WHERE id = $1`,
+      [
+        Number(existing.id),
+        description,
+        link,
+        embedding ? pgvector.toSql(embedding) : null,
+        seekingCollaborators,
+      ],
+    );
     return { ok: true, id: Number(existing.id), created: false };
   }
 
@@ -114,8 +121,8 @@ export async function shareProject(input: {
        SELECT count(*) AS n FROM member_projects
         WHERE platform = $1 AND user_id = $2 AND removed_at IS NULL
      )
-     INSERT INTO member_projects (platform, user_id, name, description, link, embedding)
-     SELECT $1, $2, $3, $4, $5, $6
+     INSERT INTO member_projects (platform, user_id, name, description, link, embedding, seeking_collaborators)
+     SELECT $1, $2, $3, $4, $5, $6, $9
       WHERE (SELECT n FROM recent) < $7 AND (SELECT n FROM active_total) < $8
      RETURNING id`,
     [
@@ -127,6 +134,7 @@ export async function shareProject(input: {
       embedding ? pgvector.toSql(embedding) : null,
       PROJECT_RATE_LIMIT_PER_DAY,
       MEMBER_PROJECT_CAP,
+      seekingCollaborators,
     ],
   );
   if (rows[0]) return { ok: true, id: Number(rows[0].id), created: true };
@@ -166,7 +174,7 @@ export async function removeMemberProject(
 export async function listRecentProjects(limit = 8): Promise<MemberProject[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 8, 1), 50);
   const { rows } = await pool.query(
-    `SELECT id, platform, user_id, name, description, link, created_at
+    `SELECT id, platform, user_id, name, description, link, seeking_collaborators, created_at
        FROM member_projects
       WHERE removed_at IS NULL
       ORDER BY created_at DESC
@@ -191,7 +199,7 @@ export async function searchProjects(query: string, limit = 8): Promise<MemberPr
     return [];
   }
   const { rows } = await pool.query(
-    `SELECT id, platform, user_id, name, description, link, created_at,
+    `SELECT id, platform, user_id, name, description, link, seeking_collaborators, created_at,
             1 - (embedding <=> $1) AS similarity
        FROM member_projects
       WHERE embedding IS NOT NULL AND removed_at IS NULL
@@ -273,6 +281,7 @@ function mapMemberProjectRow(r: {
   name: string;
   description: string;
   link: string | null;
+  seeking_collaborators: boolean;
   created_at: Date;
 }): MemberProject {
   return {
@@ -282,6 +291,7 @@ function mapMemberProjectRow(r: {
     name: r.name,
     description: r.description,
     link: r.link,
+    seekingCollaborators: r.seeking_collaborators,
     createdAt: r.created_at,
   };
 }

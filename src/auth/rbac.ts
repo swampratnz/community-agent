@@ -68,9 +68,10 @@ export const MEMBER_TOOLS = [
   // Reporter can retract their OWN report(s) — scoped in SQL to
   // reporter_user_id, so it can never touch anyone else's report.
   'mcp__community__withdraw_report',
-  // Self-scoped read of the caller's OWN suggestions/reports (never the
-  // shared queue, never another member's rows, never reviewer identity) —
-  // the pull-based counterpart to the best-effort resolution DMs.
+  // Self-scoped read of the caller's OWN suggestions/reports/appeals and
+  // suggest_knowledge tips (never the shared queue, never another member's
+  // rows, never reviewer identity) — the pull-based counterpart to the
+  // best-effort resolution DMs.
   'mcp__community__my_submissions',
   // Self-scoped read of the caller's OWN active warning count vs. the
   // configured limit — never a warning's reason/excerpt (admin-only context,

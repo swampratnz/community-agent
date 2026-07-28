@@ -16,8 +16,20 @@ process.env.DISCORD_GUILD_ID ??= '1';
 process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
 process.env.WHATSAPP_PROVIDER ??= 'disabled';
 process.env.AGENT_TURN_TIMEOUT_MS = '50';
+// config.ts enforces AGENT_TURN_TIMEOUT_MS > IMAGE_GEN_TIMEOUT_MS at startup
+// (issue #826 review), so the shortened ceiling above needs a correspondingly
+// shorter inner tool timeout or this whole file fails to load. Keeping the
+// real ordering rather than exempting the test is the point: the invariant
+// holds everywhere, including here.
+process.env.IMAGE_GEN_TIMEOUT_MS = '10';
 
-type QueryBehavior = { mode: 'hang' } | { mode: 'success'; text: string };
+type QueryBehavior =
+  | { mode: 'hang' }
+  | { mode: 'success'; text: string }
+  // A wedge that CLEARS after the outer timeout has already fired — the
+  // orphaned-generator case (issue #826 review). `release` is resolved by the
+  // test once it holds the timed-out reply.
+  | { mode: 'unwedges'; release: Promise<void>; onResume: () => void };
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
 let storedSession: StoredSession | null = null;
 
@@ -30,6 +42,10 @@ function mockQuery(params: { prompt: string; options: { resume?: string } }) {
     // generator's first `next()` never resolves and never rejects, so only
     // the Promise.race timeout in execTurn can unblock the caller.
     if (behavior.mode === 'hang') await new Promise(() => {});
+    if (behavior.mode === 'unwedges') {
+      await behavior.release;
+      behavior.onResume();
+    }
     yield {
       type: 'result',
       subtype: 'success',
@@ -115,6 +131,42 @@ test('runAgentTurn: a query() call that never yields and never settles resolves 
 
   assert.equal(reply.ok, false);
   assert.equal(reply.text, INTERNAL_ERROR_REPLY);
+});
+
+test('runAgentTurn: a wedged turn that CLEARS after the timeout cannot change the reply the member already received — the orphaned generator settles into nothing (issue #826 review)', async (t) => {
+  // Documented residual: the timeout bounds the CALLER's wait, it does not
+  // kill the underlying CLI subprocess (AbortController wiring is the named
+  // growth path, deliberately out of scope for #826). So after the ceiling
+  // fires, the abandoned `for await` loop is still alive and may later
+  // resume. This pins the part that matters to a member: the reply they got
+  // is final, and the late result is discarded rather than racing a second
+  // reply into the conversation.
+  const { runAgentTurn, INTERNAL_ERROR_REPLY } = await core(t);
+  reset();
+  const { adapter } = makeAdapter();
+
+  let releaseWedge!: () => void;
+  let resumed = false;
+  const release = new Promise<void>((resolve) => {
+    releaseWedge = resolve;
+  });
+  behavior = { mode: 'unwedges', release, onResume: () => (resumed = true) };
+
+  const reply = await runAgentTurn(makeCaller(), 'hello', adapter);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.text, INTERNAL_ERROR_REPLY, 'the member sees the generic internal-error reply');
+  assert.equal(resumed, false, 'the generator is still wedged at the moment the caller gave up');
+
+  // The wedge clears only now — strictly after the caller already returned.
+  releaseWedge();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  assert.equal(
+    reply.text,
+    INTERNAL_ERROR_REPLY,
+    'the already-returned reply is immutable — a late completion can never retroactively change what the member was told',
+  );
+  assert.equal(capturedCalls.length, 1, 'the late completion never triggers a second query() call');
 });
 
 test('runAgentTurn: resumeFailed is false on a turn timeout even when a resumable session was in play, and no retry is attempted (issue #826)', async (t) => {

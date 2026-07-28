@@ -402,6 +402,11 @@ CREATE TABLE IF NOT EXISTS member_projects (
 ALTER TABLE member_projects ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
 ALTER TABLE member_projects DROP CONSTRAINT IF EXISTS member_projects_platform_user_id_name_key;
 
+-- Self-declared "I'd welcome help on this" signal (issue #834) — same shape
+-- as member_interests.willing_to_help above: boolean, opt-in, default false,
+-- rendered only when true.
+ALTER TABLE member_projects ADD COLUMN IF NOT EXISTS seeking_collaborators BOOLEAN NOT NULL DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS member_projects_recent_idx
   ON member_projects (created_at DESC) WHERE removed_at IS NULL;
 

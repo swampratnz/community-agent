@@ -249,6 +249,9 @@ after(async () => {
     await pool.query(`DELETE FROM moderation_appeals WHERE user_id LIKE $1`, [
       `${MY_SUBMISSIONS_HANDLER_USER}%`,
     ]);
+    await pool.query(`DELETE FROM knowledge_candidates WHERE source_user_id LIKE $1`, [
+      `${MY_SUBMISSIONS_HANDLER_USER}%`,
+    ]);
     await pool.query(`DELETE FROM member_warnings WHERE user_id LIKE $1`, [`${MY_WARNINGS_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM interactions WHERE user_id LIKE $1`, [`${MY_DATA_HANDLER_USER}%`]);
     await pool.query(`DELETE FROM interactions WHERE meta->>'replyToUserId' LIKE $1`, [
@@ -12784,6 +12787,56 @@ test(
 );
 
 test(
+  'share_project seekingCollaborators renders the collaborators marker via list_projects iff true; unmarked when omitted (issue #834 AC #4)',
+  { skip },
+  async () => {
+    const seekerId = `${RUN}-share-project-seeking`;
+    const showcaseId = `${RUN}-share-project-showcase-only`;
+    const seekerTool = shareProjectHandler({ platform: 'discord', userId: seekerId, userName: 'Seeker' });
+    const showcaseTool = shareProjectHandler({
+      platform: 'discord',
+      userId: showcaseId,
+      userName: 'Showcaser',
+    });
+    const listTool = listProjectsHandler({
+      platform: 'discord',
+      userId: `${RUN}-share-project-marker-viewer`,
+    });
+
+    const seeking = await seekerTool.handler({
+      name: 'Wants Help Project',
+      description: 'a project that wants collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(seeking.isError, false);
+    const showcaseOnly = await showcaseTool.handler({
+      name: 'Just Showing Off',
+      description: 'a project with no collaborators flag',
+    });
+    assert.equal(showcaseOnly.isError, false);
+
+    const listed = await listTool.handler({});
+    const listedText = listed.content[0]?.text ?? '';
+    assert.match(
+      listedText,
+      /Wants Help Project.*🤝 looking for collaborators/,
+      'a project shared with seekingCollaborators: true shows the marker',
+    );
+    const showcaseLine = listedText.split('\n').find((line) => line.includes('Just Showing Off'));
+    assert.ok(showcaseLine, 'the omitted-flag project still renders');
+    assert.doesNotMatch(
+      showcaseLine ?? '',
+      /🤝 looking for collaborators/,
+      'a project shared with the field omitted never shows the marker',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [seekerId, showcaseId],
+    ]);
+  },
+);
+
+test(
   'share_project refuses once the per-member cap is hit, with a distinct message from the rate cap (issue #646)',
   { skip },
   async () => {
@@ -16683,6 +16736,145 @@ test(
     assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add dark mode too`));
     assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*more spam`));
     assert.doesNotMatch(output, /Your appeals:/, 'no appeals filed, so no appeals header at all');
+  },
+);
+
+test(
+  'my_submissions lists the caller\'s own knowledge tip alongside their suggestion/report/appeal, in a "Your knowledge tips:" section (issue #830)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-knowledge-tip`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add dark mode three',
+    });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'even more spam',
+    });
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'the warning was wrong',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const tip = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} knowledge tip topic`,
+      title: 'how to reset your password',
+      content: 'go to settings then security',
+    });
+    assert.ok(suggestion && report && appeal && tip, 'fixtures recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${tip.id}.*\\[pending\\].*how to reset your password`));
+    assert.match(
+      output,
+      /Your suggestions:[\s\S]*\n\nYour reports:[\s\S]*\n\nYour appeals:[\s\S]*\n\nYour knowledge tips:/,
+      'the knowledge tips block is rendered last, separated by a blank line from the other three',
+    );
+  },
+);
+
+test(
+  'my_submissions omits the "Your knowledge tips:" block when the caller has none, leaving suggestions/reports/appeals rendering unchanged (issue #830)',
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-no-tips`;
+    const suggestion = await createSuggestion({
+      platform: 'whatsapp',
+      userId,
+      content: 'add dark mode four',
+    });
+    const report = await createContentReport({
+      platform: 'whatsapp',
+      reporterUserId: userId,
+      conversationId: 'convo-1',
+      reason: 'yet more spam',
+    });
+    const appeal = await createModerationAppeal({
+      platform: 'whatsapp',
+      userId,
+      userName: 'Submitting Member',
+      reason: 'still wrong',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    assert.ok(suggestion && report && appeal, 'fixtures recorded');
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.equal(result.isError, false);
+    assert.match(output, new RegExp(`#${suggestion.id}.*\\[new\\].*add dark mode four`));
+    assert.match(output, new RegExp(`#${report.id}.*\\[open\\].*yet more spam`));
+    assert.match(output, new RegExp(`#${appeal.id}.*\\[open\\].*still wrong`));
+    assert.doesNotMatch(output, /Your knowledge tips:/, 'no tips filed, so no knowledge-tips header at all');
+  },
+);
+
+test(
+  "SECURITY: my_submissions never leaks another member's knowledge tip content, and never surfaces a machine-drafted (no submitter) candidate, in the caller's own view (issue #830)",
+  { skip },
+  async () => {
+    const userId = `${MY_SUBMISSIONS_HANDLER_USER}-tip-security`;
+    const otherUser = `${MY_SUBMISSIONS_HANDLER_USER}-tip-security-other`;
+
+    const mine = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip security own topic`,
+      title: 'my own tip title',
+      content: 'my own tip content',
+    });
+    const theirs = await createKnowledgeTip({
+      platform: 'whatsapp',
+      userId: otherUser,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip security other topic`,
+      title: "someone else's private tip title",
+      content: "someone else's private tip content",
+    });
+    assert.ok(mine && theirs, 'fixtures recorded');
+
+    const digestId = await insertContextDigest({
+      periodStart: new Date(Date.now() - 86_400_000),
+      periodEnd: new Date(),
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip security machine topic`,
+      summary: 'summary',
+      exampleRefs: [],
+      distinctUsers: 3,
+      questionCount: 3,
+    });
+    await insertKnowledgeCandidate({
+      digestId,
+      topic: `${MY_SUBMISSIONS_HANDLER_USER} tip security machine topic`,
+      title: 'a machine-drafted candidate title',
+      content: 'a machine-drafted candidate with no submitter',
+    });
+
+    const result = await mySubmissionsHandler(userId).handler();
+    const output = result.content[0]?.text ?? '';
+
+    assert.match(output, /my own tip title/, 'the caller sees their own tip');
+    assert.doesNotMatch(
+      output,
+      /someone else's private tip title/,
+      "SECURITY: another member's knowledge tip must never leak",
+    );
+    assert.doesNotMatch(
+      output,
+      /a machine-drafted candidate title/,
+      "SECURITY: a machine-drafted (no submitter) candidate must never appear in any real caller's own view",
+    );
   },
 );
 

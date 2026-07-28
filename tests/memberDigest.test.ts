@@ -37,6 +37,9 @@ const {
   updateKnowledge,
   countProjectsSharedSince,
   shareProject,
+  countInterestsPublishedSince,
+  setMemberInterests,
+  setHelperAvailability,
 } = await import('../src/storage/repository.js');
 const { config } = await import('../src/config.js');
 
@@ -278,6 +281,135 @@ test('formatMemberDigestMessage: an only-release-watch week (all other inputs em
   assert.equal(message, '🆕 Anthropic platform updates this week: docs: release-notes/overview');
 });
 
+// --- formatMemberDigestMessage: member-tip note (issue #837) ---------------
+
+test('formatMemberDigestMessage: memberTipCount > 0 appends a trailing clause to the knowledge-base line with singular/plural agreement', () => {
+  const singular = formatMemberDigestMessage([], ['Setting up MCP auth'], 0, [], 1);
+  assert.equal(
+    singular,
+    '📚 New in the knowledge base (1): Setting up MCP auth — 1 suggested by a member like you 💡',
+  );
+  const plural = formatMemberDigestMessage([], ['Setting up MCP auth', 'Bedrock region checklist'], 0, [], 2);
+  assert.equal(
+    plural,
+    '📚 New in the knowledge base (2): Setting up MCP auth, Bedrock region checklist — 2 suggested by members like you 💡',
+  );
+});
+
+test("formatMemberDigestMessage: memberTipCount === 0 (default, omitted argument) renders byte-identical to today's knowledge-base line", () => {
+  const withDefault = formatMemberDigestMessage([], ['Setting up MCP auth'], 0);
+  const withExplicitZero = formatMemberDigestMessage([], ['Setting up MCP auth'], 0, [], 0);
+  assert.equal(withDefault, '📚 New in the knowledge base (1): Setting up MCP auth');
+  assert.equal(withDefault, withExplicitZero);
+});
+
+test('formatMemberDigestMessage: memberTipCount is clamped to newKnowledgeTitles.length — the clause never reads as a subset larger than the titles shown', () => {
+  const message = formatMemberDigestMessage([], ['Setting up MCP auth'], 0, [], 12);
+  assert.equal(
+    message,
+    '📚 New in the knowledge base (1): Setting up MCP auth — 1 suggested by a member like you 💡',
+    'a memberTipCount (12, an uncapped aggregate) far exceeding the one displayed title clamps down to 1, never rendering "(1): ... — 12 suggested"',
+  );
+});
+
+test('formatMemberDigestMessage: memberTipCount > 0 with an empty newKnowledgeTitles renders no knowledge-base line and no orphan clause', () => {
+  const message = formatMemberDigestMessage([], [], 0, [], 5);
+  assert.equal(message, null, 'the clause has nothing to attach to when no knowledge-base line renders');
+});
+
+test('formatMemberDigestMessage: memberTipCount never affects any other section', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    [],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+    5,
+  );
+  assert.equal(
+    message,
+    "📅 This week's topics:\n• MCP server auth (1 question)\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.\n\n🆕 Anthropic platform updates this week: docs: release-notes/overview",
+  );
+});
+
+test('SECURITY: formatMemberDigestMessage never emits a platform name or user-id-shaped string for any memberTipCount input — the parameter is a bare number, not a candidate row/list', () => {
+  const inputs = [0, 1, 2, 10, 999_999, -5];
+  for (const memberTipCount of inputs) {
+    const message = formatMemberDigestMessage([], ['Setting up MCP auth'], 0, [], memberTipCount);
+    assert.ok(message);
+    assert.doesNotMatch(
+      message,
+      /discord|whatsapp/i,
+      `memberTipCount=${memberTipCount} must never leak a platform name`,
+    );
+    assert.doesNotMatch(
+      message,
+      /\b\d{15,20}\b/,
+      `memberTipCount=${memberTipCount} must never leak a Discord-snowflake-shaped id`,
+    );
+  }
+});
+
+// --- formatMemberDigestMessage: member-interests count (issue #815) --------
+
+test('formatMemberDigestMessage: newInterestCount > 0 renders the interests section with singular/plural agreement', () => {
+  const singular = formatMemberDigestMessage([], [], 0, [], 0, 1);
+  assert.equal(
+    singular,
+    '🔍 1 member published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+  const plural = formatMemberDigestMessage([], [], 0, [], 0, 3);
+  assert.equal(
+    plural,
+    '🔍 3 members published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+});
+
+test('formatMemberDigestMessage: newInterestCount === 0 renders byte-identical to the shorter-argument output — no interests section', () => {
+  const withoutInterestArg = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+  );
+  const withZeroInterestCount = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+    0,
+    0,
+  );
+  assert.equal(withoutInterestArg, withZeroInterestCount);
+});
+
+test('formatMemberDigestMessage: an only-interests week (all other inputs empty) still returns a non-null message containing only the interests section', () => {
+  const message = formatMemberDigestMessage([], [], 0, [], 0, 2);
+  assert.equal(
+    message,
+    '🔍 2 members published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+  assert.doesNotMatch(message ?? '', /This week's topics|knowledge base|showcase|platform updates/i);
+});
+
+test('formatMemberDigestMessage: interests section renders last, after topics, knowledge-base, project and release-watch sections', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: 'https://platform.claude.com/a' }],
+    0,
+    1,
+  );
+  assert.equal(
+    message,
+    '📅 This week\'s topics:\n• MCP server auth (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.\n\n🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/a)\n\n🔍 1 member published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+});
+
+test('formatMemberDigestMessage: a quiet week across all five inputs (topics, knowledge, projects, release-watch, interests) still renders null', () => {
+  assert.equal(formatMemberDigestMessage([], [], 0, [], 0), null);
+});
+
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
 
 test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a no-op — no send, no freshness read', async () => {
@@ -286,6 +418,7 @@ test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a n
   try {
     const { adapter, sent } = makeAdapter();
     let wasSentRecentlyCalled = false;
+    let memberTipCountCalled = false;
     const runOnce = makeDefaultMemberDigestRun([adapter], {
       wasSentRecently: async () => {
         wasSentRecentlyCalled = true;
@@ -293,6 +426,10 @@ test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a n
       },
       getDigests: async () => [],
       getNewKnowledgeTitles: async () => [],
+      getMemberTipCount: async () => {
+        memberTipCountCalled = true;
+        return 0;
+      },
       recordSent: async () => {},
     });
     await runOnce();
@@ -302,15 +439,21 @@ test('makeDefaultMemberDigestRun: MEMBER_DIGEST_CHANNEL_ID unset, runOnce is a n
       false,
       'the freshness guard is never even checked when config is incomplete',
     );
+    assert.equal(
+      memberTipCountCalled,
+      false,
+      'the new count read is never invoked when the digest is inert (channel unconfigured)',
+    );
   } finally {
     config.memberDigest.channelId = original;
   }
 });
 
-test('makeDefaultMemberDigestRun: inside the freshness window, runOnce is a no-op — no digest read, no knowledge read, no send', async () => {
+test('makeDefaultMemberDigestRun: inside the freshness window, runOnce is a no-op — no digest read, no knowledge read, no member-tip read, no send', async () => {
   const { adapter, sent } = makeAdapter();
   let digestsCalled = false;
   let knowledgeCalled = false;
+  let memberTipCountCalled = false;
   const runOnce = makeDefaultMemberDigestRun([adapter], {
     wasSentRecently: async () => true,
     getDigests: async () => {
@@ -321,12 +464,17 @@ test('makeDefaultMemberDigestRun: inside the freshness window, runOnce is a no-o
       knowledgeCalled = true;
       return [];
     },
+    getMemberTipCount: async () => {
+      memberTipCountCalled = true;
+      return 0;
+    },
     recordSent: async () => {},
   });
   await runOnce();
   assert.equal(sent.length, 0, 'no send inside the freshness window');
   assert.equal(digestsCalled, false, 'digests are never read inside the freshness window');
   assert.equal(knowledgeCalled, false, 'new knowledge is never read inside the freshness window');
+  assert.equal(memberTipCountCalled, false, 'the member-tip count is never read inside the freshness window');
 });
 
 test('makeDefaultMemberDigestRun: no connected Discord adapter — no-op, no throw, no send', async () => {
@@ -348,7 +496,9 @@ test('makeDefaultMemberDigestRun: a quiet week (no digests, no new knowledge, no
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -365,7 +515,9 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
     getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -379,6 +531,39 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
   assert.equal(recordCalled, true, 'a real send stamps the freshness guard');
 });
 
+test('makeDefaultMemberDigestRun: getMemberTipCount is called with the exact same `since` instant as getNewKnowledgeTitles/getNewProjectCount, and a nonzero result reaches the sent message (issue #837)', async () => {
+  const { adapter, sent } = makeAdapter();
+  let knowledgeSince: Date | undefined;
+  let tipSince: Date | undefined;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async (since) => {
+      knowledgeSince = since;
+      return ['Setting up MCP auth'];
+    },
+    getNewInterestCount: async () => 0,
+    getNewProjectCount: async () => 0,
+    getMemberTipCount: async (since) => {
+      tipSince = since;
+      return 1;
+    },
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.ok(knowledgeSince instanceof Date && tipSince instanceof Date);
+  assert.equal(
+    tipSince?.getTime(),
+    knowledgeSince?.getTime(),
+    'getMemberTipCount receives the exact same since instant as getNewKnowledgeTitles',
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    '📚 New in the knowledge base (1): Setting up MCP auth — 1 suggested by a member like you 💡',
+  );
+});
+
 test("makeDefaultMemberDigestRun: an only-projects week (zero topics, zero new knowledge, newProjectCount > 0) still posts — the null-guard's OR condition covers all three inputs", async () => {
   const { adapter, sent } = makeAdapter();
   let recordCalled = false;
@@ -386,7 +571,9 @@ test("makeDefaultMemberDigestRun: an only-projects week (zero topics, zero new k
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 2,
+    getMemberTipCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
     },
@@ -411,10 +598,12 @@ test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact sa
       knowledgeSince = since;
       return [];
     },
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async (since) => {
       projectSince = since;
       return 0;
     },
+    getMemberTipCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -439,7 +628,9 @@ test('SECURITY: makeDefaultMemberDigestRun never calls getReleaseWatchUpdates wh
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
       getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
       getReleaseWatchUpdates: async () => {
         releaseWatchCalled = true;
         return [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }];
@@ -475,7 +666,9 @@ test('makeDefaultMemberDigestRun: with RELEASE_WATCH_ENABLED true, getReleaseWat
         receivedSince = since;
         return [];
       },
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
       getReleaseWatchUpdates: async (since, pathPrefixes) => {
         receivedPaths = pathPrefixes;
         assert.equal(since.getTime(), receivedSince?.getTime(), 'shares the exact same since instant');
@@ -511,7 +704,9 @@ test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero 
       wasSentRecently: async () => false,
       getDigests: async () => [],
       getNewKnowledgeTitles: async () => [],
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
       getReleaseWatchUpdates: async () => [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }],
       recordSent: async () => {
         recordCalled = true;
@@ -524,6 +719,58 @@ test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero 
   } finally {
     config.releaseWatch.enabled = original;
   }
+});
+
+// --- makeDefaultMemberDigestRun: member-interests wiring (issue #815) ------
+
+test('makeDefaultMemberDigestRun: an only-interests week (zero topics, zero new knowledge, zero new projects, no release-watch) still posts — newInterestCount is a 5th input to the same null-guard OR condition', async () => {
+  const { adapter, sent } = makeAdapter();
+  let recordCalled = false;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getNewInterestCount: async () => 4,
+    recordSent: async () => {
+      recordCalled = true;
+    },
+  });
+  await runOnce();
+  assert.equal(sent.length, 1, 'a week with only new interests activity still posts');
+  assert.equal(
+    sent[0].text,
+    '🔍 4 members published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+  assert.equal(recordCalled, true);
+});
+
+test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact same `since` instant already computed for getNewProjectCount — one window, no second Date.now() call', async () => {
+  const { adapter, sent } = makeAdapter();
+  let projectSince: Date | undefined;
+  let interestSince: Date | undefined;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async (since) => {
+      projectSince = since;
+      return 0;
+    },
+    getNewInterestCount: async (since) => {
+      interestSince = since;
+      return 0;
+    },
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.ok(projectSince instanceof Date && interestSince instanceof Date);
+  assert.equal(
+    interestSince?.getTime(),
+    projectSince?.getTime(),
+    'getNewInterestCount receives the exact same since instant as getNewProjectCount',
+  );
+  assert.equal(sent.length, 0, 'both inputs still zero this run — nothing to post');
 });
 
 test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
@@ -539,6 +786,8 @@ test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIG
       ],
       getNewKnowledgeTitles: async () => [],
       getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
+      getNewInterestCount: async () => 0,
       recordSent: async () => {},
     });
     await runOnce();
@@ -560,7 +809,9 @@ test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'below floor', distinctUsers: 2 })],
       getNewKnowledgeTitles: async () => [],
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
+      getMemberTipCount: async () => 0,
       recordSent: async () => {
         recordCalled = true;
       },
@@ -583,7 +834,9 @@ test("SECURITY: makeDefaultMemberDigestRun never surfaces a WhatsApp-sourced dig
       makeDigest({ topic: 'cross-platform topic', platform: null, questionCount: 1 }),
     ],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -608,7 +861,9 @@ test('SECURITY: makeDefaultMemberDigestRun posts to exactly MEMBER_DIGEST_CHANNE
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -636,7 +891,9 @@ test("SECURITY: makeDefaultMemberDigestRun never leaks a ContextDigest's distinc
     wasSentRecently: async () => false,
     getDigests: async () => [adversarialDigest],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
+    getMemberTipCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -1036,5 +1293,114 @@ test(
     );
 
     await pool.query('DELETE FROM member_projects WHERE user_id = ANY($1)', [[activeUser, removedUser]]);
+  },
+);
+
+// --- Repository: member-interests count (issue #815, DB-integration) -------
+
+test(
+  'repository: countInterestsPublishedSince counts a row updated after `since` and excludes rows updated at or before it',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-boundary`;
+    const afterUser = `${marker}-after`;
+    const atUser = `${marker}-at`;
+    const beforeUser = `${marker}-before`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    const baseline = await countInterestsPublishedSince(since);
+
+    await setMemberInterests('discord', afterUser, 'published after since');
+    assert.equal(
+      await countInterestsPublishedSince(since),
+      baseline + 1,
+      'a row updated strictly after `since` (just now) is counted',
+    );
+
+    await setMemberInterests('discord', atUser, 'published exactly at since');
+    await pool.query(
+      `UPDATE member_interests SET updated_at = $1 WHERE platform = 'discord' AND user_id = $2`,
+      [since, atUser],
+    );
+    assert.equal(
+      await countInterestsPublishedSince(since),
+      baseline + 1,
+      'a row whose updated_at equals `since` is excluded (strict >)',
+    );
+
+    await setMemberInterests('discord', beforeUser, 'published before since');
+    await pool.query(
+      `UPDATE member_interests SET updated_at = $1 WHERE platform = 'discord' AND user_id = $2`,
+      [new Date(since.getTime() - 1000), beforeUser],
+    );
+    assert.equal(
+      await countInterestsPublishedSince(since),
+      baseline + 1,
+      'a row whose updated_at precedes `since` is excluded',
+    );
+
+    await pool.query('DELETE FROM member_interests WHERE user_id = ANY($1)', [
+      [afterUser, atUser, beforeUser],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: countInterestsPublishedSince + formatMemberDigestMessage never leak interest text or a member identifier — only the integer count and fixed nudge text ever reach the rendered digest',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-leak`;
+    const owner = `${marker}-owner`;
+    const adversarialInterests = `${marker}-interests <script>alert(1)</script> impersonating-admin`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    await setMemberInterests('discord', owner, adversarialInterests);
+
+    const count = await countInterestsPublishedSince(since);
+    assert.ok(count >= 1, 'the seeded interests row is counted');
+
+    const message = formatMemberDigestMessage([], [], 0, [], 0, count);
+    assert.ok(message);
+    assert.doesNotMatch(
+      message,
+      new RegExp(marker),
+      "no interest text or member identifier ever appears in the rendered message — formatMemberDigestMessage's signature takes only a bare count",
+    );
+    assert.match(
+      message,
+      /members? published or updated their interests this week — ask me "who's into X\?" to find them\.$/,
+    );
+
+    await pool.query('DELETE FROM member_interests WHERE user_id = $1', [owner]);
+  },
+);
+
+test(
+  'SECURITY: repository: setHelperAvailability never bumps updated_at, so a helper-availability toggle does not contribute to countInterestsPublishedSince',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-toggle`;
+    const userId = `${marker}-helper`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    await setMemberInterests('discord', userId, 'building RAG systems with Claude');
+    await pool.query(
+      `UPDATE member_interests SET updated_at = $1 WHERE platform = 'discord' AND user_id = $2`,
+      [new Date(since.getTime() - 1000), userId],
+    );
+
+    const before = await countInterestsPublishedSince(since);
+
+    const toggled = await setHelperAvailability('discord', userId, true);
+    assert.deepEqual(toggled, { ok: true });
+
+    const after = await countInterestsPublishedSince(since);
+    assert.equal(
+      after,
+      before,
+      'toggling willing_to_help does not bump updated_at, so it never contributes to this public-surface count',
+    );
+
+    await pool.query('DELETE FROM member_interests WHERE user_id = $1', [userId]);
   },
 );

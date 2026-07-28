@@ -147,13 +147,17 @@ skill-invocation counts vs. `rate_answer` helpful-rate on those threads.
 
 ### B2. Structured output for the classifiers *(medium impact, low effort, security-relevant)*
 
-**Status:** Shipped (#720), for the abuse classifier specifically, as
-proposed. `classifyAbuseWithLlm` in `src/moderation/moderator.ts` now sets
-`outputFormat: { type: 'json_schema', schema: ABUSE_CLASSIFIER_OUTPUT_SCHEMA }`,
-covered by `tests/abuseClassifierStructuredOutput.test.ts`; the
-`Detection | null` boundary shape is unchanged. The "grows into" targets
-(context builder cluster summariser, knowledge refresh researcher) are
-untouched — still free-text parsing.
+**Status:** Shipped for the abuse classifier (#720) and the knowledge refresh
+researcher (#835). `classifyAbuseWithLlm` in `src/moderation/moderator.ts` and
+`researchTopic` in `src/context/knowledgeRefresh.ts` both now set
+`outputFormat: { type: 'json_schema', schema: ... }` and read
+`structured_output` instead of parsing free text, covered by
+`tests/abuseClassifierStructuredOutput.test.ts` and
+`tests/knowledgeRefreshStructuredOutput.test.ts` respectively; both call
+sites' boundary shapes (`Detection | null`, `string | null`) are unchanged.
+The remaining "grows into" target, the context builder's cluster summariser,
+is still free-text parsing as of this writing (see #831/PR #833, in
+progress).
 
 **Why:** `classifyAbuseWithLlm` (`src/moderation/moderator.ts:402`) asks for
 `"CLEAN"` or `"ABUSE: <reason>"` as free text and then regex-parses it
@@ -169,8 +173,8 @@ existing `Detection | null` return shape at the boundary so nothing downstream
 changes, and keep the throw-on-failure discipline that lets `makeClassifier`'s
 cache distinguish "model said clean" from "call failed".
 
-**Grows into:** the context builder's cluster summariser and the knowledge
-refresh researcher, both of which parse prose today.
+**Grows into:** the context builder's cluster summariser, the one remaining
+call site that still parses prose today (see #831/PR #833).
 
 ### B3. `fallbackModel` for graceful degradation *(low effort)*
 

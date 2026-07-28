@@ -898,6 +898,25 @@ async function* imagePromptStream(
  * or exposed to model/user-supplied text, and its message is never surfaced
  * in a reply — the catch block below returns the existing, unmodified
  * `INTERNAL_ERROR_REPLY` for it, exactly like any other generic turn failure.
+ *
+ * RESIDUAL, deliberately accepted (issue #826 review): this bounds the
+ * CALLER's wait, not the underlying work. `Promise.race` abandons the
+ * `for await` loop but does not abort it — the SDK's CLI subprocess keeps
+ * running and the loop still holds this caller's `toolServer`. So once the
+ * ceiling fires, `router.ts`'s per-conversation queue unblocks and a NEW turn
+ * can start while the orphaned generator is still alive; if the wedge later
+ * clears, that generator can still drive real tool calls.
+ *
+ * Why that is tolerable as shipped: the orphan runs with the SAME caller's
+ * already-resolved tier and tool surface, so it is not a privilege-escalation
+ * path — the worst case is duplicated side effects from a turn the member was
+ * already told had failed, which is strictly better than the pre-#826
+ * behaviour where the wedge blocked that conversation's queue forever with no
+ * recovery short of a process restart. Killing the subprocess needs
+ * `AbortController` wiring, which the approved issue explicitly scoped out as
+ * the growth path. `tests/agentCoreTurnTimeout.test.ts` pins the part a member
+ * can observe: the reply they received is final and a late completion never
+ * races a second reply into the conversation.
  */
 class AgentTurnTimeoutError extends Error {}
 

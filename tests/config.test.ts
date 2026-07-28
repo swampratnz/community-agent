@@ -64,6 +64,40 @@ test(
   },
 );
 
+test('config: an AGENT_TURN_TIMEOUT_MS at or below IMAGE_GEN_TIMEOUT_MS is REJECTED at startup, not merely pinned for the default (issue #826 review)', () => {
+  // The test above only pins the shipped default. An operator tightening
+  // AGENT_TURN_TIMEOUT_MS in .env (e.g. for a latency SLA) would otherwise
+  // silently reintroduce the bug the default was chosen to avoid: the outer
+  // ceiling pre-empting a legitimately in-flight image-gen tool call.
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const runWith = (turnMs: string, imageMs: string) =>
+    spawnSync(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'tests/fixtures/loadConfig.ts'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN: 'test-token',
+        DISCORD_BOT_TOKEN: 'test-token',
+        DISCORD_GUILD_ID: '1',
+        DATABASE_URL: 'postgres://test:test@127.0.0.1:5432/test',
+        WHATSAPP_PROVIDER: 'disabled',
+        AGENT_TURN_TIMEOUT_MS: turnMs,
+        IMAGE_GEN_TIMEOUT_MS: imageMs,
+      },
+    });
+
+  const below = runWith('60000', '180000');
+  assert.notEqual(below.status, 0, 'a turn timeout BELOW the image-gen timeout must fail startup');
+  assert.match(`${below.stderr}${below.stdout}`, /AGENT_TURN_TIMEOUT_MS/);
+
+  const equal = runWith('180000', '180000');
+  assert.notEqual(equal.status, 0, 'EQUAL is rejected too — the outer bound must be strictly greater');
+
+  const above = runWith('240000', '180000');
+  assert.equal(above.status, 0, `a strictly greater value still starts; stderr: ${above.stderr}`);
+  assert.equal(JSON.parse(above.stdout).behaviour.agentTurnTimeoutMs, 240_000);
+});
+
 test('config: MODERATION_STRIKE_WINDOW_DAYS unset (default) is undefined — unbounded strike accumulation, unchanged from before this option existed (issue #194)', () => {
   assert.equal(config.moderation.strikeWindowDays, undefined);
 });

@@ -1065,6 +1065,20 @@ const EnvSchemaChecked = EnvSchema.refine(
       path: ['KNOWLEDGE_CANDIDATE_STALE_DAYS'],
     },
   )
+  .refine((e) => e.AGENT_TURN_TIMEOUT_MS > e.IMAGE_GEN_TIMEOUT_MS, {
+    // The turn ceiling is the OUTER bound around a whole turn; image
+    // generation is an inner tool call with its own timeout. Set the outer
+    // one at or below the inner one and a legitimately in-flight image-gen
+    // turn is killed before its own timeout can fire — the exact bug class
+    // the 300_000 default was chosen to avoid (issue #826 review). Pinning
+    // only the shipped default in a unit test does not stop an operator
+    // tightening AGENT_TURN_TIMEOUT_MS in .env and silently reintroducing
+    // it, so fail fast at startup, same as the KNOWLEDGE_STALE_MAX_AGE_DAYS
+    // vs KNOWLEDGE_STALE_DAYS pairing above.
+    message:
+      'AGENT_TURN_TIMEOUT_MS must be strictly greater than IMAGE_GEN_TIMEOUT_MS, or the outer turn ceiling can kill an in-flight image-generation tool call before its own timeout fires',
+    path: ['AGENT_TURN_TIMEOUT_MS'],
+  })
   .refine(
     (e) =>
       e.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL === 0 ||

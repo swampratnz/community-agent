@@ -3,6 +3,8 @@ import { logger } from './logger.js';
 import { startTrackedJob } from './backgroundJobs.js';
 import { scrubPII } from './context/export.js';
 import {
+  countAcceptedMemberKnowledgeTipsSince,
+  countInterestsPublishedSince,
   countProjectsSharedSince,
   listContextDigests,
   listCuratedKnowledgeCreatedSince,
@@ -59,18 +61,42 @@ const MAX_RELEASE_WATCH_PAGES = 10;
  * every existing call site (and every existing test's byte-for-byte
  * expectation) is unaffected; renders only when non-empty, same
  * add-a-section-only-if-it-has-content convention as the other three.
+ *
+ * `memberTipCount` (issue #837) is not its own section — it is a trailing
+ * clause on the knowledge-base line, surfacing that some of this week's
+ * accepted entries came from a member's own `suggest_knowledge` (#633)
+ * rather than only admin/machine drafting. Zero by default (byte-identical
+ * to pre-#837 output) and, when the knowledge-base line renders at all,
+ * clamped to `newKnowledgeTitles.length` so the clause can never read as "M
+ * of the N titles above" when M exceeds N — `newKnowledgeTitles` is itself
+ * capped at `MAX_NEW_KNOWLEDGE_TITLES` while this count is a plain,
+ * uncapped `COUNT(*)`. Takes only a bare `number`, never a candidate
+ * row/list, so a platform/user id reaching this public template is
+ * structurally impossible — the same guarantee this file already documents
+ * for `newProjectCount`.
+ * `newInterestCount` (issue #815) is a 6th, optional section — the direct
+ * sibling of `newProjectCount` for `member_interests` (published/updated via
+ * `set_my_interests`), same bare-count-only shape for the same reason:
+ * `set_my_interests`'s own publication consent is scoped to "other members
+ * via `who_is_into`" (a member-tier, on-demand tool), not this ungated
+ * public channel post, so only an integer ever reaches this surface, never
+ * interest text or a member identifier. Defaults to 0 so every existing call
+ * site is unaffected.
  */
 export function formatMemberDigestMessage(
   topics: ReadonlyArray<{ topic: string; questionCount: number }>,
   newKnowledgeTitles: readonly string[],
   newProjectCount: number,
   releaseWatchPages: ReadonlyArray<{ title: string; url: string | null }> = [],
+  memberTipCount = 0,
+  newInterestCount = 0,
 ): string | null {
   if (
     topics.length === 0 &&
     newKnowledgeTitles.length === 0 &&
     newProjectCount === 0 &&
-    releaseWatchPages.length === 0
+    releaseWatchPages.length === 0 &&
+    newInterestCount === 0
   )
     return null;
 
@@ -86,8 +112,15 @@ export function formatMemberDigestMessage(
     );
   }
   if (newKnowledgeTitles.length > 0) {
+    const clampedTipCount = Math.min(Math.max(memberTipCount, 0), newKnowledgeTitles.length);
+    const tipClause =
+      clampedTipCount === 1
+        ? ' — 1 suggested by a member like you 💡'
+        : clampedTipCount > 1
+          ? ` — ${clampedTipCount} suggested by members like you 💡`
+          : '';
     sections.push(
-      `📚 New in the knowledge base (${newKnowledgeTitles.length}): ${newKnowledgeTitles.join(', ')}`,
+      `📚 New in the knowledge base (${newKnowledgeTitles.length}): ${newKnowledgeTitles.join(', ')}${tipClause}`,
     );
   }
   if (newProjectCount > 0) {
@@ -100,6 +133,11 @@ export function formatMemberDigestMessage(
       `🆕 Anthropic platform updates this week: ${releaseWatchPages
         .map((p) => (p.url ? `[${p.title}](${p.url})` : p.title))
         .join(', ')}`,
+    );
+  }
+  if (newInterestCount > 0) {
+    sections.push(
+      `🔍 ${newInterestCount} member${newInterestCount === 1 ? '' : 's'} published or updated their interests this week — ask me "who's into X?" to find them.`,
     );
   }
   return sections.join('\n\n');
@@ -124,6 +162,8 @@ export function makeDefaultMemberDigestRun(
       pathPrefixes: readonly string[],
       limit: number,
     ) => Promise<Array<{ pageTitle: string; sourceUrl: string | null }>>;
+    getMemberTipCount?: (since: Date) => Promise<number>;
+    getNewInterestCount?: (since: Date) => Promise<number>;
     recordSent?: () => Promise<void>;
   } = {},
 ): () => Promise<void> {
@@ -132,6 +172,8 @@ export function makeDefaultMemberDigestRun(
   const getNewKnowledgeTitles = deps.getNewKnowledgeTitles ?? listCuratedKnowledgeCreatedSince;
   const getNewProjectCount = deps.getNewProjectCount ?? countProjectsSharedSince;
   const getReleaseWatchUpdates = deps.getReleaseWatchUpdates ?? listReleaseWatchUpdatesSince;
+  const getMemberTipCount = deps.getMemberTipCount ?? countAcceptedMemberKnowledgeTipsSince;
+  const getNewInterestCount = deps.getNewInterestCount ?? countInterestsPublishedSince;
   const recordSent = deps.recordSent ?? recordMemberDigestSent;
 
   return async () => {
@@ -158,13 +200,22 @@ export function makeDefaultMemberDigestRun(
     // off, getReleaseWatchUpdates must never be invoked (issue #733's
     // byte-identical-when-disabled contract), so this is a conditional
     // Promise, not a post-hoc empty-array filter.
-    const [digests, newKnowledgeTitles, newProjectCount, releaseWatchPages] = await Promise.all([
+    const [
+      digests,
+      newKnowledgeTitles,
+      newProjectCount,
+      releaseWatchPages,
+      memberTipCount,
+      newInterestCount,
+    ] = await Promise.all([
       getDigests(FRESHNESS_DAYS, MAX_TOPICS),
       getNewKnowledgeTitles(since, MAX_NEW_KNOWLEDGE_TITLES),
       getNewProjectCount(since),
       config.releaseWatch.enabled
         ? getReleaseWatchUpdates(since, config.releaseWatch.docPaths, MAX_RELEASE_WATCH_PAGES)
         : Promise.resolve([]),
+      getMemberTipCount(since),
+      getNewInterestCount(since),
     ]);
     // Two independent floors before a digest topic reaches this public
     // surface (PR #651 review):
@@ -187,6 +238,8 @@ export function makeDefaultMemberDigestRun(
       newKnowledgeTitles,
       newProjectCount,
       releaseWatchPages.map((p) => ({ title: p.pageTitle, url: p.sourceUrl })),
+      memberTipCount,
+      newInterestCount,
     );
     // Quiet week — nothing to post. Deliberately leaves the freshness row
     // untouched (same convention as adminDigest.ts's quiet-week skip) so a
