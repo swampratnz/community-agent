@@ -2942,13 +2942,27 @@ export function buildToolServer(
     minTier: 'guest' | 'member' | 'admin' | 'super_admin',
     run: () => Promise<string>,
   ) {
+    // The router deterministically re-emits this description as the
+    // authoritative `⚠️ Pending:` notice (router.ts, PENDING_NOTICE)
+    // *because* the model composes it and the model is untrusted. Individual
+    // callers already sanitize resolved display names (resolveSanitizedLabel,
+    // #227/M3), but several tools interpolate raw model-supplied free text
+    // (moderate's `reason`, create_event's `name`/`location`, suggest_issue's
+    // `title`, forget_me's caller name) straight into `description`. A planted
+    // newline there forges a second line in that trusted single-line notice —
+    // the exact quarantine-escape class delete_message strips inline. Strip it
+    // ONCE here so every current and future call site is covered; angle
+    // brackets go too so nothing can fake a tag. Quotes are left intact:
+    // legitimate labels use them (create event "Movie Night") and they cannot
+    // break out of a single line.
+    const safeDescription = description.replace(/[<>\r\n\u2028\u2029\u0085]/g, ' ');
     registerPendingAction(caller.platform, caller.conversationId, caller.userId, {
-      description,
+      description: safeDescription,
       minTier,
       execute: run,
     });
     return text(
-      `⚠️ Pending: ${description}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
+      `⚠️ Pending: ${safeDescription}\nReply CONFIRM within 60 seconds to proceed, or CANCEL to abort. ` +
         `(Confirmation is handled outside the AI and must come from you in this conversation.)`,
     );
   }
