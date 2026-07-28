@@ -3133,6 +3133,201 @@ test('SECURITY: buildAdminDigestMessage: openAppealsCount === 0 renders no open-
   );
 });
 
+// Shared 36-element positional prefix for buildAdminDigestMessage — every
+// signal through oldestOpenAppealAgeDays (position 36) at its quiet-week
+// default. Every test below appends exactly the two new trailing arguments
+// under test: acceptedKnowledgeCandidatesCount (position 37) and
+// projectsSharedCount (position 38). Named as a tuple (one element per line,
+// in signature order) rather than counted inline, matching the
+// APPEALS_ONLY_ARGS convention above — a single miscounted positional arg
+// silently shifts every argument after it.
+const FLYWHEEL_ZERO_PREFIX = [
+  [], // 1  clusters
+  0, // 2  pendingAccessRequests
+  0, // 3  openReports
+  0, // 4  pendingSuggestions
+  0, // 5  staleKnowledgeCount
+  0, // 6  knowledgeStaleDays
+  0, // 7  knowledgeGapsCount
+  0, // 8  pendingKnowledgeCandidates
+  0, // 9  lowRatedKnowledgeCount
+  0, // 10 joinedThisWeek
+  0, // 11 leftThisWeek
+  0, // 12 mutedMembersCount
+  0, // 13 maxTurnsFailuresCount
+  0, // 14 duplicateKnowledgeCount
+  0, // 15 conflictCandidateCount
+  0, // 16 knowledgeStaleMaxAgeDays
+  0, // 17 pendingKnowledgeCandidatesStaleCount
+  0, // 18 knowledgeCandidateStaleDays
+  0, // 19 staleMutedMembersCount
+  0, // 20 notMembersCount
+  0, // 21 escalatedKnowledgeGapsCount
+  undefined, // 22 previousCounts
+  null, // 23 oldestAccessRequestAgeDays
+  null, // 24 oldestOpenReportAgeDays
+  null, // 25 oldestPendingSuggestionAgeDays
+  0, // 26 generalUnhelpfulCount
+  0, // 27 autoAnswerHelpful
+  0, // 28 autoAnswerUnhelpful
+  0, // 29 addressedHelpful
+  0, // 30 addressedUnhelpful
+  0, // 31 openAppealsCount
+  0, // 32 unreachableSourceKnowledgeCount
+  0, // 33 overallAnswerHelpful
+  0, // 34 overallAnswerTotal
+  0, // 35 unhelpfulThemeCount
+  null, // 36 oldestOpenAppealAgeDays
+] as const;
+
+test('buildAdminDigestMessage: the flywheel line renders only when at least one of acceptedKnowledgeCandidatesCount/projectsSharedCount is > 0, with independent per-signal wording, and every other signal zero alongside both flywheel counts at zero -> null (issue #797 acceptance criteria 3, 4, 5)', () => {
+  assert.equal(
+    buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 0),
+    null,
+    'every signal zero, including both flywheel counts, is a quiet week',
+  );
+
+  const acceptedOnly = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 3, 0);
+  assert.ok(acceptedOnly, 'accepted candidates alone still produce a DM (issue #797 acceptance criterion 5)');
+  const acceptedLines = acceptedOnly.split('\n').filter((l) => l.includes('🌱'));
+  assert.equal(acceptedLines.length, 1, 'exactly one flywheel line');
+  assert.equal(
+    acceptedLines[0],
+    '🌱 3 knowledge candidate(s) accepted, 0 project(s) shared this week — the community is contributing back.',
+    'a nonzero accepted count with zero shared projects still renders both sub-counts (issue #797 acceptance criterion 3)',
+  );
+
+  const sharedOnly = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 0, 2);
+  assert.ok(sharedOnly, 'shared projects alone still produce a DM (issue #797 acceptance criterion 5)');
+  const sharedLines = sharedOnly.split('\n').filter((l) => l.includes('🌱'));
+  assert.equal(sharedLines.length, 1, 'exactly one flywheel line');
+  assert.equal(
+    sharedLines[0],
+    '🌱 0 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
+    'a nonzero shared count with zero accepted candidates still renders both sub-counts',
+  );
+
+  const both = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 3, 2);
+  assert.ok(both);
+  const bothLines = both.split('\n').filter((l) => l.includes('🌱'));
+  assert.equal(bothLines.length, 1, 'exactly one flywheel line even when both sub-counts are nonzero');
+  assert.equal(
+    bothLines[0],
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
+  );
+});
+
+test('buildAdminDigestMessage: the flywheel line trends acceptedKnowledgeCandidatesCount and projectsSharedCount independently via trendSuffix (issue #797)', () => {
+  const prefixWithTrend = [
+    ...FLYWHEEL_ZERO_PREFIX.slice(0, 21),
+    { acceptedKnowledgeCandidatesCount: 1, projectsSharedCount: 5 },
+    ...FLYWHEEL_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    line,
+    '🌱 3 knowledge candidate(s) accepted (▲+2 since last week), 2 project(s) shared (▼-3 since last week) this week — the community is contributing back.',
+    'each sub-signal carries its own independent trendSuffix, same one-call-per-signal convention as joinedThisWeek/leftThisWeek',
+  );
+
+  const noTrend = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 3, 2);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    noTrendLine,
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
+    'no previousCounts -> no suffix on either sub-signal',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: both flywheel counts at zero renders no flywheel line and leaves the rest of the digest byte-identical to a caller that has not wired the new params through — never a fabricated "0 accepted, 0 shared" line (issue #797 acceptance criteria 4, 7)', () => {
+  const busyPrefix = [
+    [], // clusters
+    2, // pendingAccessRequests
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    null,
+  ] as const;
+  const withoutNewParams = buildAdminDigestMessage(...busyPrefix);
+  const withZeroFlywheel = buildAdminDigestMessage(...busyPrefix, 0, 0);
+  assert.ok(withoutNewParams, 'a nonzero unrelated signal still produces a DM');
+  assert.equal(
+    withoutNewParams,
+    withZeroFlywheel,
+    'omitting the two new trailing params is byte-identical to passing explicit zeros for both',
+  );
+  assert.ok(!withZeroFlywheel!.includes('🌱'), 'no flywheel line at all when both counts are zero');
+  assert.ok(
+    !withZeroFlywheel!.includes('0 knowledge candidate(s) accepted'),
+    'SECURITY: the zero-count case must never fabricate a "0 accepted, 0 shared" line — absent, not zeroed',
+  );
+});
+
+test('SECURITY: the flywheel line is a deterministic function of (acceptedKnowledgeCandidatesCount, projectsSharedCount) only, and never carries a candidate title/content/topic or a project name/description/link/owner identifier (issue #797 acceptance criterion 6)', () => {
+  const secretCandidateTitle = 'a very identifiable drafted candidate title that must never leak';
+  const secretCandidateContent = 'a very identifiable drafted candidate answer that must never leak';
+  const secretProjectName = 'a very identifiable shared project name that must never leak';
+  const secretProjectDescription = 'a very identifiable shared project description that must never leak';
+  const secretProjectLink = 'https://example.com/a-very-identifiable-project-link';
+  const secretOwnerId = 'user-id-987654321';
+
+  const message = buildAdminDigestMessage(...FLYWHEEL_ZERO_PREFIX, 3, 2);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.ok(line);
+  for (const secret of [
+    secretCandidateTitle,
+    secretCandidateContent,
+    secretProjectName,
+    secretProjectDescription,
+    secretProjectLink,
+    secretOwnerId,
+  ]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the flywheel line must never carry "${secret}" — it takes no such input, only the two integer counts`,
+    );
+  }
+  assert.equal(
+    line,
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared this week — the community is contributing back.',
+    'the line is a pure function of the two integer counts — bare numbers and fixed template text only',
+  );
+});
+
 test('buildAdminDigestMessage: unreachable-source-knowledge line appears only when unreachableSourceKnowledgeCount > 0, and all TWENTY-ONE signals zero -> null (issue #624 acceptance criteria 2, 3)', () => {
   assert.equal(
     buildAdminDigestMessage(

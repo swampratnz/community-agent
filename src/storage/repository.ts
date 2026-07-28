@@ -4260,6 +4260,23 @@ export async function countProjectsSharedSince(since: Date): Promise<number> {
   return Number(rows[0].n);
 }
 
+/**
+ * Count of candidates accepted since `since` — issue #797's admin-digest
+ * flywheel-throughput signal, the positive counterpart to
+ * `countPendingKnowledgeCandidates`'s backlog nag. Mirrors
+ * `countProjectsSharedSince`'s exact shape: `reviewed_at` (set by
+ * `acceptKnowledgeCandidate` alongside the `status = 'accepted'` flip) is the
+ * acceptance-event timestamp, so a candidate created long ago but accepted
+ * this week still counts, and a pending/declined row never does.
+ */
+export async function countAcceptedKnowledgeCandidatesSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM knowledge_candidates WHERE status = 'accepted' AND reviewed_at > $1`,
+    [since],
+  );
+  return Number(rows[0].n);
+}
+
 function mapMemberProjectRow(r: {
   id: number | string;
   platform: string;

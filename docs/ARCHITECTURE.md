@@ -409,13 +409,26 @@ memory**:
    (`moderation_appeals` has no `conversation_id` either), and the digest
    backlog line `#554`/`#622` both named and deferred as a follow-up until
    now. Points an admin at the existing `list_appeals` tool; a bare integer
-   only, never an appellant's `user_name`/`reason`/`user_id`. All these
+   only, never an appellant's `user_name`/`reason`/`user_id`.
+   Plus (issue #797) VISION's Participation north star made visible — "member
+   contributions (accepted candidate entries, showcased projects) becoming a
+   routine occurrence rather than zero" — as one line combining
+   `countAcceptedKnowledgeCandidatesSince(since)` (the throughput complement to
+   the pending-candidates backlog count above: candidates actually cleared
+   into `knowledge`, windowed by `reviewed_at`) and `countProjectsSharedSince(since)`
+   (the same guild-wide aggregate `src/memberDigest.ts` already runs weekly for
+   its own "come browse the showcase" nudge, wired here for the first time as
+   an admin-facing trend), both over the identical `FRESHNESS_DAYS`-derived
+   `since` window `memberDigest.ts` uses. Rendered only when at least one is
+   non-zero, each with its own independent trend suffix; bare integers only —
+   never a candidate title/content/topic or a project name/description/link/owner.
+   All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
    `countPendingSuggestions`/`countStaleKnowledge`/`countKnowledgeGaps`/
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
    `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
-   `countOpenAppeals`)
+   `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Four of these queue lines also
