@@ -410,6 +410,7 @@ test('makeDefaultMemberDigestRun: a quiet week (no digests, no new knowledge, no
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
@@ -427,6 +428,7 @@ test('makeDefaultMemberDigestRun: past the freshness window with content, posts 
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
     getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     recordSent: async () => {
       recordCalled = true;
@@ -448,6 +450,7 @@ test("makeDefaultMemberDigestRun: an only-projects week (zero topics, zero new k
     wasSentRecently: async () => false,
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 2,
     recordSent: async () => {
       recordCalled = true;
@@ -473,6 +476,7 @@ test('makeDefaultMemberDigestRun: getNewProjectCount is called with the exact sa
       knowledgeSince = since;
       return [];
     },
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async (since) => {
       projectSince = since;
       return 0;
@@ -501,6 +505,7 @@ test('SECURITY: makeDefaultMemberDigestRun never calls getReleaseWatchUpdates wh
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 4 })],
       getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getReleaseWatchUpdates: async () => {
         releaseWatchCalled = true;
@@ -537,6 +542,7 @@ test('makeDefaultMemberDigestRun: with RELEASE_WATCH_ENABLED true, getReleaseWat
         receivedSince = since;
         return [];
       },
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getReleaseWatchUpdates: async (since, pathPrefixes) => {
         receivedPaths = pathPrefixes;
@@ -573,6 +579,7 @@ test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero 
       wasSentRecently: async () => false,
       getDigests: async () => [],
       getNewKnowledgeTitles: async () => [],
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       getReleaseWatchUpdates: async () => [{ pageTitle: 'docs: release-notes/overview', sourceUrl: null }],
       recordSent: async () => {
@@ -653,6 +660,7 @@ test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIG
       ],
       getNewKnowledgeTitles: async () => [],
       getNewProjectCount: async () => 0,
+      getNewInterestCount: async () => 0,
       recordSent: async () => {},
     });
     await runOnce();
@@ -674,6 +682,7 @@ test('makeDefaultMemberDigestRun: a week where every digest is below the k-floor
       wasSentRecently: async () => false,
       getDigests: async () => [makeDigest({ topic: 'below floor', distinctUsers: 2 })],
       getNewKnowledgeTitles: async () => [],
+      getNewInterestCount: async () => 0,
       getNewProjectCount: async () => 0,
       recordSent: async () => {
         recordCalled = true;
@@ -697,6 +706,7 @@ test("SECURITY: makeDefaultMemberDigestRun never surfaces a WhatsApp-sourced dig
       makeDigest({ topic: 'cross-platform topic', platform: null, questionCount: 1 }),
     ],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     recordSent: async () => {},
   });
@@ -722,6 +732,7 @@ test('SECURITY: makeDefaultMemberDigestRun posts to exactly MEMBER_DIGEST_CHANNE
     wasSentRecently: async () => false,
     getDigests: async () => [makeDigest({ topic: 'MCP server auth', questionCount: 1 })],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     recordSent: async () => {},
   });
@@ -750,6 +761,7 @@ test("SECURITY: makeDefaultMemberDigestRun never leaks a ContextDigest's distinc
     wasSentRecently: async () => false,
     getDigests: async () => [adversarialDigest],
     getNewKnowledgeTitles: async () => [],
+    getNewInterestCount: async () => 0,
     getNewProjectCount: async () => 0,
     recordSent: async () => {},
   });
