@@ -4374,7 +4374,7 @@ export function buildToolServer(
         .optional()
         .describe(
           'Set true if the caller wants help/collaborators on this project — shown to other members via ' +
-            'list_projects. Defaults to false (showcase only). Only set this on the caller\'s own explicit ' +
+            "list_projects. Defaults to false (showcase only). Only set this on the caller's own explicit " +
             'statement, e.g. "I\'m looking for help with this" — never inferred.',
         ),
     },

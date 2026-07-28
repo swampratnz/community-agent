@@ -98,7 +98,13 @@ export async function shareProject(input: {
   if (existing) {
     await pool.query(
       `UPDATE member_projects SET description = $2, link = $3, embedding = $4, seeking_collaborators = $5 WHERE id = $1`,
-      [Number(existing.id), description, link, embedding ? pgvector.toSql(embedding) : null, seekingCollaborators],
+      [
+        Number(existing.id),
+        description,
+        link,
+        embedding ? pgvector.toSql(embedding) : null,
+        seekingCollaborators,
+      ],
     );
     return { ok: true, id: Number(existing.id), created: false };
   }

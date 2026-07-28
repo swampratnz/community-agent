@@ -12798,7 +12798,10 @@ test(
       userId: showcaseId,
       userName: 'Showcaser',
     });
-    const listTool = listProjectsHandler({ platform: 'discord', userId: `${RUN}-share-project-marker-viewer` });
+    const listTool = listProjectsHandler({
+      platform: 'discord',
+      userId: `${RUN}-share-project-marker-viewer`,
+    });
 
     const seeking = await seekerTool.handler({
       name: 'Wants Help Project',
