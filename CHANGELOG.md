@@ -25,6 +25,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-28
 
 ### Added
+- **A member can now explicitly ask to talk to a human** (#808,
+  `request_human_help`, gated by the existing `ESCALATION_TO_ADMIN_ENABLED`):
+  the last gap neither the max-turns "reply yes" offer (#479) nor the
+  thumbs-down escalation (#598) covered — a member pre-emptively asking for
+  an admin mid-conversation, on a turn that completes normally. Zero-argument
+  and member+ only; it accepts no free-text field, so nothing the model
+  composes can reach the admin notification, which is built solely from the
+  caller's own message. Shares the same guild-wide hourly escalation cap as
+  its two siblings, plus a new per-caller daily cap (3/24h) so one member
+  can't alone exhaust that shared budget.
 - **`review_queue` and the weekly admin digest now show the pending-knowledge-
   candidates backlog's age too, not just its count** (#801): a new
   `oldestPendingCandidateAgeDays` repository function — the same

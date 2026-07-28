@@ -103,6 +103,12 @@ export const MEMBER_TOOLS = [
   // caller (rate-capped); the read side (list_answer_feedback) is
   // admin-tier — a member can never read the aggregate feedback queue.
   'mcp__community__rate_answer',
+  // Zero-argument write; sets a turn-scoped flag only (rate-capped per
+  // caller) — router.ts reads it back post-turn to direct-fire the same
+  // admin escalation notifyAdmins path rate_answer's thumbs-down uses
+  // (issue #808). Never a free-text field, so there is nothing here for a
+  // model-composed admin-notification injection to ride.
+  'mcp__community__request_human_help',
   // Self-service, non-destructive, instantly reversible — no CONFIRM gate.
   'mcp__community__set_response_style',
   // Same self-service shape as set_response_style, closed enum — no CONFIRM
