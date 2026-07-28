@@ -16,6 +16,7 @@
   "agentCoreRequesterTag.test.ts": 1,
   "agentCoreResponseStyle.test.ts": 1,
   "agentCoreSessionTail.test.ts": 1,
+  "agentCoreTurnTimeout.test.ts": 2,
   "agentCoreUnhelpfulAnswerRated.test.ts": 2,
   "agentCoreUsageLimitAlert.test.ts": 3,
   "agentModelFallback.test.ts": 1,

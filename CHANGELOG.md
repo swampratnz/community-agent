@@ -77,6 +77,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   knowledge weeks render byte-identical to today; the digest still receives
   only a bare number, so no platform or member identity ever reaches this
   public channel post.
+- **The agent's per-turn Claude call now has a wall-clock ceiling**
+  (#826, `AGENT_TURN_TIMEOUT_MS`, default `300_000`ms, on by default): a
+  `query()` call that never yields and never settles — a network partition, a
+  wedged CLI subprocess — used to wedge that conversation's entire serialised
+  turn queue forever, since a `catch` only fires on rejection, not a hang.
+  `execTurn` now races the turn against a timer and returns the existing,
+  unmodified generic-failure reply on expiry — never a new user-facing string,
+  never misclassified as a usage-limit/overload failure. The default is kept
+  comfortably above `IMAGE_GEN_TIMEOUT_MS` so a legitimate image-generation
+  turn is never pre-empted by the new outer ceiling.
 
 ### Fixed
 - **The offline context builder's cluster summariser no longer silently
