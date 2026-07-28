@@ -852,7 +852,8 @@ test("SECURITY: a guest caller is rejected on /digest without buildMemberDigestC
       (c) =>
         c.sql.includes('FROM context_digests') ||
         c.sql.includes('FROM member_projects') ||
-        c.sql.includes('FROM knowledge_candidates'),
+        c.sql.includes('FROM knowledge_candidates') ||
+        c.sql.includes('FROM member_interests'),
     ),
     'buildMemberDigestContent must never be invoked for a rejected caller',
   );
@@ -876,6 +877,11 @@ test("a member caller passes the /digest gate, defers before any DB read, and re
     }
     if (sql.includes('FROM member_projects')) {
       return { rows: [{ n: '2' }], rowCount: 0 };
+    }
+    // countInterestsPublishedSince (issue #815) — a 6th read buildMemberDigestContent
+    // now issues alongside the other five.
+    if (sql.includes('FROM member_interests')) {
+      return { rows: [{ n: '0' }], rowCount: 0 };
     }
     if (sql.includes('FROM knowledge')) {
       return { rows: [], rowCount: 0 };
@@ -909,6 +915,7 @@ test('/digest replies with the fixed "Nothing to report right now." text when bu
     if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
     if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
     // FROM context_digests and the generic FROM knowledge (curated titles)
     // branches both resolve to an empty row set — every input empty renders
     // null (formatMemberDigestMessage's own silence-over-noise contract).
@@ -946,6 +953,7 @@ test('SECURITY: /digest never wraps its reply in untrusted() — unlike communit
     }
     if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
     if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
     return { rows: [], rowCount: 0 };
   }) as typeof pool.query);
   const adapter = new DiscordAdapter();
