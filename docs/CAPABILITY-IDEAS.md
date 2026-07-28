@@ -147,19 +147,19 @@ skill-invocation counts vs. `rate_answer` helpful-rate on those threads.
 
 ### B2. Structured output for the classifiers *(medium impact, low effort, security-relevant)*
 
-**Status:** Shipped (#720) for the abuse classifier, and (#831) for the
-context builder's cluster summariser. `classifyAbuseWithLlm` in
-`src/moderation/moderator.ts` sets
-`outputFormat: { type: 'json_schema', schema: ABUSE_CLASSIFIER_OUTPUT_SCHEMA }`,
-covered by `tests/abuseClassifierStructuredOutput.test.ts`; the
-`Detection | null` boundary shape is unchanged. `summarizeCluster` in
-`src/context/builder.ts` likewise sets
-`outputFormat: { type: 'json_schema', schema: CLUSTER_SUMMARY_OUTPUT_SCHEMA }`
-and reads `message.structured_output` via a narrow-or-throw
-`parseClusterSummary`, covered by `tests/contextBuilderStructuredOutput.test.ts`;
-the `ClusterSummarizer` return shape is unchanged. The other "grows into"
-target — the knowledge refresh researcher's `NO_UPDATE` marker parsing — is
-still untouched, still free-text.
+**Status:** Shipped for all three targets — the abuse classifier (#720), the
+knowledge refresh researcher (#835), and the context builder's cluster
+summariser (#831). `classifyAbuseWithLlm` in `src/moderation/moderator.ts`,
+`researchTopic` in `src/context/knowledgeRefresh.ts`, and `summarizeCluster`
+in `src/context/builder.ts` all now set
+`outputFormat: { type: 'json_schema', schema: ... }` and read
+`structured_output` via a narrow-or-throw parser instead of regex-matching
+free text — covered by `tests/abuseClassifierStructuredOutput.test.ts`,
+`tests/knowledgeRefreshStructuredOutput.test.ts` and
+`tests/contextBuilderStructuredOutput.test.ts` respectively. Every call
+site's boundary shape (`Detection | null`, `string | null`, and
+`ClusterSummarizer`'s `{ topic, summary, candidate }`) is unchanged, so no
+caller needed touching.
 
 **Why:** `classifyAbuseWithLlm` (`src/moderation/moderator.ts:402`) asks for
 `"CLEAN"` or `"ABUSE: <reason>"` as free text and then regex-parses it
@@ -175,9 +175,9 @@ existing `Detection | null` return shape at the boundary so nothing downstream
 changes, and keep the throw-on-failure discipline that lets `makeClassifier`'s
 cache distinguish "model said clean" from "call failed".
 
-**Grows into:** the knowledge refresh researcher (`src/context/knowledgeRefresh.ts`'s
-`NO_UPDATE` marker), which still parses prose today. (The context builder's
-cluster summariser half shipped in #831.)
+**Grows into:** nothing further in this group — with #831 the last
+free-text-parsed model boundary here is gone. Any NEW model call should adopt
+the same `outputFormat` + narrow-or-throw discipline from the start.
 
 ### B3. `fallbackModel` for graceful degradation *(low effort)*
 

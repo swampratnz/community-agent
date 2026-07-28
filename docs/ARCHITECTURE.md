@@ -1572,6 +1572,20 @@ upgrade).
   degrades to a permanently-empty section, never an error. No member data
   anywhere in this path (config-fixed doc titles/URLs only), so unlike the
   topics section it needs no `scrubPII` call.
+- **Member-contribution credit on the knowledge-base line (issue #837)**: when
+  at least one of this week's curated titles was accepted from a member's own
+  `suggest_knowledge` submission (#633), the "new in the knowledge base" line
+  gains a trailing "— N suggested by members like you 💡" clause. `N` comes
+  from `countAcceptedMemberKnowledgeTipsSince`, the same
+  `status = 'accepted' AND reviewed_at > since` shape as the admin digest's
+  `countAcceptedKnowledgeCandidatesSince` (#797), plus `source_user_id IS NOT
+  NULL` (non-null only for a member-sourced row, never a context-builder
+  draft). `formatMemberDigestMessage` clamps the rendered count to the number
+  of titles actually displayed — `newKnowledgeTitles` is capped at
+  `MAX_NEW_KNOWLEDGE_TITLES` while this count is an independent, uncapped
+  `COUNT(*)`, so an uncapped busy week can never render a clause claiming
+  more member contributions than titles shown. Takes only a bare `number`,
+  same structural no-leak guarantee as `newProjectCount`.
 - **Two independent floors, widened-audience-aware (PR #651 review)**: this
   surface is more exposed than either existing `context_digests` consumer
   (admin-only `list_context_digests`, and the export's own
