@@ -683,7 +683,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | Talk to the bot | ❌ | ✅ | ✅ | ✅ |
 | Search memory (own conversation), knowledge, `forget_me` | ❌ | ✅ | ✅ | ✅ |
 | `my_data` (read-only summary of the caller's own stored footprint — the IPP6 access counterpart to `forget_me`) | ❌ | ✅ | ✅ | ✅ |
-| `my_submissions` (read back the caller's OWN previously-filed suggestions, content reports, and moderation appeals, self-scoped in SQL — a pull-based fallback for a missed resolution DM) | ❌ | ✅ | ✅ | ✅ |
+| `my_submissions` (read back the caller's OWN previously-filed suggestions, content reports, moderation appeals, and suggest_knowledge tips, self-scoped in SQL — a pull-based fallback for a missed resolution DM) | ❌ | ✅ | ✅ | ✅ |
 | `report_content` (flag harassment/spam/rule violations to admins) | ❌ | ✅ *(rate-capped, 5/24h)* | ✅ | ✅ |
 | `appeal_moderation` (ask admins to review the caller's OWN active warning(s)/mute; refuses cleanly with none) | ❌ | ✅ *(rate-capped, 1 per `MODERATION_APPEAL_COOLDOWN_HOURS`, default 24h)* | ✅ | ✅ |
 | `community_guidelines` (read the community's rules, verbatim, or a not-set-yet message) | ❌ | ✅ | ✅ | ✅ |
@@ -2270,6 +2270,19 @@ all-zero usage), and `usage_stats` now sums them across the requested window
 and reports a real `Prompt cache: NN% hit rate (X read / Y new tokens)` line
 — so the actual hit rate is a number in the tool an operator already checks,
 not just a debug log line.
+
+**Incoming message length cap** (`MAX_INCOMING_MESSAGE_CHARS`, default `8,000`
+chars, `0` = disabled, issue #811): the member's own message is the one
+model-bound input with no prior ceiling — `runAgentTurn` (`core.ts`) truncates
+its local `userText` copy to this cap (UTF-16-surrogate-pair-safe, appending a
+fixed marker stating the omitted count only when truncation actually occurs)
+before it reaches `searchMemory`, `selectPersona`, or `assemblePrompt`. This
+bounds both the one-off cost of a pasted log/code dump and, because the Agent
+SDK resumes the same session across turns, the size of the cached prefix every
+subsequent turn re-reads for up to `SESSION_MAX_TURNS`/`SESSION_MAX_AGE_HOURS`.
+Only this local copy is affected — `msg.text` itself (read by the router's
+archiving, CONFIRM/escalation classification, dedup-normalize, and the
+admin-notify echo) is never mutated.
 
 **Ack shortcut** (`ACK_SHORTCUT_ENABLED`, off by default): a pure
 acknowledgement reply to the bot ("thanks", "ok", "👍" and a handful of other

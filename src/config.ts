@@ -468,6 +468,14 @@ const EnvSchema = z.object({
   // amnesiac mid-conversation, with only semantic recall (keyed on the
   // CURRENT message text) to reconstruct what was just said. 0 = disabled.
   SESSION_ROLLOVER_TAIL_COUNT: z.coerce.number().int().nonnegative().default(10),
+  // Ceiling on the member's own message text reaching the paid model call
+  // (runAgentTurn's local `userText` copy only — never `msg.text` itself, so
+  // archiving/classification/echo still see the full original). 0 = disabled
+  // (byte-identical to today's unbounded behaviour). 8,000 chars (~2,000
+  // tokens) is generous for a real snippet while bounding a pasted log/code
+  // dump, which otherwise inflates one turn's cost and, via session resume,
+  // the cached prefix every subsequent turn re-reads.
+  MAX_INCOMING_MESSAGE_CHARS: z.coerce.number().int().nonnegative().default(8_000),
   // Age-based purge of raw `interactions` content. Unset/0 = disabled (no
   // behaviour change on upgrade). knowledge/admin_audit/sessions are never
   // touched by this — see storage/repository.ts:purgeOldInteractions.
@@ -1304,6 +1312,7 @@ export const config = {
     sessionMaxTurns: env.SESSION_MAX_TURNS,
     sessionMaxAgeHours: env.SESSION_MAX_AGE_HOURS,
     sessionRolloverTailCount: env.SESSION_ROLLOVER_TAIL_COUNT,
+    maxIncomingMessageChars: env.MAX_INCOMING_MESSAGE_CHARS,
     interactionRetentionDays: env.INTERACTION_RETENTION_DAYS,
     rosterDepartedRetentionDays: env.ROSTER_DEPARTED_RETENTION_DAYS,
     healthAlertAfterMinutes: env.HEALTH_ALERT_AFTER_MINUTES,
