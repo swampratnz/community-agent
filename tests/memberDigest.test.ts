@@ -37,6 +37,9 @@ const {
   updateKnowledge,
   countProjectsSharedSince,
   shareProject,
+  countInterestsPublishedSince,
+  setMemberInterests,
+  setHelperAvailability,
 } = await import('../src/storage/repository.js');
 const { config } = await import('../src/config.js');
 
@@ -276,6 +279,65 @@ test('formatMemberDigestMessage: an only-release-watch week (all other inputs em
     { title: 'docs: release-notes/overview', url: null },
   ]);
   assert.equal(message, '🆕 Anthropic platform updates this week: docs: release-notes/overview');
+});
+
+// --- formatMemberDigestMessage: member-interests count (issue #815) --------
+
+test('formatMemberDigestMessage: newInterestCount > 0 renders the interests section with singular/plural agreement', () => {
+  const singular = formatMemberDigestMessage([], [], 0, [], 1);
+  assert.equal(
+    singular,
+    '🔍 1 member published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+  const plural = formatMemberDigestMessage([], [], 0, [], 3);
+  assert.equal(
+    plural,
+    '🔍 3 members published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+});
+
+test("formatMemberDigestMessage: newInterestCount === 0 renders byte-identical to today's four-argument output — no fifth section", () => {
+  const withoutInterestArg = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+  );
+  const withZeroInterestCount = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: null }],
+    0,
+  );
+  assert.equal(withoutInterestArg, withZeroInterestCount);
+});
+
+test('formatMemberDigestMessage: an only-interests week (all other inputs empty) still returns a non-null message containing only the interests section', () => {
+  const message = formatMemberDigestMessage([], [], 0, [], 2);
+  assert.equal(
+    message,
+    '🔍 2 members published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+  assert.doesNotMatch(message ?? '', /This week's topics|knowledge base|showcase|platform updates/i);
+});
+
+test('formatMemberDigestMessage: interests section renders last, after topics, knowledge-base, project and release-watch sections', () => {
+  const message = formatMemberDigestMessage(
+    [{ topic: 'MCP server auth', questionCount: 1 }],
+    ['Setting up MCP auth'],
+    1,
+    [{ title: 'docs: release-notes/overview', url: 'https://platform.claude.com/a' }],
+    1,
+  );
+  assert.equal(
+    message,
+    '📅 This week\'s topics:\n• MCP server auth (1 question)\n\n📚 New in the knowledge base (1): Setting up MCP auth\n\n🚀 1 new project added to the showcase this week — ask me to show the project showcase to browse.\n\n🆕 Anthropic platform updates this week: [docs: release-notes/overview](https://platform.claude.com/a)\n\n🔍 1 member published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+});
+
+test('formatMemberDigestMessage: a quiet week across all five inputs (topics, knowledge, projects, release-watch, interests) still renders null', () => {
+  assert.equal(formatMemberDigestMessage([], [], 0, [], 0), null);
 });
 
 // --- makeDefaultMemberDigestRun (injected deps, no real DB) ----------------
@@ -524,6 +586,58 @@ test('makeDefaultMemberDigestRun: an only-release-watch week (zero topics, zero 
   } finally {
     config.releaseWatch.enabled = original;
   }
+});
+
+// --- makeDefaultMemberDigestRun: member-interests wiring (issue #815) ------
+
+test('makeDefaultMemberDigestRun: an only-interests week (zero topics, zero new knowledge, zero new projects, no release-watch) still posts — newInterestCount is a 5th input to the same null-guard OR condition', async () => {
+  const { adapter, sent } = makeAdapter();
+  let recordCalled = false;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async () => 0,
+    getNewInterestCount: async () => 4,
+    recordSent: async () => {
+      recordCalled = true;
+    },
+  });
+  await runOnce();
+  assert.equal(sent.length, 1, 'a week with only new interests activity still posts');
+  assert.equal(
+    sent[0].text,
+    '🔍 4 members published or updated their interests this week — ask me "who\'s into X?" to find them.',
+  );
+  assert.equal(recordCalled, true);
+});
+
+test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact same `since` instant already computed for getNewProjectCount — one window, no second Date.now() call', async () => {
+  const { adapter, sent } = makeAdapter();
+  let projectSince: Date | undefined;
+  let interestSince: Date | undefined;
+  const runOnce = makeDefaultMemberDigestRun([adapter], {
+    wasSentRecently: async () => false,
+    getDigests: async () => [],
+    getNewKnowledgeTitles: async () => [],
+    getNewProjectCount: async (since) => {
+      projectSince = since;
+      return 0;
+    },
+    getNewInterestCount: async (since) => {
+      interestSince = since;
+      return 0;
+    },
+    recordSent: async () => {},
+  });
+  await runOnce();
+  assert.ok(projectSince instanceof Date && interestSince instanceof Date);
+  assert.equal(
+    interestSince?.getTime(),
+    projectSince?.getTime(),
+    'getNewInterestCount receives the exact same since instant as getNewProjectCount',
+  );
+  assert.equal(sent.length, 0, 'both inputs still zero this run — nothing to post');
 });
 
 test('SECURITY: makeDefaultMemberDigestRun drops a digest topic below MEMBER_DIGEST_MIN_DISTINCT_USERS — its own k-anonymity floor, independent of the builder/export floors', async () => {
@@ -1036,5 +1150,114 @@ test(
     );
 
     await pool.query('DELETE FROM member_projects WHERE user_id = ANY($1)', [[activeUser, removedUser]]);
+  },
+);
+
+// --- Repository: member-interests count (issue #815, DB-integration) -------
+
+test(
+  'repository: countInterestsPublishedSince counts a row updated after `since` and excludes rows updated at or before it',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-boundary`;
+    const afterUser = `${marker}-after`;
+    const atUser = `${marker}-at`;
+    const beforeUser = `${marker}-before`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    const baseline = await countInterestsPublishedSince(since);
+
+    await setMemberInterests('discord', afterUser, 'published after since');
+    assert.equal(
+      await countInterestsPublishedSince(since),
+      baseline + 1,
+      'a row updated strictly after `since` (just now) is counted',
+    );
+
+    await setMemberInterests('discord', atUser, 'published exactly at since');
+    await pool.query(
+      `UPDATE member_interests SET updated_at = $1 WHERE platform = 'discord' AND user_id = $2`,
+      [since, atUser],
+    );
+    assert.equal(
+      await countInterestsPublishedSince(since),
+      baseline + 1,
+      'a row whose updated_at equals `since` is excluded (strict >)',
+    );
+
+    await setMemberInterests('discord', beforeUser, 'published before since');
+    await pool.query(
+      `UPDATE member_interests SET updated_at = $1 WHERE platform = 'discord' AND user_id = $2`,
+      [new Date(since.getTime() - 1000), beforeUser],
+    );
+    assert.equal(
+      await countInterestsPublishedSince(since),
+      baseline + 1,
+      'a row whose updated_at precedes `since` is excluded',
+    );
+
+    await pool.query('DELETE FROM member_interests WHERE user_id = ANY($1)', [
+      [afterUser, atUser, beforeUser],
+    ]);
+  },
+);
+
+test(
+  'SECURITY: repository: countInterestsPublishedSince + formatMemberDigestMessage never leak interest text or a member identifier — only the integer count and fixed nudge text ever reach the rendered digest',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-leak`;
+    const owner = `${marker}-owner`;
+    const adversarialInterests = `${marker}-interests <script>alert(1)</script> impersonating-admin`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    await setMemberInterests('discord', owner, adversarialInterests);
+
+    const count = await countInterestsPublishedSince(since);
+    assert.ok(count >= 1, 'the seeded interests row is counted');
+
+    const message = formatMemberDigestMessage([], [], 0, [], count);
+    assert.ok(message);
+    assert.doesNotMatch(
+      message,
+      new RegExp(marker),
+      "no interest text or member identifier ever appears in the rendered message — formatMemberDigestMessage's signature takes only a bare count",
+    );
+    assert.match(
+      message,
+      /members? published or updated their interests this week — ask me "who's into X\?" to find them\.$/,
+    );
+
+    await pool.query('DELETE FROM member_interests WHERE user_id = $1', [owner]);
+  },
+);
+
+test(
+  'SECURITY: repository: setHelperAvailability never bumps updated_at, so a helper-availability toggle does not contribute to countInterestsPublishedSince',
+  { skip },
+  async () => {
+    const marker = `t${Date.now()}${Math.floor(Math.random() * 1e6)}-toggle`;
+    const userId = `${marker}-helper`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    await setMemberInterests('discord', userId, 'building RAG systems with Claude');
+    await pool.query(
+      `UPDATE member_interests SET updated_at = $1 WHERE platform = 'discord' AND user_id = $2`,
+      [new Date(since.getTime() - 1000), userId],
+    );
+
+    const before = await countInterestsPublishedSince(since);
+
+    const toggled = await setHelperAvailability('discord', userId, true);
+    assert.deepEqual(toggled, { ok: true });
+
+    const after = await countInterestsPublishedSince(since);
+    assert.equal(
+      after,
+      before,
+      'toggling willing_to_help does not bump updated_at, so it never contributes to this public-surface count',
+    );
+
+    await pool.query('DELETE FROM member_interests WHERE user_id = $1', [userId]);
   },
 );

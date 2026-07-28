@@ -25,6 +25,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-28
 
 ### Added
+- **The weekly member digest now nudges the community about new published
+  interests, not just new showcase projects** (#815): a new
+  `countInterestsPublishedSince` repository function — the exact
+  `countProjectsSharedSince` (#714) pattern applied to `member_interests`
+  instead of `member_projects` — adds a fifth digest section, `🔍 N
+  member(s) published or updated their interests this week — ask me "who's
+  into X?" to find them`, rendered only when the count is non-zero. Bare
+  integer only, same as the project-showcase line: never interest text, a
+  member name, or a handle, since `set_my_interests`'s own publication
+  consent is scoped to other members via `who_is_into`, not this ungated
+  public channel post.
 - **A member can now explicitly ask to talk to a human** (#808,
   `request_human_help`, gated by the existing `ESCALATION_TO_ADMIN_ENABLED`):
   the last gap neither the max-turns "reply yes" offer (#479) nor the

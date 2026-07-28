@@ -93,7 +93,7 @@
   "knowledgeShortcutRouter.test.ts": 3,
   "linkCheck.test.ts": 13,
   "lowRatedCaveatRouter.test.ts": 3,
-  "memberDigest.test.ts": 14,
+  "memberDigest.test.ts": 16,
   "modelAndPlanSelectionSkill.test.ts": 1,
   "modelUsageRouter.test.ts": 2,
   "moderation.test.ts": 14,
