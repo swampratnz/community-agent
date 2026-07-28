@@ -977,8 +977,25 @@ export function formatUsageStats(
     (s.backgroundCostUsd > 0 ? `\nBackground jobs: ${byJob}.` : '') +
     formatShortcutHitsLine(s.shortcutHits, s.costByRole) +
     formatCacheUsageLine(s.cacheUsage) +
-    formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd)
+    formatAutoAnswerUsageLine(s.autoAnswerUsage, s.costUsd) +
+    formatModelUsageLine(s.costByModel)
   );
+}
+
+/**
+ * Renders the per-model cost breakdown line (issue #792) — the operator-facing
+ * verification for the #382/#394 role-tiered `AGENT_MODEL` and #738's
+ * `AGENT_MODEL_FALLBACK`, neither of which was previously confirmable from
+ * this tool. Unlike `formatCacheUsageLine`/`formatAutoAnswerUsageLine`, a
+ * window with exactly one model still renders the line (acceptance criterion
+ * 3) — the point is confirming tiering is landing on the configured model,
+ * not just flagging something unusual, so "boring" is itself the signal.
+ * `s.costByModel` is already ordered by cost desc (then model name) by the
+ * repository query, so this only formats.
+ */
+function formatModelUsageLine(costByModel: Awaited<ReturnType<typeof usageStats>>['costByModel']): string {
+  if (costByModel.length === 0) return '';
+  return `\nModels: ${costByModel.map((m) => `${m.model} ~$${m.costUsd.toFixed(2)} (${m.replies})`).join(' · ')}.`;
 }
 
 /**

@@ -2001,6 +2001,15 @@ export class Router {
           ...(reply.cacheCreationTokens != null && reply.cacheCreationTokens > 0
             ? { cacheCreationTokens: reply.cacheCreationTokens }
             : {}),
+          // Per-model cost telemetry (issue #792): mirrors the cache-telemetry
+          // conditional immediately above — a turn whose SDK result carried no
+          // `modelUsage` at all, or only zero-cost entries, must write no
+          // `modelUsage` key at all (never a fabricated empty object), so
+          // `usageStats()`'s aggregation can tell "no data" apart from "landed
+          // on a model that cost nothing".
+          ...(reply.modelUsage != null && Object.keys(reply.modelUsage).length > 0
+            ? { modelUsage: reply.modelUsage }
+            : {}),
           // Auto-answer cost visibility (issue #552): `replyConversationId` is
           // populated ONLY inside the `isAutoAnswerCandidate` branch above
           // (origin thread creation or an in-thread follow-up), so this is

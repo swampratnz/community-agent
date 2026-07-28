@@ -67,6 +67,17 @@ export interface AgentReply {
    */
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /**
+   * Per-model cost split read from the SDK `result` message's `modelUsage`
+   * field (issue #792) — a flat `{ [canonicalModel]: costUsd }` map, copying
+   * only `costUSD` per entry (no token counts, no `provider`/`contextWindow`).
+   * Mirrors `cacheReadTokens`/`cacheCreationTokens` exactly: set whenever the
+   * SDK reports a non-empty `modelUsage`, left `undefined` when it is absent
+   * or empty so `usage_stats` can tell "no data" from "landed on one model
+   * costing nothing" (the same "absent, not zero" discipline #522 established
+   * for cache telemetry).
+   */
+  modelUsage?: Record<string, number>;
   sessionId?: string;
   /**
    * Whether this reply is a genuine answer (`TurnOutcome.ok`), as opposed to
@@ -249,6 +260,7 @@ interface TurnOutcome {
   costUsd?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  modelUsage?: Record<string, number>;
   sessionId?: string;
   maxTurnsExceeded?: boolean;
   knowledgeEntryId?: number;
@@ -733,6 +745,7 @@ export async function runAgentTurn(
     costUsd: outcome.costUsd,
     cacheReadTokens: outcome.cacheReadTokens,
     cacheCreationTokens: outcome.cacheCreationTokens,
+    modelUsage: outcome.modelUsage,
     sessionId: outcome.sessionId,
     ok: outcome.ok,
     maxTurnsExceeded: outcome.maxTurnsExceeded,
@@ -869,6 +882,7 @@ async function execTurn(
   let costUsd: number | undefined;
   let cacheReadTokens: number | undefined;
   let cacheCreationTokens: number | undefined;
+  let modelUsage: Record<string, number> | undefined;
   let sessionId: string | undefined;
 
   try {
@@ -934,6 +948,30 @@ async function execTurn(
               'agent turn cache usage',
             );
           }
+          // Per-model cost telemetry (issue #792): the same `result` message
+          // already carries `modelUsage`, keyed by the model that actually
+          // served each portion of the turn — the only way to confirm the
+          // #382/#394 role tiering and #738's fallback model are landing spend
+          // where configured, rather than trusting the config on faith. Only
+          // `costUSD` is copied (never token counts or `provider`/
+          // `contextWindow`); keyed by `canonicalModel` when the SDK provides
+          // one so a provider-specific alias doesn't fragment the same model
+          // into multiple rows. Left `undefined` (not `{}`) when `modelUsage`
+          // is absent or every entry's cost is zero, mirroring cache
+          // telemetry's "absent, not zero" discipline.
+          if ('modelUsage' in message && message.modelUsage && typeof message.modelUsage === 'object') {
+            const entries = message.modelUsage as Record<
+              string,
+              { costUSD?: number; canonicalModel?: string }
+            >;
+            const reduced: Record<string, number> = {};
+            for (const [rawModel, entry] of Object.entries(entries)) {
+              if (typeof entry?.costUSD !== 'number') continue;
+              const model = entry.canonicalModel ?? rawModel;
+              reduced[model] = (reduced[model] ?? 0) + entry.costUSD;
+            }
+            if (Object.keys(reduced).length > 0) modelUsage = reduced;
+          }
           resultSubtype = message.subtype;
           break;
         default:
@@ -982,6 +1020,7 @@ async function execTurn(
       costUsd,
       cacheReadTokens,
       cacheCreationTokens,
+      modelUsage,
       sessionId,
       maxTurnsExceeded: resultSubtype === 'error_max_turns' ? true : undefined,
     };
@@ -996,6 +1035,7 @@ async function execTurn(
     costUsd,
     cacheReadTokens,
     cacheCreationTokens,
+    modelUsage,
     sessionId,
     ...(turnState.lastKnowledgeHitId != null ? { knowledgeEntryId: turnState.lastKnowledgeHitId } : {}),
     ...(turnState.unhelpfulAnswerRated ? { unhelpfulAnswerRated: true } : {}),

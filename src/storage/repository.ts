@@ -2774,6 +2774,7 @@ export async function usageStats(
   backgroundCostByJob: Array<{ job: string; costUsd: number }>;
   cacheUsage: { readTokens: number; creationTokens: number };
   autoAnswerUsage: { count: number; costUsd: number };
+  costByModel: Array<{ model: string; costUsd: number; replies: number }>;
 }> {
   const clampedDays = Math.min(Math.max(Math.trunc(days) || 7, 1), 365);
   const interval = `${clampedDays} days`;
@@ -2856,6 +2857,22 @@ export async function usageStats(
      WHERE direction = 'outbound' AND created_at > now() - $1::interval`,
     [interval],
   );
+  // Per-model cost telemetry (issue #792): sums the `meta->'modelUsage'`
+  // JSONB object `core.ts`/`router.ts` write per outbound row, keyed by
+  // canonical model id. `jsonb_each_text` is a strict set-returning
+  // function, so a row with no `modelUsage` key (meta->'modelUsage' is SQL
+  // NULL) contributes zero expanded rows rather than needing an explicit
+  // `meta ? 'modelUsage'` filter — same table/window/direction filter as the
+  // cache/auto-answer aggregates above, one more LATERAL aggregate over it.
+  const { rows: costByModelRows } = await pool.query(
+    `SELECT mu.key AS model, coalesce(sum(mu.value::numeric), 0) AS cost, count(*) AS n
+     FROM interactions
+     CROSS JOIN LATERAL jsonb_each_text(meta->'modelUsage') AS mu(key, value)
+     WHERE direction = 'outbound' AND created_at > now() - $1::interval
+     GROUP BY mu.key
+     ORDER BY cost DESC, mu.key`,
+    [interval],
+  );
   const background = await sumBackgroundJobCosts(clampedDays);
   const shortcuts = await sumShortcutHits(clampedDays);
   return {
@@ -2881,6 +2898,11 @@ export async function usageStats(
       count: Number(autoAnswer[0].count),
       costUsd: Number(autoAnswer[0].cost),
     },
+    costByModel: costByModelRows.map((r) => ({
+      model: r.model as string,
+      costUsd: Number(r.cost),
+      replies: Number(r.n),
+    })),
   };
 }
 
