@@ -90,6 +90,12 @@ const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
   'unhelpfulThemeCount',
   'overallAnswerHelpful',
   'overallAnswerTotal',
+  // The outcome-mix complement to openAppealsCount above (issue #844) —
+  // added to this allowlist in the SAME diff that introduces the
+  // currentCounts keys, unlike the #820-review-fixed signals above that
+  // shipped without it.
+  'resolvedAppealsCount',
+  'dismissedAppealsCount',
 ]);
 
 /** Strips any key outside `ADMIN_DIGEST_SIGNAL_KEYS` and any non-integer value. */

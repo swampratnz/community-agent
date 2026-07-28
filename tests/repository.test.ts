@@ -161,6 +161,7 @@ const {
   resolveModerationAppeal,
   countOpenAppeals,
   oldestOpenAppealAgeDays,
+  appealResolutionBreakdown,
   blockUser,
   unblockUser,
   isUserBlocked,
@@ -12438,6 +12439,137 @@ test(
       null,
       'a platform value with zero matching open appeals must return null, never 0 or a throw',
     );
+  },
+);
+
+test(
+  'repository: appealResolutionBreakdown counts resolved/dismissed rows closed within the window, excluding open rows, other platforms, and rows resolved outside the window (issue #844 acceptance criterion 1)',
+  { skip },
+  async () => {
+    // Uses a per-run-unique platform value (not 'discord'/'whatsapp') so this
+    // test's counts are exact rather than baseline-deltas, avoiding
+    // cross-file interference the same way oldestOpenAppealAgeDays's
+    // empty-platform SECURITY test above does.
+    const platform = `${RUN}-appealbreakdown`;
+    const otherPlatform = `${RUN}-appealbreakdown-other`;
+    const userId = `${RUN}-appealbreakdown-user`;
+
+    const resolvedInWindow = await createModerationAppeal({
+      platform,
+      userId,
+      userName: 'A',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissedInWindow1 = await createModerationAppeal({
+      platform,
+      userId,
+      userName: 'B',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const dismissedInWindow2 = await createModerationAppeal({
+      platform,
+      userId,
+      userName: 'C',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const stillOpen = await createModerationAppeal({
+      platform,
+      userId,
+      userName: 'D',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const resolvedOutsideWindow = await createModerationAppeal({
+      platform,
+      userId,
+      userName: 'E',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    const otherPlatformResolved = await createModerationAppeal({
+      platform: otherPlatform,
+      userId,
+      userName: 'F',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+
+    await resolveModerationAppeal(resolvedInWindow.id, 'resolved', 'admin-1');
+    await resolveModerationAppeal(dismissedInWindow1.id, 'dismissed', 'admin-1');
+    await resolveModerationAppeal(dismissedInWindow2.id, 'dismissed', 'admin-1');
+    await resolveModerationAppeal(resolvedOutsideWindow.id, 'resolved', 'admin-1');
+    await resolveModerationAppeal(otherPlatformResolved.id, 'resolved', 'admin-1');
+
+    // Push the out-of-window row's resolved_at (and, defensively, created_at)
+    // outside the 7-day window under test.
+    await pool.query(`UPDATE moderation_appeals SET resolved_at = now() - interval '30 days' WHERE id = $1`, [
+      resolvedOutsideWindow.id,
+    ]);
+
+    const breakdown = await appealResolutionBreakdown(platform, 7);
+    assert.deepEqual(
+      breakdown,
+      { resolved: 1, dismissed: 2 },
+      'only the in-window resolved/dismissed rows for this platform count; the still-open row, the ' +
+        'out-of-window resolved row, and the other-platform row must all be excluded',
+    );
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = ANY($1)`, [
+      [
+        resolvedInWindow.id,
+        dismissedInWindow1.id,
+        dismissedInWindow2.id,
+        stillOpen.id,
+        resolvedOutsideWindow.id,
+        otherPlatformResolved.id,
+      ],
+    ]);
+  },
+);
+
+test(
+  'repository: appealResolutionBreakdown zero-fills both keys for a platform with no closed appeals in the window (issue #844 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-appealbreakdown-empty-platform`;
+    const breakdown = await appealResolutionBreakdown(platform, 7);
+    assert.deepEqual(
+      breakdown,
+      { resolved: 0, dismissed: 0 },
+      'an empty scoped set must zero-fill both keys, never omit one or return undefined',
+    );
+  },
+);
+
+test(
+  'SECURITY: appealResolutionBreakdown returns only the two integer counts, never reason/user_name/resolved_by or any other per-appeal field (issue #844 acceptance criterion 3)',
+  { skip },
+  async () => {
+    const platform = `${RUN}-appealbreakdown-security`;
+    const userId = `${RUN}-appealbreakdown-security-user`;
+    const appeal = await createModerationAppeal({
+      platform,
+      userId,
+      userName: 'SecretName',
+      reason: 'a private reason that must never surface in an aggregate',
+      activeWarnings: 1,
+      strikeLimit: 3,
+    });
+    await resolveModerationAppeal(appeal.id, 'dismissed', 'admin-secret');
+
+    const breakdown = await appealResolutionBreakdown(platform, 7);
+    assert.deepEqual(Object.keys(breakdown).sort(), ['dismissed', 'resolved']);
+    assert.equal(typeof breakdown.resolved, 'number');
+    assert.equal(typeof breakdown.dismissed, 'number');
+    const serialized = JSON.stringify(breakdown);
+    assert.ok(!serialized.includes('SecretName'), 'user_name must never appear in the aggregate');
+    assert.ok(!serialized.includes('private reason'), 'reason must never appear in the aggregate');
+    assert.ok(!serialized.includes('admin-secret'), 'resolved_by must never appear in the aggregate');
+
+    await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [appeal.id]);
   },
 );
 

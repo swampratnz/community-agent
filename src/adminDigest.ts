@@ -4,6 +4,7 @@ import { startTrackedJob } from './backgroundJobs.js';
 import {
   answerFeedbackOriginSummary,
   answerFeedbackWeeklySummary,
+  appealResolutionBreakdown,
   countAcceptedKnowledgeCandidatesSince,
   countAccessRequests,
   countDuplicateKnowledge,
@@ -442,6 +443,20 @@ export function buildAdminDigestMessage(
   // the quiet case (all three flywheel sub-signals 0) is byte-identical to
   // the pre-#820 form.
   helperMatchesCount: number = 0,
+  // Outcome mix of appeals closed in the last FRESHNESS_DAYS days
+  // (`appealResolutionBreakdown`, issue #844) — the still-missing
+  // resolved-vs-dismissed complement to `openAppealsCount`/
+  // `oldestOpenAppealAgeDays`'s backlog-size/-age signals above. Counts
+  // CLOSED rows, disjoint from `openAppealsCount`'s open-only scope, so it
+  // gets its own entry in the all-signals-zero gate below rather than riding
+  // as a sub-count of an already-gated signal. Rendered as ONE line only
+  // when `resolvedAppealsCount + dismissedAppealsCount > 0`. Bare integers
+  // only — no appellant user_name/reason/user_id/resolved_by ever reaches
+  // the DM, same privacy convention as `openAppealsCount` (#631). Two
+  // append-only trailing params, default 0, so every existing call site is
+  // unaffected and the quiet case is byte-identical to the pre-#844 form.
+  resolvedAppealsCount: number = 0,
+  dismissedAppealsCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -469,7 +484,9 @@ export function buildAdminDigestMessage(
     unhelpfulThemeCount === 0 &&
     acceptedKnowledgeCandidatesCount === 0 &&
     projectsSharedCount === 0 &&
-    helperMatchesCount === 0
+    helperMatchesCount === 0 &&
+    resolvedAppealsCount === 0 &&
+    dismissedAppealsCount === 0
   )
     return null;
 
@@ -706,6 +723,17 @@ export function buildAdminDigestMessage(
         trendSuffix('openAppealsCount', openAppealsCount, previousCounts),
     );
   }
+  if (resolvedAppealsCount + dismissedAppealsCount > 0) {
+    // Bare integers only — no appellant user_name/reason/user_id/resolved_by
+    // ever reaches the DM (#844).
+    const closedTotal = resolvedAppealsCount + dismissedAppealsCount;
+    sections.push(
+      `📈 ${closedTotal} appeal(s) closed this period: ${resolvedAppealsCount} resolved, ` +
+        `${dismissedAppealsCount} dismissed.` +
+        trendSuffix('resolvedAppealsCount', resolvedAppealsCount, previousCounts) +
+        trendSuffix('dismissedAppealsCount', dismissedAppealsCount, previousCounts),
+    );
+  }
   if (unreachableSourceKnowledgeCount > 0) {
     // Bare integer only — no source URL, entry title, or entry id ever reaches the DM (#624).
     sections.push(
@@ -800,6 +828,7 @@ export async function buildAdminDigestForAdmin(
     projectsSharedCount,
     oldestPendingCandidateAge,
     helperMatchesCount,
+    appealBreakdown,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -918,6 +947,11 @@ export async function buildAdminDigestForAdmin(
     // above: a deployment with find_helper off never issues the extra query
     // and this always resolves to 0.
     config.findHelper.enabled ? countHelperMatchesSince(since) : Promise.resolve(0),
+    // Outcome mix of appeals closed over the same FRESHNESS_DAYS window as
+    // every other rolling-window trend line here — the still-missing
+    // resolved-vs-dismissed complement to countOpenAppeals/
+    // oldestOpenAppealAgeDays above (issue #844).
+    appealResolutionBreakdown(platform, FRESHNESS_DAYS),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -956,6 +990,8 @@ export async function buildAdminDigestForAdmin(
     acceptedKnowledgeCandidatesCount,
     projectsSharedCount,
     helperMatchesCount,
+    resolvedAppealsCount: appealBreakdown.resolved,
+    dismissedAppealsCount: appealBreakdown.dismissed,
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1012,6 +1048,8 @@ export async function buildAdminDigestForAdmin(
     projectsSharedCount,
     oldestPendingCandidateAge,
     helperMatchesCount,
+    appealBreakdown.resolved,
+    appealBreakdown.dismissed,
   );
   return { message, currentCounts };
 }
