@@ -128,6 +128,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   above it was stuck in English — a single reply, mixed language. The caveat
   now renders in te reo alongside the suffix, and English-preference replies
   are unchanged.
+- **Auto-moderation now re-scans an edited Discord message, not just its
+  original text** (#798). Previously a member could post clean text, then
+  edit in a slur or harassment, and the bot's only automated abuse-detection
+  path never saw it — no `member_warnings` row, no `mod-alerts`, no strike.
+  An edit now runs through the exact same `Moderator.scan()` a fresh message
+  would, skipped only when the edit is known not to have changed the text
+  (an embed unfurl or pin-state change); an edit whose prior text Discord
+  didn't hand back to us is scanned anyway rather than silently skipped.
+  Also fixes the scan listener itself only being wired up when full-message
+  archiving or reply-retraction was also on — a moderation-only deployment
+  (the common case) previously never saw edits at all.
 
 ## 2026-07-27
 
