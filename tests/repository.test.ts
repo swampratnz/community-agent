@@ -4602,6 +4602,7 @@ test(
     await recordShortcutHit('repeat_question');
     await recordShortcutHit('repeat_max_turns');
     await recordShortcutHit('slash_command');
+    await recordShortcutHit('whatsapp_text_command');
     // Outside the 1-day window — must not contribute to either total or byKind.
     await pool.query(`INSERT INTO shortcut_hits (kind, created_at) VALUES ($1, now() - interval '2 days')`, [
       'ack',
@@ -4610,7 +4611,7 @@ test(
     const after = await sumShortcutHits(days);
     const afterByKind = new Map(after.byKind.map((r) => [r.kind, r.count]));
 
-    assert.equal(after.total - before.total, 6, 'total sums only the in-window rows: 2 + 1 + 1 + 1 + 1');
+    assert.equal(after.total - before.total, 7, 'total sums only the in-window rows: 2 + 1 + 1 + 1 + 1 + 1');
     assert.equal(
       (afterByKind.get('ack') ?? 0) - (beforeByKind.get('ack') ?? 0),
       2,
@@ -4624,10 +4625,15 @@ test(
       1,
       'slash_command (issue #863) sums its one in-window row',
     );
+    assert.equal(
+      (afterByKind.get('whatsapp_text_command') ?? 0) - (beforeByKind.get('whatsapp_text_command') ?? 0),
+      1,
+      'whatsapp_text_command (issue #874) sums its one in-window row',
+    );
 
     await pool.query(
       `DELETE FROM shortcut_hits WHERE kind = ANY($1) AND created_at > now() - interval '3 days'`,
-      [['ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command']],
+      [['ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command', 'whatsapp_text_command']],
     );
   },
 );
@@ -5097,6 +5103,26 @@ test(
     );
     assert.equal(inserted.rowCount, 1, "the widened CHECK constraint must accept 'slash_command'");
     await pool.query(`DELETE FROM shortcut_hits WHERE id = $1`, [inserted.rows[0].id]);
+
+    // 'whatsapp_text_command' (issue #874) widened the CHECK constraint a
+    // sixth time and must be accepted the same way, and — the load-bearing
+    // assertion — a row inserted under one kind must never be counted under
+    // the other: 'slash_command' and 'whatsapp_text_command' are distinct
+    // cost-avoidance mechanisms (Discord vs. WhatsApp) and must never be
+    // conflated in the stored data.
+    const insertedWa = await pool.query(
+      `INSERT INTO shortcut_hits (kind) VALUES ('whatsapp_text_command') RETURNING id`,
+    );
+    assert.equal(insertedWa.rowCount, 1, "the widened CHECK constraint must accept 'whatsapp_text_command'");
+    const { rows: kindRows } = await pool.query(`SELECT kind FROM shortcut_hits WHERE id = $1`, [
+      insertedWa.rows[0].id,
+    ]);
+    assert.equal(
+      kindRows[0]?.kind,
+      'whatsapp_text_command',
+      "the WhatsApp row's kind is never conflated with 'slash_command'",
+    );
+    await pool.query(`DELETE FROM shortcut_hits WHERE id = $1`, [insertedWa.rows[0].id]);
 
     // sumShortcutHits's return shape carries only kind + count — no
     // user/conversation identifier or free-text field can leak through it.
