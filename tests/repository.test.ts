@@ -191,6 +191,7 @@ const {
   isProjectConnectionRequesterAtDailyCap,
   PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT,
   PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT,
+  responseLatencyStats,
 } = await import('../src/storage/repository.js');
 
 // Unique per test-run tag so fixtures never collide across runs and can be
@@ -13337,5 +13338,159 @@ test(
       await clearDocsIngestUrlFailures([]);
       await markDocsIngestUrlsReported([]);
     });
+  },
+);
+
+// responseLatencyStats (issue #877) — VISION's "time-to-first-answer"
+// north-star metric, derived from interactions timestamps/meta already
+// written on every turn. Helpers insert rows directly (not via
+// recordInteraction, which always calls the real embedding model and has no
+// created_at override) so deltas are exact and deterministic.
+
+async function insertLatencyInbound(conversationId: string, userId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+     VALUES ('discord',$1,$2,'member','inbound','a question',true,$3)`,
+    [conversationId, userId, createdAt],
+  );
+}
+
+async function insertLatencyReply(conversationId: string, replyToUserId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+     VALUES ('discord',$1,'bot','member','outbound','an answer',$2,$3)`,
+    [conversationId, JSON.stringify({ replyToUserId }), createdAt],
+  );
+}
+
+async function insertLatencyProactiveOutbound(conversationId: string, createdAt: Date) {
+  await pool.query(
+    `INSERT INTO interactions
+       (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+     VALUES ('discord',$1,'bot','member','outbound','digest push','{}'::jsonb,$2)`,
+    [conversationId, createdAt],
+  );
+}
+
+test(
+  'repository: responseLatencyStats pairs each reply with the preceding inbound message from the same member and computes count/median/p90 in seconds',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-basic`;
+    const now = new Date();
+    const userA = `${RUN}-latency-user-a`;
+    const userB = `${RUN}-latency-user-b`;
+    const userC = `${RUN}-latency-user-c`;
+
+    // Three independent pairs (distinct members, so the lateral join can
+    // never cross-pair) with exact 10s/20s/30s deltas.
+    await insertLatencyInbound(conversationId, userA, new Date(now.getTime() - 30_000));
+    await insertLatencyReply(conversationId, userA, new Date(now.getTime() - 20_000)); // +10s
+    await insertLatencyInbound(conversationId, userB, new Date(now.getTime() - 25_000));
+    await insertLatencyReply(conversationId, userB, new Date(now.getTime() - 5_000)); // +20s
+    await insertLatencyInbound(conversationId, userC, new Date(now.getTime() - 30_000));
+    await insertLatencyReply(conversationId, userC, now); // +30s
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats, 'three qualifying pairs must yield a non-null result');
+    assert.equal(stats.count, 3);
+    assert.equal(stats.medianSeconds, 20, 'median of [10,20,30] is the middle value');
+    assert.equal(stats.p90Seconds, 28, 'p90 of [10,20,30] via percentile_cont interpolates to 28');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: responseLatencyStats excludes proactive outbound rows with no meta.replyToUserId from pairing (acceptance criterion 3)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-proactive`;
+    const now = new Date();
+    const user = `${RUN}-latency-proactive-user`;
+
+    await insertLatencyInbound(conversationId, user, new Date(now.getTime() - 15_000));
+    await insertLatencyReply(conversationId, user, now); // +15s, a real reply
+    await insertLatencyProactiveOutbound(conversationId, now); // a digest/alert push — must not count
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats);
+    assert.equal(stats.count, 1, 'the proactive push contributes nothing to count');
+    assert.equal(stats.medianSeconds, 15);
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'repository: responseLatencyStats returns null (not NaN/Infinity/a throw) when there are zero qualifying pairs (acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-empty`;
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.equal(stats, null);
+  },
+);
+
+test(
+  "repository: responseLatencyStats windows only on the OUTBOUND row's created_at — a recent reply to an old question still counts (acceptance criterion 5)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-c-latency-window`;
+    const now = new Date();
+    const user = `${RUN}-latency-window-user`;
+
+    // The inbound question is 20 days old (well outside a 7-day window);
+    // the reply itself is recent. Only the reply's created_at gates inclusion.
+    await insertLatencyInbound(conversationId, user, new Date(now.getTime() - 20 * 86_400_000));
+    await insertLatencyReply(conversationId, user, new Date(now.getTime() - 60_000));
+
+    const stats = await responseLatencyStats([conversationId], 7);
+    assert.ok(stats, 'a recent reply must count even though the question it answers is old');
+    assert.equal(stats.count, 1);
+    assert.ok(
+      stats.medianSeconds > 19 * 86_400,
+      'the reported delta reflects the true (old) question timestamp, not a clamped one',
+    );
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+  },
+);
+
+test(
+  'SECURITY: repository: responseLatencyStats excludes conversations outside the given scope (acceptance criterion 6)',
+  { skip },
+  async () => {
+    const inScopeConvo = `${RUN}-c-latency-scope-in`;
+    const outOfScopeConvo = `${RUN}-c-latency-scope-out`;
+    const now = new Date();
+    const inScopeUser = `${RUN}-latency-scope-in-user`;
+    const outOfScopeUser = `${RUN}-latency-scope-out-user`;
+
+    // Deliberately distinguishable deltas so a leak is unmistakable: the
+    // in-scope pair is 5s, the out-of-scope pair is 500s.
+    await insertLatencyInbound(inScopeConvo, inScopeUser, new Date(now.getTime() - 5_000));
+    await insertLatencyReply(inScopeConvo, inScopeUser, now);
+    await insertLatencyInbound(outOfScopeConvo, outOfScopeUser, new Date(now.getTime() - 500_000));
+    await insertLatencyReply(outOfScopeConvo, outOfScopeUser, now);
+
+    const scoped = await responseLatencyStats([inScopeConvo], 7);
+    assert.ok(scoped);
+    assert.equal(scoped.count, 1, 'scope must reflect only the in-scope conversation');
+    assert.equal(
+      scoped.medianSeconds,
+      5,
+      "SECURITY: the out-of-scope conversation's 500s delta must never influence the scoped figures",
+    );
+
+    const unscoped = await responseLatencyStats(null, 7);
+    assert.ok(unscoped);
+    assert.ok(unscoped.count >= 2, 'without a scope filter (super admin), both conversations contribute');
+
+    await pool.query(`DELETE FROM interactions WHERE conversation_id = ANY($1)`, [
+      [inScopeConvo, outOfScopeConvo],
+    ]);
   },
 );
