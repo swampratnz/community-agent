@@ -303,6 +303,22 @@ const EnvSchema = z.object({
   WHATSAPP_PROVIDER: z.enum(['baileys', 'cloud', 'disabled']).default('baileys'),
   WHATSAPP_AUTH_DIR: z.string().default('./whatsapp-auth'),
   WHATSAPP_ALLOWED_JIDS: z.string().optional(),
+  // Cap on consecutive Baileys reconnect attempts before the adapter STOPS
+  // retrying (issue: the 2026-07-29 405 outage). The backoff is
+  // 3s·2^(n-1) capped at 5 min, so the default 20 spends roughly an hour
+  // retrying — long enough to ride out a genuine transient outage, far short
+  // of the 73 attempts over ~6 h that the unbounded loop actually ran.
+  //
+  // Why cap at all: a 405 is WhatsApp REFUSING the connection, not a network
+  // blip, and docs/SECURITY.md treats Baileys ToS/ban exposure as a real risk
+  // — indefinitely hammering a server that is actively rejecting us is the
+  // wrong posture. Giving up is also more visible than looping forever: the
+  // adapter stays disconnected, so health.ts's existing sustained-disconnect
+  // alert keeps notifying super admins.
+  //
+  // `0` means unlimited, preserving the old behaviour as an escape hatch for
+  // an operator who would rather retry forever than restart by hand.
+  WHATSAPP_MAX_RECONNECT_ATTEMPTS: z.coerce.number().int().min(0).default(20),
   // Welcome message posted to a group on group-participants.update (Baileys
   // only); off unless explicitly enabled.
   WHATSAPP_WELCOME_ENABLED: z
@@ -1204,6 +1220,7 @@ export const config = {
     provider: env.WHATSAPP_PROVIDER,
     authDir: env.WHATSAPP_AUTH_DIR,
     allowedJids: csv(env.WHATSAPP_ALLOWED_JIDS),
+    maxReconnectAttempts: env.WHATSAPP_MAX_RECONNECT_ATTEMPTS,
     welcome: {
       enabled: env.WHATSAPP_WELCOME_ENABLED ?? false,
       cooldownMinutes: env.WHATSAPP_WELCOME_COOLDOWN_MINUTES,

@@ -227,8 +227,35 @@ export class BaileysAdapter implements PlatformAdapter {
     // reconnects would each build a socket and end() the other's (audit M5).
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectAttempts += 1;
+
+    // Bounded retry. Before this cap the loop was infinite, and on 2026-07-29
+    // that meant 73 consecutive `statusCode: 405` refusals over ~6 hours,
+    // every 5 minutes, with nobody reading the log. A 405 is WhatsApp
+    // REFUSING us rather than a network blip, and docs/SECURITY.md treats
+    // Baileys ToS/ban exposure as a live risk, so hammering a server that is
+    // actively rejecting the connection is the wrong posture.
+    //
+    // Giving up is also LOUDER than looping: `connected` stays false, so
+    // health.ts's sustained-disconnect check keeps alerting super admins, and
+    // the operator gets one unambiguous error naming the fix instead of an
+    // endless warn stream that looks like progress.
+    const maxAttempts = config.whatsapp.maxReconnectAttempts;
+    if (maxAttempts > 0 && this.reconnectAttempts > maxAttempts) {
+      logger.error(
+        { attempts: this.reconnectAttempts - 1, maxAttempts },
+        'WhatsApp reconnect attempts exhausted — giving up. The session is NOT logged out; ' +
+          'restart the service to retry (`sudo systemctl restart community-agent`). If it keeps ' +
+          'failing with statusCode 405, WhatsApp is refusing this client version — check for a ' +
+          'newer @whiskeysockets/baileys release.',
+      );
+      return;
+    }
+
     const delay = Math.min(3_000 * 2 ** (this.reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS);
-    logger.warn({ attempt: this.reconnectAttempts, delayMs: delay }, 'Scheduling WhatsApp reconnect');
+    logger.warn(
+      { attempt: this.reconnectAttempts, delayMs: delay, maxAttempts: maxAttempts || 'unlimited' },
+      'Scheduling WhatsApp reconnect',
+    );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect().catch((err) => {
