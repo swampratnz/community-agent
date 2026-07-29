@@ -16,7 +16,7 @@
   "agentCoreRequesterTag.test.ts": 1,
   "agentCoreResponseStyle.test.ts": 1,
   "agentCoreSessionTail.test.ts": 1,
-  "agentCoreTurnTimeout.test.ts": 2,
+  "agentCoreTurnTimeout.test.ts": 4,
   "agentCoreUnhelpfulAnswerRated.test.ts": 2,
   "agentCoreUsageLimitAlert.test.ts": 3,
   "agentModelFallback.test.ts": 1,
@@ -139,5 +139,6 @@
   "whatsappBlockRouterOpen.test.ts": 1,
   "whatsappCloudAdapter.test.ts": 21,
   "whatsappCloudWire.test.ts": 8,
+  "whatsappTextCommandsRouter.test.ts": 4,
   "whatsappWire.test.ts": 1
 }

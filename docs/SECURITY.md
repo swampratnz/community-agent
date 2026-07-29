@@ -2564,6 +2564,54 @@ class**, not a symmetry extension of an existing one:
   that runs a super admin (well above every cap) through the flag-off path
   and asserts zero fetch calls regardless.
 
+### 23. WhatsApp text commands (`!whois`, `!projects`, `!guidelines`, `!digest`, `WHATSAPP_TEXT_COMMANDS_ENABLED`, off by default, issue #859)
+
+The WhatsApp counterpart to §20's Discord slash commands, re-keyed for a
+platform with no native command-picker UI. A second entry point onto the
+same existing reads (`who_is_into`, `list_projects`, the
+`community_guidelines` policy text, `buildMemberDigestContent`) — no new
+tool, tier, table, or repository function — checked in `Router.handle()`
+(`tryWhatsAppTextCommand`) alongside the other router-level shortcuts.
+
+- **Identity is resolved via `resolveRole(platform, userId)` only**, same as
+  every chat message and identical to §20's own invariant.
+- **Tier floors mirror each tool's real gate exactly.** `!whois`, `!projects`,
+  `!digest` require `atLeast(role, 'member')`, the same runtime floor
+  `who_is_into`/`list_projects`/`community_digest`'s own handlers apply.
+  `!guidelines` has no gate, matching `community_guidelines`.
+- **SECURITY: gate failure is silent fallthrough, never a denial reply** —
+  the one deliberate departure from §20's design, not an oversight. Discord's
+  ephemeral reply lets a rejected caller be told "you don't have access" at
+  zero visibility cost; a WhatsApp group reply is visible to everyone, so an
+  equivalent bespoke denial would out an ineligible caller's tier to the
+  whole group — a probing vector Discord's design never had to consider.
+  Instead, an unrecognised prefix, a non-WhatsApp platform, or a
+  sub-member-tier caller on `!whois`/`!projects`/`!digest` all make
+  `tryWhatsAppTextCommand` return `null`, and the message is treated as
+  ordinary chat text — falling through to a normal turn (or the gated-guest
+  path) exactly as if the `!`-prefixed text weren't recognised. The
+  underlying repository function is never invoked on a rejected caller,
+  pinned by a `SECURITY:` test asserting each of `searchMemberInterests`/
+  `searchProjects`/`listRecentProjects`/`buildMemberDigestContent` is never
+  called for a guest's `!whois`/`!projects`/`!digest` message.
+- **Every reply routes through `this.send()` → `adapter.sendMessage()`**, the
+  same outbound-filtered send path every other router reply uses — never a
+  new, unfiltered send primitive.
+- **Rate-limit parity.** Each served reply is recorded via `recordInteraction`
+  with `meta.replyToUserId` set, exactly like `sendKnowledgeShortcut`, so it
+  counts toward the caller's `dailyReplyLimitPerUser` like any other answer —
+  this cannot become an unmetered read path distinct from normal chat.
+- **`!kb` is deliberately absent.** `KNOWLEDGE_SHORTCUT_ENABLED` already gives
+  WhatsApp an implicit, similarity-matched knowledge lookup; a second,
+  differently-triggered path to the same read would be redundant scope.
+- **Byte-identical when off, and a no-op on any non-WhatsApp platform even
+  with the flag on** — Discord already has its own (ephemeral, denial-capable)
+  command surface via §20, so this dispatcher never fires there regardless of
+  this flag's state.
+
+No new write path, no `shortcut_hits` tracking. See docs/ARCHITECTURE.md's
+"WhatsApp text commands" section for the mechanism.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
@@ -2757,20 +2805,31 @@ itself — same failure text, same admin-notify debounce, just reached less
 often.
 
 ## Residual risks (accepted, documented)
-- **A timed-out agent turn is abandoned, not aborted** (`AGENT_TURN_TIMEOUT_MS`,
-  issue #826). The wall-clock ceiling bounds how long the *caller* waits; it
-  does not kill the SDK's CLI subprocess. Once it fires, `router.ts`'s
-  per-conversation queue unblocks and a new turn may start while the orphaned
-  `for await` loop is still alive holding the same caller's `toolServer`, so a
-  wedge that clears later can still drive real tool calls. Bounded by: the
-  orphan carries the SAME caller's already-resolved tier and tool surface (no
+- **A timed-out agent turn now sends an abort signal, but the underlying CLI
+  subprocess stopping is still best-effort, not immediate** (`AGENT_TURN_TIMEOUT_MS`,
+  issue #826; `AbortController` wiring added in issue #860). `execTurn`
+  constructs one `AbortController` per turn and passes it to `query()` as
+  `options.abortController`; the same `setTimeout` callback that rejects the
+  `Promise.race` on timeout now also calls `controller.abort()`. Per the
+  installed SDK's own documented contract (`@anthropic-ai/claude-agent-sdk`'s
+  `sdk.d.ts`), that abort is forwarded to the CLI subprocess only after the
+  SDK's own graceful-close path — stdin EOF, then a short grace window —
+  rather than killing it instantly. So there remains a bounded window, now
+  much narrower than before #860, in which `router.ts`'s per-conversation
+  queue has already unblocked and a new turn may start while the orphaned
+  `for await` loop has not yet actually stopped and still holds the same
+  caller's `toolServer`; if it drives a tool call in that window, it is a
+  genuine (if now rare and narrow) side effect. Bounded by: the orphan carries
+  the SAME caller's already-resolved tier and tool surface (no
   privilege-escalation path — every tier check and CONFIRM gate still applies
   to it), and the member-visible reply is final, pinned by a test that releases
   a wedge *after* the timeout and asserts no second reply is produced. Accepted
   because the alternative shipped behaviour was strictly worse: before #826 a
   wedged iteration blocked that conversation's queue forever with no recovery
-  short of a process restart. Killing the subprocess requires `AbortController`
-  wiring, the named growth path the approved issue scoped out.
+  short of a process restart, and before #860 the timeout never told the
+  subprocess to stop at all. `tests/agentCoreTurnTimeout.test.ts` pins that
+  `abort()` fires exactly once, only on the timeout path, and that the
+  installed SDK still documents the `abortController` field this depends on.
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and
