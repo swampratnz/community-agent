@@ -312,6 +312,17 @@ export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI =
   'i kitea e ētahi atu mema he kore-āwhina tēnei — ka taea hoki e koe te tohu mā te rate_answer';
 
 /**
+ * Fixed, human-authored te reo Māori variant of the `'may be outdated'`
+ * staleness tag `formatKnowledgeCitationNote` appends below (issue #848) —
+ * the one fragment of that function's three note fragments #789 didn't reach,
+ * since #789's own scope was limited to the low-rated caveat directly below
+ * this constant. Same trust level as its siblings: no interpolation, no
+ * model call. SECURITY: exact string-equality is asserted in tests, same
+ * convention as `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`.
+ */
+export const KNOWLEDGE_STALE_NOTE_MI = 'tērā pea kua tawhito';
+
+/**
  * Fixed, deterministic trailing line appended to a `knowledge_search` reply
  * when two or more of the served hits sit in the "conflict candidate"
  * similarity band (issue #389) — the live-path backstop for the gap #330
@@ -364,7 +375,10 @@ export const KNOWLEDGE_CONFLICT_CAVEAT_TEXT =
  * is exactly `'mi'` and `lowRatedCaveat` is true — mirrors
  * `KNOWLEDGE_SHORTCUT_SUFFIX`/`KNOWLEDGE_SHORTCUT_SUFFIX_MI`'s selection one
  * line below the caller's `sendKnowledgeShortcut` call site so a `'mi'`-
- * preference member's reply is consistently one language, not a mix. The
+ * preference member's reply is consistently one language, not a mix. It also
+ * (issue #848) selects `KNOWLEDGE_STALE_NOTE_MI` instead of the fixed English
+ * `'may be outdated'` staleness tag on the same `=== 'mi'` condition — the
+ * fragment #789's own scope didn't reach. The
  * `formatKnowledgeSearchResults` call site never passes this argument, so it
  * stays byte-identical.
  */
@@ -392,7 +406,7 @@ export function formatKnowledgeCitationNote(
       maxAgeDays,
     )
   ) {
-    notes.push('may be outdated');
+    notes.push(lang === 'mi' ? KNOWLEDGE_STALE_NOTE_MI : 'may be outdated');
   }
   if (lowRatedCaveat) {
     notes.push(lang === 'mi' ? KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI : KNOWLEDGE_LOW_RATED_CAVEAT_TEXT);

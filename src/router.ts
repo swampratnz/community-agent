@@ -1649,10 +1649,19 @@ export class Router {
       { platform: msg.platform, conversationId: msg.conversationId },
       'guest_knowledge_shortcut_hit',
     );
-    const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays);
-    // Single lookup serves both interpolated strings below (acceptance
-    // criterion 3) — not a per-string read.
+    // Language preference (issue #848) is resolved BEFORE the citation note
+    // so the note's stale-tag fragment and the trailing suffix/nudge below
+    // render from the same single lookup — a reorder, not a second DB read
+    // (mirrors #789's identical fix to the member `sendKnowledgeShortcut`
+    // path).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const note = formatKnowledgeCitationNote(
+      hit,
+      config.adminDigest.knowledgeStaleDays,
+      undefined,
+      undefined,
+      lang,
+    );
     const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
     const nudge = lang === 'mi' ? GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI : GUEST_KNOWLEDGE_SHORTCUT_NUDGE;
     const replyText = `${hit.content}${note}${suffix}${nudge}`;
