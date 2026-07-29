@@ -1134,7 +1134,7 @@ function formatShortcutHitsLine(
   return (
     `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
     `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')}, ` +
-    `slash-command ${countOf('slash_command')})${dollarClause}.`
+    `slash-command ${countOf('slash_command')}, whatsapp-text-command ${countOf('whatsapp_text_command')})${dollarClause}.`
   );
 }
 
@@ -1306,6 +1306,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     envVar: 'WHATSAPP_VOICE_ENABLED',
     configPath: 'whatsapp.voice.enabled',
     label: 'WhatsApp voice message transcription',
+    category: 'WhatsApp',
+  },
+  {
+    envVar: 'WHATSAPP_IMAGE_INPUT_ENABLED',
+    configPath: 'whatsapp.image.enabled',
+    label: 'WhatsApp image-attachment input (Baileys)',
     category: 'WhatsApp',
   },
   {
@@ -2228,6 +2234,60 @@ export async function notifyKnowledgeTipResolved(
       return;
     }
     logger.warn({ err, userId: hashId(userId) }, 'Knowledge tip resolution DM failed');
+  });
+}
+
+/**
+ * Best-effort confirmation DM to a member when an admin's `clear_warnings`
+ * call actually clears one of their active warnings — closes the last of the
+ * codebase's member-resolution flows that stayed silent (issue #865):
+ * `resolve_appeal`'s own description carves the unmute out as `clear_warnings`'
+ * separate job, so #622's `notifyAppealResolved` never covers it, and a
+ * cleared/unmuted member otherwise has no signal short of testing whether
+ * they can post again. Mirrors `notifyAppealResolved`'s shape exactly:
+ * fire-and-forget, `.catch(logger.warn)`, never blocks or changes
+ * `clear_warnings`' own reported outcome. `muteLifted` drives "mute lifted"
+ * vs. "nothing to lift" wording; the caller passes `true` only when an
+ * `unmute_user` call was actually attempted AND succeeded — never merely
+ * because the platform lacks the capability (WhatsApp has no mute mechanism
+ * at all, so `muteLifted` must stay `false` there even on a genuine
+ * `cleared > 0` clear) — so this never claims to have lifted a mute that was
+ * either never attempted or that the caller was just told it could not.
+ * Only ever called on a genuine `cleared > 0` transition; never for a no-op
+ * clear. Exported separately so it's unit-testable without the MCP tool-call
+ * transport, same convention as `notifyAppealResolved`. Honours the target's
+ * standing `'mi'` language preference (issue #331), same degrade-to-`'auto'`-
+ * on-failure shape. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #644, same #602 recovery extended to this member-facing DM); any
+ * other rejection is unaffected.
+ */
+export async function notifyWarningsCleared(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  muteLifted: boolean,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message =
+    lang === 'mi'
+      ? muteLifted
+        ? 'Kua whakawāteahia ō whakatūpato, kua tangohia hoki tō noho pōkai — ka taea anō e koe te tuku karere.'
+        : 'Kua whakawāteahia ō whakatūpato.'
+      : muteLifted
+        ? 'Your warnings have been cleared and your mute has been lifted — you can post again.'
+        : 'Your warnings have been cleared.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Warnings-cleared DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Warnings-cleared DM failed');
   });
 }
 
@@ -4886,6 +4946,7 @@ export function buildToolServer(
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
+      const state = { cleared: 0, muteNote: '', muteLifted: false };
       const { success, result } = await audited({
         actionKind: 'clear_warnings',
         targetUserId: args.targetUserId,
@@ -4893,6 +4954,7 @@ export function buildToolServer(
         params: { reason: args.reason },
         run: async () => {
           const cleared = await clearWarnings(caller.platform, args.targetUserId, caller.userId);
+          state.cleared = cleared;
           // Lift the mute too, if the platform supports it. The DB clear is the
           // source of truth; a failed unmute is reported inline, not fatal.
           let muteNote = '';
@@ -4903,16 +4965,29 @@ export function buildToolServer(
                 targetUserId: args.targetUserId,
                 conversationId: caller.conversationId,
               });
+              state.muteLifted = true;
             } catch (err) {
               logger.warn({ err, targetUserId: args.targetUserId }, 'Unmute after clear_warnings failed');
               muteNote = ' (but I could not lift the Discord mute — check my Manage Roles permission)';
             }
           }
+          state.muteNote = muteNote;
           return cleared > 0
             ? `Cleared ${cleared} warning(s); ${args.targetUserId} can post again${muteNote}.`
             : `${args.targetUserId} had no active warnings${muteNote}.`;
         },
       });
+      // Member-facing notice (issue #865) — only on a genuine cleared > 0
+      // transition, never for a no-op clear, and always via the caller's own
+      // platform adapter (clear_warnings never operates cross-platform).
+      // muteLifted is only true when an unmute_user call was attempted AND
+      // succeeded — platforms without the capability (WhatsApp has no mute
+      // mechanism at all) always get the mute-free wording, per the #866
+      // review (a bare `!state.muteNote` wrongly said "mute lifted" whenever
+      // the platform simply lacked unmute_user, not just when it failed).
+      if (success && state.cleared > 0) {
+        await notifyWarningsCleared(adapter, args.targetUserId, caller.platform, state.muteLifted);
+      }
       return text(success ? result : `Failed: ${result}`);
     },
   );

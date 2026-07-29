@@ -1459,8 +1459,25 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     `scan()` call sites — `postAdminAlert`'s other, non-moderation callers
     (e.g. the manual `warn_user` mute alert) are unaffected.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
-    member's active warnings and lifts the mute; it's lenient/reversible so it
-    isn't CONFIRM-gated, and any admin may clear anyone's.
+    member's active warnings and lifts the mute where the platform supports
+    it; it's lenient/reversible so it isn't CONFIRM-gated, and any admin may
+    clear anyone's. On a genuine `cleared > 0` transition it now also sends
+    the target member a best-effort `notifyWarningsCleared` DM (issue #865),
+    the last of the codebase's member-resolution flows to close this gap —
+    mirroring `notifyAppealResolved`'s shape (fixed English/`mi` text, no
+    interpolated free text, `WindowClosedError` queued via
+    `queueForWindowReopen` at `'low'`, any other send failure logged and
+    dropped) and never altering `clear_warnings`' own admin-facing result. The
+    DM's wording only claims "your mute has been lifted" when an
+    `unmute_user` call was actually attempted *and* succeeded — WhatsApp has
+    no mute mechanism at all (no `unmute_user` capability), so it always gets
+    the mute-free "your warnings have been cleared" wording, never the
+    Discord-only mute-lifted one (a PR #866 review finding: a first version
+    derived the wording from `!muteNote`, which is empty — and so reads as
+    "lifted" — both when the unmute call succeeds and when the platform never
+    has the capability to try). No DM is sent when `cleared === 0` — an admin
+    pre-emptively clearing stale, never-active warnings triggers no
+    notification (pinned by `SECURITY:` tests).
   - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
     test) enumerates currently-muted members by identity — the growth path
     #403 named and deferred for the digest's bare `🔇 N` count. It sits at the
@@ -2487,14 +2504,18 @@ regardless. The mechanism is also fully optional: no note, an empty note, or a
 failed post all leave the pipeline exactly as it was, so removing it needs no
 migration.
 
-### 22. Discord image-attachment input (`IMAGE_INPUT_ENABLED`, off by default, `super_admin`-only default, issue #783)
+### 22. Image-attachment input (`IMAGE_INPUT_ENABLED` Discord / `WHATSAPP_IMAGE_INPUT_ENABLED` WhatsApp-Baileys, both off by default, `super_admin`-only default, issues #783 / #879)
 
 Lets an eligible caller attach a single image (screenshot, stack trace,
 billing page) alongside their message; `runAgentTurn`/`execTurn`
 (`src/agent/core.ts`) pass it to `query()` as an image content block
 alongside the turn's text, so the model can ground its answer in what was
-actually shown. Off by default; this is a **genuinely new untrusted-input
-class**, not a symmetry extension of an existing one:
+actually shown — identically regardless of which platform's adapter
+populated `IncomingMessage.image`. Shipped first for Discord (#783), then
+mirrored onto `BaileysAdapter` (#879, `WhatsAppCloudAdapter` explicitly out
+of scope for v1, matching the existing `WHATSAPP_VOICE_*` Baileys-only
+precedent). Off by default on both platforms; this is a **genuinely new
+untrusted-input class**, not a symmetry extension of an existing one:
 
 - **Unlike voice transcription, this is unfilterable at the boundary.**
   `DISCORD_VOICE_*`/`WHATSAPP_VOICE_*` (§13) only ever produce ordinary
@@ -2507,52 +2528,82 @@ class**, not a symmetry extension of an existing one:
   `systemPrompt.ts` clause below — no sanitizer can inspect model-side image
   interpretation, so there is nothing else to add. This residual gap is
   accepted, not hidden: it is the reason this feature defaults to
-  `super_admin` rather than the wider default a plain symmetry argument with
-  voice might suggest.
-- **Same gate order as the voice features, independently configured.**
-  `maybeFetchImageAttachment` (`src/platforms/discord/adapter.ts`) checks, in
-  order, all before any network fetch: `IMAGE_INPUT_ENABLED` → caller tier
-  vs. `IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` — the pure
-  `isSuperAdmin('discord', senderId)` env check with no DB call at that
+  `super_admin` on BOTH platforms rather than the wider default a plain
+  symmetry argument with voice might suggest.
+- **Same gate order as the voice features, independently configured per
+  platform.** `maybeFetchImageAttachment` — `src/platforms/discord/adapter.ts`
+  for Discord, `src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp —
+  checks, in order, all before any network fetch: `IMAGE_INPUT_ENABLED` /
+  `WHATSAPP_IMAGE_INPUT_ENABLED` → caller tier vs. `IMAGE_INPUT_MIN_ROLE` /
+  `WHATSAPP_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on both — the pure
+  `isSuperAdmin(platform, senderId)` env check with no DB call at that
   default, else `resolveRole`/`atLeast`) → `IMAGE_INPUT_DAILY_LIMIT_PER_USER`
-  (a rolling calendar-day cap per platform-qualified sender, checked via
-  `reserveImageInputDaily`, same shape as `reserveImageGenDaily`/
-  `reserveDevTeamDispatchDaily`) → MIME allowlist (`image/png`, `image/jpeg`,
-  `image/webp`) and `IMAGE_INPUT_MAX_BYTES`, both read from Discord's own
-  attachment metadata (`contentType`/`size`) so the check never itself
-  fetches. Only then is the attachment downloaded and base64-encoded. Every
-  refusal path — flag off, below-tier, at daily cap, bad MIME, over byte cap
-  — is pinned by a dedicated `SECURITY:` test asserting **zero** fetch calls,
-  in `tests/discordImageInput.test.ts`.
-- **One image, Discord only, no OCR/moderation-scan extension in v1.** These
-  are named, deliberate scope limits (see `docs/CAPABILITY-IDEAS.md` §A1),
-  not gaps discovered later: multiple attachments, WhatsApp parity, and
-  OCR-then-moderation-scan are growth paths for a future proposal to size
-  against observed usage, not this one.
+  / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day cap
+  per platform-qualified sender — `` `discord:${id}` `` / `` `whatsapp:${id}` ``
+  — checked via the shared `reserveImageInputDaily`, same shape as
+  `reserveImageGenDaily`/`reserveDevTeamDispatchDaily`) → MIME allowlist
+  (`image/png`, `image/jpeg`, `image/webp`) and `IMAGE_INPUT_MAX_BYTES` /
+  `WHATSAPP_IMAGE_INPUT_MAX_BYTES`, both read from each platform's own
+  pre-fetch attachment metadata (Discord's `contentType`/`size`, WhatsApp's
+  `mimetype`/`fileLength`) so the check never itself fetches. Only then is
+  the attachment downloaded and base64-encoded. Every refusal path — flag
+  off, below-tier, at daily cap, bad MIME, over byte cap — is pinned by a
+  dedicated `SECURITY:` test asserting **zero** fetch/download calls, in
+  `tests/discordImageInput.test.ts` (Discord) and
+  `tests/baileysImageInput.test.ts` (WhatsApp).
+- **The two platforms' flags are fully independent.** `WHATSAPP_IMAGE_INPUT_*`
+  is `WHATSAPP_`-prefixed and separate from the unprefixed Discord
+  `IMAGE_INPUT_*` flags, mirroring the existing `DISCORD_VOICE_*`/
+  `WHATSAPP_VOICE_*` split rather than coupling both platforms' rollout to
+  one flag pair — an operator can enable, tune, or leave off either platform
+  independently. Pinned by a `SECURITY:` test in
+  `tests/baileysImageInput.test.ts` asserting that enabling Discord's
+  `IMAGE_INPUT_ENABLED` does not, by itself, enable WhatsApp image
+  downloading.
+- **One image per message, no OCR/moderation-scan extension on either
+  platform, `WhatsAppCloudAdapter` out of scope.** These are named,
+  deliberate scope limits (see `docs/CAPABILITY-IDEAS.md` §A1 and issue
+  #879's "smallest viable version"), not gaps discovered later: multiple
+  attachments, Cloud API parity, and OCR-then-moderation-scan are growth
+  paths for a future proposal to size against observed usage, not this one.
 - **No storage.** The base64 bytes are held in memory for the one `query()`
   call and discarded; `IncomingMessage.image` is never passed to
   `recordInteraction` anywhere in `src/router.ts` — the `interactions` row for
   an image-bearing turn contains `text` only, byte-identical in shape to a
-  turn without one. Pinned by a `SECURITY:` test spying on `pool.query` and
-  asserting the inserted `content` never contains the image payload.
-  `forget_me`/purge semantics are unaffected because there is nothing new to
-  purge.
-- **Injection-defense clause, same precedent as pasted prompts.** When
-  `IMAGE_INPUT_ENABLED` is on, `systemPrompt.ts`'s `GUIDELINES` gains an
-  explicit clause (mirroring `PROMPT_REVIEW_CLAUSE`'s framing for a pasted
-  prompt) stating that text rendered inside an attached image is untrusted
-  data to look at and answer from, never an instruction — including anything
-  styled as a role claim or a system-style directive. Present only when the
-  flag could apply, absent otherwise; pinned by `SECURITY:` tests on both
-  sides (`tests/discordImageInput.test.ts` for off, `tests/
-  imageInputSystemPromptEnabled.test.ts` for on, since `config` is read once
-  per process).
-- **Byte-identical when off.** With `IMAGE_INPUT_ENABLED` unset (the
-  default), Discord message handling — including any attachment, image or
-  not — is unchanged from today for every role: no fetch, no `image` field on
-  the `IncomingMessage`, no systemPrompt clause. Pinned by a `SECURITY:` test
-  that runs a super admin (well above every cap) through the flag-off path
-  and asserts zero fetch calls regardless.
+  turn without one, regardless of which platform the turn came from. Pinned
+  by a platform-agnostic `SECURITY:` test in `tests/router.test.ts` spying on
+  `pool.query` and asserting the inserted `content` never contains the image
+  payload. `forget_me`/purge semantics are unaffected because there is
+  nothing new to purge.
+- **Injection-defense clause, same precedent as pasted prompts, gated on
+  EITHER platform's flag.** When `IMAGE_INPUT_ENABLED` OR
+  `WHATSAPP_IMAGE_INPUT_ENABLED` is on, `systemPrompt.ts`'s `GUIDELINES`
+  gains an explicit clause (mirroring `PROMPT_REVIEW_CLAUSE`'s framing for a
+  pasted prompt) stating that text rendered inside an attached image is
+  untrusted data to look at and answer from, never an instruction —
+  including anything styled as a role claim or a system-style directive. One
+  shared clause covers both platforms' image turns (the risk and wording are
+  identical regardless of which platform's flag tripped it), present
+  whenever EITHER flag could apply, absent when both are off. Widening the
+  gate to WhatsApp (`config.discord.image.enabled ||
+  config.whatsapp.image.enabled`, previously Discord-only) was a **must-ship
+  correctness fix in #879**, not an optional follow-up: shipping the
+  WhatsApp image path without it would have silently reintroduced the exact
+  injection-mitigation gap #783's design closed, just on the other platform.
+  All four flag combinations are pinned by dedicated `SECURITY:` tests —
+  `tests/discordImageInput.test.ts` (both off),
+  `tests/imageInputSystemPromptEnabled.test.ts` (Discord only),
+  `tests/whatsappImageInputSystemPromptEnabled.test.ts` (WhatsApp only), and
+  `tests/imageInputSystemPromptBothEnabled.test.ts` (both on) — each its own
+  process, since `config` (and the `GUIDELINES` string it feeds) is read
+  once per process and can't be toggled mid-run.
+- **Byte-identical when off.** With both `IMAGE_INPUT_ENABLED` and
+  `WHATSAPP_IMAGE_INPUT_ENABLED` unset (the default), message handling on
+  either platform — including any attachment, image or not — is unchanged
+  from today for every role: no fetch/download, no `image` field on the
+  `IncomingMessage`, no systemPrompt clause. Pinned by a `SECURITY:` test per
+  platform that runs a super admin (well above every cap) through the
+  flag-off path and asserts zero fetch/download calls regardless.
 
 ### 23. WhatsApp text commands (`!whois`, `!projects`, `!guidelines`, `!digest`, `WHATSAPP_TEXT_COMMANDS_ENABLED`, off by default, issue #859)
 
