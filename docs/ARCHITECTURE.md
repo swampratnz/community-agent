@@ -2287,9 +2287,57 @@ criterion 4's "matching the chat path" language for a command with no tool
 counterpart of its own.
 
 Scope is deliberately narrow (issue #744's guardrail): exactly these four
-commands, no `shortcut_hits` tracking of slash-command usage (a named growth
-path, not this feature), and no WhatsApp equivalent — all four underlying
-tools remain reachable via chat on every platform regardless of this flag.
+commands and no `shortcut_hits` tracking of slash-command usage (a named
+growth path, not this feature). WhatsApp has no native command-picker UI to
+register these against, so it instead gets a literal-prefix text-command
+equivalent — see "WhatsApp text commands" below — rather than leaving the
+gap open indefinitely; all four underlying tools remain reachable via chat on
+every platform regardless of either flag.
+
+## WhatsApp text commands (issue #859)
+
+`WHATSAPP_TEXT_COMMANDS_ENABLED` (off by default) is the WhatsApp counterpart
+to the Discord slash commands above, re-keyed for a platform with no native
+command-picker UI: a trimmed, case-insensitive WhatsApp message beginning
+`!whois <query>`, `!projects [query]`, `!guidelines`, or `!digest` is served
+by the same deterministic, zero-`query()`-call path, checked in
+`Router.handle()` (`tryWhatsAppTextCommand`) alongside the other router-level
+shortcuts (the knowledge shortcut, ack shortcut, etc.). `!kb` is deliberately
+not added — `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an implicit,
+similarity-matched equivalent, and a second, literal-prefix path to the same
+knowledge read would be redundant scope. The dispatcher is a no-op on any
+non-WhatsApp platform even with the flag on, and a byte-identical no-op on
+WhatsApp itself with the flag off.
+
+Each command reuses the identical repository/render functions the Discord
+commands and chat-path tools call (`searchMemberInterests`/
+`formatInterestResults`, `searchProjects`/`listRecentProjects`/
+`formatProjectResults`, `getCommunityGuidelines`/`getCommunityGuidelinesMi`,
+`buildMemberDigestContent`), injectable on `Router` the same way
+`tryKnowledgeShortcut`'s `searchKnowledgeForShortcut` already is. Tier floors
+mirror the Discord side exactly: `!whois`, `!projects`, `!digest` require
+`atLeast(role, 'member')` (the same runtime floor each tool's own handler
+applies); `!guidelines` has no tier gate, matching `community_guidelines`.
+
+**Gating behaviour deliberately differs from Discord's.** Discord's ephemeral
+reply lets a denied caller be told "you don't have access" at zero visibility
+cost. WhatsApp has no ephemeral concept — a bespoke denial posted in a group
+would out an ineligible caller's tier to everyone else in it, a probing
+vector Discord's design never had to consider. So on a gate failure (an
+unrecognised prefix, the wrong platform, or a sub-member-tier caller on
+`!whois`/`!projects`/`!digest`), `tryWhatsAppTextCommand` returns `null` and
+the message falls through to the normal message-handling path exactly as if
+the `!`-prefixed text weren't recognised at all — never a distinguishing
+reply, mirroring the existing shortcuts' fallthrough-on-miss pattern rather
+than inventing new UX.
+
+Every reply is sent via the router's own `this.send()` (→
+`adapter.sendMessage()`), the same outbound-filtered path every other router
+reply uses — never a new send primitive — and is recorded via
+`recordInteraction` with `meta.replyToUserId` set, exactly like
+`sendKnowledgeShortcut`, so each served reply counts toward the caller's
+`dailyReplyLimitPerUser` like any other answer rather than becoming an
+unmetered read path.
 
 ## Concurrency model
 

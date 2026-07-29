@@ -915,6 +915,18 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  // WhatsApp-only, zero-model-call text commands (issue #859) — the WhatsApp
+  // counterpart to Discord's slash commands (DISCORD_SLASH_COMMANDS_ENABLED
+  // above), re-keyed for a platform with no native command UI: `!whois
+  // <query>`, `!projects [query]`, `!guidelines`, `!digest`. `!kb` is
+  // deliberately not added — KNOWLEDGE_SHORTCUT_ENABLED already gives
+  // WhatsApp an equivalent. Off by default, same convention as the other
+  // shortcut flags above; checked in Router.handle() alongside them. See
+  // src/router.ts and docs/ARCHITECTURE.md.
+  WHATSAPP_TEXT_COMMANDS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   // Real-time admin escalation after a max-turns failure (issue #479): when a
   // turn ends with `reply.maxTurnsExceeded === true`, append a "reply yes to
   // flag this for a community admin" offer to the fixed MAX_TURNS_REPLY/_MI
@@ -1354,6 +1366,7 @@ export const config = {
     guestKnowledgeShortcutEnabled: env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED ?? false,
     repeatQuestionShortcutEnabled: env.REPEAT_QUESTION_SHORTCUT_ENABLED ?? false,
     repeatMaxTurnsShortcutEnabled: env.REPEAT_MAX_TURNS_SHORTCUT_ENABLED ?? false,
+    whatsappTextCommandsEnabled: env.WHATSAPP_TEXT_COMMANDS_ENABLED ?? false,
     escalationToAdminEnabled: env.ESCALATION_TO_ADMIN_ENABLED ?? false,
     dailyReplyBudgetWarnEnabled: env.DAILY_REPLY_BUDGET_WARN_ENABLED ?? false,
     dailyReplyBudgetWarnRemaining: env.DAILY_REPLY_BUDGET_WARN_REMAINING,

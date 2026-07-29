@@ -26,6 +26,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-29
 
 ### Added
+- **WhatsApp now has zero-cost text-command shortcuts for the four questions
+  Discord's slash commands already answer for free** (#859): `!whois <query>`,
+  `!projects [query]`, `!guidelines`, `!digest` — a trimmed, case-insensitive
+  message reuses the exact same deterministic read the Discord command/chat
+  tool does, with no agent turn spent. Off by default
+  (`WHATSAPP_TEXT_COMMANDS_ENABLED`); `!whois`/`!projects`/`!digest` need
+  member tier, `!guidelines` needs none, matching each command's Discord-side
+  gate exactly. Unlike Discord's ephemeral rejection, a member below the
+  required tier just gets treated as an ordinary message — a WhatsApp group
+  reply is visible to everyone, so a bespoke "you don't have access" text
+  would out their tier to the whole group. `!kb` isn't included; the existing
+  knowledge shortcut already covers WhatsApp for that one.
 - **Community digest is now available on demand, not just as a weekly post**
   (#841): a new member-tier `community_digest` chat tool and a matching
   `/digest` Discord slash command both pull this week's topics, new

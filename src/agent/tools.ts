@@ -1334,6 +1334,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'Cost/Model',
   },
   {
+    envVar: 'WHATSAPP_TEXT_COMMANDS_ENABLED',
+    configPath: 'behaviour.whatsappTextCommandsEnabled',
+    label: 'WhatsApp text commands',
+    category: 'Cost/Model',
+  },
+  {
     envVar: 'DAILY_REPLY_BUDGET_WARN_ENABLED',
     configPath: 'behaviour.dailyReplyBudgetWarnEnabled',
     label: 'Daily reply budget warning',
