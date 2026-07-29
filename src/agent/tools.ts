@@ -81,6 +81,7 @@ import {
   listKnowledgeFeedbackSummary,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
+  listOwnProjects,
   listOwnReports,
   listOwnSuggestions,
   listRecentProjects,
@@ -132,6 +133,7 @@ import {
   setMemberInterests,
   setResponseStyle,
   searchMemberInterests,
+  searchMemberInterestsForSelf,
   shareProject,
   findHelperCandidates,
   recordHelperNotificationIfUnderCap,
@@ -1310,6 +1312,12 @@ export const FEATURE_FLAG_MAP: readonly FeatureFlagEntry[] = [
     category: 'WhatsApp',
   },
   {
+    envVar: 'WHATSAPP_IMAGE_INPUT_ENABLED',
+    configPath: 'whatsapp.image.enabled',
+    label: 'WhatsApp image-attachment input (Baileys)',
+    category: 'WhatsApp',
+  },
+  {
     envVar: 'WHATSAPP_CLOUD_WELCOME_ENABLED',
     configPath: 'whatsapp.cloud.welcomeEnabled',
     label: 'WhatsApp Cloud welcome message',
@@ -1691,6 +1699,24 @@ const MEMBER_CAPABILITIES_TEXT =
   'X?"), or opt in/out of being notified for other members\' requests\n' +
   '- Pull the community digest on demand\n' +
   '- Erase all your stored data any time ("forget me")';
+
+/**
+ * Fixed-literal rundown of the WhatsApp `!`-prefixed text-command shortcuts
+ * (issue #859), appended to MEMBER_CAPABILITIES_TEXT only for a WhatsApp
+ * caller when `config.behaviour.whatsappTextCommandsEnabled` is true (issue
+ * #872) — Discord already gets free discovery via its native `/` picker
+ * (`SlashCommandBuilder.setDescription`, `src/platforms/discord/slashCommands.ts`),
+ * which WhatsApp has no client-native equivalent of. No `!kb`: the existing
+ * KNOWLEDGE_SHORTCUT_ENABLED shortcut already covers WhatsApp for that one
+ * (#859's own decision). Never interpolates caller or message data — same
+ * trust level as MEMBER_CAPABILITIES_TEXT.
+ */
+const WHATSAPP_TEXT_COMMANDS_TEXT =
+  "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+  '- `!whois <topic>` — find members into a topic\n' +
+  '- `!projects [query]` — browse the project showcase\n' +
+  '- `!guidelines` — community guidelines\n' +
+  "- `!digest` — this week's digest";
 
 /**
  * Plain-language rundown of what an admin can additionally ask the bot to
@@ -2211,6 +2237,60 @@ export async function notifyKnowledgeTipResolved(
       return;
     }
     logger.warn({ err, userId: hashId(userId) }, 'Knowledge tip resolution DM failed');
+  });
+}
+
+/**
+ * Best-effort confirmation DM to a member when an admin's `clear_warnings`
+ * call actually clears one of their active warnings — closes the last of the
+ * codebase's member-resolution flows that stayed silent (issue #865):
+ * `resolve_appeal`'s own description carves the unmute out as `clear_warnings`'
+ * separate job, so #622's `notifyAppealResolved` never covers it, and a
+ * cleared/unmuted member otherwise has no signal short of testing whether
+ * they can post again. Mirrors `notifyAppealResolved`'s shape exactly:
+ * fire-and-forget, `.catch(logger.warn)`, never blocks or changes
+ * `clear_warnings`' own reported outcome. `muteLifted` drives "mute lifted"
+ * vs. "nothing to lift" wording; the caller passes `true` only when an
+ * `unmute_user` call was actually attempted AND succeeded — never merely
+ * because the platform lacks the capability (WhatsApp has no mute mechanism
+ * at all, so `muteLifted` must stay `false` there even on a genuine
+ * `cleared > 0` clear) — so this never claims to have lifted a mute that was
+ * either never attempted or that the caller was just told it could not.
+ * Only ever called on a genuine `cleared > 0` transition; never for a no-op
+ * clear. Exported separately so it's unit-testable without the MCP tool-call
+ * transport, same convention as `notifyAppealResolved`. Honours the target's
+ * standing `'mi'` language preference (issue #331), same degrade-to-`'auto'`-
+ * on-failure shape. A `WindowClosedError` rejection is queued via
+ * `queueForWindowReopen` at `'low'` priority instead of logged-and-dropped
+ * (issue #644, same #602 recovery extended to this member-facing DM); any
+ * other rejection is unaffected.
+ */
+export async function notifyWarningsCleared(
+  adapter: PlatformAdapter,
+  userId: string,
+  platform: Platform,
+  muteLifted: boolean,
+  getLangPref: typeof getLanguagePreference = getLanguagePreference,
+): Promise<void> {
+  const lang = await getLangPref(platform, userId).catch(() => 'auto' as const);
+  const message =
+    lang === 'mi'
+      ? muteLifted
+        ? 'Kua whakawāteahia ō whakatūpato, kua tangohia hoki tō noho pōkai — ka taea anō e koe te tuku karere.'
+        : 'Kua whakawāteahia ō whakatūpato.'
+      : muteLifted
+        ? 'Your warnings have been cleared and your mute has been lifted — you can post again.'
+        : 'Your warnings have been cleared.';
+  await adapter.sendDirectMessage(userId, message).catch((err) => {
+    if (err instanceof WindowClosedError && adapter.queueForWindowReopen) {
+      adapter.queueForWindowReopen(userId, message, 'low');
+      logger.warn(
+        { userId: hashId(userId), platform },
+        "Warnings-cleared DM: recipient's window is closed, queued for reopen",
+      );
+      return;
+    }
+    logger.warn({ err, userId: hashId(userId) }, 'Warnings-cleared DM failed');
   });
 }
 
@@ -3137,15 +3217,19 @@ export function buildToolServer(
       'do not answer that from general knowledge alone.',
     {},
     async () => {
+      const memberSegment =
+        caller.platform === 'whatsapp' &&
+        config.behaviour.whatsappTextCommandsEnabled &&
+        atLeast(caller.role, 'member')
+          ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
+          : MEMBER_CAPABILITIES_TEXT;
       if (caller.role === 'super_admin') {
-        return text(
-          `${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`,
-        );
+        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`);
       }
       if (caller.role === 'admin') {
-        return text(`${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}`);
+        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`);
       }
-      return text(MEMBER_CAPABILITIES_TEXT);
+      return text(memberSegment);
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4236,21 +4320,40 @@ export function buildToolServer(
       'member-to-member discovery, e.g. "who\'s into RAG?" or "anyone working on MCP servers?". Returns up ' +
       `to ${WHO_IS_INTO_LIMIT} matches by meaning. Results derive only from what members have explicitly ` +
       'published with set_my_interests — never from general chat or any other source. A caller with no ' +
-      'published interests of their own can still search.',
+      'published interests of their own can still search. Omit the topic to find members like the caller ' +
+      "themselves — matched against the caller's OWN published interests, excluding the caller's own entry " +
+      '(requires the caller to have already called set_my_interests).',
     {
       query: z
         .string()
         .min(1)
         .max(300)
-        .describe('Topic/keyword to search published member interests by meaning'),
+        .optional()
+        .describe(
+          'Topic/keyword to search published member interests by meaning. Omit to search using the ' +
+            'caller\'s own published interests instead ("find people like me").',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'member', 'who_is_into');
-      const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
-      if (hits.length === 0) {
-        return text('No members have published interests matching that yet.');
+      if (args.query) {
+        const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
+        if (hits.length === 0) {
+          return text('No members have published interests matching that yet.');
+        }
+        return text(await formatInterestResults(hits));
       }
-      return text(await formatInterestResults(hits));
+      const selfMatch = await searchMemberInterestsForSelf(caller.platform, caller.userId, WHO_IS_INTO_LIMIT);
+      if (!selfMatch.hasProfile) {
+        return text(
+          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
+            'topic will search using your own published interests.',
+        );
+      }
+      if (selfMatch.hits.length === 0) {
+        return text('No other members have published interests matching yours yet.');
+      }
+      return text(await formatInterestResults(selfMatch.hits));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4477,9 +4580,24 @@ export function buildToolServer(
         .boolean()
         .optional()
         .describe('Only show projects whose owner is looking for collaborators. Omit or false to show all.'),
+      mine: z
+        .boolean()
+        .optional()
+        .describe(
+          "Only show the caller's own shared projects — ignores query/seekingCollaborators when set. " +
+            'Use this to find the exact name of one of your own projects before editing or removing it ' +
+            'with share_project.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'member', 'list_projects');
+      if (args.mine) {
+        const projects = await listOwnProjects(caller.platform, caller.userId);
+        if (projects.length === 0) {
+          return text("You haven't shared any projects yet.");
+        }
+        return text(await formatProjectResults(projects));
+      }
       const opts = { seekingCollaboratorsOnly: args.seekingCollaborators };
       const projects = args.query
         ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
@@ -4867,6 +4985,7 @@ export function buildToolServer(
       if (!(await isKnownUser(caller.platform, args.targetUserId))) {
         return text(`Refusing: user "${args.targetUserId}" has never been seen on ${caller.platform}.`, true);
       }
+      const state = { cleared: 0, muteNote: '', muteLifted: false };
       const { success, result } = await audited({
         actionKind: 'clear_warnings',
         targetUserId: args.targetUserId,
@@ -4874,6 +4993,7 @@ export function buildToolServer(
         params: { reason: args.reason },
         run: async () => {
           const cleared = await clearWarnings(caller.platform, args.targetUserId, caller.userId);
+          state.cleared = cleared;
           // Lift the mute too, if the platform supports it. The DB clear is the
           // source of truth; a failed unmute is reported inline, not fatal.
           let muteNote = '';
@@ -4884,16 +5004,29 @@ export function buildToolServer(
                 targetUserId: args.targetUserId,
                 conversationId: caller.conversationId,
               });
+              state.muteLifted = true;
             } catch (err) {
               logger.warn({ err, targetUserId: args.targetUserId }, 'Unmute after clear_warnings failed');
               muteNote = ' (but I could not lift the Discord mute — check my Manage Roles permission)';
             }
           }
+          state.muteNote = muteNote;
           return cleared > 0
             ? `Cleared ${cleared} warning(s); ${args.targetUserId} can post again${muteNote}.`
             : `${args.targetUserId} had no active warnings${muteNote}.`;
         },
       });
+      // Member-facing notice (issue #865) — only on a genuine cleared > 0
+      // transition, never for a no-op clear, and always via the caller's own
+      // platform adapter (clear_warnings never operates cross-platform).
+      // muteLifted is only true when an unmute_user call was attempted AND
+      // succeeded — platforms without the capability (WhatsApp has no mute
+      // mechanism at all) always get the mute-free wording, per the #866
+      // review (a bare `!state.muteNote` wrongly said "mute lifted" whenever
+      // the platform simply lacked unmute_user, not just when it failed).
+      if (success && state.cleared > 0) {
+        await notifyWarningsCleared(adapter, args.targetUserId, caller.platform, state.muteLifted);
+      }
       return text(success ? result : `Failed: ${result}`);
     },
   );

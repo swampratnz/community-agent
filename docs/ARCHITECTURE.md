@@ -215,23 +215,36 @@ message would be — a scan fired against the message's native (always empty,
 for a voice bubble) `content` would never see what was actually said. See
 SECURITY.md §13 for the full posture.
 
-## Discord image-attachment input (issue #783)
+## Image-attachment input (Discord #783, WhatsApp/Baileys #879)
 
-`IMAGE_INPUT_ENABLED` (**off by default**, `CAPABILITY-IDEAS.md` §A1) lets an
-eligible caller attach a single image (a screenshot, stack trace, or billing
-page) alongside their message; the model answers grounded in what the image
-actually shows rather than whatever caption (or nothing) was typed. Discord
-only, one attachment per message, no OCR, no moderation-scan extension — see
-the "smallest viable version" in the issue for what is deliberately deferred.
+`IMAGE_INPUT_ENABLED` (Discord, **off by default**, `CAPABILITY-IDEAS.md`
+§A1) and its WhatsApp counterpart `WHATSAPP_IMAGE_INPUT_ENABLED` (Baileys
+only, also off by default, issue #879) let an eligible caller attach a
+single image (a screenshot, stack trace, or billing page) alongside their
+message; the model answers grounded in what the image actually shows rather
+than whatever caption (or nothing) was typed. One attachment per message, no
+OCR, no moderation-scan extension on either platform — see the "smallest
+viable version" in each issue for what is deliberately deferred.
+`WhatsAppCloudAdapter` is out of scope for #879, matching the existing
+`WHATSAPP_VOICE_*`/Baileys-only precedent.
 
-The gate (`maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`)
-mirrors the voice gate's shape above — flag → `IMAGE_INPUT_MIN_ROLE` (default
-`'super_admin'`) → `IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day
-cap, `reserveImageInputDaily` in `src/agent/tools.ts`) → MIME allowlist
-(`image/png`, `image/jpeg`, `image/webp`) + `IMAGE_INPUT_MAX_BYTES`, both read
-from the attachment's own pre-fetch metadata — before ever downloading it.
-The fetched bytes are base64-encoded and carried on
-`IncomingMessage.image`, unset for every other message.
+The gate — `maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`
+for Discord, the same-named method in
+`src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp — mirrors the voice
+gate's shape above on both platforms: flag → `IMAGE_INPUT_MIN_ROLE` /
+`WHATSAPP_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on both) →
+`IMAGE_INPUT_DAILY_LIMIT_PER_USER` / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER`
+(a rolling calendar-day cap per platform-qualified sender, shared
+`reserveImageInputDaily` in `src/agent/tools.ts`) → MIME allowlist
+(`image/png`, `image/jpeg`, `image/webp`) + `IMAGE_INPUT_MAX_BYTES` /
+`WHATSAPP_IMAGE_INPUT_MAX_BYTES`, both read from the attachment's own
+pre-fetch metadata (Discord's `contentType`/`size`, WhatsApp's
+`mimetype`/`fileLength`) — before ever downloading it. The fetched bytes are
+base64-encoded and carried on `IncomingMessage.image`, unset for every other
+message, regardless of which platform populated it. The two platforms' flags
+are fully independent — `WHATSAPP_`-prefixed and separate from the
+unprefixed Discord flags, mirroring the existing `DISCORD_VOICE_*`/
+`WHATSAPP_VOICE_*` split rather than sharing one flag pair.
 
 `runAgentTurn`/`execTurn` (`src/agent/core.ts`) thread that optional image
 through to the SDK: absent an image, `query()`'s `prompt` stays the plain
@@ -248,10 +261,13 @@ Unlike voice transcription (which only ever yields ordinary `text` flowing
 through the same moderation/injection handling), an image is a genuinely new
 untrusted-input class: text rendered inside it is interpreted model-side and
 is invisible to every inbound filter, including `moderator.scan`. The only
-defence is an explicit `systemPrompt.ts` clause (present only when the flag
-could apply) stating that image-borne text is untrusted data to answer from,
-never an instruction. See SECURITY.md §22 for the full threat model and why
-the default is `super_admin` rather than a wider tier.
+defence is an explicit `systemPrompt.ts` clause, present whenever EITHER
+platform's flag could apply (`config.discord.image.enabled ||
+config.whatsapp.image.enabled`) — one shared clause, since the risk and the
+wording are identical regardless of which platform's turn triggered it —
+stating that image-borne text is untrusted data to answer from, never an
+instruction. See SECURITY.md §22 for the full threat model and why the
+default is `super_admin` rather than a wider tier on both platforms.
 
 ## Memory & "learning"
 
@@ -722,7 +738,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718) | ❌ | ✅ | ✅ | ✅ |
-| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840; an optional `seekingCollaborators` boolean narrows either path to only active projects with `seeking_collaborators = true` — issue #854) | ❌ | ✅ | ✅ | ✅ |
+| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840; an optional `seekingCollaborators` boolean narrows either path to only active projects with `seeking_collaborators = true` — issue #854; an optional `mine` boolean, ignoring `query`/`seekingCollaborators` when set, instead returns only the caller's own active projects via `listOwnProjects`, self-scoped by identity — the recall path `share_project`'s own name-based edit/remove needs — issue #867) | ❌ | ✅ | ✅ | ✅ |
 | `set_helper_availability` (opt in/out of being notified for `find_helper` requests matching the caller's own published interests; requires an existing `set_my_interests` row; instantly reversible, no CONFIRM) / `find_helper` (ask for member-to-member help; embedding-matches `topic` against opted-in helpers and sends AT MOST ONE DM, to the single best eligible candidate — never a broadcast, never a name/handle disclosed back to the requester; both rate-capped, both behind `FIND_HELPER_ENABLED`, off by default — issue #729) | ❌ | ✅ | ✅ | ✅ |
 | `request_project_connection` (ask to connect with a project owner who marked `seekingCollaborators` true; looks up the project by id and sends its owner AT MOST ONE DM naming the requester and project — never a broadcast, never discloses the owner's identity back to the requester beyond what `list_projects` already showed; requester rate-capped 3/24h, owner rate-capped 3 received/7d, both DB-backed; no feature flag — explicitly floors at `member`, excluding open-mode guests — issue #840) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -1202,7 +1218,23 @@ weakening it:
    explicitly deferred the `SUPER_ADMIN_TOOLS` case as a named, separate
    growth path ("no evidenced complaint... left as an explicit, separate
    growth path"); #582 is that follow-up, closing the one tier `community_info`
-   previously under-served.
+   previously under-served. A WhatsApp caller additionally gets a fixed,
+   four-shortcut discovery block appended to the member segment (issue #872)
+   when `WHATSAPP_TEXT_COMMANDS_ENABLED` is on — the `!whois`/`!projects`/
+   `!guidelines`/`!digest` shortcuts (issue #859) have no client-native
+   discovery surface the way Discord's slash commands do via
+   `SlashCommandBuilder.setDescription`, so `community_info` is the only
+   place a WhatsApp member learns they exist. Branch condition is
+   `caller.platform === 'whatsapp'` plus the config flag plus
+   `atLeast(caller.role, 'member')` — never message content — and the
+   appended text is a hand-written literal, same trust level as
+   `MEMBER_CAPABILITIES_TEXT` itself; a Discord caller's reply is
+   byte-identical regardless of the flag, and a WhatsApp caller with the flag
+   off is byte-identical to before #872. The role check matters because
+   three of the four shortcuts (`!whois`/`!projects`/`!digest`) themselves
+   gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` — a guest
+   caller never satisfies it, so the block is withheld rather than
+   advertising shortcuts that would silently no-op for them.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls

@@ -41,6 +41,7 @@ const {
   notifyAppealFiled,
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
+  notifyWarningsCleared,
   buildToolServer,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
@@ -205,6 +206,13 @@ after(async () => {
       `${REPORT_CONTENT_ACK_HANDLER_CONVO}%`,
     ]);
     await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_SEARCH_HANDLER_SCOPE]);
+    // The scope-leak test (issue #411 acceptance criterion 6) inserts a
+    // knowledge row directly via saveKnowledge and never removed it — a
+    // stray row left behind here previously survived across runs and, since
+    // suggest_knowledge's dedup guard searches the whole table regardless of
+    // scope, resurfaced as a false-positive "already covered" match against
+    // an unrelated test's fixture content (issue #872 build session).
+    await pool.query(`DELETE FROM knowledge WHERE scope = $1`, [KNOWLEDGE_ENTRY_ID_SCOPE_LEAK_SCOPE_A]);
     await pool.query(`DELETE FROM suggestions WHERE user_id = $1`, [RESOLVE_SUGGESTION_HANDLER_USER]);
     await pool.query(`DELETE FROM content_reports WHERE reporter_user_id = $1`, [
       RESOLVE_REPORT_HANDLER_USER,
@@ -1132,6 +1140,92 @@ test("SECURITY: notifyAppealResolved degrades to the English default, rather tha
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /reviewed and resolved/);
+});
+
+// notifyWarningsCleared holds all of clear_warnings' new (issue #865)
+// notification behaviour — the last of the codebase's member-resolution
+// flows that stayed silent — tested directly here the same way
+// notifyAppealResolved is above.
+test('notifyWarningsCleared sends a DM naming the outcome, wording differing per muteLifted', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true);
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', false);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /mute has been lifted/i);
+  assert.match(calls[0][1], /can post again/i);
+  assert.notEqual(calls[0][1], calls[1][1], 'muteLifted true/false get distinct wording');
+  assert.doesNotMatch(calls[1][1], /mute/i, 'no mute-lifted claim when nothing was lifted');
+});
+
+test('notifyWarningsCleared swallows a DM failure rather than throwing (clear_warnings stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyWarningsCleared(adapter, 'user-1', 'discord', true));
+});
+
+test('SECURITY: notifyWarningsCleared queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #865)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true);
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyWarningsCleared sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true, async () => 'mi');
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', false, async () => 'mi');
+
+  assert.match(calls[0], /whakawāteahia/);
+  assert.match(calls[0], /noho pōkai/, 'mi wording distinguishes the mute-lifted case too');
+  assert.notEqual(calls[0], calls[1], 'mi wording also differs per muteLifted');
+});
+
+test("notifyWarningsCleared sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true, async () => 'auto');
+
+  assert.match(calls[0], /warnings have been cleared/i);
+});
+
+test("SECURITY: notifyWarningsCleared degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true, async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /warnings have been cleared/i);
 });
 
 // notifyKnowledgeTipResolved holds all of accept_knowledge_candidate /
@@ -2478,10 +2572,13 @@ test('SECURITY: set_language_preference rejects any language outside {auto,en,mi
 // (already trusted, tier-resolved data), so the handler is exercised directly
 // via the MCP server's registered tool, same pattern as the
 // moderation_history zod test above — no DB, no adapter behaviour involved.
-function communityInfoHandler(role: 'guest' | 'member' | 'admin' | 'super_admin') {
+function communityInfoHandler(
+  role: 'guest' | 'member' | 'admin' | 'super_admin',
+  platform: 'discord' | 'whatsapp' = 'discord',
+) {
   const adapter = stubAdapter(async () => {});
   const caller = {
-    platform: 'discord' as const,
+    platform,
     userId: 'caller-1',
     userName: 'Caller',
     role,
@@ -3039,6 +3136,82 @@ test('SECURITY: community_info admin-, member-, and guest-tier replies never con
         `${tierName}-tier reply must never name the super-admin-only tool "${id}"`,
       );
     }
+  }
+});
+
+test('SECURITY: community_info for a Discord caller is byte-identical regardless of whatsappTextCommandsEnabled (issue #872)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    const withFlagOff = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const withFlagOn = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+
+    assert.equal(
+      withFlagOn,
+      withFlagOff,
+      'the WhatsApp shortcut-discovery branch must never render for a Discord caller',
+    );
+    assert.doesNotMatch(
+      withFlagOn,
+      /!whois/,
+      'a Discord reply must never mention the WhatsApp !whois shortcut',
+    );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
+  }
+});
+
+test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEnabled off is byte-identical to MEMBER_CAPABILITIES_TEXT, and the appended block is the fixed literal when the flag is on (issue #872)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = false;
+    const flagOffReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+    const discordReply = (await communityInfoHandler('member', 'discord')).content[0]?.text ?? '';
+    assert.equal(
+      flagOffReply,
+      discordReply,
+      'a WhatsApp caller with the flag off must render byte-identical to today (no accidental always-on)',
+    );
+
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const flagOnReply = (await communityInfoHandler('member', 'whatsapp')).content[0]?.text ?? '';
+    assert.equal(
+      flagOnReply,
+      `${discordReply}\n` +
+        "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+        '- `!whois <topic>` — find members into a topic\n' +
+        '- `!projects [query]` — browse the project showcase\n' +
+        '- `!guidelines` — community guidelines\n' +
+        "- `!digest` — this week's digest",
+      'the appended block must be exactly the fixed literal, never caller- or model-composed text',
+    );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
+  }
+});
+
+test('SECURITY: community_info for a guest-tier WhatsApp caller never advertises the member-gated shortcuts, even with whatsappTextCommandsEnabled on (issue #872)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+    const guestReplyFlagOff = (await communityInfoHandler('guest', 'discord')).content[0]?.text ?? '';
+
+    assert.equal(
+      guestReply,
+      guestReplyFlagOff,
+      'a guest-tier caller must never receive the WhatsApp shortcut block: !whois/!projects/!digest ' +
+        "all require member tier in router.ts's tryWhatsAppTextCommand, so advertising them to a " +
+        'guest would promise a shortcut that silently falls through to a normal turn instead',
+    );
+    assert.doesNotMatch(
+      guestReply,
+      /!whois|!projects|!digest/,
+      'a guest-tier reply must never mention the member-gated WhatsApp shortcuts',
+    );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
   }
 });
 
@@ -5197,6 +5370,162 @@ test(
       0,
       'the admin-source row must be cleared too',
     );
+  },
+);
+
+test(
+  'clear_warnings sends the target member exactly one confirmation DM when it actually clears an active ' +
+    'warning, using the mute-free wording on a platform with no unmute_user capability at all (issue #865 ' +
+    'acceptance criterion #1, regressing PR #866 review: WhatsApp has no mute mechanism, so a bare ' +
+    '`!muteNote` wrongly claimed "mute lifted" here even though no unmute was ever attempted)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-notify`;
+    const target = `${RUN}-warnings-cleared-notify-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    await addWarning({
+      platform: 'whatsapp',
+      userId: target,
+      reason: 'spam',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const calls: Array<[string, string]> = [];
+    // stubAdapter's default adminCapabilities is empty — mirrors the real
+    // WhatsApp adapters, which have no unmute_user (or any mute) capability.
+    const adapter = stubAdapter(async (userId, message) => {
+      calls.push([userId, message]);
+    });
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
+    // Filtered to the target: the same adapter also carries the unrelated
+    // audited()-> notifySuperAdmins alert about the admin's own action
+    // (issue #288), which is not what this test is pinning.
+    const toTarget = calls.filter(([userId]) => userId === target);
+    assert.equal(toTarget.length, 1, 'exactly one DM to the target member');
+    assert.match(toTarget[0][1], /warnings have been cleared/i);
+    assert.doesNotMatch(
+      toTarget[0][1],
+      /mute/i,
+      'no mute-lifted claim on a platform with no unmute_user capability',
+    );
+  },
+);
+
+test(
+  'clear_warnings words the DM as mute-lifted only when an unmute_user call was actually attempted and ' +
+    'succeeded (issue #865 acceptance criterion #1, Discord path)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-notify-unmuted`;
+    const target = `${RUN}-warnings-cleared-notify-unmuted-target`;
+    await seedKnownUser('discord', convo, target);
+    await addWarning({
+      platform: 'discord',
+      userId: target,
+      reason: 'spam',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const calls: Array<[string, string]> = [];
+    const adapter: PlatformAdapter = {
+      ...stubAdapter(async (userId, message) => {
+        calls.push([userId, message]);
+      }),
+      adminCapabilities: new Set(['unmute_user']),
+      performAdminAction: async () => {},
+    };
+    const registeredTool = clearWarningsHandler({
+      platform: 'discord',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
+    const toTarget = calls.filter(([userId]) => userId === target);
+    assert.equal(toTarget.length, 1, 'exactly one DM to the target member');
+    assert.match(toTarget[0][1], /mute has been lifted/i);
+    assert.match(toTarget[0][1], /can post again/i);
+  },
+);
+
+test(
+  'SECURITY: clear_warnings sends no DM when the target had no active warnings to clear — no notification ' +
+    'without a state change (issue #865 acceptance criteria #2/#5)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-noop`;
+    const target = `${RUN}-warnings-cleared-noop-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    assert.equal(await countActiveWarnings('whatsapp', target), 0, 'sanity: no warnings seeded');
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, message) => {
+      calls.push([userId, message]);
+    });
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
+    assert.equal(
+      calls.filter(([userId]) => userId === target).length,
+      0,
+      'no active warnings means nothing changed for the target — no DM',
+    );
+  },
+);
+
+test(
+  'SECURITY: clear_warnings notification is fire-and-forget — a DM-send failure on the notify path never ' +
+    "changes clear_warnings' own reported success to the calling admin and never throws out of the tool " +
+    'call (issue #865 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-dm-fails`;
+    const target = `${RUN}-warnings-cleared-dm-fails-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    await addWarning({
+      platform: 'whatsapp',
+      userId: target,
+      reason: 'spam',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+
+    // A rejection here would fail the test on its own — the explicit
+    // assertions below additionally pin the exact non-degraded outcome.
+    const result = await registeredTool.handler({ targetUserId: target });
+    assert.doesNotMatch(
+      result.content[0]?.text ?? '',
+      /^(Failed|Refusing)/,
+      "a failed member-facing DM must never flip clear_warnings' own admin-facing outcome to failure",
+    );
+    assert.match(result.content[0]?.text ?? '', /can post again/i);
   },
 );
 
@@ -8425,8 +8754,8 @@ test('feature_flags: FEATURE_FLAG_MAP covers every *_ENABLED env var in config.t
   const envVars = extractEnabledEnvVars(configSource);
   assert.equal(
     envVars.length,
-    44,
-    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785; +1 for WHATSAPP_TEXT_COMMANDS_ENABLED landing with #859)",
+    45,
+    "the pinned count is the proposal's own evidence — a change here is itself signal worth noticing (28 at #559; +3 for ENGAGEMENT_ALERT/USAGE_COST_DIGEST/AUTO_RETRACT_REPLY landing alongside #582; +1 for MEMBER_DIGEST_ENABLED landing with #645; +1 for BACKGROUND_JOB_COST_ALERT_ENABLED landing with #610; +1 for KNOWLEDGE_GAP_ALERT_ENABLED landing with #650; +1 for KNOWLEDGE_STALE_ALERT_ENABLED landing with #701; +1 for FIND_HELPER_ENABLED landing with #729; +1 for RELEASE_WATCH_ENABLED landing with #733; +1 for KNOWLEDGE_ANSWER_CANDIDATE_ENABLED landing with #726; +1 for DISCORD_VOICE_ENABLED landing with #732; +1 for AGENT_SKILLS_ENABLED landing with #741; +1 for DISCORD_SLASH_COMMANDS_ENABLED landing with #744; +1 for IMAGE_INPUT_ENABLED landing with #783; +1 for ADMIN_LEVERAGE_ALERT_ENABLED landing with #785; +1 for WHATSAPP_TEXT_COMMANDS_ENABLED landing with #859; +1 for WHATSAPP_IMAGE_INPUT_ENABLED landing with #879)",
   );
   assertFeatureFlagEnvVarsCovered(envVars, FEATURE_FLAG_MAP);
   assert.equal(
@@ -12623,7 +12952,7 @@ function whoIsIntoHandler(caller: {
         string,
         {
           handler: (args: {
-            query: string;
+            query?: string;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -12799,6 +13128,134 @@ test(
   },
 );
 
+test(
+  'who_is_into() with no query and no published row for the caller returns guidance directing them to set_my_interests, without running any search (issue #882 AC #3)',
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-self-no-profile`;
+    const otherPublisher = `${RUN}-who-is-into-self-no-profile-other`;
+    const setTool = setMyInterestsHandler({ platform: 'discord', userId: otherPublisher });
+    const created = await setTool.handler({ interests: 'some other member entirely' });
+    assert.equal(created.isError, false);
+
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+    const result = await whoTool.handler({});
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /set_my_interests/);
+    assert.doesNotMatch(
+      result.content[0]?.text ?? '',
+      /some other member entirely/,
+      'no search may run against other members when the caller has no published row',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = $1`, [
+      otherPublisher,
+    ]);
+  },
+);
+
+test(
+  "who_is_into() with no query and a published row for the caller matches other members against the caller's own text, excluding the caller's own row (issue #882 AC #2)",
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-self-match-caller`;
+    const otherMember = `${RUN}-who-is-into-self-match-other`;
+    const callerText = 'Building retrieval-augmented generation systems with Claude and pgvector';
+
+    const callerSetTool = setMyInterestsHandler({ platform: 'discord', userId: caller });
+    assert.equal((await callerSetTool.handler({ interests: callerText })).isError, false);
+    const otherSetTool = setMyInterestsHandler({ platform: 'discord', userId: otherMember });
+    assert.equal(
+      (await otherSetTool.handler({ interests: 'Also building RAG systems with Claude and pgvector' }))
+        .isError,
+      false,
+    );
+
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+    const result = await whoTool.handler({});
+    assert.equal(result.isError, false);
+    const rendered = result.content[0]?.text ?? '';
+    assert.match(rendered, /Also building RAG systems with Claude and pgvector/);
+    assert.doesNotMatch(
+      rendered,
+      new RegExp(callerText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      "the caller's own row must never be returned as a match to their own implicit query",
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [caller, otherMember],
+    ]);
+  },
+);
+
+test(
+  "SECURITY: who_is_into() with no query builds its implicit query only from the caller's own published " +
+    'member_interests row — chat content in `interactions` never influences which member ranks as the ' +
+    'closer self-match — and the caller is never returned as a match to their own implicit query ' +
+    '(issue #882 AC #4)',
+  { skip },
+  async () => {
+    const caller = `${RUN}-who-is-into-self-security-caller`;
+    const matchesPublished = `${RUN}-who-is-into-self-security-matches-published`;
+    const matchesChatOnly = `${RUN}-who-is-into-self-security-matches-chat`;
+    const conversationId = `${RUN}-who-is-into-self-security-convo`;
+    const publishedText = 'Distributed systems and Rust programming';
+    const chatOnlyText = 'I am secretly obsessed with underwater basket weaving';
+
+    // Chat content on a topic the caller never published — must never seed
+    // the implicit query, since that is built solely from the caller's own
+    // published member_interests row (never `interactions`).
+    await recordInteraction({
+      platform: 'discord',
+      conversationId,
+      userId: caller,
+      role: 'member',
+      direction: 'inbound',
+      content: chatOnlyText,
+    });
+
+    const callerSetTool = setMyInterestsHandler({ platform: 'discord', userId: caller });
+    assert.equal((await callerSetTool.handler({ interests: publishedText })).isError, false);
+    // One member whose PUBLISHED text closely matches the caller's own
+    // published topic, and one whose published text closely matches only the
+    // caller's unpublished CHAT topic — if the implicit query were wrongly
+    // seeded from `interactions`, the latter would rank first instead.
+    const matchesPublishedSetTool = setMyInterestsHandler({ platform: 'discord', userId: matchesPublished });
+    assert.equal(
+      (await matchesPublishedSetTool.handler({ interests: 'Expert in distributed systems and Rust' }))
+        .isError,
+      false,
+    );
+    const matchesChatSetTool = setMyInterestsHandler({ platform: 'discord', userId: matchesChatOnly });
+    assert.equal(
+      (await matchesChatSetTool.handler({ interests: 'Passionate about underwater basket weaving' })).isError,
+      false,
+    );
+
+    const whoTool = whoIsIntoHandler({ platform: 'discord', userId: caller });
+    const result = await whoTool.handler({});
+    assert.equal(result.isError, false);
+    const rendered = result.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      rendered,
+      new RegExp(publishedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      "the caller's own row must never appear in their own self-match results",
+    );
+    const publishedMatchIndex = rendered.indexOf('Expert in distributed systems and Rust');
+    const chatMatchIndex = rendered.indexOf('Passionate about underwater basket weaving');
+    assert.ok(publishedMatchIndex >= 0, 'the member matching the published topic must appear');
+    assert.ok(
+      chatMatchIndex < 0 || publishedMatchIndex < chatMatchIndex,
+      'the member matching the published topic must rank ahead of the member matching only the unpublished chat topic',
+    );
+
+    await pool.query(`DELETE FROM member_interests WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [caller, matchesPublished, matchesChatOnly],
+    ]);
+    await pool.query(`DELETE FROM interactions WHERE user_id = $1`, [caller]);
+  },
+);
+
 // share_project / list_projects (issue #646): the member-declared project
 // showcase — the second instance of #634's self-declared-member-table
 // pattern. share_project is self-scoped write (rate-capped, per-member
@@ -12865,6 +13322,7 @@ function listProjectsHandler(caller: {
           handler: (args: {
             query?: string;
             seekingCollaborators?: boolean;
+            mine?: boolean;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -12898,6 +13356,15 @@ test('SECURITY: list_projects refuses a guest-tier caller regardless of the seek
     () => listTool.handler({ seekingCollaborators: false }),
     /Permission denied/,
     'a guest must be refused with seekingCollaborators: false too',
+  );
+});
+
+test('SECURITY: list_projects refuses a guest-tier caller when mine: true is set — the new argument adds no alternate reachability path (issue #867)', async () => {
+  const listTool = listProjectsHandler({ platform: 'discord', userId: 'guest-3', role: 'guest' });
+  await assert.rejects(
+    () => listTool.handler({ mine: true }),
+    /Permission denied/,
+    'a guest must be refused with mine: true, before listOwnProjects is ever called',
   );
 });
 
@@ -13100,6 +13567,118 @@ test(
     );
 
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "list_projects mine:true returns exactly the caller's own active projects, with a distinct empty-state message, and leaves mine omitted/false byte-identical to today (issue #867 AC #1, #3, #4)",
+  { skip },
+  async () => {
+    const ownerId = `${RUN}-list-projects-mine-owner`;
+    const ownerTool = shareProjectHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+    const listTool = listProjectsHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+
+    const noneShared = await listTool.handler({ mine: true });
+    assert.equal(noneShared.isError, false);
+    assert.equal(noneShared.content[0]?.text, "You haven't shared any projects yet.");
+
+    const shared = await ownerTool.handler({
+      name: 'Mine Recall Project',
+      description: 'a project the owner recalls by name',
+      seekingCollaborators: true,
+    });
+    assert.equal(shared.isError, false);
+
+    const mine = await listTool.handler({ mine: true });
+    const mineText = mine.content[0]?.text ?? '';
+    assert.match(
+      mineText,
+      /"Mine Recall Project"/,
+      'the exact stored name is quotable back into share_project',
+    );
+    assert.match(
+      mineText,
+      /\[#\d+\]/,
+      'the id prefix is present, same shape as any other list_projects render',
+    );
+    assert.match(mineText, /🤝 looking for collaborators/);
+
+    // AC #4: mine omitted/false is byte-identical to today's existing paths.
+    const omittedNoQuery = await listTool.handler({});
+    const explicitFalse = await listTool.handler({ mine: false });
+    assert.equal(explicitFalse.content[0]?.text, omittedNoQuery.content[0]?.text);
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [ownerId]);
+  },
+);
+
+test(
+  'SECURITY: list_projects({ mine: true }) for caller A never returns a project owned by caller B, even when B has projects and A has none (issue #867 AC #8)',
+  { skip },
+  async () => {
+    const callerA = `${RUN}-list-projects-mine-caller-a`;
+    const callerB = `${RUN}-list-projects-mine-caller-b`;
+    const bTool = shareProjectHandler({ platform: 'discord', userId: callerB, userName: 'CallerB' });
+    const aListTool = listProjectsHandler({ platform: 'discord', userId: callerA, userName: 'CallerA' });
+
+    const bShared = await bTool.handler({
+      name: 'Caller B Only Project',
+      description: "must never leak into caller A's mine:true results",
+    });
+    assert.equal(bShared.isError, false);
+
+    const aMine = await aListTool.handler({ mine: true });
+    assert.equal(
+      aMine.content[0]?.text,
+      "You haven't shared any projects yet.",
+      "caller A has zero of their own projects, regardless of caller B's",
+    );
+    assert.doesNotMatch(aMine.content[0]?.text ?? '', /Caller B Only Project/);
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [callerB]);
+  },
+);
+
+test(
+  "SECURITY: list_projects mine:true ignores any supplied query/seekingCollaborators and draws results exclusively from the caller's own projects, never falling through to the public search path (issue #867 AC #9)",
+  { skip },
+  async () => {
+    const ownerId = `${RUN}-list-projects-mine-ignores-filters`;
+    const otherId = `${RUN}-list-projects-mine-ignores-filters-other`;
+    const ownerTool = shareProjectHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+    const otherTool = shareProjectHandler({ platform: 'discord', userId: otherId, userName: 'Other' });
+    const listTool = listProjectsHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+
+    // The caller's own project deliberately does NOT match the query below
+    // and is NOT seeking collaborators, so if mine:true fell through to the
+    // public search/filter path it would be excluded.
+    const owned = await ownerTool.handler({
+      name: 'Unrelated Widget',
+      description: 'shares nothing in common with the query below',
+    });
+    assert.equal(owned.isError, false);
+    // Another member's project DOES match the query and IS seeking
+    // collaborators, so if mine:true fell through to the public path it
+    // would appear instead of (or alongside) the caller's own.
+    const other = await otherTool.handler({
+      name: 'Gizmo Match',
+      description: 'a gizmo project matching the query below',
+      seekingCollaborators: true,
+    });
+    assert.equal(other.isError, false);
+
+    const result = await listTool.handler({ mine: true, query: 'gizmo', seekingCollaborators: true });
+    const resultText = result.content[0]?.text ?? '';
+    assert.match(resultText, /Unrelated Widget/, "the caller's own non-matching project is still shown");
+    assert.doesNotMatch(
+      resultText,
+      /Gizmo Match/,
+      "another member's project must never appear, even though it matches query/seekingCollaborators",
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [ownerId, otherId],
+    ]);
   },
 );
 

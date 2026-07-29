@@ -15,10 +15,12 @@ import {
   areKnowledgeEntriesLowRated,
   getLanguagePreference,
   hasConflictAmongIds,
+  listOwnProjects,
   listRecentProjects,
   recordShortcutHit,
   searchKnowledge,
   searchMemberInterests,
+  searchMemberInterestsForSelf,
   searchProjects,
 } from '../../storage/repository.js';
 import {
@@ -76,6 +78,12 @@ export function buildSlashCommands() {
           .setDescription('Only show projects whose owner is looking for collaborators')
           .setRequired(false),
       )
+      .addBooleanOption((o) =>
+        o
+          .setName('mine')
+          .setDescription('Only show your own shared projects — ignores query/seeking_collaborators')
+          .setRequired(false),
+      )
       .toJSON(),
     new SlashCommandBuilder()
       .setName('whois')
@@ -83,8 +91,8 @@ export function buildSlashCommands() {
       .addStringOption((o) =>
         o
           .setName('query')
-          .setDescription('Topic/keyword to search published member interests')
-          .setRequired(true),
+          .setDescription('Optional topic/keyword; omit to find members like you')
+          .setRequired(false),
       )
       .toJSON(),
     new SlashCommandBuilder()
@@ -219,6 +227,15 @@ async function handleProjects(
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
+  const mine = interaction.options.getBoolean('mine', false) ?? false;
+  if (mine) {
+    const projects = await listOwnProjects('discord', interaction.user.id);
+    const reply =
+      projects.length === 0 ? "You haven't shared any projects yet." : await formatProjectResults(projects);
+    recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
+    await replyEphemeral(interaction, reply, deps);
+    return;
+  }
   const query = interaction.options.getString('query', false);
   const seekingCollaborators = interaction.options.getBoolean('seeking_collaborators', false) ?? false;
   const opts = { seekingCollaboratorsOnly: seekingCollaborators };
@@ -248,12 +265,23 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     await replyEphemeral(interaction, NOT_AUTHORIZED_TEXT, deps);
     return;
   }
-  const query = interaction.options.getString('query', true);
-  const hits = await searchMemberInterests(query);
-  const reply =
-    hits.length === 0
-      ? 'No members have published interests matching that yet.'
-      : await formatInterestResults(hits);
+  const query = interaction.options.getString('query', false);
+  let reply: string;
+  if (query) {
+    const hits = await searchMemberInterests(query);
+    reply =
+      hits.length === 0
+        ? 'No members have published interests matching that yet.'
+        : await formatInterestResults(hits);
+  } else {
+    const selfMatch = await searchMemberInterestsForSelf('discord', interaction.user.id);
+    reply = !selfMatch.hasProfile
+      ? 'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
+        '...") first, then /whois with no topic will search using your own published interests.'
+      : selfMatch.hits.length === 0
+        ? 'No other members have published interests matching yours yet.'
+        : await formatInterestResults(selfMatch.hits);
+  }
   recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, reply, deps);
 }

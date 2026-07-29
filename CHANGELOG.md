@@ -26,6 +26,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-30
 
 ### Added
+- **WhatsApp members can now discover the `!whois`/`!projects`/`!guidelines`/
+  `!digest` shortcuts** (#872) — asking "what can you do?" now lists them
+  (with a one-line description each) when your community has
+  `WHATSAPP_TEXT_COMMANDS_ENABLED` on. Discord members already see slash
+  commands in the native `/` picker; WhatsApp has no equivalent, so this was
+  the only way to learn the shortcuts (#859) exist at all. No change for
+  Discord, or for WhatsApp with the feature off.
 - **The weekly admin digest's flywheel-throughput line now also counts
   `request_project_connection` calls, not just `find_helper` matches,
   knowledge candidates, and shared projects** (#870): a new
@@ -46,6 +53,25 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   commands were counted, so a WhatsApp-heavy deployment's real cost savings
   from #859 were undercounted in the `Shortcuts fired: ...` line and its
   dollar-avoided estimate.
+- **WhatsApp can now answer from an attached image, closing the gap where
+  only Discord could** (#879): a WhatsApp (Baileys) member at or above
+  `WHATSAPP_IMAGE_INPUT_MIN_ROLE` can attach a screenshot, stack trace, or
+  billing-page image and get a reply grounded in what it actually shows,
+  mirroring #783's Discord image-attachment input field-for-field. Off by
+  default (`WHATSAPP_IMAGE_INPUT_ENABLED`), `super_admin`-only by default,
+  with the same MIME allowlist, byte cap, and daily-per-sender cap as the
+  Discord feature — checked before any download, so a below-tier or
+  over-cap sender's image is never fetched. No image bytes are ever stored.
+  Baileys only in this release, matching the existing WhatsApp voice
+  feature's own Baileys-only scope.
+- **`who_is_into` (and `/whois`) can now find "members like me", not just a
+  typed topic** (#882): the `query` argument is optional — omit it and the
+  bot matches other members' published interests against your own published
+  `set_my_interests` text instead, excluding your own entry from the results.
+  A member with no published interests yet gets a nudge to run
+  `set_my_interests` first, rather than an error or an empty search. Same
+  member-tier requirement, same 5-result cap, same rendering as a typed
+  query; `who_is_into(query)` and `/whois <query>` are unchanged.
 - **A new admin tool, `response_latency`, answers how quickly members are
   actually getting answered** (#877) — VISION's own "time-to-first-answer"
   north-star metric, which had no measurement behind it until now. Given a
@@ -70,6 +96,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   and alerts an admin rather than retrying silently in the background.
 
 ### Added
+- **`clear_warnings` now tells the member their warnings were cleared** (#865):
+  the one resolution flow that stayed silent — suggestions, reports, appeals,
+  and knowledge tips already DM the affected member, but clearing warnings and
+  lifting a mute never did, so a cleared member had no way to know short of
+  testing whether they could post again. A best-effort DM now fires whenever
+  an admin's `clear_warnings` call actually clears an active warning,
+  distinguishing "mute lifted" from "nothing to lift" wording and honouring
+  the member's standing te reo Māori preference. Sends nothing when there was
+  nothing to clear, and never affects the admin's own reported outcome.
 - **WhatsApp now has zero-cost text-command shortcuts for the four questions
   Discord's slash commands already answer for free** (#859): `!whois <query>`,
   `!projects [query]`, `!guidelines`, `!digest` — a trimmed, case-insensitive
@@ -110,6 +145,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   projects are currently looking for collaborators." No new tool, table,
   migration, or model call — one `AND seeking_collaborators` clause on the two
   existing repository queries.
+- **`list_projects` (and `/projects`) can now recall the caller's own shared
+  projects by name** (#867): a new optional `mine` boolean (Discord: same
+  `mine` option) returns only the projects the caller has published
+  themselves — ignoring any `query`/`seekingCollaborators` when set — so a
+  member editing or removing a project with `share_project` no longer has to
+  guess or luckily re-find the exact name it was saved under. A caller with
+  nothing shared yet gets a distinct "You haven't shared any projects yet."
+  reply. No new tool, table, migration, or model call — one indexed
+  `platform`/`user_id` read on the existing `member_projects` table.
 - **The weekly admin digest's flywheel-throughput line now counts successful
   `find_helper` connections, not just knowledge candidates and shared
   projects** (#820): a new `countHelperMatchesSince` repository function
