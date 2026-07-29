@@ -320,7 +320,25 @@ memory**:
    verbatim), and an optional `provenance` filter narrows the browse to just
    one of those (issue #294) — the same trust signal `knowledge_search`
    already uses to decide quarantine, now visible to the one tool built for
-   browsing it. `question_digest` closes the
+   browsing it. `merge_knowledge` (issue #886) is the consolidation step
+   `list_duplicate_knowledge`/`list_knowledge_conflicts` (#316/#330) both
+   describe in their own tool text ("merge (`update_knowledge`) or retire
+   (`delete_knowledge`)") but that this codebase never implemented until now:
+   given `keepId`/`mergeId`, it sums both rows' `retrieval_count` and takes
+   the later of their `last_retrieved_at` onto `keepId`, then deletes
+   `mergeId` — folding the retired entry's usage history (issue #134) into
+   the survivor instead of silently dropping it, which is what a manual
+   `update_knowledge` + `delete_knowledge` pair does today. Optional
+   `title`/`content`/`scope` override the survivor exactly like
+   `update_knowledge`'s own "undefined = leave unchanged" convention;
+   omitting all three re-embeds nothing. Same admin-tier + CONFIRM-gated +
+   `audited()` shape as `update_knowledge`/`delete_knowledge` — the audit row
+   also records the deleted entry's pre-merge title/content, the same
+   recoverability precedent `update_knowledge` set for its own overwrite.
+   Runs as sequential queries rather than an explicit transaction, matching
+   this file's existing convention; a `mergeId` delete failing after the
+   `keepId` count-fold is an accepted, non-transactional risk on this
+   infrequent, admin-invoked, non-security path. `question_digest` closes the
    discovery gap: it greedily
    clusters recent addressed-to-bot messages by embedding similarity (reusing
    the same vectors, no new embedding calls) to surface "N people asked this"
@@ -727,7 +745,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `create_poll` (native Discord poll; announce-class outward post, rate-capped instead of confirm-gated — Discord only) | ❌ | ❌ | ✅ *their conversations* | ✅ anywhere |
 | `create_thread` (open a Discord thread; additive, rate-capped, self-refuses under an unscanned moderation allowlist — Discord only) / `archive_thread` (confirm-gated) | ❌ | ❌ | ✅ *their conversations* | ✅ anywhere |
 | `create_event` (real Discord Scheduled Event; outward + member-notifying, confirm-gated, guild-wide not conversation-scoped — Discord only) / `cancel_event` (marks it Canceled, not deleted; confirm-gated; live target validation against Discord's own scheduled events before any CONFIRM is registered) | ❌ | ❌ | ✅ | ✅ |
-| `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` | ❌ | ❌ | ✅, delete confirm-gated | ✅ |
+| `save_knowledge` / `list_knowledge` / `update_knowledge` / `delete_knowledge` / `merge_knowledge` (consolidate a duplicate/conflict pair, confirm-gated) | ❌ | ❌ | ✅, delete/merge confirm-gated | ✅ |
 | `set_community_guidelines` (set/clear the rules text shown to members; content curation, not runtime control — same tier as `save_knowledge`) | ❌ | ❌ | ✅ | ✅ |
 | `set_welcome_message` (set/clear the new-member welcome text, in place of the hardcoded default; same shape as `set_community_guidelines`) | ❌ | ❌ | ✅ | ✅ |
 | `list_access_requests` | ❌ | ❌ | ✅ *(not conversation-scoped — see below)* | ✅ |

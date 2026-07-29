@@ -89,6 +89,19 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   browse/curation) is the one deliberate exception: it keeps browsing by
   explicit scope, unrestricted by the caller's own conversation — it's an
   admin-tier curation view, not member-facing recall.
+- **`merge_knowledge`** (issue #886) consolidates a `list_duplicate_knowledge`/
+  `list_knowledge_conflicts` pair into one entry — same admin-tier +
+  **CONFIRM-gated** + `audited()` treatment as `update_knowledge`/
+  `delete_knowledge`, since it both overwrites (when `title`/`content` is
+  supplied) and deletes a row. `keepId`/`mergeId` are ids the admin already
+  holds from prior tool output, the same "ids sourced from prior tool
+  output, never free text" discipline `accept_knowledge_candidate`/
+  `decline_knowledge_candidate` already rely on — no new untrusted-input
+  path. `keepId === mergeId`, or either id not existing, is rejected with
+  zero mutation before either row is touched. The audit row records both
+  ids plus the pre-merge title/content of the deleted `mergeId` entry (the
+  same recoverability precedent `update_knowledge`'s own audit trail set),
+  so an injected admin turn's merge still leaves a recoverable trail.
 - **Guest FAQ shortcut is global-scope only** (`GUEST_KNOWLEDGE_SHORTCUT_ENABLED`,
   off by default, issue #165): a gated guest's first message may be answered
   from `knowledge` before the static "ask an admin" pointer, but the lookup
