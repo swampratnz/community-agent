@@ -42,6 +42,13 @@ export interface KnowledgeCandidate {
   /** Provenance (issue #633): non-null together for a member's own suggest_knowledge submission, null/null for a machine-drafted (context-builder) row. */
   sourcePlatform: Platform | null;
   sourceUserId: string | null;
+  /**
+   * The linked `knowledge` entry's `retrieval_count` (issue #880) — only ever
+   * non-null when the caller's query joins it in (see
+   * `listOwnKnowledgeCandidates`); every other reader of this row leaves it
+   * `null`, not "0 uses", so the two can never be confused.
+   */
+  retrievalCount: number | null;
 }
 
 function toKnowledgeCandidate(r: {
@@ -56,6 +63,7 @@ function toKnowledgeCandidate(r: {
   reviewed_at: Date | null;
   source_platform?: string | null;
   source_user_id?: string | null;
+  retrieval_count?: number | string | null;
 }): KnowledgeCandidate {
   return {
     id: Number(r.id),
@@ -69,6 +77,8 @@ function toKnowledgeCandidate(r: {
     reviewedAt: r.reviewed_at,
     sourcePlatform: (r.source_platform as Platform | null) ?? null,
     sourceUserId: r.source_user_id ?? null,
+    retrievalCount:
+      r.retrieval_count === null || r.retrieval_count === undefined ? null : Number(r.retrieval_count),
   };
 }
 
@@ -171,6 +181,12 @@ export async function createKnowledgeTip(input: {
  * `source_platform`/`source_user_id` are NULL together on a machine-drafted
  * (context-builder) candidate, so `NULL = $1` never matches and such a row
  * can never appear here for any real caller.
+ *
+ * LEFT JOINs the linked `knowledge` entry (issue #880) to surface its
+ * `retrieval_count` — the impact signal for an already-accepted tip. The
+ * join is only ever non-null for an accepted, linked candidate; a pending or
+ * declined row (whose `knowledge_id` is always NULL) reads back `null`, not
+ * `0`, matching `retrievalCount`'s own doc comment.
  */
 export async function listOwnKnowledgeCandidates(
   platform: Platform,
@@ -179,10 +195,12 @@ export async function listOwnKnowledgeCandidates(
 ): Promise<KnowledgeCandidate[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 50);
   const { rows } = await pool.query(
-    `SELECT id, digest_id, topic, title, content, status, created_at, reviewed_by, reviewed_at, source_platform, source_user_id
-       FROM knowledge_candidates
-      WHERE source_platform = $1 AND source_user_id = $2
-      ORDER BY created_at DESC
+    `SELECT kc.id, kc.digest_id, kc.topic, kc.title, kc.content, kc.status, kc.created_at,
+            kc.reviewed_by, kc.reviewed_at, kc.source_platform, kc.source_user_id, k.retrieval_count
+       FROM knowledge_candidates kc
+       LEFT JOIN knowledge k ON k.id = kc.knowledge_id
+      WHERE kc.source_platform = $1 AND kc.source_user_id = $2
+      ORDER BY kc.created_at DESC
       LIMIT $3`,
     [platform, userId, clampedLimit],
   );
@@ -439,9 +457,11 @@ export async function acceptKnowledgeCandidate(input: {
     sourceTitle: input.sourceTitle,
   });
 
+  // Persists the link (issue #880) in the SAME UPDATE that flips status, so
+  // the two can never drift apart (e.g. a crash between two separate writes).
   await pool.query(
-    `UPDATE knowledge_candidates SET status = 'accepted', reviewed_by = $2, reviewed_at = now() WHERE id = $1`,
-    [input.id, input.reviewedBy],
+    `UPDATE knowledge_candidates SET status = 'accepted', reviewed_by = $2, reviewed_at = now(), knowledge_id = $3 WHERE id = $1`,
+    [input.id, input.reviewedBy, knowledgeId],
   );
 
   return {
