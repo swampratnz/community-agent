@@ -22,7 +22,7 @@ process.env.KNOWLEDGE_LOW_RATED_CAVEAT_MIN_UNHELPFUL = '2';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
-const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI } =
+const { KNOWLEDGE_LOW_RATED_CAVEAT_TEXT, KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI, KNOWLEDGE_STALE_NOTE_MI } =
   await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
@@ -355,4 +355,88 @@ test('SECURITY: router (low-rated caveat): a getLangPref rejection still renders
     new RegExp(KNOWLEDGE_LOW_RATED_CAVEAT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
   assert.match(sent[0].text, /From our knowledge base/i);
+});
+
+// --- Standing 'mi' language preference on the member shortcut's staleness tag (issue #848) ---
+//
+// #789 (directly above) fixed this same function's low-rated caveat fragment
+// for the member path; its own scope never reached the "(may be outdated)"
+// freshness tag, which stayed English even for a 'mi'-preference member.
+// These pin the fix: the lang branch inside formatKnowledgeCitationNote.
+
+test("router (low-rated caveat): a caller with a standing 'mi' language preference gets KNOWLEDGE_STALE_NOTE_MI on a stale entry, never the English 'may be outdated' tag", async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    const router = makeRouter({
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        updatedAt: new Date(Date.now() - 400 * 86_400_000),
+      }),
+      getLangPref: async () => 'mi',
+      checkLowRatedKnowledge: async () => false,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage());
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, new RegExp(KNOWLEDGE_STALE_NOTE_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(sent[0].text, /may be outdated/);
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
+});
+
+test("router (low-rated caveat): a stale entry with caller preference 'auto' (no standing preference) keeps the English 'may be outdated' tag, byte-identical to pre-#848 behaviour", async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    const router = makeRouter({
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        updatedAt: new Date(Date.now() - 400 * 86_400_000),
+      }),
+      getLangPref: async () => 'auto',
+      checkLowRatedKnowledge: async () => false,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage());
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /may be outdated/);
+    assert.doesNotMatch(
+      sent[0].text,
+      new RegExp(KNOWLEDGE_STALE_NOTE_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
+});
+
+test('SECURITY: router (low-rated caveat): a getLangPref rejection with a stale entry still renders a complete English reply — content and tag present, never dropped or thrown', async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    const router = makeRouter({
+      searchKnowledgeForShortcut: fixedHitSearch(0.95, {
+        updatedAt: new Date(Date.now() - 400 * 86_400_000),
+      }),
+      getLangPref: async () => {
+        throw new Error('language_prefs read boom');
+      },
+      checkLowRatedKnowledge: async () => false,
+    });
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await assert.doesNotReject(trigger(makeMessage()));
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /Be kind and follow the code of conduct\./);
+    assert.match(sent[0].text, /may be outdated/);
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
 });

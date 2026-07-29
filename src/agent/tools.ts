@@ -316,6 +316,17 @@ export const KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI =
   'i kitea e ētahi atu mema he kore-āwhina tēnei — ka taea hoki e koe te tohu mā te rate_answer';
 
 /**
+ * Fixed, human-authored te reo Māori variant of the `'may be outdated'`
+ * staleness tag `formatKnowledgeCitationNote` appends below (issue #848) —
+ * the one fragment of that function's three note fragments #789 didn't reach,
+ * since #789's own scope was limited to the low-rated caveat directly below
+ * this constant. Same trust level as its siblings: no interpolation, no
+ * model call. SECURITY: exact string-equality is asserted in tests, same
+ * convention as `KNOWLEDGE_LOW_RATED_CAVEAT_TEXT`.
+ */
+export const KNOWLEDGE_STALE_NOTE_MI = 'tērā pea kua tawhito';
+
+/**
  * Fixed, deterministic trailing line appended to a `knowledge_search` reply
  * when two or more of the served hits sit in the "conflict candidate"
  * similarity band (issue #389) — the live-path backstop for the gap #330
@@ -368,7 +379,10 @@ export const KNOWLEDGE_CONFLICT_CAVEAT_TEXT =
  * is exactly `'mi'` and `lowRatedCaveat` is true — mirrors
  * `KNOWLEDGE_SHORTCUT_SUFFIX`/`KNOWLEDGE_SHORTCUT_SUFFIX_MI`'s selection one
  * line below the caller's `sendKnowledgeShortcut` call site so a `'mi'`-
- * preference member's reply is consistently one language, not a mix. The
+ * preference member's reply is consistently one language, not a mix. It also
+ * (issue #848) selects `KNOWLEDGE_STALE_NOTE_MI` instead of the fixed English
+ * `'may be outdated'` staleness tag on the same `=== 'mi'` condition — the
+ * fragment #789's own scope didn't reach. The
  * `formatKnowledgeSearchResults` call site never passes this argument, so it
  * stays byte-identical.
  */
@@ -396,7 +410,7 @@ export function formatKnowledgeCitationNote(
       maxAgeDays,
     )
   ) {
-    notes.push('may be outdated');
+    notes.push(lang === 'mi' ? KNOWLEDGE_STALE_NOTE_MI : 'may be outdated');
   }
   if (lowRatedCaveat) {
     notes.push(lang === 'mi' ? KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI : KNOWLEDGE_LOW_RATED_CAVEAT_TEXT);
@@ -4451,14 +4465,25 @@ export function buildToolServer(
           'Optional topic/keyword to search shared projects by meaning. Omit for the most recently ' +
             'shared projects.',
         ),
+      seekingCollaborators: z
+        .boolean()
+        .optional()
+        .describe('Only show projects whose owner is looking for collaborators. Omit or false to show all.'),
     },
     async (args) => {
       assertAtLeast(caller.role, 'member', 'list_projects');
+      const opts = { seekingCollaboratorsOnly: args.seekingCollaborators };
       const projects = args.query
-        ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT)
-        : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT);
+        ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
+        : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
       if (projects.length === 0) {
-        return text(args.query ? 'No shared projects match that.' : 'No projects have been shared yet.');
+        return text(
+          args.seekingCollaborators
+            ? 'No projects are currently looking for collaborators.'
+            : args.query
+              ? 'No shared projects match that.'
+              : 'No projects have been shared yet.',
+        );
       }
       return text(await formatProjectResults(projects));
     },

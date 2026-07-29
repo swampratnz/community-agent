@@ -43,6 +43,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   false case. No new tool, table, or model call; the flag lives on the
   existing `member_projects` row, so purge/roster-leave cleanup removes it
   along with everything else automatically.
+- **`list_projects` (and `/projects`) can now filter to only projects seeking
+  collaborators** (#854): a new optional `seekingCollaborators` boolean (Discord:
+  `seeking_collaborators`) narrows either the no-query recent-projects path or
+  the query-driven similarity search to active projects with `#834`'s
+  `seeking_collaborators` flag set — closing the gap where a project seeking
+  help could sit unreachable outside the default top-8 recent-projects window.
+  Omitting the flag (or setting it `false`) leaves both paths byte-identical to
+  today. When the filter is on and nothing matches, the reply is a distinct "No
+  projects are currently looking for collaborators." No new tool, table,
+  migration, or model call — one `AND seeking_collaborators` clause on the two
+  existing repository queries.
 - **The weekly admin digest's flywheel-throughput line now counts successful
   `find_helper` connections, not just knowledge candidates and shared
   projects** (#820): a new `countHelperMatchesSince` repository function
@@ -119,6 +130,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   appeals count/age. Omitted entirely when nothing closed this period; bare
   integers only, same as the backlog line — never an appellant's name,
   reason, or the resolving admin's identity.
+- **A waiting guest's gated notice now shows the community guidelines too,
+  not just the one-time welcome message** (#850): the repeated "member-only,
+  ask an admin" notice a gated guest sees every time they address the bot now
+  also carries the admin-configured community guidelines, appended after the
+  base notice, while they're still within their first day of waiting (the
+  same signal that already keeps the returning-guest wait clause silent on a
+  first message). A returning guest past that first day sees the unchanged
+  wait-clause-only notice, so the notice doesn't grow on every repeat.
+  Guidelines are unchanged if never set, and a lookup failure still sends the
+  base notice — never blocks or empties the reply.
 
 ### Fixed
 - **The offline context builder's cluster summariser no longer silently
@@ -133,6 +154,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   missing response throws (counted as a `failed` cluster, same as today)
   instead of landing a placeholder digest or losing a candidate in front of
   an admin.
+- **The knowledge-shortcut "may be outdated" tag now renders in te reo Māori
+  for a caller with a standing preference, on both the member and guest
+  paths** (#848). #789 (shipped yesterday) fixed this same reply's low-rated
+  caveat but explicitly didn't reach this fragment; a `'mi'`-preference
+  member or guest hitting a stale knowledge entry via the shortcut used to
+  get a reply that mixed te reo (caveat/suffix) with an English "(may be
+  outdated)" tag. The guest path also now resolves the language preference
+  before building the note instead of after, so its freshness tag stops
+  ignoring a stored preference entirely — still one lookup, not two. No
+  change for a caller with no stored preference.
 
 ## 2026-07-28
 

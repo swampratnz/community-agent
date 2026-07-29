@@ -690,7 +690,7 @@ this list — unlike the others it's implemented on both WhatsApp adapters
 | `suggest_improvement` (file a bot-improvement idea; write-only) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `suggest_knowledge` (suggest a durable knowledge-base tip; write-only into the SAME admin-reviewed `knowledge_candidates` queue the context builder feeds — dedup-guarded, never influences answers before an admin accepts it) | ❌ | ✅ *(rate-capped, 3/24h)* | ✅ | ✅ |
 | `set_my_interests` (publish self-declared interests for member-to-member discovery; free text or the literal `'clear'`, one row per identity, upsert/clear semantics; explicitly floors at `member`, excluding open-mode guests) / `who_is_into` (embedding-similarity search over published interests only; same `member` floor; a caller with no published interests of their own can still search; a matched member with ≥1 active shared project also gets a `Shared projects: "X", "Y"` line, batched-looked-up from `member_projects` — issue #718) | ❌ | ✅ | ✅ | ✅ |
-| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840) | ❌ | ✅ | ✅ | ✅ |
+| `share_project` (publish a self-declared project to the member showcase; upsert-by-name edits, `remove: true` takes it down; per-member cap of 3, rate-capped 3 new shares/24h; explicitly floors at `member`, excluding open-mode guests) / `list_projects` (browse/search the showcase; same `member` floor; a project whose owner has published interests also gets an `Interests: <text>` line, batched-looked-up from `member_interests` — issue #718; each rendered row is prefixed with the project's DB id, e.g. `[#42]` — issue #840; an optional `seekingCollaborators` boolean narrows either path to only active projects with `seeking_collaborators = true` — issue #854) | ❌ | ✅ | ✅ | ✅ |
 | `set_helper_availability` (opt in/out of being notified for `find_helper` requests matching the caller's own published interests; requires an existing `set_my_interests` row; instantly reversible, no CONFIRM) / `find_helper` (ask for member-to-member help; embedding-matches `topic` against opted-in helpers and sends AT MOST ONE DM, to the single best eligible candidate — never a broadcast, never a name/handle disclosed back to the requester; both rate-capped, both behind `FIND_HELPER_ENABLED`, off by default — issue #729) | ❌ | ✅ | ✅ | ✅ |
 | `request_project_connection` (ask to connect with a project owner who marked `seekingCollaborators` true; looks up the project by id and sends its owner AT MOST ONE DM naming the requester and project — never a broadcast, never discloses the owner's identity back to the requester beyond what `list_projects` already showed; requester rate-capped 3/24h, owner rate-capped 3 received/7d, both DB-backed; no feature flag — explicitly floors at `member`, excluding open-mode guests — issue #840) | ❌ | ✅ | ✅ | ✅ |
 | `set_response_style` (standing plain-language reply preference; self-service, no CONFIRM) | ❌ | ✅ | ✅ | ✅ |
@@ -942,7 +942,15 @@ function (`formatKnowledgeCitationNote`) live in `agent/tools.ts` — issue
 `formatKnowledgeCitationNote` off the same `getLangPref` read
 `sendKnowledgeShortcut` already resolves for the suffix, so a `'mi'`-
 preference member's low-rated-entry reply is one language throughout rather
-than an English caveat next to a te reo suffix. Separately, the eleven deterministic
+than an English caveat next to a te reo suffix. #789's own scope stopped at
+that caveat fragment, leaving the same function's `'may be outdated'`
+staleness tag English-only on both shortcut paths, and leaving the guest path
+resolving `note` before `lang` so its tag ignored a stored `'mi'` preference
+entirely; issue #848 closes that remaining fragment — a `KNOWLEDGE_STALE_NOTE_MI`
+branch on the already-threaded `lang` parameter, plus the same
+resolve-`lang`-before-`note` reorder in `sendGuestKnowledgeShortcut` that #789
+applied to the member path — so the staleness tag is one language throughout
+too, on both the member and guest shortcut paths. Separately, the eleven deterministic
 fallback/notice constants across `router.ts`/`core.ts`/`upstreamFailure.ts`
 also gain a
 fixed, human-authored `_PLAIN` counterpart honouring a standing `'plain'`
@@ -1048,7 +1056,20 @@ weakening it:
    intentional, bounded exception to that non-blocking default; the
    rate-limited path and the guest-knowledge-shortcut-hit path (issue #165,
    below), where no gated notice is sent at all, keep the upsert
-   fire-and-forget exactly as before.
+   fire-and-forget exactly as before. The same `waitDays` value also gates a
+   second append (issue #850): while it's falsy — a guest's first-ever
+   addressed message, and any message before a whole day has passed, per
+   `waitDaysSince`'s truncation, so this is *not* "exactly once per
+   identity" — the gated notice additionally carries the admin-configured
+   community guidelines (`getCommunityGuidelines`/`getCommunityGuidelinesMi`,
+   `'mi'` preferring the te reo variant with English fallback, same order as
+   the `community_guidelines` tool), appended after the base notice text
+   exactly like the welcome message's own "if set" concatenation above. Once
+   `waitDays >= 1`, only the wait clause is appended — no repeated
+   guidelines block on every subsequent message. Unset guidelines render
+   byte-identical to today, and a lookup failure degrades to the unchanged
+   base notice, same fail-open shape as the notice-builder/response-style
+   reads on this path.
 3. **Server roster** (issue #47, extended to WhatsApp by issue #407). The
    Discord adapter records every `guildMemberAdd`/`guildMemberRemove` into
    `server_roster` (identity metadata only — see SECURITY.md) and

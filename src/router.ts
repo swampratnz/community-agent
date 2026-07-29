@@ -26,7 +26,7 @@ import {
   sweepExpiredPendingActions,
   takePendingAction,
 } from './agent/pendingActions.js';
-import { isPaused } from './storage/policies.js';
+import { isPaused, getCommunityGuidelines, getCommunityGuidelinesMi } from './storage/policies.js';
 import { recordReplyMapping } from './replyRetraction.js';
 import { queuePendingAlert } from './pendingAlertQueue.js';
 import {
@@ -464,6 +464,12 @@ export class Router {
    * `markStaleKnowledgeAlertedFn` defaults to the real DB-backed atomic
    * gate+stamp (issue #701), consulted from `maybeAlertStaleKnowledge` below;
    * overridable so tests can assert on it without a live DB.
+   * `getCommunityGuidelinesFn`/`getCommunityGuidelinesMiFn` default to the
+   * real TTL-cached policy reads (issue #850), consulted only from the
+   * gated-notice branch while `waitDays` is falsy (a guest's first message,
+   * or any message before a whole day has passed) — overridable so tests can
+   * assert on the appended text, the unset no-op, and the fail-open catch
+   * without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -483,6 +489,8 @@ export class Router {
     private readonly recordEscalatedGapFn: typeof recordEscalatedKnowledgeGap = recordEscalatedKnowledgeGap,
     private readonly markKnowledgeGapsAlertedFn: typeof markKnowledgeGapsAlerted = markKnowledgeGapsAlerted,
     private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted = markStaleKnowledgeAlerted,
+    private readonly getCommunityGuidelinesFn: typeof getCommunityGuidelines = getCommunityGuidelines,
+    private readonly getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -752,6 +760,44 @@ export class Router {
   }
 
   /**
+   * Appends the community guidelines to the gated notice (issue #850), while
+   * `waitDays` is falsy — a guest's first-ever addressed message, and any
+   * message before a whole day has passed (`waitDaysSince`'s truncation
+   * means this is NOT "exactly once per identity"; see the adversarial
+   * review on issue #850). `waitDays` is the same value the caller already
+   * computed from `firstRequestedAtPromise` for the wait clause — no new DB
+   * read. Returning guests (`waitDays >= 1`) skip the lookup entirely,
+   * rendering byte-identical to today. `mi` selects
+   * `getCommunityGuidelinesMiFn() ?? getCommunityGuidelinesFn()`, the same
+   * fallback order as the `community_guidelines` tool's own 'mi' handling
+   * (`agent/tools.ts`). Guidelines are admin-authored (`set_community_guidelines`,
+   * admin tier) and concatenated verbatim, mirroring the welcome message's
+   * own concatenation (the platform adapters' join-welcome send paths) —
+   * never passed through the model. A read failure degrades to the unchanged
+   * base notice, the same fail-open shape as the `getGatedNotice`/
+   * `getRespStyle` catches on this branch: the guest must still get a reply,
+   * never silence.
+   */
+  private async appendCommunityGuidelinesIfFirstMessage(
+    notice: string,
+    waitDays: number | undefined,
+    mi: boolean,
+  ): Promise<string> {
+    if (waitDays) return notice;
+    const guidelines = await (
+      mi
+        ? this.getCommunityGuidelinesMiFn().then(
+            async (value) => value ?? (await this.getCommunityGuidelinesFn()),
+          )
+        : this.getCommunityGuidelinesFn()
+    ).catch((err) => {
+      logger.warn({ err }, 'Community guidelines read failed; sending gated notice without them');
+      return null;
+    });
+    return guidelines ? `${notice}\n\nCommunity guidelines:\n${guidelines}` : notice;
+  }
+
+  /**
    * Outbound filtering (secrets + code policy) lives in the adapters' send
    * paths. `language` and `style` are optional and threaded straight into
    * `adapter.sendMessage` (issues #339, #657) — every call site except the
@@ -956,7 +1002,10 @@ export class Router {
               // above — no new DB round-trip on this branch.
               const firstRequestedAt = await firstRequestedAtPromise;
               const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
-              notice = appendWaitClauseMi(GATED_NOTICE_MI, waitDays);
+              // Community guidelines (issue #850): appended while waitDays is
+              // falsy, using the same waitDays value — no new DB read.
+              notice = await this.appendCommunityGuidelinesIfFirstMessage(GATED_NOTICE_MI, waitDays, true);
+              notice = appendWaitClauseMi(notice, waitDays);
             } else {
               notice = await this.getGatedNotice(msg.platform).catch((err) => {
                 logger.warn({ err }, 'Gated notice builder failed; using the static fallback');
@@ -980,6 +1029,9 @@ export class Router {
               // path's existing awaits above.
               const firstRequestedAt = await firstRequestedAtPromise;
               const waitDays = firstRequestedAt ? waitDaysSince(firstRequestedAt) : undefined;
+              // Community guidelines (issue #850): appended while waitDays is
+              // falsy, using the same waitDays value — no new DB read.
+              notice = await this.appendCommunityGuidelinesIfFirstMessage(notice, waitDays, false);
               notice = appendWaitClause(notice, waitDays);
             }
             await this.send(adapter, msg.conversationId, notice).catch((err) =>
@@ -1597,10 +1649,19 @@ export class Router {
       { platform: msg.platform, conversationId: msg.conversationId },
       'guest_knowledge_shortcut_hit',
     );
-    const note = formatKnowledgeCitationNote(hit, config.adminDigest.knowledgeStaleDays);
-    // Single lookup serves both interpolated strings below (acceptance
-    // criterion 3) — not a per-string read.
+    // Language preference (issue #848) is resolved BEFORE the citation note
+    // so the note's stale-tag fragment and the trailing suffix/nudge below
+    // render from the same single lookup — a reorder, not a second DB read
+    // (mirrors #789's identical fix to the member `sendKnowledgeShortcut`
+    // path).
     const lang = await this.getLangPref(msg.platform, msg.userId).catch(() => 'auto' as const);
+    const note = formatKnowledgeCitationNote(
+      hit,
+      config.adminDigest.knowledgeStaleDays,
+      undefined,
+      undefined,
+      lang,
+    );
     const suffix = lang === 'mi' ? KNOWLEDGE_SHORTCUT_SUFFIX_MI : KNOWLEDGE_SHORTCUT_SUFFIX;
     const nudge = lang === 'mi' ? GUEST_KNOWLEDGE_SHORTCUT_NUDGE_MI : GUEST_KNOWLEDGE_SHORTCUT_NUDGE;
     const replyText = `${hit.content}${note}${suffix}${nudge}`;

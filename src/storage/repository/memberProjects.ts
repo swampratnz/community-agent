@@ -172,12 +172,16 @@ export async function removeMemberProject(
 }
 
 /** Most-recently-shared ACTIVE projects across every member — the no-query default for list_projects. */
-export async function listRecentProjects(limit = 8): Promise<MemberProject[]> {
+export async function listRecentProjects(
+  limit = 8,
+  opts: { seekingCollaboratorsOnly?: boolean } = {},
+): Promise<MemberProject[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 8, 1), 50);
   const { rows } = await pool.query(
     `SELECT id, platform, user_id, name, description, link, seeking_collaborators, created_at
        FROM member_projects
       WHERE removed_at IS NULL
+        ${opts.seekingCollaboratorsOnly ? 'AND seeking_collaborators' : ''}
       ORDER BY created_at DESC
       LIMIT $1`,
     [clampedLimit],
@@ -190,7 +194,11 @@ export interface MemberProjectSearchHit extends MemberProject {
 }
 
 /** Embedding-similarity search over ACTIVE projects' name+description, for the query-supplied path of list_projects. */
-export async function searchProjects(query: string, limit = 8): Promise<MemberProjectSearchHit[]> {
+export async function searchProjects(
+  query: string,
+  limit = 8,
+  opts: { seekingCollaboratorsOnly?: boolean } = {},
+): Promise<MemberProjectSearchHit[]> {
   const clampedLimit = Math.min(Math.max(Math.trunc(limit) || 8, 1), 50);
   let queryVec: number[];
   try {
@@ -204,6 +212,7 @@ export async function searchProjects(query: string, limit = 8): Promise<MemberPr
             1 - (embedding <=> $1) AS similarity
        FROM member_projects
       WHERE embedding IS NOT NULL AND removed_at IS NULL
+        ${opts.seekingCollaboratorsOnly ? 'AND seeking_collaborators' : ''}
       ORDER BY embedding <=> $1
       LIMIT $2`,
     [pgvector.toSql(queryVec), clampedLimit],
