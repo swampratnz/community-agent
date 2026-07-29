@@ -4452,14 +4452,25 @@ export function buildToolServer(
           'Optional topic/keyword to search shared projects by meaning. Omit for the most recently ' +
             'shared projects.',
         ),
+      seekingCollaborators: z
+        .boolean()
+        .optional()
+        .describe('Only show projects whose owner is looking for collaborators. Omit or false to show all.'),
     },
     async (args) => {
       assertAtLeast(caller.role, 'member', 'list_projects');
+      const opts = { seekingCollaboratorsOnly: args.seekingCollaborators };
       const projects = args.query
-        ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT)
-        : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT);
+        ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
+        : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
       if (projects.length === 0) {
-        return text(args.query ? 'No shared projects match that.' : 'No projects have been shared yet.');
+        return text(
+          args.seekingCollaborators
+            ? 'No projects are currently looking for collaborators.'
+            : args.query
+              ? 'No shared projects match that.'
+              : 'No projects have been shared yet.',
+        );
       }
       return text(await formatProjectResults(projects));
     },

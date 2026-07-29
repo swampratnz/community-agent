@@ -132,6 +132,7 @@ function fakeInteraction(opts: {
   userId?: string;
   channelId?: string;
   options?: Record<string, string | null>;
+  booleanOptions?: Record<string, boolean | null>;
   spoofedAdminClaim?: boolean;
 }): { interaction: unknown; replies: FakeReply[]; followUps: FakeReply[]; order: string[] } {
   const replies: FakeReply[] = [];
@@ -151,6 +152,7 @@ function fakeInteraction(opts: {
       : undefined,
     options: {
       getString: (name: string) => opts.options?.[name] ?? null,
+      getBoolean: (name: string) => opts.booleanOptions?.[name] ?? null,
     },
     deferReply: async (payload: { flags?: number }) => {
       order.push('deferReply');
@@ -286,6 +288,13 @@ test('buildSlashCommands defines exactly the five approved read-only commands, e
   assert.equal(requiredness('kb'), true);
   assert.equal(requiredness('whois'), true);
   assert.equal(requiredness('projects'), false);
+  const seekingCollaboratorsOption = (
+    byName.get('projects') as {
+      options?: Array<{ name: string; type: number; required?: boolean }>;
+    }
+  ).options?.find((o) => o.name === 'seeking_collaborators');
+  assert.ok(seekingCollaboratorsOption, '/projects must define a seeking_collaborators option (issue #854)');
+  assert.equal(seekingCollaboratorsOption?.required, false);
   assert.deepEqual((byName.get('guidelines') as { options?: unknown[] }).options ?? [], []);
   assert.deepEqual(
     (byName.get('digest') as { options?: unknown[] }).options ?? [],
@@ -350,6 +359,85 @@ test("SECURITY: a guest caller is rejected on /projects without list_projects's 
     !calls.some((c) => c.sql.includes('FROM member_projects')),
     'listRecentProjects/searchProjects must never be called for a rejected caller',
   );
+});
+
+test('SECURITY: a guest caller is rejected on /projects regardless of the seeking_collaborators option value (issue #854 AC #6)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'projects',
+    userId: 'guest-1',
+    booleanOptions: { seeking_collaborators: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.ok(
+    !calls.some((c) => c.sql.includes('FROM member_projects')),
+    'the seeking_collaborators option must never let a guest reach listRecentProjects/searchProjects',
+  );
+});
+
+test('/projects seeking_collaborators:true threads the same filter through as list_projects, on both the no-query and query paths (issue #854 AC #5)', async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', projectRows: [] });
+  const adapter = new DiscordAdapter();
+
+  const noQuery = fakeInteraction({
+    commandName: 'projects',
+    userId: 'member-1',
+    booleanOptions: { seeking_collaborators: true },
+  });
+  await handleInteraction(noQuery.interaction as never, adapterDeps(adapter));
+  const noQueryCall = calls.find((c) => c.sql.includes('FROM member_projects') && !c.sql.includes('<=>'));
+  assert.ok(noQueryCall, 'the no-query path must have run');
+  assert.match(
+    noQueryCall.sql,
+    /AND seeking_collaborators/,
+    'seeking_collaborators:true must narrow the no-query listRecentProjects call exactly as list_projects does',
+  );
+
+  calls.length = 0;
+  const withQuery = fakeInteraction({
+    commandName: 'projects',
+    userId: 'member-1',
+    options: { query: 'rag' },
+    booleanOptions: { seeking_collaborators: true },
+  });
+  await handleInteraction(withQuery.interaction as never, adapterDeps(adapter));
+  const queryCall = calls.find((c) => c.sql.includes('FROM member_projects') && c.sql.includes('<=>'));
+  assert.ok(queryCall, 'the query path must have run');
+  assert.match(
+    queryCall.sql,
+    /AND seeking_collaborators/,
+    'seeking_collaborators:true must narrow the query-path searchProjects call exactly as list_projects does',
+  );
+
+  calls.length = 0;
+  const omitted = fakeInteraction({ commandName: 'projects', userId: 'member-1' });
+  await handleInteraction(omitted.interaction as never, adapterDeps(adapter));
+  const omittedCall = calls.find((c) => c.sql.includes('FROM member_projects'));
+  assert.ok(omittedCall);
+  assert.doesNotMatch(
+    omittedCall.sql,
+    /AND seeking_collaborators/,
+    'omitting seeking_collaborators must stay byte-identical to the unfiltered SQL',
+  );
+});
+
+test('/projects seeking_collaborators:true with no matching rows replies with the distinct filtered empty-state message (issue #854 AC #4, #5)', async (t) => {
+  mockPool(t, { memberRole: 'member', projectRows: [] });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'projects',
+    userId: 'member-1',
+    booleanOptions: { seeking_collaborators: true },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.match(replies[0].content, /No projects are currently looking for collaborators\./);
 });
 
 test("SECURITY: /kb tracks knowledge_search's own toolsForRole reachability rather than a hardcoded role check — a guest CAN use /kb, exactly like the chat-path tool (acceptance criteria 4, 12)", async (t) => {

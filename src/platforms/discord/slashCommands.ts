@@ -69,6 +69,12 @@ export function buildSlashCommands() {
       .addStringOption((o) =>
         o.setName('query').setDescription('Optional topic/keyword to search by meaning').setRequired(false),
       )
+      .addBooleanOption((o) =>
+        o
+          .setName('seeking_collaborators')
+          .setDescription('Only show projects whose owner is looking for collaborators')
+          .setRequired(false),
+      )
       .toJSON(),
     new SlashCommandBuilder()
       .setName('whois')
@@ -212,14 +218,18 @@ async function handleProjects(
     return;
   }
   const query = interaction.options.getString('query', false);
+  const seekingCollaborators = interaction.options.getBoolean('seeking_collaborators', false) ?? false;
+  const opts = { seekingCollaboratorsOnly: seekingCollaborators };
   const projects = query
-    ? await searchProjects(query, LIST_PROJECTS_DEFAULT_LIMIT)
-    : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT);
+    ? await searchProjects(query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
+    : await listRecentProjects(LIST_PROJECTS_DEFAULT_LIMIT, opts);
   const reply =
     projects.length === 0
-      ? query
-        ? 'No shared projects match that.'
-        : 'No projects have been shared yet.'
+      ? seekingCollaborators
+        ? 'No projects are currently looking for collaborators.'
+        : query
+          ? 'No shared projects match that.'
+          : 'No projects have been shared yet.'
       : await formatProjectResults(projects);
   await replyEphemeral(interaction, reply, deps);
 }

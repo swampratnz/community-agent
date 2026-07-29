@@ -7369,6 +7369,83 @@ test(
 );
 
 test(
+  'repository: listRecentProjects/searchProjects seekingCollaboratorsOnly narrows to active, seeking projects only, ordering otherwise unchanged (issue #854 AC #1, #3)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-seeking-filter`;
+    const seeking = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'seeking one',
+      description: 'wants help with this widget',
+      seekingCollaborators: true,
+    });
+    const notSeeking = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'showcase only',
+      description: 'just showing this widget off',
+    });
+    assert.ok(seeking.ok && notSeeking.ok);
+
+    const recentFiltered = await listRecentProjects(200, { seekingCollaboratorsOnly: true });
+    assert.ok(
+      recentFiltered.some((p) => seeking.ok && p.id === seeking.id),
+      'the seeking row is included in the no-query filtered path',
+    );
+    assert.ok(
+      !recentFiltered.some((p) => notSeeking.ok && p.id === notSeeking.id),
+      'the non-seeking row is excluded from the no-query filtered path',
+    );
+
+    const searchFiltered = await searchProjects('this widget', 200, { seekingCollaboratorsOnly: true });
+    assert.ok(
+      searchFiltered.some((p) => seeking.ok && p.id === seeking.id),
+      'the seeking row is included in the query-filtered similarity path',
+    );
+    assert.ok(
+      !searchFiltered.some((p) => notSeeking.ok && p.id === notSeeking.id),
+      'the non-seeking row is excluded from the query-filtered similarity path',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'SECURITY: repository: listRecentProjects/searchProjects seekingCollaboratorsOnly never returns a soft-removed row (issue #854 AC #7)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-seeking-removed`;
+    const created = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'removed but seeking',
+      description: 'this project later gets removed',
+      seekingCollaborators: true,
+    });
+    assert.ok(created.ok);
+    assert.equal(await removeMemberProject('discord', owner, 'removed but seeking'), true);
+
+    const recentFiltered = await listRecentProjects(200, { seekingCollaboratorsOnly: true });
+    assert.ok(
+      !recentFiltered.some((p) => created.ok && p.id === created.id),
+      'a soft-removed row must never surface from the filtered no-query path even though seeking_collaborators is true',
+    );
+
+    const searchFiltered = await searchProjects('this project later gets removed', 200, {
+      seekingCollaboratorsOnly: true,
+    });
+    assert.ok(
+      !searchFiltered.some((p) => created.ok && p.id === created.id),
+      'a soft-removed row must never surface from the filtered query path even though seeking_collaborators is true',
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = $1`, [owner]);
+  },
+);
+
+test(
   "SECURITY: repository: purgeUserData/purgeSingleIdentity deletes the caller's member_projects rows (issue #646 AC #4)",
   { skip },
   async () => {

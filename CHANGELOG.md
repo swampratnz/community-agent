@@ -43,6 +43,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   false case. No new tool, table, or model call; the flag lives on the
   existing `member_projects` row, so purge/roster-leave cleanup removes it
   along with everything else automatically.
+- **`list_projects` (and `/projects`) can now filter to only projects seeking
+  collaborators** (#854): a new optional `seekingCollaborators` boolean (Discord:
+  `seeking_collaborators`) narrows either the no-query recent-projects path or
+  the query-driven similarity search to active projects with `#834`'s
+  `seeking_collaborators` flag set — closing the gap where a project seeking
+  help could sit unreachable outside the default top-8 recent-projects window.
+  Omitting the flag (or setting it `false`) leaves both paths byte-identical to
+  today. When the filter is on and nothing matches, the reply is a distinct "No
+  projects are currently looking for collaborators." No new tool, table,
+  migration, or model call — one `AND seeking_collaborators` clause on the two
+  existing repository queries.
 - **The weekly admin digest's flywheel-throughput line now counts successful
   `find_helper` connections, not just knowledge candidates and shared
   projects** (#820): a new `countHelperMatchesSince` repository function
