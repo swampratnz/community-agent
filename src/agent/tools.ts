@@ -131,6 +131,7 @@ import {
   setMemberInterests,
   setResponseStyle,
   searchMemberInterests,
+  searchMemberInterestsForSelf,
   shareProject,
   findHelperCandidates,
   recordHelperNotificationIfUnderCap,
@@ -4295,21 +4296,40 @@ export function buildToolServer(
       'member-to-member discovery, e.g. "who\'s into RAG?" or "anyone working on MCP servers?". Returns up ' +
       `to ${WHO_IS_INTO_LIMIT} matches by meaning. Results derive only from what members have explicitly ` +
       'published with set_my_interests — never from general chat or any other source. A caller with no ' +
-      'published interests of their own can still search.',
+      "published interests of their own can still search. Omit the topic to find members like the caller " +
+      "themselves — matched against the caller's OWN published interests, excluding the caller's own entry " +
+      '(requires the caller to have already called set_my_interests).',
     {
       query: z
         .string()
         .min(1)
         .max(300)
-        .describe('Topic/keyword to search published member interests by meaning'),
+        .optional()
+        .describe(
+          'Topic/keyword to search published member interests by meaning. Omit to search using the ' +
+            "caller's own published interests instead (\"find people like me\").",
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'member', 'who_is_into');
-      const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
-      if (hits.length === 0) {
-        return text('No members have published interests matching that yet.');
+      if (args.query) {
+        const hits = await searchMemberInterests(args.query, WHO_IS_INTO_LIMIT);
+        if (hits.length === 0) {
+          return text('No members have published interests matching that yet.');
+        }
+        return text(await formatInterestResults(hits));
       }
-      return text(await formatInterestResults(hits));
+      const selfMatch = await searchMemberInterestsForSelf(caller.platform, caller.userId, WHO_IS_INTO_LIMIT);
+      if (!selfMatch.hasProfile) {
+        return text(
+          "You haven't published interests yet — call set_my_interests first, then who_is_into with no " +
+            'topic will search using your own published interests.',
+        );
+      }
+      if (selfMatch.hits.length === 0) {
+        return text('No other members have published interests matching yours yet.');
+      }
+      return text(await formatInterestResults(selfMatch.hits));
     },
     { annotations: { readOnlyHint: true } },
   );
