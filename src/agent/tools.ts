@@ -1700,6 +1700,24 @@ const MEMBER_CAPABILITIES_TEXT =
   '- Erase all your stored data any time ("forget me")';
 
 /**
+ * Fixed-literal rundown of the WhatsApp `!`-prefixed text-command shortcuts
+ * (issue #859), appended to MEMBER_CAPABILITIES_TEXT only for a WhatsApp
+ * caller when `config.behaviour.whatsappTextCommandsEnabled` is true (issue
+ * #872) — Discord already gets free discovery via its native `/` picker
+ * (`SlashCommandBuilder.setDescription`, `src/platforms/discord/slashCommands.ts`),
+ * which WhatsApp has no client-native equivalent of. No `!kb`: the existing
+ * KNOWLEDGE_SHORTCUT_ENABLED shortcut already covers WhatsApp for that one
+ * (#859's own decision). Never interpolates caller or message data — same
+ * trust level as MEMBER_CAPABILITIES_TEXT.
+ */
+const WHATSAPP_TEXT_COMMANDS_TEXT =
+  "You're on WhatsApp, so you can also use these zero-wait shortcuts:\n" +
+  '- `!whois <topic>` — find members into a topic\n' +
+  '- `!projects [query]` — browse the project showcase\n' +
+  '- `!guidelines` — community guidelines\n' +
+  "- `!digest` — this week's digest";
+
+/**
  * Plain-language rundown of what an admin can additionally ask the bot to
  * do, on top of MEMBER_CAPABILITIES_TEXT above (issue #367) — every entry in
  * ADMIN_TOOLS gets a mention, consolidated into behaviourally-related
@@ -3198,15 +3216,19 @@ export function buildToolServer(
       'do not answer that from general knowledge alone.',
     {},
     async () => {
+      const memberSegment =
+        caller.platform === 'whatsapp' &&
+        config.behaviour.whatsappTextCommandsEnabled &&
+        atLeast(caller.role, 'member')
+          ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
+          : MEMBER_CAPABILITIES_TEXT;
       if (caller.role === 'super_admin') {
-        return text(
-          `${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`,
-        );
+        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}\n${SUPER_ADMIN_CAPABILITIES_TEXT}`);
       }
       if (caller.role === 'admin') {
-        return text(`${MEMBER_CAPABILITIES_TEXT}\n${ADMIN_CAPABILITIES_TEXT}`);
+        return text(`${memberSegment}\n${ADMIN_CAPABILITIES_TEXT}`);
       }
-      return text(MEMBER_CAPABILITIES_TEXT);
+      return text(memberSegment);
     },
     { annotations: { readOnlyHint: true } },
   );
