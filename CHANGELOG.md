@@ -46,6 +46,17 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   commands were counted, so a WhatsApp-heavy deployment's real cost savings
   from #859 were undercounted in the `Shortcuts fired: ...` line and its
   dollar-avoided estimate.
+- **WhatsApp can now answer from an attached image, closing the gap where
+  only Discord could** (#879): a WhatsApp (Baileys) member at or above
+  `WHATSAPP_IMAGE_INPUT_MIN_ROLE` can attach a screenshot, stack trace, or
+  billing-page image and get a reply grounded in what it actually shows,
+  mirroring #783's Discord image-attachment input field-for-field. Off by
+  default (`WHATSAPP_IMAGE_INPUT_ENABLED`), `super_admin`-only by default,
+  with the same MIME allowlist, byte cap, and daily-per-sender cap as the
+  Discord feature — checked before any download, so a below-tier or
+  over-cap sender's image is never fetched. No image bytes are ever stored.
+  Baileys only in this release, matching the existing WhatsApp voice
+  feature's own Baileys-only scope.
 
 ## 2026-07-29
 
@@ -62,6 +73,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   and alerts an admin rather than retrying silently in the background.
 
 ### Added
+- **`clear_warnings` now tells the member their warnings were cleared** (#865):
+  the one resolution flow that stayed silent — suggestions, reports, appeals,
+  and knowledge tips already DM the affected member, but clearing warnings and
+  lifting a mute never did, so a cleared member had no way to know short of
+  testing whether they could post again. A best-effort DM now fires whenever
+  an admin's `clear_warnings` call actually clears an active warning,
+  distinguishing "mute lifted" from "nothing to lift" wording and honouring
+  the member's standing te reo Māori preference. Sends nothing when there was
+  nothing to clear, and never affects the admin's own reported outcome.
 - **WhatsApp now has zero-cost text-command shortcuts for the four questions
   Discord's slash commands already answer for free** (#859): `!whois <query>`,
   `!projects [query]`, `!guidelines`, `!digest` — a trimmed, case-insensitive

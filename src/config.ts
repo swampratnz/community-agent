@@ -417,6 +417,28 @@ const EnvSchema = z.object({
   // single caller could otherwise run up.
   IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
 
+  // WhatsApp (Baileys only) counterpart to IMAGE_INPUT_* above (issue #879):
+  // mirrors Discord's #783 image-attachment input onto BaileysAdapter,
+  // reusing the exact same untrusted-input class and residual-risk story —
+  // see the comment above IMAGE_INPUT_ENABLED for why the conservative
+  // 'super_admin' default matters here too. WHATSAPP_-prefixed and fully
+  // independent of the unprefixed Discord flags above, mirroring the
+  // existing DISCORD_VOICE_*/WHATSAPP_VOICE_* split rather than the unified
+  // IMAGE_INPUT_* shape, so an operator can enable/tune each platform's
+  // rollout separately.
+  WHATSAPP_IMAGE_INPUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  WHATSAPP_IMAGE_INPUT_MIN_ROLE: z.enum(['super_admin', 'admin', 'member', 'guest']).default('super_admin'),
+  // Same default as IMAGE_INPUT_MAX_BYTES — comfortably inside the Anthropic
+  // API's own per-image limit; refused WITHOUT downloading.
+  WHATSAPP_IMAGE_INPUT_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
+  // Same default as IMAGE_INPUT_DAILY_LIMIT_PER_USER, checked BEFORE any
+  // download — bounds the real per-image multimodal token cost a single
+  // sender could otherwise run up.
+  WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(10),
+
   // RBAC: super admins are env-bootstrapped (never grantable via chat).
   SUPER_ADMIN_DISCORD_IDS: z.string().optional(),
   SUPER_ADMIN_WHATSAPP_NUMBERS: z.string().optional(),
@@ -1244,6 +1266,12 @@ export const config = {
       maxSeconds: env.WHATSAPP_VOICE_MAX_SECONDS,
       minRole: env.WHATSAPP_VOICE_MIN_ROLE,
       rateLimitPerHour: env.WHATSAPP_VOICE_RATE_LIMIT_PER_HOUR,
+    },
+    image: {
+      enabled: env.WHATSAPP_IMAGE_INPUT_ENABLED ?? false,
+      minRole: env.WHATSAPP_IMAGE_INPUT_MIN_ROLE,
+      maxBytes: env.WHATSAPP_IMAGE_INPUT_MAX_BYTES,
+      dailyLimitPerUser: env.WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER,
     },
     cloud: {
       phoneNumberId: env.WHATSAPP_CLOUD_PHONE_NUMBER_ID,
