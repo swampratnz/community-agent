@@ -2795,20 +2795,31 @@ itself — same failure text, same admin-notify debounce, just reached less
 often.
 
 ## Residual risks (accepted, documented)
-- **A timed-out agent turn is abandoned, not aborted** (`AGENT_TURN_TIMEOUT_MS`,
-  issue #826). The wall-clock ceiling bounds how long the *caller* waits; it
-  does not kill the SDK's CLI subprocess. Once it fires, `router.ts`'s
-  per-conversation queue unblocks and a new turn may start while the orphaned
-  `for await` loop is still alive holding the same caller's `toolServer`, so a
-  wedge that clears later can still drive real tool calls. Bounded by: the
-  orphan carries the SAME caller's already-resolved tier and tool surface (no
+- **A timed-out agent turn now sends an abort signal, but the underlying CLI
+  subprocess stopping is still best-effort, not immediate** (`AGENT_TURN_TIMEOUT_MS`,
+  issue #826; `AbortController` wiring added in issue #860). `execTurn`
+  constructs one `AbortController` per turn and passes it to `query()` as
+  `options.abortController`; the same `setTimeout` callback that rejects the
+  `Promise.race` on timeout now also calls `controller.abort()`. Per the
+  installed SDK's own documented contract (`@anthropic-ai/claude-agent-sdk`'s
+  `sdk.d.ts`), that abort is forwarded to the CLI subprocess only after the
+  SDK's own graceful-close path — stdin EOF, then a short grace window —
+  rather than killing it instantly. So there remains a bounded window, now
+  much narrower than before #860, in which `router.ts`'s per-conversation
+  queue has already unblocked and a new turn may start while the orphaned
+  `for await` loop has not yet actually stopped and still holds the same
+  caller's `toolServer`; if it drives a tool call in that window, it is a
+  genuine (if now rare and narrow) side effect. Bounded by: the orphan carries
+  the SAME caller's already-resolved tier and tool surface (no
   privilege-escalation path — every tier check and CONFIRM gate still applies
   to it), and the member-visible reply is final, pinned by a test that releases
   a wedge *after* the timeout and asserts no second reply is produced. Accepted
   because the alternative shipped behaviour was strictly worse: before #826 a
   wedged iteration blocked that conversation's queue forever with no recovery
-  short of a process restart. Killing the subprocess requires `AbortController`
-  wiring, the named growth path the approved issue scoped out.
+  short of a process restart, and before #860 the timeout never told the
+  subprocess to stop at all. `tests/agentCoreTurnTimeout.test.ts` pins that
+  `abort()` fires exactly once, only on the timeout path, and that the
+  installed SDK still documents the `abortController` field this depends on.
 - **Prompt injection is mitigated, not solved.** An admin turn still processes
   untrusted channel text. The blast radius is bounded by: conversation-scoped
   targets, the CONFIRM gate on destructive actions, super-admin alerting, and

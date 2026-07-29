@@ -198,6 +198,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   before building the note instead of after, so its freshness tag stops
   ignoring a stored preference entirely — still one lookup, not two. No
   change for a caller with no stored preference.
+- **A timed-out agent turn now tells the underlying Claude subprocess to
+  stop, instead of only giving up on waiting for it** (#860, following on
+  from #826's wall-clock ceiling). When the per-turn timeout fires, the turn
+  now also sends an abort signal to the SDK call, narrowing (not
+  eliminating — the SDK forwards the signal best-effort, after its own
+  graceful shutdown) the window in which an abandoned turn could still go on
+  to make real tool calls after the member has already been told it failed.
+  No change to a turn that completes within the timeout, and no new
+  configuration — same trigger, same generic failure reply.
 
 ## 2026-07-28
 

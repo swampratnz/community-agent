@@ -899,24 +899,27 @@ async function* imagePromptStream(
  * in a reply — the catch block below returns the existing, unmodified
  * `INTERNAL_ERROR_REPLY` for it, exactly like any other generic turn failure.
  *
- * RESIDUAL, deliberately accepted (issue #826 review): this bounds the
- * CALLER's wait, not the underlying work. `Promise.race` abandons the
- * `for await` loop but does not abort it — the SDK's CLI subprocess keeps
- * running and the loop still holds this caller's `toolServer`. So once the
- * ceiling fires, `router.ts`'s per-conversation queue unblocks and a NEW turn
- * can start while the orphaned generator is still alive; if the wedge later
- * clears, that generator can still drive real tool calls.
+ * RESIDUAL, narrowed but not eliminated (issue #826 review; abort wiring
+ * added in #860). `Promise.race` abandons the `for await` loop, and the
+ * timeout branch now also calls `abortController.abort()` on the same
+ * `query()` call — but per the pinned SDK's own documented contract that
+ * abort is forwarded to the CLI subprocess best-effort, after its graceful
+ * stdin-EOF close and a short grace window, not instantaneously. So there is
+ * still a bounded window, shorter than before #860, in which `router.ts`'s
+ * per-conversation queue has unblocked and a NEW turn can start while the
+ * orphaned generator has not yet actually stopped and still holds this
+ * caller's `toolServer`; if it drives a tool call in that window, it is a
+ * genuine (if now much narrower) side effect.
  *
- * Why that is tolerable as shipped: the orphan runs with the SAME caller's
+ * Why that residual is tolerable: the orphan runs with the SAME caller's
  * already-resolved tier and tool surface, so it is not a privilege-escalation
  * path — the worst case is duplicated side effects from a turn the member was
  * already told had failed, which is strictly better than the pre-#826
  * behaviour where the wedge blocked that conversation's queue forever with no
- * recovery short of a process restart. Killing the subprocess needs
- * `AbortController` wiring, which the approved issue explicitly scoped out as
- * the growth path. `tests/agentCoreTurnTimeout.test.ts` pins the part a member
- * can observe: the reply they received is final and a late completion never
- * races a second reply into the conversation.
+ * recovery short of a process restart. `tests/agentCoreTurnTimeout.test.ts`
+ * pins both the member-observable part (the reply they received is final and
+ * a late completion never races a second reply into the conversation) and the
+ * new abort call itself (fires exactly once, only on the timeout path).
  */
 class AgentTurnTimeoutError extends Error {}
 
@@ -959,6 +962,16 @@ async function execTurn(
   // against a timer unblocks it. Cleared in `finally` on every settle path
   // (success, thrown error, or timeout) so no leaked timer outlives the call.
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  // One AbortController per turn (issue #860), aborted from the timeout
+  // branch below. `abortController` is the exact field name the pinned
+  // @anthropic-ai/claude-agent-sdk@0.3.220's sdk.d.ts documents on `Options`
+  // ("Controller for cancelling the query. When aborted, the query will stop
+  // and clean up resources.") — confirmed by
+  // tests/agentCoreTurnTimeout.test.ts's .d.ts-pinning test, mirroring the
+  // core.ts:450 / tests/agentSkillsEnabled.test.ts precedent, so a future SDK
+  // upgrade that renames or drops it fails CI instead of the abort silently
+  // becoming a no-op.
+  const abortController = new AbortController();
   try {
     await Promise.race([
       (async () => {
@@ -969,14 +982,17 @@ async function execTurn(
           // config.discord.image / DiscordAdapter.maybeFetchImageAttachment)
           // switches this to the single-message async-iterable form instead.
           prompt: image ? imagePromptStream(prompt, image) : prompt,
-          options: buildQueryOptions(
-            caller.role,
-            systemPrompt,
-            { community: toolServer },
-            resumeSession,
-            caller.conversationId,
-            caller.platform,
-          ),
+          options: {
+            ...buildQueryOptions(
+              caller.role,
+              systemPrompt,
+              { community: toolServer },
+              resumeSession,
+              caller.conversationId,
+              caller.platform,
+            ),
+            abortController,
+          },
         })) {
           switch (message.type) {
             case 'system':
@@ -1057,6 +1073,13 @@ async function execTurn(
       })(),
       new Promise<never>((_resolve, reject) => {
         timeoutHandle = setTimeout(() => {
+          // Additive to #826's mechanism, not a replacement: the reject below
+          // is unchanged, this only also tells the SDK to stop the underlying
+          // CLI subprocess. Per the pinned sdk.d.ts (see SpawnOptions.signal
+          // above `query`'s own Options.abortController), this is forwarded
+          // best-effort — it aborts only after the SDK's own graceful-close
+          // path (stdin EOF, then a ~2s grace window), not instantaneously.
+          abortController.abort();
           reject(new AgentTurnTimeoutError('agent turn timed out'));
         }, config.behaviour.agentTurnTimeoutMs);
       }),
