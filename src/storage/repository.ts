@@ -57,6 +57,7 @@ export * from './repository/knowledgeGaps.js';
 export * from './repository/adminStats.js';
 export * from './repository/contentReports.js';
 export * from './repository/answerFeedback.js';
+export * from './repository/responseLatency.js';
 
 export interface InteractionInput {
   platform: Platform;
