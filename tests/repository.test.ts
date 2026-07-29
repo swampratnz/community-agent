@@ -4596,6 +4596,7 @@ test(
     await recordShortcutHit('knowledge');
     await recordShortcutHit('repeat_question');
     await recordShortcutHit('repeat_max_turns');
+    await recordShortcutHit('slash_command');
     // Outside the 1-day window — must not contribute to either total or byKind.
     await pool.query(`INSERT INTO shortcut_hits (kind, created_at) VALUES ($1, now() - interval '2 days')`, [
       'ack',
@@ -4604,7 +4605,7 @@ test(
     const after = await sumShortcutHits(days);
     const afterByKind = new Map(after.byKind.map((r) => [r.kind, r.count]));
 
-    assert.equal(after.total - before.total, 5, 'total sums only the in-window rows: 2 + 1 + 1 + 1');
+    assert.equal(after.total - before.total, 6, 'total sums only the in-window rows: 2 + 1 + 1 + 1 + 1');
     assert.equal(
       (afterByKind.get('ack') ?? 0) - (beforeByKind.get('ack') ?? 0),
       2,
@@ -4613,10 +4614,15 @@ test(
     assert.equal((afterByKind.get('knowledge') ?? 0) - (beforeByKind.get('knowledge') ?? 0), 1);
     assert.equal((afterByKind.get('repeat_question') ?? 0) - (beforeByKind.get('repeat_question') ?? 0), 1);
     assert.equal((afterByKind.get('repeat_max_turns') ?? 0) - (beforeByKind.get('repeat_max_turns') ?? 0), 1);
+    assert.equal(
+      (afterByKind.get('slash_command') ?? 0) - (beforeByKind.get('slash_command') ?? 0),
+      1,
+      'slash_command (issue #863) sums its one in-window row',
+    );
 
     await pool.query(
       `DELETE FROM shortcut_hits WHERE kind = ANY($1) AND created_at > now() - interval '3 days'`,
-      [['ack', 'knowledge', 'repeat_question', 'repeat_max_turns']],
+      [['ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command']],
     );
   },
 );
@@ -5076,6 +5082,16 @@ test(
       /violates check constraint/,
       'the kind CHECK constraint rejects anything outside the fixed enum',
     );
+
+    // 'slash_command' (issue #863) widened the same CHECK constraint and must
+    // be accepted with no migration failure against a table that already
+    // holds rows for the original four kinds (this test runs after those
+    // kinds' own rows have been inserted elsewhere in this suite).
+    const inserted = await pool.query(
+      `INSERT INTO shortcut_hits (kind) VALUES ('slash_command') RETURNING id`,
+    );
+    assert.equal(inserted.rowCount, 1, "the widened CHECK constraint must accept 'slash_command'");
+    await pool.query(`DELETE FROM shortcut_hits WHERE id = $1`, [inserted.rows[0].id]);
 
     // sumShortcutHits's return shape carries only kind + count — no
     // user/conversation identifier or free-text field can leak through it.

@@ -7660,8 +7660,36 @@ test('formatUsageStats: shortcutHits.total > 0 appends a per-kind breakdown with
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1) — ' +
+      'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0) — ' +
       '~$3.50 avoided at the member-tier average reply cost.',
+  );
+});
+
+test('formatUsageStats: shortcutHits breakdown includes a slash-command count when Discord slash-command hits are present (issue #863)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      shortcutHits: {
+        total: 9,
+        byKind: [
+          { kind: 'ack', count: 2 },
+          { kind: 'knowledge', count: 3 },
+          { kind: 'repeat_question', count: 1 },
+          { kind: 'repeat_max_turns', count: 1 },
+          { kind: 'slash_command', count: 2 },
+        ],
+      },
+    },
+    7,
+  );
+  // member row: costUsd 1.5 / replies 3 = $0.50/reply avg; 9 * 0.50 = $4.50
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Shortcuts fired: 9 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 2) — ' +
+      '~$4.50 avoided at the member-tier average reply cost.',
   );
 });
 
@@ -7679,7 +7707,7 @@ test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits th
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: none\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0).',
+      'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0, slash-command 0).',
   );
 });
 

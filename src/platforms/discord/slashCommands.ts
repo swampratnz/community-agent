@@ -16,6 +16,7 @@ import {
   getLanguagePreference,
   hasConflictAmongIds,
   listRecentProjects,
+  recordShortcutHit,
   searchKnowledge,
   searchMemberInterests,
   searchProjects,
@@ -188,6 +189,7 @@ async function handleKb(interaction: ChatInputCommandInteraction, deps: SlashCom
           return new Set<number>();
         })
       : new Set<number>();
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(
     interaction,
     formatKnowledgeSearchResults(
@@ -231,6 +233,7 @@ async function handleProjects(
           ? 'No shared projects match that.'
           : 'No projects have been shared yet.'
       : await formatProjectResults(projects);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, reply, deps);
 }
 
@@ -251,6 +254,7 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
     hits.length === 0
       ? 'No members have published interests matching that yet.'
       : await formatInterestResults(hits);
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, reply, deps);
 }
 
@@ -279,6 +283,7 @@ async function handleGuidelines(
     languagePreference === 'mi'
       ? ((await getCommunityGuidelinesMi()) ?? (await getCommunityGuidelines()))
       : await getCommunityGuidelines();
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(
     interaction,
     guidelines ?? 'No community guidelines have been set yet — ask an admin.',
@@ -304,6 +309,7 @@ async function handleDigest(interaction: ChatInputCommandInteraction, deps: Slas
   // never wrapped in untrusted()) — like /kb/whois/projects/guidelines, this
   // reply never re-enters model context, so there is nothing to quarantine.
   const message = await buildMemberDigestContent();
+  recordShortcutHit('slash_command').catch((err) => logger.warn({ err }, 'shortcut_hit_record_failed'));
   await replyEphemeral(interaction, message ?? 'Nothing to report right now.', deps);
 }
 

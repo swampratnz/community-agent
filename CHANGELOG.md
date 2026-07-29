@@ -124,6 +124,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   wait-clause-only notice, so the notice doesn't grow on every repeat.
   Guidelines are unchanged if never set, and a lookup failure still sends the
   base notice — never blocks or empties the reply.
+- **`usage_stats`'s shortcut-hit count now includes Discord slash-command
+  usage** (#863), closing a gap #744 itself named as deferred: `/kb`,
+  `/whois`, `/projects`, `/guidelines`, and `/digest` all avoid a model call
+  exactly like the four original shortcuts (ack/knowledge/repeat-question/
+  repeat-max-turns), but none of them were counted in the "Shortcuts fired"
+  line until now. A successful invocation of any of the five records one
+  aggregate `slash_command` hit (an auth-denied reply records nothing), so
+  the total and dollar-avoided estimate now reflect this whole cost-
+  avoidance path. Byte-identical output when no shortcut of any kind has
+  fired in the window.
 
 ### Fixed
 - **The offline context builder's cluster summariser no longer silently
