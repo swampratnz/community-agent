@@ -56,6 +56,13 @@ import {
 const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 
+// Bounded retry for a transient `sock.sendMessage` failure on the two
+// reply/DM-carrying send paths (issue #852) — the Baileys-adapter port of
+// #846's Discord `DISCORD_SEND_MAX_ATTEMPTS`/`DISCORD_SEND_RETRY_DELAY_MS`,
+// same values, same shape.
+const BAILEYS_SEND_MAX_ATTEMPTS = 3;
+const BAILEYS_SEND_RETRY_DELAY_MS = 500;
+
 // Bounds for the sent-message retry cache (see `sentMessages`). Retry receipts
 // for an undecryptable message arrive within minutes, occasionally hours; keep
 // enough to service them without letting the cache grow unbounded on a busy
@@ -157,6 +164,8 @@ export class BaileysAdapter implements PlatformAdapter {
   /** WA Web version is fetched once and reused across reconnects. */
   private cachedVersion: [number, number, number] | null = null;
   private welcomeCooldown: WelcomeCooldownState = initialWelcomeCooldownState();
+
+  constructor(private readonly sendRetryDelayMs = BAILEYS_SEND_RETRY_DELAY_MS) {}
   /**
    * Bounded cache of the messages we've SENT (id -> content), so `getMessage`
    * (wired into makeWASocket in connect()) can answer a recipient's retry
@@ -882,17 +891,43 @@ export class BaileysAdapter implements PlatformAdapter {
 
   async sendMessage(out: OutgoingMessage): Promise<string[] | undefined> {
     if (!this.sock) throw new Error('WhatsApp socket not connected');
-    const sent = await this.sock.sendMessage(out.conversationId, {
-      text: await this.filtered(out.text, out.language, out.style),
-    });
+    const sock = this.sock;
+    const text = await this.filtered(out.text, out.language, out.style);
+    const sent = await this.sendBaileysMessageWithRetry(() => sock.sendMessage(out.conversationId, { text }));
     this.remember(sent);
     // Clear the "composing" indicator now that the reply has actually sent.
     // Best-effort: a presence update failing here must not affect the send
     // that already succeeded above.
-    this.sock
+    sock
       .sendPresenceUpdate('paused', out.conversationId)
       .catch((err) => logger.debug({ err }, 'Failed to clear WhatsApp presence'));
     return sent?.key?.id ? [sent.key.id] : undefined;
+  }
+
+  /**
+   * Retries a single Baileys `sock.sendMessage` call (a reply or a DM) up to
+   * `BAILEYS_SEND_MAX_ATTEMPTS` times total (issue #852) — the same
+   * bounded-retry shape #846 applied to the Discord adapter's send paths
+   * (`sendDiscordMessageWithRetry`), scoped to just the already-built socket
+   * call so the caller's `filtered()` call runs exactly once, before the
+   * loop starts, and a retry re-sends the identical filtered payload rather
+   * than re-deriving or re-filtering it. Re-throws once attempts are
+   * exhausted so the existing `router.ts` "respond failed" log path still
+   * fires as the final backstop for a persistent failure.
+   */
+  private async sendBaileysMessageWithRetry<T>(send: () => Promise<T>): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= BAILEYS_SEND_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await send();
+      } catch (err) {
+        lastErr = err;
+        if (attempt === BAILEYS_SEND_MAX_ATTEMPTS) break;
+        logger.warn({ err, attempt }, 'WhatsApp send attempt failed, retrying');
+        await new Promise((resolve) => setTimeout(resolve, this.sendRetryDelayMs));
+      }
+    }
+    throw lastErr;
   }
 
   /** Post an image (with an optional caption) to a conversation. */
@@ -921,9 +956,12 @@ export class BaileysAdapter implements PlatformAdapter {
     if (!isPhoneUserId(userId)) {
       throw new Error(`Refusing to DM "${userId}": not a phone-number id (LID-only sender?).`);
     }
-    this.remember(
-      await this.sock.sendMessage(`${userId}@s.whatsapp.net`, { text: await this.filtered(text) }),
+    const sock = this.sock;
+    const filteredText = await this.filtered(text);
+    const sent = await this.sendBaileysMessageWithRetry(() =>
+      sock.sendMessage(`${userId}@s.whatsapp.net`, { text: filteredText }),
     );
+    this.remember(sent);
   }
 
   /**
