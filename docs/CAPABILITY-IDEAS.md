@@ -33,13 +33,16 @@ floor. An image-only message arrives as empty text.
 
 ### A1. Screenshot / image input *(high impact, medium effort)*
 
-**Status:** Shipped (issue #783). `IMAGE_INPUT_ENABLED` (off by default,
-`IMAGE_INPUT_MIN_ROLE` default `'super_admin'` — a deliberate correction of
-this entry's own `member+` draft text, see SECURITY.md §22) gates a single
-Discord image attachment per message, MIME-allowlisted and byte-capped, passed
-to `query()` as an image content block alongside the turn's text. No image
-bytes are stored. `src/media/grokImage.ts` remains unrelated: it generates
-images as tool *output*, not image input/perception.
+**Status:** Shipped (issue #783, WhatsApp/Baileys parity in #879).
+`IMAGE_INPUT_ENABLED` (Discord) / `WHATSAPP_IMAGE_INPUT_ENABLED`
+(WhatsApp/Baileys) — both off by default, both `MIN_ROLE` defaulting to
+`'super_admin'` — a deliberate correction of this entry's own `member+` draft
+text, see SECURITY.md §22) gate a single image attachment per message,
+MIME-allowlisted and byte-capped, passed to `query()` as an image content
+block alongside the turn's text. No image bytes are stored. `WhatsAppCloudAdapter`
+remains out of scope, matching the existing `WHATSAPP_VOICE_*` Baileys-only
+precedent. `src/media/grokImage.ts` remains unrelated: it generates images as
+tool *output*, not image input/perception.
 
 **Why:** in a builders' community the most common support artifact is a
 screenshot — a stack trace, a console error, a Workbench screenshot, a billing
@@ -63,8 +66,8 @@ image-borne instructions (the prompt-review clause for pasted prompts, issue
 more expensive per turn than text, so a per-user daily cap alongside
 `DAILY_REPLY_LIMIT_PER_USER` is part of v1, not a growth path.
 
-**Grows into:** WhatsApp images (same normalisation), and admin-side triage of
-reported image content.
+**Grows into:** `WhatsAppCloudAdapter` parity (Baileys-only in #879), and
+admin-side triage of reported image content.
 
 ### A2. Discord voice-message transcription *(medium impact, low effort)*
 
@@ -380,7 +383,7 @@ prompt change ships, is the right shape.
 
 | Idea | Impact | Effort | Status | Notes |
 |---|---|---|---|---|
-| A1 Image input | High | Medium | Not started | Biggest capability gap; injection + cost design required |
+| A1 Image input | High | Medium | Shipped (#783/#879) | Discord + WhatsApp/Baileys; Cloud API adapter still not started |
 | B1 Agent Skills | High | Medium | Shipped (#741/#742) | Also reduces per-turn cached prefix; repo-bundled only |
 | C1 Slash commands | High | Medium | Shipped (#744) | Cost + discoverability; Discord-only, keep read-only |
 | D1 Helper handoff | High | Medium | Shipped (#729) | The one idea that pings people — opt-in is the feature |

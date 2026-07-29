@@ -86,3 +86,22 @@ export function extractAudio(msg: WAMessage): {
   const audio = m?.audioMessage ?? null;
   return { audio, contextInfo: audio?.contextInfo ?? null };
 }
+
+/**
+ * The image-attachment payload of a message, if any, after unwrapping the
+ * same protocol containers as `extractText`/`extractAudio` (issue #879, the
+ * WhatsApp/Baileys counterpart to Discord's #783 image-attachment input).
+ * `contextInfo` is returned separately, same reasoning as `extractAudio`: an
+ * image's caption lives on the `imageMessage` itself, not on an
+ * `extendedTextMessage`, so without this a mention placed in an image's
+ * caption would never be detected. Returns `{ image: null }` for every
+ * non-image message — the normal text/audio paths are untouched.
+ */
+export function extractImage(msg: WAMessage): {
+  image: proto.Message.IImageMessage | null;
+  contextInfo: proto.IContextInfo | null;
+} {
+  const m = unwrapMessage(msg.message);
+  const image = m?.imageMessage ?? null;
+  return { image, contextInfo: image?.contextInfo ?? null };
+}
