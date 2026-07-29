@@ -728,10 +728,18 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
   per-row — a crafted name/description/link can't escape the rendered block
   or forge another member's attribution. A stored `link` is verbatim
   member-supplied text, **rendered, never fetched** — no preview, no SSRF
-  surface, same as every other member-authored link in this bot. Rows are
-  deleted by `forget_me`/`purge_user_data` and on roster leave (a departed
-  member's published projects go with them, unlike most other member data
-  which waits for an explicit privacy request), and counted in `my_data`.
+  surface, same as every other member-authored link in this bot. `list_projects`'
+  `mine` boolean (issue #867) is the self-recall counterpart `share_project`'s
+  own name-based edit/remove contract needs: it calls `listOwnProjects`
+  scoped by equality on `caller.platform`/`caller.userId` — identity, never a
+  tool-argument-supplied id — ignores any supplied `query`/`seekingCollaborators`
+  entirely rather than falling through to the public search path, and renders
+  through the same unmodified `formatProjectResults`. No new tool, tier,
+  table, or exposure: it returns only the caller's own already-public rows.
+  Rows are deleted by `forget_me`/`purge_user_data` and on roster leave (a
+  departed member's published projects go with them, unlike most other
+  member data which waits for an explicit privacy request), and counted in
+  `my_data`.
 - **Member interests / member-to-member discovery** (`member_interests`,
   issue #634): a member publishes a single free-text blob of their own
   interests with `set_my_interests(text | 'clear')`, discoverable by every

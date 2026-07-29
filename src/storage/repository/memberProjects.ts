@@ -189,6 +189,26 @@ export async function listRecentProjects(
   return rows.map(mapMemberProjectRow);
 }
 
+/**
+ * Self-scoped listing: the caller's own ACTIVE (`removed_at IS NULL`) shared
+ * projects, ORDER BY created_at DESC — the recall path `share_project`'s
+ * edit/remove-by-name contract needs (issue #867) but list_projects never
+ * exposed. Scoped by equality on BOTH platform and user_id, taken from the
+ * caller's own identity only (never a tool-argument-supplied identifier), the
+ * same self-scoping pattern as getActiveProjectNamesForOwners above. No limit
+ * param — naturally bounded by MEMBER_PROJECT_CAP.
+ */
+export async function listOwnProjects(platform: Platform, userId: string): Promise<MemberProject[]> {
+  const { rows } = await pool.query(
+    `SELECT id, platform, user_id, name, description, link, seeking_collaborators, created_at
+       FROM member_projects
+      WHERE platform = $1 AND user_id = $2 AND removed_at IS NULL
+      ORDER BY created_at DESC`,
+    [platform, userId],
+  );
+  return rows.map(mapMemberProjectRow);
+}
+
 export interface MemberProjectSearchHit extends MemberProject {
   similarity: number;
 }
