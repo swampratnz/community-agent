@@ -38,6 +38,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   and alerts an admin rather than retrying silently in the background.
 
 ### Added
+- **`clear_warnings` now tells the member their warnings were cleared** (#865):
+  the one resolution flow that stayed silent — suggestions, reports, appeals,
+  and knowledge tips already DM the affected member, but clearing warnings and
+  lifting a mute never did, so a cleared member had no way to know short of
+  testing whether they could post again. A best-effort DM now fires whenever
+  an admin's `clear_warnings` call actually clears an active warning,
+  distinguishing "mute lifted" from "nothing to lift" wording and honouring
+  the member's standing te reo Māori preference. Sends nothing when there was
+  nothing to clear, and never affects the admin's own reported outcome.
 - **Community digest is now available on demand, not just as a weekly post**
   (#841): a new member-tier `community_digest` chat tool and a matching
   `/digest` Discord slash command both pull this week's topics, new

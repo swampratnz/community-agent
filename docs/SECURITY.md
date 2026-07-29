@@ -1460,7 +1460,17 @@ A normal user tries to get the agent to moderate, announce, or reveal secrets.
     (e.g. the manual `warn_user` mute alert) are unaffected.
   - `clear_warnings` (admin tier, pinned by a `SECURITY:` RBAC test) clears a
     member's active warnings and lifts the mute; it's lenient/reversible so it
-    isn't CONFIRM-gated, and any admin may clear anyone's.
+    isn't CONFIRM-gated, and any admin may clear anyone's. On a genuine
+    `cleared > 0` transition it now also sends the target member a best-effort
+    `notifyWarningsCleared` DM confirming they can post again (issue #865),
+    the last of the codebase's member-resolution flows to close this gap —
+    mirroring `notifyAppealResolved`'s shape (fixed English/`mi` text, no
+    interpolated free text, `WindowClosedError` queued via
+    `queueForWindowReopen` at `'low'`, any other send failure logged and
+    dropped) and never altering `clear_warnings`' own admin-facing result. No
+    DM is sent when `cleared === 0` — an admin pre-emptively clearing stale,
+    never-active warnings triggers no notification (pinned by `SECURITY:`
+    tests).
   - `list_muted_members` (issue #487, admin tier, pinned by a `SECURITY:` RBAC
     test) enumerates currently-muted members by identity — the growth path
     #403 named and deferred for the digest's bare `🔇 N` count. It sits at the

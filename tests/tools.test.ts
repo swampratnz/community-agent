@@ -41,6 +41,7 @@ const {
   notifyAppealFiled,
   notifyAppealResolved,
   notifyKnowledgeTipResolved,
+  notifyWarningsCleared,
   buildToolServer,
   formatKnowledgeSearchResults,
   formatKnowledgeTopics,
@@ -1095,6 +1096,92 @@ test("SECURITY: notifyAppealResolved degrades to the English default, rather tha
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /reviewed and resolved/);
+});
+
+// notifyWarningsCleared holds all of clear_warnings' new (issue #865)
+// notification behaviour — the last of the codebase's member-resolution
+// flows that stayed silent — tested directly here the same way
+// notifyAppealResolved is above.
+test('notifyWarningsCleared sends a DM naming the outcome, wording differing per muteLifted', async () => {
+  const calls: Array<[string, string]> = [];
+  const adapter = stubAdapter(async (userId, text) => {
+    calls.push([userId, text]);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true);
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', false);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'user-1');
+  assert.match(calls[0][1], /mute has been lifted/i);
+  assert.match(calls[0][1], /can post again/i);
+  assert.notEqual(calls[0][1], calls[1][1], 'muteLifted true/false get distinct wording');
+  assert.doesNotMatch(calls[1][1], /mute/i, 'no mute-lifted claim when nothing was lifted');
+});
+
+test('notifyWarningsCleared swallows a DM failure rather than throwing (clear_warnings stays the source of truth)', async () => {
+  const adapter = stubAdapter(async () => {
+    throw new Error('DMs closed');
+  });
+
+  await assert.doesNotReject(notifyWarningsCleared(adapter, 'user-1', 'discord', true));
+});
+
+test('SECURITY: notifyWarningsCleared queues via queueForWindowReopen at "low" priority on a WindowClosedError, rather than dropping the DM (issue #644 recovery extended to issue #865)', async () => {
+  const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+  const adapter: PlatformAdapter = {
+    ...stubAdapter(async () => {
+      throw new WindowClosedError('user-1');
+    }),
+    queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+      queued.push({ userId, message, priority });
+    },
+  };
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true);
+
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.userId, 'user-1');
+  assert.equal(queued[0]?.priority, 'low');
+});
+
+test("notifyWarningsCleared sends the te reo Māori variant for a caller with a stored 'mi' preference (issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true, async () => 'mi');
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', false, async () => 'mi');
+
+  assert.match(calls[0], /whakawāteahia/);
+  assert.match(calls[0], /noho pōkai/, 'mi wording distinguishes the mute-lifted case too');
+  assert.notEqual(calls[0], calls[1], 'mi wording also differs per muteLifted');
+});
+
+test("notifyWarningsCleared sends the English default for the default 'auto' preference, byte-identical to today", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true, async () => 'auto');
+
+  assert.match(calls[0], /warnings have been cleared/i);
+});
+
+test("SECURITY: notifyWarningsCleared degrades to the English default, rather than throwing or dropping the DM, when the language-preference lookup fails (issue #52's invariant extended to issue #331)", async () => {
+  const calls: string[] = [];
+  const adapter = stubAdapter(async (_userId, message) => {
+    calls.push(message);
+  });
+
+  await notifyWarningsCleared(adapter, 'user-1', 'discord', true, async () => {
+    throw new Error('DB unreachable');
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /warnings have been cleared/i);
 });
 
 // notifyKnowledgeTipResolved holds all of accept_knowledge_candidate /
@@ -5160,6 +5247,115 @@ test(
       0,
       'the admin-source row must be cleared too',
     );
+  },
+);
+
+test(
+  'clear_warnings sends the target member exactly one confirmation DM when it actually clears an active ' +
+    'warning, wording the mute as lifted when the unmute attempt is not reported as failed (issue #865 ' +
+    'acceptance criterion #1)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-notify`;
+    const target = `${RUN}-warnings-cleared-notify-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    await addWarning({
+      platform: 'whatsapp',
+      userId: target,
+      reason: 'spam',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, message) => {
+      calls.push([userId, message]);
+    });
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
+    // Filtered to the target: the same adapter also carries the unrelated
+    // audited()-> notifySuperAdmins alert about the admin's own action
+    // (issue #288), which is not what this test is pinning.
+    const toTarget = calls.filter(([userId]) => userId === target);
+    assert.equal(toTarget.length, 1, 'exactly one DM to the target member');
+    assert.match(toTarget[0][1], /mute has been lifted/i);
+    assert.match(toTarget[0][1], /can post again/i);
+  },
+);
+
+test(
+  'SECURITY: clear_warnings sends no DM when the target had no active warnings to clear — no notification ' +
+    'without a state change (issue #865 acceptance criteria #2/#5)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-noop`;
+    const target = `${RUN}-warnings-cleared-noop-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    assert.equal(await countActiveWarnings('whatsapp', target), 0, 'sanity: no warnings seeded');
+
+    const calls: Array<[string, string]> = [];
+    const adapter = stubAdapter(async (userId, message) => {
+      calls.push([userId, message]);
+    });
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+    const result = await registeredTool.handler({ targetUserId: target });
+
+    assert.doesNotMatch(result.content[0]?.text ?? '', /^(Failed|Refusing)/);
+    assert.equal(
+      calls.filter(([userId]) => userId === target).length,
+      0,
+      'no active warnings means nothing changed for the target — no DM',
+    );
+  },
+);
+
+test(
+  'SECURITY: clear_warnings notification is fire-and-forget — a DM-send failure on the notify path never ' +
+    "changes clear_warnings' own reported success to the calling admin and never throws out of the tool " +
+    'call (issue #865 acceptance criterion #4)',
+  { skip },
+  async () => {
+    const convo = `${RUN}-warnings-cleared-dm-fails`;
+    const target = `${RUN}-warnings-cleared-dm-fails-target`;
+    await seedKnownUser('whatsapp', convo, target);
+    await addWarning({
+      platform: 'whatsapp',
+      userId: target,
+      reason: 'spam',
+      excerpt: null,
+      source: 'admin',
+      issuedBy: MANUAL_WARN_HANDLER_ADMIN,
+    });
+
+    const adapter = stubAdapter(async () => {
+      throw new Error('DMs closed');
+    });
+    const registeredTool = clearWarningsHandler({
+      platform: 'whatsapp',
+      userId: MANUAL_WARN_HANDLER_ADMIN,
+      adapter,
+    });
+
+    // A rejection here would fail the test on its own — the explicit
+    // assertions below additionally pin the exact non-degraded outcome.
+    const result = await registeredTool.handler({ targetUserId: target });
+    assert.doesNotMatch(
+      result.content[0]?.text ?? '',
+      /^(Failed|Refusing)/,
+      "a failed member-facing DM must never flip clear_warnings' own admin-facing outcome to failure",
+    );
+    assert.match(result.content[0]?.text ?? '', /can post again/i);
   },
 );
 
