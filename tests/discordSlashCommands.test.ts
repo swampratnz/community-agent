@@ -1076,3 +1076,116 @@ test('handleInteraction ignores every non-chat-input interaction (e.g. a button 
   const nonCommand = { isChatInputCommand: () => false };
   await assert.doesNotReject(() => handleInteraction(nonCommand as never, adapterDeps(adapter)));
 });
+
+// --- Issue #863: slash-command usage counted into shortcut_hits --------------
+
+/** Every `INSERT INTO shortcut_hits` call recorded across a set of pool.query calls. */
+function shortcutHitCalls(
+  calls: Array<{ sql: string; params: unknown[] }>,
+): Array<{ sql: string; params: unknown[] }> {
+  return calls.filter((c) => c.sql.includes('INSERT INTO shortcut_hits'));
+}
+
+test("a successful /kb invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
+  const calls = mockPool(t, {
+    memberRole: null,
+    knowledgeRows: [
+      {
+        id: 1,
+        title: 'FAQ',
+        content: 'trusted answer',
+        created_by_role: 'admin',
+        similarity: 0.9,
+        updated_at: new Date(),
+      },
+    ],
+  });
+  const adapter = new DiscordAdapter();
+  const { interaction } = fakeInteraction({
+    commandName: 'kb',
+    userId: 'guest-1',
+    options: { query: 'faq' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  const hits = shortcutHitCalls(calls);
+  assert.equal(hits.length, 1, '/kb must record exactly one slash_command hit');
+  assert.deepEqual(hits[0].params, ['slash_command']);
+});
+
+test("a successful /whois invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', interestRows: [] });
+  const adapter = new DiscordAdapter();
+  const { interaction } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: { query: 'rag' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/whois must record exactly one slash_command hit');
+});
+
+test("a successful /projects invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
+  const calls = mockPool(t, { memberRole: 'member', projectRows: [] });
+  const adapter = new DiscordAdapter();
+  const { interaction } = fakeInteraction({ commandName: 'projects', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/projects must record exactly one slash_command hit');
+});
+
+test("a successful /guidelines invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
+  resetPolicyCacheForTests();
+  const calls = mockPool(t, { guidelines: 'Be kind.' });
+  const adapter = new DiscordAdapter();
+  const { interaction } = fakeInteraction({ commandName: 'guidelines', userId: 'anyone-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/guidelines must record exactly one slash_command hit');
+});
+
+test("a successful /digest invocation calls recordShortcutHit('slash_command') exactly once (issue #863 acceptance criterion 1)", async (t) => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  t.mock.method(pool, 'query', (async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT role FROM community_users')) return { rows: [{ role: 'member' }], rowCount: 0 };
+    if (sql.includes('FROM knowledge_candidates')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_projects')) return { rows: [{ n: '0' }], rowCount: 0 };
+    if (sql.includes('FROM member_interests')) return { rows: [{ n: '0' }], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  }) as typeof pool.query);
+  const adapter = new DiscordAdapter();
+  const { interaction } = fakeInteraction({ commandName: 'digest', userId: 'member-1' });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(shortcutHitCalls(calls).length, 1, '/digest must record exactly one slash_command hit');
+});
+
+test('SECURITY: recordShortcutHit is never called on the NOT_AUTHORIZED_TEXT branch for /whois or /projects (issue #863 acceptance criterion 4/security criterion 5)', async (t) => {
+  const calls = mockPool(t, { memberRole: null });
+  const adapter = new DiscordAdapter();
+
+  const whois = fakeInteraction({ commandName: 'whois', userId: 'guest-1', options: { query: 'rag' } });
+  await handleInteraction(whois.interaction as never, adapterDeps(adapter));
+  assert.match(whois.replies[0].content, /don't have access/i, 'sanity check: /whois was actually denied');
+
+  const projects = fakeInteraction({ commandName: 'projects', userId: 'guest-1' });
+  await handleInteraction(projects.interaction as never, adapterDeps(adapter));
+  assert.match(
+    projects.replies[0].content,
+    /don't have access/i,
+    'sanity check: /projects was actually denied',
+  );
+
+  assert.equal(
+    shortcutHitCalls(calls).length,
+    0,
+    'an auth-denied reply must never record a shortcut hit — that would let the counter be used to infer auth-denied probe volume',
+  );
+});

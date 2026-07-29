@@ -2286,10 +2286,18 @@ member-facing "guidelines" surface, and the only sensible referent for
 criterion 4's "matching the chat path" language for a command with no tool
 counterpart of its own.
 
-Scope is deliberately narrow (issue #744's guardrail): exactly these four
-commands, no `shortcut_hits` tracking of slash-command usage (a named growth
-path, not this feature), and no WhatsApp equivalent — all four underlying
-tools remain reachable via chat on every platform regardless of this flag.
+Scope is deliberately narrow (issue #744's guardrail): exactly these
+commands and no WhatsApp equivalent — all underlying tools remain reachable
+via chat on every platform regardless of this flag. `shortcut_hits` tracking
+of slash-command usage, named above as a deferred growth path, has since been
+built (issue #863): every successful invocation of `/kb`, `/whois`,
+`/projects`, `/guidelines`, or `/digest` records one `slash_command`
+`shortcut_hits` row (an aggregate per-mechanism count, not broken down by
+command name, matching the granularity of the four original kinds from issue
+#440), so `usage_stats`'s "Shortcuts fired" line now includes this
+cost-avoidance path in its total and its `slash-command N` breakdown. An
+auth-denied reply records nothing, so the counter can never be used to infer
+auth-denied probe volume.
 
 ## Concurrency model
 
@@ -2825,7 +2833,11 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   env-gated turn-skipping shortcuts (ack, knowledge, repeat-question,
   repeat-max-turns) fired, with a rough dollar estimate of Max-pool spend
   avoided at the member-tier average reply cost. Both lines are appended only
-  when non-zero, byte-identical to today's output otherwise.
+  when non-zero, byte-identical to today's output otherwise. A fifth
+  `slash_command` kind (issue #863) folds in every successful Discord slash-
+  command reply (`/kb`, `/whois`, `/projects`, `/guidelines`, `/digest`) as
+  one aggregate count, so the shortcut-hit total and dollar estimate now
+  cover that previously-invisible cost-avoidance path too.
 - `usage_stats` also reports a `Prompt cache: NN% hit rate (X read / Y new
   tokens)` line (issue #522), summing the `cache_read_input_tokens`/
   `cache_creation_input_tokens` counts issue #508 already reads off each
