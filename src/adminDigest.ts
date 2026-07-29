@@ -20,6 +20,7 @@ import {
   countOpenReports,
   countPendingKnowledgeCandidates,
   countPendingSuggestions,
+  countProjectConnectionsSince,
   countProjectsSharedSince,
   countStaleKnowledge,
   countStaleMutedMembers,
@@ -294,6 +295,19 @@ function pctTrendSuffix(key: string, current: number, previous: Record<string, n
  * `topic` content ever reaches the DM. Append-only trailing param, default 0,
  * so every existing call site is unaffected and the quiet case (all three 0)
  * is byte-identical to the pre-#820 form.
+ * `projectConnectionsCount` (issue #870) is the flywheel line's fourth
+ * dimension: `request_project_connection` calls (`project_connection_requests`
+ * rows) since the same `since` window, from `countProjectConnectionsSince` —
+ * the second action in `helperMatchesCount`'s "actively connects two members"
+ * category, shipped after #820 and never previously wired into this line.
+ * Unlike `helperMatchesCount` it is called unconditionally — there is no
+ * feature flag for `request_project_connection`, unlike `find_helper`.
+ * Extends the line's gate to a four-way `||` and gets its own independent
+ * `trendSuffix`, same one-call-per-signal convention. Bare integer only — no
+ * requester/owner identifier and no project name/description/link ever
+ * reaches the DM. Append-only trailing param, default 0, so every existing
+ * call site is unaffected and the quiet case (all four 0) is byte-identical
+ * to the pre-#870 form.
  */
 export function buildAdminDigestMessage(
   clusters: readonly QuestionCluster[],
@@ -457,6 +471,13 @@ export function buildAdminDigestMessage(
   // unaffected and the quiet case is byte-identical to the pre-#844 form.
   resolvedAppealsCount: number = 0,
   dismissedAppealsCount: number = 0,
+  // request_project_connection calls since the same `since` window (issue
+  // #870) — the flywheel line's fourth dimension, alongside
+  // acceptedKnowledgeCandidatesCount/projectsSharedCount/helperMatchesCount
+  // above. Append-only trailing param, default 0, so every existing call
+  // site is unaffected and the quiet case (all four flywheel sub-signals 0)
+  // is byte-identical to the pre-#870 form.
+  projectConnectionsCount: number = 0,
 ): string | null {
   if (
     clusters.length === 0 &&
@@ -486,7 +507,8 @@ export function buildAdminDigestMessage(
     projectsSharedCount === 0 &&
     helperMatchesCount === 0 &&
     resolvedAppealsCount === 0 &&
-    dismissedAppealsCount === 0
+    dismissedAppealsCount === 0 &&
+    projectConnectionsCount === 0
   )
     return null;
 
@@ -742,12 +764,18 @@ export function buildAdminDigestMessage(
         trendSuffix('unreachableSourceKnowledgeCount', unreachableSourceKnowledgeCount, previousCounts),
     );
   }
-  if (acceptedKnowledgeCandidatesCount > 0 || projectsSharedCount > 0 || helperMatchesCount > 0) {
+  if (
+    acceptedKnowledgeCandidatesCount > 0 ||
+    projectsSharedCount > 0 ||
+    helperMatchesCount > 0 ||
+    projectConnectionsCount > 0
+  ) {
     // Bare integers only — no candidate title/content/topic, no project
     // name/description/link/owner, no helper/requester identifier or
     // find_helper topic content, no user/admin identifier ever reaches the
-    // DM (#797, extended by #820). Three independent trendSuffix calls, one
-    // per sub-signal, same convention as the joined/left roster line above.
+    // DM (#797, extended by #820 and #870). Four independent trendSuffix
+    // calls, one per sub-signal, same convention as the joined/left roster
+    // line above.
     sections.push(
       `🌱 ${acceptedKnowledgeCandidatesCount} knowledge candidate(s) accepted` +
         trendSuffix('acceptedKnowledgeCandidatesCount', acceptedKnowledgeCandidatesCount, previousCounts) +
@@ -755,6 +783,8 @@ export function buildAdminDigestMessage(
         trendSuffix('projectsSharedCount', projectsSharedCount, previousCounts) +
         `, ${helperMatchesCount} member-to-member connection(s) made` +
         trendSuffix('helperMatchesCount', helperMatchesCount, previousCounts) +
+        `, ${projectConnectionsCount} project connection(s) requested` +
+        trendSuffix('projectConnectionsCount', projectConnectionsCount, previousCounts) +
         ' this week — the community is contributing back.',
     );
   }
@@ -829,6 +859,7 @@ export async function buildAdminDigestForAdmin(
     oldestPendingCandidateAge,
     helperMatchesCount,
     appealBreakdown,
+    projectConnectionsCount,
   ] = await Promise.all([
     recentQuestionClusters(scope, FRESHNESS_DAYS, CLUSTER_LIMIT),
     countAccessRequests(),
@@ -952,6 +983,11 @@ export async function buildAdminDigestForAdmin(
     // resolved-vs-dismissed complement to countOpenAppeals/
     // oldestOpenAppealAgeDays above (issue #844).
     appealResolutionBreakdown(platform, FRESHNESS_DAYS),
+    // The flywheel line's fourth dimension (issue #870) — request_project_connection
+    // calls since the same `since` window. Called unconditionally: unlike
+    // find_helper, request_project_connection has no feature flag (verified
+    // none exists in config.ts), so there is no gate to mirror here.
+    countProjectConnectionsSince(since),
   ]);
   // Onboarding-queue count only means anything in 'gated' mode — an
   // 'open'-mode not_members row already has full member-tool access
@@ -992,6 +1028,7 @@ export async function buildAdminDigestForAdmin(
     helperMatchesCount,
     resolvedAppealsCount: appealBreakdown.resolved,
     dismissedAppealsCount: appealBreakdown.dismissed,
+    projectConnectionsCount,
   };
   // Only added when there's at least one auto-answer rating this week (issue
   // #629) — mirrors the render block's own `autoAnswerHelpful +
@@ -1050,6 +1087,7 @@ export async function buildAdminDigestForAdmin(
     helperMatchesCount,
     appealBreakdown.resolved,
     appealBreakdown.dismissed,
+    projectConnectionsCount,
   );
   return { message, currentCounts };
 }

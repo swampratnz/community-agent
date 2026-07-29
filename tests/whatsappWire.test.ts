@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extractAudio,
+  extractImage,
   extractText,
   isLidJid,
   isPhoneUserId,
@@ -114,4 +115,48 @@ test('extractAudio reaches through wrappers and returns null for a text message'
     message: { conversation: 'hello' },
   } as unknown as WAMessage;
   assert.equal(extractAudio(textMsg).audio, null, 'a text message has no audio payload');
+});
+
+test('extractImage returns the image payload + its own contextInfo for a captioned image (issue #879)', () => {
+  const ctx = { participant: '64299999999@s.whatsapp.net', mentionedJid: ['64211111111@s.whatsapp.net'] };
+  const msg = {
+    key: { remoteJid: 'g@g.us' },
+    message: {
+      imageMessage: {
+        mimetype: 'image/png',
+        caption: "what's this error?",
+        fileLength: 12_345,
+        contextInfo: ctx,
+      },
+    },
+  } as unknown as WAMessage;
+  const { image, contextInfo } = extractImage(msg);
+  assert.equal(image?.mimetype, 'image/png');
+  assert.equal(image?.fileLength, 12_345);
+  assert.equal(
+    contextInfo?.participant,
+    '64299999999@s.whatsapp.net',
+    'an @-mention inside an image caption must still be detectable',
+  );
+});
+
+test('extractImage reaches through wrappers and returns null for a text/audio message', () => {
+  const wrapped = {
+    message: { ephemeralMessage: { message: { imageMessage: { mimetype: 'image/jpeg' } } } },
+  } as unknown as WAMessage;
+  assert.equal(
+    extractImage(wrapped).image?.mimetype,
+    'image/jpeg',
+    'unwraps ephemeral like extractText does',
+  );
+
+  const textMsg = {
+    message: { conversation: 'hello' },
+  } as unknown as WAMessage;
+  assert.equal(extractImage(textMsg).image, null, 'a text message has no image payload');
+
+  const audioMsg = {
+    message: { audioMessage: { seconds: 5, ptt: true } },
+  } as unknown as WAMessage;
+  assert.equal(extractImage(audioMsg).image, null, 'a voice note has no image payload');
 });

@@ -4,6 +4,7 @@ import type { AgentReply } from '../src/agent/core.js';
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 import type { MemberInterestSearchHit } from '../src/storage/repository/memberDiscovery.js';
 import type { MemberProject, MemberProjectSearchHit } from '../src/storage/repository/memberProjects.js';
+import type { ShortcutKind } from '../src/storage/repository/shortcutHits.js';
 
 // config.ts validates env at import time — provide a dummy environment
 // before importing anything that (transitively) loads it, matching
@@ -120,6 +121,7 @@ interface RouterOpts {
   getCommunityGuidelinesFn?: () => Promise<string | null>;
   getCommunityGuidelinesMiFn?: () => Promise<string | null>;
   getLangPref?: () => Promise<'auto' | 'en' | 'mi'>;
+  recordShortcutHitFn?: (kind: ShortcutKind) => Promise<void>;
 }
 
 /**
@@ -138,29 +140,29 @@ interface RouterOpts {
  */
 function makeRouter(opts: RouterOpts = {}): Router {
   return new Router(
-    opts.runTurn ?? (async () => ({ text: REAL_TURN_REPLY })),
-    20,
-    async () => false, // checkPaused
-    undefined,
-    undefined,
-    async () => 0, // countReplies — always under budget, deterministic
-    opts.getLangPref,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    opts.getCommunityGuidelinesFn,
-    opts.getCommunityGuidelinesMiFn,
-    opts.searchMemberInterestsFn,
-    opts.searchProjectsFn,
-    opts.listRecentProjectsFn,
-    opts.buildMemberDigestContentFn,
+    opts.runTurn ?? (async () => ({ text: REAL_TURN_REPLY })), // 1 runTurn
+    20, // 2 typingRefireMs
+    async () => false, // 3 checkPaused
+    undefined, // 4 searchKnowledgeForShortcut
+    undefined, // 5 recordShortcutRetrieval
+    async () => 0, // 6 countReplies — always under budget, deterministic
+    opts.getLangPref, // 7 getLangPref
+    undefined, // 8 checkLowRatedKnowledge
+    undefined, // 9 getGatedNotice
+    undefined, // 10 getRespStyle
+    opts.recordShortcutHitFn, // 11 recordShortcutHit
+    undefined, // 12 recordAccessRequestFn
+    undefined, // 13 notifyAccessRequestFn
+    undefined, // 14 notifyAdminsFn
+    undefined, // 15 recordEscalatedGapFn
+    undefined, // 16 markKnowledgeGapsAlertedFn
+    undefined, // 17 markStaleKnowledgeAlertedFn
+    opts.getCommunityGuidelinesFn, // 18
+    opts.getCommunityGuidelinesMiFn, // 19
+    opts.searchMemberInterestsFn, // 20
+    opts.searchProjectsFn, // 21
+    opts.listRecentProjectsFn, // 22
+    opts.buildMemberDigestContentFn, // 23
   );
 }
 
@@ -419,6 +421,81 @@ test('!digest replies with the fixed "Nothing to report" text when buildMemberDi
   await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
 
   assert.equal(sent[0].text, 'Nothing to report right now.');
+});
+
+// --- shortcut_hits tracking (issue #874, acceptance criterion 1) ------------
+
+test('acceptance criterion 1: each of !whois/!projects/!guidelines/!digest records exactly one whatsapp_text_command shortcut hit via the shared send path', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+    searchMemberInterestsFn: async () => [
+      { platform: 'whatsapp', userId: 'target-1', interests: 'rust', similarity: 0.9 },
+    ],
+    listRecentProjectsFn: async () => [],
+    getCommunityGuidelinesFn: async () => 'Be kind.',
+    buildMemberDigestContentFn: async () => 'Nothing much.',
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: '!whois rust', userId: 'member-1' }));
+  await trigger(makeMessage({ text: '!projects', userId: 'member-1' }));
+  await trigger(makeMessage({ text: '!guidelines', userId: 'member-1' }));
+  await trigger(makeMessage({ text: '!digest', userId: 'member-1' }));
+
+  assert.equal(sent.length, 4);
+  assert.deepEqual(
+    hits,
+    ['whatsapp_text_command', 'whatsapp_text_command', 'whatsapp_text_command', 'whatsapp_text_command'],
+    'all four commands must record exactly one whatsapp_text_command hit each, via the shared send path',
+  );
+});
+
+test('SECURITY: a message that falls through to a normal turn (unrecognised prefix) never records a whatsapp_text_command hit (issue #874)', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: async () => ({ text: REAL_TURN_REPLY }),
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  await trigger(makeMessage({ text: 'just a normal message', userId: 'member-1' }));
+
+  assert.equal(sent[0].text, REAL_TURN_REPLY);
+  assert.deepEqual(hits, [], 'a fallthrough turn must never record a shortcut hit');
+});
+
+test('SECURITY: the recorded whatsapp_text_command kind is a fixed literal, never derived from the message text — even adversarial content in the !whois query (issue #874)', async (t) => {
+  mockPoolRole(t, 'member');
+  const hits: string[] = [];
+  const router = makeRouter({
+    runTurn: throwingRunTurn,
+    recordShortcutHitFn: async (kind) => {
+      hits.push(kind);
+    },
+    searchMemberInterestsFn: async () => [],
+  });
+  const { adapter, sent, trigger } = makeAdapter();
+  router.register(adapter);
+
+  const adversarialQuery = "slash_command'; DROP TABLE shortcut_hits; --";
+  await trigger(makeMessage({ text: `!whois ${adversarialQuery}`, userId: 'member-1' }));
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(
+    hits,
+    ['whatsapp_text_command'],
+    'the recorded kind is always the fixed literal, regardless of the message body',
+  );
 });
 
 // --- SECURITY: tier floors + silent fallthrough (acceptance criteria 3, 6) ---

@@ -23,6 +23,41 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 -->
 
 
+## 2026-07-30
+
+### Added
+- **The weekly admin digest's flywheel-throughput line now also counts
+  `request_project_connection` calls, not just `find_helper` matches,
+  knowledge candidates, and shared projects** (#870): a new
+  `countProjectConnectionsSince` repository function counts
+  `project_connection_requests` rows — one per connection request a member
+  actually sent — since the same window the line's other sub-signals already
+  use. Like `find_helper`, `request_project_connection` actively connects two
+  members rather than just contributing content, and it had zero visibility
+  in the digest since it shipped. Unlike `find_helper`, there's no feature
+  flag to gate behind, so this one is always counted. The line's gate is now
+  a four-way `||` (any sub-signal renders it), each with its own independent
+  week-over-week trend; still a bare integer only — never a requester/owner
+  identifier or a project name/description/link.
+- **`usage_stats`'s shortcut-savings estimate now counts WhatsApp's `!` text
+  commands too** (#874): `!whois`/`!projects`/`!guidelines`/`!digest` hits now
+  record a `whatsapp_text_command` shortcut, the WhatsApp counterpart to
+  #863's Discord slash-command tracking. Previously only Discord's slash
+  commands were counted, so a WhatsApp-heavy deployment's real cost savings
+  from #859 were undercounted in the `Shortcuts fired: ...` line and its
+  dollar-avoided estimate.
+- **WhatsApp can now answer from an attached image, closing the gap where
+  only Discord could** (#879): a WhatsApp (Baileys) member at or above
+  `WHATSAPP_IMAGE_INPUT_MIN_ROLE` can attach a screenshot, stack trace, or
+  billing-page image and get a reply grounded in what it actually shows,
+  mirroring #783's Discord image-attachment input field-for-field. Off by
+  default (`WHATSAPP_IMAGE_INPUT_ENABLED`), `super_admin`-only by default,
+  with the same MIME allowlist, byte cap, and daily-per-sender cap as the
+  Discord feature — checked before any download, so a below-tier or
+  over-cap sender's image is never fetched. No image bytes are ever stored.
+  Baileys only in this release, matching the existing WhatsApp voice
+  feature's own Baileys-only scope.
+
 ## 2026-07-29
 
 ### Fixed
@@ -38,6 +73,15 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   and alerts an admin rather than retrying silently in the background.
 
 ### Added
+- **`clear_warnings` now tells the member their warnings were cleared** (#865):
+  the one resolution flow that stayed silent — suggestions, reports, appeals,
+  and knowledge tips already DM the affected member, but clearing warnings and
+  lifting a mute never did, so a cleared member had no way to know short of
+  testing whether they could post again. A best-effort DM now fires whenever
+  an admin's `clear_warnings` call actually clears an active warning,
+  distinguishing "mute lifted" from "nothing to lift" wording and honouring
+  the member's standing te reo Māori preference. Sends nothing when there was
+  nothing to clear, and never affects the admin's own reported outcome.
 - **WhatsApp now has zero-cost text-command shortcuts for the four questions
   Discord's slash commands already answer for free** (#859): `!whois <query>`,
   `!projects [query]`, `!guidelines`, `!digest` — a trimmed, case-insensitive

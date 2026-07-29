@@ -15,7 +15,7 @@ import { config } from '../../config.js';
 import { logger, hashId } from '../../logger.js';
 import { filterOutbound } from '../../agent/outbound.js';
 import { runtimeSecrets } from '../../agent/secrets.js';
-import { reserveVoiceTranscriptionSlot } from '../../agent/tools.js';
+import { reserveVoiceTranscriptionSlot, reserveImageInputDaily } from '../../agent/tools.js';
 import { getCodeAnswersPolicy, getCommunityGuidelines, getWelcomeMessage } from '../../storage/policies.js';
 import {
   blockUser,
@@ -37,6 +37,7 @@ import {
 } from '../../voiceLanguageCaveatNotice.js';
 import {
   extractAudio,
+  extractImage,
   extractText,
   isLidJid,
   isPhoneUserId,
@@ -386,9 +387,11 @@ export class BaileysAdapter implements PlatformAdapter {
 
     const { text: rawText, contextInfo: textContextInfo } = extractText(msg);
     const { audio, contextInfo: audioContextInfo } = extractAudio(msg);
-    // A voice note carries its OWN contextInfo (not the extendedText one), so
-    // reply-to-bot detection keeps working when the message is audio.
-    const contextInfo = textContextInfo ?? audioContextInfo;
+    const { image: imageMessage, contextInfo: imageContextInfo } = extractImage(msg);
+    // A voice note / image carries its OWN contextInfo (not the
+    // extendedText one), so reply-to-bot detection keeps working when the
+    // message is audio or a captioned image.
+    const contextInfo = textContextInfo ?? audioContextInfo ?? imageContextInfo;
 
     // In groups, only respond if the bot is mentioned OR the message quotes
     // (replies to) one of the bot's messages. mentionedJid entries may be
@@ -427,6 +430,16 @@ export class BaileysAdapter implements PlatformAdapter {
         await this.maybeSendVoiceLanguageCaveat(senderId);
       }
     }
+
+    // WhatsApp image-attachment input (opt-in, WHATSAPP_IMAGE_INPUT_ENABLED,
+    // issue #879): mirrors Discord's #783 flow onto Baileys. Runs
+    // independently of `text` — an image's own caption (already captured by
+    // extractText above) is routinely present alongside it, not instead of
+    // it, exactly like Discord's own gate.
+    const image = imageMessage
+      ? await this.maybeFetchImageAttachment(msg, imageMessage, senderId)
+      : undefined;
+
     if (!text) return;
 
     const normalised: IncomingMessage = {
@@ -435,6 +448,7 @@ export class BaileysAdapter implements PlatformAdapter {
       userId: senderId,
       userName: msg.pushName ?? senderId,
       text,
+      ...(image ? { image } : {}),
       isDirect,
       addressedToBot: isDirect || mentioned || repliedToBot,
       messageId: msg.key.id ?? undefined,
@@ -528,6 +542,96 @@ export class BaileysAdapter implements PlatformAdapter {
     const transcript = await transcribeVoiceNote(buffer, config.whatsapp.voice.model);
     logger.info({ chars: transcript.length, seconds }, 'Transcribed voice note');
     return transcript;
+  }
+
+  /**
+   * Resolve a single WhatsApp image message to an `IncomingMessage.image`
+   * payload, or `undefined` to leave it untouched — the SINGLE gate for the
+   * feature (issue #879), mirroring `DiscordAdapter.maybeFetchImageAttachment`
+   * (#783) and this adapter's own `maybeTranscribeVoiceNote` gate order:
+   *   1. WHATSAPP_IMAGE_INPUT_ENABLED must be on (off by default);
+   *   2. the sender's resolved tier must meet WHATSAPP_IMAGE_INPUT_MIN_ROLE
+   *      (default 'super_admin'). At the default this stays a pure
+   *      `isSuperAdmin` env check — no DB call — exactly like the voice gate;
+   *   3. WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER is checked next, BEFORE
+   *      the MIME/byte check, per the acceptance criteria — a sender already
+   *      at their daily cap is refused without their attachment's MIME/size
+   *      ever being inspected;
+   *   4. the message's own `mimetype` must be on the allowlist (image/png,
+   *      image/jpeg, image/webp) and its `fileLength` must be under
+   *      WHATSAPP_IMAGE_INPUT_MAX_BYTES — both read from WhatsApp's own
+   *      message metadata, so this never downloads to find out;
+   *   5. only then is the image downloaded and base64-encoded.
+   * Any download failure is logged and swallowed (returns undefined) so a
+   * bad attachment is dropped rather than crashing the loop or leaking
+   * internals. The bytes are held only for the return value —
+   * `runAgentTurn` passes them to `query()` for this one turn and nothing
+   * here persists them.
+   */
+  private async maybeFetchImageAttachment(
+    msg: WAMessage,
+    image: proto.Message.IImageMessage,
+    senderId: string,
+  ): Promise<IncomingMessage['image'] | undefined> {
+    if (!config.whatsapp.image.enabled) return undefined;
+    const minRole = config.whatsapp.image.minRole;
+    if (minRole === 'super_admin') {
+      if (!isSuperAdmin('whatsapp', senderId)) return undefined;
+    } else {
+      const role = await resolveRole('whatsapp', senderId);
+      if (!atLeast(role, minRole)) return undefined;
+    }
+    if (!reserveImageInputDaily(`whatsapp:${senderId}`, config.whatsapp.image.dailyLimitPerUser)) {
+      logger.info(
+        { sender: hashId(senderId), limit: config.whatsapp.image.dailyLimitPerUser },
+        'WhatsApp image attachment refused — sender hit the daily image-input cap',
+      );
+      return undefined;
+    }
+    const mimeType = image.mimetype;
+    if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') {
+      logger.info(
+        { mimeType },
+        'WhatsApp image attachment outside the MIME allowlist — ignored without downloading',
+      );
+      return undefined;
+    }
+    const size = Number(image.fileLength ?? 0);
+    if (size > config.whatsapp.image.maxBytes) {
+      logger.info(
+        { size, cap: config.whatsapp.image.maxBytes },
+        'WhatsApp image attachment over the byte cap — ignored without downloading',
+      );
+      return undefined;
+    }
+    try {
+      return await this.fetchImageAttachment(msg, mimeType);
+    } catch (err) {
+      logger.warn({ err }, 'WhatsApp image-attachment download failed — dropping the attachment');
+      return undefined;
+    }
+  }
+
+  /**
+   * Download the image message's bytes from WhatsApp and base64-encode
+   * them. Split out from the gate above as the single seam that touches the
+   * network — overridden in tests so the gate logic can be exercised
+   * without a real media fetch. Never called for a below-tier sender, a
+   * disabled feature, an at-cap sender, or a MIME/byte-cap refusal (the
+   * gate returns first).
+   */
+  private async fetchImageAttachment(
+    msg: WAMessage,
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp',
+  ): Promise<IncomingMessage['image']> {
+    if (!this.sock) throw new Error('WhatsApp socket not connected');
+    const buffer = await downloadMediaMessage(
+      msg,
+      'buffer',
+      {},
+      { logger, reuploadRequest: this.sock.updateMediaMessage },
+    );
+    return { data: buffer.toString('base64'), mimeType };
   }
 
   /**

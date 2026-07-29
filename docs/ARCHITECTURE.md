@@ -215,23 +215,36 @@ message would be — a scan fired against the message's native (always empty,
 for a voice bubble) `content` would never see what was actually said. See
 SECURITY.md §13 for the full posture.
 
-## Discord image-attachment input (issue #783)
+## Image-attachment input (Discord #783, WhatsApp/Baileys #879)
 
-`IMAGE_INPUT_ENABLED` (**off by default**, `CAPABILITY-IDEAS.md` §A1) lets an
-eligible caller attach a single image (a screenshot, stack trace, or billing
-page) alongside their message; the model answers grounded in what the image
-actually shows rather than whatever caption (or nothing) was typed. Discord
-only, one attachment per message, no OCR, no moderation-scan extension — see
-the "smallest viable version" in the issue for what is deliberately deferred.
+`IMAGE_INPUT_ENABLED` (Discord, **off by default**, `CAPABILITY-IDEAS.md`
+§A1) and its WhatsApp counterpart `WHATSAPP_IMAGE_INPUT_ENABLED` (Baileys
+only, also off by default, issue #879) let an eligible caller attach a
+single image (a screenshot, stack trace, or billing page) alongside their
+message; the model answers grounded in what the image actually shows rather
+than whatever caption (or nothing) was typed. One attachment per message, no
+OCR, no moderation-scan extension on either platform — see the "smallest
+viable version" in each issue for what is deliberately deferred.
+`WhatsAppCloudAdapter` is out of scope for #879, matching the existing
+`WHATSAPP_VOICE_*`/Baileys-only precedent.
 
-The gate (`maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`)
-mirrors the voice gate's shape above — flag → `IMAGE_INPUT_MIN_ROLE` (default
-`'super_admin'`) → `IMAGE_INPUT_DAILY_LIMIT_PER_USER` (a rolling calendar-day
-cap, `reserveImageInputDaily` in `src/agent/tools.ts`) → MIME allowlist
-(`image/png`, `image/jpeg`, `image/webp`) + `IMAGE_INPUT_MAX_BYTES`, both read
-from the attachment's own pre-fetch metadata — before ever downloading it.
-The fetched bytes are base64-encoded and carried on
-`IncomingMessage.image`, unset for every other message.
+The gate — `maybeFetchImageAttachment` in `src/platforms/discord/adapter.ts`
+for Discord, the same-named method in
+`src/platforms/whatsapp/baileysAdapter.ts` for WhatsApp — mirrors the voice
+gate's shape above on both platforms: flag → `IMAGE_INPUT_MIN_ROLE` /
+`WHATSAPP_IMAGE_INPUT_MIN_ROLE` (default `'super_admin'` on both) →
+`IMAGE_INPUT_DAILY_LIMIT_PER_USER` / `WHATSAPP_IMAGE_INPUT_DAILY_LIMIT_PER_USER`
+(a rolling calendar-day cap per platform-qualified sender, shared
+`reserveImageInputDaily` in `src/agent/tools.ts`) → MIME allowlist
+(`image/png`, `image/jpeg`, `image/webp`) + `IMAGE_INPUT_MAX_BYTES` /
+`WHATSAPP_IMAGE_INPUT_MAX_BYTES`, both read from the attachment's own
+pre-fetch metadata (Discord's `contentType`/`size`, WhatsApp's
+`mimetype`/`fileLength`) — before ever downloading it. The fetched bytes are
+base64-encoded and carried on `IncomingMessage.image`, unset for every other
+message, regardless of which platform populated it. The two platforms' flags
+are fully independent — `WHATSAPP_`-prefixed and separate from the
+unprefixed Discord flags, mirroring the existing `DISCORD_VOICE_*`/
+`WHATSAPP_VOICE_*` split rather than sharing one flag pair.
 
 `runAgentTurn`/`execTurn` (`src/agent/core.ts`) thread that optional image
 through to the SDK: absent an image, `query()`'s `prompt` stays the plain
@@ -248,10 +261,13 @@ Unlike voice transcription (which only ever yields ordinary `text` flowing
 through the same moderation/injection handling), an image is a genuinely new
 untrusted-input class: text rendered inside it is interpreted model-side and
 is invisible to every inbound filter, including `moderator.scan`. The only
-defence is an explicit `systemPrompt.ts` clause (present only when the flag
-could apply) stating that image-borne text is untrusted data to answer from,
-never an instruction. See SECURITY.md §22 for the full threat model and why
-the default is `super_admin` rather than a wider tier.
+defence is an explicit `systemPrompt.ts` clause, present whenever EITHER
+platform's flag could apply (`config.discord.image.enabled ||
+config.whatsapp.image.enabled`) — one shared clause, since the risk and the
+wording are identical regardless of which platform's turn triggered it —
+stating that image-borne text is untrusted data to answer from, never an
+instruction. See SECURITY.md §22 for the full threat model and why the
+default is `super_admin` rather than a wider tier on both platforms.
 
 ## Memory & "learning"
 
@@ -430,6 +446,15 @@ memory**:
    rather than contributing content, extending the line's gate to a three-way
    `||`. Bare integer plus its own trend suffix only — never a helper/requester
    identifier or the `find_helper` topic.
+   Plus (issue #870) the flywheel line's fourth dimension —
+   `request_project_connection` calls since the same `since` window, from
+   `countProjectConnectionsSince(since)` — the second action in `#820`'s
+   "actively connects two members" category, shipped after #820 and wired
+   into the line here for the first time. Unlike `countHelperMatchesSince`
+   it is called unconditionally (`request_project_connection` has no feature
+   flag), extending the line's gate to a four-way `||`. Bare integer plus its
+   own trend suffix only — never a requester/owner identifier or a project
+   name/description/link.
    All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
@@ -437,7 +462,7 @@ memory**:
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
    `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
    `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`/
-   `countHelperMatchesSince`)
+   `countHelperMatchesSince`/`countProjectConnectionsSince`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Five of these queue lines also
@@ -2393,6 +2418,16 @@ reply uses — never a new send primitive — and is recorded via
 `dailyReplyLimitPerUser` like any other answer rather than becoming an
 unmetered read path.
 
+`shortcut_hits` tracking of this path (issue #874, mirroring issue #863's
+identical fix for Discord slash commands): the shared `sendWhatsAppTextCommand`
+send path records one `whatsapp_text_command` `shortcut_hits` row per served
+reply — a fixed string literal, never derived from the WhatsApp message text —
+so all four commands are covered from this one call site with no per-command
+wiring. `usage_stats`'s "Shortcuts fired" line includes it in the total and its
+own `whatsapp-text-command N` breakdown, distinct from Discord's
+`slash-command N` (a new kind rather than reusing `slash_command`, which is
+documented as Discord-specific).
+
 ## Concurrency model
 
 - The router **serialises turns per conversation** (a promise chain keyed by
@@ -2931,7 +2966,9 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   `slash_command` kind (issue #863) folds in every successful Discord slash-
   command reply (`/kb`, `/whois`, `/projects`, `/guidelines`, `/digest`) as
   one aggregate count, so the shortcut-hit total and dollar estimate now
-  cover that previously-invisible cost-avoidance path too.
+  cover that previously-invisible cost-avoidance path too. A sixth
+  `whatsapp_text_command` kind (issue #874) does the same for WhatsApp's `!`
+  text commands (issue #859) — the one platform issue #863 left uncounted.
 - `usage_stats` also reports a `Prompt cache: NN% hit rate (X read / Y new
   tokens)` line (issue #522), summing the `cache_read_input_tokens`/
   `cache_creation_input_tokens` counts issue #508 already reads off each

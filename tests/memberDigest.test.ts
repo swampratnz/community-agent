@@ -731,6 +731,10 @@ test('makeDefaultMemberDigestRun: an only-interests week (zero topics, zero new 
     getDigests: async () => [],
     getNewKnowledgeTitles: async () => [],
     getNewProjectCount: async () => 0,
+    // Un-injected deps fall through to the REAL repository (see
+    // buildMemberDigestContent's `deps.x ?? <repo fn>` defaults), so a missing
+    // stub here is a silent live-Postgres dependency, not a no-op.
+    getMemberTipCount: async () => 0,
     getNewInterestCount: async () => 4,
     recordSent: async () => {
       recordCalled = true;
@@ -761,6 +765,10 @@ test('makeDefaultMemberDigestRun: getNewInterestCount is called with the exact s
       interestSince = since;
       return 0;
     },
+    // Un-injected deps fall through to the REAL repository (see
+    // buildMemberDigestContent's `deps.x ?? <repo fn>` defaults), so a missing
+    // stub here is a silent live-Postgres dependency, not a no-op.
+    getMemberTipCount: async () => 0,
     recordSent: async () => {},
   });
   await runOnce();
@@ -1307,6 +1315,10 @@ test("buildMemberDigestContent: with injected deps, gathers, applies the two-flo
     getNewKnowledgeTitles: async () => ['Setting up MCP auth'],
     getNewProjectCount: async () => 1,
     getMemberTipCount: async () => 0,
+    // Un-injected deps fall through to the REAL repository (see
+    // buildMemberDigestContent's `deps.x ?? <repo fn>` defaults), so a missing
+    // stub here is a silent live-Postgres dependency, not a no-op.
+    getNewInterestCount: async () => 0,
   });
   assert.equal(
     message,
@@ -1320,6 +1332,7 @@ test('buildMemberDigestContent: every input empty renders null, same as formatMe
     getNewKnowledgeTitles: async () => [],
     getNewProjectCount: async () => 0,
     getMemberTipCount: async () => 0,
+    getNewInterestCount: async () => 0,
   });
   assert.equal(message, null);
 });
