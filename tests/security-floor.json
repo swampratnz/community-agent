@@ -121,7 +121,7 @@
   "repeatQuestionShortcutRouter.test.ts": 4,
   "replyRetractionDisabled.test.ts": 2,
   "replyRetractionRouter.test.ts": 1,
-  "repository.test.ts": 109,
+  "repository.test.ts": 110,
   "reviewVerdict.test.ts": 5,
   "router.test.ts": 9,
   "secrets.test.ts": 5,

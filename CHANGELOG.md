@@ -82,6 +82,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   `title`/`content`/`scope` let you also rewrite the survivor in the same
   step; admin-tier and confirmation-gated, same as `update_knowledge`/
   `delete_knowledge`.
+- **A new admin tool, `response_latency`, answers how quickly members are
+  actually getting answered** (#877) — VISION's own "time-to-first-answer"
+  north-star metric, which had no measurement behind it until now. Given a
+  recent window (default 7 days, max 30), it reports the count of replies
+  plus the median and p90 response time in seconds, derived entirely from
+  timestamps and metadata the bot already stores on every turn (no new
+  tracking). Scoped to the admin's own conversations, aggregate-only — never
+  a per-message timestamp, user id, or excerpt.
 
 ## 2026-07-29
 
