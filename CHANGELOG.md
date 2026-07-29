@@ -117,6 +117,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   missing response throws (counted as a `failed` cluster, same as today)
   instead of landing a placeholder digest or losing a candidate in front of
   an admin.
+- **The knowledge-shortcut "may be outdated" tag now renders in te reo Māori
+  for a caller with a standing preference, on both the member and guest
+  paths** (#848). #789 (shipped yesterday) fixed this same reply's low-rated
+  caveat but explicitly didn't reach this fragment; a `'mi'`-preference
+  member or guest hitting a stale knowledge entry via the shortcut used to
+  get a reply that mixed te reo (caveat/suffix) with an English "(may be
+  outdated)" tag. The guest path also now resolves the language preference
+  before building the note instead of after, so its freshness tag stops
+  ignoring a stored preference entirely — still one lookup, not two. No
+  change for a caller with no stored preference.
 
 ## 2026-07-28
 

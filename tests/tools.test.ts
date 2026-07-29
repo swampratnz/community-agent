@@ -56,6 +56,7 @@ const {
   formatRelativeAge,
   KNOWLEDGE_LOW_RATED_CAVEAT_TEXT,
   KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI,
+  KNOWLEDGE_STALE_NOTE_MI,
   KNOWLEDGE_CONFLICT_CAVEAT_TEXT,
   KNOWLEDGE_SEARCH_RELEVANCE_THRESHOLD,
   KNOWLEDGE_TIE_MARGIN,
@@ -8974,6 +8975,50 @@ test('SECURITY: formatKnowledgeCitationNote renders KNOWLEDGE_LOW_RATED_CAVEAT_T
     'must be byte-identical to the exported static clause — a substring/regex match could pass with an interpolated value slipped in',
   );
   assert.doesNotMatch(note, /\d/, 'no digit (count, id, etc.) may ever appear in the caveat clause');
+});
+
+// formatKnowledgeCitationNote's stale-note fragment (issue #848): #789 only
+// reached the low-rated caveat directly above; the "may be outdated" tag one
+// line above it stayed English-only despite `lang` already being threaded
+// through. Same convention as the low-rated caveat's own lang tests.
+test("formatKnowledgeCitationNote (issue #848): renders KNOWLEDGE_STALE_NOTE_MI instead of 'may be outdated' when lang is 'mi'", () => {
+  const ancient = { updatedAt: new Date(Date.now() - 400 * 86_400_000), lastRetrievedAt: null };
+  const note = formatKnowledgeCitationNote(ancient, 30, false, undefined, 'mi');
+  assert.equal(note, ` (${KNOWLEDGE_STALE_NOTE_MI})`);
+  assert.doesNotMatch(note, /may be outdated/);
+});
+
+test("formatKnowledgeCitationNote (issue #848): lang defaults to 'auto' (today's English behaviour) when the 5th arg is omitted, byte-identical for the stale tag", () => {
+  const ancient = { updatedAt: new Date(Date.now() - 400 * 86_400_000), lastRetrievedAt: null };
+  assert.equal(
+    formatKnowledgeCitationNote(ancient, 30),
+    formatKnowledgeCitationNote(ancient, 30, false, undefined, 'auto'),
+  );
+  assert.match(formatKnowledgeCitationNote(ancient, 30), /may be outdated/);
+});
+
+test('SECURITY: formatKnowledgeCitationNote renders KNOWLEDGE_STALE_NOTE_MI as an EXACT fixed string with no interpolated date, id, or hit content', () => {
+  const ancient = { updatedAt: new Date(Date.now() - 400 * 86_400_000), lastRetrievedAt: null };
+  const note = formatKnowledgeCitationNote(ancient, 30, false, undefined, 'mi');
+  assert.equal(
+    note,
+    ` (${KNOWLEDGE_STALE_NOTE_MI})`,
+    'must be byte-identical to the exported static clause — a substring/regex match could pass with an interpolated value slipped in',
+  );
+  assert.doesNotMatch(note, /\d/, 'no digit (a raw date/id) may ever appear in the stale-tag clause');
+});
+
+test('formatKnowledgeCitationNote (issue #848): a fresh (non-stale) hit renders no note at all regardless of lang — the mi branch only ever fires when the English branch would', () => {
+  const fresh = { updatedAt: new Date(), lastRetrievedAt: null };
+  assert.equal(formatKnowledgeCitationNote(fresh, 30, false, undefined, 'mi'), '');
+});
+
+test("formatKnowledgeCitationNote (issue #848): a stale, low-rated hit with lang 'mi' renders BOTH KNOWLEDGE_STALE_NOTE_MI and KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI, joined — never a mix of one te reo and one English fragment", () => {
+  const ancient = { updatedAt: new Date(Date.now() - 400 * 86_400_000), lastRetrievedAt: null };
+  const note = formatKnowledgeCitationNote(ancient, 30, true, undefined, 'mi');
+  assert.equal(note, ` (${KNOWLEDGE_STALE_NOTE_MI} · ${KNOWLEDGE_LOW_RATED_CAVEAT_TEXT_MI})`);
+  assert.doesNotMatch(note, /may be outdated/);
+  assert.doesNotMatch(note, /other members found this unhelpful/);
 });
 
 test('SECURITY: formatKnowledgeSearchResults (the model-mediated call site) stays byte-identical after the lang param addition — it never passes a 5th argument, so it always gets the English caveat', () => {

@@ -22,6 +22,7 @@ process.env.GUEST_KNOWLEDGE_SHORTCUT_ENABLED = 'true';
 
 const { config } = await import('../src/config.js');
 const { Router } = await import('../src/router.js');
+const { KNOWLEDGE_STALE_NOTE_MI } = await import('../src/agent/tools.js');
 const { embed } = await import('../src/storage/embeddings.js');
 
 await embed('warmup').catch(() => {});
@@ -406,6 +407,136 @@ test('SECURITY: KNOWLEDGE_SHORTCUT_SUFFIX_MI and GUEST_KNOWLEDGE_SHORTCUT_NUDGE_
     sent[0].text,
     'A completely different pricing answer.\n\n— Nō tā mātou pātengi mōhiotanga; pātai mai kia whakamāramatia mehemea kāore tēnei e tino whakautu ana i tāu pātai.\n\nTonoa tētahi kaiwhakahaere hapori ki te tāpiri i a koe hei mema kia taea ai te kōrero tonu.',
   );
+});
+
+// --- Standing 'mi' language preference on the guest shortcut's staleness tag (issue #848) ---
+//
+// #435 covered this path's suffix/nudge; #789 covered the member path's
+// low-rated caveat. Neither reached the "(may be outdated)" freshness tag on
+// THIS (guest) path, which additionally resolved `note` before `lang` — so
+// the tag was unconditionally English regardless of a stored 'mi'
+// preference. These pin the fix: the reorder (still one getLangPref read)
+// plus the lang branch inside formatKnowledgeCitationNote.
+
+test("router (guest knowledge shortcut): a gated guest with a standing 'mi' preference gets KNOWLEDGE_STALE_NOTE_MI on a stale entry, never the English 'may be outdated' tag", async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      20,
+      undefined,
+      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
+      async () => {},
+      undefined,
+      async () => 'mi',
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage());
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, new RegExp(KNOWLEDGE_STALE_NOTE_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(sent[0].text, /may be outdated/);
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
+});
+
+test("router (guest knowledge shortcut): a stale entry with caller preference 'auto' (no standing preference) keeps the English 'may be outdated' tag, byte-identical to pre-#848 behaviour", async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      20,
+      undefined,
+      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
+      async () => {},
+      undefined,
+      async () => 'auto',
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage());
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /may be outdated/);
+    assert.doesNotMatch(
+      sent[0].text,
+      new RegExp(KNOWLEDGE_STALE_NOTE_MI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
+});
+
+test('router (guest knowledge shortcut): getLangPref is called exactly once per send even with a stale entry — the note/lang reorder must not introduce a second DB read', async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    let langCalls = 0;
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      20,
+      undefined,
+      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
+      async () => {},
+      undefined,
+      async () => {
+        langCalls += 1;
+        return 'mi';
+      },
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await trigger(makeMessage());
+
+    assert.equal(sent.length, 1);
+    assert.equal(langCalls, 1, 'the note/lang reorder must not duplicate the getLangPref read');
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
+});
+
+test('SECURITY: router (guest knowledge shortcut): a getLangPref rejection with a stale entry still renders a complete English reply — content, tag and suffix all present, never dropped or thrown', async () => {
+  const original = config.adminDigest.knowledgeStaleDays;
+  config.adminDigest.knowledgeStaleDays = 30;
+  try {
+    const router = new Router(
+      async () => {
+        throw new Error('runTurn must not be called for a gated guest');
+      },
+      20,
+      undefined,
+      fixedHitSearch(0.95, { updatedAt: new Date(Date.now() - 400 * 86_400_000) }),
+      async () => {},
+      undefined,
+      async () => {
+        throw new Error('language_prefs read boom');
+      },
+    );
+    const { adapter, sent, trigger } = makeAdapter();
+    router.register(adapter);
+
+    await assert.doesNotReject(trigger(makeMessage()));
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /Yes — this bot is free for members\./);
+    assert.match(sent[0].text, /may be outdated/);
+    assert.match(sent[0].text, /From our knowledge base/i);
+  } finally {
+    config.adminDigest.knowledgeStaleDays = original;
+  }
 });
 
 test('router (guest knowledge shortcut): a member (non-guest) is completely unaffected by the guest-only flag', async () => {
