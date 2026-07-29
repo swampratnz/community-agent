@@ -168,6 +168,7 @@ const {
   shareProject,
   removeMemberProject,
   listRecentProjects,
+  listOwnProjects,
   searchProjects,
   MEMBER_PROJECT_CAP,
   PROJECT_RATE_LIMIT_PER_DAY,
@@ -7551,6 +7552,73 @@ test(
     assert.equal(secondRow?.userId, b);
 
     await pool.query(`DELETE FROM member_projects WHERE user_id = ANY($1)`, [[a, b]]);
+  },
+);
+
+test(
+  "SECURITY: repository: listOwnProjects returns only the caller identity's own ACTIVE projects, newest first, and never another owner's or a soft-removed row (issue #867 AC #1, #8)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-mine-owner`;
+    const other = `${RUN}-mine-other`;
+    const older = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'older mine project',
+      description: 'shared first',
+    });
+    await pool.query(`UPDATE member_projects SET created_at = now() - interval '2 hours' WHERE id = $1`, [
+      older.ok ? older.id : -1,
+    ]);
+    const newer = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'newer mine project',
+      description: 'shared second',
+    });
+    const toRemove = await shareProject({
+      platform: 'discord',
+      userId: owner,
+      name: 'removed mine project',
+      description: 'shared then removed',
+    });
+    assert.ok(older.ok && newer.ok && toRemove.ok);
+    assert.ok(await removeMemberProject('discord', owner, 'removed mine project'));
+
+    const otherOwned = await shareProject({
+      platform: 'discord',
+      userId: other,
+      name: 'other owner project',
+      description: "must never appear in owner's listOwnProjects",
+    });
+    assert.ok(otherOwned.ok);
+
+    const mine = await listOwnProjects('discord', owner);
+    assert.deepEqual(
+      mine.map((p) => p.name),
+      ['newer mine project', 'older mine project'],
+      'newest first, active only, scoped to the caller identity',
+    );
+    assert.ok(
+      mine.every((p) => p.userId === owner),
+      'SECURITY: every returned row belongs to the queried identity',
+    );
+    assert.ok(
+      !mine.some((p) => p.id === (otherOwned.ok ? otherOwned.id : -1)),
+      "SECURITY: another owner's project never appears",
+    );
+    assert.ok(
+      !mine.some((p) => p.id === (toRemove.ok ? toRemove.id : -1)),
+      'a soft-removed project never appears',
+    );
+
+    const otherMine = await listOwnProjects('discord', other);
+    assert.deepEqual(
+      otherMine.map((p) => p.id),
+      [otherOwned.ok ? otherOwned.id : -1],
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE user_id = ANY($1)`, [[owner, other]]);
   },
 );
 
