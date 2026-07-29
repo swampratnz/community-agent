@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { CallerContext } from '../src/auth/rbac.js';
 import type { OutgoingMessage, PlatformAdapter } from '../src/platforms/types.js';
 import type { StoredSession } from '../src/storage/repository.js';
@@ -29,7 +32,11 @@ type QueryBehavior =
   // A wedge that CLEARS after the outer timeout has already fired — the
   // orphaned-generator case (issue #826 review). `release` is resolved by the
   // test once it holds the timed-out reply.
-  | { mode: 'unwedges'; release: Promise<void>; onResume: () => void };
+  | { mode: 'unwedges'; release: Promise<void>; onResume: () => void }
+  // A thrown-before-timeout failure (issue #860): used only to pin that the
+  // new per-turn AbortController is never aborted on this path, matching
+  // tests/agentCoreUsageLimit.test.ts's existing 'throw' mode.
+  | { mode: 'throw'; message: string };
 let behavior: QueryBehavior = { mode: 'success', text: 'ok' };
 let storedSession: StoredSession | null = null;
 
@@ -46,6 +53,7 @@ function mockQuery(params: { prompt: string; options: { resume?: string } }) {
       await behavior.release;
       behavior.onResume();
     }
+    if (behavior.mode === 'throw') throw new Error(behavior.message);
     yield {
       type: 'result',
       subtype: 'success',
@@ -253,3 +261,61 @@ test('runAgentTurn: the per-turn timer is cleared once a normal turn settles —
     'clearTimeout must be called in the finally block on a normal (non-timeout) settle',
   );
 });
+
+test(
+  "SECURITY: the turn's AbortController.abort() fires exactly once on a genuine timeout, and never on a " +
+    'successful or thrown-error turn (issue #860)',
+  async (t) => {
+    const { runAgentTurn } = await core(t);
+    const abortSpy = t.mock.method(AbortController.prototype, 'abort');
+
+    reset();
+    const { adapter } = makeAdapter();
+    behavior = { mode: 'hang' };
+    await runAgentTurn(makeCaller(), 'hello', adapter);
+    assert.equal(
+      abortSpy.mock.calls.length,
+      1,
+      'abort() must fire exactly once when the timeout branch runs',
+    );
+
+    abortSpy.mock.resetCalls();
+    reset();
+    behavior = { mode: 'success', text: 'ok' };
+    await runAgentTurn(makeCaller(), 'hello', adapter);
+    assert.equal(
+      abortSpy.mock.calls.length,
+      0,
+      'abort() must never fire on a turn that completes within the timeout',
+    );
+
+    abortSpy.mock.resetCalls();
+    reset();
+    behavior = { mode: 'throw', message: 'boom' };
+    await runAgentTurn(makeCaller(), 'hello', adapter);
+    assert.equal(
+      abortSpy.mock.calls.length,
+      0,
+      'abort() must never fire on a turn that throws before the timeout fires',
+    );
+  },
+);
+
+test(
+  'SECURITY: the installed SDK still documents `abortController?: AbortController` on `Options` — the field ' +
+    "this turn's timeout-abort wiring (issue #860) depends on",
+  () => {
+    const sdkDtsPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts',
+    );
+    const dts = readFileSync(sdkDtsPath, 'utf8');
+    assert.match(
+      dts,
+      /abortController\?:\s*AbortController;/,
+      "the SDK's Options type must still expose `abortController?: AbortController` — if this field's name or " +
+        "shape changed, re-verify src/agent/core.ts's execTurn abort wiring against the new contract before " +
+        'merging an SDK bump, or the abort call silently becomes a no-op',
+    );
+  },
+);
