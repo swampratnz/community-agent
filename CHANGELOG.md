@@ -26,6 +26,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 ## 2026-07-30
 
 ### Added
+- **WhatsApp members can now discover the `!whois`/`!projects`/`!guidelines`/
+  `!digest` shortcuts** (#872) — asking "what can you do?" now lists them
+  (with a one-line description each) when your community has
+  `WHATSAPP_TEXT_COMMANDS_ENABLED` on. Discord members already see slash
+  commands in the native `/` picker; WhatsApp has no equivalent, so this was
+  the only way to learn the shortcuts (#859) exist at all. No change for
+  Discord, or for WhatsApp with the feature off.
 - **The weekly admin digest's flywheel-throughput line now also counts
   `request_project_connection` calls, not just `find_helper` matches,
   knowledge candidates, and shared projects** (#870): a new
