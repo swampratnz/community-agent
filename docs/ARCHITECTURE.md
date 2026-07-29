@@ -430,6 +430,15 @@ memory**:
    rather than contributing content, extending the line's gate to a three-way
    `||`. Bare integer plus its own trend suffix only — never a helper/requester
    identifier or the `find_helper` topic.
+   Plus (issue #870) the flywheel line's fourth dimension —
+   `request_project_connection` calls since the same `since` window, from
+   `countProjectConnectionsSince(since)` — the second action in `#820`'s
+   "actively connects two members" category, shipped after #820 and wired
+   into the line here for the first time. Unlike `countHelperMatchesSince`
+   it is called unconditionally (`request_project_connection` has no feature
+   flag), extending the line's gate to a four-way `||`. Bare integer plus its
+   own trend suffix only — never a requester/owner identifier or a project
+   name/description/link.
    All these
    counts are
    sourced from dedicated `COUNT(*)` reads (`countAccessRequests`/`countOpenReports`/
@@ -437,7 +446,7 @@ memory**:
    `countPendingKnowledgeCandidates`/`countLowRatedKnowledge`/`rosterCounts`/
    `countMutedMembers`/`countMaxTurnsFailures`/`countGeneralUnhelpfulAnswers`/
    `countOpenAppeals`/`countAcceptedKnowledgeCandidatesSince`/`countProjectsSharedSince`/
-   `countHelperMatchesSince`)
+   `countHelperMatchesSince`/`countProjectConnectionsSince`)
    so a backlog past `list_access_requests`/`list_reports`/`list_suggestions`/
    `list_knowledge_gaps`/`list_knowledge_candidates`/`list_low_rated_knowledge`'s
    own list `limit` is never understated. Five of these queue lines also
