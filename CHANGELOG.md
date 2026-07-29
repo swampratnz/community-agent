@@ -57,6 +57,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   over-cap sender's image is never fetched. No image bytes are ever stored.
   Baileys only in this release, matching the existing WhatsApp voice
   feature's own Baileys-only scope.
+- **`my_submissions` now tells a contributor whether their accepted knowledge
+  tip actually helped anyone** (#880): an accepted tip whose linked
+  `knowledge` entry has a positive `retrieval_count` now shows a "used N
+  times in answers so far" suffix, closing the loop `suggest_knowledge`
+  (#633) and the status-only `my_submissions` view (#830) left open at
+  "accepted". Pending, declined, and accepted-but-not-yet-retrieved tips are
+  unaffected — no premature "used 0 times" text. The count itself already
+  existed (#134, admin-only via `list_knowledge`); this only surfaces a
+  member's own count back to them, scoped exactly as tightly as their
+  existing tip-status view.
 
 ## 2026-07-29
 

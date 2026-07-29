@@ -1377,6 +1377,18 @@ and review flow above, rather than a separate table or a privileged surface:
   admin-overridden) title; the declined wording is neutral-to-supportive,
   same as `resolve_appeal`'s `dismissed` case — `decline_knowledge_candidate`
   takes no reason argument, so nothing is fabricated.
+- **Impact loop closure (issue #880)**: acceptance told a contributor their
+  tip was in `knowledge`, but never whether it actually helped anyone —
+  `knowledge.retrieval_count` (#134) tracked exactly that, but only ever
+  surfaced to admins via `list_knowledge`. `acceptKnowledgeCandidate` now
+  persists the `knowledgeId` it already computes onto a new nullable
+  `knowledge_candidates.knowledge_id` FK, in the SAME `UPDATE` that flips the
+  row to `'accepted'` (mirroring the existing `digest_id` FK shape).
+  `listOwnKnowledgeCandidates` `LEFT JOIN`s `knowledge` on that column so
+  `my_submissions` can append a "used N times in answers so far" suffix —
+  only for an `accepted` tip with a positive count, never a premature
+  "used 0 times" for one that's accepted but not yet served, or for a
+  pending/declined tip.
 
 #### Implicit drafting from a helpful answer (`rate_answer`, issue #726)
 
