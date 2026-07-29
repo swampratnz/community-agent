@@ -11,15 +11,16 @@ import { pool } from '../db.js';
 
 // --- Shortcut hits -----------------------------------------------------------
 
-export type ShortcutKind = 'ack' | 'knowledge' | 'repeat_question' | 'repeat_max_turns';
+export type ShortcutKind = 'ack' | 'knowledge' | 'repeat_question' | 'repeat_max_turns' | 'slash_command';
 
 /**
  * Records a hit of one of the four env-gated turn-skipping shortcuts (issue
- * #440) — each avoids a `query()` call against the shared Max pool but was
- * previously visible only via a single `logger.debug`/`.info` line. Callers
- * are expected to fire this without awaiting and swallow rejections (mirrors
- * `recordBackgroundJobCost`'s convention) — a failed write must never block
- * or delay the shortcut's own reply.
+ * #440), or a Discord slash-command reply (issue #863, aggregated as a single
+ * `slash_command` kind) — each avoids a `query()` call against the shared Max
+ * pool but was previously visible only via a single `logger.debug`/`.info`
+ * line. Callers are expected to fire this without awaiting and swallow
+ * rejections (mirrors `recordBackgroundJobCost`'s convention) — a failed
+ * write must never block or delay the shortcut's own reply.
  */
 export async function recordShortcutHit(kind: ShortcutKind): Promise<void> {
   await pool.query(`INSERT INTO shortcut_hits (kind) VALUES ($1)`, [kind]);

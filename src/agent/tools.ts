@@ -1122,7 +1122,8 @@ function formatShortcutHitsLine(
       : '';
   return (
     `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
-    `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')})${dollarClause}.`
+    `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')}, ` +
+    `slash-command ${countOf('slash_command')})${dollarClause}.`
   );
 }
 

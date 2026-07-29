@@ -894,6 +894,16 @@ CREATE TABLE IF NOT EXISTS shortcut_hits (
 CREATE INDEX IF NOT EXISTS shortcut_hits_created_at_idx
   ON shortcut_hits (created_at DESC);
 
+-- Widens the kind enum to also cover the Discord slash commands (issue #744)
+-- as a fifth, aggregate cost-avoidance kind — they are an equally real
+-- zero-`query()`-call shortcut that #744 itself deferred tracking (issue
+-- #863). Same idempotent DROP CONSTRAINT IF EXISTS / re-add convention as
+-- member_projects above, safe to re-run against a table that already holds
+-- rows for the original four kinds.
+ALTER TABLE shortcut_hits DROP CONSTRAINT IF EXISTS shortcut_hits_kind_check;
+ALTER TABLE shortcut_hits ADD CONSTRAINT shortcut_hits_kind_check
+  CHECK (kind IN ('ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command'));
+
 -- ---------------------------------------------------------------------------
 -- Semantic half of the knowledge_candidates dedup guard (issue #503).
 -- hasQueuedCandidateForTopic's exact (case-insensitive) string match doesn't
