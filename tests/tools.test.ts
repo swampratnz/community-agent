@@ -595,6 +595,43 @@ test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion,
   assert.equal(delivered, true);
 });
 
+test('every tool registered on the MCP server is reachable from some tier — a tool absent from the rbac lists is dead code in production (issue #877 review)', () => {
+  // The per-turn surface is tier-derived: core.ts builds allowedTools from
+  // filterFeatureFlaggedTools(toolsForRole(role, platform)), and that filter
+  // only ever REMOVES entries. So registering a tool and asserting its tier
+  // inside the handler is NOT enough — a tool missing from MEMBER_TOOLS/
+  // ADMIN_TOOLS/SUPER_ADMIN_TOOLS is never offered to the SDK for any role,
+  // including super_admin, and can never be invoked. response_latency shipped
+  // exactly that way: registered, correctly gated, and unreachable.
+  //
+  // Every existing rbac test iterates the tier lists, so none of them can see
+  // a registered-but-unlisted tool. This closes the gap in the other
+  // direction, for every future tool rather than just this one.
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'surface-probe',
+      userName: 'Probe',
+      role: 'super_admin' as const,
+      conversationId: 'surface-probe-convo',
+    },
+    adapter,
+  );
+  const registered = Object.keys(
+    (server.instance as unknown as { _registeredTools: Record<string, unknown> })._registeredTools,
+  ).map((name) => `mcp__community__${name}`);
+  const listed = new Set<string>([...MEMBER_TOOLS, ...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]);
+
+  const unreachable = registered.filter((t) => !listed.has(t)).sort();
+  assert.deepEqual(
+    unreachable,
+    [],
+    `these tools are registered but appear in no rbac tier list, so toolsForRole never offers them and they are dead code: ${unreachable.join(', ')}`,
+  );
+  assert.ok(registered.length > 0, 'sanity: the probe server registered at least one tool');
+});
+
 test('notifyAdminApproved signposts the community_info discovery path rather than duplicating ADMIN_TOOLS (issue #201)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (_userId, message) => {
