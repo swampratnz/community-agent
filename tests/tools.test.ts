@@ -12762,6 +12762,7 @@ function listProjectsHandler(caller: {
         {
           handler: (args: {
             query?: string;
+            seekingCollaborators?: boolean;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -12781,6 +12782,20 @@ test('SECURITY: share_project and list_projects refuse a guest-tier caller befor
     () => listTool.handler({}),
     /Permission denied/,
     'list_projects must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+});
+
+test('SECURITY: list_projects refuses a guest-tier caller regardless of the seekingCollaborators flag — the new argument adds no alternate reachability path (issue #854 AC #6)', async () => {
+  const listTool = listProjectsHandler({ platform: 'discord', userId: 'guest-2', role: 'guest' });
+  await assert.rejects(
+    () => listTool.handler({ seekingCollaborators: true }),
+    /Permission denied/,
+    'a guest must be refused with seekingCollaborators: true, before the flag is ever read',
+  );
+  await assert.rejects(
+    () => listTool.handler({ seekingCollaborators: false }),
+    /Permission denied/,
+    'a guest must be refused with seekingCollaborators: false too',
   );
 });
 
@@ -12882,6 +12897,107 @@ test(
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
       [seekerId, showcaseId],
     ]);
+  },
+);
+
+test(
+  'list_projects seekingCollaborators:true narrows both the no-query and query paths to active seeking rows only; omitted/false stays byte-identical to today (issue #854 AC #1, #2, #3, #4)',
+  { skip },
+  async () => {
+    const seekerId = `${RUN}-list-projects-seeking-filter-seeker`;
+    const showcaseId = `${RUN}-list-projects-seeking-filter-showcase`;
+    const seekerTool = shareProjectHandler({ platform: 'discord', userId: seekerId, userName: 'Seeker' });
+    const showcaseTool = shareProjectHandler({
+      platform: 'discord',
+      userId: showcaseId,
+      userName: 'Showcaser',
+    });
+    const listTool = listProjectsHandler({
+      platform: 'discord',
+      userId: `${RUN}-list-projects-seeking-filter-viewer`,
+    });
+
+    const seeking = await seekerTool.handler({
+      name: 'Filter Seeking Gizmo',
+      description: 'a gizmo that wants collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(seeking.isError, false);
+    const showcaseOnly = await showcaseTool.handler({
+      name: 'Filter Showcase Gizmo',
+      description: 'a gizmo with no collaborators flag',
+    });
+    assert.equal(showcaseOnly.isError, false);
+
+    // AC #1: no-query filter path shows only the seeking row.
+    const filteredRecent = await listTool.handler({ seekingCollaborators: true });
+    assert.match(filteredRecent.content[0]?.text ?? '', /Filter Seeking Gizmo/);
+    assert.doesNotMatch(filteredRecent.content[0]?.text ?? '', /Filter Showcase Gizmo/);
+
+    // AC #3: query filter path applies the same narrowing to similarity search.
+    const filteredSearch = await listTool.handler({ query: 'gizmo', seekingCollaborators: true });
+    assert.match(filteredSearch.content[0]?.text ?? '', /Filter Seeking Gizmo/);
+    assert.doesNotMatch(filteredSearch.content[0]?.text ?? '', /Filter Showcase Gizmo/);
+
+    // AC #2: omitted/false is byte-identical to today's unfiltered call, for both paths.
+    const unfilteredNoQuery = await listTool.handler({});
+    const explicitFalseNoQuery = await listTool.handler({ seekingCollaborators: false });
+    assert.equal(explicitFalseNoQuery.content[0]?.text, unfilteredNoQuery.content[0]?.text);
+    assert.match(unfilteredNoQuery.content[0]?.text ?? '', /Filter Seeking Gizmo/);
+    assert.match(unfilteredNoQuery.content[0]?.text ?? '', /Filter Showcase Gizmo/);
+
+    const unfilteredQuery = await listTool.handler({ query: 'gizmo' });
+    const explicitFalseQuery = await listTool.handler({ query: 'gizmo', seekingCollaborators: false });
+    assert.equal(explicitFalseQuery.content[0]?.text, unfilteredQuery.content[0]?.text);
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [seekerId, showcaseId],
+    ]);
+  },
+);
+
+test(
+  'list_projects produces a distinct empty-state message for the filtered-and-empty case, separate from the other two empty states (issue #854 AC #4)',
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-projects-empty-states`;
+    const showcaseTool = shareProjectHandler({ platform: 'discord', userId, userName: 'Showcaser' });
+    const listTool = listProjectsHandler({
+      platform: 'discord',
+      userId: `${RUN}-list-projects-empty-states-viewer`,
+    });
+
+    // No projects shared by anyone matching this run's unique marker yet:
+    // the plain no-query empty state.
+    const noneShared = await listTool.handler({ query: `${RUN}-empty-states-nonexistent-topic` });
+    assert.match(noneShared.content[0]?.text ?? '', /No shared projects match that\./);
+
+    const shared = await showcaseTool.handler({
+      name: 'Empty State Showcase Project',
+      description: 'never opts into seeking collaborators',
+    });
+    assert.equal(shared.isError, false);
+
+    // A real project exists, but none is seeking collaborators: the
+    // filtered-and-empty state, distinct from both other empty strings.
+    const filteredEmpty = await listTool.handler({ seekingCollaborators: true });
+    assert.match(
+      filteredEmpty.content[0]?.text ?? '',
+      /No projects are currently looking for collaborators\./,
+    );
+    assert.doesNotMatch(filteredEmpty.content[0]?.text ?? '', /No projects have been shared yet\./);
+    assert.doesNotMatch(filteredEmpty.content[0]?.text ?? '', /No shared projects match that\./);
+
+    const filteredEmptyQuery = await listTool.handler({
+      query: 'Empty State Showcase Project',
+      seekingCollaborators: true,
+    });
+    assert.match(
+      filteredEmptyQuery.content[0]?.text ?? '',
+      /No projects are currently looking for collaborators\./,
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [userId]);
   },
 );
 
