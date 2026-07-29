@@ -57,6 +57,14 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   over-cap sender's image is never fetched. No image bytes are ever stored.
   Baileys only in this release, matching the existing WhatsApp voice
   feature's own Baileys-only scope.
+- **`who_is_into` (and `/whois`) can now find "members like me", not just a
+  typed topic** (#882): the `query` argument is optional — omit it and the
+  bot matches other members' published interests against your own published
+  `set_my_interests` text instead, excluding your own entry from the results.
+  A member with no published interests yet gets a nudge to run
+  `set_my_interests` first, rather than an error or an empty search. Same
+  member-tier requirement, same 5-result cap, same rendering as a typed
+  query; `who_is_into(query)` and `/whois <query>` are unchanged.
 
 ## 2026-07-29
 

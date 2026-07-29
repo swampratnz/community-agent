@@ -254,12 +254,14 @@ async function handleWhois(interaction: ChatInputCommandInteraction, deps: Slash
   if (query) {
     const hits = await searchMemberInterests(query);
     reply =
-      hits.length === 0 ? 'No members have published interests matching that yet.' : await formatInterestResults(hits);
+      hits.length === 0
+        ? 'No members have published interests matching that yet.'
+        : await formatInterestResults(hits);
   } else {
     const selfMatch = await searchMemberInterestsForSelf('discord', interaction.user.id);
     reply = !selfMatch.hasProfile
-      ? "You haven't published interests yet — tell the bot your interests (e.g. \"set my interests to " +
-          '...") first, then /whois with no topic will search using your own published interests.'
+      ? 'You haven\'t published interests yet — tell the bot your interests (e.g. "set my interests to ' +
+        '...") first, then /whois with no topic will search using your own published interests.'
       : selfMatch.hits.length === 0
         ? 'No other members have published interests matching yours yet.'
         : await formatInterestResults(selfMatch.hits);

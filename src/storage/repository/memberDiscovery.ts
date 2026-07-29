@@ -105,8 +105,7 @@ export async function searchMemberInterests(
 }
 
 export type SelfInterestMatchResult =
-  | { hasProfile: false }
-  | { hasProfile: true; hits: MemberInterestSearchHit[] };
+  { hasProfile: false } | { hasProfile: true; hits: MemberInterestSearchHit[] };
 
 /**
  * `who_is_into`'s no-`query` path (issue #882): match the caller's OWN

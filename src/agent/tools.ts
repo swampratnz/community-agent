@@ -4296,7 +4296,7 @@ export function buildToolServer(
       'member-to-member discovery, e.g. "who\'s into RAG?" or "anyone working on MCP servers?". Returns up ' +
       `to ${WHO_IS_INTO_LIMIT} matches by meaning. Results derive only from what members have explicitly ` +
       'published with set_my_interests — never from general chat or any other source. A caller with no ' +
-      "published interests of their own can still search. Omit the topic to find members like the caller " +
+      'published interests of their own can still search. Omit the topic to find members like the caller ' +
       "themselves — matched against the caller's OWN published interests, excluding the caller's own entry " +
       '(requires the caller to have already called set_my_interests).',
     {
@@ -4307,7 +4307,7 @@ export function buildToolServer(
         .optional()
         .describe(
           'Topic/keyword to search published member interests by meaning. Omit to search using the ' +
-            "caller's own published interests instead (\"find people like me\").",
+            'caller\'s own published interests instead ("find people like me").',
         ),
     },
     async (args) => {

@@ -286,7 +286,11 @@ test('buildSlashCommands defines exactly the five approved read-only commands, e
       (o) => o.name === 'query',
     )?.required;
   assert.equal(requiredness('kb'), true);
-  assert.equal(requiredness('whois'), true);
+  assert.equal(
+    requiredness('whois'),
+    false,
+    'issue #882: /whois query is optional (omit to find members like you)',
+  );
   assert.equal(requiredness('projects'), false);
   const seekingCollaboratorsOption = (
     byName.get('projects') as {
@@ -874,6 +878,66 @@ test("SECURITY: /whois preserves who_is_into's untrusted-content quarantine — 
     'angle brackets must be stripped, not passed through raw',
   );
   assert.ok(replies[0].content.includes('member-interests'), 'must use the quarantine wrapper, not raw rows');
+});
+
+// --- Issue #882: /whois with the query option omitted -----------------------
+
+test('/whois with no query option and a published row for the caller renders the self-match results, mirroring who_is_into (issue #882 acceptance criterion 5)', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    interestRows: [
+      { platform: 'discord', user_id: 'target-1', interests: 'RAG systems with pgvector', similarity: 0.8 },
+    ],
+    projectRows: [],
+  });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: {},
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content, /RAG systems with pgvector/);
+});
+
+test('/whois with no query option and no published row for the caller returns guidance to set_my_interests, mirroring who_is_into (issue #882 acceptance criterion 5)', async (t) => {
+  mockPool(t, { memberRole: 'member', interestRows: [], projectRows: [] });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: {},
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content, /haven't published interests yet/i);
+});
+
+test('/whois <query> remains byte-identical to today when a query IS supplied, even though the option is now optional (issue #882 acceptance criterion 5)', async (t) => {
+  mockPool(t, {
+    memberRole: 'member',
+    interestRows: [
+      { platform: 'discord', user_id: 'target-1', interests: 'RAG systems with pgvector', similarity: 0.8 },
+    ],
+    projectRows: [],
+  });
+  const adapter = new DiscordAdapter();
+  const { interaction, replies } = fakeInteraction({
+    commandName: 'whois',
+    userId: 'member-1',
+    options: { query: 'rag' },
+  });
+
+  await handleInteraction(interaction as never, adapterDeps(adapter));
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content, /RAG systems with pgvector/);
+  assert.doesNotMatch(replies[0].content, /haven't published interests yet/i);
 });
 
 test("SECURITY: /projects preserves list_projects's untrusted-content quarantine — angle brackets stripped (acceptance criterion 8)", async (t) => {
