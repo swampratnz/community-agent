@@ -20671,6 +20671,135 @@ test(
   },
 );
 
+// response_latency (issue #877) — VISION's "time-to-first-answer" north-star
+// metric: count/median/p90 seconds pairing each real reply to a member with
+// the message it answered. Aggregate-only (count + two numbers), admin
+// tier, callerScope()-scoped, mirroring review_queue/question_digest's shape.
+function responseLatencyToolFrom(server: unknown): {
+  handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }>;
+} {
+  return (
+    server as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['response_latency'];
+}
+
+test('SECURITY: response_latency refuses a member-tier caller before any repository query runs (issue #877)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query');
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-response-latency-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-response-latency-member-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+
+  await assert.rejects(() => responseLatencyToolFrom(server.instance).handler({}), /Permission denied/);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'SECURITY: a member-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+  );
+});
+
+test('SECURITY: response_latency refuses a guest-tier caller before any repository query runs (issue #877)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query');
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-response-latency-guest`,
+      userName: 'Guest',
+      role: 'guest' as const,
+      conversationId: `${RUN}-response-latency-guest-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+
+  await assert.rejects(() => responseLatencyToolFrom(server.instance).handler({}), /Permission denied/);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'SECURITY: a guest-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+  );
+});
+
+test(
+  'response_latency renders the fixed "not enough data yet" message for a window with zero qualifying pairs, never NaN/Infinity (acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-response-latency-empty-convo`;
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: `${RUN}-response-latency-empty-admin`,
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId,
+      },
+      stubAdapter(async () => {}),
+    );
+    const out = (await responseLatencyToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+    assert.match(out, /^⏱️ Response latency \(last 7d\): not enough data yet\.$/);
+    assert.ok(!out.includes('NaN') && !out.includes('Infinity'));
+  },
+);
+
+test(
+  "SECURITY: response_latency's reply is exactly the fixed label plus count/median/p90 — never a user id, display name, or message excerpt (acceptance criterion 7)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-response-latency-content-convo`;
+    const secretUserId = `${RUN}-response-latency-SECRET-USER-ID`;
+    const secretContent = 'SECRET-QUESTION-CONTENT-NEVER-SHOWN-response-latency';
+    const now = new Date();
+
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound',$3,true,$4)`,
+      [conversationId, secretUserId, secretContent, new Date(now.getTime() - 12_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','the reply text itself',$2,$3)`,
+      [conversationId, JSON.stringify({ replyToUserId: secretUserId }), now],
+    );
+
+    try {
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: `${RUN}-response-latency-content-admin`,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await responseLatencyToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      assert.match(
+        out,
+        /^⏱️ Response latency \(last 7d\): \d+ replies, median \d+s, p90 \d+s$/,
+        'the reply must be exactly the fixed label plus three aggregate numbers',
+      );
+      assert.ok(
+        !out.includes(secretUserId) && !out.includes(secretContent) && !out.includes('the reply text itself'),
+        'SECURITY: response_latency must never render a user id, display name, or message excerpt',
+      );
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
+    }
+  },
+);
+
 test(
   'admin_activity resolves display names via the community_users->server_roster precedence, falls back to the raw platform user id for an unknown actor, and never renders admin_audit.params content (issue #488)',
   { skip },

@@ -119,6 +119,7 @@ import {
   resolveDisplayName,
   resolveModerationAppeal,
   resolveSuggestion,
+  responseLatencyStats,
   rosterCounts,
   resolveLinkedIdentities,
   saveKnowledge,
@@ -6392,6 +6393,27 @@ export function buildToolServer(
     { annotations: { readOnlyHint: true } },
   );
 
+  const responseLatencyTool = tool(
+    'response_latency',
+    "Show how quickly your conversations' members are getting answered — count of replies, median and " +
+      'p90 response time in seconds, over a recent window (default 7 days, max 30). Pairs each reply to a ' +
+      "member with that member's preceding message; proactive digest/alert pushes are never counted. " +
+      'Aggregate only — never a per-message timestamp, user id, or message excerpt. Admin only.',
+    { days: z.number().optional().describe('Window in days (default 7, max 30)') },
+    async (args) => {
+      assertAtLeast(caller.role, 'admin', 'response_latency');
+      const allowed = await callerScope();
+      const stats = await responseLatencyStats(allowed, args.days ?? 7);
+      const days = Math.min(Math.max(Math.trunc(args.days ?? 7) || 7, 1), 30);
+      if (!stats) return text(`⏱️ Response latency (last ${days}d): not enough data yet.`);
+      return text(
+        `⏱️ Response latency (last ${days}d): ${stats.count} replies, ` +
+          `median ${Math.round(stats.medianSeconds)}s, p90 ${Math.round(stats.p90Seconds)}s`,
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const moderationHistory = tool(
     'moderation_history',
     "Show recent moderation actions (warnings, timeouts, kicks, bans, deletions, announcements) in your conversations — for checking prior history before escalating. Optionally filter to one member and/or one action kind, e.g. to review a specific member's prior warnings before deciding whether to escalate. Admin only.",
@@ -7731,6 +7753,7 @@ export function buildToolServer(
       adminDigestTool,
       reviewQueueTool,
       listKnowledgeGaps,
+      responseLatencyTool,
       moderationHistory,
       listReportsTool,
       resolveReportTool,
