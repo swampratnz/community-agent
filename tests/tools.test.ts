@@ -603,6 +603,43 @@ test('notifyAdminApproved sends exactly one orientation DM on a fresh promotion,
   assert.equal(delivered, true);
 });
 
+test('every tool registered on the MCP server is reachable from some tier — a tool absent from the rbac lists is dead code in production (issue #877 review)', () => {
+  // The per-turn surface is tier-derived: core.ts builds allowedTools from
+  // filterFeatureFlaggedTools(toolsForRole(role, platform)), and that filter
+  // only ever REMOVES entries. So registering a tool and asserting its tier
+  // inside the handler is NOT enough — a tool missing from MEMBER_TOOLS/
+  // ADMIN_TOOLS/SUPER_ADMIN_TOOLS is never offered to the SDK for any role,
+  // including super_admin, and can never be invoked. response_latency shipped
+  // exactly that way: registered, correctly gated, and unreachable.
+  //
+  // Every existing rbac test iterates the tier lists, so none of them can see
+  // a registered-but-unlisted tool. This closes the gap in the other
+  // direction, for every future tool rather than just this one.
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: 'surface-probe',
+      userName: 'Probe',
+      role: 'super_admin' as const,
+      conversationId: 'surface-probe-convo',
+    },
+    adapter,
+  );
+  const registered = Object.keys(
+    (server.instance as unknown as { _registeredTools: Record<string, unknown> })._registeredTools,
+  ).map((name) => `mcp__community__${name}`);
+  const listed = new Set<string>([...MEMBER_TOOLS, ...ADMIN_TOOLS, ...SUPER_ADMIN_TOOLS]);
+
+  const unreachable = registered.filter((t) => !listed.has(t)).sort();
+  assert.deepEqual(
+    unreachable,
+    [],
+    `these tools are registered but appear in no rbac tier list, so toolsForRole never offers them and they are dead code: ${unreachable.join(', ')}`,
+  );
+  assert.ok(registered.length > 0, 'sanity: the probe server registered at least one tool');
+});
+
 test('notifyAdminApproved signposts the community_info discovery path rather than duplicating ADMIN_TOOLS (issue #201)', async () => {
   const calls: string[] = [];
   const adapter = stubAdapter(async (_userId, message) => {
@@ -2659,7 +2696,7 @@ test('community_info: admin-tier reply stays byte-identical, never gains SUPER_A
     '- Review flagged content reports and resolve each report, review suggestions members submit and resolve each suggestion, see how members rated my answers, check which knowledge entries are rated poorly, and review recurring unhelpful-answer themes across all answers\n' +
     '- Post to the community: make an announcement, create a poll or end one poll early, open a Discord thread, or schedule/cancel an event\n' +
     '- Curate the knowledge base: save a new knowledge entry, browse knowledge entries, edit a knowledge entry, or delete a knowledge entry, and check for near-duplicate entries or conflicting entries\n' +
-    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, or get a review-queue roll-up of all five review queues at once\n" +
+    "- Review knowledge candidates, accept a candidate or decline a candidate, track knowledge gaps (questions I couldn't answer), recurring question clusters, raw context digests, pull your own admin-digest snapshot on demand, get a review-queue roll-up of all five review queues at once, or check how quickly I've been answering members (response latency)\n" +
     '- See who is waiting for access, or who has joined or left the server\n' +
     "- Add a note about a member, review notes on a member, delete a note, or look up a member's history across conversations\n" +
     '- Set the community guidelines or the welcome message shown to new members\n' +
@@ -2852,6 +2889,7 @@ const ADMIN_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__question_digest', /recurring question clusters/i],
   ['mcp__community__admin_digest', /admin-digest snapshot on demand/i],
   ['mcp__community__review_queue', /review-queue roll-up of all five review queues/i],
+  ['mcp__community__response_latency', /how quickly I've been answering members/i],
   ['mcp__community__list_knowledge_gaps', /knowledge gaps/i],
   ['mcp__community__moderation_history', /moderation history log/i],
   ['mcp__community__add_member', /add a new member/i],
@@ -21246,6 +21284,135 @@ test(
       if (whatsappAppealId !== undefined) {
         await pool.query(`DELETE FROM moderation_appeals WHERE id = $1`, [whatsappAppealId]);
       }
+    }
+  },
+);
+
+// response_latency (issue #877) — VISION's "time-to-first-answer" north-star
+// metric: count/median/p90 seconds pairing each real reply to a member with
+// the message it answered. Aggregate-only (count + two numbers), admin
+// tier, callerScope()-scoped, mirroring review_queue/question_digest's shape.
+function responseLatencyToolFrom(server: unknown): {
+  handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }>;
+} {
+  return (
+    server as {
+      _registeredTools: Record<
+        string,
+        { handler: (args: object) => Promise<{ content: Array<{ type: string; text: string }> }> }
+      >;
+    }
+  )._registeredTools['response_latency'];
+}
+
+test('SECURITY: response_latency refuses a member-tier caller before any repository query runs (issue #877)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query');
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-response-latency-member`,
+      userName: 'Member',
+      role: 'member' as const,
+      conversationId: `${RUN}-response-latency-member-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+
+  await assert.rejects(() => responseLatencyToolFrom(server.instance).handler({}), /Permission denied/);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'SECURITY: a member-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+  );
+});
+
+test('SECURITY: response_latency refuses a guest-tier caller before any repository query runs (issue #877)', async (t) => {
+  const querySpy = t.mock.method(pool, 'query');
+  const server = buildToolServer(
+    {
+      platform: 'discord' as const,
+      userId: `${RUN}-response-latency-guest`,
+      userName: 'Guest',
+      role: 'guest' as const,
+      conversationId: `${RUN}-response-latency-guest-convo`,
+    },
+    stubAdapter(async () => {}),
+  );
+
+  await assert.rejects(() => responseLatencyToolFrom(server.instance).handler({}), /Permission denied/);
+  assert.equal(
+    querySpy.mock.calls.length,
+    0,
+    'SECURITY: a guest-tier caller must trigger zero repository queries before the assertAtLeast rejection',
+  );
+});
+
+test(
+  'response_latency renders the fixed "not enough data yet" message for a window with zero qualifying pairs, never NaN/Infinity (acceptance criterion 4)',
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-response-latency-empty-convo`;
+    const server = buildToolServer(
+      {
+        platform: 'discord' as const,
+        userId: `${RUN}-response-latency-empty-admin`,
+        userName: 'Admin',
+        role: 'admin' as const,
+        conversationId,
+      },
+      stubAdapter(async () => {}),
+    );
+    const out = (await responseLatencyToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+    assert.match(out, /^⏱️ Response latency \(last 7d\): not enough data yet\.$/);
+    assert.ok(!out.includes('NaN') && !out.includes('Infinity'));
+  },
+);
+
+test(
+  "SECURITY: response_latency's reply is exactly the fixed label plus count/median/p90 — never a user id, display name, or message excerpt (acceptance criterion 7)",
+  { skip },
+  async () => {
+    const conversationId = `${RUN}-response-latency-content-convo`;
+    const secretUserId = `${RUN}-response-latency-SECRET-USER-ID`;
+    const secretContent = 'SECRET-QUESTION-CONTENT-NEVER-SHOWN-response-latency';
+    const now = new Date();
+
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, addressed_to_bot, created_at)
+       VALUES ('discord',$1,$2,'member','inbound',$3,true,$4)`,
+      [conversationId, secretUserId, secretContent, new Date(now.getTime() - 12_000)],
+    );
+    await pool.query(
+      `INSERT INTO interactions
+         (platform, conversation_id, user_id, role, direction, content, meta, created_at)
+       VALUES ('discord',$1,'bot','member','outbound','the reply text itself',$2,$3)`,
+      [conversationId, JSON.stringify({ replyToUserId: secretUserId }), now],
+    );
+
+    try {
+      const server = buildToolServer(
+        {
+          platform: 'discord' as const,
+          userId: `${RUN}-response-latency-content-admin`,
+          userName: 'Admin',
+          role: 'admin' as const,
+          conversationId,
+        },
+        stubAdapter(async () => {}),
+      );
+      const out = (await responseLatencyToolFrom(server.instance).handler({})).content[0]?.text ?? '';
+      assert.match(
+        out,
+        /^⏱️ Response latency \(last 7d\): \d+ replies, median \d+s, p90 \d+s$/,
+        'the reply must be exactly the fixed label plus three aggregate numbers',
+      );
+      assert.ok(
+        !out.includes(secretUserId) && !out.includes(secretContent) && !out.includes('the reply text itself'),
+        'SECURITY: response_latency must never render a user id, display name, or message excerpt',
+      );
+    } finally {
+      await pool.query(`DELETE FROM interactions WHERE conversation_id = $1`, [conversationId]);
     }
   },
 );
