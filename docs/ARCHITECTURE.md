@@ -1201,11 +1201,16 @@ weakening it:
    discovery surface the way Discord's slash commands do via
    `SlashCommandBuilder.setDescription`, so `community_info` is the only
    place a WhatsApp member learns they exist. Branch condition is
-   `caller.platform === 'whatsapp'` plus the config flag — never message
-   content — and the appended text is a hand-written literal, same trust
-   level as `MEMBER_CAPABILITIES_TEXT` itself; a Discord caller's reply is
+   `caller.platform === 'whatsapp'` plus the config flag plus
+   `atLeast(caller.role, 'member')` — never message content — and the
+   appended text is a hand-written literal, same trust level as
+   `MEMBER_CAPABILITIES_TEXT` itself; a Discord caller's reply is
    byte-identical regardless of the flag, and a WhatsApp caller with the flag
-   off is byte-identical to before #872.
+   off is byte-identical to before #872. The role check matters because
+   three of the four shortcuts (`!whois`/`!projects`/`!digest`) themselves
+   gate on `atLeast(role, 'member')` in `tryWhatsAppTextCommand` — a guest
+   caller never satisfies it, so the block is withheld rather than
+   advertising shortcuts that would silently no-op for them.
 7. **Opt-in auto-enroll** (issue #605, off unless
    `DISCORD_AUTO_ENROLL_MEMBERS=true`). Removes the manual per-person
    `add_member` step: on every non-bot Discord join, `onGuildMemberAdd` calls

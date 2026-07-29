@@ -2671,9 +2671,17 @@ call.
 
 - **Branch condition is identity + config only.** `caller.platform ===
   'whatsapp'` (platform-derived, resolved from the adapter exactly like every
-  other tier/identity check in this doc — never message content) **and**
-  `config.behaviour.whatsappTextCommandsEnabled`. Nothing a member types
-  influences which text renders.
+  other tier/identity check in this doc — never message content), **and**
+  `config.behaviour.whatsappTextCommandsEnabled`, **and**
+  `atLeast(caller.role, 'member')`. Nothing a member types influences which
+  text renders.
+- **Guest-tier callers never see the block.** Three of the four advertised
+  shortcuts (`!whois`, `!projects`, `!digest`) gate on `atLeast(role,
+  'member')` in `router.ts`'s `tryWhatsAppTextCommand`; a guest sending one
+  silently falls through to a normal agent turn instead of running the
+  shortcut. Advertising them to a guest would violate `community_info`'s own
+  invariant — "names every tool the caller actually has" — so the block is
+  gated the same way the router gates the shortcuts themselves.
 - **Fixed literal, never interpolated.** The appended block
   (`WHATSAPP_TEXT_COMMANDS_TEXT`) is a hand-written string naming the four
   §23 shortcuts, authored with the same discipline as
@@ -2687,9 +2695,13 @@ call.
   asserts a WhatsApp caller with the flag off renders byte-identical to
   `MEMBER_CAPABILITIES_TEXT` alone (today's behaviour, unchanged), and that
   the appended block, when it does render, equals the fixed literal exactly.
+- **SECURITY: guest-tier exclusion.** A third `SECURITY:`-prefixed test
+  asserts a guest-tier WhatsApp caller's `community_info` output never
+  mentions the member-gated shortcuts, even with the flag on.
 - **Admin/super_admin WhatsApp callers inherit it too**, since it's appended
-  to the member-tier segment every tier's reply already includes — not a new
-  tier-specific branch.
+  to the member-tier segment their reply already includes — not a new
+  tier-specific branch. Member tier is the floor: `atLeast(role, 'member')`
+  is also true for admin and super_admin.
 
 No new tool, table, RBAC change, or data collection. See
 docs/ARCHITECTURE.md's `community_info` write-up for the mechanism.

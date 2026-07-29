@@ -3154,6 +3154,30 @@ test('SECURITY: community_info for a WhatsApp caller with whatsappTextCommandsEn
   }
 });
 
+test('SECURITY: community_info for a guest-tier WhatsApp caller never advertises the member-gated shortcuts, even with whatsappTextCommandsEnabled on (issue #872)', async () => {
+  const original = config.behaviour.whatsappTextCommandsEnabled;
+  try {
+    config.behaviour.whatsappTextCommandsEnabled = true;
+    const guestReply = (await communityInfoHandler('guest', 'whatsapp')).content[0]?.text ?? '';
+    const guestReplyFlagOff = (await communityInfoHandler('guest', 'discord')).content[0]?.text ?? '';
+
+    assert.equal(
+      guestReply,
+      guestReplyFlagOff,
+      'a guest-tier caller must never receive the WhatsApp shortcut block: !whois/!projects/!digest ' +
+        "all require member tier in router.ts's tryWhatsAppTextCommand, so advertising them to a " +
+        'guest would promise a shortcut that silently falls through to a normal turn instead',
+    );
+    assert.doesNotMatch(
+      guestReply,
+      /!whois|!projects|!digest/,
+      'a guest-tier reply must never mention the member-gated WhatsApp shortcuts',
+    );
+  } finally {
+    config.behaviour.whatsappTextCommandsEnabled = original;
+  }
+});
+
 test('SECURITY: redeploy_bot registers a pending action instead of executing directly (issue #101)', async () => {
   const adapter = stubAdapter(async () => {});
   const caller = {

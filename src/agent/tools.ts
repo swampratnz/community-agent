@@ -3216,7 +3216,9 @@ export function buildToolServer(
     {},
     async () => {
       const memberSegment =
-        caller.platform === 'whatsapp' && config.behaviour.whatsappTextCommandsEnabled
+        caller.platform === 'whatsapp' &&
+        config.behaviour.whatsappTextCommandsEnabled &&
+        atLeast(caller.role, 'member')
           ? `${MEMBER_CAPABILITIES_TEXT}\n${WHATSAPP_TEXT_COMMANDS_TEXT}`
           : MEMBER_CAPABILITIES_TEXT;
       if (caller.role === 'super_admin') {
