@@ -934,6 +934,18 @@ ALTER TABLE shortcut_hits DROP CONSTRAINT IF EXISTS shortcut_hits_kind_check;
 ALTER TABLE shortcut_hits ADD CONSTRAINT shortcut_hits_kind_check
   CHECK (kind IN ('ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command'));
 
+-- Widens the kind enum again to cover WhatsApp's `!`-prefixed text commands
+-- (issue #859) as a sixth kind — the WhatsApp counterpart to Discord's
+-- slash_command above, and the same class of gap #863 closed for Discord
+-- (issue #874). A distinct kind rather than reusing `slash_command`: that
+-- value is documented as Discord-specific, so folding WhatsApp hits into it
+-- would misname the mechanism and corrupt any per-kind analysis. Same
+-- idempotent DROP CONSTRAINT IF EXISTS / re-add convention, safe to re-run
+-- against a table that already holds rows for the original five kinds.
+ALTER TABLE shortcut_hits DROP CONSTRAINT IF EXISTS shortcut_hits_kind_check;
+ALTER TABLE shortcut_hits ADD CONSTRAINT shortcut_hits_kind_check
+  CHECK (kind IN ('ack', 'knowledge', 'repeat_question', 'repeat_max_turns', 'slash_command', 'whatsapp_text_command'));
+
 -- ---------------------------------------------------------------------------
 -- Semantic half of the knowledge_candidates dedup guard (issue #503).
 -- hasQueuedCandidateForTopic's exact (case-insensitive) string match doesn't

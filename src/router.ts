@@ -454,7 +454,8 @@ export class Router {
    * consulted at the same call sites, but only when `getLangPref` didn't
    * already resolve to 'mi' (which takes precedence). `recordShortcutHit`
    * defaults to the real DB-backed shortcut-hit recorder (issue #440),
-   * fired at each of the four member-facing shortcut short-circuits.
+   * fired at each of the four member-facing shortcut short-circuits, plus
+   * `sendWhatsAppTextCommand`'s shared send path (issue #874).
    * `notifyAccessRequestFn` defaults to the real `notifyAccessRequest`
    * (issue #480), consulted only when `ACCESS_REQUEST_ALERT_ENABLED` is on
    * and `recordAccessRequest` reports a fresh insert — overridable so tests
@@ -1739,7 +1740,11 @@ export class Router {
    * Sends a served WhatsApp text-command reply and records it exactly like a
    * normal agent reply — counted toward `dailyReplyLimitPerUser`, visible to
    * admin history/digest views — mirroring `sendKnowledgeShortcut`'s
-   * precedent (issue #162 point 4, reused for issue #859).
+   * precedent (issue #162 point 4, reused for issue #859). Also records a
+   * `whatsapp_text_command` shortcut hit (issue #874) — the WhatsApp
+   * counterpart to `slashCommands.ts`'s `recordShortcutHit('slash_command')`
+   * call sites — from this one shared send path, so all four `!` commands
+   * are covered without a per-command call site.
    */
   private async sendWhatsAppTextCommand(
     msg: IncomingMessage,
@@ -1747,6 +1752,9 @@ export class Router {
     replyText: string,
   ): Promise<void> {
     await this.send(adapter, msg.conversationId, replyText);
+    this.recordShortcutHit('whatsapp_text_command').catch((err) =>
+      logger.warn({ err }, 'shortcut_hit_record_failed'),
+    );
     await recordInteraction({
       platform: msg.platform,
       conversationId: msg.conversationId,

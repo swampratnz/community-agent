@@ -7668,8 +7668,8 @@ test('formatUsageStats: shortcutHits.total > 0 appends a per-kind breakdown with
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0) — ' +
-      '~$3.50 avoided at the member-tier average reply cost.',
+      'Shortcuts fired: 7 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0, ' +
+      'whatsapp-text-command 0) — ~$3.50 avoided at the member-tier average reply cost.',
   );
 });
 
@@ -7696,8 +7696,36 @@ test('formatUsageStats: shortcutHits breakdown includes a slash-command count wh
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: member ~$1.50 (3 replies)\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Shortcuts fired: 9 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 2) — ' +
-      '~$4.50 avoided at the member-tier average reply cost.',
+      'Shortcuts fired: 9 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 2, ' +
+      'whatsapp-text-command 0) — ~$4.50 avoided at the member-tier average reply cost.',
+  );
+});
+
+test('formatUsageStats: shortcutHits breakdown includes a whatsapp-text-command count when WhatsApp `!` text-command hits are present (issue #874)', () => {
+  const out = formatUsageStats(
+    {
+      ...BASE_USAGE_STATS,
+      shortcutHits: {
+        total: 8,
+        byKind: [
+          { kind: 'ack', count: 2 },
+          { kind: 'knowledge', count: 3 },
+          { kind: 'repeat_question', count: 1 },
+          { kind: 'repeat_max_turns', count: 1 },
+          { kind: 'whatsapp_text_command', count: 1 },
+        ],
+      },
+    },
+    7,
+  );
+  // member row: costUsd 1.5 / replies 3 = $0.50/reply avg; 8 * 0.50 = $4.00
+  assert.equal(
+    out,
+    'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
+      'Cost by role: member ~$1.50 (3 replies)\n' +
+      'Top users:\n- Alice: 2 msgs\n' +
+      'Shortcuts fired: 8 (ack 2, knowledge 3, repeat-question 1, repeat-max-turns 1, slash-command 0, ' +
+      'whatsapp-text-command 1) — ~$4.00 avoided at the member-tier average reply cost.',
   );
 });
 
@@ -7715,7 +7743,8 @@ test('formatUsageStats: shortcutHits.total > 0 with zero member replies omits th
     'Last 7 day(s): 5 inbound / 3 replies, ~$1.50 recorded.\n' +
       'Cost by role: none\n' +
       'Top users:\n- Alice: 2 msgs\n' +
-      'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0, slash-command 0).',
+      'Shortcuts fired: 4 (ack 4, knowledge 0, repeat-question 0, repeat-max-turns 0, slash-command 0, ' +
+      'whatsapp-text-command 0).',
   );
 });
 

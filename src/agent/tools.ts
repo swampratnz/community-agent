@@ -1134,7 +1134,7 @@ function formatShortcutHitsLine(
   return (
     `\nShortcuts fired: ${shortcutHits.total} (ack ${countOf('ack')}, knowledge ${countOf('knowledge')}, ` +
     `repeat-question ${countOf('repeat_question')}, repeat-max-turns ${countOf('repeat_max_turns')}, ` +
-    `slash-command ${countOf('slash_command')})${dollarClause}.`
+    `slash-command ${countOf('slash_command')}, whatsapp-text-command ${countOf('whatsapp_text_command')})${dollarClause}.`
   );
 }
 

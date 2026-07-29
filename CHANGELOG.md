@@ -39,6 +39,13 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   a four-way `||` (any sub-signal renders it), each with its own independent
   week-over-week trend; still a bare integer only — never a requester/owner
   identifier or a project name/description/link.
+- **`usage_stats`'s shortcut-savings estimate now counts WhatsApp's `!` text
+  commands too** (#874): `!whois`/`!projects`/`!guidelines`/`!digest` hits now
+  record a `whatsapp_text_command` shortcut, the WhatsApp counterpart to
+  #863's Discord slash-command tracking. Previously only Discord's slash
+  commands were counted, so a WhatsApp-heavy deployment's real cost savings
+  from #859 were undercounted in the `Shortcuts fired: ...` line and its
+  dollar-avoided estimate.
 
 ## 2026-07-29
 

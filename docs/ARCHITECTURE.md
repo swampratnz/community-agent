@@ -2402,6 +2402,16 @@ reply uses — never a new send primitive — and is recorded via
 `dailyReplyLimitPerUser` like any other answer rather than becoming an
 unmetered read path.
 
+`shortcut_hits` tracking of this path (issue #874, mirroring issue #863's
+identical fix for Discord slash commands): the shared `sendWhatsAppTextCommand`
+send path records one `whatsapp_text_command` `shortcut_hits` row per served
+reply — a fixed string literal, never derived from the WhatsApp message text —
+so all four commands are covered from this one call site with no per-command
+wiring. `usage_stats`'s "Shortcuts fired" line includes it in the total and its
+own `whatsapp-text-command N` breakdown, distinct from Discord's
+`slash-command N` (a new kind rather than reusing `slash_command`, which is
+documented as Discord-specific).
+
 ## Concurrency model
 
 - The router **serialises turns per conversation** (a promise chain keyed by
@@ -2940,7 +2950,9 @@ adds an opt-in proactive check on top of the existing (pull-only, super-admin)
   `slash_command` kind (issue #863) folds in every successful Discord slash-
   command reply (`/kb`, `/whois`, `/projects`, `/guidelines`, `/digest`) as
   one aggregate count, so the shortcut-hit total and dollar estimate now
-  cover that previously-invisible cost-avoidance path too.
+  cover that previously-invisible cost-avoidance path too. A sixth
+  `whatsapp_text_command` kind (issue #874) does the same for WhatsApp's `!`
+  text commands (issue #859) — the one platform issue #863 left uncounted.
 - `usage_stats` also reports a `Prompt cache: NN% hit rate (X read / Y new
   tokens)` line (issue #522), summing the `cache_read_input_tokens`/
   `cache_creation_input_tokens` counts issue #508 already reads off each
