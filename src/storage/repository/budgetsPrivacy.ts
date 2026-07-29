@@ -205,6 +205,16 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
            OR (requester_platform = $1 AND requester_user_id = $2)`,
       [platform, userId],
     );
+    // project_connection_requests (issue #840, request_project_connection) is
+    // keyed on this identity in EITHER role — as the project owner who
+    // received a request, or as the requester who sent one — same two-sided
+    // shape as helper_notifications above.
+    const { rowCount: projectConnectionRequests } = await client.query(
+      `DELETE FROM project_connection_requests
+        WHERE (owner_platform = $1 AND owner_user_id = $2)
+           OR (requester_platform = $1 AND requester_user_id = $2)`,
+      [platform, userId],
+    );
 
     await client.query('COMMIT');
     return (
@@ -226,7 +236,8 @@ async function purgeSingleIdentity(platform: Platform, userId: string): Promise<
       (memberProjects ?? 0) +
       (memberInterests ?? 0) +
       (knowledgeTips ?? 0) +
-      (helperNotifications ?? 0)
+      (helperNotifications ?? 0) +
+      (projectConnectionRequests ?? 0)
     );
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

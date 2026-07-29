@@ -2502,8 +2502,9 @@ test('community_info reply stays concise, not a wall of text (issue #92)', async
   // heuristic — a future addition that isn't consolidated should fail this
   // rather than silently growing into a wall of text. Bumped again for issue
   // #729's set_helper_availability/find_helper line, and again for issue
-  // #808's request_human_help line.
-  assert.ok(replyText.length < 1850, `reply should stay short; was ${replyText.length} chars`);
+  // #808's request_human_help line, and again for issue #840's
+  // request_project_connection line.
+  assert.ok(replyText.length < 1950, `reply should stay short; was ${replyText.length} chars`);
 });
 
 test('community_info appends the full ADMIN_CAPABILITIES_TEXT rundown for admin/super_admin callers, on top of the member content (issue #367)', async () => {
@@ -2615,6 +2616,7 @@ const MEMBER_CAPABILITY_COVERAGE = new Map<string, RegExp>([
   ['mcp__community__who_is_into', /who's working on Discord bots/i],
   ['mcp__community__set_helper_availability', /opt in\/out of being notified/i],
   ['mcp__community__find_helper', /can someone help with/i],
+  ['mcp__community__request_project_connection', /looking for collaborators/i],
   ['mcp__community__community_digest', /community digest on demand/i],
 ]);
 // community_info is self-referential — it describes every OTHER member
@@ -2687,6 +2689,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
     '- Ask what meetups/events are coming up ("what\'s on?")\n' +
     '- Share a project you\'ve built with the community, or browse what others have shared ("share my ' +
     'project", "what has everyone built?")\n' +
+    "- Ask to connect with a project owner who's looking for collaborators (\"I'd like to help with that " +
+    'project")\n' +
     '- Publish your own interests so other members can find you, or find members into a topic ("add me to ' +
     'who\'s into RAG", "who\'s working on Discord bots?")\n' +
     '- Ask if someone in the community can help with something you\'re stuck on ("can someone help with ' +
@@ -2701,7 +2705,8 @@ test('community_info: member-tier reply is byte-identical to the pinned member c
       'list_events line, issue #437 added the list_knowledge_topics line, issue #496 added the ' +
       'appeal_moderation line, issue #646 added the share_project/list_projects line, issue #634 added the ' +
       'set_my_interests/who_is_into line, issue #729 added the set_helper_availability/find_helper line, ' +
-      'issue #808 added the request_human_help line, issue #841 added the community_digest line; ' +
+      'issue #808 added the request_human_help line, issue #840 added the request_project_connection line, ' +
+      'issue #841 added the community_digest line; ' +
       'otherwise unchanged since #367)',
   );
 });
@@ -2829,8 +2834,9 @@ test('community_info: admin reply stays under a hard char cap, not a wall of tex
   // reports/suggestions/feedback bullet, not a new one); bumped again
   // alongside the member cap for issue #729's set_helper_availability/
   // find_helper line, and again alongside the member cap for issue #808's
-  // request_human_help line.
-  assert.ok(adminReply.length < 3650, `admin reply should stay short; was ${adminReply.length} chars`);
+  // request_human_help line, and again alongside the member cap for issue
+  // #840's request_project_connection line.
+  assert.ok(adminReply.length < 3850, `admin reply should stay short; was ${adminReply.length} chars`);
 });
 
 test('SECURITY: community_info member-tier and guest-tier replies never name an admin/super_admin-only tool or contain any ADMIN_CAPABILITIES_TEXT-unique line (issue #367, issue #311)', async () => {
@@ -2959,9 +2965,11 @@ test('community_info: super_admin reply stays under a hard char cap, not a wall 
   // who_is_into line; bumped again alongside the admin cap for issue #724's
   // list_unhelpful_themes clause; bumped again alongside the member/admin
   // caps for issue #729's set_helper_availability/find_helper line, and again
-  // alongside the member/admin caps for issue #808's request_human_help line.
+  // alongside the member/admin caps for issue #808's request_human_help line,
+  // and again alongside the member/admin caps for issue #840's
+  // request_project_connection line.
   assert.ok(
-    superAdminReply.length < 4260,
+    superAdminReply.length < 4460,
     `super_admin reply should stay short; was ${superAdminReply.length} chars`,
   );
 });
@@ -13211,6 +13219,442 @@ test(
       hostileOwner,
     ]);
     await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [hostileOwner]);
+  },
+);
+
+test(
+  "list_projects prefixes each rendered row with the project's DB id, e.g. [#42] (issue #840 AC #4)",
+  { skip },
+  async () => {
+    const userId = `${RUN}-list-projects-id-prefix`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId, userName: 'Prefixed' });
+    const created = await shareTool.handler({ name: 'Id Prefixed Project', description: 'has an id prefix' });
+    assert.equal(created.isError, false);
+
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [userId, 'Id Prefixed Project'],
+    );
+    const id = Number(dbRow.rows[0].id);
+
+    const listTool = listProjectsHandler({ platform: 'discord', userId: `${RUN}-list-projects-id-viewer` });
+    const rendered = (await listTool.handler({})).content[0]?.text ?? '';
+    const line = rendered.split('\n').find((l) => l.includes('Id Prefixed Project'));
+    assert.ok(line, 'the shared project must be rendered');
+    assert.match(
+      line ?? '',
+      new RegExp(`^\\d+\\. \\[#${id}\\] "Id Prefixed Project"`),
+      "the rendered row must be prefixed with the project's actual DB id",
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [userId]);
+  },
+);
+
+// request_project_connection (issue #840): the action counterpart to
+// share_project's seekingCollaborators signal (#834) — modelled directly on
+// find_helper's DM-handoff shape (memberDiscovery.ts), but matching by
+// explicit id rather than embedding similarity.
+function requestProjectConnectionHandler(caller: {
+  platform: 'discord' | 'whatsapp';
+  userId: string;
+  userName?: string;
+  role?: 'member' | 'guest' | 'admin' | 'super_admin';
+}) {
+  const adapter = stubAdapter(async () => {});
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: caller.userName ?? 'Member',
+      role: caller.role ?? 'member',
+      conversationId: 'convo-request-project-connection',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            projectId: number;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['request_project_connection'];
+}
+
+/** Same shape as requestProjectConnectionHandler, but with a caller-supplied adapter so a test can capture the DM the tool sends. */
+function requestProjectConnectionHandlerWithAdapter(
+  caller: { platform: 'discord' | 'whatsapp'; userId: string; userName?: string },
+  adapter: PlatformAdapter,
+) {
+  const server = buildToolServer(
+    {
+      platform: caller.platform,
+      userId: caller.userId,
+      userName: caller.userName ?? 'Member',
+      role: 'member',
+      conversationId: 'convo-request-project-connection-adapter',
+    },
+    adapter,
+  );
+  return (
+    server.instance as unknown as {
+      _registeredTools: Record<
+        string,
+        {
+          handler: (args: {
+            projectId: number;
+          }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+        }
+      >;
+    }
+  )._registeredTools['request_project_connection'];
+}
+
+test('SECURITY: request_project_connection refuses a guest-tier caller before any DB write/read (assertAtLeast re-check, issue #840)', async () => {
+  const guestTool = requestProjectConnectionHandler({
+    platform: 'discord',
+    userId: 'guest-1',
+    role: 'guest',
+  });
+  await assert.rejects(
+    () => guestTool.handler({ projectId: 1 }),
+    /Permission denied/,
+    'request_project_connection must refuse an open-mode guest even though it is in MEMBER_TOOLS',
+  );
+});
+
+test(
+  'request_project_connection DMs the project owner naming the requester and project, and only when the project is active and seeking collaborators (issue #840 AC #1)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-request-connection-happy-owner`;
+    const requester = `${RUN}-request-connection-happy-requester`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const created = await shareTool.handler({
+      name: 'Wants Help RPC Project',
+      description: 'a project that wants collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(created.isError, false);
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Wants Help RPC Project'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+    const tool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: requester },
+      adapter,
+    );
+    const result = await tool.handler({ projectId });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /reached out/i);
+    assert.equal(sends.length, 1, 'exactly one DM is sent');
+    assert.equal(sends[0]?.userId, owner);
+    assert.match(sends[0]?.text ?? '', /Wants Help RPC Project/);
+
+    const requesterResultText = result.content[0]?.text ?? '';
+    assert.doesNotMatch(
+      requesterResultText,
+      new RegExp(owner),
+      "SECURITY: the requester's own tool result never contains the owner's raw user id",
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'SECURITY: request_project_connection refuses cleanly with no DM sent for an unknown/removed project id, a project not seeking collaborators, and a self-request (issue #840 AC #2, #5)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-request-connection-refusals-owner`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const showcaseOnly = await shareTool.handler({
+      name: 'Showcase Only RPC Project',
+      description: 'not seeking collaborators',
+    });
+    assert.equal(showcaseOnly.isError, false);
+    const showcaseRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Showcase Only RPC Project'],
+    );
+    const showcaseOnlyId = Number(showcaseRow.rows[0].id);
+
+    const seeking = await shareTool.handler({
+      name: 'Seeking RPC Project',
+      description: 'seeking collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(seeking.isError, false);
+    const seekingRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Seeking RPC Project'],
+    );
+    const seekingId = Number(seekingRow.rows[0].id);
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+
+    // (a) unknown id
+    const requester = `${RUN}-request-connection-refusals-requester`;
+    const requesterTool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: requester },
+      adapter,
+    );
+    const unknown = await requesterTool.handler({ projectId: seekingId + 1_000_000 });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.content[0]?.text ?? '', /no active project/i);
+
+    // (b) not seeking collaborators
+    const notSeeking = await requesterTool.handler({ projectId: showcaseOnlyId });
+    assert.equal(notSeeking.isError, true);
+    assert.match(notSeeking.content[0]?.text ?? '', /not currently looking for collaborators/i);
+
+    // (c) self-request — the owner tries to connect to their own project
+    const ownerTool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: owner },
+      adapter,
+    );
+    const selfRequest = await ownerTool.handler({ projectId: seekingId });
+    assert.equal(selfRequest.isError, true);
+    assert.match(selfRequest.content[0]?.text ?? '', /own project/i);
+
+    assert.equal(sends.length, 0, 'none of the three refusal branches ever sends a DM');
+    const rows = await pool.query(
+      `SELECT 1 FROM project_connection_requests WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(rows.rows.length, 0, 'none of the three refusal branches ever writes a row');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'SECURITY: request_project_connection refuses a requester already at their daily cap BEFORE any project lookup, with no DM sent (issue #840 AC #3)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-request-connection-daily-cap-owner`;
+    const requester = `${RUN}-request-connection-daily-cap-requester`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const created = await shareTool.handler({
+      name: 'Daily Cap RPC Project',
+      description: 'seeking collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(created.isError, false);
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Daily Cap RPC Project'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const { PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT } = await import('../src/storage/repository.js');
+    for (let i = 0; i < PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO project_connection_requests
+           (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [`${RUN}-request-connection-daily-cap-prior-owner-${i}`, requester, i + 1],
+      );
+    }
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+    const tool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: requester },
+      adapter,
+    );
+    const result = await tool.handler({ projectId });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /limit/i);
+    assert.equal(sends.length, 0, 'a requester at their daily cap must never trigger a DM');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE requester_user_id = $1`, [requester]);
+  },
+);
+
+test(
+  "request_project_connection refuses with a generic message and sends no DM once the owner's weekly received-cap is hit — no cap number disclosed (issue #840 AC #3)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-request-connection-weekly-cap-owner`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const created = await shareTool.handler({
+      name: 'Weekly Cap RPC Project',
+      description: 'seeking collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(created.isError, false);
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Weekly Cap RPC Project'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const { PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT } = await import('../src/storage/repository.js');
+    for (let i = 0; i < PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT; i++) {
+      await pool.query(
+        `INSERT INTO project_connection_requests
+           (owner_platform, owner_user_id, requester_platform, requester_user_id, project_id)
+         VALUES ('discord', $1, 'discord', $2, $3)`,
+        [owner, `${RUN}-request-connection-weekly-cap-prior-requester-${i}`, projectId],
+      );
+    }
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+    const requester = `${RUN}-request-connection-weekly-cap-requester`;
+    const tool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: requester },
+      adapter,
+    );
+    const result = await tool.handler({ projectId });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /can't receive new connection requests/i);
+    assert.doesNotMatch(result.content[0]?.text ?? '', /\d/, 'the refusal never discloses a cap number');
+    assert.equal(sends.length, 0);
+
+    const rows = await pool.query(
+      `SELECT count(*) AS n FROM project_connection_requests WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(Number(rows.rows[0].n), PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT, 'no extra row was inserted');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  "SECURITY: request_project_connection's DM to the owner contains only the sanitized requester label and the quarantined project name — never the project's link or the requester's raw platform/user id (issue #840 AC #6)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-request-connection-no-leak-owner`;
+    const requester = `${RUN}-request-connection-no-leak-requester`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const created = await shareTool.handler({
+      name: 'No Leak RPC Project',
+      description: 'seeking collaborators',
+      link: 'https://example.com/secret-project-link',
+      seekingCollaborators: true,
+    });
+    assert.equal(created.isError, false);
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'No Leak RPC Project'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    // A display name distinct from the raw id, so the assertion below proves
+    // the DM carries the SANITIZED LABEL rather than merely happening to
+    // equal resolveSanitizedLabel's own raw-id fallback for an unknown user
+    // (find_helper's DM legitimately DOES name the requester — the id itself
+    // is only forbidden in its raw form).
+    await upsertRosterMember({ platform: 'discord', userId: requester, displayName: 'No Leak Requester' });
+
+    const sends: Array<{ userId: string; text: string }> = [];
+    const adapter = stubAdapter(async (userId: string, text: string) => {
+      sends.push({ userId, text });
+    });
+    const tool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: requester },
+      adapter,
+    );
+    const result = await tool.handler({ projectId });
+    assert.equal(result.isError, false);
+    assert.equal(sends.length, 1);
+
+    const dm = sends[0]?.text ?? '';
+    assert.doesNotMatch(dm, /example\.com/, "SECURITY: the owner's DM never contains the project's link");
+    assert.match(dm, /No Leak Requester/, 'the DM names the requester via their sanitized label');
+    assert.doesNotMatch(
+      dm,
+      new RegExp(requester),
+      "SECURITY: the owner's DM never contains the requester's raw platform/user id",
+    );
+    assert.match(dm, /No Leak RPC Project/, 'the DM still names the project');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM server_roster WHERE platform = 'discord' AND user_id = $1`, [requester]);
+  },
+);
+
+test(
+  'request_project_connection: a WindowClosedError on the DM send is queued via queueForWindowReopen rather than dropped, same recovery path as find_helper (issue #840)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-request-connection-window-closed-owner`;
+    const requester = `${RUN}-request-connection-window-closed-requester`;
+    const shareTool = shareProjectHandler({ platform: 'discord', userId: owner, userName: 'Owner' });
+    const created = await shareTool.handler({
+      name: 'Window Closed RPC Project',
+      description: 'seeking collaborators',
+      seekingCollaborators: true,
+    });
+    assert.equal(created.isError, false);
+    const dbRow = await pool.query(
+      `SELECT id FROM member_projects WHERE platform = 'discord' AND user_id = $1 AND name = $2`,
+      [owner, 'Window Closed RPC Project'],
+    );
+    const projectId = Number(dbRow.rows[0].id);
+
+    const queued: Array<{ userId: string; message: string; priority: 'system' | 'low' }> = [];
+    const adapter: PlatformAdapter = {
+      platform: 'discord',
+      start: async () => {},
+      stop: async () => {},
+      isConnected: () => true,
+      onMessage: () => {},
+      sendMessage: async () => {},
+      sendDirectMessage: async () => {
+        throw new WindowClosedError(owner);
+      },
+      queueForWindowReopen(userId: string, message: string, priority: 'system' | 'low') {
+        queued.push({ userId, message, priority });
+      },
+      conversationsForUser: async () => [],
+      adminCapabilities: new Set(),
+      performAdminAction: async () => {
+        throw new Error('not implemented in stub');
+      },
+    };
+    const tool = requestProjectConnectionHandlerWithAdapter(
+      { platform: 'discord', userId: requester },
+      adapter,
+    );
+    const result = await tool.handler({ projectId });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content[0]?.text ?? '', /reached out/i);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0]?.userId, owner);
+    assert.equal(queued[0]?.priority, 'low');
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
   },
 );
 

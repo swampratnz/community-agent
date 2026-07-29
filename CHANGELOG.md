@@ -98,6 +98,22 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   of silently being upserted into the knowledge base as if it were a real
   briefing. No behaviour change for a well-formed response or a genuine
   "nothing new" result.
+- **A member can now act on the "looking for collaborators" signal, not just
+  see it** (#840, `request_project_connection`): closes the gap #834 (shipped
+  today) knowingly left open — a member browsing `list_projects`/`who_is_into`
+  who spots the 🤝 marker can now request an introduction by the project's id
+  (shown by a new `[#id]` prefix on every rendered row) instead of
+  independently DMing whatever name was rendered. Modelled directly on
+  `find_helper`'s DM-handoff shape: sends the project's owner AT MOST ONE
+  direct message naming the requester and project, never a broadcast, and
+  never discloses the owner's identity back to the requester beyond what
+  `list_projects` already showed. Requester capped at 3 requests/24h, owner
+  capped at 3 received/7 days, both DB-backed and restart-proof; refuses
+  cleanly with no DM sent for an unknown/removed project, a project not
+  seeking collaborators, or a request to connect with the caller's own
+  project. Unlike `find_helper` this sits behind no feature flag — the owner
+  explicitly opted this specific project in via `share_project`'s
+  `seekingCollaborators` flag, a stronger consent basis than a topic-match.
 - **The weekly member digest now credits member-suggested knowledge tips**
   (#837): a new `countAcceptedMemberKnowledgeTipsSince` repository function —
   the same `COUNT(*)` shape as the existing project-showcase count — counts

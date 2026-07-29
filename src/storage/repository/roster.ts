@@ -77,6 +77,20 @@ export async function markRosterLeave(platform: Platform, userId: string): Promi
         [platform, userId],
       )
       .catch((err) => logger.warn({ err, platform }, 'Roster-leave helper_notifications cleanup failed'));
+    // project_connection_requests (issue #840) rides along the same
+    // departure, in EITHER role — a departed member's connection-request log
+    // (as project owner or as requester) shouldn't linger once
+    // member_projects above is already gone for them.
+    await pool
+      .query(
+        `DELETE FROM project_connection_requests
+          WHERE (owner_platform = $1 AND owner_user_id = $2)
+             OR (requester_platform = $1 AND requester_user_id = $2)`,
+        [platform, userId],
+      )
+      .catch((err) =>
+        logger.warn({ err, platform }, 'Roster-leave project_connection_requests cleanup failed'),
+      );
   }
   return left;
 }

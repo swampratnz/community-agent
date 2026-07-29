@@ -169,6 +169,17 @@ export const MEMBER_TOOLS = [
   // FIND_HELPER_WEEKLY_LIMIT_PER_HELPER). Same FIND_HELPER_ENABLED gate as
   // set_helper_availability above.
   'mcp__community__find_helper',
+  // The signal-to-action handoff for share_project's seekingCollaborators
+  // flag (issue #840): looks up a project by id and sends its owner at most
+  // one DM. Re-checks 'member' in the handler like share_project/find_helper
+  // above, and is rate-capped on both the requester and the notified-owner
+  // side (see repository.ts PROJECT_CONNECTION_REQUESTER_DAILY_LIMIT /
+  // PROJECT_CONNECTION_OWNER_WEEKLY_LIMIT), same shape as find_helper. Unlike
+  // find_helper this is not behind a feature flag — no new disclosure class,
+  // and the DM is solicited (the owner explicitly opted this specific project
+  // in via seekingCollaborators), a stronger consent basis than find_helper's
+  // topic-match.
+  'mcp__community__request_project_connection',
   // On-demand pull of the community-wide weekly member-digest snapshot
   // (issue #841) — the member-facing sibling of admin_digest (#499): same
   // buildMemberDigestContent gathering the scheduled MEMBER_DIGEST_ENABLED
