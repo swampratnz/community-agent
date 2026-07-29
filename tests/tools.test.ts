@@ -13074,6 +13074,7 @@ function listProjectsHandler(caller: {
           handler: (args: {
             query?: string;
             seekingCollaborators?: boolean;
+            mine?: boolean;
           }) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
         }
       >;
@@ -13107,6 +13108,15 @@ test('SECURITY: list_projects refuses a guest-tier caller regardless of the seek
     () => listTool.handler({ seekingCollaborators: false }),
     /Permission denied/,
     'a guest must be refused with seekingCollaborators: false too',
+  );
+});
+
+test('SECURITY: list_projects refuses a guest-tier caller when mine: true is set — the new argument adds no alternate reachability path (issue #867)', async () => {
+  const listTool = listProjectsHandler({ platform: 'discord', userId: 'guest-3', role: 'guest' });
+  await assert.rejects(
+    () => listTool.handler({ mine: true }),
+    /Permission denied/,
+    'a guest must be refused with mine: true, before listOwnProjects is ever called',
   );
 });
 
@@ -13309,6 +13319,118 @@ test(
     );
 
     await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [userId]);
+  },
+);
+
+test(
+  "list_projects mine:true returns exactly the caller's own active projects, with a distinct empty-state message, and leaves mine omitted/false byte-identical to today (issue #867 AC #1, #3, #4)",
+  { skip },
+  async () => {
+    const ownerId = `${RUN}-list-projects-mine-owner`;
+    const ownerTool = shareProjectHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+    const listTool = listProjectsHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+
+    const noneShared = await listTool.handler({ mine: true });
+    assert.equal(noneShared.isError, false);
+    assert.equal(noneShared.content[0]?.text, "You haven't shared any projects yet.");
+
+    const shared = await ownerTool.handler({
+      name: 'Mine Recall Project',
+      description: 'a project the owner recalls by name',
+      seekingCollaborators: true,
+    });
+    assert.equal(shared.isError, false);
+
+    const mine = await listTool.handler({ mine: true });
+    const mineText = mine.content[0]?.text ?? '';
+    assert.match(
+      mineText,
+      /"Mine Recall Project"/,
+      'the exact stored name is quotable back into share_project',
+    );
+    assert.match(
+      mineText,
+      /\[#\d+\]/,
+      'the id prefix is present, same shape as any other list_projects render',
+    );
+    assert.match(mineText, /🤝 looking for collaborators/);
+
+    // AC #4: mine omitted/false is byte-identical to today's existing paths.
+    const omittedNoQuery = await listTool.handler({});
+    const explicitFalse = await listTool.handler({ mine: false });
+    assert.equal(explicitFalse.content[0]?.text, omittedNoQuery.content[0]?.text);
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [ownerId]);
+  },
+);
+
+test(
+  'SECURITY: list_projects({ mine: true }) for caller A never returns a project owned by caller B, even when B has projects and A has none (issue #867 AC #8)',
+  { skip },
+  async () => {
+    const callerA = `${RUN}-list-projects-mine-caller-a`;
+    const callerB = `${RUN}-list-projects-mine-caller-b`;
+    const bTool = shareProjectHandler({ platform: 'discord', userId: callerB, userName: 'CallerB' });
+    const aListTool = listProjectsHandler({ platform: 'discord', userId: callerA, userName: 'CallerA' });
+
+    const bShared = await bTool.handler({
+      name: 'Caller B Only Project',
+      description: "must never leak into caller A's mine:true results",
+    });
+    assert.equal(bShared.isError, false);
+
+    const aMine = await aListTool.handler({ mine: true });
+    assert.equal(
+      aMine.content[0]?.text,
+      "You haven't shared any projects yet.",
+      "caller A has zero of their own projects, regardless of caller B's",
+    );
+    assert.doesNotMatch(aMine.content[0]?.text ?? '', /Caller B Only Project/);
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = $1`, [callerB]);
+  },
+);
+
+test(
+  "SECURITY: list_projects mine:true ignores any supplied query/seekingCollaborators and draws results exclusively from the caller's own projects, never falling through to the public search path (issue #867 AC #9)",
+  { skip },
+  async () => {
+    const ownerId = `${RUN}-list-projects-mine-ignores-filters`;
+    const otherId = `${RUN}-list-projects-mine-ignores-filters-other`;
+    const ownerTool = shareProjectHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+    const otherTool = shareProjectHandler({ platform: 'discord', userId: otherId, userName: 'Other' });
+    const listTool = listProjectsHandler({ platform: 'discord', userId: ownerId, userName: 'Owner' });
+
+    // The caller's own project deliberately does NOT match the query below
+    // and is NOT seeking collaborators, so if mine:true fell through to the
+    // public search/filter path it would be excluded.
+    const owned = await ownerTool.handler({
+      name: 'Unrelated Widget',
+      description: 'shares nothing in common with the query below',
+    });
+    assert.equal(owned.isError, false);
+    // Another member's project DOES match the query and IS seeking
+    // collaborators, so if mine:true fell through to the public path it
+    // would appear instead of (or alongside) the caller's own.
+    const other = await otherTool.handler({
+      name: 'Gizmo Match',
+      description: 'a gizmo project matching the query below',
+      seekingCollaborators: true,
+    });
+    assert.equal(other.isError, false);
+
+    const result = await listTool.handler({ mine: true, query: 'gizmo', seekingCollaborators: true });
+    const resultText = result.content[0]?.text ?? '';
+    assert.match(resultText, /Unrelated Widget/, "the caller's own non-matching project is still shown");
+    assert.doesNotMatch(
+      resultText,
+      /Gizmo Match/,
+      "another member's project must never appear, even though it matches query/seekingCollaborators",
+    );
+
+    await pool.query(`DELETE FROM member_projects WHERE platform = 'discord' AND user_id = ANY($1)`, [
+      [ownerId, otherId],
+    ]);
   },
 );
 

@@ -81,6 +81,7 @@ import {
   listKnowledgeFeedbackSummary,
   listOwnAppeals,
   listOwnKnowledgeCandidates,
+  listOwnProjects,
   listOwnReports,
   listOwnSuggestions,
   listRecentProjects,
@@ -4543,9 +4544,24 @@ export function buildToolServer(
         .boolean()
         .optional()
         .describe('Only show projects whose owner is looking for collaborators. Omit or false to show all.'),
+      mine: z
+        .boolean()
+        .optional()
+        .describe(
+          "Only show the caller's own shared projects — ignores query/seekingCollaborators when set. " +
+            'Use this to find the exact name of one of your own projects before editing or removing it ' +
+            'with share_project.',
+        ),
     },
     async (args) => {
       assertAtLeast(caller.role, 'member', 'list_projects');
+      if (args.mine) {
+        const projects = await listOwnProjects(caller.platform, caller.userId);
+        if (projects.length === 0) {
+          return text("You haven't shared any projects yet.");
+        }
+        return text(await formatProjectResults(projects));
+      }
       const opts = { seekingCollaboratorsOnly: args.seekingCollaborators };
       const projects = args.query
         ? await searchProjects(args.query, LIST_PROJECTS_DEFAULT_LIMIT, opts)
