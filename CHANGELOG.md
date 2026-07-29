@@ -33,6 +33,19 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   commands in the native `/` picker; WhatsApp has no equivalent, so this was
   the only way to learn the shortcuts (#859) exist at all. No change for
   Discord, or for WhatsApp with the feature off.
+- **The weekly admin digest's flywheel-throughput line now also counts
+  `request_project_connection` calls, not just `find_helper` matches,
+  knowledge candidates, and shared projects** (#870): a new
+  `countProjectConnectionsSince` repository function counts
+  `project_connection_requests` rows — one per connection request a member
+  actually sent — since the same window the line's other sub-signals already
+  use. Like `find_helper`, `request_project_connection` actively connects two
+  members rather than just contributing content, and it had zero visibility
+  in the digest since it shipped. Unlike `find_helper`, there's no feature
+  flag to gate behind, so this one is always counted. The line's gate is now
+  a four-way `||` (any sub-signal renders it), each with its own independent
+  week-over-week trend; still a bare integer only — never a requester/owner
+  identifier or a project name/description/link.
 
 ## 2026-07-29
 

@@ -366,6 +366,23 @@ export async function recordProjectConnectionIfUnderCap(
   return rows.length > 0;
 }
 
+/**
+ * Count of connection requests since `since` — issue #870's admin-digest
+ * flywheel-throughput signal, the fourth dimension and the second action in
+ * #820's "actively connects two members" category alongside
+ * `countHelperMatchesSince`. Mirrors that function's exact shape: one row per
+ * successful request_project_connection call (the atomic claim in
+ * recordProjectConnectionIfUnderCap), so a capped/refused attempt never
+ * inflates the count.
+ */
+export async function countProjectConnectionsSince(since: Date): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    `SELECT count(*) AS n FROM project_connection_requests WHERE created_at > $1`,
+    [since],
+  );
+  return Number(rows[0].n);
+}
+
 function mapMemberProjectRow(r: {
   id: number | string;
   platform: string;

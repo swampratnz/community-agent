@@ -96,6 +96,11 @@ const ADMIN_DIGEST_SIGNAL_KEYS = new Set([
   // shipped without it.
   'resolvedAppealsCount',
   'dismissedAppealsCount',
+  // The flywheel line's fourth dimension (issue #870) — added in the SAME
+  // diff that introduces the `currentCounts` key, per this module's own
+  // doc comment above, rather than repeating the #820-review-fixed mistake
+  // a third time.
+  'projectConnectionsCount',
 ]);
 
 /** Strips any key outside `ADMIN_DIGEST_SIGNAL_KEYS` and any non-integer value. */
