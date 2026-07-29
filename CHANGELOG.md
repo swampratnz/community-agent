@@ -103,6 +103,16 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
   appeals count/age. Omitted entirely when nothing closed this period; bare
   integers only, same as the backlog line — never an appellant's name,
   reason, or the resolving admin's identity.
+- **A waiting guest's gated notice now shows the community guidelines too,
+  not just the one-time welcome message** (#850): the repeated "member-only,
+  ask an admin" notice a gated guest sees every time they address the bot now
+  also carries the admin-configured community guidelines, appended after the
+  base notice, while they're still within their first day of waiting (the
+  same signal that already keeps the returning-guest wait clause silent on a
+  first message). A returning guest past that first day sees the unchanged
+  wait-clause-only notice, so the notice doesn't grow on every repeat.
+  Guidelines are unchanged if never set, and a lookup failure still sends the
+  base notice — never blocks or empties the reply.
 
 ### Fixed
 - **The offline context builder's cluster summariser no longer silently

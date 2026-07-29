@@ -1011,7 +1011,20 @@ weakening it:
    intentional, bounded exception to that non-blocking default; the
    rate-limited path and the guest-knowledge-shortcut-hit path (issue #165,
    below), where no gated notice is sent at all, keep the upsert
-   fire-and-forget exactly as before.
+   fire-and-forget exactly as before. The same `waitDays` value also gates a
+   second append (issue #850): while it's falsy — a guest's first-ever
+   addressed message, and any message before a whole day has passed, per
+   `waitDaysSince`'s truncation, so this is *not* "exactly once per
+   identity" — the gated notice additionally carries the admin-configured
+   community guidelines (`getCommunityGuidelines`/`getCommunityGuidelinesMi`,
+   `'mi'` preferring the te reo variant with English fallback, same order as
+   the `community_guidelines` tool), appended after the base notice text
+   exactly like the welcome message's own "if set" concatenation above. Once
+   `waitDays >= 1`, only the wait clause is appended — no repeated
+   guidelines block on every subsequent message. Unset guidelines render
+   byte-identical to today, and a lookup failure degrades to the unchanged
+   base notice, same fail-open shape as the notice-builder/response-style
+   reads on this path.
 3. **Server roster** (issue #47, extended to WhatsApp by issue #407). The
    Discord adapter records every `guildMemberAdd`/`guildMemberRemove` into
    `server_roster` (identity metadata only — see SECURITY.md) and
