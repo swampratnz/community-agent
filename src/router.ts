@@ -13,11 +13,15 @@ import {
   type AgentReply,
 } from './agent/core.js';
 import {
+  formatInterestResults,
   formatKnowledgeCitationNote,
+  formatProjectResults,
   formatRelativeAge,
+  LIST_PROJECTS_DEFAULT_LIMIT,
   notifyAdmins,
   truncateForEcho,
 } from './agent/tools.js';
+import { buildMemberDigestContent } from './memberDigest.js';
 import {
   cancelPendingAction,
   classifyConfirmReply,
@@ -37,6 +41,7 @@ import {
   isKnowledgeStale,
   isUserBlocked,
   listAdmins,
+  listRecentProjects,
   markKnowledgeGapsAlerted,
   markStaleKnowledgeAlerted,
   recordAccessRequest,
@@ -45,6 +50,8 @@ import {
   recordKnowledgeRetrieval,
   recordShortcutHit as recordShortcutHitDefault,
   searchKnowledge,
+  searchMemberInterests,
+  searchProjects,
 } from './storage/repository.js';
 import {
   RATE_LIMIT_NOTICE_TEXT,
@@ -469,7 +476,13 @@ export class Router {
    * gated-notice branch while `waitDays` is falsy (a guest's first message,
    * or any message before a whole day has passed) — overridable so tests can
    * assert on the appended text, the unset no-op, and the fail-open catch
-   * without a live DB.
+   * without a live DB. `searchMemberInterestsFn`/`searchProjectsFn`/
+   * `listRecentProjectsFn`/`buildMemberDigestContentFn` default to the real
+   * repository/digest reads (issue #859), consulted only from
+   * `tryWhatsAppTextCommand`'s `!whois`/`!projects`/`!digest` branches —
+   * overridable so the WhatsApp text-command tests can assert `runTurn` (and
+   * therefore `embed()`, which only the real search functions would call) is
+   * never reached, without a live DB.
    */
   constructor(
     private readonly runTurn: typeof runAgentTurn = runAgentTurn,
@@ -491,6 +504,10 @@ export class Router {
     private readonly markStaleKnowledgeAlertedFn: typeof markStaleKnowledgeAlerted = markStaleKnowledgeAlerted,
     private readonly getCommunityGuidelinesFn: typeof getCommunityGuidelines = getCommunityGuidelines,
     private readonly getCommunityGuidelinesMiFn: typeof getCommunityGuidelinesMi = getCommunityGuidelinesMi,
+    private readonly searchMemberInterestsFn: typeof searchMemberInterests = searchMemberInterests,
+    private readonly searchProjectsFn: typeof searchProjects = searchProjects,
+    private readonly listRecentProjectsFn: typeof listRecentProjects = listRecentProjects,
+    private readonly buildMemberDigestContentFn: typeof buildMemberDigestContent = buildMemberDigestContent,
   ) {
     setInterval(() => this.sweep(), this.RATE_WINDOW_MS * 5).unref();
   }
@@ -1430,6 +1447,25 @@ export class Router {
       }
     }
 
+    // WhatsApp-only, zero-model-call text commands (issue #859): the
+    // WhatsApp counterpart to Discord's slash commands (slashCommands.ts),
+    // checked alongside the shortcuts above. Off by default. A gate failure
+    // (unrecognised prefix, wrong platform, or an ineligible caller's tier —
+    // see tryWhatsAppTextCommand) returns null rather than a denial reply, so
+    // the message falls through to a normal turn exactly as if the
+    // `!`-prefixed text weren't recognised at all — a WhatsApp group reply
+    // has no ephemeral concept, so a bespoke denial (unlike Discord's) would
+    // out an ineligible caller's tier to the whole group.
+    if (config.behaviour.whatsappTextCommandsEnabled) {
+      const replyText = await this.tryWhatsAppTextCommand(msg, role);
+      if (replyText !== null) {
+        await this.enqueue(key, 'whatsapp text command reply', () =>
+          this.sendWhatsAppTextCommand(msg, adapter, replyText),
+        );
+        return;
+      }
+    }
+
     // Deterministic repeat-question short-circuit (issue #259): the same
     // caller (platform + conversation + user) sending the exact
     // whitespace-normalized text again inside REPEAT_SHORTCUT_WINDOW_MS gets
@@ -1627,6 +1663,100 @@ export class Router {
         ...(replyConversationId !== undefined ? { autoAnswer: true } : {}),
       },
     }).catch((err) => logger.error({ err }, 'Failed to record knowledge-shortcut outbound interaction'));
+  }
+
+  /**
+   * WhatsApp-only, zero-model-call text-command dispatcher (issue #859) — the
+   * WhatsApp counterpart to Discord's slash commands (slashCommands.ts),
+   * re-keyed for a platform with no native command UI. `!kb` is deliberately
+   * absent: `KNOWLEDGE_SHORTCUT_ENABLED` already gives WhatsApp an (implicit,
+   * similarity-matched) equivalent, so a second literal-prefix path to the
+   * same knowledge read would be redundant scope.
+   *
+   * Returns `null` on any of: the platform isn't WhatsApp, the trimmed text
+   * matches none of the four prefixes, or the caller doesn't clear the
+   * command's tier floor — every one of those causes the caller in
+   * `handle()` to fall through to a normal turn, never a distinguishing
+   * reply (see the call site's comment for why silent fallthrough, not a
+   * denial reply, is the deliberate choice here).
+   *
+   * Tier floors mirror each Discord handler's REAL minimum exactly:
+   * `who_is_into`/`list_projects`/`community_digest` are structurally
+   * reachable by every role (including guest) via `toolsForRole` — none of
+   * them are Discord-only tools — so `atLeast(role, 'member')` alone is
+   * equivalent to Discord's own `toolsForRole(...).includes(...) ||
+   * !atLeast(...)` check for these three. `community_guidelines` has no tier
+   * floor in either handler.
+   */
+  private async tryWhatsAppTextCommand(msg: IncomingMessage, role: Tier): Promise<string | null> {
+    if (msg.platform !== 'whatsapp') return null;
+    const text = msg.text.trim();
+
+    const whoisMatch = /^!whois\s+(.+)$/i.exec(text);
+    if (whoisMatch) {
+      if (!atLeast(role, 'member')) return null;
+      const query = whoisMatch[1].trim();
+      if (!query) return null;
+      const hits = await this.searchMemberInterestsFn(query);
+      return hits.length === 0
+        ? 'No members have published interests matching that yet.'
+        : await formatInterestResults(hits);
+    }
+
+    const projectsMatch = /^!projects(?:\s+(.+))?$/i.exec(text);
+    if (projectsMatch) {
+      if (!atLeast(role, 'member')) return null;
+      const query = projectsMatch[1]?.trim();
+      const projects = query
+        ? await this.searchProjectsFn(query, LIST_PROJECTS_DEFAULT_LIMIT)
+        : await this.listRecentProjectsFn(LIST_PROJECTS_DEFAULT_LIMIT);
+      return projects.length === 0
+        ? query
+          ? 'No shared projects match that.'
+          : 'No projects have been shared yet.'
+        : await formatProjectResults(projects);
+    }
+
+    if (/^!guidelines$/i.test(text)) {
+      const languagePreference = await this.getLangPref(msg.platform, msg.userId);
+      const guidelines =
+        languagePreference === 'mi'
+          ? ((await this.getCommunityGuidelinesMiFn()) ?? (await this.getCommunityGuidelinesFn()))
+          : await this.getCommunityGuidelinesFn();
+      return guidelines ?? 'No community guidelines have been set yet — ask an admin.';
+    }
+
+    if (/^!digest$/i.test(text)) {
+      if (!atLeast(role, 'member')) return null;
+      const message = await this.buildMemberDigestContentFn();
+      return message ?? 'Nothing to report right now.';
+    }
+
+    return null;
+  }
+
+  /**
+   * Sends a served WhatsApp text-command reply and records it exactly like a
+   * normal agent reply — counted toward `dailyReplyLimitPerUser`, visible to
+   * admin history/digest views — mirroring `sendKnowledgeShortcut`'s
+   * precedent (issue #162 point 4, reused for issue #859).
+   */
+  private async sendWhatsAppTextCommand(
+    msg: IncomingMessage,
+    adapter: PlatformAdapter,
+    replyText: string,
+  ): Promise<void> {
+    await this.send(adapter, msg.conversationId, replyText);
+    await recordInteraction({
+      platform: msg.platform,
+      conversationId: msg.conversationId,
+      userId: 'bot',
+      userName: 'CommunityAgent',
+      role: 'member',
+      direction: 'outbound',
+      content: replyText,
+      meta: { replyToUserId: msg.userId, whatsappTextCommand: true },
+    }).catch((err) => logger.error({ err }, 'Failed to record WhatsApp text-command outbound interaction'));
   }
 
   /**

@@ -2554,6 +2554,54 @@ class**, not a symmetry extension of an existing one:
   that runs a super admin (well above every cap) through the flag-off path
   and asserts zero fetch calls regardless.
 
+### 23. WhatsApp text commands (`!whois`, `!projects`, `!guidelines`, `!digest`, `WHATSAPP_TEXT_COMMANDS_ENABLED`, off by default, issue #859)
+
+The WhatsApp counterpart to §20's Discord slash commands, re-keyed for a
+platform with no native command-picker UI. A second entry point onto the
+same existing reads (`who_is_into`, `list_projects`, the
+`community_guidelines` policy text, `buildMemberDigestContent`) — no new
+tool, tier, table, or repository function — checked in `Router.handle()`
+(`tryWhatsAppTextCommand`) alongside the other router-level shortcuts.
+
+- **Identity is resolved via `resolveRole(platform, userId)` only**, same as
+  every chat message and identical to §20's own invariant.
+- **Tier floors mirror each tool's real gate exactly.** `!whois`, `!projects`,
+  `!digest` require `atLeast(role, 'member')`, the same runtime floor
+  `who_is_into`/`list_projects`/`community_digest`'s own handlers apply.
+  `!guidelines` has no gate, matching `community_guidelines`.
+- **SECURITY: gate failure is silent fallthrough, never a denial reply** —
+  the one deliberate departure from §20's design, not an oversight. Discord's
+  ephemeral reply lets a rejected caller be told "you don't have access" at
+  zero visibility cost; a WhatsApp group reply is visible to everyone, so an
+  equivalent bespoke denial would out an ineligible caller's tier to the
+  whole group — a probing vector Discord's design never had to consider.
+  Instead, an unrecognised prefix, a non-WhatsApp platform, or a
+  sub-member-tier caller on `!whois`/`!projects`/`!digest` all make
+  `tryWhatsAppTextCommand` return `null`, and the message is treated as
+  ordinary chat text — falling through to a normal turn (or the gated-guest
+  path) exactly as if the `!`-prefixed text weren't recognised. The
+  underlying repository function is never invoked on a rejected caller,
+  pinned by a `SECURITY:` test asserting each of `searchMemberInterests`/
+  `searchProjects`/`listRecentProjects`/`buildMemberDigestContent` is never
+  called for a guest's `!whois`/`!projects`/`!digest` message.
+- **Every reply routes through `this.send()` → `adapter.sendMessage()`**, the
+  same outbound-filtered send path every other router reply uses — never a
+  new, unfiltered send primitive.
+- **Rate-limit parity.** Each served reply is recorded via `recordInteraction`
+  with `meta.replyToUserId` set, exactly like `sendKnowledgeShortcut`, so it
+  counts toward the caller's `dailyReplyLimitPerUser` like any other answer —
+  this cannot become an unmetered read path distinct from normal chat.
+- **`!kb` is deliberately absent.** `KNOWLEDGE_SHORTCUT_ENABLED` already gives
+  WhatsApp an implicit, similarity-matched knowledge lookup; a second,
+  differently-triggered path to the same read would be redundant scope.
+- **Byte-identical when off, and a no-op on any non-WhatsApp platform even
+  with the flag on** — Discord already has its own (ephemeral, denial-capable)
+  command surface via §20, so this dispatcher never fires there regardless of
+  this flag's state.
+
+No new write path, no `shortcut_hits` tracking. See docs/ARCHITECTURE.md's
+"WhatsApp text commands" section for the mechanism.
+
 ## Platform-specific notes
 
 ### WhatsApp / Baileys ToS risk
