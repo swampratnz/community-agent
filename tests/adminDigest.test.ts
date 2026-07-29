@@ -40,6 +40,7 @@ const {
   countStaleKnowledge,
   countUnreachableSourceKnowledge,
   countPendingKnowledgeCandidates,
+  countProjectConnectionsSince,
   createContentReport,
   createSuggestion,
   createAnswerFeedback,
@@ -60,6 +61,7 @@ const {
   createModerationAppeal,
   resolveModerationAppeal,
   recordHelperNotificationIfUnderCap,
+  recordProjectConnectionIfUnderCap,
 } = await import('../src/storage/repository.js');
 const { buildAdminDigestMessage, buildAdminDigestForAdmin, runAdminDigestOnce, startAdminDigest } =
   await import('../src/adminDigest.js');
@@ -3196,7 +3198,7 @@ test('buildAdminDigestMessage: the flywheel line renders only when at least one 
   assert.equal(acceptedLines.length, 1, 'exactly one flywheel line');
   assert.equal(
     acceptedLines[0],
-    '🌱 3 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'a nonzero accepted count with zero shared projects still renders all three sub-counts (issue #797 acceptance criterion 3)',
   );
 
@@ -3206,7 +3208,7 @@ test('buildAdminDigestMessage: the flywheel line renders only when at least one 
   assert.equal(sharedLines.length, 1, 'exactly one flywheel line');
   assert.equal(
     sharedLines[0],
-    '🌱 0 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 0 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'a nonzero shared count with zero accepted candidates still renders all three sub-counts',
   );
 
@@ -3216,7 +3218,7 @@ test('buildAdminDigestMessage: the flywheel line renders only when at least one 
   assert.equal(bothLines.length, 1, 'exactly one flywheel line even when both sub-counts are nonzero');
   assert.equal(
     bothLines[0],
-    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
   );
 });
 
@@ -3231,7 +3233,7 @@ test('buildAdminDigestMessage: the flywheel line trends acceptedKnowledgeCandida
   const line = message.split('\n').find((l) => l.includes('🌱'));
   assert.equal(
     line,
-    '🌱 3 knowledge candidate(s) accepted (▲+2 since last week), 2 project(s) shared (▼-3 since last week), 0 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted (▲+2 since last week), 2 project(s) shared (▼-3 since last week), 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'each sub-signal carries its own independent trendSuffix, same one-call-per-signal convention as joinedThisWeek/leftThisWeek',
   );
 
@@ -3240,7 +3242,7 @@ test('buildAdminDigestMessage: the flywheel line trends acceptedKnowledgeCandida
   const noTrendLine = noTrend.split('\n').find((l) => l.includes('🌱'));
   assert.equal(
     noTrendLine,
-    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'no previousCounts -> no suffix on either sub-signal',
   );
 });
@@ -3326,7 +3328,7 @@ test('SECURITY: the flywheel line is a deterministic function of (acceptedKnowle
   }
   assert.equal(
     line,
-    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 3 knowledge candidate(s) accepted, 2 project(s) shared, 0 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'the line is a pure function of the three integer counts — bare numbers and fixed template text only',
   );
 });
@@ -3348,7 +3350,7 @@ test('buildAdminDigestMessage: the flywheel line renders when ONLY helperMatches
   assert.equal(helperLines.length, 1, 'exactly one flywheel line');
   assert.equal(
     helperLines[0],
-    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'a nonzero helperMatchesCount with the other two sub-signals at zero still renders the line, with the first two clauses reading 0 (issue #820 acceptance criterion 4, three-way || gate, not &&)',
   );
 });
@@ -3364,7 +3366,7 @@ test('buildAdminDigestMessage: the flywheel line trends helperMatchesCount indep
   const line = message.split('\n').find((l) => l.includes('🌱'));
   assert.equal(
     line,
-    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made (▲+3 since last week) this week — the community is contributing back.',
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made (▲+3 since last week), 0 project connection(s) requested this week — the community is contributing back.',
     'helperMatchesCount carries its own independent trendSuffix, same one-call-per-signal convention as acceptedKnowledgeCandidatesCount/projectsSharedCount',
   );
 
@@ -3373,7 +3375,7 @@ test('buildAdminDigestMessage: the flywheel line trends helperMatchesCount indep
   const noTrendLine = noTrend.split('\n').find((l) => l.includes('🌱'));
   assert.equal(
     noTrendLine,
-    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'no previousCounts -> no suffix on helperMatchesCount either',
   );
 });
@@ -3406,7 +3408,7 @@ test('SECURITY: the flywheel line never carries a helper/requester identifier or
   }
   assert.equal(
     line,
-    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made this week — the community is contributing back.',
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 4 member-to-member connection(s) made, 0 project connection(s) requested this week — the community is contributing back.',
     'the line is a pure function of the three integer counts — bare numbers and fixed template text only',
   );
 });
@@ -3619,7 +3621,7 @@ test(
       assert.ok(week1.message);
       assert.match(
         week1.message.split('\n').find((l) => l.includes('🌱')) ?? '',
-        /1 member-to-member connection\(s\) made this week/,
+        /1 member-to-member connection\(s\) made, /,
         'no prior snapshot yet -> no trend suffix, week 1 renders bare',
       );
 
@@ -4232,6 +4234,316 @@ function fakeAdapter(opts: {
     },
   };
 }
+
+// --- issue #870: the flywheel line's fourth dimension, projectConnectionsCount --
+
+// Full 42-element positional prefix for buildAdminDigestMessage at its
+// quiet-week default — every signal through dismissedAppealsCount (position
+// 42) zero/null. projectConnectionsCount (position 43) is appended by each
+// test below, matching the FLYWHEEL_ZERO_PREFIX + trailing-args convention
+// used for helperMatchesCount above.
+const PROJECT_CONNECTIONS_ZERO_PREFIX = [...FLYWHEEL_ZERO_PREFIX, 0, 0, null, 0, 0, 0] as const;
+
+test('buildAdminDigestMessage: the flywheel line renders when ONLY projectConnectionsCount > 0, with the first three clauses reading 0 (issue #870 acceptance criteria 1, 3)', () => {
+  assert.equal(
+    buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX, 0),
+    null,
+    'every flywheel sub-signal at zero, including projectConnectionsCount, is still a quiet week',
+  );
+
+  const connectionsOnly = buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX, 5);
+  assert.ok(
+    connectionsOnly,
+    'project connections alone still produce a DM (issue #870 acceptance criterion 1)',
+  );
+  const connectionsLines = connectionsOnly.split('\n').filter((l) => l.includes('🌱'));
+  assert.equal(connectionsLines.length, 1, 'exactly one flywheel line');
+  assert.equal(
+    connectionsLines[0],
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made, 5 project connection(s) requested this week — the community is contributing back.',
+    'a nonzero projectConnectionsCount with the other three sub-signals at zero still renders the line, with the first three clauses reading 0 (issue #870 acceptance criterion 1, four-way || gate, not &&)',
+  );
+});
+
+test('buildAdminDigestMessage: the flywheel line trends projectConnectionsCount independently via trendSuffix (issue #870 acceptance criterion 2)', () => {
+  const prefixWithTrend = [
+    ...FLYWHEEL_ZERO_PREFIX.slice(0, 21),
+    { projectConnectionsCount: 2 },
+    ...FLYWHEEL_ZERO_PREFIX.slice(22),
+  ] as const;
+  const message = buildAdminDigestMessage(...prefixWithTrend, 0, 0, null, 0, 0, 0, 5);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    line,
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made, 5 project connection(s) requested (▲+3 since last week) this week — the community is contributing back.',
+    'projectConnectionsCount carries its own independent trendSuffix, same one-call-per-signal convention as the other three flywheel sub-signals',
+  );
+
+  const noTrend = buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX, 5);
+  assert.ok(noTrend);
+  const noTrendLine = noTrend.split('\n').find((l) => l.includes('🌱'));
+  assert.equal(
+    noTrendLine,
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made, 5 project connection(s) requested this week — the community is contributing back.',
+    'no previousCounts -> no suffix on projectConnectionsCount either',
+  );
+});
+
+test('SECURITY: buildAdminDigestMessage: all four flywheel sub-signals at zero renders no flywheel line, byte-identical to a caller that has not wired projectConnectionsCount through at all (issue #870 acceptance criterion 5)', () => {
+  const withoutParam = buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX);
+  const withZero = buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX, 0);
+  assert.equal(
+    withoutParam,
+    withZero,
+    'omitting the new trailing param is byte-identical to passing an explicit zero (issue #870 acceptance criterion 5)',
+  );
+  assert.equal(withZero, null, 'still a quiet week');
+});
+
+test('SECURITY: buildAdminDigestMessage: all four flywheel sub-signals at zero leaves the rest of a busy digest byte-identical to a caller that has not wired projectConnectionsCount through — the flywheel line renders only when at least one sub-signal is nonzero (issue #870 acceptance criterion 4)', () => {
+  const busyPrefix = [
+    [], // clusters
+    2, // pendingAccessRequests
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    undefined,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    null,
+  ] as const;
+  const withoutParam = buildAdminDigestMessage(...busyPrefix, 0, 0, null, 0, 0, 0);
+  const withZeroConnections = buildAdminDigestMessage(...busyPrefix, 0, 0, null, 0, 0, 0, 0);
+  assert.ok(withoutParam, 'a nonzero unrelated signal still produces a DM');
+  assert.equal(
+    withoutParam,
+    withZeroConnections,
+    'omitting projectConnectionsCount is byte-identical to passing an explicit zero, with the other three flywheel sub-signals also zero (issue #870 acceptance criterion 4)',
+  );
+  assert.ok(
+    !withZeroConnections!.includes('🌱'),
+    'no flywheel line at all when all four sub-signals are zero',
+  );
+});
+
+test('SECURITY: the flywheel line never carries a requester/owner identifier or project name/description/link — only the four integer counts and fixed template text (issue #870 acceptance criterion 7)', () => {
+  const secretProjectName = 'a very identifiable connected project name that must never leak';
+  const secretOwnerId = 'owner-user-id-135792468';
+  const secretRequesterId = 'requester-user-id-246813579';
+
+  const message = buildAdminDigestMessage(...PROJECT_CONNECTIONS_ZERO_PREFIX, 5);
+  assert.ok(message);
+  const line = message.split('\n').find((l) => l.includes('🌱'));
+  assert.ok(line);
+  for (const secret of [secretProjectName, secretOwnerId, secretRequesterId]) {
+    assert.ok(
+      !line.includes(secret),
+      `SECURITY: the flywheel line must never carry "${secret}" — it takes no such input, only the bare count`,
+    );
+  }
+  assert.equal(
+    line,
+    '🌱 0 knowledge candidate(s) accepted, 0 project(s) shared, 0 member-to-member connection(s) made, 5 project connection(s) requested this week — the community is contributing back.',
+    'the line is a pure function of the four integer counts — bare numbers and fixed template text only',
+  );
+});
+
+// --- issue #870: countProjectConnectionsSince + buildAdminDigestForAdmin wiring --
+
+test(
+  'repository: countProjectConnectionsSince counts project_connection_requests rows created after the window only, excluding rows created before it (issue #870 acceptance criterion 1)',
+  { skip },
+  async () => {
+    const owner = `${RUN}-projectconnections-owner`;
+    const requester = `${RUN}-projectconnections-requester`;
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countProjectConnectionsSince(since);
+
+    const claimed = await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 111);
+    assert.ok(claimed, 'seed connection request claims a slot');
+
+    assert.equal(
+      await countProjectConnectionsSince(since),
+      before + 1,
+      'a row created inside the window counts',
+    );
+
+    await pool.query(
+      `UPDATE project_connection_requests SET created_at = now() - interval '30 days'
+        WHERE owner_platform = 'discord' AND owner_user_id = $1`,
+      [owner],
+    );
+    assert.equal(
+      await countProjectConnectionsSince(since),
+      before,
+      'a row created before the window is excluded once its created_at is pushed outside it (issue #870 acceptance criterion 1)',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  "SECURITY: repository: countProjectConnectionsSince returns a bare number carrying no identifying data — mirrors countHelperMatchesSince's existing count-only coverage (issue #870 acceptance criterion 7)",
+  { skip },
+  async () => {
+    const owner = `${RUN}-projectconnections-typecheck-owner`;
+    const requester = `${RUN}-projectconnections-typecheck-requester`;
+    const since = new Date(Date.now() - 3_600_000);
+
+    await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 222);
+
+    const count = await countProjectConnectionsSince(since);
+    assert.equal(typeof count, 'number', 'SECURITY: the return value is a bare number, not an object/row');
+    assert.ok(count >= 1, 'the seeded connection request is counted');
+    assert.doesNotMatch(
+      String(count),
+      new RegExp(owner),
+      'SECURITY: the count carries no trace of the owner or requester id it was derived from',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+  },
+);
+
+test(
+  'buildAdminDigestForAdmin: projectConnectionsCount reflects countProjectConnectionsSince and renders on the flywheel line — called unconditionally, unlike helperMatchesCount which is gated behind config.findHelper.enabled (issue #870 acceptance criteria 2, 3)',
+  { skip },
+  async (t) => {
+    const adminId = `${RUN}-projectconnwired-admin`;
+    const conversationId = `${RUN}-c-projectconnwired`;
+    const owner = `${RUN}-projectconnwired-owner`;
+    const requester = `${RUN}-projectconnwired-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const before = await countProjectConnectionsSince(since);
+    const claimed = await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 333);
+    assert.ok(claimed, 'seed connection request claims a slot');
+
+    const querySpy = t.mock.method(pool, 'query');
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+    const result = await buildAdminDigestForAdmin('discord', adminId, adapter);
+
+    assert.equal(
+      result.currentCounts.projectConnectionsCount,
+      before + 1,
+      'projectConnectionsCount reflects the seeded connection request',
+    );
+    assert.ok(result.message, 'a nonzero projectConnectionsCount alone still produces a DM');
+    assert.match(
+      result.message,
+      new RegExp(`${before + 1} project connection\\(s\\) requested`),
+      'the flywheel line reports the current exact count, including this newly-seeded connection request',
+    );
+    assert.ok(
+      !result.message.includes(owner) && !result.message.includes(requester),
+      'SECURITY: neither the owner nor the requester identity ever reaches the rendered digest (issue #870 acceptance criterion 7)',
+    );
+
+    const issuedProjectConnectionsQuery = querySpy.mock.calls.some((call) =>
+      String(call.arguments[0]).includes('project_connection_requests'),
+    );
+    assert.ok(
+      issuedProjectConnectionsQuery,
+      'the project_connection_requests COUNT(*) is always issued — unlike countHelperMatchesSince there is no feature flag to gate it behind (issue #870 acceptance criterion 2)',
+    );
+
+    await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = $1`, [owner]);
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+  },
+);
+
+test(
+  "SECURITY: buildAdminDigestForAdmin: projectConnectionsCount round-trips through currentCounts -> sanitizeDigestCounts -> persisted snapshot -> getLastDigestCounts, and the second week's pull renders the exact delta against the first — pinning against the ADMIN_DIGEST_SIGNAL_KEYS allowlist-omission bug class that already struck autoAnswerHelpfulPct and helperMatchesCount once each (issue #870 acceptance criterion 8)",
+  { skip },
+  async () => {
+    const adminId = `${RUN}-projectconntrend-admin`;
+    const conversationId = `${RUN}-c-projectconntrend`;
+    const owner = `${RUN}-projectconntrend-owner`;
+    const owner2 = `${RUN}-projectconntrend-owner2`;
+    const requester = `${RUN}-projectconntrend-requester`;
+    await upsertMember({ platform: 'discord', userId: adminId, role: 'admin', addedBy: `${RUN}-actor` });
+
+    const adapter = fakeAdapter({ platform: 'discord', conversationIds: [conversationId], sent: [] });
+
+    const wasTrendsEnabled = config.adminDigest.trendsEnabled;
+    config.adminDigest.trendsEnabled = true;
+    try {
+      const claimed = await recordProjectConnectionIfUnderCap('discord', owner, 'discord', requester, 444);
+      assert.ok(claimed, 'seed connection request claims a slot');
+
+      const week1 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(week1.message);
+      assert.match(
+        week1.message.split('\n').find((l) => l.includes('🌱')) ?? '',
+        /1 project connection\(s\) requested this week/,
+        'no prior snapshot yet -> no trend suffix, week 1 renders bare',
+      );
+
+      // Persist week 1's snapshot exactly as runAdminDigestOnce would on a
+      // real send, so week 2's read sees it as "last week".
+      await recordAdminDigestSnapshot('discord', adminId, week1.currentCounts);
+      assert.equal(
+        (await getLastDigestCounts('discord', adminId))?.projectConnectionsCount,
+        1,
+        'projectConnectionsCount survives the sanitizeDigestCounts allowlist round-trip (issue #870) — the exact class of bug that silently stripped autoAnswerHelpfulPct and helperMatchesCount before their own allowlist entries were added',
+      );
+
+      // Week 2: one more connection.
+      await recordProjectConnectionIfUnderCap('discord', owner2, 'discord', requester, 555);
+
+      const week2 = await buildAdminDigestForAdmin('discord', adminId, adapter);
+      assert.ok(week2.message);
+      assert.match(
+        week2.message.split('\n').find((l) => l.includes('🌱')) ?? '',
+        /2 project connection\(s\) requested \(▲\+1 since last week\)/,
+        "week 2 sees last week's persisted count and renders the exact ▲+1 delta",
+      );
+
+      await pool.query(`DELETE FROM project_connection_requests WHERE owner_user_id = ANY($1)`, [
+        [owner, owner2],
+      ]);
+    } finally {
+      config.adminDigest.trendsEnabled = wasTrendsEnabled;
+    }
+
+    await pool.query(`DELETE FROM community_users WHERE platform = 'discord' AND platform_user_id = $1`, [
+      adminId,
+    ]);
+    await pool.query(`DELETE FROM admin_digest_sends WHERE platform_user_id = $1`, [adminId]);
+  },
+);
 
 // --- issue #385: runAdminDigestOnce now signals total failure to
 // startTrackedJob (previously listAdmins() failures were caught-and-returned,
