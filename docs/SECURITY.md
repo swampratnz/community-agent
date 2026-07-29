@@ -2516,6 +2516,22 @@ keep volume human-like, or switch to `WhatsAppCloudAdapter`
 deliberate, accepted trade-off for immediate, free operation; revisit it
 before scaling.
 
+**Reconnects are bounded** (`WHATSAPP_MAX_RECONNECT_ATTEMPTS`, default 20).
+On 2026-07-29 WhatsApp started refusing the connection with `statusCode: 405,
+loggedOut: false` — a refusal, not a logout, and not a network blip — and the
+then-unbounded retry loop reconnected **73 times over ~6 hours** at its
+5-minute backoff ceiling. Repeatedly re-attempting a connection the server is
+actively rejecting is precisely the un-human-like pattern this section warns
+about, so the loop now stops after a bounded budget (~1 h of backoff),
+logs one actionable error, and stays disconnected — which leaves the
+sustained-disconnect alert nagging a super admin rather than burying the
+problem under an endless warn stream. `0` restores unlimited retries.
+
+A `401` (`loggedOut`) close is handled separately and has **never** been
+retried: the linked device is gone and only `npm run whatsapp:link` restores
+it. That distinction is pinned by a `SECURITY:` test, because retrying a
+revoked session is the version of this that most plausibly attracts a ban.
+
 Enabling `WHATSAPP_WELCOME_ENABLED` adds an **unprompted, event-triggered
 automated group post** (a static message on `group-participants.update`) to
 this unofficial path — not a risk-free feature. It never DMs the joiner

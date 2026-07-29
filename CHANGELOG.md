@@ -25,6 +25,18 @@ Skipped as internal: #707 #725 #731 #749 #750 #751 #767 #769 #770 #779 #780 #790
 
 ## 2026-07-29
 
+### Fixed
+- **WhatsApp reconnects after WhatsApp itself refuses the connection.** On the
+  morning of 29 July, WhatsApp began rejecting the bot's connection outright
+  (a refusal, not a logout — the pairing was never lost), and Dave was
+  unreachable on WhatsApp for about six hours. Discord was unaffected
+  throughout. The WhatsApp library has been updated to the release published
+  the same day, which addresses the rejection.
+- **The bot no longer retries forever when WhatsApp is refusing it.** Reconnect
+  attempts are now capped (~an hour of retrying by default) instead of looping
+  indefinitely; when the budget runs out it logs one clear, actionable error
+  and alerts an admin rather than retrying silently in the background.
+
 ### Added
 - **Community digest is now available on demand, not just as a weekly post**
   (#841): a new member-tier `community_digest` chat tool and a matching
